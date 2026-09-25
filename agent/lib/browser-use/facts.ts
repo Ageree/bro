@@ -303,6 +303,26 @@ export async function browserRunFacts(scope: AccessScope) {
     details:
       lines.length === 0 ? undefined : [factsHeader, ...lines].join("\n"),
     home: profileHome(profile),
-    phone: ownPhone(profile, accountPhone),
   };
+}
+
+/**
+ * The person's own phone, to sign in with where the site sends a code: the
+ * one in Personal Info, else the one they signed in to Bro with.
+ */
+export async function readOwnPhone(scope: AccessScope) {
+  try {
+    const [profile, accountPhone] = await Promise.all([
+      readUserProfile(scope),
+      safeAccountPhoneNumber(scope),
+    ]);
+    return ownPhone(profile, accountPhone);
+  } catch (error) {
+    // No phone to sign in with is the run as it was before: the errand
+    // still starts, and a sign-in stops with NEEDS: password.
+    console.warn("[browser-use] the person's phone could not be read", {
+      cause: error,
+    });
+    return undefined;
+  }
 }

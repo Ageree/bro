@@ -22,7 +22,7 @@ import {
   reportBrowserUseOutOfCredits,
 } from "./credits";
 import { customProxy } from "./proxy";
-import { resolveBrowserSecretBindings } from "./secrets";
+import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 import { releaseBrowserRunSpend } from "./spend";
 
 type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
@@ -179,9 +179,15 @@ async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
  * follow-up was using, with the site's secrets bound afresh.
  */
 async function createQueuedRun(row: BrowserRunRow, reference: string) {
+  const task = row.pendingTask ?? row.task;
   const secrets = await resolveBrowserSecretBindings(
     { userId: row.createdByUserId, workspaceId: row.workspaceId },
-    { allowPayment: row.paymentAllowed, site: row.site ?? undefined }
+    {
+      allowPayment: row.paymentAllowed,
+      // The phone goes again only where the errand was composed with it.
+      phoneSignIn: signsInByPhone(task),
+      site: row.site ?? undefined,
+    }
   );
   return createRunInSession({
     customProxy: customProxy(),
@@ -191,7 +197,7 @@ async function createQueuedRun(row: BrowserRunRow, reference: string) {
     proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
     secretBindings: secrets.bindings,
     sessionId: row.sessionId ?? undefined,
-    task: `${row.pendingTask ?? row.task}\n\n${reference}`,
+    task: `${task}\n\n${reference}`,
   });
 }
 

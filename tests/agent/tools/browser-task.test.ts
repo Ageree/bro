@@ -114,9 +114,14 @@ const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
   )
 );
 const resolveBrowserSecretBindings = vi.hoisted(() =>
-  vi.fn<() => Promise<{ aliases: string[]; bindings: { alias: string }[] }>>(
-    () => Promise.resolve({ aliases: [], bindings: [] })
-  )
+  vi.fn<
+    (
+      scope: AccessScope,
+      options: Parameters<
+        typeof browserUseSecrets.resolveBrowserSecretBindings
+      >[1]
+    ) => Promise<{ aliases: string[]; bindings: { alias: string }[] }>
+  >(() => Promise.resolve({ aliases: [], bindings: [] }))
 );
 const readUserProfile = vi.hoisted(() =>
   vi.fn<() => Promise<UserProfile>>(() => Promise.resolve(emptyUserProfile))
@@ -282,14 +287,10 @@ vi.mock("@db/services/user-profile", () => ({
 vi.mock("@db/services/users", () => ({ readAccountPhoneNumber }));
 vi.mock("@db/services/vault", () => ({ readVaultItems, readVaultSecret }));
 vi.mock("@agent/lib/billing/quota", () => ({ browserRunQuotaGate }));
-vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => {
-  const original = await importOriginal<typeof browserUseSecrets>();
-  return {
-    browserSecretAliases: original.browserSecretAliases,
-    nationalPhoneDigits: original.nationalPhoneDigits,
-    resolveBrowserSecretBindings,
-  };
-});
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseSecrets>()),
+  resolveBrowserSecretBindings,
+}));
 // The error class travels from the real module: the tool decides what to do
 // with a 409 or a 404 by testing against it.
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
@@ -364,6 +365,10 @@ function rowSessionId(): string | null {
   return sessionId;
 }
 
+function rowSite(): string | null {
+  return "https://taxi.yandex.ru";
+}
+
 /** A policy of standing permissions alone, without a monthly limit. */
 function standingPolicy(actions: StandingAction[]): SpendLimitPolicy {
   return {
@@ -408,7 +413,7 @@ function browserRunRow(
     retryAt: noRetryAt(),
     rootSessionId: "session-1",
     sessionId: rowSessionId(),
-    site: "https://taxi.yandex.ru",
+    site: rowSite(),
     status: completedAt ? "done" : "running",
     submission,
     task: "Войди в аккаунт на taxi.yandex.ru",
@@ -609,7 +614,7 @@ describe("browser_task continuation", () => {
     expect(created?.task).toContain("Site: https://taxi.yandex.ru");
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: false, site: "https://taxi.yandex.ru" }
+      { allowPayment: false, phoneSignIn: true, site: "https://taxi.yandex.ru" }
     );
     expect(createBrowserRun).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
@@ -668,7 +673,7 @@ describe("browser_task continuation", () => {
     });
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: true, site: "https://taxi.yandex.ru" }
+      { allowPayment: true, phoneSignIn: true, site: "https://taxi.yandex.ru" }
     );
     expect(createBrowserUseRun.mock.calls[0]?.[0].secretBindings).toEqual([
       { alias: "card_number" },
@@ -995,11 +1000,9 @@ describe("browser_task known facts", () => {
     // A vault contact card's phone may be someone else's.
     expect(task).not.toContain("+79991234567");
     expect(task).not.toContain("ул. Ленина");
-    // The person's own phone appears once: to sign in on the errand's site.
-    expect(task.split("+79990000001")).toHaveLength(2);
-    expect(task).toContain(
-      "sign in to the person's own account there with their phone +79990000001"
-    );
+    // The phone to sign in with is a secret, never text in the task.
+    expect(task).not.toContain("+79990000001");
+    expect(task).not.toContain("9990000001");
   });
 
   it("keeps the account phone out of the known details once one is known", async () => {
@@ -1667,7 +1670,11 @@ describe("browser_task standing spend limit", () => {
     });
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      { allowPayment: true, site: "https://www.shop.example" }
+      {
+        allowPayment: true,
+        phoneSignIn: true,
+        site: "https://www.shop.example",
+      }
     );
     const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
     expect(task).toContain("Payment is pre-approved up to");
@@ -3711,8 +3718,10 @@ describe("browser_task finds the option before the one card", () => {
 describe("browser_task sign-in by the person's phone", () => {
   // RU 25.09, d04: «закажи на озоне тот же корм» stopped at Ozon's sign-in,
   // which takes a phone and an SMS code, with NEEDS: password.
-  const phoneLine =
-    "sign in to the person's own account there with their phone +79991234567";
+  const phoneAliases = {
+    aliases: ["signin_phone", "signin_phone_digits"],
+    bindings: [{ alias: "signin_phone" }, { alias: "signin_phone_digits" }],
+  };
 
   beforeEach(() => {
     readUserProfile.mockResolvedValue({
@@ -3737,76 +3746,52 @@ describe("browser_task sign-in by the person's phone", () => {
     return String(createBrowserUseRun.mock.calls[0]?.[0].task);
   }
 
-  it("signs in on the errand's own site with the person's phone", async () => {
+  function phoneAsked() {
+    return resolveBrowserSecretBindings.mock.calls[0]?.[1];
+  }
+
+  it("binds the person's phone as a secret for the errand they started", async () => {
+    resolveBrowserSecretBindings.mockResolvedValue(phoneAliases);
+
     const task = await start({ site: "https://www.ozon.ru" });
 
-    expect(task).toContain(phoneLine);
+    expect(phoneAsked()).toEqual({
+      allowPayment: false,
+      phoneSignIn: true,
+      site: "https://www.ozon.ru",
+    });
+    // The run refers to the secret by name and never sees the number.
+    expect(task).not.toContain("+79991234567");
+    expect(task).not.toContain("9991234567");
     expect(task).toContain(
-      "with their phone +79991234567 (the 10 digits after +7: 9991234567). If the phone field already shows the country code (+7) or a mask, type only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other form (+7XXXXXXXXXX), then stop with NEEDS: info describing what the field expects."
+      "sign in to the person's own account there with their phone: focus the phone field and ask for the secret signin_phone. If the phone field already shows the country code (+7) or a mask, ask for signin_phone_digits instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects."
     );
     expect(task).toContain(
-      "That phone is for signing in on www.ozon.ru only — its own sign-in page, which may sit on a subdomain of it — never on another site, a fallback or a site it sends you to, and no other personal detail goes with it."
+      "It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
     );
     expect(task).toContain(
       "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
     );
-    expect(task).toContain(
-      "If www.ozon.ru offers only a password sign-in, stop with NEEDS: password"
-    );
-    // Not approved to act in their name: the phone is for signing in only.
     expect(task).toContain(
       "Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else."
     );
     expect(task).not.toContain("No stored credentials are available");
   });
 
-  it("leaves the phone out when a login is saved for the site", async () => {
-    resolveBrowserSecretBindings.mockResolvedValue({
-      aliases: ["login_username", "login_password"],
-      bindings: [{ alias: "login_username" }, { alias: "login_password" }],
-    });
-
-    const task = await start({ site: "https://www.ozon.ru" });
-
-    expect(task).not.toContain("+79991234567");
-    expect(task).toContain("login_username");
-  });
-
-  it("writes a phone saved with an 8 as +7 and its 10 digits", async () => {
-    readUserProfile.mockResolvedValue({
-      ...emptyUserProfile,
-      phone: "8 (999) 123-45-67",
-    });
-
-    const task = await start({ site: "https://www.ozon.ru" });
-
-    expect(task).toContain(
-      "with their phone +79991234567 (the 10 digits after +7: 9991234567)."
-    );
-  });
-
-  it("leaves the phone out when no phone is known", async () => {
-    readUserProfile.mockResolvedValue(emptyUserProfile);
-
-    const task = await start({ site: "https://www.ozon.ru" });
-
-    expect(task).not.toContain("sign in to the person's own account");
-    expect(task).toContain("No stored credentials are available");
-  });
-
-  it("gives no site the phone when the errand names none", async () => {
-    const task = await start({});
-
-    expect(task).not.toContain("+79991234567");
-  });
-
-  it("gives a scheduled worker's run no phone", async () => {
-    const task = await start({
+  it("asks for no phone in a scheduled worker's run", async () => {
+    await start({
       authenticator: "scheduled-worker",
       site: "https://www.ozon.ru",
     });
 
-    expect(task).not.toContain("+79991234567");
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
+  });
+
+  it("writes no phone paragraph when no phone was bound", async () => {
+    const task = await start({ site: "https://www.ozon.ru" });
+
+    expect(task).not.toContain("signin_phone");
+    expect(task).toContain("No stored credentials are available");
   });
 
   it("keeps it for a report turn continuing the person's errand", async () => {
@@ -3825,9 +3810,11 @@ describe("browser_task sign-in by the person's phone", () => {
       toolContext("better-auth:alice", "browser-result")
     );
 
-    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      phoneLine
-    );
+    expect(phoneAsked()).toEqual({
+      allowPayment: false,
+      phoneSignIn: true,
+      site: "https://www.ozon.ru",
+    });
   });
 
   it("gives no phone to a report turn continuing a worker's errand", async () => {
@@ -3847,52 +3834,31 @@ describe("browser_task sign-in by the person's phone", () => {
       toolContext("better-auth:alice", "browser-result")
     );
 
-    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
-      "+79991234567"
-    );
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
   });
 
-  it("composes the line only for the errand's own site", async () => {
-    const { composeBrowserContinuation, composeBrowserTask } =
-      await import("@agent/tools/browser_task");
-    const base = {
-      aliases: [],
-      allowPayment: false,
-      collectImages: false,
-      consent: undefined,
-      deliveryAddress: undefined,
-      errand: "Закажи корм",
-      facts: undefined,
-      signInPhone: "+79991234567",
-    };
+  it("brings no new site for the phone on a follow-up of an errand without one", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      site: null,
+    });
+    const tool = await resolvedBrowserTask([], "Возьми на озоне");
 
-    expect(
-      composeBrowserTask({
-        ...base,
-        home: undefined,
+    await tool.execute(
+      {
+        action: "continue",
+        personSaid: "Возьми на озоне",
+        runId,
         site: "https://www.ozon.ru",
-      })
-    ).toContain(phoneLine);
-    expect(
-      composeBrowserTask({ ...base, home: undefined, site: undefined })
-    ).not.toContain("+79991234567");
-    expect(
-      composeBrowserContinuation({
-        ...base,
-        message: "Человек написал: «оформляй»",
-        searching: false,
-        site: "https://www.ozon.ru",
-      })
-    ).toContain(phoneLine);
-    // A Госуслуги login signs in instead.
-    expect(
-      composeBrowserTask({
-        ...base,
-        aliases: ["gosuslugi_username", "gosuslugi_password"],
-        home: undefined,
-        site: "https://www.mos.ru",
-      })
-    ).not.toContain("+79991234567");
+        task: "Возьми на озоне",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(phoneAsked()).toMatchObject({
+      phoneSignIn: false,
+      site: "https://www.ozon.ru",
+    });
   });
 });
 
@@ -3970,15 +3936,11 @@ describe("browser_task delivery address before the card", () => {
     expect(task).toContain(
       "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
     );
-    // The other saved addresses and everything else wait for the card; the
-    // phone goes only to the site's own sign-in.
+    // The other saved addresses and everything else wait for the card.
     expect(task).not.toContain("Рассвет");
     expect(task).not.toContain("Known details you may type into forms:");
     expect(task).not.toContain("Иван Петров");
-    expect(task.split("+79991234567")).toHaveLength(2);
-    expect(task).toContain(
-      "That phone is for signing in on lavka.yandex.ru only"
-    );
+    expect(task).not.toContain("+79991234567");
     expect(task).not.toContain("ivan@example.com");
   });
 

@@ -74,8 +74,7 @@ vi.mock("@db/services/browser-runs", () => ({
   readBrowserRun,
 }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  browserSecretAliases: (await importOriginal<typeof browserUseSecrets>())
-    .browserSecretAliases,
+  ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings,
 }));
 
@@ -198,7 +197,8 @@ describe("the anti-bot retry policy", () => {
     // The card was bound before, so the retry binds it again.
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
-      { allowPayment: true, site: "https://shop.example" }
+      // The errand was not composed with the phone, so it stays unbound.
+      { allowPayment: true, phoneSignIn: false, site: "https://shop.example" }
     );
     // The new row, the link and the reservation move in one handoff.
     expect(handOffBrowserRunRetry).toHaveBeenCalledOnce();

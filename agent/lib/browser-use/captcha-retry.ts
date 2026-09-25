@@ -13,7 +13,7 @@ import {
   readBrowserUseRun,
 } from "./client";
 import { retryProxySettings } from "./proxy";
-import { resolveBrowserSecretBindings } from "./secrets";
+import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 
 type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
 
@@ -150,13 +150,13 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           userId: row.createdByUserId,
           workspaceId: row.workspaceId,
         };
-        const [previous, secrets] = await Promise.all([
-          readBrowserUseRun(row.id),
-          resolveBrowserSecretBindings(scope, {
-            allowPayment: row.paymentAllowed,
-            site: row.site ?? undefined,
-          }),
-        ]);
+        const previous = await readBrowserUseRun(row.id);
+        const secrets = await resolveBrowserSecretBindings(scope, {
+          allowPayment: row.paymentAllowed,
+          // The phone goes again only where the errand was composed with it.
+          phoneSignIn: signsInByPhone(previous.task),
+          site: row.site ?? undefined,
+        });
         starting = true;
         run = await createBrowserUseRun({
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),

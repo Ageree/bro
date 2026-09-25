@@ -410,12 +410,70 @@ describe("browser secret bindings", () => {
     expect(bound.aliases).toEqual(["login_username", "login_password"]);
   });
 
-  it("reads a Russian phone as the 10 digits after +7", () => {
+  it("reads a Russian phone as the 10 digits after +7, and no other", () => {
     expect(nationalPhoneDigits("+79991234567")).toBe("9991234567");
     expect(nationalPhoneDigits("8 (999) 123-45-67")).toBe("9991234567");
-    expect(nationalPhoneDigits("999 123 45 67")).toBe("9991234567");
-    expect(nationalPhoneDigits("+1 555 123 4567")).toBeUndefined();
-    expect(nationalPhoneDigits("+44 20 7946 0958")).toBeUndefined();
+    expect(nationalPhoneDigits("7 495 123-45-67")).toBe("4951234567");
+    for (const foreign of [
+      "999 123 45 67",
+      "+1 555 123 4567",
+      "+44 20 7946 0958",
+      "+84 912 345 678",
+      "+852 9123 4567",
+      "+853 6612 3456",
+      "+81 90 1234 5678",
+      "+960 791 2345",
+      "+961 3 123 456",
+      "+7 123 456 78 90",
+    ]) {
+      expect(nationalPhoneDigits(foreign)).toBeUndefined();
+    }
+  });
+
+  it("binds the person's phone to the errand's registrable domain alone", () => {
+    const bound = browserSecretBindings({
+      card: undefined,
+      login: undefined,
+      signInPhone: "8 (999) 123-45-67",
+      site: "https://market.yandex.ru",
+    });
+
+    expect(bound.aliases).toEqual(["signin_phone", "signin_phone_digits"]);
+    // Yandex signs people in on passport.yandex.ru: the whole of yandex.ru.
+    for (const binding of bound.bindings) {
+      expect(binding.allowedDomains).toEqual(["yandex.ru"]);
+    }
+    expect(bound.bindings.map((binding) => binding.source.value)).toEqual([
+      "+79991234567",
+      "9991234567",
+    ]);
+  });
+
+  it("binds no phone where a saved login signs in, or on a public suffix", () => {
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login,
+        signInPhone: "+79991234567",
+        site: "https://taxi.yandex.ru",
+      }).aliases
+    ).toEqual(["login_username", "login_password"]);
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login: undefined,
+        signInPhone: "+79991234567",
+        site: "https://spb.ru",
+      }).aliases
+    ).toEqual([]);
+    expect(
+      browserSecretBindings({
+        card: undefined,
+        login: undefined,
+        signInPhone: "+852 9123 4567",
+        site: "https://www.ozon.ru",
+      }).bindings.map((binding) => binding.source.value)
+    ).toEqual(["+852 9123 4567"]);
   });
 
   it("binds nothing when no vault item was selected", () => {
