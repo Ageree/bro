@@ -3,9 +3,12 @@ import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import {
   findPlace,
+  type LookupBudget,
+  lookupsPerCall,
   type MapPlace,
   MapServiceError,
   measureRoutes,
+  openStreetMapAttribution,
   routeLink,
   straightKm,
   travelModes,
@@ -48,6 +51,17 @@ const kindOfPlace =
   /^(?:(?:отель|гостиница|хостел|ресторан|кафе|кофейня|бар|паб|бистро|пиццерия|столовая|станция|метро|м\.|hotel|hostel|restaurant|cafe|café|coffee shop|bar|pub|bistro|station|metro|subway|the)\s+)+/iu;
 
 /**
+ * A part of the query that is a place's own name, where a number belongs to
+ * the name: «Школа 57», «Городская поликлиника 2», «Бар 1703». Up to two
+ * words may come before the kind («Детская городская поликлиника»).
+ */
+const namedPlace =
+  /^(?:\p{L}+\s+){0,2}(?:кафе|ресторан|бар|паб|кофейня|пиццерия|столовая|бистро|отель|гостиница|хостел|школа|гимназия|лицей|колледж|университет|поликлиника|больница|клиника|роддом|детский сад|аптека|магазин|салон|клуб|кинотеатр|театр|музей|библиотека|school|hospital|clinic|cafe|café|bar|pub|restaurant|hotel|hostel|gym|club|museum|theatre|theater|cinema|store|shop)(?!\p{L})/iu;
+
+/** «1-я Тверская-Ямская» names a street, not a house. */
+const numberPattern = /(?<!\p{L})\d+(?![-‐]\p{L})/gu;
+
+/**
  * «12 корп. 2», «11, стр 1», «д. 5» as OpenStreetMap writes Russian houses:
  * «12 к2», «11 с1», «5». The eval on 25.09 asked for «Чистопрудный бульвар
  * 12, корп 2», which the map does not know, while «12 к2» it does.
@@ -62,40 +76,76 @@ function withHouseShorthand(query: string) {
 }
 
 /**
- * House numbers a query names. «1-я Тверская-Ямская» is a street's name,
- * not a house.
+ * The house numbers a query names, as the map would find them. A number in
+ * a place's own name («Школа 57», «поликлиника № 2») is not a house: the map
+ * finds the school at its real address and must not be refused for it.
  */
-function askedNumbers(query: string): readonly string[] {
-  return query.match(/(?<!\p{L})\d+(?![-‐]\p{L})/gu) ?? [];
+function houseNumbers(query: string, place: MapPlace): readonly string[] {
+  const inName = new Set(place.name?.match(numberPattern) ?? []);
+  return withHouseShorthand(query)
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => !namedPlace.test(part))
+    .flatMap(
+      (part) =>
+        part.replaceAll(/(?:№|No\.?|#)\s*\d+/giu, "").match(numberPattern) ?? []
+    )
+    .filter((number) => !inName.has(number));
+}
+
+/** The query is itself this area: «Тверь», «Москва, Россия». */
+function namesArea(query: string, place: MapPlace) {
+  if (/\d/u.test(query)) return false;
+  const first = (query.split(",")[0] ?? "").trim().toLowerCase();
+  const name = place.name?.trim().toLowerCase() ?? "";
+  return (
+    first.length > 0 &&
+    name.length > 0 &&
+    (first.includes(name) || name.includes(first))
+  );
 }
 
 /**
- * Why the place the map matched is not the house the query names, or
- * nothing when it is. On 25.09 «Большая Никольская 12 стр 2» came back as
- * the street (18 minutes away instead of 8), «Покровка 17» as «Покровка
- * 50/2 с17» and «Тверская 7» as «Тверская 12 с7»: a time to such a point is
- * wrong, so it is not given.
+ * Why the place the map matched is not the one asked for, or nothing when it
+ * is. On 25.09 «Большая Никольская 12 стр 2» came back as the street (18
+ * minutes away instead of 8), «Покровка 17» as «Покровка 50/2 с17»,
+ * «Тверская 7» as «Тверская 12 с7», and a query ending in «Москва, Россия»
+ * could come back as the city itself: a time to such a point is wrong, so it
+ * is not given.
  */
-function missedHouse(query: string, place: MapPlace) {
-  const asked = askedNumbers(query);
-  if (asked.length === 0) return undefined;
-  if (place.streetOnly) {
-    return `the map knows only the street «${place.label}», not this house`;
+function mismatch(query: string, place: MapPlace) {
+  if (place.kind === "area") {
+    return namesArea(query, place)
+      ? undefined
+      : `the map found only the area «${place.label}», whose centre is not the place asked for`;
   }
+  if (place.kind === "street") {
+    return `the map found only the street «${place.label}», some point along it, not the place asked for`;
+  }
+  const houses = houseNumbers(query, place);
   const matched = /^\d+/u.exec(place.houseNumber ?? "")?.[0];
-  if (matched === undefined || asked.includes(matched)) return undefined;
+  if (
+    houses.length === 0 ||
+    matched === undefined ||
+    houses.includes(matched)
+  ) {
+    return undefined;
+  }
   return `the map matched another building, «${place.label}»`;
 }
 
-function missedHouseNote(reason: string) {
+function mismatchNote(reason: string) {
   return `${reason}, and a time to it would be wrong: call again with the place's name and city, or «lat, lon»`;
 }
 
 /**
  * What to ask the geocoder, best first: the query as given, then the
- * address alone when a name comes before it («Кафе Авокадо, Чистопрудный
- * бульвар 12к2, Москва» is found only so), then the name without the kind of
- * place and quotes. Each miss costs a second of the turn.
+ * address alone when a name comes before an address with a house («Кафе
+ * Авокадо, Чистопрудный бульвар 12к2, Москва» is found only so), then the
+ * name without the kind of place and quotes. A street with its house first
+ * («Тверская 7, Москва, Россия») or a name before only a city is never cut
+ * down to «Москва, Россия»: the map would answer with the city. Each miss
+ * costs a lookup and two seconds of the turn.
  */
 function queryVariants(query: string) {
   const parts = withHouseShorthand(query)
@@ -108,9 +158,12 @@ function queryVariants(query: string) {
     .replaceAll(/[«»"“”„]/gu, "")
     .trim();
   const variants = [parts.join(", ")];
-  // «Улица, 12 к2, Москва» is no name before an address: «12 к2, Москва»
-  // alone would find any such house in the city.
-  if (address.length >= 2 && /\p{L}{3}/u.test(address[0] ?? "")) {
+  if (
+    !/\d/u.test(name) &&
+    address.length >= 2 &&
+    /\p{L}{3}/u.test(address[0] ?? "") &&
+    /\d/u.test(address[0] ?? "")
+  ) {
     variants.push(address.join(", "));
   }
   if (bareName.length > 0) variants.push([bareName, ...address].join(", "));
@@ -119,22 +172,31 @@ function queryVariants(query: string) {
 
 /**
  * Finds a place by the first variant of the query the map knows. A match
- * that misses the house is kept only when no variant finds the house.
+ * that is not the place asked for is kept only when no variant finds it, and
+ * then gets no time.
  */
 async function locate(
   query: string,
   near: MapPlace | undefined,
+  budget: LookupBudget,
   signal: AbortSignal
 ) {
-  let houseMissed: MapPlace | undefined;
-  /* oxlint-disable eslint/no-await-in-loop -- Each variant is asked only when the one before found nothing, a second apart. */
+  let fallback: MapPlace | undefined;
+  /* oxlint-disable eslint/no-await-in-loop -- Each variant is asked only when the one before found nothing, two seconds apart. */
   for (const variant of queryVariants(query)) {
-    const place = await findPlace(variant, near, signal);
-    if (place && missedHouse(query, place) === undefined) return place;
-    houseMissed ??= place;
+    const place = await findPlace(variant, near, budget, signal);
+    if (place && mismatch(query, place) === undefined) return place;
+    fallback ??= place;
   }
   /* oxlint-enable eslint/no-await-in-loop */
-  return houseMissed;
+  return fallback;
+}
+
+/** An area the person named on purpose is measured to its centre, and says so. */
+function areaNote(place: MapPlace) {
+  return place.kind === "area"
+    ? `the time is to the centre of «${place.label}», not to an address`
+    : undefined;
 }
 
 async function measure(
@@ -142,10 +204,10 @@ async function measure(
   signal: AbortSignal
 ) {
   const basis = basisByMode[input.mode];
-  const source = "© OpenStreetMap contributors";
+  const budget: LookupBudget = { remaining: lookupsPerCall };
   let from: MapPlace | undefined;
   try {
-    from = await locate(input.from, undefined, signal);
+    from = await locate(input.from, undefined, budget, signal);
   } catch (error) {
     if (!(error instanceof MapServiceError)) throw error;
     return {
@@ -159,10 +221,10 @@ async function measure(
       status: "not_found" as const,
     };
   }
-  const startMissed = missedHouse(input.from, from);
-  if (startMissed !== undefined) {
+  const startMismatch = mismatch(input.from, from);
+  if (startMismatch !== undefined) {
     return {
-      note: `For the start «${input.from}», ${missedHouseNote(startMissed)}.`,
+      note: `For the start «${input.from}», ${mismatchNote(startMismatch)}.`,
       status: "not_found" as const,
     };
   }
@@ -172,10 +234,10 @@ async function measure(
     readonly place: MapPlace | undefined;
     readonly query: string;
   }[] = [];
-  /* oxlint-disable eslint/no-await-in-loop -- One at a time on purpose: the geocoder allows one request a second. */
+  /* oxlint-disable eslint/no-await-in-loop -- One at a time on purpose: the geocoder allows one request a second for the whole application. */
   for (const query of input.to) {
     try {
-      places.push({ place: await locate(query, from, signal), query });
+      places.push({ place: await locate(query, from, budget, signal), query });
     } catch (error) {
       if (!(error instanceof MapServiceError)) throw error;
       places.push({ failure: error.message, place: undefined, query });
@@ -183,7 +245,7 @@ async function measure(
   }
   /* oxlint-enable eslint/no-await-in-loop */
   const found = places.flatMap((entry) =>
-    entry.place && missedHouse(entry.query, entry.place) === undefined
+    entry.place && mismatch(entry.query, entry.place) === undefined
       ? [entry.place]
       : []
   );
@@ -209,9 +271,9 @@ async function measure(
         to: entry.query,
       };
     }
-    const missed = missedHouse(entry.query, place);
+    const missed = mismatch(entry.query, place);
     if (missed !== undefined) {
-      return { error: missedHouseNote(missed), to: entry.query };
+      return { error: mismatchNote(missed), to: entry.query };
     }
     const route = measured[foundIndex];
     foundIndex += 1;
@@ -238,24 +300,26 @@ async function measure(
       km: route.km,
       link,
       minutes: route.minutes,
+      note: areaNote(place),
       place: place.label,
       to: entry.query,
     };
   });
 
   return {
+    attribution: openStreetMapAttribution,
     basis,
     from: from.label,
+    fromNote: areaNote(from),
     mode: input.mode,
     routes,
-    source,
     status: "ok" as const,
   };
 }
 
 export const routeTime = defineTool({
   description:
-    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`): check that it is the one meant, in the right city. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map.",
+    "Measure how long it takes to walk, cycle or drive between places, and how far it is, on OpenStreetMap with no key: «пешком от отеля», «сколько идти от метро», «далеко ли от дома», commute time for a morning digest. Compare up to five destinations from one start in one call. Each result names the place it matched (`place`): check that it is the one meant, in the right city. A destination the map found only as a street, a district or another building comes back with an error instead of minutes: never fill in a time for it. `link` opens the route on Yandex Maps or Google Maps; for a car it shows the live time with traffic, which this tool does not know. Use the minutes and km as returned instead of estimating from the map, and wherever you give them credit the map briefly with `attribution`, for example «(по данным © OpenStreetMap)».",
   inputSchema,
   async execute(input, ctx) {
     return measure(input, ctx.abortSignal);

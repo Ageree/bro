@@ -17,6 +17,8 @@ import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
 import {
+  artifactIdPattern,
+  drawnPictures,
   imageGenerationScope,
   pictureRequested,
 } from "@agent/lib/image-artifact/generation";
@@ -47,8 +49,6 @@ const maximumPhotos = 4;
 const maximumDrawnPictures = 3;
 const captionLength = 80;
 const sandboxScheme = "eve-sandbox:";
-const artifactIdPattern =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu;
 
 /** A photo from the history, reduced to what the executor needs to read it. */
 type PersonPhoto = {
@@ -127,31 +127,11 @@ export default defineDynamic({
   },
 });
 
-/**
- * The pictures this conversation already drew, newest first, from the
- * tool's own answers in the history. After a quiz of a dozen messages the
- * artifact is far back, and «make the text English» still has to edit it.
- */
+/** The newest pictures of this conversation, so an edit passes the right one. */
 function describeDrawnPictures(messages: readonly ModelMessage[]) {
-  const drawn: string[] = [];
-  for (const message of messages.toReversed()) {
-    if (message.role !== "tool") continue;
-    for (const part of message.content.toReversed()) {
-      if (part.type !== "tool-result" || part.toolName !== "generate_image") {
-        continue;
-      }
-      const output =
-        part.output.type === "json" || part.output.type === "text"
-          ? JSON.stringify(part.output.value)
-          : "";
-      const id = artifactIdPattern.exec(output)?.[0]?.toLowerCase();
-      const artifact = id && `/artifacts/${id}`;
-      if (artifact && !drawn.includes(artifact)) drawn.push(artifact);
-    }
-    if (drawn.length >= maximumDrawnPictures) break;
-  }
+  const drawn = drawnPictures(messages).slice(0, maximumDrawnPictures);
   if (drawn.length === 0) return "";
-  return `Pictures drawn earlier in this conversation, newest first: ${drawn.slice(0, maximumDrawnPictures).join(", ")}; to change one, pass it in images. `;
+  return `Pictures drawn earlier in this conversation, newest first: ${drawn.join(", ")}; to change one, pass it in images. `;
 }
 
 function describePhotos(photos: readonly PersonPhoto[]) {

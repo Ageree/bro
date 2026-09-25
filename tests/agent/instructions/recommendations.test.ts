@@ -22,7 +22,7 @@ describe("recommendation instructions", () => {
    * «пешком» for a 20-minute walk guessed from the map, and a booking run
    * nobody asked for.
    */
-  it("aims for three checked options, measures the walk, and only offers to check a table", async () => {
+  it("aims for three checked options, measures the walk and credits the map", async () => {
     const content = await resolveContent("photon-imessage");
 
     expect(content).toContain(
@@ -39,9 +39,29 @@ describe("recommendation instructions", () => {
     expect(content).toContain(
       "та страница, которую вернул инструмент, как есть"
     );
-    expect(content).toContain("предложи проверить наличие без брони");
-    expect(content).toContain("`browser_task start` без `allowSubmit`");
-    expect(content).toContain("Без его согласия браузер не запускай");
+    expect(content).toContain("по данным © OpenStreetMap");
+  });
+
+  /**
+   * One question, then one card: «Проверить стол?» and then «бронируй?»
+   * would be two questions before the card, against the one-question rule.
+   */
+  it("ends with one booking question and books through one card", async () => {
+    const content = await resolveContent("photon-imessage");
+
+    expect(content).toContain(
+      "Подбирай через `web_search`, `web_fetch` и `route_time`, без браузера"
+    );
+    expect(content).toContain("Закончи одним вопросом");
+    expect(content).toContain("Других вопросов в этом сообщении нет");
+    expect(content).toContain(
+      "`browser_task start` без `allowSubmit` найдёт слот и остановится"
+    );
+    expect(content).toContain(
+      "единственная карточка, второго вопроса текстом нет"
+    );
+    expect(content).toContain("До его «да» браузер не запускай");
+    expect(content).not.toContain("Проверить свободный стол");
   });
 
   it("sends map lookups through site search instead of fetching the map", async () => {
