@@ -420,12 +420,56 @@ describe("sendRefusal on the benchmark of 25.09", () => {
   ])("drops a near copy with %s (d15)", (_case, first, second) => {
     const history = [
       barberRequest,
-      ...toolStep("web_search", { results: [] }),
+      // The search luna made in d15.
+      ...toolStep(
+        "web_search",
+        { results: [] },
+        { query: "барбершоп Артур Профсоюзная Москва адрес", sites: [] }
+      ),
       ...sendMessage("address", first),
     ];
 
     expect(refusal(history, second)).toEqual({ skipped: "duplicate" });
   });
+
+  it.each([
+    [
+      "Ивановой after Иванову",
+      "Отправил письмо Иванову: встреча переносится на пятницу.",
+      "Отправил письмо Ивановой: встреча переносится на пятницу.",
+    ],
+    [
+      "Александре after Александру",
+      "Отправил письмо Александру: встреча переносится на пятницу.",
+      "Отправил письмо Александре: встреча переносится на пятницу.",
+    ],
+    [
+      "Евгении after Евгению",
+      "Отправил письмо Евгению: встреча переносится на пятницу.",
+      "Отправил письмо Евгении: встреча переносится на пятницу.",
+    ],
+    [
+      "на Тверском after на Тверской",
+      "Встреча в кафе на Тверской в 15:00, адрес отправил всем.",
+      "Встреча в кафе на Тверском в 15:00, адрес отправил всем.",
+    ],
+  ])(
+    "delivers %s: names the turn never used are compared as written",
+    (_case, first, second) => {
+      const history = [
+        userMessage(
+          "Разошли всем из вчерашнего письма, что встреча переносится на пятницу"
+        ),
+        ...toolStep("gmail-send", { id: "m-1" }),
+        ...sendMessage("first", first),
+        ...toolStep("gmail-send", { id: "m-2" }),
+      ];
+
+      expect(refusal(history, second)).toBeUndefined();
+      // Without the second letter in between, too.
+      expect(refusal(history.slice(0, -2), second)).toBeUndefined();
+    }
+  );
 
   const groceries = userMessage(
     "закажи продукты к восьми вечера: молоко 3,2, десяток яиц, 2 авокадо, куриное филе около кило и чего-нибудь к чаю. если чего-то нет, замени похожим, но скажи что заменил"
@@ -700,6 +744,153 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     expect(refusal(history, text)).toBeUndefined();
   });
 
+  const taxiStart = browserStep(
+    "start",
+    { runId: "run-9", status: "running" },
+    {
+      site: "https://taxi.yandex.ru",
+      task: "Закажите такси до офиса на 9:00 утра и пришлите машину и цену.",
+    }
+  );
+  const taxiStatus =
+    "Запустил заказ такси до офиса на 9:00, пришлю машину и цену.";
+
+  it.each([
+    [
+      "the letter the person asked to check",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и проверь, пришло ли письмо от Иванова"
+        ),
+        ...inOneStep(taxiStart, toolStep("gmail-search", { messages: [] })),
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "Письмо от Иванова есть: просит перенести встречу на четверг.",
+    ],
+    [
+      "a gift idea the person asked for",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и подскажи, что подарить Маше"
+        ),
+        ...taxiStart,
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "А Маше можно подарить сертификат в спа или хорошие наушники.",
+    ],
+    [
+      "whether the person makes it in time",
+      [
+        userMessage(
+          "Закажи такси до офиса на 9 утра и скажи, успею ли я к 10:00 в Шереметьево"
+        ),
+        ...taxiStart,
+        ...sendMessage("taxi", taxiStatus),
+      ],
+      "К 10:00 в Шереметьево успеешь, запас есть.",
+    ],
+    [
+      "the answer to a question asked with a steer",
+      [
+        userMessage("Поменяй на 20:00. А Пушкин работает до полуночи?"),
+        ...browserStep(
+          "continue",
+          { runId: "run-2", status: "running" },
+          { task: "Поменяй на 20:00. А Пушкин работает до полуночи?" }
+        ),
+        ...sendMessage("steer", "Передал: переносим бронь на 20:00."),
+      ],
+      "Да, «Пушкин» открыт до полуночи.",
+    ],
+  ])(
+    "delivers %s after the errand's message: it is not about the errand",
+    (_case, history, text) => {
+      expect(refusal(history, text)).toBeUndefined();
+    }
+  );
+
+  it("delivers the second errand's message after the first's (two starts in one step)", () => {
+    const both = [
+      userMessage(
+        "Закажи такси до Шереметьево на 18:00 и забронируй столик в Пушкине на 21:00 на двоих"
+      ),
+      ...inOneStep(
+        browserStep(
+          "start",
+          { runId: "run-12", status: "running" },
+          { task: "Закажите такси до Шереметьево на 18:00." }
+        ),
+        browserStep(
+          "start",
+          { runId: "run-13", status: "running" },
+          { task: "Забронируйте столик в «Пушкине» на 21:00 на двоих." }
+        )
+      ),
+      ...sendMessage(
+        "taxi",
+        "Такси до Шереметьево на 18:00 заказываю, пришлю машину."
+      ),
+    ];
+
+    expect(
+      refusal(
+        both,
+        "Столик в «Пушкине» на 21:00 на двоих тоже ищу, пришлю подтверждение."
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers the saved address the model gave the errand", () => {
+    const taxi = [
+      userMessage("Закажи такси на работу к 9 утра"),
+      ...browserStep(
+        "start",
+        { runId: "run-14", status: "running" },
+        {
+          task: "Закажите такси от Тверской, 7 до Профсоюзной, 11, тариф Комфорт, подача к 9:00.",
+        }
+      ),
+      ...sendMessage("taxi", "Запустил заказ такси к 9:00, пришлю машину."),
+    ];
+
+    expect(
+      refusal(
+        taxi,
+        "Уточню: еду от Тверской, 7 до Профсоюзной, 11, тариф Комфорт."
+      )
+    ).toBeUndefined();
+  });
+
+  it("gives each errand started in one step its own message", () => {
+    const both = [
+      userMessage(
+        "Закажи такси до офиса на 9 утра и забронируй столик в Пушкине на 20:00"
+      ),
+      ...inOneStep(
+        taxiStart,
+        browserStep(
+          "start",
+          { runId: "run-10", status: "running" },
+          {
+            site: "https://cafe-pushkin.ru",
+            task: "Забронируйте столик в «Пушкине» на 20:00 на двоих.",
+          }
+        )
+      ),
+      ...sendMessage("taxi", taxiStatus),
+    ];
+    const table =
+      "И запустил бронь столика в «Пушкине» на 20:00 — пришлю подтверждение.";
+
+    expect(refusal(both, table)).toBeUndefined();
+    // Both have had their message, so a third is dropped.
+    const third = refusal(
+      [...both, ...sendMessage("table", table)],
+      "Оба поручения переданы в браузер: такси и столик в «Пушкине»."
+    );
+    expect(third && "skipped" in third).toBe(true);
+  });
+
   it("still gives the errand one message when other work came with it", () => {
     const history = [
       ticketsAndWeather,
@@ -730,15 +921,33 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     ...sendMessage("started", errandStatus),
   ];
 
+  const rateSearch = toolStep("web_search", {
+    results: "Официальный курс доллара ЦБ РФ на 26 сентября — 92,4 ₽.",
+  });
+
   it.each([
-    ["И ещё сейчас поставлю приём доставки в календарь.", deliveryInCalendar],
-    ["Сейчас поставлю напоминание принять доставку.", deliveryReminder],
+    [
+      "поставь в календарь приём доставки на 19:50 и скажи курс доллара",
+      "И ещё сейчас поставлю приём доставки в календарь.",
+      "calendar-create-event",
+      "В календарь поставил приём доставки на 19:50.",
+    ],
+    [
+      "напомни в 20:00 позвонить маме и скажи курс доллара",
+      "Сейчас поставлю напоминание позвонить маме.",
+      "schedules-create",
+      "Напоминание позвонить маме поставил на 20:00.",
+    ],
   ])(
-    "returns «%s», a step the person asked for announced instead of taken",
-    (text, history) => {
-      expect(refusal(history, text)).toEqual({
-        rewrite: "announced",
-      });
+    "returns a step the person asked for (%s), announced instead of taken",
+    (request, text, toolName, result) => {
+      const history = [
+        userMessage(request),
+        ...rateSearch,
+        ...sendMessage("rate", "Курс доллара — 92,4 ₽."),
+      ];
+
+      expect(refusal(history, text)).toEqual({ rewrite: "announced" });
       expect(rewriteSendNotice("announced")).toContain(
         "Take the step now with its tool"
       );
@@ -749,14 +958,42 @@ describe("sendRefusal on the benchmark of 25.09", () => {
           text,
           textOutput(rewriteSendNotice("announced"))
         ),
-        ...toolStep("calendar-create-event", { id: "event-1" }),
+        ...toolStep(toolName, { id: "step-1" }),
       ];
       expect(turnMustEnd(entered)).toBe(false);
-      expect(
-        refusal(entered, "В календарь поставил «Принять доставку» на 19:50.")
-      ).toBeUndefined();
+      expect(refusal(entered, result)).toBeUndefined();
     }
   );
+
+  it("never has a step taken now that waits on the run the turn started", () => {
+    const dentist = [
+      userMessage("Запиши меня к стоматологу на пятницу и поставь в календарь"),
+      ...browserStep(
+        "start",
+        { runId: "run-11", status: "running" },
+        { task: "Запишите к стоматологу на пятницу, 2 октября." }
+      ),
+      ...sendMessage(
+        "started",
+        "Запустил запись к стоматологу на пятницу. Пришлю, на какое время записали."
+      ),
+    ];
+    const refused = refusal(
+      dentist,
+      "Время пока не знаю. Поставлю в календарь визит к стоматологу."
+    );
+
+    expect(refused && "skipped" in refused).toBe(true);
+    for (const text of [
+      "И ещё сейчас поставлю приём доставки в календарь.",
+      "Сейчас поставлю напоминание принять доставку.",
+    ]) {
+      for (const history of [deliveryInCalendar, deliveryReminder]) {
+        const held = refusal(history, text);
+        expect(held && "skipped" in held).toBe(true);
+      }
+    }
+  });
 
   const deferredSteps = [
     "Поставлю доставку в календарь, как придёт подтверждение заказа.",
@@ -853,21 +1090,44 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     "Забронировать на завтра, 26 сентября, на 19:30, на четверых в «Авокадо»?";
   const retold = `«Авокадо» — единственный найденный вариант, который подходит по типу кухни и адресу, но подтвердить бюджет до 2 500 ₽ на человека не получилось. ${offer}`;
 
+  const retoldAsIs = `«Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню, средний чек до 2 500 ₽. ${offer}`;
+
   it("returns a question wrapped in the answer told again (d03)", () => {
     const answered = [...dinner, ...sendMessage("places", twoPlaces)];
 
-    expect(refusal(answered, retold)).toEqual({ rewrite: "restated" });
+    expect(refusal(answered, retoldAsIs)).toEqual({ rewrite: "restated" });
     expect(rewriteSendNotice("restated")).toContain("Send the question alone");
     // The question alone is news.
     const returned = [
       ...answered,
       ...sendMessage(
         "retold",
-        retold,
+        retoldAsIs,
         textOutput(rewriteSendNotice("restated"))
       ),
     ];
     expect(refusal(returned, offer)).toBeUndefined();
+  });
+
+  it("delivers a question next to what it says anew about a place", () => {
+    const found = [
+      userMessage("Где поужинать сегодня у Чистых прудов?"),
+      ...toolStep("web_search", { results: [] }),
+      ...sendMessage(
+        "places",
+        "Нашёл два места: «Пушкин» на Тверском бульваре, 26 и «Авокадо» на Чистопрудном бульваре, 12."
+      ),
+    ];
+
+    expect(
+      refusal(
+        found,
+        "«Пушкин» сегодня закрыт на спецобслуживание, так что остаётся «Авокадо». Бронировать?"
+      )
+    ).toBeUndefined();
+    // The d03 retelling in other words is delivered too, as it was before.
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+    expect(refusal(answered, retold)).toBeUndefined();
   });
 
   it("returns it when the person asked their question with limits in it (d03)", () => {
@@ -880,7 +1140,7 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       ...sendMessage("places", twoPlaces),
     ];
 
-    expect(refusal(asked, retold)).toEqual({ rewrite: "restated" });
+    expect(refusal(asked, retoldAsIs)).toEqual({ rewrite: "restated" });
   });
 
   it("drops the answer sent again after it went out in one message (d03)", () => {
@@ -910,6 +1170,17 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     const answered = [...dinner, ...sendMessage("places", twoPlaces)];
 
     expect(refusal(answered, text)).toBeUndefined();
+  });
+
+  it("delivers a correction around the question", () => {
+    const answered = [...dinner, ...sendMessage("places", twoPlaces)];
+
+    expect(
+      refusal(
+        answered,
+        "Поправлю: у «Авокадо» средний чек до 2 500 ₽ на человека, я ошибся. Забронировать на завтра в 19:30?"
+      )
+    ).toBeUndefined();
   });
 
   it("delivers a retold question once the turn did more work", () => {
@@ -1718,13 +1989,14 @@ let toolSteps = 0;
 
 function toolStep(
   toolName: string,
-  value: Extract<ToolResultPart["output"], { type: "json" }>["value"]
+  value: Extract<ToolResultPart["output"], { type: "json" }>["value"],
+  input: Readonly<Record<string, JSONValue>> = {}
 ): ModelMessage[] {
   toolSteps += 1;
   const toolCallId = `${toolName}-${String(toolSteps)}`;
   return [
     {
-      content: [{ input: {}, toolCallId, toolName, type: "tool-call" }],
+      content: [{ input, toolCallId, toolName, type: "tool-call" }],
       role: "assistant",
     },
     {

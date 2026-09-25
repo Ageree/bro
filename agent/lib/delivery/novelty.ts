@@ -281,21 +281,38 @@ function differInGender(message: SentMessage, other: SentMessage) {
 }
 
 /**
+ * How names are matched across two messages: `distinct` stems on which the
+ * person named two people, and `foldable` words — the person's message and
+ * the turn's tool inputs — whose names may match in another case.
+ */
+interface NameMatching {
+  readonly distinct?: readonly string[];
+  readonly foldable?: readonly string[];
+}
+
+/**
  * Whether each name of one message also occurs as a word of the other. A
  * sentence opener that only changed case, «Готово! Напомню» after «Готово,
- * напомню», still occurs, and so does a name in another case («Артура» and
- * «Артур»: d15 sent near copies that differed only so); a different person
- * or place does not. On a stem in `distinct` a name counts only as written,
- * and so does every name when the two speak of a man and a woman.
+ * напомню», still occurs; a different person or place does not. A name in
+ * another case occurs too («Артура» and «Артур»: d15 sent near copies that
+ * differed only so), but only for a name the turn itself used — the person
+ * or a tool input: «Иванову» and «Ивановой» from two sent letters are two
+ * people. On a stem in `distinct` a name counts only as written, and so does
+ * every name when the two speak of a man and a woman.
  */
 export function namesShared(
   message: SentMessage,
   other: SentMessage,
-  distinct: readonly string[] = []
+  { distinct = [], foldable = [] }: NameMatching = {}
 ) {
   const words = wordsOf([other]);
   const stems = differInGender(message, other) ? everyStem : distinct;
-  return message.names.every((name) => knownWord(name, words, stems));
+  const turnWords = new Set(foldable);
+  return message.names.every((name) =>
+    knownWord(name, turnWords, stems)
+      ? knownWord(name, words, stems)
+      : words.has(name)
+  );
 }
 
 /** Two texts at least this similar say the same thing. */
@@ -376,14 +393,24 @@ export function announcesWork(message: SentMessage) {
  * handed the message, it is looking, the result will follow.
  */
 const errandWords =
-  /(?:^| )(?:запустил\p{L}*|запущен\p{L}*|передал\p{L}*|поручени\p{L}*|started|handed)(?= |$)/u;
+  /(?:^| )(?:запустил\p{L}*|запущен\p{L}*|запуск\p{L}*|передал\p{L}*|передан\p{L}*|поручени\p{L}*|браузер\p{L}*|started|handed)(?= |$)/u;
+
+/**
+ * Whether a message names the errand itself: the run, the browser, the
+ * errand handed over. Only such a message can be the errand's second one; an
+ * answer to something else the person asked — the letter they wanted
+ * checked, a gift idea — is judged like any other message.
+ */
+export function mentionsErrand(message: SentMessage) {
+  return errandWords.test(message.text);
+}
 
 /** Whether a message talks about an errand at work rather than a result. */
 export function announcesErrand(message: SentMessage) {
   return (
     laterWords.test(message.text) ||
     busyWords.test(message.text) ||
-    errandWords.test(message.text)
+    mentionsErrand(message)
   );
 }
 
@@ -568,10 +595,8 @@ function writesAnotherLanguage(
 export function addsNothingNew(
   message: SentMessage,
   delivered: readonly SentMessage[],
-  options: {
+  options: NameMatching & {
     readonly afterWork: boolean;
-    /** Stems on which the person named two people (`distinctStems`). */
-    readonly distinct?: readonly string[];
     /** The person's own message that opened the turn, if they opened it. */
     readonly request?: SentMessage;
   }
@@ -609,7 +634,7 @@ export function addsNothingNew(
   }
   const nextItem = delivered.some(
     (sent) =>
-      !namesShared(message, sent, options.distinct) &&
+      !namesShared(message, sent, options) &&
       similarity(message.text, sent.text) >= nearDuplicateSimilarity
   );
   if (nextItem) return false;
@@ -648,6 +673,13 @@ export function statedIn(text: string) {
   return [...statementsOf(text), ...limits].join("\n");
 }
 
+/** Words shorter than this — «так», «что», «уже» — say nothing new. */
+const contentWordLength = 4;
+
+/** Words that correct what a message already said. */
+const correction =
+  /(?<!\p{L})(?:ошиб\p{L}*|поправ\p{L}*|точнее|вместо|исправ\p{L}*|на самом деле|не так)(?!\p{L})/iu;
+
 /**
  * Whether a message that asks the person something wraps its question in the
  * answer told again: its other sentences name numbers, links, places or
@@ -676,13 +708,28 @@ export function retellsAroundQuestion(
   if (message.attachments.some((attachment) => !attachments.has(attachment))) {
     return false;
   }
+  const statements = statementsOf(text);
+  // A correction says the same places again on purpose.
+  if (statements.some((statement) => correction.test(statement))) {
+    return false;
+  }
   const sentCodes = delivered.flatMap((sent) => sent.codes);
   const sentWords = wordsOf(delivered);
   const told = stated ? [...delivered, stated] : delivered;
   const toldCodes = told.flatMap((sent) => sent.codes);
   const toldWords = wordsOf(told);
+  // A word no message used says something new about the place: «Пушкин
+  // сегодня закрыт на спецобслуживание». Only a near copy is a retelling.
+  const saysMore = statements.some((statement) =>
+    normalizedText(statement)
+      .split(" ")
+      .some(
+        (word) =>
+          word.length >= contentWordLength && !knownWord(word, toldWords)
+      )
+  );
+  if (saysMore) return false;
   const toldNames = new Set(delivered.flatMap((sent) => sent.properNames));
-  const statements = statementsOf(text);
   const facts = statements.flatMap((statement) =>
     codesOf(statement).filter(isFact)
   );

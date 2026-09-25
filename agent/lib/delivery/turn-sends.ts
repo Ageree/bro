@@ -9,6 +9,7 @@ import {
   unperformedClaims,
 } from "./claims";
 import {
+  browserAnswer,
   errandAtWork,
   reportedRunOf,
   leavesRunAtWork,
@@ -22,6 +23,7 @@ import {
   carriesFacts,
   codesOf,
   distinctStems,
+  mentionsErrand,
   namesOf,
   namesShared,
   nearDuplicateSimilarity,
@@ -168,31 +170,33 @@ export function sentMessageOf(message: OutgoingMessage): SentMessage {
   };
 }
 
+type NameMatching = NonNullable<Parameters<typeof namesShared>[2]>;
+
 function isRepeat(
   message: SentMessage,
   earlier: SentMessage,
-  distinct: readonly string[]
+  names: NameMatching
 ) {
   return (
     message.attachments.join("\n") === earlier.attachments.join("\n") &&
     message.codes.join("\n") === earlier.codes.join("\n") &&
-    namesShared(message, earlier, distinct) &&
-    namesShared(earlier, message, distinct) &&
+    namesShared(message, earlier, names) &&
+    namesShared(earlier, message, names) &&
     similarity(message.text, earlier.text) >= nearDuplicateSimilarity
   );
 }
 
 /**
- * Whether a message says again what one of the delivered ones said.
- * `distinct` are stems on which the person named two people.
+ * Whether a message says again what one of the delivered ones said. `names`
+ * says which names may match in another case (`namesShared`).
  */
 export function repeatsDelivered(
   outgoing: OutgoingMessage,
   delivered: readonly SentMessage[],
-  distinct: readonly string[] = []
+  names: NameMatching = {}
 ) {
   const message = sentMessageOf(outgoing);
-  return delivered.some((earlier) => isRepeat(message, earlier, distinct));
+  return delivered.some((earlier) => isRepeat(message, earlier, names));
 }
 
 /**
@@ -209,6 +213,7 @@ function heldBack(message: SentMessage, turn: ReturnType<typeof turnSends>) {
     addsNothingNew(message, delivered, {
       afterWork: turn.workSinceDelivery,
       distinct: turn.distinct,
+      foldable: turn.foldable,
       request: turn.request,
     })
   ) {
@@ -217,6 +222,7 @@ function heldBack(message: SentMessage, turn: ReturnType<typeof turnSends>) {
   if (
     turn.request &&
     turn.errandTold &&
+    mentionsErrand(message) &&
     !turn.otherWorkSinceDelivery &&
     !asksOrShowsNew(message, delivered) &&
     !tellsBeyond(message, [
@@ -302,7 +308,7 @@ export function sendRefusal(
 ): z.infer<typeof sendRefusalSchema> | undefined {
   const { delivered } = turn;
   if (delivered.length >= turnMessageLimit) return { skipped: "limit" };
-  if (repeatsDelivered(outgoing, delivered, turn.distinct)) {
+  if (repeatsDelivered(outgoing, delivered, turn)) {
     return { skipped: "duplicate" };
   }
   const message = sentMessageOf(outgoing);
@@ -320,6 +326,7 @@ export function sendRefusal(
   if (held) {
     // Dropped, it would end the turn before the step it announces is taken.
     return !yields &&
+      !turn.errandRunning &&
       promisesUntakenStep(
         outgoing.text ?? "",
         turn.actions,
@@ -501,14 +508,25 @@ export function turnSends(messages: readonly ModelMessage[]) {
   let workSinceDelivery = false;
   let otherWorkSinceDelivery = false;
   let workAfterSkip = false;
+  // Errands handed over in this turn whose message has not gone out yet: a
+  // step may start two, and each gets its own.
+  let errandsUntold = 0;
   let errandHandedOver = false;
-  let errandTold = false;
+  // Runs this turn handed work to whose outcome has not come in yet.
+  const runsAtWork = new Set<string>();
+  // The words of the turn's tool inputs, which the model wrote with the
+  // person's own words in mind.
+  const inputTexts: string[] = [];
   for (const message of turn) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
       if (part.type === "tool-call" && part.toolName === "send_message") {
         const input = sendMessageOutputSchema.safeParse(part.input).data;
         if (input) inputs.set(part.toolCallId, input);
+      }
+      if (part.type === "tool-call" && !deliveryTools.has(part.toolName)) {
+        const input = jsonSchema.safeParse(part.input);
+        if (input.success) inputTexts.push(...stringsOf(input.data));
       }
       if (part.type === "tool-call" && part.toolName === "browser_task") {
         const action = browserCallSchema.safeParse(part.input).data?.action;
@@ -527,13 +545,20 @@ export function turnSends(messages: readonly ModelMessage[]) {
         if (part.toolName !== "browser_task") {
           foundTexts.push(...resultTexts(part.output));
         }
+        const settled =
+          part.toolName === "browser_task"
+            ? settledOutcomeRun(part.output)
+            : undefined;
+        if (settled) runsAtWork.delete(settled);
         if (
           part.toolName === "browser_task" &&
           errandHandovers.has(browserActions.get(part.toolCallId) ?? "") &&
           leavesRunAtWork(part.output)
         ) {
           errandHandedOver = true;
-          errandTold = false;
+          errandsUntold += 1;
+          const run = browserAnswer(part.output)?.runId;
+          if (run) runsAtWork.add(run);
           errandTexts.push(...(browserTexts.get(part.toolCallId) ?? []));
         }
         continue;
@@ -558,12 +583,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
       // the errand; it uses up the errand's one message only when it talks
       // about the errand and names nothing beyond the request and the errand.
       if (
-        errandHandedOver &&
+        errandsUntold > 0 &&
         (!otherWorkSinceDelivery ||
           (announcesErrand(sent) &&
             !tellsBeyond(sent, [...(request ? [request] : []), errandKnown()])))
       ) {
-        errandTold = true;
+        errandsUntold -= 1;
       }
       workSinceDelivery = false;
       otherWorkSinceDelivery = false;
@@ -582,11 +607,23 @@ export function turnSends(messages: readonly ModelMessage[]) {
     /** How many messages about the errand were dropped as `started`. */
     errandSkips,
     /**
-     * Whether a message that had no other work to tell reached the person
-     * after the turn last handed a browser run its errand — a `start` or
-     * `continue` that left it at work.
+     * Whether every errand the turn handed a browser run — a `start` or
+     * `continue` that left it at work — has had its message: one that
+     * reached the person with no other work to tell, or that talked about
+     * the errand and named nothing beyond it.
      */
-    errandTold,
+    errandTold: errandHandedOver && errandsUntold === 0,
+    /** Whether a run this turn handed work to has yet to report. */
+    errandRunning: runsAtWork.size > 0,
+    /**
+     * The words of the person's message and of the turn's tool inputs: names
+     * among them may match in another case (`namesShared`).
+     */
+    foldable: [
+      ...new Set(
+        normalizedText([requestText ?? "", ...inputTexts].join("\n")).split(" ")
+      ),
+    ],
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,
