@@ -12,6 +12,7 @@ import {
 import {
   awaitsDelivery,
   outcomeToldEarlier,
+  reportOwedSteps,
   turnActed,
   turnDelivered,
   turnHandedErrandOn,
@@ -21,6 +22,7 @@ import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import {
   cardToolsBeforeOutcome,
   cardToolsBeforeOutcomeNote,
+  owedStepsNote,
 } from "@agent/lib/delivery/browser-report";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { turnMustEnd, turnSends } from "@agent/lib/delivery/turn-sends";
@@ -104,6 +106,14 @@ export default defineAgent({
           reportRunId !== undefined &&
           !staleReport &&
           sends.delivered.length === 0;
+        // Once the message is out, the card step the report asks for is
+        // still to come: nothing may tell the turn to end before it.
+        const owedSteps =
+          reportRunId !== undefined &&
+          !staleReport &&
+          sends.delivered.length > 0
+            ? reportOwedSteps(ctx.messages)
+            : [];
         // A report — a browser run's or a schedule's — is Bro's own turn.
         // Its question goes out as a message, so the person's reply starts a
         // turn of their own: only there does `schedules-answer` resume a
@@ -152,6 +162,7 @@ export default defineAgent({
                 answered: sends.delivered.length > 0,
                 formOfAddress,
                 language: replyLanguage,
+                stepOwed: owedSteps.length > 0,
               })
             : undefined,
           staleReport ? staleReportNote : undefined,
@@ -159,6 +170,7 @@ export default defineAgent({
           // A tool that vanished without a word is one the model says it
           // used anyway.
           heldForAnswer ? heldForAnswerNote : undefined,
+          owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
         ].filter((note) => note !== undefined);
         return modelSelection(modelId, {
           // After the reply, a step with nothing to add may come back empty

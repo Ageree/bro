@@ -661,6 +661,54 @@ describe("sendRefusal on claims no tool made", () => {
     ).toEqual({ rewrite: "calendar" });
   });
 
+  it.each([
+    "Записал тебя к терапевту на пт 10:00 — добавлю в календарь, как подтвердишь.",
+    "Занял слот у стоматолога на 12:00 — сейчас добавлю событие в календарь.",
+    "Scheduled your visit for Friday 10:00 — I'll add it to your calendar once you confirm.",
+  ])(
+    "delivers «%s»: the calendar step is only promised (review #30)",
+    (text) => {
+      // The report of a confirmed booking asks for exactly this message: the
+      // booking the site made, and the calendar entry still to come.
+      const report = [
+        userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+      ];
+
+      expect(refusal(report, text)).toBeUndefined();
+      expect(
+        refusal([userMessage("запиши меня к терапевту на пятницу")], text)
+      ).toBeUndefined();
+    }
+  );
+
+  it.each([
+    "Записал тебя к терапевту, добавил в календарь и поставлю напоминание.",
+    "Поставлю напоминание, а встречу уже добавил в календарь.",
+  ])("still returns «%s», a write said as done", (text) => {
+    expect(
+      refusal([userMessage("запиши меня к терапевту на пятницу")], text)
+    ).toEqual({ rewrite: "calendar" });
+  });
+
+  it("asks a report for the future tense while its calendar tool is held (review #25)", () => {
+    const report = [
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+    ];
+    const claim = "Записал тебя к терапевту на пт 10:00 и добавил в календарь.";
+
+    // The calendar tool comes back only after this message, so «use it
+    // first» cannot be followed.
+    expect(refusal(report, claim)).toEqual({ rewrite: "calendar-later" });
+    expect(rewriteSendNotice("calendar-later")).toContain("future tense");
+    // Once a message is out, the tool is there again.
+    const told = [...report, ...sendMessage("a", "Записал тебя к терапевту.")];
+    expect(
+      refusal(told, "Добавил событие в календарь: пятница 10:00, каб. 212.")
+    ).toEqual({
+      rewrite: "calendar",
+    });
+  });
+
   it("delivers a calendar event the apps tool created (review #11)", () => {
     const request = userMessage(
       "поставь встречу с Анной в четверг 15:00 в мой Outlook"

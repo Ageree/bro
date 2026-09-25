@@ -1,6 +1,10 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  calendarInstruction,
+  laterStepInstruction,
+} from "@agent/lib/browser-use/guidance";
 
 /**
  * The line of a finished run's report that names the run
@@ -145,4 +149,45 @@ export const cardToolsBeforeOutcome = [
  * take their absence for a missing calendar and only offer the entry.
  */
 export const cardToolsBeforeOutcomeNote =
-  "Tools that ask the person on an approval card (the calendar, mail, Notion, Slack, apps, schedules, spending) are held back in this report turn until a message of yours has reached the person: no card may come before the outcome. They come back right after it. When the report asks you to put a booking in the calendar, say in that message that you will add it, then call the calendar tool.";
+  "Tools that ask the person on an approval card (the calendar, mail, Notion, Slack, apps, schedules, spending) are held back in this report turn until a message of yours has reached the person: no card may come before the outcome. They come back right after it. When the report asks you to put a booking in the calendar or set up a later step, say in that message what you will add, then call its tool.";
+
+/**
+ * The card steps a browser report asks for once its message is out, each by
+ * the instruction that asks for it (`agent/lib/browser-use/completion.ts`):
+ * the calendar entry of a booking the site confirmed, the schedule of a step
+ * that opens later.
+ */
+const stepsAfterMessage = [
+  {
+    instruction: calendarInstruction,
+    step: "put the booking in the person's calendar with calendar-create-event",
+    tool: "calendar-create-event",
+  },
+  {
+    instruction: laterStepInstruction,
+    step: "set up the later step (Next) with schedules-create, if the person asked for that step",
+    tool: "schedules-create",
+  },
+] as const;
+
+/**
+ * The card steps a browser report's own instructions ask for after its
+ * message. The instructions close the report, after every line the page
+ * wrote, so a page that quotes one in its own text asks for nothing.
+ */
+export function stepsAskedBy(report: string) {
+  const closing = report.split("\n\n").at(-1) ?? "";
+  return stepsAfterMessage.filter(({ instruction }) =>
+    closing.includes(instruction)
+  );
+}
+
+/**
+ * What the model reads last once the report's message is out while a step
+ * it asks for is still to come. Without it the last word after a delivery
+ * was «end the turn without calling any tool», and the calendar card the
+ * message promised never came.
+ */
+export function owedStepsNote(steps: ReturnType<typeof stepsAskedBy>) {
+  return `Your message with the outcome has reached the person. The report still asks you to ${steps.map(({ step }) => step).join(", and to ")}: do it now, without writing again. It is the step the report asks for, not a new message, so «end the turn without calling any tool» does not apply until it is done. When its tool is not among your tools, end the turn without a word.`;
+}

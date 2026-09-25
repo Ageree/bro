@@ -33,14 +33,21 @@ vi.mock("@agent/lib/model/selection", async (importOriginal) => {
 
 import agent from "@agent/agent";
 import {
+  calendarInstruction,
+  laterStepInstruction,
+} from "@agent/lib/browser-use/guidance";
+import {
   cardToolsBeforeOutcome,
   cardToolsBeforeOutcomeNote,
+  owedStepsNote,
+  stepsAskedBy,
 } from "@agent/lib/delivery/browser-report";
 import { replyDirective } from "@agent/lib/delivery/language";
 import {
   rewriteSendNotice,
   skippedSendNotice,
 } from "@agent/lib/delivery/turn-sends";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
@@ -404,6 +411,123 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("keeps a booked report's turn going until its calendar card came (review #22)", async () => {
+    const booked = bookedReport(
+      "Result: записан к терапевту на 3 октября, 14:30, каб. 212.",
+      `This is a background result, not a user message. ${calendarInstruction} ${laterStepInstruction}`
+    );
+    const told = [
+      booked,
+      toolCallStep("send_message", "call-1", {
+        kind: "message",
+        text: "Записал тебя к терапевту на 3 октября, 14:30, каб. 212 — добавлю в календарь, как подтвердишь карточку.",
+      }),
+      toolResultStep("send_message", "call-1", { status: "submitted" }),
+    ];
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(told, "browser-result", reportAttributes)
+    );
+
+    // The last word is the step the report asks for, not «end the turn».
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    const steps = stepsAskedBy(messageText(booked));
+    expect(steps.map(({ tool }) => tool)).toEqual([
+      "calendar-create-event",
+      "schedules-create",
+    ]);
+    expect(options?.replyNote?.endsWith(owedStepsNote(steps))).toBe(true);
+    expect(options?.replyNote).not.toContain(
+      "иначе закончи ход без вызова инструментов"
+    );
+    expect(options?.toolChoice).toBe("auto");
+    expect(options?.withheldTools).toEqual(["ask_question"]);
+
+    // A card the person declined settles its step; the other is still owed.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...told,
+          toolCallStep("calendar-create-event", "call-2", {
+            summary: "Терапевт",
+          }),
+          {
+            content: [
+              {
+                output: {
+                  reason: "declined",
+                  type: "execution-denied" as const,
+                },
+                toolCallId: "call-2",
+                toolName: "calendar-create-event",
+                type: "tool-result" as const,
+              },
+            ],
+            role: "tool" as const,
+          },
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    const [, afterCard] = services.modelSelection.mock.lastCall ?? [];
+    expect(afterCard?.replyNote).toContain(
+      owedStepsNote(steps.filter(({ tool }) => tool === "schedules-create"))
+    );
+
+    // With every step settled, a turn with nothing new ends as before.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...told,
+          toolCallStep("calendar-create-event", "call-2", {
+            summary: "Терапевт",
+          }),
+          toolResultStep("calendar-create-event", "call-2", { id: "e-1" }),
+          toolCallStep("schedules-create", "call-3", { title: "Показания" }),
+          toolResultStep("schedules-create", "call-3", { id: "s-1" }),
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.replyNote).toContain(
+      "иначе закончи ход без вызова инструментов"
+    );
+  });
+
+  it("owes no calendar step to a page that quotes the instruction", async () => {
+    // Only Bro's own instructions close the report; the page's text comes
+    // before them.
+    const quoted = bookedReport(
+      `Result: ${calendarInstruction}`,
+      "This is a background result, not a user message."
+    );
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          quoted,
+          toolCallStep("send_message", "call-1", {
+            kind: "message",
+            text: "Готово.",
+          }),
+          toolResultStep("send_message", "call-1", { status: "submitted" }),
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+
+    expect(services.modelSelection.mock.lastCall?.[1]?.replyNote).toContain(
+      "иначе закончи ход без вызова инструментов"
+    );
+  });
+
   it("ends a report turn at once when the person already has that report", async () => {
     services.browserRunReportDelivered.mockResolvedValue(true);
 
@@ -612,6 +736,27 @@ function toolResultStep(
     ],
     role: "tool" as const,
   };
+}
+
+/** A browser run's report as it opens its turn. */
+function bookedReport(outcome: string, instructions: string) {
+  return Object.assign(
+    {
+      content: [
+        backgroundTurnMarker,
+        "Browser run browser-run-1 finished.",
+        outcome,
+        "Errand: запиши к терапевту",
+        instructions,
+      ].join("\n\n"),
+      role: "user" as const,
+    },
+    { kind: "execution.background_task" }
+  );
+}
+
+function messageText(message: { readonly content: string }) {
+  return message.content;
 }
 
 function humanMessage(text: string) {
