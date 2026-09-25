@@ -36,6 +36,10 @@ describe("recommendation instructions", () => {
       "Его `pick` считает, сколько кандидатов в пешей доступности и скольких не хватает до трёх"
     );
     expect(content).toContain("повтори с адресом без названия");
+    // A map service that refuses is no reason to drop a candidate.
+    expect(content).toContain(
+      "остаётся кандидатом с пометкой «время пешком не проверил»: замену ему не ищи"
+    );
     expect(content).toContain("почему выбрал его, и один честный минус");
     expect(content).toContain('`route_time` (`mode: "walking"`)');
     expect(content).toContain("«Пешком» — до 15 минут");

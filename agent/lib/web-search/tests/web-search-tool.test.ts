@@ -168,16 +168,36 @@ describe("web_search tool selection", () => {
     expect(
       await search("поезд Москва Казань 3 октября нижняя полка наличие мест")
     ).toContain("start browser_task now");
-    expect(await search("hotel in Kazan for the weekend")).toContain(
-      "start browser_task now"
-    );
+    for (const query of [
+      "hotel in Kazan for the weekend",
+      "отель Казань 3-5 октября",
+      "купе Москва Питер пятница",
+      "отель рядом с Красной площадью 3 октября",
+      "авиабилеты Москва Сочи 12.10",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
+      expect(await search(query)).toContain("start browser_task now");
+    }
 
-    // A dinner, a timetable in general and a flight's status are not it.
+    // A dinner, a timetable in general and a flight's status are not it,
+    // and neither is a pick of a place or a master with a hotel as a
+    // landmark or a day as when (review of 25.09).
     for (const query of [
       "Казань ресторан ужин суббота центр средний чек меню ресторан 2026",
       "сколько идёт поезд из Москвы в Казань",
+      "поездка в Казань на выходные что посмотреть",
       "рейс SU 1234 статус сегодня",
       "training schedule tomorrow",
+      "где поужинать рядом с отелем Метрополь в субботу",
+      "ресторан ужин Казань суббота рядом с отелем",
+      "кафе рядом с отелем Radisson завтрак сегодня",
+      "интересные места рядом с отелем Азимут Москва",
+      "ресторан рядом с гостиницей Космос в пятницу",
+      "бар возле отеля Four Seasons на выходных",
+      "сборка шкафа-купе Москва мастер завтра",
+      "книжные полки наличие в магазине",
+      "отели Казани с рейтингом 4.5 и выше",
+      "restaurants near the hotel Metropol on Saturday",
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- One query at a time keeps the failure readable.
       expect(await search(query)).not.toContain("browser_task");
