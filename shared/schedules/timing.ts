@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isPublicDayOff } from "./holidays";
 
 const localTimeSchema = z
   .string()
@@ -34,59 +35,81 @@ const dayOfMonthSchema = z
     'Day of the month, or "last". A day the month lacks (31 in April, 30 in February) falls on its last day.'
   );
 
-const calendarBase = {
-  kind: z.literal("calendar"),
-  localTime: localTimeSchema,
-  timezone: timezoneSchema,
-};
-
 const monthDays = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-const calendarTimingSchema = z.discriminatedUnion("frequency", [
-  z.strictObject({ ...calendarBase, frequency: z.literal("daily") }),
-  // Monday to Friday.
-  z.strictObject({ ...calendarBase, frequency: z.literal("weekdays") }),
-  z.strictObject({
-    ...calendarBase,
-    frequency: z.literal("weekly"),
-    weekdays: z
-      .array(weekdaySchema)
-      .min(1)
-      .max(7)
-      .refine((days) => new Set(days).size === days.length, {
-        message: "List each weekday once.",
-      })
-      .describe(
-        "The days of the week it runs on, e.g. [1, 3] for Mon and Wed."
-      ),
-  }),
-  z.strictObject({
-    ...calendarBase,
-    dayOfMonth: dayOfMonthSchema,
-    frequency: z.literal("monthly"),
-  }),
-  // «Каждое второе воскресенье месяца», «в последнюю пятницу».
-  z.strictObject({
-    ...calendarBase,
-    frequency: z.literal("monthly_weekday"),
-    occurrence: z
-      .union([z.number().int().min(1).max(4), z.literal("last")])
-      .describe('Which such weekday of the month: 1 to 4, or "last".'),
-    weekday: weekdaySchema,
-  }),
-  z
-    .strictObject({
+/**
+ * The calendar rules over a zone field: a stored rule always names its zone,
+ * while the tool lets the model leave it to the person's profile.
+ */
+function calendarTimingSchemaFor<Zone extends z.ZodType>(timezone: Zone) {
+  const calendarBase = {
+    kind: z.literal("calendar"),
+    localTime: localTimeSchema,
+    timezone,
+  };
+  return z.discriminatedUnion("frequency", [
+    z.strictObject({ ...calendarBase, frequency: z.literal("daily") }),
+    // Monday to Friday, minus the public days off of a Russian zone.
+    z.strictObject({ ...calendarBase, frequency: z.literal("weekdays") }),
+    z.strictObject({
+      ...calendarBase,
+      frequency: z.literal("weekly"),
+      weekdays: z
+        .array(weekdaySchema)
+        .min(1)
+        .max(7)
+        .refine((days) => new Set(days).size === days.length, {
+          message: "List each weekday once.",
+        })
+        .describe(
+          "The days of the week it runs on, e.g. [1, 3] for Mon and Wed."
+        ),
+    }),
+    z.strictObject({
+      ...calendarBase,
+      dayOfMonth: dayOfMonthSchema,
+      frequency: z.literal("monthly"),
+    }),
+    // «Каждое второе воскресенье месяца», «в последнюю пятницу».
+    z.strictObject({
+      ...calendarBase,
+      frequency: z.literal("monthly_weekday"),
+      occurrence: z
+        .union([z.number().int().min(1).max(4), z.literal("last")])
+        .describe('Which such weekday of the month: 1 to 4, or "last".'),
+      weekday: weekdaySchema,
+    }),
+    z.strictObject({
       ...calendarBase,
       dayOfMonth: dayOfMonthSchema,
       frequency: z.literal("yearly"),
       month: z.number().int().min(1).max(12).describe("Month, 1 January."),
-    })
-    .refine(
-      ({ dayOfMonth, month }) =>
-        dayOfMonth === "last" || dayOfMonth <= (monthDays[month - 1] ?? 31),
-      { message: "That month has fewer days.", path: ["dayOfMonth"] }
-    ),
-]);
+    }),
+  ]);
+}
+
+/** 31 April is no birthday; «last» and 29 February are. */
+function yearlyDayExists(timing: {
+  readonly dayOfMonth?: number | "last";
+  readonly frequency: string;
+  readonly month?: number;
+}) {
+  return (
+    timing.frequency !== "yearly" ||
+    timing.dayOfMonth === "last" ||
+    (timing.dayOfMonth ?? 1) <= (monthDays[(timing.month ?? 1) - 1] ?? 31)
+  );
+}
+
+const yearlyDayMessage = {
+  message: "That month has fewer days.",
+  path: ["dayOfMonth"],
+};
+
+const calendarTimingSchema = calendarTimingSchemaFor(timezoneSchema).refine(
+  yearlyDayExists,
+  yearlyDayMessage
+);
 
 // A whole month or year of minutes drifts off the calendar: «каждое 5-е»
 // stored as 43 200 minutes moved a day earlier every 31-day month.
@@ -98,32 +121,76 @@ const intervalTimingSchema = z.strictObject({
   kind: z.literal("interval"),
 });
 
+const newIntervalTimingSchema = intervalTimingSchema.refine(
+  ({ everyMinutes }) =>
+    everyMinutes % 1_440 !== 0 ||
+    !calendarLikeIntervalDays.has(everyMinutes / 1_440),
+  {
+    message:
+      "A month or a year is not a fixed number of minutes: use calendar timing with frequency monthly or yearly.",
+    path: ["everyMinutes"],
+  }
+);
+
+const instantSchema = z.iso.datetime({ offset: true });
+// «Завтра в 9» as the model reads it off the person's clock, no offset.
+const wallClockSchema = z.iso.datetime({ local: true });
+
 /**
- * What a schedule tool accepts. Month- and year-based recurrence is a
- * calendar rule in the person's timezone, never a fixed count of minutes.
+ * A schedule as it is stored. Month- and year-based recurrence is a calendar
+ * rule in the person's timezone, never a fixed count of minutes.
  */
 export const scheduleTimingSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    at: z.iso.datetime({ offset: true }),
-    kind: z.literal("once"),
-  }),
-  intervalTimingSchema.refine(
-    ({ everyMinutes }) =>
-      everyMinutes % 1_440 !== 0 ||
-      !calendarLikeIntervalDays.has(everyMinutes / 1_440),
-    {
-      message:
-        "A month or a year is not a fixed number of minutes: use calendar timing with frequency monthly or yearly.",
-      path: ["everyMinutes"],
-    }
-  ),
+  z.strictObject({ at: instantSchema, kind: z.literal("once") }),
+  newIntervalTimingSchema,
   calendarTimingSchema,
+]);
+
+const personZoneSchema = timezoneSchema
+  .optional()
+  .describe(
+    "IANA timezone, e.g. Europe/Moscow. Leave it out to use the person's own zone from their profile; name one only when they asked for another («по Нью-Йорку»)."
+  );
+
+/**
+ * What the schedule tools accept: the same rules, with the zone left to the
+ * person's profile and a one-off moment given on their wall clock. Guessing
+ * the offset of «завтра в 9» put reminders an hour or a zone off; the model
+ * only reads the date and time, and `resolveScheduleTiming` does the rest.
+ */
+export const scheduleTimingInputSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    at: z
+      .string()
+      .trim()
+      .refine(
+        (at) =>
+          instantSchema.safeParse(at).success ||
+          wallClockSchema.safeParse(at).success,
+        {
+          message:
+            "Use the wall-clock time YYYY-MM-DDTHH:MM, or an ISO datetime with its offset.",
+        }
+      )
+      .describe(
+        "When it happens: the wall-clock time YYYY-MM-DDTHH:MM in `timezone`, e.g. 2026-09-26T09:00 for «завтра в 9», or an exact ISO datetime with an offset."
+      ),
+    kind: z.literal("once"),
+    timezone: personZoneSchema,
+  }),
+  newIntervalTimingSchema,
+  calendarTimingSchemaFor(personZoneSchema).refine(
+    yearlyDayExists,
+    yearlyDayMessage
+  ),
 ]);
 
 // Weekly schedules written before `weekdays` named their single day.
 const legacyWeeklyTimingSchema = z.strictObject({
-  ...calendarBase,
   frequency: z.literal("weekly"),
+  kind: z.literal("calendar"),
+  localTime: localTimeSchema,
+  timezone: timezoneSchema,
   weekday: weekdaySchema,
 });
 
@@ -282,14 +349,33 @@ function weekdayInMonth(
   };
 }
 
+/**
+ * Whether a rule of days runs on `date`. «Каждый будний день» is the working
+ * week: in a Russian zone a public day off is skipped the way a Saturday is
+ * («на праздники не присылай» is already so). Monday to Friday regardless is
+ * weekly with all five days.
+ */
 function runsOnDay(timing: CalendarTiming, date: CivilDate) {
   const weekday = weekdayOf(date);
-  if (timing.frequency === "weekdays") return weekday >= 1 && weekday <= 5;
+  if (timing.frequency === "weekdays") {
+    return (
+      weekday >= 1 &&
+      weekday <= 5 &&
+      !isPublicDayOff(timing.timezone, date.year, date.month, date.day)
+    );
+  }
   if (timing.frequency !== "weekly") return true;
   return "weekdays" in timing
     ? timing.weekdays.includes(weekday)
     : timing.weekday === weekday;
 }
+
+/**
+ * Days walked for a rule of days: a week and a day covers any weekly rule,
+ * and the Russian New Year break (up to eleven days off, weekends included)
+ * plus a working day on each side covers the working week.
+ */
+const dayRuleWalk = 16;
 
 /**
  * The calendar dates a rule falls on, walking from `from` (inclusive) in
@@ -308,7 +394,7 @@ function* occurrenceDates(
     timing.frequency === "weekdays" ||
     timing.frequency === "weekly"
   ) {
-    for (let offset = 0; offset <= 8; offset += 1) {
+    for (let offset = 0; offset <= dayRuleWalk; offset += 1) {
       const date = civilDate(
         from.year,
         from.month,
@@ -409,4 +495,51 @@ export function computeLatestRun(
   }
 
   return calendarOccurrence(timing, at, -1);
+}
+
+/**
+ * The stored rule for what the tool was given: a missing zone is the
+ * person's own, and a wall-clock moment becomes the instant it happens there.
+ * An instant the model gave with its offset stays as given.
+ */
+export function resolveScheduleTiming(
+  timing: z.infer<typeof scheduleTimingInputSchema>,
+  personTimeZone: string
+): z.infer<typeof scheduleTimingSchema> {
+  if (timing.kind === "interval") return timing;
+  if (timing.kind === "calendar") {
+    return { ...timing, timezone: timing.timezone ?? personTimeZone };
+  }
+  if (instantSchema.safeParse(timing.at).success) {
+    return { at: timing.at, kind: "once" };
+  }
+  const [year, month, day, hour, minute] = timing.at
+    .split(/[-T:]/u)
+    .map(Number);
+  const at = fromWallClock(
+    timing.timezone ?? personTimeZone,
+    { day: day ?? 1, month: month ?? 1, year: year ?? 1970 },
+    hour ?? 0,
+    minute ?? 0
+  );
+  return { at: new Date(at).toISOString(), kind: "once" };
+}
+
+function twoDigits(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * A run's moment on the person's clock, for the reply that names it: the
+ * model counting «завтра» from a UTC instant named the wrong day.
+ */
+export function localRunLabel(at: Date, timeZone: string) {
+  const parts = zonedParts(at.getTime(), timeZone);
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+  }).format(at);
+  const date = [parts.year, parts.month, parts.day].map(twoDigits).join("-");
+  const time = [parts.hour, parts.minute].map(twoDigits).join(":");
+  return `${date} ${time}, ${weekday} (${timeZone})`;
 }
