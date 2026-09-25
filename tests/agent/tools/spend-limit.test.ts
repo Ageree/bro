@@ -411,7 +411,86 @@ describe("spend_limit clear", () => {
     expect(result).toMatchObject({ cleared: [], rules: [{ limitRub: 5000 }] });
     expect(noteOf(result)).toContain("the rules listed here still hold");
   });
+
+  /**
+   * Review of #191: a paid standing permission pays without asking too, so
+   * «every payment already needs a card» is true only with none left.
+   */
+  it("names the paid permissions a scoped clear leaves paying", async () => {
+    const taxi = { kind: "taxi" as const, maxRub: 1500, merchant: null };
+    stored = { ...monthly, actions: [taxi], rules: [] };
+
+    const result = await clear({ action: "clear", merchant: "ozon.ru" });
+
+    expect(result).toMatchObject({
+      cleared: [],
+      stillPaying: [describeStandingAction(taxi)],
+    });
+    expect(noteOf(result)).toContain("still pay without asking");
+    expect(noteOf(result)).not.toContain("already needs");
+    // The clear the person's «не плати без ок» needs takes it back.
+    const all = await clear({ action: "clear" });
+    expect(all).toMatchObject({
+      takenBackPermissions: [describeStandingAction(taxi)],
+    });
+  });
 });
+
+it("tells the model to clear while a paid standing permission remains", () => {
+  expect(spendLimit.description).toContain(
+    "Skip clear only when your instructions say there is neither a spend limit nor a paid standing permission"
+  );
+});
+
+/**
+ * Review of #191: a rule a page slipped in drove a no-card clear of the
+ * person's limit. In the report of a browser run nothing changes the limit.
+ */
+describe("spend_limit in a turn the page wrote", () => {
+  beforeEach(() => {
+    mocks.readSpendLimit.mockResolvedValue(monthly);
+  });
+
+  it("refuses every change there without a card, and still reads", async () => {
+    for (const input of [
+      { action: "clear" as const },
+      { action: "set" as const, limitRub: 9000 },
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One call at a time keeps the failure readable.
+      const status = await approvalOf(input, "browser-result");
+      expect(denialReason(status)).toContain(
+        "only in a turn the user's own message started"
+      );
+    }
+    expect(await approvalOf({ action: "read" }, "browser-result")).toBe(
+      "not-applicable"
+    );
+  });
+
+  it("changes it in the person's own turn as before", async () => {
+    expect(await approvalOf({ action: "clear" }, "photon-imessage")).toBe(
+      "not-applicable"
+    );
+    expect(
+      await approvalOf({ action: "set", limitRub: 9000 }, "photon-imessage")
+    ).toBe("user-approval");
+  });
+});
+
+async function approvalOf(
+  input: Parameters<typeof applySpendLimitChange>[1],
+  authenticator: Parameters<typeof toolContext>[1]
+): Promise<ApprovalStatus> {
+  const approval = spendLimit.approval;
+  if (approval === undefined) throw new Error("No approval policy.");
+  const policy = "request" in approval ? approval.request : approval;
+  return policy({
+    ...toolContext("spend_limit", authenticator),
+    approvedTools: new Set(),
+    toolInput: input,
+    toolName: "spend_limit",
+  });
+}
 
 /** Why the policy refused a call without a card, when it did. */
 function denialReason(status: ApprovalStatus) {
