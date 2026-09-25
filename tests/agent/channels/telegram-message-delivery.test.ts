@@ -1006,14 +1006,17 @@ describe("Telegram approval cards", () => {
 
     await handleInputRequested(
       inputRequested(
-        approvalRequest("gmail-send", { subject: "Привет", to: ["a@b.c"] })
+        approvalRequest("gmail-update", {
+          messageIds: ["a", "b", "c", "d"],
+          update: "archive",
+        })
       ),
       context,
       sessionContext()
     );
 
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toBe("Approve tool call: gmail-send");
+    expect(body.text).toBe("Approve tool call: gmail-update");
     expect(JSON.stringify(body.reply_markup)).toContain("Approve");
   });
 });
