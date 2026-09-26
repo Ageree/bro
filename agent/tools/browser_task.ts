@@ -627,7 +627,7 @@ function stagingLine(signIn: boolean, own: boolean) {
       : "Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is submitted, typed or paid before they confirm: pick the one option that best fits every condition and take it up to the last step before any of that, and leave that page open.",
     `For a basket or an order, go on from the basket to the checkout («Оформить заказ», «Перейти к оформлению», «Перейти к оплате») until the page shows the final total with every fee, the delivery slot or date and the delivery or pickup address. For a ticket, a stay, a table or an appointment, select the train or flight, the room, the table or the slot and the seats, and go on to the form that asks for the person's details${own ? ", and fill it in" : ""}.`,
     signIn
-      ? `When the site shows that final total, the seats, the slots or the saved pickup point only to a signed-in account${own ? ", or needs one to reach the payment step" : ""}, sign in as the sign-in paragraph below allows.`
+      ? `When the site shows that final total, the seats, the slots or the saved pickup point only to a signed-in account${own ? ", or needs one to reach the payment step" : ""}, sign in as the sign-in paragraph below allows.${own ? " When it asks for a password you do not have, do not stop there yet: take the same option up to the payment step on a fallback site the errand names that lets you go on as a guest, and say in the report which site and why; stop with NEEDS: password only when none does." : ""}`
       : "When the site shows the final total only to a signed-in account, report the total the page shows and say it may change once signed in.",
     "Items already in the basket before this errand are not part of it: keep them out of this order — uncheck them, or remove them when the site has no other way — and name each one in the report with what you did with it.",
     own
@@ -643,7 +643,7 @@ function stagingLine(signIn: boolean, own: boolean) {
  * person decides on it in the same one answer.
  */
 const closestOptionLine =
-  "When no option meets every condition of the errand, still take the closest real one up to that step and put it first in ITEMS, its details opening with «Differs:» and what differs, in the errand's language — «Differs: дороже на 400 ₽», «Differs: отправление в 18:40, а не после 19:00» — never an invented one.";
+  "When no option meets every condition of the errand, still take the closest real one up to that step and put it first in ITEMS, its details opening with «Differs:» and what differs, in the errand's language — «Differs: дороже на 400 ₽», «Differs: отправление в 18:40, а не после 19:00» — never an invented one. The closest one keeps the dates and times the person named and the kind of seat or room they asked for, and differs in price before it differs in time.";
 
 /**
  * The person asked in their own message for the errand to be done, and has

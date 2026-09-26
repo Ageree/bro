@@ -6502,6 +6502,10 @@ describe("browser_task takes an errand the person asked to be done to its last s
     expect(task).toContain(fillsDetails);
     expect(task).toContain(stopsBeforePaying);
     expect(task).toContain(closestOption);
+    // RU 26.09, d01: «после 18:00, до 6 тыс» staged a 15:40 train at 8 238 ₽.
+    expect(task).toContain(
+      "The closest one keeps the dates and times the person named and the kind of seat or room they asked for, and differs in price before it differs in time."
+    );
     expect(task).not.toContain(noDetails);
     expect(task).not.toContain("Never type the person's name");
     // Right after the first rule of the run, before the search paragraphs.
@@ -6577,6 +6581,11 @@ describe("browser_task takes an errand the person asked to be done to its last s
 
     expect(task).toContain(
       "When the site shows that final total, the seats, the slots or the saved pickup point only to a signed-in account, or needs one to reach the payment step, sign in as the sign-in paragraph below allows."
+    );
+    // RU 26.09, d01: ticket.rzd.ru asked for a password at the passenger step
+    // and the run stopped there, with tutu.ru named as a fallback and unused.
+    expect(task).toContain(
+      "When it asks for a password you do not have, do not stop there yet: take the same option up to the payment step on a fallback site the errand names that lets you go on as a guest, and say in the report which site and why; stop with NEEDS: password only when none does."
     );
   });
 
