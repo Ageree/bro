@@ -15,13 +15,16 @@ import type { MailParty } from "./mime.ts";
  * each case's «Нужно заранее» (`docs/benchmarks/ru/cases.json`) and the
  * Assistant Benchmark's tests (`docs/benchmarks/en/cases.tsv`).
  *
- * Nobody but the tester is ever written to. People («Ирина Павловна»,
- * «руководитель», Sam) are plus-addresses of the tester's own mailbox, so a
- * reply Bro sends after an approval lands back in the tester's inbox;
- * services and shops write from `*.example.com`, `example.org` and
- * `example.net`, which are reserved and deliver nowhere. Names, cards and
- * documents are placeholders. Dates are computed when the fixtures are
- * seeded, in the tester's zone, so «завтра» and «в пятницу» stay true.
+ * Nobody but the tester is ever written to. People the tester writes back to
+ * («Ирина Павловна», Sam) are plus-addresses of the tester's own mailbox, so a
+ * reply Bro sends after an approval lands back in the tester's inbox. The
+ * evening's boss and friend are not: Gmail files a plus-address of the
+ * mailbox as mail the person sent, and the background check skips that, so
+ * those letters would never be seen. They write from reserved domains, as
+ * services and shops do (`*.example.com`, `example.org`, `example.net`),
+ * which deliver nowhere. Names, cards and documents are placeholders. Dates
+ * are computed when the fixtures are seeded, in the tester's zone, so
+ * «завтра» and «в пятницу» stay true.
  *
  * `expect` is what a reviewer checks Bro's answer against: the free windows,
  * the right thread, the total of the receipts.
@@ -628,7 +631,7 @@ function eveningRu(context: SeedContext): FixtureSetContent {
       {
         body: "Привет! Можешь к утру глянуть цифры по Q3? Хочу понимать, что говорить на планёрке.\n\nА. В.",
         folder: "inbox",
-        from: person(context, "boss", "Андрей Волков"),
+        from: { address: "andrey.volkov@example.com", name: "Андрей Волков" },
         key: "boss",
         sentAt: "on-arrival",
         subject: "Q3",
@@ -657,7 +660,7 @@ function eveningRu(context: SeedContext): FixtureSetContent {
       {
         body: "го в субботу на шашлыки? у нас на даче, с 14:00. Катя тоже будет. скажи до пятницы, чтобы я мясо на всех взял",
         folder: "inbox",
-        from: person(context, "friend", "Дима"),
+        from: { address: "dima@example.com", name: "Дима" },
         key: "friend",
         sentAt: "on-arrival",
         subject: "шашлыки",
@@ -703,7 +706,7 @@ function eveningEn(context: SeedContext): FixtureSetContent {
       {
         body: "Can you take a look at the Q3 numbers before tomorrow morning? I want to know what to say at the 9:30.\n\nMark",
         folder: "inbox",
-        from: person(context, "boss", "Mark Ellis"),
+        from: { address: "mark.ellis@example.com", name: "Mark Ellis" },
         key: "boss",
         sentAt: "on-arrival",
         subject: "Q3 numbers",
@@ -732,7 +735,7 @@ function eveningEn(context: SeedContext): FixtureSetContent {
       {
         body: "BBQ at ours on Saturday? From 2pm, bring anyone. Let me know by Friday so I know how much to buy",
         folder: "inbox",
-        from: person(context, "friend", "Alex"),
+        from: { address: "alex@example.com", name: "Alex" },
         key: "friend",
         sentAt: "on-arrival",
         subject: "Saturday?",

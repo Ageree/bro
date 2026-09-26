@@ -96,6 +96,29 @@ describe("fixture catalog", () => {
     ).toEqual([]);
   });
 
+  it("writes the evening's boss and friend from reserved domains, not the tester's plus-addresses", () => {
+    const from = Object.fromEntries(
+      fixtureSets["evening-ru"].build(context).letters.map((letter) => [
+        letter.key,
+        letter.from.address,
+      ])
+    );
+    expect(from).toEqual({
+      boss: "andrey.volkov@example.com",
+      friend: "dima@example.com",
+      parcel: "noreply@cdek.example.com",
+      phishing: "security@bank-notice.example.com",
+    });
+    const english = Object.fromEntries(
+      fixtureSets["evening-en"].build(context).letters.map((letter) => [
+        letter.key,
+        letter.from.address,
+      ])
+    );
+    expect(english.boss).toBe("mark.ellis@example.com");
+    expect(english.friend).toBe("alex@example.com");
+  });
+
   it("puts the flight tomorrow and the dentist and Thursday where the tests say", () => {
     const flight = fixtureSets["flight-ru"].build(context);
     expect(flight.events[0]?.start.toISOString()).toBe(
