@@ -12,6 +12,10 @@ import {
  */
 const emptyDeliveryMarker =
   /<eve-empty-delivery\/>|&lt;eve-empty-delivery\/&gt;/u;
+const everyEmptyDeliveryMarker =
+  /<eve-empty-delivery\/>|&lt;eve-empty-delivery\/&gt;/gu;
+const endsWithEmptyDelivery =
+  /(?:<eve-empty-delivery\/>|&lt;eve-empty-delivery\/&gt;)\s*$/u;
 
 /**
  * The same said in words, as the whole last sentence. «Остальное передавать
@@ -20,18 +24,26 @@ const emptyDeliveryMarker =
 const nothingToHandOver =
   /(?:^|[.!?\n]\s*)(?:передавать нечего|нечего передавать|nothing to (?:hand over|pass on|report))[.!]?$/iu;
 
+/**
+ * Nothing to hand over: the reply is only the empty-delivery marker, or it
+ * ends with that marker (reasoning, then the decision that there is nothing).
+ * Naming the marker and then writing the handover — «the marker is not right
+ * here», followed by the flight — is still a handover.
+ */
 function saysNothing(summary: string) {
-  return (
-    emptyDeliveryMarker.test(summary) || nothingToHandOver.test(summary.trim())
-  );
+  const trimmed = summary.trim();
+  if (nothingToHandOver.test(trimmed)) return true;
+  if (!emptyDeliveryMarker.test(trimmed)) return false;
+  const rest = trimmed.replace(everyEmptyDeliveryMarker, "").trim();
+  return rest.length === 0 || endsWithEmptyDelivery.test(trimmed);
 }
 
 /**
- * Whether a finished run's outcome is worth a report turn. A worker's
- * `<eve-empty-delivery/>` never appears inside a real handover (the proactive
- * worker's instructions say so), so any result carrying it hands over
- * nothing, and the report turn given it anyway told the person «почту и
- * календарь проверил — нового ничего».
+ * Whether a finished run's outcome is worth a report turn. A reply that is
+ * the empty-delivery marker, or that ends with it, hands over nothing: the
+ * report turn given that text told the person «почту и календарь проверил —
+ * нового ничего». A handover that only mentions the marker and then says
+ * what happened still goes out.
  */
 export function reportNeeded(outcome: ScheduledRunOutcome) {
   return !(outcome.kind === "result" && saysNothing(outcome.summary));
@@ -54,9 +66,15 @@ export function workerOutcome(
 ): ScheduledRunOutcome {
   const text = message?.trim();
   const urgent = text !== undefined && urgentHandover.test(text);
-  const summary = urgent ? text.replace(urgentHandover, "").trim() : text;
+  const unmarked = urgent ? text.replace(urgentHandover, "").trim() : text;
+  // Decide from the reply as written. A kept handover then loses the marker,
+  // so the report turn does not read it as «say nothing».
+  const summary =
+    unmarked === undefined || saysNothing(unmarked)
+      ? undefined
+      : unmarked.replace(everyEmptyDeliveryMarker, "").trim();
   return scheduledRunOutcomeSchema.parse(
-    summary && !saysNothing(summary)
+    summary
       ? {
           kind: "result",
           summary: summary.slice(0, 4_000),
