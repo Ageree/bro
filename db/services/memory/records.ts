@@ -64,6 +64,30 @@ export async function listCurrentMemories(
   return rows.map(memoryResult);
 }
 
+/**
+ * The texts of the rules the person set, from every memory scope of the
+ * workspace: a tool outside the memory provider has no scope key, and a
+ * rule binds Bro in every conversation.
+ */
+export async function listCurrentRuleTexts(scope: AccessScope) {
+  const now = new Date();
+  const rows = await db
+    .select({ content: memoryRecords.content })
+    .from(memoryRecords)
+    .where(
+      and(
+        eq(memoryRecords.workspaceId, scope.workspaceId),
+        sql`${memoryRecords.content}->>'category' = 'rule'`,
+        or(
+          sql`${memoryRecords.content}->>'validUntil' IS NULL`,
+          sql`(${memoryRecords.content}->>'validUntil')::timestamptz > ${now}`
+        )
+      )
+    )
+    .limit(maximumRecords);
+  return rows.flatMap((row) => (row.content ? [row.content.text] : []));
+}
+
 export async function findMemories(
   scope: AccessScope,
   scopeKey: string,

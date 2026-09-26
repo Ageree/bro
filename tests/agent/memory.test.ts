@@ -27,6 +27,7 @@ import {
   memoryRemovalApproval,
   parseLegacyRecall,
   renderProfile,
+  ruleAsksBeforeBuying,
   ruleWriteRefusal,
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
@@ -663,6 +664,35 @@ describe("the person's rules in the profile", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("knows a rule that has Bro ask before buying, in any conversation", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "rule", text: "Никогда не пиши маме после десяти." },
+      "save:mother",
+      { sessionId: "session", turnId: "turn-1" }
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "preference", text: "Не любит платить без спроса." },
+      "save:preference",
+      { sessionId: "session", turnId: "turn-2" }
+    );
+    expect(await ruleAsksBeforeBuying(alice)).toBe(false);
+
+    await saveMemory(
+      alice,
+      "scope-b",
+      { category: "rule", text: "Ничего не оплачивай без моего ок." },
+      "save:rule",
+      { sessionId: "session", turnId: "turn-3" }
+    );
+
+    expect(await ruleAsksBeforeBuying(alice)).toBe(true);
+    expect(await ruleAsksBeforeBuying(bob)).toBe(false);
   });
 
   it("reads as it always did while the person has set no rule or preference", () => {
