@@ -75,9 +75,9 @@ describe("public-service instructions", () => {
     );
   });
 
-  it("keeps «найди билеты» a search, on the seller's own site", () => {
+  it("keeps a look at fares a search, on the seller's own site", () => {
     expect(browser).toContain(
-      "«найди» остаётся поиском, даже если человек назвал место («у прохода») или регистрацию"
+      "При `\"look\"` («сколько стоит», «посмотри варианты») запуск только ищет и называет цены, без оформления."
     );
     expect(browser).toContain(
       "В `site` ставь сайт перевозчика или продавца, где будет покупка"
