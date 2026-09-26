@@ -6,9 +6,12 @@ import { describe, expect, it } from "vitest";
 import {
   CaseJournal,
   describeEvent,
+  failedTurnStatusDetail,
+  formatCaseSummary,
   isoWithOffset,
   maskCodes,
   readRunRecord,
+  runCommandExitCode,
   runRecordSchema,
   type RunRecord,
 } from "../../bench/journal.ts";
@@ -88,6 +91,46 @@ describe("isoWithOffset", () => {
       "2026-09-23T19:05:00+05:00"
     );
     expect(isoWithOffset(at, "UTC")).toBe("2026-09-23T14:05:00+00:00");
+  });
+});
+
+describe("a failed turn in the summary", () => {
+  const credits =
+    "This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 24969. To increase, visit https://openrouter.ai/settings/credits and add more credits";
+
+  it("keeps the error code and the start of the message", () => {
+    expect(
+      failedTurnStatusDetail({ code: "MODEL_CALL_FAILED", message: credits })
+    ).toBe(
+      "MODEL_CALL_FAILED: This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 24969.…"
+    );
+    expect(
+      failedTurnStatusDetail({
+        code: "MODEL_CALL_FAILED",
+        message: "provider down",
+      })
+    ).toBe("MODEL_CALL_FAILED: provider down");
+  });
+
+  it("prints failed in the console summary and exits non-zero", () => {
+    const outDir = join(tmpdir(), "bench-journal-summary");
+    const journal = new CaseJournal(
+      outDir,
+      "uc-ho-water-outage",
+      "Europe/Moscow"
+    );
+    const record = recordFor(journal, "привет");
+    record.caseId = "uc-ho-water-outage";
+    record.driver.status = "failed";
+    record.driver.statusDetail =
+      "MODEL_CALL_FAILED: This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 24969.…";
+    record.transcript = "/tmp/uc-ho-water-outage.log";
+
+    expect(formatCaseSummary(record)).toBe(
+      "uc-ho-water-outage: failed — MODEL_CALL_FAILED: This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 24969.… (подсказок 0, карточек 0) → /tmp/uc-ho-water-outage.log"
+    );
+    expect(runCommandExitCode(["completed", "failed", "scheduled"])).toBe(1);
+    expect(runCommandExitCode(["completed", "scheduled"])).toBe(0);
   });
 });
 
