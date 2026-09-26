@@ -52,6 +52,7 @@ import {
   serializeAddressVaultPayload,
   serializeContactVaultPayload,
 } from "@shared/vault/schema";
+import type * as browserUseHost from "@agent/lib/browser-use/host";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "22222222-2222-4222-8222-222222222222";
@@ -376,6 +377,14 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   updateQueuedBrowserRun,
 }));
+// Whether a site's name exists is a DNS answer: no test asks the network.
+const siteHostMissing = vi.hoisted(() =>
+  vi.fn<(site: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseHost>()),
+  siteHostMissing,
+}));
 // The owner's alert state lives in the database; what the tool does about a
 // 402 is what these tests read.
 vi.mock("@agent/lib/browser-use/credits", async (importOriginal) => ({
@@ -672,6 +681,36 @@ describe("browser_task cost ceiling", () => {
   });
 });
 
+describe("browser_task on a site that does not exist", () => {
+  it("starts nothing and sends Bro to find the real site", async () => {
+    // RU 26.09, d15: an errand on a barbershop's made-up address was
+    // retried as an anti-bot wall for half an hour.
+    siteHostMissing.mockResolvedValueOnce(true);
+
+    const result = await startErrand("");
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://example.com"
+    );
+    expect(result).toEqual({
+      note: "Nothing was started: the site example.com does not exist — its name does not resolve, so no browser could open it. Do not start it again at that address and do not guess another. Find the real site first: look the place, shop or service up with web_search (for a business, with sites yandex.ru/maps or 2gis.ru — its card there names its own site), then start the errand with the origin that search gave. When it has no site of its own, tell the user so and offer what the search found instead, such as its phone or its card on the maps.",
+      status: "site_not_found",
+    });
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("starts as usual on a site whose name resolves", async () => {
+    await startErrand("");
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://example.com"
+    );
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+});
+
 describe("browser_task monthly quota", () => {
   it("records the site the errand was pointed at", async () => {
     await startErrand("");
@@ -709,7 +748,8 @@ describe("browser_task continuation", () => {
     const result = await continueErrand({});
 
     expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
-    const [queuedTo, queued] = queueBrowserUseSessionMessage.mock.calls[0] ?? [];
+    const [queuedTo, queued] =
+      queueBrowserUseSessionMessage.mock.calls[0] ?? [];
     expect(queuedTo).toBe(sessionId);
     expect(
       queued?.startsWith(
@@ -717,7 +757,9 @@ describe("browser_task continuation", () => {
       )
     ).toBe(true);
     expect(queued).toContain("\nNEEDS: exactly one of ");
-    expect(queued).toContain("\nITEMS: a JSON array with one object per option");
+    expect(queued).toContain(
+      "\nITEMS: a JSON array with one object per option"
+    );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId, status: "running" });
@@ -1050,7 +1092,7 @@ describe("browser_task anti-bot checks", () => {
     );
     // A site the network never loads goes to the same background retry.
     expect(task).toContain(
-      "If this errand's Site does not load at all because of a network or proxy error — ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
+      "If this errand's Site does not load at all because of a network or proxy error — ERR_NAME_NOT_RESOLVED, ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
     );
   });
 

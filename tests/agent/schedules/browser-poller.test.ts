@@ -22,6 +22,7 @@ import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserRunsService from "@db/services/browser-runs";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import type { BrowserSubmission } from "@shared/browser/submission";
+import type * as browserUseHost from "@agent/lib/browser-use/host";
 
 // The poller runs for real against a real schema: the round-robin take, the
 // queue's claim and hand-off, the report lease. Only Browser Use, the
@@ -67,6 +68,14 @@ const alertOwner = vi.hoisted(() =>
 vi.mock("@agent/lib/owner-alert", () => ({
   alertOwner,
   clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
+// Whether a site's name exists is a DNS answer: no test asks the network.
+const siteHostMissing = vi.hoisted(() =>
+  vi.fn<(site: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseHost>()),
+  siteHostMissing,
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages: () => Promise.resolve([]),

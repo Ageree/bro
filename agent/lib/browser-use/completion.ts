@@ -54,6 +54,7 @@ import {
   placedOrderInstruction,
 } from "./guidance";
 import { gosuslugiFallback } from "./public-services";
+import { siteHostMissing, siteHostname } from "./host";
 import {
   keepsPage,
   persistProfileCookies,
@@ -118,7 +119,7 @@ export async function settleBrowserRun(
     return { kind: "open" as const, summaryStatus: run.status };
   }
 
-  const { interrupted, parsed } = await networkVerdict(
+  const { interrupted, missingSite, parsed } = await networkVerdict(
     row,
     run,
     parseBrowserOutcome(run.result)
@@ -142,7 +143,9 @@ export async function settleBrowserRun(
   // Only a finished run has an order to record; one still waiting on the
   // person has bought nothing yet.
   const order =
-    parsed.needs === "none" && (await couldHaveActed(row, false))
+    parsed.needs === "none" &&
+    missingSite === undefined &&
+    (await couldHaveActed(row, false))
       ? parseBrowserOrder(parsed, {
           result: run.result,
           site: row.site,
@@ -156,6 +159,7 @@ export async function settleBrowserRun(
     hasItems: parsed.items.length > 0,
     hasLinks,
     interrupted,
+    missingSite,
     needs: parsed.needs,
     next: parsed.next,
     failed: status === "failed",
@@ -284,10 +288,23 @@ async function networkVerdict(
   reported: ReturnType<typeof parseBrowserOutcome>
 ): Promise<{
   readonly interrupted?: string;
+  /** The host of the errand's site, when its name does not exist. */
+  readonly missingSite?: string;
   readonly parsed: ReturnType<typeof parseBrowserOutcome>;
 }> {
   const error = networkErrorIn(run.result) ?? networkErrorIn(run.error);
   const walled = reported.needs === "captcha" || unreachableRun(run);
+  const unresolved =
+    unreachableCause(reported, run.error)?.includes("NAME_NOT_RESOLVED") ===
+    true;
+  // A site whose name does not exist never opened, so nothing was done on
+  // it, and no fresh browser on another address will open it either.
+  if ((walled || unresolved) && row.site && (await siteHostMissing(row.site))) {
+    return {
+      missingSite: siteHostname(row.site) ?? row.site,
+      parsed: { ...reported, needs: "none" },
+    };
+  }
   if (error === undefined || !walled) return { parsed: reported };
   if (await couldHaveActed(row, true)) {
     return { interrupted: error, parsed: { ...reported, needs: "info" } };
@@ -484,7 +501,18 @@ function walledInstruction(unreachable: string | undefined) {
     unreachable === undefined
       ? "the site is not letting the errand through"
       : "the site could not be reached, not that it blocked the errand";
-  return `This is a background result, not a user message. ${cause} If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that ${blocked} and where you went instead. Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision. When the user named that shop, or no such site exists, tell the user plainly that ${plainly}, name the alternative you would try, and ask before going there.`;
+  return `This is a background result, not a user message. ${cause} If the user asked for the thing rather than for that shop, and another well-known site that serves them can do the same errand, start it there now with browser_task start — a new errand with the same constraints and that site's origin — and tell the user in one short line that ${blocked} and where you went instead. ${newSitePermissionLine} When the user named that shop, or no such site exists, tell the user plainly that ${plainly}, name the alternative you would try, and ask before going there.`;
+}
+
+const newSitePermissionLine =
+  "Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision.";
+
+/**
+ * An errand whose site's name does not exist: an address made up rather
+ * than found. It is not a wall to wait out; the real site is looked up.
+ */
+function missingSiteInstruction(host: string) {
+  return `This is a background result, not a user message. The site ${host} does not exist — its name does not resolve, so the errand never opened it. It is not an anti-bot check and it is not retried: nothing was done there. Do not start the errand at that address again and do not guess another. Find the real site now: look the place, shop or service up with web_search (for a business, with sites yandex.ru/maps or 2gis.ru — its card there names its own site), then start the errand there with browser_task start — a new errand with the same constraints and the origin that search gave — and tell the user in one short line that the address did not exist and where you found the real one. ${newSitePermissionLine} When the search finds no site of its own, tell the user plainly and offer what it found instead, such as the phone or the card on the maps.`;
 }
 
 /**
@@ -522,6 +550,8 @@ function deliveryInstruction(
     readonly hasLinks: boolean;
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
+    /** The host of the errand's site, when its name does not exist. */
+    readonly missingSite?: string;
     readonly next: boolean;
     readonly ordered: boolean;
     /** What to do without a public-service site that would not let it in. */
@@ -533,6 +563,9 @@ function deliveryInstruction(
   const { hasItems, hasLinks } = facts;
   const tail =
     "Answer a follow-up with browser_task continue on this run id instead of a new start: it picks the errand up where this run left off and hands back the run id to use after that. Omit send_message.replyTo.";
+  if (facts.missingSite !== undefined) {
+    return [missingSiteInstruction(facts.missingSite), tail].join(" ");
+  }
   if (needs === "captcha") {
     return [walledInstruction(facts.unreachable), facts.stuck, tail]
       .filter((line) => line !== undefined)
@@ -597,6 +630,8 @@ function browserRunReport(
     readonly images?: readonly BrowserRunImage[];
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
+    /** The host of the errand's site, when its name does not exist. */
+    readonly missingSite?: string;
     /** The run failed or ran out of time. */
     readonly failed?: boolean;
     readonly needs: BrowserRunNeed;
@@ -643,6 +678,7 @@ function browserRunReport(
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,
       interrupted: options.interrupted,
+      missingSite: options.missingSite,
       next: options.next !== undefined,
       ordered: options.ordered === true,
       stuck,

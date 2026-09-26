@@ -3,6 +3,7 @@ import type { ScheduleToFn } from "eve/schedules";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import { formatRub } from "@shared/spending/limit";
+import type * as browserUseHost from "@agent/lib/browser-use/host";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 
@@ -241,6 +242,14 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   cancelBrowserUseRun,
   stopBrowserUseSessionBrowsers,
   readBrowserUseRun,
+}));
+// Whether a site's name exists is a DNS answer: no test asks the network.
+const siteHostMissing = vi.hoisted(() =>
+  vi.fn<(site: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseHost>()),
+  siteHostMissing,
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
@@ -759,6 +768,78 @@ describe("settling a browser run", () => {
 
     await settleBrowserRun({ to }, runId);
 
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("does not wait out a site whose name does not exist, and has the real one found", async () => {
+    // RU 26.09, d15: a made-up barbershop address met the proxy's
+    // ERR_TUNNEL_CONNECTION_FAILED and was retried for half an hour.
+    const invented = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://barbershop-arthur-profsoyuznaya.ru",
+      submission: null,
+      task: "Запиши к барберу Артуру на Профсоюзной на 19:00",
+    };
+    readBrowserRun.mockResolvedValue(invented);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...invented, completedAt: new Date() });
+    siteHostMissing.mockResolvedValueOnce(true);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: сайт не открылся\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+      sessionId: "session-1",
+      status: "completed",
+      task: invented.task,
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://barbershop-arthur-profsoyuznaya.ru"
+    );
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(
+      String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
+    ).not.toContain("Needs: captcha");
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "This is a background result, not a user message. The site barbershop-arthur-profsoyuznaya.ru does not exist — its name does not resolve, so the errand never opened it. It is not an anti-bot check and it is not retried: nothing was done there. Do not start the errand at that address again and do not guess another. Find the real site now: look the place, shop or service up with web_search (for a business, with sites yandex.ru/maps or 2gis.ru — its card there names its own site), then start the errand there with browser_task start — a new errand with the same constraints and the origin that search gave — and tell the user in one short line that the address did not exist and where you found the real one."
+    );
+    expect(prompt).not.toContain("through 5 attempts");
+  });
+
+  it("still retries a wall on a site whose name resolves", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: "net::ERR_TUNNEL_CONNECTION_FAILED at https://www.gosuslugi.ru/",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Посмотри штрафы",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://www.gosuslugi.ru"
+    );
     expect(send).not.toHaveBeenCalled();
     expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
   });
