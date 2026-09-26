@@ -240,15 +240,19 @@ export function isNightSubject(subject: string) {
 
 const parcelWords =
   /посылк|отправлени|доставк|трек|пункт выдачи|сдэк|cdek|boxberry|почта росси|parcel|package|shipment|delivery|tracking/iu;
+// A tracking or order number: «Заказ 1094857362», «RA123456789RU».
+const trackingNumber = /\d{6,}/u;
 const personalLabels = new Set(["CATEGORY_PERSONAL", "IMPORTANT", "STARRED"]);
 
 /**
  * How much a message matters when a backlog does not fit one run, from its
- * headers alone, lower first: 0 — a flight, an account's security (the
- * sender's name counts: phishing signs as a bank's security service) or a
- * parcel; 1 — a person Gmail files as personal or important, or one the
- * person starred; 2 — anything else; 3 — a newsletter or bulk mail
- * (`List-Unsubscribe`, `List-Id`, `Precedence: bulk`).
+ * headers alone, lower first: 0 — an account's security (the sender's name
+ * counts: phishing signs as a bank's security service), a flight or a parcel;
+ * 1 — a person Gmail files as personal or important, one the person starred,
+ * or bulk mail about flights or delivery without a flight, tracking or order
+ * number, which is how an airline's or a shop's promotion reads; 2 — anything
+ * else; 3 — a newsletter or other bulk mail (`List-Unsubscribe`, `List-Id`,
+ * `Precedence: bulk`).
  */
 export function mailRank(mail: {
   readonly bulk: boolean;
@@ -257,13 +261,16 @@ export function mailRank(mail: {
   readonly subject: string;
 }) {
   const said = `${mail.subject} ${mail.from}`;
+  if (securityWords.test(said)) return 0;
+  const flight = flightSubject.test(mail.subject);
+  const parcel = parcelWords.test(said);
   if (
-    flightSubject.test(mail.subject) ||
-    securityWords.test(said) ||
-    parcelWords.test(said)
+    (flight && (!mail.bulk || flightNumber.test(mail.subject))) ||
+    (parcel && (!mail.bulk || trackingNumber.test(mail.subject)))
   ) {
     return 0;
   }
+  if (flight || parcel) return 1;
   if (mail.bulk) return 3;
   return mail.labels.some((label) => personalLabels.has(label)) ? 1 : 2;
 }

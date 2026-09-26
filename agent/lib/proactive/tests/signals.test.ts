@@ -472,4 +472,26 @@ describe("what matters in a backlog of mail", () => {
       })
     ).toBe(3);
   });
+
+  it("does not put a promotion about flights or delivery first", () => {
+    const promotion = {
+      ...letter,
+      bulk: true,
+      labels: ["INBOX", "CATEGORY_UPDATES"],
+    };
+    expect(
+      mailRank({
+        ...promotion,
+        from: "Магазин <news@shop.example.com>",
+        subject: "Бесплатная доставка до конца недели",
+      })
+    ).toBe(1);
+    expect(
+      mailRank({
+        ...promotion,
+        from: "Авиакомпания <news@airline.example.com>",
+        subject: "Рейсы в Сочи от 2990 ₽",
+      })
+    ).toBe(1);
+  });
 });
