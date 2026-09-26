@@ -135,6 +135,104 @@ describe("decideInputRequest", () => {
       response: { optionId: "approve" },
     });
   });
+
+  it("confirms a payment at the cap (--confirm-payment-up-to)", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", {
+        allowPayment: true,
+        submission: { chargeRub: 1000 },
+      }),
+      ownDataTools,
+      [],
+      1000
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "approve", requestId: "req_1" },
+    });
+  });
+
+  it("confirms a payment under the cap (--confirm-payment-up-to)", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", {
+        allowPayment: true,
+        submission: { chargeRub: 900 },
+      }),
+      ownDataTools,
+      [],
+      1000
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "approve", requestId: "req_1" },
+    });
+  });
+
+  it("cancels a payment over the cap (--confirm-payment-up-to)", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", {
+        allowPayment: true,
+        submission: { chargeRub: 1001 },
+      }),
+      ownDataTools,
+      [],
+      1000
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "cancel", requestId: "req_1" },
+    });
+  });
+
+  it("cancels a payment with an unknown amount even with a cap set", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", { allowPayment: true }),
+      ownDataTools,
+      [],
+      1000
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "cancel", requestId: "req_1" },
+    });
+  });
+
+  it("cancels a payment as before when no cap is set", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", {
+        allowPayment: true,
+        submission: { chargeRub: 900 },
+      }),
+      ownDataTools
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "cancel", requestId: "req_1" },
+    });
+  });
+
+  it("holds a tool over the cap when it is also --hold'd", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", {
+        allowPayment: true,
+        submission: { chargeRub: 900 },
+      }),
+      ownDataTools,
+      ["browser_task"],
+      1000
+    );
+    expect(decision).toMatchObject({ kind: "ask-tester" });
+  });
+
+  it("leaves a plain question unanswered even with a cap set", () => {
+    const decision = decideInputRequest(
+      { ...approvalCard("ask_question"), kind: "question" },
+      ownDataTools,
+      [],
+      1000
+    );
+    expect(decision.kind).toBe("ask-tester");
+  });
 });
 
 describe("responseFromText", () => {

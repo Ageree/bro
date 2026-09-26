@@ -34,6 +34,10 @@ export interface DriverSettings {
   readonly approvedTools: readonly string[];
   /** How long to follow a session for background results; 0 skips it. */
   readonly backgroundWaitMs: number;
+  /** Upper bound, in roubles, up to which a payment card is confirmed for
+   * the owner (`--confirm-payment-up-to`); undefined keeps every payment
+   * card cancelled, as before the flag existed. */
+  readonly confirmPaymentUpToRub: number | undefined;
   readonly extraFiles: readonly OutgoingFile[];
   /** Tools whose approval card the driver leaves for the owner (`--hold`). */
   readonly heldTools: readonly string[];
@@ -261,7 +265,8 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
       const decision = decideInputRequest(
         request,
         run.settings.approvedTools,
-        run.settings.heldTools
+        run.settings.heldTools,
+        run.settings.confirmPaymentUpToRub
       );
       if (decision.kind !== "respond") {
         if (request.kind === "tool-approval") {

@@ -16,6 +16,16 @@ import { z } from "zod";
  * would otherwise be cancelled: real purchases against prod (`u8`) need the
  * owner to decide the payment card himself, so the driver stops on it too
  * and leaves it for `pnpm bench send --option approve|cancel`.
+ *
+ * `--confirm-payment-up-to` is the owner's standing decision (26.09): the
+ * driver may confirm a payment card up to that many roubles on his behalf,
+ * cancelling anything above it or without a known charge. This only reads
+ * `submission.chargeRub` off an `allowPayment` card — the same field
+ * `shared/chat/approval-card.ts` draws the card's payment line from — so it
+ * is not specific to `browser_task`, but no other tool sets it today. It
+ * does not touch a plain-text confirmation (a `question` request, or Bro
+ * simply asking in a message): that path stays for the tester, unhandled
+ * here until the planned text confirmation lands.
  */
 
 /**
@@ -34,6 +44,39 @@ const invitesSomeoneSchema = z.object({
   attendees: z.array(z.unknown()).min(1),
 });
 
+// The same shape `shared/chat/approval-card.ts` reads a payment line from:
+// `allowPayment` marks the card as a payment confirmation, and
+// `submission.chargeRub` carries its amount (set by `browser_task` today,
+// but not tied to it).
+const paymentCardSchema = z
+  .object({
+    allowPayment: z.boolean(),
+    submission: z.object({ chargeRub: z.number().nonnegative() }).partial(),
+  })
+  .partial();
+
+function paymentCapDecision(
+  request: InputRequest,
+  capRub: number
+): InputDecision | undefined {
+  const card = paymentCardSchema.safeParse(request.action.input);
+  if (!card.success || card.data.allowPayment !== true) return undefined;
+  const chargeRub = card.data.submission?.chargeRub;
+  const withinCap = chargeRub !== undefined && chargeRub <= capRub;
+  const amountText =
+    chargeRub === undefined
+      ? "сумма неизвестна"
+      : `${String(chargeRub)} ₽ ${withinCap ? "≤" : ">"} лимита ${String(capRub)} ₽`;
+  return {
+    kind: "respond",
+    reason: `оплата (--confirm-payment-up-to): ${amountText} — ${withinCap ? "подтверждаем от имени владельца" : "отклоняем"}`,
+    response: {
+      optionId: withinCap ? "approve" : "cancel",
+      requestId: request.requestId,
+    },
+  };
+}
+
 export type InputDecision =
   | {
       readonly kind: "respond";
@@ -45,7 +88,8 @@ export type InputDecision =
 export function decideInputRequest(
   request: InputRequest,
   approvedTools: readonly string[],
-  heldTools: readonly string[] = []
+  heldTools: readonly string[] = [],
+  confirmPaymentUpToRub?: number
 ): InputDecision {
   if (request.kind === "question") {
     return {
@@ -67,6 +111,10 @@ export function decideInputRequest(
       kind: "ask-tester",
       reason: `карточка «${tool}» на удержании (--hold): ответ даёт владелец через \`pnpm bench send --option approve|cancel\``,
     };
+  }
+  if (confirmPaymentUpToRub !== undefined) {
+    const decision = paymentCapDecision(request, confirmPaymentUpToRub);
+    if (decision) return decision;
   }
   const approve =
     approvedTools.includes(tool) &&

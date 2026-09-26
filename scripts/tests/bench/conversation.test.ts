@@ -44,10 +44,15 @@ const step: PlannedStep = {
   text: "привет",
 };
 
-async function settingsFor(host: string, backgroundWaitMs = 0) {
+async function settingsFor(
+  host: string,
+  backgroundWaitMs = 0,
+  confirmPaymentUpToRub?: number
+) {
   return {
     approvedTools: ownDataTools,
     backgroundWaitMs,
+    confirmPaymentUpToRub,
     extraFiles: [],
     heldTools: [],
     hintText: "ну что там?",

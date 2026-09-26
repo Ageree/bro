@@ -61,19 +61,24 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
   pnpm bench list   [--suite ru|en] [--case id,…] [--group d13|13|категория] [--risk read-only]
   pnpm bench run    [отбор как у list] [--host URL] [--cookie-file PATH] [--out DIR]
                     [--fill '[ресторан]=Хачапури и вино'] [--attach FILE] [--voice FILE]
-                    [--approve tool] [--hold tool] [--concurrency 4] [--max-steps N]
+                    [--approve tool] [--hold tool] [--confirm-payment-up-to 1000]
+                    [--concurrency 4] [--max-steps N]
                     [--compress] [--background-wait-min 20] [--nudges 1]
                     [--turn-timeout-min 15] [--dry-run]
                     (шаг сценария «T+7д» ждёт своего срока: pnpm bench next;
                     --compress шлёт все шаги сразу; --hold tool оставляет карточку
                     этого инструмента тестировщику — pnpm bench send --option
                     approve|cancel — вместо автоматического решения; для реальной
-                    оплаты на проде)
+                    оплаты на проде; --confirm-payment-up-to RUB подтверждает
+                    карточку оплаты от имени владельца, если известная сумма не
+                    выше лимита, и отклоняет её иначе — --hold того же
+                    инструмента важнее и оставляет карточку тестировщику)
   pnpm bench next   --out DIR --case ID [--early] [--hold tool]
+                    [--confirm-payment-up-to 1000]
                     (следующие шаги сценария, когда подошёл их срок)
   pnpm bench send   --out DIR --case ID (--text T | --code C | --option ID)
                     [--kind hint|answer|approval|code|probe|cleanup] [--attach FILE] [--voice FILE]
-                    [--hold tool]
+                    [--hold tool] [--confirm-payment-up-to 1000]
                     (--kind answer отвечает на вопрос, на котором кейс встал,
                     и досылает оставшиеся сообщения сценария; --option approve|cancel
                     отвечает на удержанную карточку --hold)
@@ -83,6 +88,7 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
   pnpm bench observe --out DIR --case ID [--session ID] [--minutes 60] [--since 21:00]
                     (смотрит разговор и записывает, что Бро пишет сам; ничего не шлёт)
   pnpm bench follow --out DIR --case ID [--background-wait-min 20] [--hold tool]
+                    [--confirm-payment-up-to 1000]
 
 По умолчанию хост https://brobro.tech, cookie ~/.bro-bench/cookies.txt,
 заготовки ~/.bro-bench/fixtures.json.
@@ -100,6 +106,7 @@ const options = {
   code: { type: "string" },
   compress: { type: "boolean" },
   concurrency: { type: "string" },
+  "confirm-payment-up-to": { type: "string" },
   "cookie-file": { type: "string" },
   "dry-run": { type: "boolean" },
   early: { type: "boolean" },
@@ -148,6 +155,7 @@ const list = (items: readonly string[] | undefined) =>
 
 const minutesSchema = z.coerce.number().nonnegative();
 const countSchema = z.coerce.number().int().nonnegative();
+const rubSchema = z.coerce.number().nonnegative();
 const sendKindSchema = z.enum([
   "answer",
   "approval",
@@ -208,6 +216,9 @@ function settings(flags: Values, host: string, outDir: string): DriverSettings {
   return {
     approvedTools: [...ownDataTools, ...list(flags.approve)],
     backgroundWaitMs: minutes(flags["background-wait-min"], 20),
+    confirmPaymentUpToRub: flags["confirm-payment-up-to"]
+      ? rubSchema.parse(flags["confirm-payment-up-to"])
+      : undefined,
     extraFiles: list(flags.attach).map((path) => ({ path: resolve(path) })),
     heldTools: list(flags.hold),
     hintText: flags.hint ?? "ну что там?",
