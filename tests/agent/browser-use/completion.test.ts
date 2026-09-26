@@ -1985,9 +1985,14 @@ describe("what the report turn retells", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    expect(send.mock.calls[0]?.[0]).toContain(
-      "The user already confirmed this errand on a card or by a standing permission, so it is a purchase in progress, not a search: do not ask whether to go ahead."
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "The user already confirmed this errand — their yes to paying, their own request or a standing permission — so it is a purchase in progress, not a search: do not ask whether to go ahead."
     );
+    expect(prompt).toContain(
+      "When it costs money, write the user one short message in your own voice with what changed and the real total with every fee, ending with «Оплачиваю?»"
+    );
+    expect(prompt).not.toContain("confirms the change on one card");
   });
 
   it("leaves a search that stopped at its final step to the usual card", async () => {
