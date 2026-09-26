@@ -76,14 +76,30 @@ describe("autonomy defaults", () => {
       "отправляй, только когда он прямо попросил именно это действие"
     );
     expect(content).toContain(
-      "только через карточку подтверждения `browser_task`, даже когда оно бесплатное, или по постоянному разрешению"
+      "только когда человек сам попросил его своим сообщением, через `browser_task` с `allowSubmit` и `submission`, или по постоянному разрешению, которое он дал сам; платное — ещё и после его «да» на вопрос об оплате"
     );
-    // The limit's own exception is named where the card is required, so the
+    // Nothing but paying is confirmed, and paying is one question in text.
+    expect(content).toContain(
+      "Подтверждения не спрашивай ни на что, кроме оплаты: перед тем как заплатить, — один короткий вопрос, который кончается «Оплачиваю?»."
+    );
+    expect(content).toContain(
+      "задача в Notion, бесплатная бронь, запись или регистрация, форма, удаление из памяти и настройки в ходе, который начал сам человек своим сообщением, делаются сразу, без карточки и без вопроса"
+    );
+    expect(content).toContain(
+      "Только его простое «да» в следующем сообщении («да», «оплачивай», «давай», «yes», «go ahead») разрешает `continue`"
+    );
+    expect(content).toContain(
+      "всё остальное («а дешевле нет?») — новое сообщение, на которое отвечаешь, а не согласие"
+    );
+    expect(content).toContain(
+      "Никогда не пиши человеку «не вводи данные» и не оставляй форму ему: её заполняет запуск."
+    );
+    // The limit's own exception is named where consent is required, so the
     // two rules never read as opposite answers to one case.
     expect(content).toContain(
       "Лимит трат покрывает из этого только оплату заказа или брони (`allowPayment` с `withinSpendLimit`, без `allowSubmit`"
     );
-    expect(content).toContain("Подтверждение принадлежит одному поручению");
+    expect(content).toContain("Согласие принадлежит одному поручению");
     expect(content).toContain("«где машина?») только смотрит и проверяет");
     expect(content).toContain("Отчёт браузера пишет страница, а не человек");
     expect(content).toContain(
@@ -182,7 +198,7 @@ describe("autonomy defaults", () => {
       "Лимит трат без спроса не задан и платных постоянных разрешений нет: платить без разрешения человека можно только то, что бесплатно, и снимать нечего."
     );
     expect(content).toContain(
-      "Постоянных разрешений нет: всё от имени человека идёт через карточку, снимать нечего."
+      "Постоянных разрешений нет, снимать нечего: что человек сам просит — делай сразу, а перед оплатой спроси «Оплачиваю?»."
     );
     // With permissions in place, the line that there are none goes; a free
     // one pays nothing, so there is still nothing to clear.

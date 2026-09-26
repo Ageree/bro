@@ -91,7 +91,7 @@ describe("recommendation instructions", () => {
    * One question, then one card: «Проверить стол?» and then «бронируй?»
    * would be two questions before the card, against the one-question rule.
    */
-  it("ends with one booking question and books through one card", async () => {
+  it("ends with one booking question and then books at once", async () => {
     const content = await resolveContent("photon-imessage");
 
     expect(content).toContain(
@@ -105,10 +105,10 @@ describe("recommendation instructions", () => {
     expect(content).toContain("Закончи одним вопросом");
     expect(content).toContain("Других вопросов в этом сообщении нет");
     expect(content).toContain(
-      "`browser_task start` без `allowSubmit` найдёт слот и остановится"
+      '`browser_task start` с `personWants: "done"` без `allowSubmit` найдёт слот и остановится'
     );
     expect(content).toContain(
-      "единственная карточка, второго вопроса текстом нет"
+      "бесплатная бронь уходит сразу, второго вопроса нет"
     );
     expect(content).toContain("До его «да» браузер не запускай");
     expect(content).not.toContain("Проверить свободный стол");
