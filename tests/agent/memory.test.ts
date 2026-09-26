@@ -26,6 +26,7 @@ import {
   memoryBulkRemovalApproval,
   memoryRemovalApproval,
   parseLegacyRecall,
+  renderPreferencesForRequest,
   renderProfile,
   ruleWriteRefusal,
 } from "@agent/lib/memory/profile";
@@ -627,7 +628,7 @@ describe("the person's rules in the profile", () => {
       expect.stringContaining("a rule only holds you back"),
       "1 (revision 1, rule): Никогда ничего не оплачивать и никому не писать без моего ок.",
       "## The user's preferences",
-      expect.stringContaining("name in the reply the ones you applied"),
+      expect.stringContaining("name in the reply only those"),
       "0 (revision 1, preference): Любит суши.",
     ]);
   });
@@ -689,11 +690,126 @@ describe("the person's rules in the profile", () => {
 
     expect(profile.slice(2)).toEqual([
       "## The user's preferences",
-      "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), each preference that bears on it is a condition like one named in the message: filter by it, put it into a browser errand, and name in the reply the ones you applied («учёл: без свинины»).",
+      "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), a preference is a condition only where it bears on that very request — a diet on food, a berth on a train that has berths, a seat on that kind of trip — and never against the user's own words in it: a seat, berth or diet the message names wins over a saved one. Filter by the ones that bear on it, put them into a browser errand, and name in the reply only those («учёл: …»). The note «Saved preferences for this request» names them for the current request.",
       "1 (revision 1, preference): В поезде только нижняя полка, в самолёте у прохода, свинину не ест.",
       "## Other records",
       "0 (revision 1, fact): Живёт в Казани.",
     ]);
+  });
+
+  /**
+   * RU d01: «Учёл: нижняя полка, место у прохода, без свинины» in reply to
+   * «места у окна» in a «Сапсан» — one preference against the request and two
+   * that do not bear on a seated train.
+   */
+  describe("which saved preferences bear on the request", () => {
+    const saved = [
+      currentRecord(0, { text: "Живёт в Москве." }),
+      currentRecord(1, {
+        category: "preference",
+        text: "Нижняя полка, место у прохода, без свинины",
+      }),
+    ];
+
+    it("applies none of them to a window seat on a «Сапсан»", () => {
+      const note = renderPreferencesForRequest(
+        saved,
+        "возьми мне сапсан в питер на пятницу через неделю, после 18:00, обратно в воскресенье вечером. места у окна, до 6 тыс в одну сторону"
+      );
+
+      expect(note).toBe(
+        "Saved preferences for this request: none bears on it. Apply none of them, put none into a browser errand, and name none as applied («учёл: …»). The seat or berth this message names is the one to look for, whatever a saved preference says."
+      );
+      expect(note).not.toContain("нижняя полка");
+      expect(note).not.toContain("у прохода");
+      expect(note).not.toContain("без свинины");
+    });
+
+    it("applies the diet to a dinner pick, and only the diet", () => {
+      const note = renderPreferencesForRequest(
+        saved,
+        "нужно где поужинать завтра в 19:30 на четверых, пешком от чистых прудов"
+      );
+
+      expect(note).toBe(
+        "Saved preferences for this request: «без свинины». Apply these as conditions — in the search and in a browser errand — and name only these as applied («учёл: …»); leave the other saved preferences out of this request and out of the reply."
+      );
+      expect(note).not.toContain("нижняя полка");
+      expect(note).not.toContain("у прохода");
+    });
+
+    it("applies the berth and the seat to a train that has berths when the request names neither", () => {
+      expect(
+        renderPreferencesForRequest(
+          saved,
+          "найди поезд до казани на следующие выходные"
+        )
+      ).toContain("«Нижняя полка», «место у прохода».");
+      expect(
+        renderPreferencesForRequest(
+          saved,
+          "поезд до казани в пятницу, верхняя полка"
+        )
+      ).toContain("«место у прохода».");
+    });
+
+    // EN d10: the preference is told in English, the seat asked in Russian.
+    it("yields a saved aisle seat to a window seat asked for, and keeps it for a flight that names none", () => {
+      const english = [
+        currentRecord(2, {
+          category: "preference",
+          text: "I always want aisle seats and I don't eat pork.",
+        }),
+      ];
+
+      expect(
+        renderPreferencesForRequest(
+          english,
+          "Get me a Sapsan to St Petersburg on Friday after 6pm, window seat"
+        )
+      ).toContain("none bears on it");
+      expect(
+        renderPreferencesForRequest(
+          english,
+          "Book me a round-trip flight from New York to Chicago"
+        )
+      ).toContain("«I always want aisle seats».");
+      expect(
+        renderPreferencesForRequest(
+          english,
+          "Find a dinner spot for four tomorrow at 7:30"
+        )
+      ).toContain("«I don't eat pork».");
+    });
+
+    it("reads a clause with no topic of its own with the one before it", () => {
+      const flights = [
+        currentRecord(3, {
+          category: "preference",
+          text: "В самолёте у прохода и с багажом, без лука",
+        }),
+      ];
+
+      expect(
+        renderPreferencesForRequest(flights, "сапсан в питер в пятницу")
+      ).toContain("none bears on it");
+      expect(
+        renderPreferencesForRequest(flights, "рейс в сочи в пятницу")
+      ).toContain("«В самолёте у прохода», «с багажом».");
+      expect(
+        renderPreferencesForRequest(flights, "где поужинать в субботу")
+      ).toContain("«без лука».");
+    });
+
+    it("says nothing when the request names nothing a preference could bear on", () => {
+      expect(renderPreferencesForRequest(saved, "давай второй")).toBeUndefined();
+      expect(
+        renderPreferencesForRequest(
+          [currentRecord(0, { text: "Живёт в Москве." })],
+          "где поужинать на чистых прудах"
+        )
+      ).toBeUndefined();
+    });
   });
 
   it("keeps the rules when the facts no longer fit", () => {
