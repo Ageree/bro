@@ -72,6 +72,10 @@ const sendMessageTool = {
   type: "function" as const,
 };
 
+function patterned(pattern: string) {
+  return { pattern, type: "string" as const };
+}
+
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://openinstinct.example",
@@ -546,6 +550,71 @@ describe("model selection", () => {
           .parse(schema).inputSchema.properties
       )
     ).toEqual(["kind", "text", "replyTo"]);
+  });
+
+  // EN d03 and d12: `ask_question`'s «contains a non-space» `\S` let hosts
+  // that match a pattern against the whole string write `{"prompt": "I"}`.
+  it("sends a host no pattern it could read as the whole string", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    openRouter.chat.mockImplementation((modelId) => ({
+      doGenerate,
+      doStream: vi.fn<LanguageModelV4["doStream"]>(),
+      modelId,
+      provider: "openrouter.chat",
+      specificationVersion: "v4",
+      supportedUrls: {},
+    }));
+    const inputSchema: JSONSchema7 = {
+      properties: {
+        alternatives: patterned("^yes|no$"),
+        grouped: patterned("^(yes|no)$"),
+        literalDollar: patterned("^price in \\$"),
+        options: {
+          items: {
+            anyOf: [patterned("\\S"), patterned("^[a-z]+$")],
+          },
+          type: "array",
+        },
+        prefix: patterned("^imessage:.*"),
+        prompt: patterned("[?]|\\S+\\s+\\S+\\s+\\S"),
+        slug: patterned("^[A-Z0-9_]+$"),
+      },
+      type: "object",
+    };
+    const askQuestion = {
+      inputSchema,
+      name: "ask_question",
+      type: "function" as const,
+    };
+
+    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      toolChoice: "required",
+    }).model.doGenerate({ prompt: [], tools: [askQuestion] });
+
+    expect(doGenerate.mock.calls[0]?.[0].tools?.[0]).toEqual({
+      ...askQuestion,
+      inputSchema: {
+        properties: {
+          alternatives: { type: "string" },
+          grouped: patterned("^(yes|no)$"),
+          literalDollar: { type: "string" },
+          options: {
+            items: { anyOf: [{ type: "string" }, patterned("^[a-z]+$")] },
+            type: "array",
+          },
+          prefix: { type: "string" },
+          prompt: { type: "string" },
+          slug: patterned("^[A-Z0-9_]+$"),
+        },
+        type: "object",
+      },
+    });
+    // The tool keeps its own rule, which eve checks every call against.
+    expect(inputSchema.properties?.prompt).toEqual(
+      patterned("[?]|\\S+\\s+\\S+\\s+\\S")
+    );
   });
 
   // RU 25.09: hosts that decode a forced call in schema key order sent

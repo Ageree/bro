@@ -126,56 +126,107 @@ function fixesValue(definition: JSONSchema7Definition) {
   );
 }
 
-function reordered(definition: JSONSchema7Definition): JSONSchema7Definition {
-  return definition === true || definition === false
-    ? definition
-    : discriminatorsFirst(definition);
-}
-
-function reorderedRecord(
-  definitions: Readonly<Record<string, JSONSchema7Definition>>
-) {
-  return Object.fromEntries(
-    Object.entries(definitions).map(([name, definition]) => [
-      name,
-      reordered(definition),
-    ])
-  );
+/** The schema with `change` applied to it and to every schema nested in it. */
+function eachSchema(
+  schema: JSONSchema7,
+  change: (schema: JSONSchema7) => JSONSchema7
+): JSONSchema7 {
+  const nested = (definition: JSONSchema7Definition): JSONSchema7Definition =>
+    definition === true || definition === false
+      ? definition
+      : eachSchema(definition, change);
+  const nestedRecord = (
+    definitions: Readonly<Record<string, JSONSchema7Definition>>
+  ) =>
+    Object.fromEntries(
+      Object.entries(definitions).map(([name, definition]) => [
+        name,
+        nested(definition),
+      ])
+    );
+  const result: JSONSchema7 = { ...schema };
+  if (schema.properties) result.properties = nestedRecord(schema.properties);
+  if (schema.anyOf) result.anyOf = schema.anyOf.map(nested);
+  if (schema.oneOf) result.oneOf = schema.oneOf.map(nested);
+  if (schema.allOf) result.allOf = schema.allOf.map(nested);
+  if (schema.items !== undefined) {
+    result.items = Array.isArray(schema.items)
+      ? schema.items.map(nested)
+      : nested(schema.items);
+  }
+  if (schema.additionalProperties !== undefined) {
+    result.additionalProperties = nested(schema.additionalProperties);
+  }
+  if (schema.definitions) {
+    result.definitions = nestedRecord(schema.definitions);
+  }
+  return change(result);
 }
 
 /**
- * The same schema with the keys that tell a union's branches apart — a
- * `const`, or an `enum` of one value — first in every object. Hosts that
- * decode a tool call in the order its schema lists keys pick the branch by
- * the first key the model writes: with `id` listed before `kind`,
- * `replyTo: {"kind": "automation", "id": …}` came out as `{"kind":
- * "current"}` on DeepInfra, OpenInference, Alibaba and Wafer (24.09), every
- * time. Only the order changes; what the tool accepts does not.
+ * The object with the keys that tell a union's branches apart — a `const`,
+ * or an `enum` of one value — first. Hosts that decode a tool call in the
+ * order its schema lists keys pick the branch by the first key the model
+ * writes: with `id` listed before `kind`, `replyTo: {"kind": "automation",
+ * "id": …}` came out as `{"kind": "current"}` on DeepInfra, OpenInference,
+ * Alibaba and Wafer (24.09), every time. Only the order changes; what the
+ * tool accepts does not.
  */
 function discriminatorsFirst(schema: JSONSchema7): JSONSchema7 {
-  const result: JSONSchema7 = { ...schema };
-  if (schema.properties) {
-    const properties = Object.entries(reorderedRecord(schema.properties));
-    result.properties = Object.fromEntries([
+  if (!schema.properties) return schema;
+  const properties = Object.entries(schema.properties);
+  return {
+    ...schema,
+    properties: Object.fromEntries([
       ...properties.filter(([, definition]) => fixesValue(definition)),
       ...properties.filter(([, definition]) => !fixesValue(definition)),
-    ]);
+    ]),
+  };
+}
+
+/**
+ * Whether a regular expression can match only a whole string: `^` first,
+ * an unescaped `$` last, and no `|` outside a group or class that would let
+ * one branch match just a part.
+ */
+function matchesWholeString(pattern: string) {
+  if (!pattern.startsWith("^") || !pattern.endsWith("$")) return false;
+  let depth = 0;
+  let inClass = false;
+  let index = 1;
+  while (index < pattern.length - 1) {
+    const char = pattern[index];
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (inClass) inClass = char !== "]";
+    else if (char === "[") inClass = true;
+    else if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    else if (char === "|" && depth === 0) return false;
+    index += 1;
   }
-  if (schema.anyOf) result.anyOf = schema.anyOf.map(reordered);
-  if (schema.oneOf) result.oneOf = schema.oneOf.map(reordered);
-  if (schema.allOf) result.allOf = schema.allOf.map(reordered);
-  if (schema.items !== undefined) {
-    result.items = Array.isArray(schema.items)
-      ? schema.items.map(reordered)
-      : reordered(schema.items);
+  return index === pattern.length - 1;
+}
+
+/**
+ * The string schema without a `pattern` that a host could read differently
+ * from JSON Schema. JSON Schema's `pattern` is a search anywhere in the
+ * string, but hosts that decode a tool call with a grammar match it against
+ * the whole string: `ask_question`'s «contains a non-space» `\S` let
+ * DeepInfra, Krea and DigitalOcean write one character, `{"prompt": "I"}`,
+ * OpenInference `"I "`, and InferenceNet `{}` (26.09, 3 of 3 tries each
+ * with the pattern, none without). eve still checks every call against the
+ * tool's own schema, pattern included, and a call that breaks it returns
+ * to the model as a tool error, so the rule holds without the host.
+ */
+function withoutSearchPattern(schema: JSONSchema7): JSONSchema7 {
+  if (schema.pattern === undefined || matchesWholeString(schema.pattern)) {
+    return schema;
   }
-  if (schema.additionalProperties !== undefined) {
-    result.additionalProperties = reordered(schema.additionalProperties);
-  }
-  if (schema.definitions) {
-    result.definitions = reorderedRecord(schema.definitions);
-  }
-  return result;
+  const { pattern: _searched, ...rest } = schema;
+  return rest;
 }
 
 function isObjectSchema(definition: JSONSchema7Definition) {
@@ -200,9 +251,19 @@ function objectRoot(schema: JSONSchema7): JSONSchema7 {
 }
 
 /**
- * Every function tool of a step, its input schema discriminators first and
- * a union of objects typed as an object.
+ * A tool's input schema as a host should decode it: discriminators first in
+ * every object, no pattern it could misread, and a union of objects typed
+ * as an object.
  */
+function hostSchema(schema: JSONSchema7): JSONSchema7 {
+  return objectRoot(
+    eachSchema(schema, (node) =>
+      discriminatorsFirst(withoutSearchPattern(node))
+    )
+  );
+}
+
+/** Every function tool of a step with its input schema as `hostSchema`. */
 function toolSchemaMiddleware(): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
@@ -211,10 +272,7 @@ function toolSchemaMiddleware(): LanguageModelMiddleware {
         ...params,
         tools: params.tools.map((tool) =>
           tool.type === "function"
-            ? {
-                ...tool,
-                inputSchema: objectRoot(discriminatorsFirst(tool.inputSchema)),
-              }
+            ? { ...tool, inputSchema: hostSchema(tool.inputSchema) }
             : tool
         ),
       };
