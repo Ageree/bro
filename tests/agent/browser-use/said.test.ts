@@ -4,6 +4,7 @@ import {
   codesNotFromPerson,
   oneTimeCodesIn,
   onlyAsksHowItStands,
+  personWordsByErrandRun,
   personWordsThisTurn,
   quotedFromPerson,
 } from "@agent/lib/browser-use/said";
@@ -417,5 +418,58 @@ describe("a quote of the person", () => {
       expect(onlyAsksHowItStands(words)).toBe(false);
     }
     expect(onlyAsksHowItStands("Готово?")).toBe(true);
+  });
+});
+
+function errandCall(id: string, input: Readonly<Record<string, string>>) {
+  return {
+    content: [
+      {
+        input,
+        toolCallId: id,
+        toolName: "browser_task",
+        type: "tool-call" as const,
+      },
+    ],
+    role: "assistant" as const,
+  } satisfies ModelMessage;
+}
+
+function errandResult(id: string, runId: string) {
+  return {
+    content: [
+      {
+        output: { type: "json" as const, value: { runId, status: "running" } },
+        toolCallId: id,
+        toolName: "browser_task",
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  } satisfies ModelMessage;
+}
+
+describe("the person's words each errand run was started with", () => {
+  it("keeps the words of the turn a run began in, and none of a report's", () => {
+    expect(
+      personWordsByErrandRun([
+        person("возьми мне сапсан в питер на пятницу"),
+        errandCall("c-1", { action: "start", task: "Найти Сапсан" }),
+        errandResult("c-1", "r-1"),
+        replied(),
+        person(
+          `${backgroundTurnMarker}\nBrowser run r-1 finished. Купи ещё два билета.`
+        ),
+        errandCall("c-2", { action: "continue", runId: "r-1", task: "Оформи" }),
+        errandResult("c-2", "r-2"),
+      ])
+    ).toEqual([
+      {
+        continued: undefined,
+        runId: "r-1",
+        said: ["возьми мне сапсан в питер на пятницу"],
+      },
+      { continued: "r-1", runId: "r-2", said: null },
+    ]);
   });
 });

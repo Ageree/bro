@@ -116,6 +116,65 @@ export function personWordsThisTurn(messages: readonly ModelMessage[]) {
   };
 }
 
+const errandCallSchema = z.object({
+  input: z.object({ runId: z.string().optional() }),
+  toolName: z.literal("browser_task"),
+});
+
+const errandResultSchema = z.object({ runId: z.string().min(1) });
+
+function errandResultRun(output: ToolResultPart["output"]) {
+  if (output.type === "json") {
+    return errandResultSchema.safeParse(output.value).data?.runId;
+  }
+  if (output.type !== "text") return undefined;
+  try {
+    return errandResultSchema.safeParse(JSON.parse(output.value)).data?.runId;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Every `browser_task` call in the conversation that handed back a run:
+ * the run it continued (`continued`), the run it returned, and what the
+ * person wrote in the turn it was made in — null when Bro opened that turn.
+ * eve's history is Bro's own record: a page writes neither a person's
+ * message nor a tool result, so the words here are the person's even when
+ * a later browser report reads them.
+ */
+export function personWordsByErrandRun(messages: readonly ModelMessage[]) {
+  const continued = new Map<string, string | undefined>();
+  const calls: {
+    readonly continued: string | undefined;
+    readonly runId: string;
+    readonly said: string[] | null;
+  }[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type === "tool-call" && part.toolName === "browser_task") {
+        continued.set(
+          part.toolCallId,
+          errandCallSchema.safeParse(part).data?.input.runId
+        );
+      }
+      if (part.type !== "tool-result" || part.toolName !== "browser_task") {
+        continue;
+      }
+      const runId = errandResultRun(part.output);
+      if (runId === undefined) continue;
+      const opening = messages.slice(0, index).findLastIndex(startsTurn);
+      calls.push({
+        continued: continued.get(part.toolCallId),
+        runId,
+        said: personBurst(messages, opening),
+      });
+    }
+  }
+  return calls;
+}
+
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
 const codeContextPattern =
   /(?<!\p{L})(?:смс|sms|otp|одноразов\p{L}*|one[\s-]time|verification)(?!\p{L})/iu;
