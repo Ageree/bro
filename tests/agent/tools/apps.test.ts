@@ -457,14 +457,12 @@ describe("apps approval card", () => {
 
     expect(card.prompt).toBe(
       [
-        "Подтверждение действия:",
-        "Приложение: Google",
-        "Действие: Добавить платёж в таблицу «Бюджет»",
-        "Инструмент: GOOGLESUPER_SPREADSHEETS_VALUES_APPEND",
-        "Данные:",
+        "В Google: добавить платёж в таблицу «Бюджет».",
+        "Вызову GOOGLESUPER_SPREADSHEETS_VALUES_APPEND с такими данными:",
         "  spreadsheet_id: sheet-1",
         "  range: Бюджет!A:C",
         '  values: [["2026-09-01","Кафе",450]]',
+        "Сделать?",
       ].join("\n")
     );
   });

@@ -122,9 +122,9 @@ describe("describeEvent on recorded turns", () => {
     // The card reads as the person sees it, not as eve titles it.
     for (const card of cards) {
       expect(card).toContain(
-        "calendar-create-event: Создать событие в календаре:"
+        "calendar-create-event: Добавлю в календарь: Лекция «Как город учит нас ходить» — чт, 15 окт., 19:30–21:00"
       );
-      expect(card).toContain("approve «Подтвердить»");
+      expect(card).toContain("Добавить? [approve «Да», cancel «Нет»]");
       expect(card).not.toContain("Approve tool call");
     }
     expect(

@@ -226,7 +226,7 @@ describe("workstream memory", () => {
       },
       "ru"
     );
-    expect(card.prompt).toBe("Забыть сохранённое дело «Autumn trip»");
+    expect(card.prompt).toBe("Забуду сохранённое дело: Autumn trip.\nЗабыть?");
 
     await laterTools.forget.execute(named, {
       ...later,
@@ -289,7 +289,7 @@ describe("workstream memory", () => {
       "ru"
     );
     expect(card.prompt).toBe(
-      "Забыть сохранённые дела:\n• «Autumn trip»\n• «UK visa»"
+      "Забуду сохранённые дела:\n• Autumn trip\n• UK visa\nЗабыть?"
     );
 
     expect(
