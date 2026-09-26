@@ -152,7 +152,7 @@ describe("whose reply can confirm a payment", () => {
     });
 
     expect(gate.kind).toBe("deny");
-    if (gate.kind === "deny") expect(gate.reason).toContain(russianQuestion);
+    expect(gate.kind === "deny" ? gate.reason : "").toContain(russianQuestion);
   });
 
   it("does not pay from a browser report, even when the page says to", () => {
@@ -181,6 +181,8 @@ describe("whose reply can confirm a payment", () => {
     });
 
     expect(gate.kind).toBe("deny");
-    if (gate.kind === "deny") expect(gate.reason).toContain("did not confirm");
+    expect(gate.kind === "deny" ? gate.reason : "").toContain(
+      "did not confirm"
+    );
   });
 });

@@ -1,4 +1,5 @@
 import type { ModelMessage } from "ai";
+import { z } from "zod";
 import {
   messageLanguage,
   personLanguage,
@@ -27,7 +28,7 @@ const unstated = {
 } as const;
 
 /** What the question names. Fees and delivery stay visible when unknown. */
-export type PaymentFacts = {
+export interface PaymentFacts {
   readonly amount?: string;
   readonly chargeRub?: number;
   readonly delivery?: string;
@@ -35,7 +36,7 @@ export type PaymentFacts = {
   readonly items?: readonly string[];
   readonly what: string;
   readonly where: string;
-};
+}
 
 export type PaymentGate =
   | { readonly kind: "proceed" }
@@ -88,13 +89,7 @@ function isPaymentQuestion(text: string) {
   return last === questionLine.ru || last === questionLine.en;
 }
 
-function sendText(input: unknown) {
-  if (typeof input !== "object" || input === null || !("text" in input)) {
-    return undefined;
-  }
-  const { text } = input;
-  return typeof text === "string" && text.trim() !== "" ? text : undefined;
-}
+const sentMessageSchema = z.object({ text: z.string() });
 
 /** Messages the person actually received, not assistant prose they never saw. */
 function sentTexts(message: ModelMessage) {
@@ -104,8 +99,9 @@ function sentTexts(message: ModelMessage) {
   const texts: string[] = [];
   for (const part of message.content) {
     if (part.type !== "tool-call" || part.toolName !== "send_message") continue;
-    const text = sendText(part.input);
-    if (text !== undefined) texts.push(text);
+    const parsed = sentMessageSchema.safeParse(part.input);
+    if (!parsed.success || parsed.data.text.trim() === "") continue;
+    texts.push(parsed.data.text);
   }
   return texts;
 }
