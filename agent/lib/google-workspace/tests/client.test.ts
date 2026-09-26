@@ -12,6 +12,7 @@ vi.mock("@db/services/settings", () => ({
 
 import {
   GoogleApiError,
+  GoogleUnreadableAnswerError,
   withGoogleAuth,
 } from "@agent/lib/google-workspace/client";
 
@@ -142,5 +143,39 @@ describe("withGoogleAuth", () => {
     expect(ctx.requireAuth).not.toHaveBeenCalled();
     expect(outcome).toBeInstanceOf(GoogleApiError);
     expect(outcome).toMatchObject({ status: 403 });
+  });
+});
+
+describe("a JSON answer the proxy hands over as text", () => {
+  const listSchema = z.object({
+    messages: z.array(z.object({ id: z.string() })).optional(),
+  });
+  async function listMail() {
+    return withGoogleAuth(composioToolContext("ca_google"), async (google) =>
+      google.json(listSchema, { url: `${profileUrl}/../messages` })
+    );
+  }
+
+  it("reads an empty 204 body as an empty list", async () => {
+    composio.proxy.mockResolvedValue({ data: "", status: 204 });
+
+    await expect(listMail()).resolves.toEqual({});
+  });
+
+  it("parses JSON text", async () => {
+    composio.proxy.mockResolvedValue({
+      data: JSON.stringify({ messages: [{ id: "m1" }] }),
+    });
+
+    await expect(listMail()).resolves.toEqual({ messages: [{ id: "m1" }] });
+  });
+
+  it("names text that is not JSON by its start, not a schema mismatch", async () => {
+    const page = `<html>${"x".repeat(200)}</html>`;
+    composio.proxy.mockResolvedValue({ data: page });
+
+    const failure = await listMail().catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(GoogleUnreadableAnswerError);
+    expect(failure).toMatchObject({ bodyStart: page.slice(0, 80) });
   });
 });

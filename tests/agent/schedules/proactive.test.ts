@@ -1,7 +1,7 @@
 import type { Session } from "eve/channels";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { probeGoogleSignals } from "@agent/lib/proactive/probe";
+import type { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
 import type {
   advanceProactiveWatermark,
   claimDueProactiveWatches,
@@ -34,6 +34,7 @@ const jobs = vi.hoisted(() => ({
   setSession: vi.fn<typeof setScheduledRunSession>(),
 }));
 const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
+const rank = vi.hoisted(() => vi.fn<typeof rankMail>());
 const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
 
 vi.mock("@db/services/proactive", () => ({
@@ -50,7 +51,10 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   releaseScheduledAgentRun: jobs.releaseRun,
   setScheduledRunSession: jobs.setSession,
 }));
-vi.mock("@agent/lib/proactive/probe", () => ({ probeGoogleSignals: probe }));
+vi.mock("@agent/lib/proactive/probe", () => ({
+  probeGoogleSignals: probe,
+  rankMail: rank,
+}));
 vi.mock("@db/services/user-profile", () => ({ readUserProfile: profile }));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
@@ -128,22 +132,81 @@ describe("proactive schedule", () => {
     );
   });
 
-  it("turns a backlog into one catch-up run with the newest mail", async () => {
-    const mail = Array.from({ length: 15 }, (_, index) => ({
-      dedupeKey: `m${String(index)}`,
-      itemId: `m${String(index)}`,
+  it("turns a night's backlog into one run with what matters first, and logs what it left out", async () => {
+    // 08:00 in Moscow: the first check after the night reads all of it.
+    const morning = new Date("2026-09-24T05:00:00.000Z");
+    vi.setSystemTime(morning);
+    // Newest first: sixteen newsletters overnight, then the evening's parcel
+    // notice and a letter from someone the person knows.
+    const mail = [
+      ...Array.from({ length: 16 }, (_, index) => `news${String(index)}`),
+      "parcel",
+      "boss",
+    ].map((id) => ({
+      dedupeKey: id,
+      itemId: id,
       source: "gmail" as const,
-      threadId: `t${String(index)}`,
+      threadId: id,
     }));
     probe.mockResolvedValue({ signals: mail, state: "connected" });
+    rank.mockResolvedValue(
+      new Map([
+        ...mail.map(({ itemId }) => [itemId, 3] as const),
+        ["parcel", 0],
+        ["boss", 1],
+      ])
+    );
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(rank).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      mail
+    );
+    const queued = proactive.queue.mock.calls[0]?.[0];
+    expect(queued?.signals).toHaveLength(12);
+    expect(queued?.signals.slice(0, 3).map(({ itemId }) => itemId)).toEqual([
+      "parcel",
+      "boss",
+      "news0",
+    ]);
+    expect(queued?.mailCheckedAt).toEqual(morning);
+    expect(console.info).toHaveBeenCalledWith("[proactive] check", {
+      droppedMail: 6,
+      night: false,
+      outcome: "queued",
+      signalCount: 18,
+      workspaceId: "workspace:alice",
+    });
+  });
+
+  it("does not rank mail that fits one run", async () => {
+    probe.mockResolvedValue({ signals: [flight], state: "connected" });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(rank).not.toHaveBeenCalled();
+  });
+
+  it("queues a flight reminder that is due even when nothing else is new", async () => {
+    // 19:00 in Moscow the evening before a 07:05 flight the checks saw at noon.
+    const evening = new Date("2026-09-23T16:00:00.000Z");
+    vi.setSystemTime(evening);
+    const seen = {
+      ...flight,
+      dedupeKey: "flight@2026-09-24T07:05:00+03:00",
+    };
+    const reminder = {
+      ...flight,
+      dedupeKey: "flight@2026-09-24T07:05:00+03:00#evening",
+    };
+    probe.mockResolvedValue({ signals: [seen, reminder], state: "connected" });
+    proactive.filterUnseen.mockResolvedValue([reminder]);
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        mailCheckedAt: afternoon,
-        signals: mail.slice(0, 12),
-      })
+      expect.objectContaining({ now: evening, signals: [reminder] })
     );
   });
 
@@ -245,9 +308,7 @@ describe("proactive schedule", () => {
 
   it("dispatches a claimed run as a proactive worker with its signals", async () => {
     probe.mockResolvedValue({ signals: [], state: "connected" });
-    proactive.listSignals.mockResolvedValue([
-      { itemId: "flight", source: "calendar", threadId: null },
-    ]);
+    proactive.listSignals.mockResolvedValue([flight]);
     const claim = proactiveClaim();
     jobs.claimRuns.mockResolvedValue([claim]);
     const send = vi

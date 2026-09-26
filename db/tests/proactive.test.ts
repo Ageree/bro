@@ -140,8 +140,8 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(runId).toBeDefined();
     if (!runId) return;
     expect(await proactive.listProactiveRunSignals(runId)).toEqual([
-      { itemId: "flight", source: "calendar", threadId: null },
-      { itemId: "m1", source: "gmail", threadId: "t1" },
+      flight,
+      bossMail,
     ]);
 
     const nextMail = { ...bossMail, dedupeKey: "m2", itemId: "m2" };
@@ -259,6 +259,63 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(await queue(nextDay, nextMail)).toMatchObject({
       status: "queued",
     });
+  });
+
+  it("reminds of a flight a run already saw, once per reminder, past the daily cap", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const queue = (at: Date, signals: (typeof flight)[]) =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: at,
+        maxRunsPerDay: 1,
+        now: at,
+        signals,
+        workspaceId: alice.workspaceId,
+      });
+    // At noon the check saw the flight, and the worker had nothing to say.
+    const noonRun = queuedRunId(await queue(now, [flight]));
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!noonRun || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.completeScheduledAgentRun(
+      noonRun,
+      claim.run.leaseToken,
+      "turn-1",
+      { kind: "nothing_to_report", reason: "Nothing to hand over." },
+      now
+    );
+
+    const evening = new Date(now.getTime() + 7 * 60 * 60_000);
+    const reminder = { ...flight, dedupeKey: `${flight.dedupeKey}#evening` };
+    expect(
+      await proactive.filterUnseenProactiveSignals(alice.workspaceId, [
+        flight,
+        reminder,
+      ])
+    ).toEqual([reminder]);
+    const eveningRun = queuedRunId(await queue(evening, [reminder]));
+    expect(eveningRun).toBeDefined();
+    if (!eveningRun) return;
+    expect(await proactive.listProactiveRunSignals(eveningRun)).toEqual([
+      reminder,
+    ]);
+    expect(
+      await proactive.filterUnseenProactiveSignals(alice.workspaceId, [
+        flight,
+        reminder,
+      ])
+    ).toEqual([]);
   });
 
   it("forgets dedupe keys past the retention window", async () => {

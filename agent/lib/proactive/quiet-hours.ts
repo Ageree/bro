@@ -9,7 +9,8 @@ const minutesPerDay = 24 * 60;
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
-function localMinuteOfDay(now: Date, timeZone: string) {
+/** Minutes since local midnight of `now` on the person's own clock. */
+export function localMinuteOfDay(now: Date, timeZone: string) {
   let formatter = formatters.get(timeZone);
   if (!formatter) {
     formatter = new Intl.DateTimeFormat("en-US", {
