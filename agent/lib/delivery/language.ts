@@ -58,7 +58,11 @@ const cardAnswers = new Set([
   "confirm",
   "decline",
   "deny",
+  "no",
   "reject",
+  "yes",
+  "да",
+  "нет",
   "одобрить",
   "отклонить",
   "отмена",
@@ -79,7 +83,7 @@ function isCardAnswer(text: string) {
  * The language a person's message is written in, when it clearly is one:
  * any Cyrillic makes it Russian, and English needs two Latin words and no
  * Cyrillic at all. «ok», «👍», a bare link, a number or a card's button label
- * — «Cancel», «Подтвердить» — say nothing.
+ * — «Cancel», «Подтвердить», «Да» — say nothing.
  */
 export function messageLanguage(text: string): ReplyLanguage | undefined {
   if (isCardAnswer(text)) return undefined;

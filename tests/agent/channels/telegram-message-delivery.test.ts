@@ -953,18 +953,16 @@ describe("Telegram approval cards", () => {
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
     expect(body.text).toBe(
       [
-        "Подтверждение действия:",
-        "Что: заявление на справку об отсутствии судимости",
-        "Где: Госуслуги (gosuslugi.ru)",
-        "От чьего имени: Алиса",
-        "Стоимость: бесплатно",
-        "Какие данные уйдут: имя, СНИЛС, паспорт, почта",
-        "Сайт: https://www.gosuslugi.ru",
+        "Заявление на справку об отсутствии судимости — Госуслуги (gosuslugi.ru).",
+        "Оформлю на имя Алиса, сайт получит: имя, СНИЛС, паспорт, почта.",
+        "Стоимость — бесплатно.",
+        "На сайте https://www.gosuslugi.ru.",
+        "Оформить?",
       ].join("\n")
     );
     // The buttons answer the same request, labelled in the person's language.
-    expect(JSON.stringify(body.reply_markup)).toContain("Подтвердить");
-    expect(JSON.stringify(body.reply_markup)).toContain("Отмена");
+    expect(JSON.stringify(body.reply_markup)).toContain('"Да"');
+    expect(JSON.stringify(body.reply_markup)).toContain('"Нет"');
     expect(JSON.stringify(state)).toContain('"optionId":"approve"');
     expect(JSON.stringify(state)).toContain('"requestId":"approval-1"');
   });
@@ -995,9 +993,8 @@ describe("Telegram approval cards", () => {
     );
 
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toContain("Стоимость: около 900 ₽ по тарифу «Комфорт»");
     expect(body.text).toContain(
-      `Оплата сохранённой картой, не больше ${formatRub(1000)}`
+      `Стоимость — около 900 ₽ по тарифу «Комфорт». Оплачу сохранённой картой, не больше ${formatRub(1000)}.`
     );
   });
 
@@ -1022,18 +1019,18 @@ describe("Telegram approval cards", () => {
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
     expect(body.text).toBe(
       [
-        "Отправить письмо:",
-        "Кому: irina@example.com",
-        "Ответ в ветке: «Встреча в четверг»",
-        "Текст:",
-        "│ Ирина Павловна, добрый день!",
-        "│",
-        "│ В четверг не смогу, могу в понедельник в 12:30.",
-        "│",
-        "│ Спасибо! Хорошего дня.",
+        "Отвечу irina@example.com в той же ветке, тема — Встреча в четверг.",
+        "",
+        "Ирина Павловна, добрый день!",
+        "",
+        "В четверг не смогу, могу в понедельник в 12:30.",
+        "",
+        "Спасибо! Хорошего дня.",
+        "",
+        "Отправить?",
       ].join("\n")
     );
-    expect(JSON.stringify(body.reply_markup)).toContain("Подтвердить");
+    expect(JSON.stringify(body.reply_markup)).toContain('"Да"');
   });
 
   it("shows when and where a calendar event is and who gets an invitation", async () => {
@@ -1056,12 +1053,14 @@ describe("Telegram approval cards", () => {
     );
 
     const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toContain("Создать событие в календаре:");
-    expect(body.text).toContain("«Встреча с Ириной Павловной»");
-    expect(body.text).toContain("12:30–13:00 (Europe/Moscow, UTC+3)");
-    expect(body.text).toContain("Где: Zoom");
-    expect(body.text).toContain("Гости: irina@example.com");
-    expect(body.text).not.toContain("calendar-create-event");
+    expect(body.text).toBe(
+      [
+        "Добавлю в календарь: Встреча с Ириной Павловной — пн, 28 сент., 12:30–13:00 (Europe/Moscow, UTC+3).",
+        "Место — Zoom.",
+        "Позову irina@example.com — Google пришлёт им приглашение.",
+        "Добавить?",
+      ].join("\n")
+    );
   });
 
   it("leaves every other approval card as eve renders it", async () => {

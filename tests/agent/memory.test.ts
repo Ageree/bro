@@ -373,11 +373,8 @@ describe("forgetting a memory without the person's word", () => {
       "ru"
     );
 
-    expect(card.prompt).toBe("Забыть из памяти:\n«Любит суши.»");
-    expect(card.options.map((option) => option.label)).toEqual([
-      "Подтвердить",
-      "Отмена",
-    ]);
+    expect(card.prompt).toBe("Забуду из памяти: Любит суши.\nЗабыть?");
+    expect(card.options.map((option) => option.label)).toEqual(["Да", "Нет"]);
   });
 });
 
@@ -483,10 +480,11 @@ describe("forgetting everything at once", () => {
     );
     expect(card.prompt).toBe(
       [
-        "Забыть из памяти эти записи:",
-        "• «Любит суши.»",
-        "• «Без моего ок ничего не оплачивать и никому не писать.»",
-        "• «Живёт в Казани.»",
+        "Забуду из памяти эти записи:",
+        "• Любит суши.",
+        "• Без моего ок ничего не оплачивать и никому не писать.",
+        "• Живёт в Казани.",
+        "Забыть?",
       ].join("\n")
     );
   });
