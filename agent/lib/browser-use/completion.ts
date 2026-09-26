@@ -497,6 +497,15 @@ function interruptedInstruction(error: string) {
 }
 
 /**
+ * A stop at payment that did not say what is being paid for. On 26.09 a
+ * grocery run came back as «Total 1 396 ₽, Needs: payment» alone (d05), and
+ * Bro asked to pay while telling of «что-то заменено» that no report said.
+ * Nothing is paid for, or told, before the basket is read back.
+ */
+const unreadBasketInstruction =
+  "The run stopped at payment without listing what is being paid for: no Items came back. Do not ask the user to pay or to confirm, do not continue with allowSubmit or allowPayment, and show no card yet. Continue this run once now with browser_task continue, asking it to change nothing and to read the basket or order summary back as ITEMS — every line with its name, quantity and price, each substitute with what it replaces, every fee as a line of its own, the delivery slot or date and the total — and tell the user in one short line that you are checking what is in the basket. If that continue is refused, tell the user the total the run reached and that it did not say what is in the basket, and offer to read it back. Say nothing about substitutes, missing items, the slot or the delivery beyond what the report itself states.";
+
+/**
  * What the coordinator is asked to do with the run it just got back. An
  * anti-bot wall only reaches it once the background retries are spent, and
  * even then the person is never asked to solve the check: the errand moves to
@@ -534,11 +543,14 @@ function deliveryInstruction(
     : "If this errand searched for concrete options and the result names options without their destination links, do not present a names-only list as a completed result. Continue this run once to collect the actual observed links when that can complete the errand; otherwise tell the user clearly that the links could not be obtained. Do not retry in a loop.";
   // A confirmed errand that stopped on the way is still the purchase the
   // person asked for: the stop is a change to confirm, not a search result.
+  const unreadBasket = needs === "payment" && !hasItems;
   const stillBuying =
-    facts.confirmed && (needs === "decision" || needs === "payment");
+    facts.confirmed &&
+    !unreadBasket &&
+    (needs === "decision" || needs === "payment");
   return [
     "This is a background result, not a user message.",
-    browserRunNeedGuidance(needs),
+    unreadBasket ? unreadBasketInstruction : browserRunNeedGuidance(needs),
     facts.stuck,
     facts.interrupted === undefined
       ? undefined

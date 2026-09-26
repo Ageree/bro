@@ -1740,6 +1740,60 @@ describe("what the report turn retells", () => {
     );
   });
 
+  it("has the basket read back before any payment when the stop lists nothing", async () => {
+    // RU 26.09, d05: «Total 1 396 ₽, Needs: payment» with no lines, and Bro
+    // asked to pay while telling of «что-то заменено».
+    finishedRun(
+      [
+        "RESULT: корзина собрана, остановлено перед оплатой",
+        "TOTAL: 1 396 ₽",
+        "NEEDS: payment",
+      ],
+      "Закажи продукты к восьми вечера"
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The run stopped at payment without listing what is being paid for: no Items came back. Do not ask the user to pay or to confirm, do not continue with allowSubmit or allowPayment, and show no card yet. Continue this run once now with browser_task continue, asking it to change nothing and to read the basket or order summary back as ITEMS — every line with its name, quantity and price, each substitute with what it replaces, every fee as a line of its own, the delivery slot or date and the total — and tell the user in one short line that you are checking what is in the basket. If that continue is refused, tell the user the total the run reached and that it did not say what is in the basket, and offer to read it back. Say nothing about substitutes, missing items, the slot or the delivery beyond what the report itself states."
+    );
+    expect(prompt).not.toContain("The run stopped before paying");
+    expect(prompt).not.toContain("continue this run now with allowSubmit");
+    expect(prompt).not.toContain(
+      "The user already confirmed this errand on a card"
+    );
+  });
+
+  it("asks to pay for a basket once the stop lists what is in it", async () => {
+    finishedRun(
+      [
+        "RESULT: корзина собрана, остановлено перед оплатой",
+        "TOTAL: 312 ₽",
+        "NEEDS: payment",
+        'ITEMS: [{"name":"Молоко 3,2%, 1 л","price":"99 ₽","quantity":"2"},{"name":"Доставка","price":"114 ₽","fee":true}]',
+      ],
+      "Закажи молоко"
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The run stopped before paying, with the total in Total."
+    );
+    expect(prompt).not.toContain("no Items came back");
+    expect(prompt).toContain(
+      "Items:\n1. Молоко 3,2%, 1 л — 99 ₽ — qty 2\n2. [fee] Доставка — 114 ₽"
+    );
+  });
+
   it("tells every charge with what it is for, never an amount alone", async () => {
     // RU 24.09, d06: «висит 500 ₽ к оплате» and nothing on what for.
     finishedRun(

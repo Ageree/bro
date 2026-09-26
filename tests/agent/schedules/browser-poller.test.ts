@@ -779,6 +779,7 @@ describe("the browser run poller", () => {
         "RESULT: остановился перед оплатой",
         "TOTAL: 2 400 ₽",
         "NEEDS: payment",
+        'ITEMS: [{"name":"Кофе Jardin 1 кг","price":"2 400 ₽","quantity":"1"}]',
       ].join("\n")
     );
     const { attachSession, send } = webChat();
