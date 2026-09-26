@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries seven independent hunks:
+`eve@0.62.0.patch` carries eight independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -87,6 +87,19 @@ regenerating the patch below against the new dist.
   into each memory tool's persisted metadata either.
   `tests/agent/memory-tools-attachments.test.ts` covers it. Drop the hunk once
   eve keeps non-JSON history out of that closure on its own.
+- A typed yes or no answers an approval card. `channel/resolve-text.js`
+  `resolveTextToResponse` matched a reply only to an option id, its English
+  label or its number, and the harness resolves every channel's message with
+  it, so «да», «отправляй», «не надо» or «go ahead» under a card went to the
+  model as a new message while the card stayed pending. The added
+  `matchApprovalAnswer` runs after those three and only for a `tool-approval`
+  request with `approve` and `cancel` options: it takes a short reply (up to
+  six words, no question mark) whose every word is a yes, a no, a negated verb
+  or filler, and returns nothing when the words disagree («да, но поменяй
+  время», «да нет») or the reply asks something («а сколько стоит?»), which
+  then reaches the model as before. A `question` request is untouched.
+  `tests/agent/channels/approval-text-answers.test.ts` covers it. Drop the
+  hunk once eve resolves a plain yes or no to an approval on its own.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -98,7 +111,9 @@ declare `message` themselves, the schedule handle once
 `tests/agent/approval-memory-recall.test.ts` and the approval eval in
 `evals/agent/integrations.eval.ts` pass without them, the rebind hunk once
 `tests/agent/dynamic-tool-rebind.test.ts` passes without it, and the memory
-tools hunk once `tests/agent/memory-tools-attachments.test.ts` does.
+tools hunk once `tests/agent/memory-tools-attachments.test.ts` does, and the
+typed answer hunk once `tests/agent/channels/approval-text-answers.test.ts`
+does.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.
