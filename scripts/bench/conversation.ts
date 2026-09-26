@@ -35,6 +35,8 @@ export interface DriverSettings {
   /** How long to follow a session for background results; 0 skips it. */
   readonly backgroundWaitMs: number;
   readonly extraFiles: readonly OutgoingFile[];
+  /** Cards the tester answers themselves (`--hold`). */
+  readonly heldTools: readonly string[];
   readonly hintText: string;
   readonly host: string;
   /** Follow-and-ask rounds while a background errand stays silent. */
@@ -248,9 +250,21 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
     const responses: InputResponse[] = [];
     for (const request of run.tracker.pending.values()) {
       if (answered.has(request.requestId)) continue;
-      const decision = decideInputRequest(request, run.settings.approvedTools);
-      if (decision.kind !== "respond") continue;
+      const decision = decideInputRequest(
+        request,
+        run.settings.approvedTools,
+        run.settings.heldTools
+      );
       answered.add(request.requestId);
+      if (decision.kind !== "respond") {
+        if (request.kind === "tool-approval") {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- log lines keep the order of the decisions
+          await run.journal.line(
+            `== драйвер: ${request.action.toolName} — ${decision.reason}`
+          );
+        }
+        continue;
+      }
       responses.push(decision.response);
       run.record.driver.decisions.push({
         optionId: decision.response.optionId,

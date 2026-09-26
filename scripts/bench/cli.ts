@@ -61,7 +61,7 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
   pnpm bench list   [--suite ru|en] [--case id,…] [--group d13|13|категория] [--risk read-only]
   pnpm bench run    [отбор как у list] [--host URL] [--cookie-file PATH] [--out DIR]
                     [--fill '[ресторан]=Хачапури и вино'] [--attach FILE] [--voice FILE]
-                    [--approve tool] [--concurrency 4] [--max-steps N] [--compress]
+                    [--approve tool] [--hold tool] [--concurrency 4] [--max-steps N] [--compress]
                     [--background-wait-min 20] [--nudges 1] [--turn-timeout-min 15]
                     [--dry-run]
                     (шаг сценария «T+7д» ждёт своего срока: pnpm bench next;
@@ -70,7 +70,10 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
                     (следующие шаги сценария, когда подошёл их срок)
   pnpm bench send   --out DIR --case ID (--text T | --code C | --option ID)
                     [--kind hint|answer|approval|code|probe|cleanup] [--attach FILE] [--voice FILE]
-                    (--kind answer отвечает на вопрос, на котором кейс встал,
+                    [--approve tool] [--hold tool]
+                    (--hold оставляет карточку инструмента тестировщику; --kind approval
+                    --text «да» отвечает на неё словами, как человек в чате;
+                    --kind answer отвечает на вопрос, на котором кейс встал,
                     и досылает оставшиеся сообщения сценария)
   pnpm bench send   --out DIR --case ID --kind observed --text T
                     [--channel telegram|imessage|web] [--at 06:40]
@@ -103,6 +106,7 @@ const options = {
   group: { multiple: true, type: "string" },
   help: { short: "h", type: "boolean" },
   hint: { type: "string" },
+  hold: { multiple: true, type: "string" },
   host: { type: "string" },
   kind: { type: "string" },
   mailbox: { type: "string" },
@@ -203,6 +207,7 @@ function settings(flags: Values, host: string, outDir: string): DriverSettings {
     approvedTools: [...ownDataTools, ...list(flags.approve)],
     backgroundWaitMs: minutes(flags["background-wait-min"], 20),
     extraFiles: list(flags.attach).map((path) => ({ path: resolve(path) })),
+    heldTools: list(flags.hold),
     hintText: flags.hint ?? "ну что там?",
     host,
     nudges: countSchema.parse(flags.nudges ?? 1),
@@ -481,7 +486,14 @@ async function sendCommand(flags: Values) {
         "Several cards are pending; answer them with --option, which applies to each."
       );
     }
-    return pending.map((each) => responseFromText(each, text));
+    const responses = pending.map((each) => responseFromText(each, text));
+    if (responses.every((response) => response !== undefined)) {
+      return responses;
+    }
+    if (flags.option !== undefined) {
+      throw new Error(`No pending card takes the option ${flags.option}.`);
+    }
+    return undefined;
   };
   const updated = await continueCase(
     client,

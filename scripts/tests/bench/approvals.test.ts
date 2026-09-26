@@ -92,6 +92,15 @@ describe("decideInputRequest", () => {
     expect(decision).toMatchObject({ response: { optionId: "continue" } });
   });
 
+  it("leaves a held card to the tester", () => {
+    const decision = decideInputRequest(
+      approvalCard("calendar-create-event", { attendees: [] }),
+      ownDataTools,
+      ["calendar-create-event"]
+    );
+    expect(decision.kind).toBe("ask-tester");
+  });
+
   it("leaves questions to the tester", () => {
     const decision = decideInputRequest(
       { ...approvalCard("ask_question"), kind: "question" },
@@ -122,9 +131,16 @@ describe("responseFromText", () => {
     });
   });
 
-  it("refuses text an approval card cannot take", () => {
-    expect(() => responseFromText(approvalCard("gmail-send"), "да")).toThrow(
-      /approve/u
-    );
+  it("leaves other words for an approval to eve, as a typed message", () => {
+    expect(responseFromText(approvalCard("gmail-send"), "да")).toBeUndefined();
+  });
+
+  it("refuses text a session limit cannot take", () => {
+    expect(() =>
+      responseFromText(
+        { ...approvalCard("send_message"), kind: "session-limit" },
+        "да"
+      )
+    ).toThrow(/approve/u);
   });
 });

@@ -49,6 +49,7 @@ async function settingsFor(host: string, backgroundWaitMs = 0) {
     approvedTools: ownDataTools,
     backgroundWaitMs,
     extraFiles: [],
+    heldTools: [],
     hintText: "ну что там?",
     host,
     nudges: 1,
