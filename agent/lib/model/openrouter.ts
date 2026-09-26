@@ -5,6 +5,7 @@ import {
   wrapLanguageModel,
 } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
+import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { watchedModelFetch } from "./stream-watchdog";
@@ -392,13 +393,6 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
     },
   };
 }
-
-/**
- * eve's own marker for a step that deliberately says nothing: a final text
- * equal to it ends the turn with `message: null` instead of a reply
- * (`eve/dist/src/shared/empty-delivery.js`, not exported).
- */
-const emptyDeliveryMarker = "<eve-empty-delivery/>";
 
 /** One part of a model's streamed answer, as middleware sees it. */
 type StreamPart =
