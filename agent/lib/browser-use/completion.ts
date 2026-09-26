@@ -131,8 +131,8 @@ export async function settleBrowserRun(
   // and stop the browser the next turn still needs. On 26.09 a code (and
   // «и добавь ещё молоко») went into a live errand this way, and the cart it
   // then finished never reached the person until they asked.
-  const followUpId = await queuedFollowUpRun(row, run.sessionId, status);
-  if (followUpId === "wait") {
+  const followUp = await queuedFollowUpRun(row, status);
+  if (followUp === "wait") {
     console.info("[browser-use] run finished with a message still queued", {
       runId,
       sessionId: run.sessionId,
@@ -191,15 +191,15 @@ export async function settleBrowserRun(
         ? unreachableCause(parsed, run.error)
         : undefined,
   };
-  if (followUpId !== undefined) {
-    await recordQueuedFollowUp(row, followUpId, run.sessionId);
+  if (followUp !== undefined) {
+    await recordQueuedFollowUp(row, followUp.runId, run.sessionId);
   }
   const claimed = await claimBrowserRunCompletion(runId, {
     outcome,
     // The plain report is kept with the claim, so the person hears about the
     // run even when this settle is cut off before the full report is ready.
     report: retryAt ? undefined : browserRunReport(row, reportFacts),
-    retriedAsRunId: followUpId,
+    retriedAsRunId: followUp?.runId,
     status: settledStatus(status),
   });
   if (!claimed) return { kind: "closed" as const };
@@ -353,31 +353,40 @@ const queuedFollowUpSince = new Map<string, number>();
  */
 async function queuedFollowUpRun(
   row: BrowserRunRow,
-  sessionId: string,
   status: BrowserUseRunStatus
-): Promise<"wait" | string | undefined> {
+): Promise<"wait" | { readonly runId: string } | undefined> {
   if (status === "cancelled" || row.sessionId === null) {
     queuedFollowUpSince.delete(row.id);
     return undefined;
   }
-  const session = row.sessionId ?? sessionId;
+  const session = row.sessionId;
   try {
     const [info, queue] = await Promise.all([
       readBrowserUseSession(session),
       listBrowserUseSessionQueue(session),
     ]);
     const candidates = [
-      info.latestRunId === row.id ? undefined : info.latestRunId,
-      ...queue.map((message) =>
-        message.runId && message.runId !== row.id ? message.runId : undefined
+      ...new Set(
+        [
+          info.latestRunId === row.id ? undefined : info.latestRunId,
+          ...queue.map((message) =>
+            message.runId && message.runId !== row.id
+              ? message.runId
+              : undefined
+          ),
+        ].filter((candidate) => candidate !== undefined)
       ),
     ];
-    for (const candidate of candidates) {
-      if (candidate === undefined) continue;
-      if ((await readBrowserRun(candidate)) === undefined) {
-        queuedFollowUpSince.delete(row.id);
-        return candidate;
-      }
+    const known = await Promise.all(
+      candidates.map(async (candidate) => ({
+        candidate,
+        existing: await readBrowserRun(candidate),
+      }))
+    );
+    const fresh = known.find((item) => item.existing === undefined);
+    if (fresh) {
+      queuedFollowUpSince.delete(row.id);
+      return { runId: fresh.candidate };
     }
     const pending = queue.some(
       (message) =>
