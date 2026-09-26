@@ -811,6 +811,16 @@ describe("the person's rules in the profile", () => {
           "где поужинать на чистых прудах"
         )
       ).toBeUndefined();
+      // «шкаф-купе» is furniture. A bare «купе» is a berth on a train.
+      expect(
+        renderPreferencesForRequest(saved, "собери шкаф-купе завтра")
+      ).toBeUndefined();
+      expect(
+        renderPreferencesForRequest(saved, "сборка шкафа купе в субботу")
+      ).toBeUndefined();
+      expect(
+        renderPreferencesForRequest(saved, "купе до казани в пятницу")
+      ).toContain("«Нижняя полка», «место у прохода».");
     });
   });
 

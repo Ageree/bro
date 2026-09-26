@@ -472,6 +472,7 @@ function requestText(input: readonly ModelMessage[]) {
 /**
  * What a request is about, as far as a saved preference can bear on it.
  * «Сапсан», «Ласточка» and suburban trains have seats and no berths.
+ * «купе» is a berth, except «шкаф-купе» and «шкаф купе», which are furniture.
  */
 const requestTopics = {
   // Not «вагон-ресторан»: a train's own car is no pick of food.
@@ -482,7 +483,7 @@ const requestTopics = {
     /(?<!\p{L})(?:сапсан|ласточк|электричк|аэроэкспресс|sapsan|lastochka)/iu,
   stay: /(?<!\p{L})(?:отел|гостиниц|хостел|апартамент|hotels?(?!\p{L})|hostels?(?!\p{L})|airbnb)/iu,
   train:
-    /(?<!\p{L})(?:поезд|сапсан|ласточк|электричк|(?:жд|ж\/д|ржд)(?!\p{L})|купе|плацкарт|trains?(?!\p{L})|rail|sapsan|lastochka)/iu,
+    /(?<!\p{L})(?:поезд|сапсан|ласточк|электричк|(?:жд|ж\/д|ржд)(?!\p{L})|(?<![\p{L}-])(?<!шкаф\p{L}{0,3}\s+)купе(?:йн\p{L}*)?(?!\p{L})|плацкарт|trains?(?!\p{L})|rail|sapsan|lastochka)/iu,
 };
 
 /** What a saved preference is about, clause by clause. */
