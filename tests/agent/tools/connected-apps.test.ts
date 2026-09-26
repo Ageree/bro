@@ -138,29 +138,29 @@ describe("approvals", () => {
     );
   });
 
-  it("asks before every write, and before a read outside the person's own turn", async () => {
+  it("does what the person asked in their own turn and asks in a turn Bro opened", async () => {
     const decisions = await Promise.all(
       ["photon-imessage", "browser-result"].map(async (authenticator) => [
         await decide(notionSearch, { query: "Пароли" }, authenticator),
         await decide(notionRead, { id: "page-1", kind: "page" }, authenticator),
         await decide(slackRead, { from: "#general", limit: 30 }, authenticator),
         await decide(slackSearch, { count: 20, query: "inv" }, authenticator),
+        await decide(notionAddTask, { title: "Q3 planning" }, authenticator),
+        await decide(
+          slackSendMessage,
+          { text: "Hi", to: "Sam" },
+          authenticator
+        ),
       ])
     );
 
     expect(decisions).toEqual([
-      Array.from({ length: 4 }, () => "not-applicable"),
-      Array.from({ length: 4 }, () => "user-approval"),
+      Array.from({ length: 6 }, () => "not-applicable"),
+      Array.from({ length: 6 }, () => "user-approval"),
     ]);
-    expect(await decide(notionAddTask, { title: "Q3 planning" })).toBe(
-      "user-approval"
-    );
-    expect(await decide(slackSendMessage, { text: "Hi", to: "Sam" })).toBe(
-      "user-approval"
-    );
   });
 
-  it("refuses a Slack message to a bare ID the card could not name", async () => {
+  it("refuses a Slack message to a bare ID that names nobody", async () => {
     const bare = await Promise.all(
       ["C07ABCDEF", " U0SAMPARK ", "D0SAMPARK"].map(async (to) =>
         decide(slackSendMessage, { text: "Hi", to })
@@ -173,7 +173,7 @@ describe("approvals", () => {
       { type: "denied" },
     ]);
     expect(await decide(slackSendMessage, { text: "Hi", to: "#general" })).toBe(
-      "user-approval"
+      "not-applicable"
     );
   });
 
@@ -755,12 +755,19 @@ describe("connect_app", () => {
     expect(composio.accounts.map(({ id }) => id)).toEqual(["ca_notion"]);
   });
 
-  it("asks only before disconnecting", async () => {
+  it("disconnects at the person's word and asks only in a turn Bro opened", async () => {
     expect(await decide(connectApp, { action: "connect", app: "slack" })).toBe(
       "not-applicable"
     );
     expect(
       await decide(connectApp, { action: "disconnect", app: "slack" })
+    ).toBe("not-applicable");
+    expect(
+      await decide(
+        connectApp,
+        { action: "disconnect", app: "slack" },
+        "browser-result"
+      )
     ).toBe("user-approval");
   });
 });
@@ -912,7 +919,7 @@ describe("an app the person has not connected", () => {
     ).resolves.toEqual({ matches: [] });
   });
 
-  it("refuses a card for an unconnected app nobody named, before it parks the turn", async () => {
+  it("refuses a write to an unconnected app nobody named, before it parks the turn", async () => {
     composio.accounts.splice(0);
     const send = (await slackToolsFor(personTurn(d18)))["slack-send-message"];
     const task = (
@@ -931,7 +938,7 @@ describe("an app the person has not connected", () => {
       type: "denied",
     });
 
-    // Named, the card goes ahead and the sign-in follows it.
+    // Named, the send goes ahead and the sign-in follows it.
     const named = (
       await slackToolsFor(
         personTurn("скинь в слак Лёше, что освобожусь не раньше восьми")
@@ -939,7 +946,7 @@ describe("an app the person has not connected", () => {
     )["slack-send-message"];
     expect(
       await decide(named, { text: "Освобожусь не раньше восьми", to: "Лёша" })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("names an app the way people write it", () => {

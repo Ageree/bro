@@ -225,7 +225,7 @@ describe("durable profile memory", () => {
 });
 
 describe("forgetting a memory without the person's word", () => {
-  it("forgets what this conversation saved at once and older memories only on a card", async () => {
+  it("forgets at the person's word an older memory they named, and only on a card in a turn Bro opened", async () => {
     await saveMemory(
       alice,
       "scope-a",
@@ -261,7 +261,7 @@ describe("forgetting a memory without the person's word", () => {
       { index: 0 }
     );
     expect(unnamed).toMatchObject({ type: "denied" });
-    // The model is told the text the card will show.
+    // The model is told the text the memory reads.
     expect(JSON.stringify(unnamed)).toContain("«Любит суши.»");
     expect(
       await memoryRemovalApproval(
@@ -274,12 +274,24 @@ describe("forgetting a memory without the person's word", () => {
         }
       )
     ).toMatchObject({ type: "denied" });
-    // Named exactly as it reads, it goes to the person on a card.
+    // Named exactly as it reads, it goes at once in the person's turn and
+    // waits for the card in a turn Bro opened.
     expect(
       await memoryRemovalApproval(
         alice,
         "scope-a",
         personTurn("this-session"),
+        {
+          index: 0,
+          text: "  любит  суши. ",
+        }
+      )
+    ).toBe("not-applicable");
+    expect(
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        reportTurn("this-session"),
         {
           index: 0,
           text: "  любит  суши. ",
@@ -303,7 +315,7 @@ describe("forgetting a memory without the person's word", () => {
       { sessionId: "earlier-session", turnId: "turn" }
     );
     // An update here does not make the memory this conversation's own, so
-    // update-then-remove cannot forget it without the card.
+    // update-then-remove cannot forget it without the person naming it.
     await updateMemory(
       alice,
       "scope-a",
@@ -342,7 +354,7 @@ describe("forgetting a memory without the person's word", () => {
           text: "Не любит суши.",
         }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // The conversation that saved it still corrects its own memory at once.
     expect(
       await memoryRemovalApproval(
@@ -384,7 +396,8 @@ describe("forgetting a memory without the person's word", () => {
 /**
  * RU 25.09 (d14): «удали всё, что ты про меня помнишь» got «одной командой
  * выполнить не могу» and a list to choose from. Every record goes in one
- * call, and what other conversations saved goes on one card with each text.
+ * call; owner 26.09: at once in the person's own turn, and on one card with
+ * each text only in a turn Bro opened.
  */
 describe("forgetting everything at once", () => {
   const everything = [
@@ -420,7 +433,7 @@ describe("forgetting everything at once", () => {
     );
   }
 
-  it("asks for one card listing every record another conversation saved", async () => {
+  it("forgets every record at once at the person's word", async () => {
     await saveEverything();
 
     expect(
@@ -430,7 +443,7 @@ describe("forgetting everything at once", () => {
         personTurn("this-session"),
         { records: everything }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // What this conversation saved goes at once, as one record would.
     expect(
       await memoryBulkRemovalApproval(
@@ -440,7 +453,7 @@ describe("forgetting everything at once", () => {
         { records: [{ index: 2, text: "Живёт в Казани." }] }
       )
     ).toBe("not-applicable");
-    // The card never shows a text the record does not have.
+    // A text the record does not have forgets nothing.
     const misnamed = await memoryBulkRemovalApproval(
       alice,
       "scope-a",
@@ -491,7 +504,7 @@ describe("forgetting everything at once", () => {
     );
   });
 
-  it("sends a card too long for a messenger back to be split", async () => {
+  it("sends a card too long for a messenger back to be split in a turn Bro opened", async () => {
     const records = Array.from({ length: 40 }, (_, index) => ({
       index,
       text: `Запись номер ${String(index)}: ${"поезд, нижняя полка, место у окна. ".repeat(3)}`.trim(),
@@ -507,7 +520,7 @@ describe("forgetting everything at once", () => {
     const decision = await memoryBulkRemovalApproval(
       alice,
       "scope-a",
-      personTurn("this-session"),
+      reportTurn("this-session"),
       { records }
     );
     expect(decision).toMatchObject({ type: "denied" });
@@ -516,10 +529,19 @@ describe("forgetting everything at once", () => {
       await memoryBulkRemovalApproval(
         alice,
         "scope-a",
-        personTurn("this-session"),
+        reportTurn("this-session"),
         { records: records.slice(0, 20) }
       )
     ).toBe("user-approval");
+    // In the person's own turn no card is shown, so none has to fit.
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { records }
+      )
+    ).toBe("not-applicable");
   });
 
   it("forgets every record that still reads as the card showed it", async () => {
@@ -630,6 +652,21 @@ describe("the person's rules in the profile", () => {
       expect.stringContaining("name in the reply the ones you applied"),
       "0 (revision 1, preference): Любит суши.",
     ]);
+  });
+
+  // Owner 26.09: a request runs without a card now, so the rule is the one
+  // thing between «напиши маме» and a sent email.
+  it("puts a saved rule above a request that otherwise runs at once", () => {
+    const [, , heading, note, rule] = renderProfile([
+      currentRecord(0, { category: "rule", text: "Никогда не писать маме." }),
+    ]).split("\n");
+
+    expect(heading).toBe("## Rules the user set");
+    expect(note).toContain("above a request in the moment");
+    expect(note).toContain(
+      "check every send, booking, change or payment against these first: what a rule forbids is not done — say which rule holds it back"
+    );
+    expect(rule).toBe("0 (revision 1, rule): Никогда не писать маме.");
   });
 
   // RU d14 (25.09): after «никому не пиши без моего ок» Bro never said that

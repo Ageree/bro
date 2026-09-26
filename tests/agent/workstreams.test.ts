@@ -171,7 +171,7 @@ describe("workstream memory", () => {
     expect(index).not.toContain("tracker page is ready");
   });
 
-  it("forgets another conversation's work only on a card with its title, even after saving it here", async () => {
+  it("forgets another conversation's work at the person's word only by its title, even after saving it here", async () => {
     const first = context("first");
     const firstTools = await workstreamMemory.provider.tools(first);
     const later = context("later");
@@ -198,9 +198,13 @@ describe("workstream memory", () => {
       title: "Autumn trip",
     };
 
-    expect(await forgetDecision("later", named)).toBe("user-approval");
-    // A title other than the saved one never reaches the card; the model
-    // is told what the card will show.
+    expect(await forgetDecision("later", named)).toBe("not-applicable");
+    // A turn Bro opened speaks for nobody: there it waits for the card.
+    expect(await forgetDecision("later", named, "browser-result")).toBe(
+      "user-approval"
+    );
+    // A title other than the saved one is refused; the model is told the
+    // saved title.
     const misnamed = await forgetDecision("later", {
       ...named,
       title: "Old test data",
@@ -237,8 +241,8 @@ describe("workstream memory", () => {
   });
 
   // RU 25.09 (d14): «удали всё, что ты про меня помнишь» takes all the
-  // saved work, on one card with the title of each.
-  it("forgets all the saved work at once, on one card listing other conversations' titles", async () => {
+  // saved work at once; owner 26.09: without a card.
+  it("forgets all the saved work at once at the person's word, and on one card in a turn Bro opened", async () => {
     const first = context("first");
     const later = context("later");
     const firstTools = await workstreamMemory.provider.tools(first);
@@ -263,7 +267,10 @@ describe("workstream memory", () => {
       ],
     };
 
-    expect(await forgetAllDecision("later", everything)).toBe("user-approval");
+    expect(await forgetAllDecision("later", everything)).toBe("not-applicable");
+    expect(await forgetAllDecision("later", everything, "browser-result")).toBe(
+      "user-approval"
+    );
     // This conversation's own work goes at once.
     expect(
       await forgetAllDecision("later", {
@@ -653,9 +660,10 @@ describe("workstream memory", () => {
 /** What the `workstreams__forget_all` policy decides in a session. */
 async function forgetAllDecision(
   sessionId: string,
-  toolInput: { workstreams: { id: string; title: string }[] }
+  toolInput: { workstreams: { id: string; title: string }[] },
+  authenticator = "authjs"
 ) {
-  const session = context(sessionId);
+  const session = context(sessionId, authenticator);
   const approval = (await workstreamMemory.provider.tools(session))?.forget_all
     .approval;
   if (approval === undefined) throw new Error("Expected a forget_all policy.");
@@ -672,9 +680,10 @@ async function forgetAllDecision(
 /** What the `workstreams__forget` policy decides for a call in a session. */
 async function forgetDecision(
   sessionId: string,
-  toolInput: { expectedRevision: number; id: string; title: string }
+  toolInput: { expectedRevision: number; id: string; title: string },
+  authenticator = "authjs"
 ) {
-  const session = context(sessionId);
+  const session = context(sessionId, authenticator);
   const approval = (await workstreamMemory.provider.tools(session))?.forget
     .approval;
   if (approval === undefined) throw new Error("Expected a forget policy.");

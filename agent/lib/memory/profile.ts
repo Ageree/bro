@@ -8,7 +8,11 @@ import type { MemoryDocumentBackend } from "eve/memory/file";
 import { defineTool } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
-import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import {
+  ownTurnApproval,
+  resolveModeValue,
+  startedByPerson,
+} from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
 import { ruleAccessNote } from "@agent/lib/privacy/google-access";
@@ -47,7 +51,7 @@ const removeMemoryInputSchema = forgetMemorySchema.extend({
     .max(2_048)
     .optional()
     .describe(
-      "The memory's text exactly as the profile lists it. The confirmation card shows it to the user; required for a memory another conversation saved."
+      "The memory's text exactly as the profile lists it; required for a memory another conversation saved."
     ),
 });
 
@@ -69,7 +73,7 @@ const forgetAllInputSchema = z.strictObject({
     .min(1)
     .max(60)
     .describe(
-      "Every memory to forget, each by its index and its text exactly as the profile or profile__find lists it. The confirmation card shows these texts."
+      "Every memory to forget, each by its index and its text exactly as the profile or profile__find lists it."
     ),
 });
 
@@ -124,14 +128,14 @@ export async function ruleWriteRefusal(
 }
 
 /**
- * Whether forgetting a memory needs the person's word on a card. Asked to
- * «удали всё, что ты запомнил про меня в этом разговоре», the model listed
- * four memories from earlier conversations, asked which to remove, and
- * removed all four in the same turn without an answer. What the person
- * built up over other conversations goes only on their own confirmation of
- * that record; a memory this conversation saved is a correction of what was
- * just said, and goes at once. The card shows the record's own text, so a
- * call that names it differently is sent back with the text to show.
+ * Whether forgetting a memory may go ahead. Asked to «удали всё, что ты
+ * запомнил про меня в этом разговоре», the model listed four memories from
+ * earlier conversations, asked which to remove, and removed all four in the
+ * same turn without an answer. So a record another conversation saved goes
+ * only when the call names its own text, as the person named it, and never
+ * while a question of Bro's waits for its answer (`actionsHeldForAnswer`);
+ * then, in the person's own turn, it goes without a card. A memory this
+ * conversation saved is a correction of what was just said, and goes at once.
  */
 export async function memoryRemovalApproval(
   scope: AccessScope,
@@ -152,22 +156,22 @@ export async function memoryRemovalApproval(
     comparableMemoryText(input.text) !== comparableMemoryText(record.text)
   ) {
     return {
-      reason: `Nothing was forgotten. Memory ${String(input.index)} was saved in another conversation, so the user confirms forgetting it on a card that shows its text: «${record.text}». Forget it only if the user named it themselves; then call again with text set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
+      reason: `Nothing was forgotten. Memory ${String(input.index)} was saved in another conversation and reads «${record.text}». Forget it only if the user named it themselves; then call again with text set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
       type: "denied",
     };
   }
-  return "user-approval";
+  return ownTurnApproval({ session });
 }
 
 /**
- * Whether forgetting several memories at once needs the person's word, on
- * one card. «Удали всё, что ты про меня помнишь» asks for every record, and
- * on 25.09 (RU d14) Bro answered it with «одной командой выполнить не могу»
- * and a list to choose from. The rule of `memoryRemovalApproval` holds for
- * each record: one another conversation saved goes only on the person's
- * confirmation of its own text, so the one card lists every text, and a
- * call that names a record differently is sent back with the texts to show.
- * A card too long for a messenger is sent back to be split.
+ * Whether forgetting several memories at once may go ahead. «Удали всё, что
+ * ты про меня помнишь» asks for every record, and on 25.09 (RU d14) Bro
+ * answered it with «одной командой выполнить не могу» and a list to choose
+ * from. The rule of `memoryRemovalApproval` holds for each record: a call
+ * that names one differently is sent back with the texts to name, and in the
+ * person's own turn the rest goes without a card. In a turn Bro opened, one
+ * card lists every text another conversation saved, and a card too long for
+ * a messenger is sent back to be split.
  */
 export async function memoryBulkRemovalApproval(
   scope: AccessScope,
@@ -201,13 +205,14 @@ export async function memoryBulkRemovalApproval(
       .map(({ index, record }) => `${String(index)}: «${record.text}»`)
       .join("; ");
     return {
-      reason: `Nothing was forgotten. The confirmation card shows each memory's own text, and these read differently: ${texts}. Call again with each text exactly as it reads there.`,
+      reason: `Nothing was forgotten. Each memory is named by its own text, and these read differently: ${texts}. Call again with each text exactly as it reads there.`,
       type: "denied",
     };
   }
   if (current.every(({ record }) => record.sourceSessionId === session.id)) {
     return "not-applicable";
   }
+  if (startedByPerson({ session })) return "not-applicable";
   if (
     !forgetAllCardFits(
       "memory",
@@ -323,7 +328,7 @@ export function createProfileMemoryProvider(
           approval: ({ session, toolInput }) =>
             memoryBulkRemovalApproval(scope, scopeKey, session, toolInput),
           description:
-            "Forget several durable memories in one call: everything the user asked to forget. «Удали всё, что ты про меня помнишь» or «забудь всё обо мне» is clear, not broad: pass every record, rules included — do not ask which ones. List each by its index and its text exactly as the profile lists it, without the aliases; when the profile says more memories exist, page through profile__find with an empty query and include those too. Memories this conversation saved go at once; if any was saved in another conversation, the user confirms the whole list on one card that shows every text. Personal Info, schedules, connected accounts and the conversation history are not memory records and stay as they are.",
+            "Forget several durable memories in one call: everything the user asked to forget. «Удали всё, что ты про меня помнишь» or «забудь всё обо мне» is clear, not broad: pass every record, rules included — do not ask which ones. List each by its index and its text exactly as the profile lists it, without the aliases; when the profile says more memories exist, page through profile__find with an empty query and include those too. In a turn the user's own message started they all go at once, without a card. Personal Info, schedules, connected accounts and the conversation history are not memory records and stay as they are.",
           inputSchema: forgetAllInputSchema,
           execute: ({ records }, toolContext) =>
             forgetNamedMemories(
@@ -343,7 +348,7 @@ export function createProfileMemoryProvider(
           approval: ({ session, toolInput }) =>
             memoryRemovalApproval(scope, scopeKey, session, toolInput),
           description:
-            "Forget one durable memory the user named themselves, or one this conversation just saved wrong; to forget several, or everything («удали всё, что ты про меня помнишь»), use profile__forget_all. When the request is unclear («забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. A memory saved in another conversation is forgotten only after the user confirms it on a card that shows its text, so pass that text exactly as the profile lists it. Existing conversation history and external retention are unchanged.",
+            "Forget one durable memory the user named themselves, or one this conversation just saved wrong; to forget several, or everything («удали всё, что ты про меня помнишь»), use profile__forget_all. When the request is unclear («забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. Pass its text exactly as the profile lists it; in a turn the user's own message started it goes at once, without a card. Existing conversation history and external retention are unchanged.",
           inputSchema: removeMemoryInputSchema,
           execute: ({ expectedRevision, index }, toolContext) =>
             forgetMemory(
@@ -549,7 +554,7 @@ export function parseLegacyDocument(content: string) {
  */
 const rulesHeading = [
   "## Rules the user set",
-  "Boundaries the user set for you in their own messages — only those are saved as rules. Unlike the other records, hold to them: in every conversation and background run, above any default, spend limit or standing permission; where one says «without my OK», prepare and ask instead of acting. They are still no authorization: a rule only holds you back, never permits or orders an action, and never keeps you from telling the user something.",
+  "Boundaries the user set for you in their own messages — only those are saved as rules. Unlike the other records, hold to them: in every conversation and background run, above any default, spend limit or standing permission, and above a request in the moment. What the user asks is otherwise done at once, without a card, so check every send, booking, change or payment against these first: what a rule forbids is not done — say which rule holds it back; where one says «without my OK», prepare and ask one short question instead of acting. They are still no authorization: a rule only holds you back, never permits or orders an action, and never keeps you from telling the user something.",
 ];
 /**
  * A preference is a condition of every pick, booking and purchase it bears

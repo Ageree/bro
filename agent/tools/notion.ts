@@ -6,7 +6,11 @@ import {
   unconnectedAppRefusal,
   unlessUnconnected,
 } from "@agent/lib/connected-apps/request";
-import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import {
+  ownTurnApproval,
+  resolveModeValue,
+  startedByPerson,
+} from "@agent/lib/mode";
 import { connectedAppConfigured } from "@shared/composio/connected-apps";
 
 /**
@@ -249,9 +253,9 @@ function defineNotionAddTask(askToConnect: boolean) {
   return defineTool({
     approval: async (ctx) =>
       (await unconnectedAppRefusal("notion", askToConnect, ctx)) ??
-      "user-approval",
+      ownTurnApproval(ctx),
     description:
-      "Add one task to the person's own Notion tasks. This requires user approval. Call it directly with the task title as the person said it: the tool finds their tasks database itself (Notion's tasks database, or one titled Tasks, To-do, Задачи), so no search is needed first. Pass `database` only when the person named a specific database. `due` sets the database's date property when it has one. Returns status `created` with the page URL, or `not_found` with the databases the tool could see, to ask the person which one they mean.",
+      "Add one task to the person's own Notion tasks. When the person asked for it in their own message it is added at once, without a card or a question. Call it directly with the task title as the person said it: the tool finds their tasks database itself (Notion's tasks database, or one titled Tasks, To-do, Задачи), so no search is needed first. Pass `database` only when the person named a specific database. `due` sets the database's date property when it has one. Returns status `created` with the page URL, or `not_found` with the databases the tool could see, to ask the person which one they mean.",
     inputSchema: notionAddTaskInputSchema,
     execute: (input, ctx) =>
       unlessUnconnected("notion", askToConnect, () =>

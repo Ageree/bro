@@ -209,7 +209,7 @@ describe("apps run", () => {
     );
   });
 
-  it("asks the person before a write, and refuses it in a read-only workspace", async () => {
+  it("writes what the person asked at once, and refuses it in a read-only workspace", async () => {
     const input = {
       action: "run" as const,
       app: "google" as const,
@@ -218,7 +218,8 @@ describe("apps run", () => {
       tool: "GOOGLESUPER_SPREADSHEETS_VALUES_APPEND",
     };
 
-    expect(await approvalOf(input)).toBe("user-approval");
+    expect(await approvalOf(input)).toBe("not-applicable");
+    expect(await approvalOf(input, "browser-result")).toBe("user-approval");
     settings.access.mockResolvedValue("read_only");
     expect(await approvalOf(input)).toEqual({
       reason: googleReadOnlyWriteRefusal,
@@ -238,14 +239,17 @@ describe("apps run", () => {
     ).resolves.toMatchObject({ status: "done", wrote: true });
   });
 
-  it("asks before a tool whose name says it writes, whatever its tags", async () => {
+  it("asks in a turn Bro opened before a tool whose name says it writes, whatever its tags", async () => {
     expect(
-      await approvalOf({
-        action: "run",
-        app: "todoist",
-        arguments: '{"task_id":"1"}',
-        tool: "TODOIST_DELETE_TASK",
-      })
+      await approvalOf(
+        {
+          action: "run",
+          app: "todoist",
+          arguments: '{"task_id":"1"}',
+          tool: "TODOIST_DELETE_TASK",
+        },
+        "browser-result"
+      )
     ).toBe("user-approval");
   });
 
@@ -387,25 +391,27 @@ describe("apps approval policy", () => {
     ).resolves.toMatchObject({ type: "denied" });
   });
 
-  it("refuses a write the card cannot show whole", async () => {
+  it("refuses a write in a turn Bro opened that its card cannot show whole", async () => {
     const write = {
       action: "run" as const,
       app: "todoist" as const,
       tool: "TODOIST_DELETE_TASK",
     };
+    const long = {
+      ...write,
+      arguments: JSON.stringify({ content: "x".repeat(3_600) }),
+    };
 
     expect(
-      await approvalOf({
-        ...write,
-        arguments: JSON.stringify({ content: "x".repeat(3_000) }),
-      })
+      await approvalOf(
+        { ...write, arguments: JSON.stringify({ content: "x".repeat(3_000) }) },
+        "browser-result"
+      )
     ).toBe("user-approval");
-    await expect(
-      approvalOf({
-        ...write,
-        arguments: JSON.stringify({ content: "x".repeat(3_600) }),
-      })
-    ).resolves.toMatchObject({ type: "denied" });
+    await expect(approvalOf(long, "browser-result")).resolves.toMatchObject({
+      type: "denied",
+    });
+    expect(await approvalOf(long)).toBe("not-applicable");
   });
 });
 

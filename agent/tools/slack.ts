@@ -8,7 +8,11 @@ import {
   unconnectedAppRefusal,
   unlessUnconnected,
 } from "@agent/lib/connected-apps/request";
-import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import {
+  ownTurnApproval,
+  resolveModeValue,
+  startedByPerson,
+} from "@agent/lib/mode";
 import { connectedAppConfigured } from "@shared/composio/connected-apps";
 
 /** The Slack Web API; every method sits right under it. */
@@ -302,14 +306,20 @@ async function resolveRecipient(
  * that name itself.
  */
 const bareIdRefusal =
-  "Not sent: name the recipient as #channel, @handle, email or name, not a bare Slack ID, so the approval card shows who gets the message. slack-read and slack-search give names.";
+  "Not sent: name the recipient as #channel, @handle, email or name, not a bare Slack ID, so it is clear who gets the message. slack-read and slack-search give names.";
 
-/** Every message waits for the card; one to a bare ID is refused first. */
-function slackSendApproval(to: string | undefined): ApprovalStatus {
+/**
+ * A message the person asked for goes at once, one Bro's own turn wrote waits
+ * for the card; one to a bare ID is refused first.
+ */
+function slackSendApproval(
+  to: string | undefined,
+  whenNamed: ApprovalStatus
+): ApprovalStatus {
   const recipient = to?.trim() ?? "";
   return userIdPattern.test(recipient) || conversationIdPattern.test(recipient)
     ? { reason: bareIdRefusal, type: "denied" }
-    : "user-approval";
+    : whenNamed;
 }
 
 /** The direct-message channel with one person, opened if it is new. */
@@ -375,9 +385,9 @@ function defineSlackSendMessage(askToConnect: boolean) {
   return defineTool({
     approval: async ({ session, toolInput }) =>
       (await unconnectedAppRefusal("slack", askToConnect, { session })) ??
-      slackSendApproval(toolInput?.to),
+      slackSendApproval(toolInput?.to, ownTurnApproval({ session })),
     description:
-      "Send a Slack message as the person, from their own Slack account. This requires user approval. Call it directly with the recipient as the person named them — a first or full name, @handle, email, or #channel, never a bare Slack ID — and the exact message text; the tool finds the recipient itself, so no lookup is needed first. Returns status `sent`; `ambiguous` with candidate people (nothing was sent: ask the person which one, then call again with that candidate's @handle, which the approval card shows in place of a bare ID); or `not_found` (nothing was sent). A sent result names the resolved recipient; tell the person who it went to.",
+      "Send a Slack message as the person, from their own Slack account. When the person asked for it in their own message it goes at once, without a card or «отправить?»; a rule they saved against writing someone, or asking for their ok first, outranks that. Call it directly with the recipient as the person named them — a first or full name, @handle, email, or #channel, never a bare Slack ID — and the exact message text; the tool finds the recipient itself, so no lookup is needed first. Returns status `sent`; `ambiguous` with candidate people (nothing was sent: ask the person which one, then call again with that candidate's @handle, never a bare ID); or `not_found` (nothing was sent). A sent result names the resolved recipient; tell the person who it went to.",
     inputSchema: slackSendInputSchema,
     execute: (input, ctx) =>
       unlessUnconnected("slack", askToConnect, () =>

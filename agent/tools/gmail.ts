@@ -44,7 +44,7 @@ import {
   usualVoices,
 } from "@agent/lib/google-workspace/turn-reads";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
-import { resolveModeValue } from "@agent/lib/mode";
+import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
 import {
   capFilename,
   maximumAttachmentBytes,
@@ -294,10 +294,10 @@ function defineGmailUpdate(updatedInTurn: number) {
       googleWriteApproval(
         ctx,
         gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
-          ? "user-approval"
+          ? ownTurnApproval(ctx)
           : "not-applicable"
       ),
-    description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. Changing more than ${String(gmailUpdateWithoutApproval)} messages in one turn, across all calls, asks the person to confirm a card. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
+    description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. Changing more than ${String(gmailUpdateWithoutApproval)} messages in one turn, across all calls, waits for the person's card only in a turn Bro opened itself (a browser report); in the person's own turn it is done at once. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
     inputSchema: gmailUpdateInputSchema,
     async execute(input, ctx) {
       const updated = await updateGmail(ctx, input.messageIds, input.update);
@@ -327,7 +327,7 @@ const replyFlow =
  * (RU d09, EN D5).
  */
 export const replyBeforeReadRefusal =
-  "Не сделано и карточку не показываю: сначала открой ветку этого письма через gmail-read-thread с `forReply: true` — она вернёт в `yourEarlierEmails` прошлые письма человека этому адресату. Напиши ответ его голосом (то же приветствие, «вы» или «ты», подпись и длина) и вызови инструмент снова.";
+  "Не сделано: сначала открой ветку этого письма через gmail-read-thread с `forReply: true` — она вернёт в `yourEarlierEmails` прошлые письма человека этому адресату. Напиши ответ его голосом (то же приветствие, «вы» или «ты», подпись и длина) и вызови инструмент снова.";
 
 /**
  * A reply to a message whose thread the conversation has not read, refused;
@@ -352,7 +352,7 @@ function replyBeforeRead(
  * as «Добрый день, Ирина Павловна!» … «С уважением».
  */
 function voiceRefusal(address: string, formulas: readonly string[]) {
-  return `Не сделано и карточку не показываю: в письмах на ${address} человек обычно пишет ${formulas.map((formula) => `«${formula}»`).join(" и ")} (его прошлые письма в \`yourEarlierEmails\`), а в этом письме этого нет. Начни и закончи письмо так же, как он, слово в слово, и вызови инструмент снова. Если человек в этом разговоре сам просил другое приветствие или подпись, вызови снова с тем же текстом.`;
+  return `Не сделано: в письмах на ${address} человек обычно пишет ${formulas.map((formula) => `«${formula}»`).join(" и ")} (его прошлые письма в \`yourEarlierEmails\`), а в этом письме этого нет. Начни и закончи письмо так же, как он, слово в слово, и вызови инструмент снова. Если человек в этом разговоре сам просил другое приветствие или подпись, вызови снова с тем же текстом.`;
 }
 
 /**
@@ -397,14 +397,14 @@ function defineGmailSend(
 ) {
   return defineTool({
     approval: async (ctx) => {
-      const access = await googleWriteApproval(ctx, "user-approval");
-      return access === "user-approval"
-        ? (replyBeforeRead(ctx.toolInput, readMessageIds) ??
+      const access = await googleWriteApproval(ctx, ownTurnApproval(ctx));
+      return typeof access === "object"
+        ? access
+        : (replyBeforeRead(ctx.toolInput, readMessageIds) ??
             voiceUnfollowed(ctx.toolInput, voices) ??
-            access)
-        : access;
+            access);
     },
-    description: `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. It shows the person an approval card with the recipients, subject and text, and that card is the only question: never ask «отправить?» in text and never send the text for review as a message first. Put the exact recipients, subject, and full text in the call so the card shows them. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused without a card. If the person declines the card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
+    description: `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. In a turn Bro opened itself (a browser report), the person decides on a card instead. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. If the person declines a card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
     inputSchema: gmailComposeSchema,
     async execute(input, ctx) {
       const sent = await sendGmail(ctx, input);

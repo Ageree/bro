@@ -209,6 +209,42 @@ describe("Google Workspace", () => {
     expect(gmailReadThread.approval).toBeUndefined();
   });
 
+  // Owner 26.09: nothing but a payment is confirmed. What the person asked
+  // for in their own message is sent, created or deleted at once; a browser
+  // run's report is the page's text, so there it waits for the card.
+  it("sends and changes the calendar at once in the person's own turn", async () => {
+    settings.access.mockResolvedValue("full");
+    composio.connect({ toolkit: "googlesuper", userId });
+    const writes = [
+      gmailSend,
+      calendarCreateEvent,
+      calendarUpdateEvent,
+      calendarDeleteEvent,
+    ];
+
+    expect(
+      await Promise.all(
+        writes.map(async (tool) =>
+          approvalOf(tool, undefined, "telegram-webhook")
+        )
+      )
+    ).toEqual(Array.from({ length: 4 }, () => "not-applicable"));
+    expect(
+      await Promise.all(
+        writes.map(async (tool) =>
+          approvalOf(tool, undefined, "browser-result")
+        )
+      )
+    ).toEqual(Array.from({ length: 4 }, () => "user-approval"));
+    expect(
+      await approvalOf(
+        gmailUpdate,
+        { messageIds: ids(12), update: "mark_read" },
+        "photon-imessage"
+      )
+    ).toBe("not-applicable");
+  });
+
   it("asks before changing more than three emails at once", async () => {
     settings.access.mockResolvedValue("full");
     composio.connect({ toolkit: "googlesuper", userId });
@@ -315,11 +351,12 @@ async function approvalOf<TInput>(
   tool: {
     readonly approval?: Approval<TInput> | undefined;
   },
-  toolInput?: ApprovalContext<TInput>["toolInput"]
+  toolInput?: ApprovalContext<TInput>["toolInput"],
+  authenticator?: string
 ) {
   const policy = policyOf(tool.approval);
   return policy({
-    ...sessionContext(),
+    ...sessionContext(authenticator),
     toolInput,
     abortSignal: new AbortController().signal,
     approvedTools: new Set(),
@@ -328,7 +365,7 @@ async function approvalOf<TInput>(
   });
 }
 
-function sessionContext() {
+function sessionContext(authenticator = "google-workspace-test") {
   return {
     async getSandbox() {
       throw new Error("Sandbox access is outside this focused test.");
@@ -340,7 +377,7 @@ function sessionContext() {
       auth: {
         current: {
           attributes: { workspaceId: scope.workspaceId },
-          authenticator: "google-workspace-test",
+          authenticator,
           principalId: userId,
           principalType: "user",
         },
