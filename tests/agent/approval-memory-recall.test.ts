@@ -95,19 +95,32 @@ const gatedCalls = [
     toolName: "calendar-create-event",
   },
   {
-    input: { action: "continue", allowPayment: true, runId: "run_1" },
+    input: {
+      action: "continue",
+      allowSubmit: true,
+      runId: "run_1",
+      submission: {
+        forWhom: "Алиса",
+        kind: "table",
+        personalData: ["имя"],
+        what: "столик на двоих",
+        when: "сегодня, 20:00",
+        where: "ресторан «Пушкин» (cafe-pushkin.ru)",
+      },
+    },
     policy: () =>
       browserTaskApproval(
         {
           action: "continue",
-          allowPayment: true,
+          allowSubmit: true,
           runId: "run_1",
           submission: {
             forWhom: "Алиса",
-            personalData: ["имя", "адрес"],
-            kind: "order",
-            what: "заказ корма для кота",
-            where: "shop.example",
+            kind: "table",
+            personalData: ["имя"],
+            what: "столик на двоих",
+            when: "сегодня, 20:00",
+            where: "ресторан «Пушкин» (cafe-pushkin.ru)",
           },
         },
         {
