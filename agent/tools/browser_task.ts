@@ -145,6 +145,11 @@ import {
 
 const inputSchema = z.object({
   action: z.enum(["start", "continue", "cancel", "status"]),
+  personWants: z
+    .enum(["done", "look"])
+    .describe(
+      "What the user's own words ask for on this errand, by what they mean rather than by their verbs. done: they want it done in their name — bought, booked, ordered, paid, signed up for or filed («возьми мне сапсан на пятницу», «закажи корм», «запиши меня к стоматологу», «хочу эти кроссовки, оформи»). look: they want only to find, compare, check a price or availability, or get a recommendation, or they said not to act yet («сколько стоит сапсан в пятницу?», «найди, где дешевле», «пока не бронируй»). With done the run takes the best option up to the last step before paying — signed in, the seat or slot chosen, their details filled in — and stops there for your one question; with look it only searches and reports. On continue it is what they want of the errand as a whole: a code, an answer or a changed seat on an errand they asked to be done keeps it done. For status and cancel, look."
+    ),
   allowPayment: z
     .boolean()
     .optional()
@@ -550,7 +555,8 @@ const confirmedStopLine =
 function commitmentLine(
   consent: SubmissionConsent | undefined,
   deliveryAddress = false,
-  phoneSignIn = false
+  phoneSignIn = false,
+  ownStaging = false
 ) {
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
@@ -581,6 +587,7 @@ function commitmentLine(
       "That checkout is all you may submit for them: never book an appointment, file an application or a request, apply to a job, register or sign up, and never send a message or a form to a business or a person on this errand.",
     ].join(" ");
   }
+  if (ownStaging) return ownStagingCommitment;
   return [
     "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never make an appointment, register, sign up, apply or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
     `${
@@ -595,128 +602,6 @@ function commitmentLine(
 }
 
 /**
- * A request to Bro to act in the person's name, in the imperative:
- * «закажи», «забронируй», «возьми сапсан», «купи», «оформи», «запиши меня»,
- * «оплати», and a clause that opens with «book», «buy» or «order». A verb in
- * the infinitive — «где купить», «сколько стоит заказать» — asks about the
- * thing, not for it, and «this book», «in order to» are no requests.
- */
-const requestPattern =
-  /(?<!\p{L})(?:закаж(?:и|ите)|оформ(?:и|ите)(?!\s+(?:списк|таблиц|табличк|ответ|результат|в\s+виде))|забронир(?:уй|уйте)|бронир(?:уй|уйте)|куп(?:и|ите)|(?:возьм(?:и|ите)|бер(?:и|ите))(?!\s+(?:(?:только|с|со|без)(?!\p{L})|в\s+расч|на\s+заметку|за\s+основу|самы|\d))|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|зарегистрир(?:уй|уйте)|подай(?:те)?|продл(?:и|ите)|оплат(?:и|ите))(?!\p{L})|(?:^|\n|[.!?;:]\s*|(?<!\p{L})(?:please|pls|then|and|just)\s+)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
-
-/**
- * The same in the voice of an errand the model wrote, which gives the run
- * instructions in the imperative or the infinitive: «Закажи…»,
- * «Забронировать столик…», «Записаться…». «Возьми» and «оформи» count
- * only with what is bought or ordered right after them («оформи заказ»,
- * «возьми билеты»): «возьми 3 самых дешёвых», «оформи результат
- * списком» and «для каждого запиши цену» are how a search reports.
- */
-const instructionPattern =
-  /(?<!\p{L})(?:закаж(?:и|ите)|заказать|забронир(?:уй|уйте|овать)|куп(?:и|ите|ить)|(?:возьм(?:и|ите)|оформ(?:и|ите|ить))(?=(?:\s+[\p{L}\d-]+){0,2}?\s+(?:заказ|покупк|брон|билет|подписк|полис|доставк))|запиш(?:и|ите)(?=\s+(?:меня|нас|его|её|ее|маму|папу|к|на)(?!\p{L}))|записаться|зарегистрир(?:уй|уйте|овать)(?:ся)?|оплат(?:и|ите|ить))(?!\p{L})|(?:^|\n|[.!?;:]\s*)(?:book|buy|order|reserve|purchase)(?!\p{L})/giu;
-
-/**
- * An errand that says in so many words that nothing is bought:
- * «Ничего не покупать», «ничего не оплачивать».
- */
-const errandDeclinesPattern =
-  /(?<!\p{L})ничего\s+не\s+(?:покуп|заказ|оплач|оплат|брон|оформл)\p{L}*/iu;
-
-/** An errand text that already asks for the last step: «дойди до оплаты». */
-const stagedErrandPattern =
-  /(?<!\p{L})(?:подготов\p{L}*\s+к\s+(?:покупке|оформлению|бронированию|заказу|записи|оплате)|до\s+(?:последнего\s+шага|оформления|страницы\s+оплаты|оплаты))(?!\p{L})/iu;
-
-/**
- * A negation up to two words before the action: «не бронируй», «ничего не
- * покупай», «не надо ничего бронировать», «don't book».
- */
-const negationBeforePattern =
-  /(?<!\p{L})(?:не|ни|без|нельзя|don't|dont|not|never|without)(?:\s+\p{L}+){0,2}\s+$/iu;
-
-/** Words after the action that turn it around: «бронировать пока не надо». */
-const negationAfterPattern =
-  /^(?:\s+\p{L}+)?\s+(?:не\s+(?:нужно|надо|стоит|требуется|буду|будем|хочу)|пока\s+не|нельзя)(?!\p{L})/iu;
-
-/**
- * A question about the thing, up to two words before the verb: «где
- * дешевле купить», «какой телефон купить», «сколько стоит продлить», «до
- * какого числа нужно оплатить», «можно ли оплатить», "where to buy".
- */
-const askedAboutPattern =
-  /(?<!\p{L})(?:где|куда|что|как|какой|какую|какое|какие|каких|какого|каком|когда|сколько|стоит\s+ли|можно\s+ли|нужно\s+ли|есть\s+ли|выгодн\p{L}*|дешевле|where|what|which|how|when)(?:\s+\p{L}+){0,2}\s+$/iu;
-
-/** «просто сравни цены», «только посмотри», «just compare». */
-const onlyLookingPattern =
-  /(?<!\p{L})(?:(?:просто|только)\s+(?:сравн|найд|найт|посмотр|подбер|подобр|узна|глян|провер)\p{L}*|(?:just|only)\s+(?:compare|find|look|check|see)|compare\s+only)(?!\p{L})/iu;
-
-/**
- * A word that asks to look for something rather than to do it: «найди»,
- * «покажи», «подскажи», «скинь варианты» — but not «скинь Лёше», which
- * sends a message.
- */
-const searchWordPattern =
-  /(?<!\p{L})(?:найд\p{L}*|найти|поищ\p{L}*|ищи|посмотр\p{L}*|сравн\p{L}*|подбер\p{L}*|подобра\p{L}*|узна\p{L}*|провер\p{L}*|глян\p{L}*|покаж\p{L}*|подскаж\p{L}*|скин(?:ь|ьте)\s+(?:мне|нам|варианты|ссылк\p{L}*|список)|дай(?:те)?\s+(?:мне\s+)?(?:варианты|ссылк\p{L}*|список)|find|search|look|compare|check|show)(?!\p{L})/iu;
-
-/**
- * Words that say not to act: a negation before any word for booking,
- * buying, ordering, signing up or paying, in any form («не бронируй»,
- * «пока не заказывай», «ничего не покупай»), or such a word followed by
- * «не надо», «не будем», «пока не».
- */
-const declinePattern =
-  /(?<!\p{L})(?:не|ни|без|don't|dont|never)(?:\s+\p{L}+){0,2}\s+(?:брон|заказ|закаж|покуп|куп|оформ|запис|запиш|оплат|оплач|бери|брать|возьм|book|buy|order|reserve|purchase)\p{L}*|(?<!\p{L})(?:брон|заказ|покуп|куп|оформ|запис|оплат|оплач|брать)\p{L}*(?:\s+\p{L}+)?\s+(?:не\s+(?:нужно|надо|стоит|будем|буду|хочу)|пока\s+не|нельзя)(?!\p{L})/iu;
-
-/** Whether one of the pattern's action words stands unnegated, and not asked about. */
-function actsIn(text: string, pattern: RegExp) {
-  return [...text.matchAll(pattern)].some((match) => {
-    const before = text.slice(0, match.index);
-    const after = text.slice(match.index + match[0].length);
-    return (
-      !negationBeforePattern.test(before) &&
-      !negationAfterPattern.test(after) &&
-      !askedAboutPattern.test(before)
-    );
-  });
-}
-
-/**
- * What the person's own words this turn say about acting. `asked`: a
- * message of theirs asks Bro, in the imperative, to book, buy, order or
- * sign them up, and asks it to look for nothing else — «купи молоко и найди
- * билеты в кино» does not say which errand the purchase is. `declined`: a
- * message says not to act yet, or only to look.
- */
-function personOnActing(words: readonly string[] | null) {
-  const said = words ?? [];
-  const declined = said.some(
-    (text) => declinePattern.test(text) || onlyLookingPattern.test(text)
-  );
-  const asked = said.some(
-    (text) => actsIn(text, requestPattern) && !searchWordPattern.test(text)
-  );
-  return { asked: asked && !declined, declined };
-}
-
-/**
- * Whether the errand the model wrote itself asks for the thing to be done,
- * not only found. Its explicit «доведи до последнего шага», «дойди до
- * страницы оплаты» always does. Its verbs — «Закажи на Ozon тот же корм» —
- * count only in a turn the person did not open (`byVerbs`): there the
- * errand is all there is, while in the person's turn their own words have
- * already said whether to act, and the errand's «возьми», «оформи»,
- * «запиши» are more often how a search reports. «Найди, где дешевле
- * купить» and «ничего не покупать» never do.
- */
-function errandAsksToAct(errand: string, byVerbs: boolean) {
-  if (stagedErrandPattern.test(errand)) return true;
-  if (!byVerbs) return false;
-  if (onlyLookingPattern.test(errand) || errandDeclinesPattern.test(errand)) {
-    return false;
-  }
-  return actsIn(errand, instructionPattern);
-}
-
-/**
  * The words a run is told the errand is to be done with, which also mark a
  * composed run so its follow-ups carry the same rule (`stagesErrand`).
  */
@@ -724,30 +609,87 @@ const stagingLead =
   "The person asked for this to be done — booked, bought, ordered or signed up for — not only found.";
 
 /**
- * An errand the person asked to be done, started before they confirmed
- * anything, goes as far as it can without them. On 25.09 runs asked to
- * «возьми», «закажи», «забронируй» stopped at a list or a guest basket
- * because the errand the model wrote said «ничего не бронировать», «только
- * для сравнения» or «не вводить данные пассажира» (RU d01, d02, d05, d13,
- * d15): the card came with no final total, or never. So this rule comes from
- * the tool, whatever the errand says, and still submits and pays nothing.
+ * An errand the person asked to be done goes as far as it can before they
+ * are asked anything. On 25.09 runs asked to «возьми», «закажи»,
+ * «забронируй» stopped at a list or a guest basket because the errand the
+ * model wrote said «ничего не бронировать», «только для сравнения» or «не
+ * вводить данные пассажира» (RU d01, d02, d05, d13, d15): the question came
+ * with no final total, or never. So this rule comes from the tool, whatever
+ * the errand says. In the person's own turn (`own`) the run signs in and
+ * fills in their details too, since paying is the only thing they are asked
+ * about; in a turn Bro opened itself it types none of them.
  */
-function stagingLine(signIn: boolean) {
+function stagingLine(signIn: boolean, own: boolean) {
   return [
     stagingLead,
-    "Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is submitted, typed or paid before they confirm: pick the one option that best fits every condition and take it up to the last step before any of that, and leave that page open.",
-    "For a basket or an order, go on from the basket to the checkout («Оформить заказ», «Перейти к оформлению», «Перейти к оплате») until the page shows the final total with every fee, the delivery slot or date and the delivery or pickup address. For a ticket, a stay, a table or an appointment, select the train or flight, the room, the table or the slot and the seats, and go on to the form that asks for the person's details.",
+    own
+      ? "Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is paid, placed or submitted before they answer: pick the one option that best fits every condition and take it up to the last step before that, and leave that page open."
+      : "Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is submitted, typed or paid before they confirm: pick the one option that best fits every condition and take it up to the last step before any of that, and leave that page open.",
+    `For a basket or an order, go on from the basket to the checkout («Оформить заказ», «Перейти к оформлению», «Перейти к оплате») until the page shows the final total with every fee, the delivery slot or date and the delivery or pickup address. For a ticket, a stay, a table or an appointment, select the train or flight, the room, the table or the slot and the seats, and go on to the form that asks for the person's details${own ? ", and fill it in" : ""}.`,
     signIn
-      ? "When the site shows that final total, the slots or the saved pickup point only to a signed-in account, sign in as the sign-in paragraph below allows."
+      ? `When the site shows that final total, the seats, the slots or the saved pickup point only to a signed-in account${own ? ", or needs one to reach the payment step" : ""}, sign in as the sign-in paragraph below allows.`
       : "When the site shows the final total only to a signed-in account, report the total the page shows and say it may change once signed in.",
     "Items already in the basket before this errand are not part of it: keep them out of this order — uncheck them, or remove them when the site has no other way — and name each one in the report with what you did with it.",
-    "Stop right before typing the person's details or pressing the button that places, books, submits or pays, and end with NEEDS: decision (or NEEDS: payment at a payment step), with that option first in ITEMS and its final total in TOTAL. The person confirms it once, and only then is anything submitted.",
+    own
+      ? closestOptionLine
+      : "Stop right before typing the person's details or pressing the button that places, books, submits or pays, and end with NEEDS: decision (or NEEDS: payment at a payment step), with that option first in ITEMS and its final total in TOTAL. The person confirms it once, and only then is anything submitted.",
   ].join(" ");
 }
+
+/**
+ * An errand with no exact fit used to end in «ничего не нашёл», with the
+ * train 400 ₽ over the budget never mentioned. The closest real option is
+ * staged all the same, and what differs is said in its first words, so the
+ * person decides on it in the same one answer.
+ */
+const closestOptionLine =
+  "When no option meets every condition of the errand, still take the closest real one up to that step and put it first in ITEMS, its details opening with «Differs:» and what differs, in the errand's language — «Differs: дороже на 400 ₽», «Differs: отправление в 18:40, а не после 19:00» — never an invented one.";
+
+/**
+ * The person asked in their own message for the errand to be done, and has
+ * not answered anything yet: the run does everything up to the one question
+ * before paying — the sign-in, the choice, their details in the form — and
+ * presses nothing that pays, places, books, submits or sends (owner, 26.09).
+ */
+const ownStagingCommitment = [
+  "The person asked in their own message for this to be done in their name, and they are asked only once, before it is paid or submitted. Take it up to that point yourself: sign in as the sign-in paragraph below allows, choose the option, the seats or the slot, and fill in the form with the person's known details below wherever it asks for them. Never leave their details for them to type and never tell them not to enter them.",
+  `${documentNumbersLine} Choose instead a passenger or a document the signed-in account already saved, and when the form needs one it has not, fill in the rest and stop there with NEEDS: decision, naming in DETAILS the document it asks for.`,
+  "Never press the button that pays, places the order, books, submits or sends, and never register, subscribe or write to anyone beyond this errand: stop right before that button, with NEEDS: payment and the final TOTAL with every fee when it charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee), or with NEEDS: decision when it is free. Put that option first in ITEMS with everything the person would answer to — its exact name, the date and time, the seats, the price with every fee, its link — then the next best options.",
+].join(" ");
 
 /** Whether a composed run was told the errand is to be done. */
 function stagesErrand(task: string | undefined) {
   return task?.includes(stagingLead) === true;
+}
+
+/**
+ * Who asked for the errand to be done: the person in their own turn
+ * (`person`), or an errand carried on in a turn Bro opened itself, which
+ * stages it without the person's details (`relayed`).
+ */
+type Staging = "person" | "relayed";
+
+/** A run staged in the person's own turn, before any consent. */
+function stagesForPerson(
+  consent: SubmissionConsent | undefined,
+  staging: Staging | undefined
+) {
+  return consent === undefined && staging === "person";
+}
+
+/**
+ * How the errand is staged, from what the model read in the person's words
+ * (`personWants`). In their own turn that is all there is; in a turn Bro
+ * opened itself an errand the person asked to be done stays so, and is
+ * staged without their details.
+ */
+function stagingFor(
+  wants: z.infer<typeof inputSchema>["personWants"] | undefined,
+  byPerson: boolean,
+  stagedBefore = false
+): Staging | undefined {
+  if (byPerson) return wants === "done" ? "person" : undefined;
+  return wants === "done" || stagedBefore ? "relayed" : undefined;
 }
 
 /**
@@ -1004,13 +946,15 @@ export function composeBrowserTask(options: {
   readonly home: string | undefined;
   readonly site: string | undefined;
   /** The person asked for the errand to be done, not only found. */
-  readonly staging?: boolean;
+  readonly staging?: Staging;
 }) {
-  // With consent the run has every detail already; the address alone is
-  // only for an errand that has none yet.
-  const address = options.consent
-    ? undefined
-    : deliveryAddressLine(options.deliveryAddress);
+  const own = stagesForPerson(options.consent, options.staging);
+  // With consent, or staged in the person's turn, the run has every detail
+  // already; the address alone is only for an errand that has none yet.
+  const address =
+    options.consent || own
+      ? undefined
+      : deliveryAddressLine(options.deliveryAddress);
   const phoneSignIn = options.aliases.includes(
     browserSecretAliases.signinPhone
   );
@@ -1019,8 +963,8 @@ export function composeBrowserTask(options: {
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
     personStepLine(),
-    options.staging === true && options.consent === undefined
-      ? stagingLine(options.aliases.length > 0)
+    options.staging !== undefined && options.consent === undefined
+      ? stagingLine(options.aliases.length > 0, own)
       : undefined,
     repeatOrderLine(options.errand),
     ticketLine(options.errand),
@@ -1028,11 +972,11 @@ export function composeBrowserTask(options: {
     publicServiceLine(options.errand),
     homeLine(options.home),
     searchLine(),
-    commitmentLine(options.consent, address !== undefined, phoneSignIn),
+    commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
     address,
     paymentLine(options.allowPayment),
     budgetLine(options.allowPayment),
-    options.consent ? options.facts : undefined,
+    options.consent || own ? options.facts : undefined,
     credentialsLine(options.aliases, options.site),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
@@ -1190,11 +1134,14 @@ export function composeBrowserContinuation(options: {
   readonly searching: boolean;
   readonly site: string | undefined;
   /** The person asked for the errand to be done, not only found. */
-  readonly staging?: boolean;
+  readonly staging?: Staging;
 }) {
-  // A follow-up on a finished order only looks: nothing to deliver anew.
+  // A follow-up on a finished order only looks: nothing to stage or deliver
+  // anew.
+  const staging = options.done === true ? undefined : options.staging;
+  const own = stagesForPerson(options.consent, staging);
   const address =
-    options.consent || options.done === true
+    options.consent || own || options.done === true
       ? undefined
       : deliveryAddressLine(options.deliveryAddress);
   const phoneSignIn = options.aliases.includes(
@@ -1214,16 +1161,14 @@ export function composeBrowserContinuation(options: {
     options.done === true && options.consent === undefined
       ? errandDoneLine
       : undefined,
-    options.staging === true &&
-    options.consent === undefined &&
-    options.done !== true
-      ? stagingLine(options.aliases.length > 0)
+    staging !== undefined && options.consent === undefined
+      ? stagingLine(options.aliases.length > 0, own)
       : undefined,
-    commitmentLine(options.consent, address !== undefined, phoneSignIn),
+    commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
     address,
     paymentLine(options.allowPayment),
     options.searching ? budgetLine(options.allowPayment) : undefined,
-    options.consent ? options.facts : undefined,
+    options.consent || own ? options.facts : undefined,
     credentialsLine(options.aliases, options.site),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
@@ -2906,8 +2851,6 @@ async function runBrowserTask(
   const { conversation, scope } = conversationTarget(context);
   const spoken = turnWords(context, turn);
   const { personTurn: byPerson, words } = spoken;
-  // Whether the person asked for the errand to be done, or said not yet.
-  const acting = personOnActing(words);
 
   if (input.action === "start") {
     const errand = z
@@ -2980,12 +2923,9 @@ async function runBrowserTask(
         facts: facts.details,
         home: facts.home,
         site: input.site,
-        // The person's own words decide it before the errand the model
-        // wrote, which on 25.09 said «ничего не бронировать» to «забронируй»;
-        // the errand's own words count only where theirs say nothing.
-        staging:
-          acting.asked ||
-          (!acting.declined && errandAsksToAct(errand, words === null)),
+        // What the person meant decides it, not the errand the model wrote,
+        // which on 25.09 said «ничего не бронировать» to «забронируй».
+        staging: stagingFor(input.personWants, byPerson),
       });
       // Another errand of the workspace in a browser on the same account
       // may be signing in: this one waits for it and starts signed in,
@@ -3475,7 +3415,11 @@ async function runBrowserTask(
           site,
           // An errand the person asked to be done stays so until they say
           // otherwise; a search stays a search.
-          staging: acting.asked || (stagesErrand(replaced) && !acting.declined),
+          staging: stagingFor(
+            input.personWants,
+            byPerson,
+            stagesErrand(replaced)
+          ),
         });
         // A follow-up in a new browser signs in anew: like a new errand, it
         // waits while another errand holds a browser on the same account.
