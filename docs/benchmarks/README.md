@@ -273,6 +273,43 @@ pnpm bench next --case d13-memory --out ~/bro-bench-runs/d13 --early  # след
 `previous/<case>-<время>/` (повторный прогон заменяет балл, старый журнал
 сохраняется), а `send` и `follow` дописывают в текущие.
 
+### Ветка до слияния: живой Бро локально
+
+Прод получает правку только после слияния, поэтому ветку гоняют на локальном
+Бро с настоящими сервисами: модель OpenRouter, браузеры Browser Use, веб и
+Composio с Google тестировщика. Локальны только сайт и Postgres.
+
+```sh
+cat > /tmp/a1.sh <<'EOF'
+bench run --case d03-recommendations --out ~/bro-bench-runs/my-branch/a1
+bench run --suite en --case d03_reco --out ~/bro-bench-runs/my-branch/a1
+bench send --out ~/bro-bench-runs/my-branch/a1 --case d03_reco --text "near Chistye Prudy" --kind answer
+tick proactive
+EOF
+scripts/bench/local/session.sh "$PWD" my-branch /tmp/a1.sh
+```
+
+- `session.sh` ждёт очереди (один Бро на машину, около 2.7 ГБ), даёт ветке
+  свою базу `bro_<имя>` и cookie, поднимает `pnpm dev:app` из указанного
+  дерева, входит драйвером, выполняет скрипт и гасит Бро. В скрипте есть
+  `bench <команда> …` (хост и cookie подставлены) и `tick <расписание>`.
+- Нужны Postgres на `127.0.0.1:5432` (пользователь из `PGUSER`, по умолчанию как в `compose.yaml`),
+  `OPENROUTER_API_KEY`, для Google-кейсов `COMPOSIO_API_KEY`. Пользователь
+  локального Бро получает id тестировщика из его подключения в Composio
+  (или `BENCH_TESTER_ID`), поэтому почта, календарь и Notion настоящие. Меньше
+  $0.5 на OpenRouter — сессия не стартует (код 3).
+- `eve dev` не запускает расписания по cron, а итог браузерного поручения
+  приносит только `browser-runs`: `ticker.sh` дёргает `browser-runs`,
+  `dynamic` и `memory` раз в минуту, `SCHEDULES="… proactive"` добавляет
+  проактивность.
+- Телефон локального пользователя — несуществующий `+70000000001`: вход на
+  сайт по телефону падает, а не шлёт код чужому человеку. Telegram и iMessage
+  выключены, проактивные сообщения ложатся в последнюю веб-сессию.
+- База пустая: нет профиля, сейфа и карты. Покупка проверяется до экрана
+  оплаты; настоящая оплата — только на проде.
+- В нескольких worktree одного клона кэш turbo общий и даёт ложные попадания:
+  `pnpm turbo run lint:app types:check:app test:app format:check knip --force`.
+
 ## Правила прогона
 
 - Не одобрять оплату, бронь, запись, заявление, отклик и письмо или сообщение
