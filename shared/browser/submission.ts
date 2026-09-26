@@ -84,13 +84,23 @@ export const browserSubmissionSchema = z.object({
     .describe(
       "What it costs the person, fees included: «бесплатно», «госпошлина 0 ₽», «около 900 ₽ по тарифу „Комфорт“»."
     ),
+  fees: cardLine(160)
+    .optional()
+    .describe(
+      "Every fee besides the items and the delivery, as the page shows it: «сервисный сбор 39 ₽», «без комиссии». Set it whenever the errand is paid, including when the fee is zero."
+    ),
+  delivery: cardLine(200)
+    .optional()
+    .describe(
+      "Delivery or pickup, as the page shows it: «199 ₽, сегодня к 20:00», «самовывоз, 0 ₽», «без доставки». Set it whenever the errand is paid."
+    ),
   chargeRub: z
     .number()
     .nonnegative()
     .max(10_000_000)
     .optional()
     .describe(
-      "The total in roubles the user pays on this errand, every fee included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money: approving the card then also approves paying up to it plus a small margin, so the user is never asked a second time for the payment. 0 for a card guarantee that charges nothing today. Leave it out when the errand is free or not priced in roubles."
+      "The total in roubles the user pays on this errand, every fee and the delivery included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money. Paying is not an approval card: the tool returns one question to send (the item, this total, the fees, the delivery, and «Оплачиваю?»), and only the user's own next reply confirms it. 0 for a card guarantee that charges nothing today. Leave it out when the errand is free or not priced in roubles."
     ),
 });
 
@@ -115,8 +125,8 @@ export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
   };
 
 /**
- * The most a run may pay on a card that named `chargeRub`. The card names
- * what the page or the tariff shows before the order, and the order itself
+ * The most a run may pay after the person confirmed a total. The question
+ * names what the page or the tariff shows before the order, and the order itself
  * rarely lands on exactly that: a taxi estimate moves with demand by a few
  * to about ten percent before the car is ordered, and a shop adds a service
  * or delivery fee of 50–100 ₽ the basket did not show. Asking again for that

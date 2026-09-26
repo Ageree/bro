@@ -370,9 +370,7 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "`allowSubmit` всегда идёт вместе с `submission` и показывает человеку одну нативную карточку подтверждения"
     );
-    expect(selected?.content).toContain(
-      "Карточка с `chargeRub` — это и разрешение заплатить"
-    );
+    expect(selected?.content).toContain("Оплата — не карточка.");
     expect(selected?.content).toContain("Подтверждение принадлежит поручению.");
     expect(selected?.content).toContain(
       "В расписаниях и фоновой работе `allowSubmit` и `allowPayment` отклоняются всегда"

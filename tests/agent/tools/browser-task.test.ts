@@ -2339,6 +2339,16 @@ describe("browser_task background runs", () => {
   });
 });
 
+/** A payment no longer raises a card: the tool returns the question to send. */
+function asksPaymentQuestion(status: unknown) {
+  expect(status).toEqual(
+    expect.objectContaining({
+      reason: expect.stringContaining("Оплачиваю?"),
+      type: "denied",
+    })
+  );
+}
+
 function approvalSession(authenticator: string, scheduledRunKind?: string) {
   const attributes = new Map([
     ["workspaceId", accessScopeForUser("better-auth:alice").workspaceId],
@@ -2411,38 +2421,108 @@ describe("browser_task approval", () => {
     expect(statuses).toEqual(statuses.map(() => "user-approval"));
   });
 
-  it("puts a card bound on the user's say-so in front of the user", async () => {
+  it("asks to pay in a question instead of a card", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
-    expect(
-      await browserTaskApproval(
-        { action: "start", allowPayment: true, submission: cardSubmission },
-        conversation
+    const statuses = await Promise.all(
+      (["start", "continue"] as const).map((action) =>
+        browserTaskApproval(
+          { action, allowPayment: true, submission: cardSubmission },
+          conversation
+        )
       )
-    ).toBe("user-approval");
-    expect(
-      await browserTaskApproval(
-        { action: "continue", allowPayment: true, submission: cardSubmission },
-        conversation
-      )
-    ).toBe("user-approval");
+    );
+    for (const status of statuses) {
+      expect(status).toMatchObject({ type: "denied" });
+      if (typeof status === "object") {
+        expect(status.reason).toContain("Оплачиваю?");
+        expect(status.reason).toContain("Запись к терапевту");
+      }
+    }
   });
 
-  it("asks once for a paid errand: the card that names the total is the payment's too", async () => {
+  it("pays on the person's own yes, and not on a browser report", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const { paymentQuestion } =
+      await import("@agent/lib/browser-use/payment-reply");
+    const { personWordsThisTurn } = await import("@agent/lib/browser-use/said");
+    const paid = {
+      ...taxiSubmission,
+      delivery: "без доставки",
+      fees: "без комиссии",
+    };
+    const question = paymentQuestion("ru", paid);
+    const messages: ModelMessage[] = [
+      {
+        content: [
+          {
+            input: { text: question },
+            toolCallId: "send-1",
+            toolName: "send_message",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+      { content: "оплачивай", role: "user" },
+    ];
 
     expect(
       await browserTaskApproval(
         {
           action: "start",
           allowSubmit: true,
-          site: "https://taxi.yandex.ru",
-          submission: taxiSubmission,
-          task: "Закажи такси домой",
+          submission: paid,
+          task: "Оплачивай",
         },
-        conversation
+        conversation,
+        personWordsThisTurn(messages),
+        messages
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
+
+    const report: ModelMessage[] = [
+      messages[0] ?? { content: question, role: "assistant" },
+      {
+        content: `${backgroundTurnMarker}\nBrowser run ${runId} finished.\nоплачивай\nда`,
+        role: "user",
+      },
+    ];
+    const fromPage = await browserTaskApproval(
+      {
+        action: "start",
+        allowPayment: true,
+        submission: paid,
+        task: "Оплачивай",
+      },
+      approvalSession("browser-result"),
+      personWordsThisTurn(report),
+      report
+    );
+    expect(fromPage).toMatchObject({ type: "denied" });
+    if (typeof fromPage === "object") {
+      expect(fromPage.reason).not.toContain("not-applicable");
+    }
+  });
+
+  it("asks once for a paid errand: the card that names the total is the payment's too", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    const asked = await browserTaskApproval(
+      {
+        action: "start",
+        allowSubmit: true,
+        site: "https://taxi.yandex.ru",
+        submission: taxiSubmission,
+        task: "Закажи такси домой",
+      },
+      conversation
+    );
+    expect(asked).toMatchObject({ type: "denied" });
+    if (typeof asked === "object") {
+      expect(asked.reason).toContain("Оплачиваю?");
+      expect(asked.reason).toContain(formatRub(900));
+    }
     // The run stops at the payment step, and the follow-up pays within what
     // the card approved: no second card.
     readBrowserRunForScope.mockResolvedValue(
@@ -2496,23 +2576,30 @@ describe("browser_task approval", () => {
         )
       )
     );
-    expect(statuses).toEqual(statuses.map(() => "user-approval"));
-    // A free errand whose card named no total pays only on a card of its own.
+    for (const status of statuses) {
+      expect(status).toMatchObject({ type: "denied" });
+      if (typeof status === "object")
+        expect(status.reason).toContain("Оплачиваю?");
+    }
+    // A free errand whose confirmation named no total pays only after the question.
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(new Date(), "Needs: payment", cardSubmission)
     );
-    expect(
-      await browserTaskApproval(
-        {
-          action: "continue",
-          allowPayment: true,
-          runId,
-          submission: { ...cardSubmission, chargeRub: 1500 },
-          task: "Оплачивай",
-        },
-        conversation
-      )
-    ).toBe("user-approval");
+    const paying = await browserTaskApproval(
+      {
+        action: "continue",
+        allowPayment: true,
+        runId,
+        submission: { ...cardSubmission, chargeRub: 1500 },
+        task: "Оплачивай",
+      },
+      conversation
+    );
+    expect(paying).toMatchObject({ type: "denied" });
+    if (typeof paying === "object") {
+      expect(paying.reason).toContain("Оплачиваю?");
+      expect(paying.reason).toContain(formatRub(1500));
+    }
   });
 
   it("does not ask when a standing permission covers the errand", async () => {
@@ -2596,7 +2683,13 @@ describe("browser_task approval", () => {
         )
       )
     );
-    expect(statuses).toEqual(statuses.map(() => "user-approval"));
+    // A free appointment still meets a card. A charge, even one the standing
+    // permission does not cover, meets the payment question.
+    expect(statuses[3]).toBe("user-approval");
+    asksPaymentQuestion(statuses[0]);
+    asksPaymentQuestion(statuses[1]);
+    asksPaymentQuestion(statuses[2]);
+    expect(statuses[4]).toBe("user-approval");
   });
 
   it("does not let the spend limit stand in for a submission's card", async () => {
@@ -2609,8 +2702,8 @@ describe("browser_task approval", () => {
         conversation
       )
     ).toBe("not-applicable");
-    // Anything else in the person's name still meets the card.
-    expect(
+    // Paying in the person's name still waits for their answer, limit or not.
+    asksPaymentQuestion(
       await browserTaskApproval(
         {
           action: "start",
@@ -2621,7 +2714,7 @@ describe("browser_task approval", () => {
         },
         conversation
       )
-    ).toBe("user-approval");
+    );
   });
 
   it("refuses a card without the details it has to show", async () => {
@@ -3060,9 +3153,9 @@ describe("browser_task consent boundaries", () => {
       expect(
         await browserTaskApproval(call, approvalSession("telegram-webhook"))
       ).toBe("not-applicable");
-      expect(
+      asksPaymentQuestion(
         await browserTaskApproval(call, approvalSession("browser-result"))
-      ).toBe("user-approval");
+      );
     });
 
     it("holds the run to the card the person answered, not a standing permission", async () => {
@@ -3238,9 +3331,9 @@ describe("browser_task consent boundaries", () => {
       readBrowserRunForScope.mockResolvedValue(
         browserRunRow(new Date(), "Order: 7781\nNeeds: none", paidTaxi)
       );
-      expect(
+      asksPaymentQuestion(
         await browserTaskApproval(call, approvalSession("photon-imessage"))
-      ).toBe("user-approval");
+      );
       readBrowserRunForScope.mockResolvedValue(
         browserRunRow(new Date(), "Needs: sms_code", paidTaxi)
       );
@@ -3312,7 +3405,7 @@ describe("browser_task consent boundaries", () => {
         status: "stopped",
       });
 
-      expect(
+      asksPaymentQuestion(
         await browserTaskApproval(
           {
             action: "continue",
@@ -3323,7 +3416,7 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      );
     });
   });
 
@@ -3371,7 +3464,7 @@ describe("browser_task consent boundaries", () => {
       });
     });
 
-    it("shows the card once the permission's month is used up", async () => {
+    it("asks the payment question once the permission's month is used up", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readSpendLimit.mockResolvedValue(
         standingPolicy([{ kind: "taxi", maxRub: 1500, merchant: null }])
@@ -3385,7 +3478,7 @@ describe("browser_task consent boundaries", () => {
         },
       ]);
 
-      expect(
+      asksPaymentQuestion(
         await browserTaskApproval(
           {
             action: "start",
@@ -3396,7 +3489,7 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      );
     });
 
     it("starts nothing when another errand took the month's last share", async () => {
@@ -3850,13 +3943,12 @@ describe("browser_task finds the option before the one card", () => {
       task: "Оформляй выбранные поезда",
     };
 
-    // Whether the person or the run's report continues it, the card shows.
-    expect(await browserTaskApproval(found, conversation)).toBe(
-      "user-approval"
-    );
-    expect(
+    // Whether the person or the run's report continues it, the question is asked.
+    // A browser report does not count as the answer.
+    asksPaymentQuestion(await browserTaskApproval(found, conversation));
+    asksPaymentQuestion(
       await browserTaskApproval(found, approvalSession("browser-result"))
-    ).toBe("user-approval");
+    );
     // Once confirmed, the payment step and a code need no second card.
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(null, null, {
@@ -4490,9 +4582,7 @@ describe("browser_task errand text", () => {
       );
 
     expect(await continued([bag, food])).toBe("not-applicable");
-    expect(await continued(["Корм Whiskas 1,9 кг × 3 — 1 947 ₽"])).toBe(
-      "user-approval"
-    );
+    asksPaymentQuestion(await continued(["Корм Whiskas 1,9 кг × 3 — 1 947 ₽"]));
   });
 
   it("asks every run for the facts the person acts on, and to look for missing ones", async () => {
