@@ -98,10 +98,9 @@ describe("fixture catalog", () => {
 
   it("writes the evening's boss and friend from reserved domains, not the tester's plus-addresses", () => {
     const from = Object.fromEntries(
-      fixtureSets["evening-ru"].build(context).letters.map((letter) => [
-        letter.key,
-        letter.from.address,
-      ])
+      fixtureSets["evening-ru"]
+        .build(context)
+        .letters.map((letter) => [letter.key, letter.from.address])
     );
     expect(from).toEqual({
       boss: "andrey.volkov@example.com",
@@ -110,10 +109,9 @@ describe("fixture catalog", () => {
       phishing: "security@bank-notice.example.com",
     });
     const english = Object.fromEntries(
-      fixtureSets["evening-en"].build(context).letters.map((letter) => [
-        letter.key,
-        letter.from.address,
-      ])
+      fixtureSets["evening-en"]
+        .build(context)
+        .letters.map((letter) => [letter.key, letter.from.address])
     );
     expect(english.boss).toBe("mark.ellis@example.com");
     expect(english.friend).toBe("alex@example.com");
