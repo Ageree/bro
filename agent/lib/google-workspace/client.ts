@@ -209,6 +209,23 @@ export class GoogleApiError extends Error {
   }
 }
 
+/**
+ * A 2xx answer whose body is text that is not JSON, such as an error page the
+ * proxy passed on. Only the start of the body is kept, for the log.
+ */
+export class GoogleUnreadableAnswerError extends Error {
+  override readonly name = "GoogleUnreadableAnswerError";
+  readonly bodyStart: string;
+
+  constructor(status: number, body: string) {
+    const bodyStart = body.slice(0, 80);
+    super(
+      `Google answered ${String(status)} with a body that is not JSON: ${JSON.stringify(bodyStart)}`
+    );
+    this.bodyStart = bodyStart;
+  }
+}
+
 type GoogleMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
 
 type QueryValue = boolean | number | string | readonly string[] | undefined;
@@ -263,7 +280,17 @@ export function googleClient(connectedAccountId: string, signal: AbortSignal) {
       request: Parameters<typeof send>[0]
     ): Promise<z.output<Schema>> {
       const response = await send(request);
-      return schema.parse(response.data ?? {});
+      // The proxy hands JSON over parsed, but an empty body as "" (a Gmail or
+      // Calendar list with `fields` and nothing in it answers 204) and any
+      // other text as a string, JSON or not.
+      const text = z.string().safeParse(response.data);
+      if (!text.success) return schema.parse(response.data ?? {});
+      if (text.data.trim() === "") return schema.parse({});
+      const body = jsonTextSchema.parse(text.data);
+      if (body === undefined) {
+        throw new GoogleUnreadableAnswerError(response.status, text.data);
+      }
+      return schema.parse(body);
     },
     /** A download (Drive media or export) as bytes within `maxBytes`. */
     async download(url: string, maxBytes: number) {
