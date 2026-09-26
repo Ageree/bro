@@ -28,6 +28,21 @@ describe("fallbackDeliveryText", () => {
       "уточни дату"
     );
   });
+
+  it.each(["<eve-empty-delivery/>", "&lt;eve-empty-delivery/&gt;"])(
+    "delivers nothing for eve's empty delivery marker %j",
+    (message) => {
+      expect(fallbackDeliveryText(message)).toBeUndefined();
+    }
+  );
+
+  it("never shows eve's empty delivery marker inside real text", () => {
+    expect(
+      fallbackDeliveryText(
+        "Браузер дошёл до оплаты.\n\n<eve-empty-delivery/>\n\nИтог: 2 билета, 1 840 ₽."
+      )
+    ).toBe("Браузер дошёл до оплаты.\n\nИтог: 2 билета, 1 840 ₽.");
+  });
 });
 
 describe("turn failure notice", () => {
