@@ -460,11 +460,11 @@ function requestText(input: readonly ModelMessage[]) {
   return input
     .filter((message) => message.role === "user")
     .map((message) =>
-      typeof message.content === "string"
+      Array.isArray(message.content)
         ? message.content
-        : message.content
             .flatMap((part) => (part.type === "text" ? [part.text] : []))
             .join("\n")
+        : message.content
     )
     .join("\n");
 }

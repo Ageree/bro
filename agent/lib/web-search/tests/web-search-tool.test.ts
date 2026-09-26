@@ -373,11 +373,11 @@ describe("web_search tool selection", () => {
       "Одно из заведений находится на Чистопрудном бульваре.\n(this result says «сеть вегетарианских кафе»: the place it is about has more than one branch under its name — a chain, so it does not pass «не сеть» when the person asked for that)"
     );
     expect(pick).toContain("1 этаж 6 филиалов\n(this result says «6 филиалов»");
-    expect(pick).toContain("3 филиала. Чек 1500 ₽\n(this result says «3 филиала»");
-    // One branch, or «несетевое», is no chain.
     expect(pick).toContain(
-      "Не сетевое заведение.\n\n5. Jagannath"
+      "3 филиала. Чек 1500 ₽\n(this result says «3 филиала»"
     );
+    // One branch, or «несетевое», is no chain.
+    expect(pick).toContain("Не сетевое заведение.\n\n5. Jagannath");
     expect(pick).toContain("(this result says «restaurant chain»");
 
     expect(pick).toContain(

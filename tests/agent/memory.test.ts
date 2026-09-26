@@ -802,7 +802,9 @@ describe("the person's rules in the profile", () => {
     });
 
     it("says nothing when the request names nothing a preference could bear on", () => {
-      expect(renderPreferencesForRequest(saved, "давай второй")).toBeUndefined();
+      expect(
+        renderPreferencesForRequest(saved, "давай второй")
+      ).toBeUndefined();
       expect(
         renderPreferencesForRequest(
           [currentRecord(0, { text: "Живёт в Москве." })],
