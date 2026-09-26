@@ -87,9 +87,12 @@ const listBrowserUseSessionQueue = vi.hoisted(() =>
   >(() => Promise.resolve([]))
 );
 const readBrowserUseSession = vi.hoisted(() =>
-  vi.fn<() => Promise<{ latestRunId: string; status: "completed" }>>(() =>
-    Promise.resolve({ latestRunId: runId, status: "completed" })
-  )
+  vi.fn<
+    () => Promise<{
+      latestRunId: string;
+      status: "completed" | "running";
+    }>
+  >(() => Promise.resolve({ latestRunId: runId, status: "completed" }))
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<
