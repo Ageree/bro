@@ -52,6 +52,7 @@ import {
   serializeAddressVaultPayload,
   serializeContactVaultPayload,
 } from "@shared/vault/schema";
+import type * as browserUseHost from "@agent/lib/browser-use/host";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "22222222-2222-4222-8222-222222222222";
@@ -64,6 +65,12 @@ const sessionId = "22222222-2222-4222-8222-222222222222";
 const codeTyping =
   "Enter this one-time code first, before you navigate, read or click anything else: it expires within minutes. If the page splits it into one box per digit, click the first box and enter the code there, as keystrokes, so the focus moves on box by box, and check that every box shows its digit before you confirm. If the boxes stay empty or show the wrong digits, clear them and enter the same code once more — it stays valid for a few minutes — before you stop for a new one.";
 const followUpRunId = "33333333-3333-4333-8333-333333333333";
+/**
+ * What a message queued into the running errand adds after the person's
+ * words, so the run's final answer still reports the whole errand.
+ */
+const joinsErrand =
+  "This message joins the errand «Войди в аккаунт на taxi.yandex.ru» you are running now; it does not replace it. Take it into that errand, then finish the errand as it asks. Your final answer reports the whole errand — everything it asked for together with this message — not only this message, and ends with the full labelled footer below. For a basket, a cart or an order, ITEMS lists every line in it as it stands when you finish.";
 const freshSessionId = "44444444-4444-4444-8444-444444444444";
 const liveViewUrl = "https://live.browser-use.com/session-1";
 
@@ -110,8 +117,18 @@ const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
 );
 const queueBrowserUseSessionMessage = vi.hoisted(() =>
-  vi.fn<(sessionId: string, message: string) => Promise<void>>(() =>
-    Promise.resolve()
+  vi.fn<
+    (
+      sessionId: string,
+      message: string
+    ) => Promise<{
+      id: number;
+      runId?: string | null;
+      sessionId: string;
+      status: string;
+    }>
+  >((queuedSessionId) =>
+    Promise.resolve({ id: 1, sessionId: queuedSessionId, status: "pending" })
   )
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
@@ -359,6 +376,14 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   stopBrowserRunErrand,
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   updateQueuedBrowserRun,
+}));
+// Whether a site's name exists is a DNS answer: no test asks the network.
+const siteHostMissing = vi.hoisted(() =>
+  vi.fn<(site: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseHost>()),
+  siteHostMissing,
 }));
 // The owner's alert state lives in the database; what the tool does about a
 // 402 is what these tests read.
@@ -656,6 +681,36 @@ describe("browser_task cost ceiling", () => {
   });
 });
 
+describe("browser_task on a site that does not exist", () => {
+  it("starts nothing and sends Bro to find the real site", async () => {
+    // RU 26.09, d15: an errand on a barbershop's made-up address was
+    // retried as an anti-bot wall for half an hour.
+    siteHostMissing.mockResolvedValueOnce(true);
+
+    const result = await startErrand("");
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://example.com"
+    );
+    expect(result).toEqual({
+      note: "Nothing was started: the site example.com does not exist — its name does not resolve, so no browser could open it. Do not start it again at that address and do not guess another. Find the real site first: look the place, shop or service up with web_search (for a business, with sites yandex.ru/maps or 2gis.ru — its card there names its own site), then start the errand with the origin that search gave. When it has no site of its own, tell the user so and offer what the search found instead, such as its phone or its card on the maps.",
+      status: "site_not_found",
+    });
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("starts as usual on a site whose name resolves", async () => {
+    await startErrand("");
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://example.com"
+    );
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+});
+
 describe("browser_task monthly quota", () => {
   it("records the site the errand was pointed at", async () => {
     await startErrand("");
@@ -692,12 +747,49 @@ describe("browser_task continuation", () => {
   it("queues the message while the tracked run is still live", async () => {
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    const [queuedTo, queued] =
+      queueBrowserUseSessionMessage.mock.calls[0] ?? [];
+    expect(queuedTo).toBe(sessionId);
+    expect(
+      queued?.startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\nBefore the labelled footer, write a complete useful report`
+      )
+    ).toBe(true);
+    expect(queued).toContain("\nNEEDS: exactly one of ");
+    expect(queued).toContain(
+      "\nITEMS: a JSON array with one object per option"
     );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId, status: "running" });
+  });
+
+  it("tracks the run an idle session drained the queued message into", async () => {
+    queueBrowserUseSessionMessage.mockResolvedValueOnce({
+      id: 7,
+      runId: followUpRunId,
+      sessionId,
+      status: "dispatching",
+    });
+
+    const result = await continueErrand({});
+
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({
+        id: followUpRunId,
+        sessionId,
+        status: "running",
+        task: "Человек написал: «Код из смс 992130»",
+      })
+    );
+    expect(result).toMatchObject({
+      previousRunId: runId,
+      runId: followUpRunId,
+      status: "running",
+    });
   });
 
   it("hands a live run the person's approval to submit with their details", async () => {
@@ -723,10 +815,12 @@ describe("browser_task continuation", () => {
   it("queues a code into a confirmed live run without restating the card", async () => {
     await continueErrand({ confirmed: cardSubmission });
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
-    );
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(
+      queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+      )
+    ).toBe(true);
     expect(recordBrowserRunSubmission).not.toHaveBeenCalled();
   });
 
@@ -827,10 +921,13 @@ describe("browser_task continuation", () => {
 
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
-    );
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(queueBrowserUseSessionMessage.mock.calls[0]?.[0]).toBe(sessionId);
+    expect(
+      queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+      )
+    ).toBe(true);
     expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId });
   });
@@ -995,7 +1092,7 @@ describe("browser_task anti-bot checks", () => {
     );
     // A site the network never loads goes to the same background retry.
     expect(task).toContain(
-      "If this errand's Site does not load at all because of a network or proxy error — ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
+      "If this errand's Site does not load at all because of a network or proxy error — ERR_NAME_NOT_RESOLVED, ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached» — reload it once; if it still does not load, stop with NEEDS: captcha and name the error in DETAILS"
     );
   });
 
@@ -5638,10 +5735,13 @@ describe("browser_task passes on only what the person sent", () => {
       expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
         sessionId
       );
-      expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-        sessionId,
-        `Человек написал: «739204»\n\n${codeTyping}`
-      );
+      expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+      expect(queueBrowserUseSessionMessage.mock.calls[0]?.[0]).toBe(sessionId);
+      expect(
+        queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+          `Человек написал: «739204»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+        )
+      ).toBe(true);
       // Any other code is still made up.
       await expect(
         tool.execute(

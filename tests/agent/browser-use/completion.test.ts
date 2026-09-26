@@ -3,6 +3,7 @@ import type { ScheduleToFn } from "eve/schedules";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import { formatRub } from "@shared/spending/limit";
+import type * as browserUseHost from "@agent/lib/browser-use/host";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 
@@ -241,6 +242,14 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   cancelBrowserUseRun,
   stopBrowserUseSessionBrowsers,
   readBrowserUseRun,
+}));
+// Whether a site's name exists is a DNS answer: no test asks the network.
+const siteHostMissing = vi.hoisted(() =>
+  vi.fn<(site: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseHost>()),
+  siteHostMissing,
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
@@ -759,6 +768,78 @@ describe("settling a browser run", () => {
 
     await settleBrowserRun({ to }, runId);
 
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("does not wait out a site whose name does not exist, and has the real one found", async () => {
+    // RU 26.09, d15: a made-up barbershop address met the proxy's
+    // ERR_TUNNEL_CONNECTION_FAILED and was retried for half an hour.
+    const invented = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://barbershop-arthur-profsoyuznaya.ru",
+      submission: null,
+      task: "Запиши к барберу Артуру на Профсоюзной на 19:00",
+    };
+    readBrowserRun.mockResolvedValue(invented);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...invented, completedAt: new Date() });
+    siteHostMissing.mockResolvedValueOnce(true);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: сайт не открылся\nNEEDS: captcha\nDETAILS: ERR_TUNNEL_CONNECTION_FAILED",
+      sessionId: "session-1",
+      status: "completed",
+      task: invented.task,
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://barbershop-arthur-profsoyuznaya.ru"
+    );
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(
+      String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
+    ).not.toContain("Needs: captcha");
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "This is a background result, not a user message. The site barbershop-arthur-profsoyuznaya.ru does not exist — its name does not resolve, so the errand never opened it. It is not an anti-bot check and it is not retried: nothing was done there. Do not start the errand at that address again and do not guess another. Find the real site now: look the place, shop or service up with web_search (for a business, with sites yandex.ru/maps or 2gis.ru — its card there names its own site), then start the errand there with browser_task start — a new errand with the same constraints and the origin that search gave — and tell the user in one short line that the address did not exist and where you found the real one."
+    );
+    expect(prompt).not.toContain("through 5 attempts");
+  });
+
+  it("still retries a wall on a site whose name resolves", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      site: "https://www.gosuslugi.ru",
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: "net::ERR_TUNNEL_CONNECTION_FAILED at https://www.gosuslugi.ru/",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Посмотри штрафы",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(siteHostMissing).toHaveBeenCalledExactlyOnceWith(
+      "https://www.gosuslugi.ru"
+    );
     expect(send).not.toHaveBeenCalled();
     expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
   });
@@ -1701,6 +1782,98 @@ describe("what the report turn retells", () => {
       task,
     });
   }
+
+  it("reports by itself an errand that took the person's message mid-run", async () => {
+    // RU 26.09, d05: «и добавь ещё молоко» went into the running errand,
+    // and its report arrived as «Total 1 396 ₽, Needs: payment» alone.
+    const basket = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://vkusvill.ru",
+      submission: null,
+      task: "Собери корзину: десяток яиц и батон",
+    };
+    readBrowserRun.mockResolvedValue(basket);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...basket, completedAt: new Date() });
+    finishedRun(
+      [
+        "В корзине яйца, батон и молоко, которое попросили добавить.",
+        "RESULT: корзина собрана, молоко добавлено",
+        "TOTAL: 412 ₽",
+        "NEEDS: none",
+        'ITEMS: [{"name":"Яйца С1, 10 шт","price":"149 ₽","quantity":"1"},{"name":"Батон нарезной","price":"64 ₽","quantity":"1"},{"name":"Молоко 3,2%, 1 л","price":"99 ₽","quantity":"1"},{"name":"Доставка","price":"100 ₽","fee":true}]',
+      ],
+      basket.task
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("Errand: Собери корзину: десяток яиц и батон");
+    expect(prompt).toContain(
+      "Items:\n1. Яйца С1, 10 шт — 149 ₽ — qty 1\n2. Батон нарезной — 64 ₽ — qty 1\n3. Молоко 3,2%, 1 л — 99 ₽ — qty 1\n4. [fee] Доставка — 100 ₽"
+    );
+  });
+
+  it("has the basket read back before any payment when the stop lists nothing", async () => {
+    // RU 26.09, d05: «Total 1 396 ₽, Needs: payment» with no lines, and Bro
+    // asked to pay while telling of «что-то заменено».
+    finishedRun(
+      [
+        "RESULT: корзина собрана, остановлено перед оплатой",
+        "TOTAL: 1 396 ₽",
+        "NEEDS: payment",
+      ],
+      "Закажи продукты к восьми вечера"
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The run stopped at payment without listing what is being paid for: no Items came back. Do not ask the user to pay or to confirm, do not continue with allowSubmit or allowPayment, and show no card yet. Continue this run once now with browser_task continue, asking it to change nothing and to read the basket or order summary back as ITEMS — every line with its name, quantity and price, each substitute with what it replaces, every fee as a line of its own, the delivery slot or date and the total — and tell the user in one short line that you are checking what is in the basket. If that continue is refused, tell the user the total the run reached and that it did not say what is in the basket, and offer to read it back. Say nothing about substitutes, missing items, the slot or the delivery beyond what the report itself states."
+    );
+    expect(prompt).not.toContain("The run stopped before paying");
+    expect(prompt).not.toContain("continue this run now with allowSubmit");
+    expect(prompt).not.toContain(
+      "The user already confirmed this errand on a card"
+    );
+  });
+
+  it("asks to pay for a basket once the stop lists what is in it", async () => {
+    finishedRun(
+      [
+        "RESULT: корзина собрана, остановлено перед оплатой",
+        "TOTAL: 312 ₽",
+        "NEEDS: payment",
+        'ITEMS: [{"name":"Молоко 3,2%, 1 л","price":"99 ₽","quantity":"2"},{"name":"Доставка","price":"114 ₽","fee":true}]',
+      ],
+      "Закажи молоко"
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "The run stopped before paying, with the total in Total."
+    );
+    expect(prompt).not.toContain("no Items came back");
+    expect(prompt).toContain(
+      "Items:\n1. Молоко 3,2%, 1 л — 99 ₽ — qty 2\n2. [fee] Доставка — 114 ₽"
+    );
+  });
 
   it("tells every charge with what it is for, never an amount alone", async () => {
     // RU 24.09, d06: «висит 500 ₽ к оплате» and nothing on what for.

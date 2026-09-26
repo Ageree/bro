@@ -429,7 +429,7 @@ export function parseBrowserOutcome(result: string | null | undefined) {
  * (d06) with nothing done and no retry.
  */
 const networkErrorPattern =
-  /ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_TIMED_OUT|TIMED_OUT|EMPTY_RESPONSE)|This site can(?:'|’)t be reached/iu;
+  /ERR_(?:NAME_NOT_RESOLVED|TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_TIMED_OUT|TIMED_OUT|EMPTY_RESPONSE)|This site can(?:'|’)t be reached/iu;
 
 /** The network error a text names, when it names one. */
 export function networkErrorIn(text: string | null | undefined) {
