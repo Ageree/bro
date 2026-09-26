@@ -215,27 +215,20 @@ describe("Google Workspace", () => {
   it("sends and changes the calendar at once in the person's own turn", async () => {
     settings.access.mockResolvedValue("full");
     composio.connect({ toolkit: "googlesuper", userId });
-    const writes = [
-      gmailSend,
-      calendarCreateEvent,
-      calendarUpdateEvent,
-      calendarDeleteEvent,
-    ];
+    const approvalsIn = async (authenticator: string) =>
+      Promise.all([
+        approvalOf(gmailSend, undefined, authenticator),
+        approvalOf(calendarCreateEvent, undefined, authenticator),
+        approvalOf(calendarUpdateEvent, undefined, authenticator),
+        approvalOf(calendarDeleteEvent, undefined, authenticator),
+      ]);
 
-    expect(
-      await Promise.all(
-        writes.map(async (tool) =>
-          approvalOf(tool, undefined, "telegram-webhook")
-        )
-      )
-    ).toEqual(Array.from({ length: 4 }, () => "not-applicable"));
-    expect(
-      await Promise.all(
-        writes.map(async (tool) =>
-          approvalOf(tool, undefined, "browser-result")
-        )
-      )
-    ).toEqual(Array.from({ length: 4 }, () => "user-approval"));
+    expect(await approvalsIn("telegram-webhook")).toEqual(
+      Array.from({ length: 4 }, () => "not-applicable")
+    );
+    expect(await approvalsIn("browser-result")).toEqual(
+      Array.from({ length: 4 }, () => "user-approval")
+    );
     expect(
       await approvalOf(
         gmailUpdate,

@@ -398,11 +398,11 @@ function defineGmailSend(
   return defineTool({
     approval: async (ctx) => {
       const access = await googleWriteApproval(ctx, ownTurnApproval(ctx));
-      return typeof access === "object"
-        ? access
-        : (replyBeforeRead(ctx.toolInput, readMessageIds) ??
+      return access === "not-applicable" || access === "user-approval"
+        ? (replyBeforeRead(ctx.toolInput, readMessageIds) ??
             voiceUnfollowed(ctx.toolInput, voices) ??
-            access);
+            access)
+        : access;
     },
     description: `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. In a turn Bro opened itself (a browser report), the person decides on a card instead. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. If the person declines a card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
     inputSchema: gmailComposeSchema,
