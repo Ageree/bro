@@ -582,7 +582,7 @@ async function startErrand(
   return browserTask.execute(
     {
       action: "start",
-      personWants: "look",
+      personWants: "look" as const,
       allowPayment,
       allowSubmit,
       // The approval card's details travel with every confirmed call.
@@ -633,7 +633,7 @@ async function continueErrand(input: {
   return tool.execute(
     {
       action: "continue",
-      personWants: "look",
+      personWants: "look" as const,
       allowPayment: input.allowPayment,
       allowSubmit: input.allowSubmit,
       personSaid:
@@ -926,7 +926,7 @@ describe("browser_task pictures", () => {
     await browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         collectImages: true,
         site: "https://www.ozon.ru",
         task: "Найди такой же фитнес-браслет и покажи фото",
@@ -947,7 +947,7 @@ describe("browser_task pictures", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         collectImages: true,
         personSaid: "скинь фотки",
         runId,
@@ -1478,7 +1478,7 @@ describe("browser_task payment boundary", () => {
       browserTask.execute(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           site: "https://www.gosuslugi.ru",
           task: "Подай заявление на справку об отсутствии судимости",
@@ -1582,7 +1582,7 @@ describe("browser_task one question per errand", () => {
     return browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         site: "https://taxi.yandex.ru",
         submission,
@@ -1697,7 +1697,7 @@ describe("browser_task one question per errand", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         personSaid: "Оплачивай картой",
         runId: "queued:errand-1",
@@ -1730,7 +1730,7 @@ describe("browser_task scoping", () => {
 
     await expect(
       browserTask.execute(
-        { action: "status", personWants: "look", runId },
+        { action: "status", personWants: "look" as const, runId },
         toolContext("better-auth:bob")
       )
     ).rejects.toThrow("That browser run is not part of this workspace.");
@@ -1750,7 +1750,7 @@ describe("browser_task scoping", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -1772,7 +1772,7 @@ describe("browser_task scoping", () => {
       const tool = await resolvedBrowserTask([], said);
       return continuationNote(
         await tool.execute(
-          { action: "status", personWants: "look", runId },
+          { action: "status", personWants: "look" as const, runId },
           toolContext("better-auth:alice")
         )
       );
@@ -1795,7 +1795,7 @@ describe("browser_task scoping", () => {
     // outcome.
     const { browserTask } = await import("@agent/tools/browser_task");
     const worker = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice", "scheduled-worker")
     );
     expect(continuationNote(worker)).not.toContain("quick web_search");
@@ -1817,7 +1817,7 @@ describe("browser_task scoping", () => {
 
     await expect(
       browserTask.execute(
-        { action: "status", personWants: "look", runId },
+        { action: "status", personWants: "look" as const, runId },
         anonymous
       )
     ).rejects.toThrow("An authenticated user is required");
@@ -1879,7 +1879,7 @@ describe("browser_task standing spend limit", () => {
     return browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         site: "https://www.shop.example",
         task: "Купи корм для кота",
@@ -1998,7 +1998,7 @@ describe("browser_task standing spend limit", () => {
     const result = await browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         site: "https://www.shop.example",
         task: "Оформи подписку на доставку корма раз в месяц",
@@ -2049,7 +2049,7 @@ describe("browser_task standing spend limit", () => {
       browserTask.execute(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           site: "https://shop.example",
           task: "Купи корм",
@@ -2107,7 +2107,7 @@ describe("browser_task standing spend limit", () => {
     await browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         site: "https://shop.example",
         submission: {
@@ -2148,7 +2148,7 @@ describe("browser_task standing spend limit", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Возьми другой корм",
         runId,
         task: "Возьми другой корм",
@@ -2191,7 +2191,7 @@ describe("browser_task spend limit on a follow-up", () => {
     return tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         personSaid: "Оформляй",
         runId,
@@ -2274,7 +2274,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "cancel", personWants: "look", runId },
+      { action: "cancel", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -2297,7 +2297,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -2316,7 +2316,7 @@ describe("browser_task background runs", () => {
       browserTask.execute(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           site: "https://www.gosuslugi.ru",
           submission: cardSubmission,
@@ -2335,7 +2335,7 @@ describe("browser_task background runs", () => {
     await browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         site: "https://emias.info",
         task: "Проверь свободные слоты к терапевту",
       },
@@ -2432,7 +2432,7 @@ describe("browser_task approval", () => {
         browserTaskApproval(
           {
             action: "start",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             submission: cardSubmission,
           },
@@ -2450,7 +2450,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           submission: cardSubmission,
         },
@@ -2461,7 +2461,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           submission: cardSubmission,
         },
@@ -2477,7 +2477,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           site: "https://taxi.yandex.ru",
           submission: taxiSubmission,
@@ -2499,14 +2499,14 @@ describe("browser_task approval", () => {
         [
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowPayment: true,
             runId,
             task: "Оплачивай",
           },
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             runId,
             submission: { ...taxiSubmission, chargeRub: 980 },
@@ -2514,7 +2514,7 @@ describe("browser_task approval", () => {
           },
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             runId,
             task: "Код 4821",
@@ -2543,7 +2543,7 @@ describe("browser_task approval", () => {
         browserTaskApproval(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             runId,
             submission,
@@ -2562,7 +2562,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           runId,
           submission: { ...cardSubmission, chargeRub: 1500 },
@@ -2586,7 +2586,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           site: "https://cafe-pushkin.ru",
           submission: tableSubmission,
@@ -2599,7 +2599,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           site: "https://taxi.yandex.ru",
           submission: taxiSubmission,
@@ -2647,7 +2647,7 @@ describe("browser_task approval", () => {
         browserTaskApproval(
           {
             action: "start",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             site,
             submission,
@@ -2668,7 +2668,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           withinSpendLimit: onLimit,
         },
@@ -2680,7 +2680,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           allowSubmit: true,
           submission: cardSubmission,
@@ -2697,8 +2697,12 @@ describe("browser_task approval", () => {
     const statuses = await Promise.all(
       (
         [
-          { action: "start", personWants: "look", allowSubmit: true },
-          { action: "continue", personWants: "look", allowPayment: true },
+          { action: "start", personWants: "look" as const, allowSubmit: true },
+          {
+            action: "continue",
+            personWants: "look" as const,
+            allowPayment: true,
+          },
         ] as const
       ).map(async (input) => browserTaskApproval(input, conversation))
     );
@@ -2723,32 +2727,32 @@ describe("browser_task approval", () => {
     const acting = [
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         submission: cardSubmission,
       },
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         site: "https://emias.info",
         submission: cardSubmission,
       },
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         submission: cardSubmission,
       },
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         submission: cardSubmission,
       },
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         withinSpendLimit: onLimit,
       },
@@ -2765,7 +2769,10 @@ describe("browser_task approval", () => {
     // Looking needs nobody's word, in the background as anywhere.
     const looking = await Promise.all(
       workers.map(async (worker) =>
-        browserTaskApproval({ action: "start", personWants: "look" }, worker)
+        browserTaskApproval(
+          { action: "start", personWants: "look" as const },
+          worker
+        )
       )
     );
     expect(looking).toEqual(workers.map(() => "not-applicable"));
@@ -2786,7 +2793,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           submission: cardSubmission,
         },
@@ -2800,13 +2807,13 @@ describe("browser_task approval", () => {
 
     expect(
       await browserTaskApproval(
-        { action: "start", personWants: "look" },
+        { action: "start", personWants: "look" as const },
         conversation
       )
     ).toBe("not-applicable");
     expect(
       await browserTaskApproval(
-        { action: "continue", personWants: "look", runId },
+        { action: "continue", personWants: "look" as const, runId },
         conversation
       )
     ).toBe("not-applicable");
@@ -2814,7 +2821,7 @@ describe("browser_task approval", () => {
       await browserTaskApproval(
         {
           action: "status",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           allowSubmit: true,
         },
@@ -2842,7 +2849,11 @@ function startedIn(index: number, output: { readonly status: string }) {
     {
       content: [
         {
-          input: { action: "start", personWants: "look", task: "Найди отель" },
+          input: {
+            action: "start",
+            personWants: "look" as const,
+            task: "Найди отель",
+          },
           toolCallId,
           toolName: "browser_task",
           type: "tool-call" as const,
@@ -2875,7 +2886,7 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     return browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: input.allowSubmit,
         site: "https://restaurant.example",
         submission: input.allowSubmit === true ? cardSubmission : undefined,
@@ -2979,11 +2990,19 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const status = await browserTask.execute(
-      { action: "status", personWants: "look", runId: "queued:errand-1" },
+      {
+        action: "status",
+        personWants: "look" as const,
+        runId: "queued:errand-1",
+      },
       toolContext("better-auth:alice")
     );
     const cancel = await browserTask.execute(
-      { action: "cancel", personWants: "look", runId: "queued:errand-1" },
+      {
+        action: "cancel",
+        personWants: "look" as const,
+        runId: "queued:errand-1",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -3012,7 +3031,11 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const status = await browserTask.execute(
-      { action: "status", personWants: "look", runId: "queued:errand-1" },
+      {
+        action: "status",
+        personWants: "look" as const,
+        runId: "queued:errand-1",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -3058,7 +3081,11 @@ describe("browser_task starts per turn", () => {
     ]);
 
     const result = await tool.execute(
-      { action: "start", personWants: "look", task: "Найди отель в Сочи" },
+      {
+        action: "start",
+        personWants: "look" as const,
+        task: "Найди отель в Сочи",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -3073,7 +3100,11 @@ describe("browser_task starts per turn", () => {
     ]);
 
     await tool.execute(
-      { action: "start", personWants: "look", task: "Найди отель в Сочи" },
+      {
+        action: "start",
+        personWants: "look" as const,
+        task: "Найди отель в Сочи",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -3118,7 +3149,7 @@ describe("browser_task consent boundaries", () => {
     return browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         site: "site" in options ? options.site : "https://cafe-pushkin.ru",
         submission,
@@ -3136,7 +3167,7 @@ describe("browser_task consent boundaries", () => {
       );
       const call = {
         action: "start" as const,
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         site: "https://cafe-pushkin.ru",
         submission: table,
@@ -3158,7 +3189,7 @@ describe("browser_task consent boundaries", () => {
       );
       const call = {
         action: "continue" as const,
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         runId,
         submission: taxi,
@@ -3221,7 +3252,7 @@ describe("browser_task consent boundaries", () => {
       const result = await browserTask.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           runId: "queued:errand-1",
           task: "Вместо этого закажи бизнес-класс до Шереметьево",
         },
@@ -3298,7 +3329,7 @@ describe("browser_task consent boundaries", () => {
         await browserTaskApproval(
           {
             action: "start",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             submission: table,
             task: "Забронируй столик где-нибудь в центре",
@@ -3339,7 +3370,7 @@ describe("browser_task consent boundaries", () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       const call = {
         action: "continue" as const,
-        personWants: "look",
+        personWants: "look" as const,
         allowPayment: true,
         runId,
         submission: taxi,
@@ -3373,7 +3404,7 @@ describe("browser_task consent boundaries", () => {
         await browserTaskApproval(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             runId,
             submission: { ...table, kind: "application" },
@@ -3428,7 +3459,7 @@ describe("browser_task consent boundaries", () => {
         await browserTaskApproval(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             allowPayment: true,
             runId,
             submission: taxi,
@@ -3502,7 +3533,7 @@ describe("browser_task consent boundaries", () => {
         await browserTaskApproval(
           {
             action: "start",
-            personWants: "look",
+            personWants: "look" as const,
             allowSubmit: true,
             site: "https://taxi.yandex.ru",
             submission: taxi,
@@ -3570,7 +3601,7 @@ describe("browser_task consent boundaries", () => {
 function submitStart(submission: BrowserSubmission, site = "https://rzd.ru") {
   return {
     action: "start" as const,
-    personWants: "look",
+    personWants: "look" as const,
     allowSubmit: true,
     site,
     submission,
@@ -3911,7 +3942,7 @@ describe("browser_task finds the option before the one card", () => {
     readBrowserRunForScope.mockResolvedValue(browserRunRow());
     const early = {
       action: "continue" as const,
-      personWants: "look",
+      personWants: "look" as const,
       allowSubmit: true,
       runId,
       submission: {
@@ -3960,7 +3991,7 @@ describe("browser_task finds the option before the one card", () => {
     );
     const found = {
       action: "continue" as const,
-      personWants: "look",
+      personWants: "look" as const,
       allowSubmit: true,
       runId,
       submission: sapsanFound,
@@ -3985,7 +4016,7 @@ describe("browser_task finds the option before the one card", () => {
       await browserTaskApproval(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           allowPayment: true,
           runId,
           task: "Код 4821",
@@ -4109,7 +4140,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         site: options.site,
         task: "Закажи тот же корм коту, что в прошлый раз",
       },
@@ -4199,7 +4230,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await report.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         runId,
         task: "Положи этот корм в корзину",
       },
@@ -4228,7 +4259,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await report.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         runId,
         task: "Проверь цену ещё раз",
       },
@@ -4248,7 +4279,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Возьми на озоне",
         runId,
         site: "https://www.ozon.ru",
@@ -4276,7 +4307,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4306,7 +4337,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4328,7 +4359,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4388,7 +4419,7 @@ describe("browser_task delivery address before the card", () => {
     await browserTask.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         deliveryAddress,
         site: "https://lavka.yandex.ru",
         task,
@@ -4619,7 +4650,7 @@ describe("browser_task errand text", () => {
       browserTaskApproval(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           runId,
           submission: { ...basket, items },
@@ -4921,7 +4952,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     return tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: task,
         runId,
         task,
@@ -5011,7 +5042,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Бери первый, но с местом у окна",
         runId,
         task: "Бери первый, но с местом у окна",
@@ -5045,7 +5076,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -5072,7 +5103,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -5085,7 +5116,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", personWants: "look", runId },
+      { action: "status", personWants: "look" as const, runId },
       toolContext("better-auth:alice", "scheduled-worker")
     );
 
@@ -5110,6 +5141,7 @@ describe("browser_task passes on only what the person sent", () => {
     return tool.execute(
       {
         action: input.action ?? "continue",
+        personWants: "look" as const,
         runId,
         site: "https://www.gosuslugi.ru",
         task: input.task,
@@ -5155,7 +5187,6 @@ describe("browser_task passes on only what the person sent", () => {
     await expect(
       inReportTurn("Needs: none", {
         action: "start",
-        personWants: "look",
         task: "Войди на Госуслуги, код из смс 739204",
       })
     ).rejects.toThrow("Never make up a code");
@@ -5221,7 +5252,7 @@ describe("browser_task passes on only what the person sent", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "739204",
         runId,
         task: "Код 739204",
@@ -5319,7 +5350,7 @@ describe("browser_task passes on only what the person sent", () => {
     );
     const input = {
       action: "continue",
-      personWants: "look",
+      personWants: "look" as const,
       allowSubmit: true,
       personSaid: "разрешает более высокий бюджет",
       runId,
@@ -5354,7 +5385,7 @@ describe("browser_task passes on only what the person sent", () => {
       );
       const input = {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         allowSubmit: true,
         runId,
         submission: cardSubmission,
@@ -5456,7 +5487,7 @@ describe("browser_task passes on only what the person sent", () => {
       report.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           runId,
           task: "Введи код подтверждения заказа 739204",
         },
@@ -5510,7 +5541,7 @@ describe("browser_task passes on only what the person sent", () => {
     await tool.execute(
       {
         action: "start",
-        personWants: "look",
+        personWants: "look" as const,
         site: "https://www.vprok.ru",
         task: "Закажи продукты с доставкой на Ленина 5, кв. 12, код для входа 4567",
       },
@@ -5557,7 +5588,7 @@ describe("browser_task passes on only what the person sent", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "739204",
         runId,
         task: "Код 739204",
@@ -5586,7 +5617,7 @@ describe("browser_task passes on only what the person sent", () => {
       tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "739204",
           runId,
           task: "Код 739204",
@@ -5625,7 +5656,13 @@ describe("browser_task passes on only what the person sent", () => {
 
       await expect(
         tool.execute(
-          { action: "continue", personWants: "look", personSaid, runId, task },
+          {
+            action: "continue",
+            personWants: "look" as const,
+            personSaid,
+            runId,
+            task,
+          },
           toolContext("better-auth:alice")
         )
       ).rejects.toThrow("Nothing was sent");
@@ -5650,7 +5687,7 @@ describe("browser_task passes on only what the person sent", () => {
       tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "бюджет можно поднять",
           runId,
           task: "Человек разрешил поднять бюджет, бери дороже",
@@ -5702,7 +5739,7 @@ describe("browser_task passes on only what the person sent", () => {
       tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "739204",
           runId,
           task: "Код 739204",
@@ -5721,7 +5758,7 @@ describe("browser_task passes on only what the person sent", () => {
 
       await expect(
         report.execute(
-          { action: "continue", personWants: "look", runId, task },
+          { action: "continue", personWants: "look" as const, runId, task },
           toolContext("better-auth:alice", "browser-result")
         )
       ).rejects.toThrow("Never make up a code");
@@ -5810,7 +5847,7 @@ describe("browser_task passes on only what the person sent", () => {
       await tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "739204",
           runId,
           task: "739204",
@@ -5830,7 +5867,7 @@ describe("browser_task passes on only what the person sent", () => {
         tool.execute(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             personSaid: "739204",
             runId,
             task: "Код 482913",
@@ -5849,7 +5886,7 @@ describe("browser_task passes on only what the person sent", () => {
       await tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "739204",
           runId,
           task: "Код 739204",
@@ -5869,7 +5906,7 @@ describe("browser_task passes on only what the person sent", () => {
       await tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "19:30",
           runId,
           task: "Бери слот на 19:30",
@@ -5895,7 +5932,7 @@ describe("browser_task passes on only what the person sent", () => {
         report.execute(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             personSaid: "739204",
             runId,
             task: "Код 739204",
@@ -6004,7 +6041,12 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
   async function fromMail(authenticator = "browser-result") {
     const tool = await resolvedBrowserTask([], report);
     return tool.execute(
-      { action: "continue", personWants: "look", codeFrom: "mail", runId },
+      {
+        action: "continue",
+        personWants: "look" as const,
+        codeFrom: "mail",
+        runId,
+      },
       toolContext("better-auth:alice", authenticator)
     );
   }
@@ -6074,7 +6116,12 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     // The person can still ask for another look themselves.
     const tool = await resolvedBrowserTask([], "посмотри код в почте ещё раз");
     await tool.execute(
-      { action: "continue", personWants: "look", codeFrom: "mail", runId },
+      {
+        action: "continue",
+        personWants: "look" as const,
+        codeFrom: "mail",
+        runId,
+      },
       toolContext("better-auth:alice")
     );
     expect(mailCodeFromSite).toHaveBeenCalledOnce();
@@ -6146,7 +6193,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
       tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           allowSubmit: true,
           codeFrom: "mail",
           personSaid: "да, оформляй",
@@ -6164,7 +6211,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     const tool = await resolvedBrowserTask([], report);
     const call = (input: { codeFrom?: "mail"; task: string }) =>
       tool.execute(
-        { action: "continue", personWants: "look", runId, ...input },
+        { action: "continue", personWants: "look" as const, runId, ...input },
         toolContext("better-auth:alice", "browser-result")
       );
 
@@ -6189,7 +6236,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "739204",
         runId,
         task: "739204",
@@ -6213,7 +6260,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "739204",
         runId,
         task: "739204",
@@ -6237,7 +6284,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Возьми второй вариант",
         runId,
         task: "Возьми второй вариант",
@@ -6263,7 +6310,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: said,
         runId,
         task: "Запросите код на email заново. Пункт выдачи — прошлый, иначе ближайший к адресу Мичуринский проспект, 5, Москва, 119192.",
@@ -6452,7 +6499,7 @@ describe("browser_task takes a wish to the step before payment", () => {
       {
         action: "continue",
         personSaid: said,
-        personWants: "look",
+        personWants: "look" as const,
         runId,
         task: said,
       },
@@ -6523,7 +6570,7 @@ describe("browser_task on Госуслуги", () => {
       await tool.execute(
         {
           action: "start",
-          personWants: "look",
+          personWants: "look" as const,
           site,
           task: "Проверь штрафы на Госуслугах",
         },
@@ -6694,7 +6741,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "покажи другие варианты",
         runId,
         task: "покажи другие варианты",
@@ -6730,7 +6777,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "на Ленина 5",
         runId,
         task: "на Ленина 5",
@@ -6763,7 +6810,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Код из смс 992130",
         runId,
         task: "Код из смс 992130",
@@ -6801,7 +6848,7 @@ describe("browser_task keeps sign-ins", () => {
         await tool.execute(
           {
             action: "continue",
-            personWants: "look",
+            personWants: "look" as const,
             personSaid: said,
             runId,
             task: said,
@@ -6842,7 +6889,12 @@ describe("browser_task keeps sign-ins", () => {
 
     await expect(
       tool.execute(
-        { action: "continue", personWants: "look", codeFrom: "mail", runId },
+        {
+          action: "continue",
+          personWants: "look" as const,
+          codeFrom: "mail",
+          runId,
+        },
         toolContext("better-auth:alice", "browser-result")
       )
     ).rejects.toThrow(
@@ -6865,7 +6917,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "а закажи ещё такое же",
         runId,
         task: "а закажи ещё такое же",
@@ -6902,7 +6954,7 @@ describe("browser_task keeps sign-ins", () => {
       return tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "бери этот слот",
           runId,
           task: "бери этот слот",
@@ -6951,7 +7003,7 @@ describe("browser_task keeps sign-ins", () => {
     await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "подтвердил в приложении",
         runId,
         task: "подтвердил в приложении",
@@ -6978,7 +7030,7 @@ describe("browser_task keeps sign-ins", () => {
       tool.execute(
         {
           action: "continue",
-          personWants: "look",
+          personWants: "look" as const,
           personSaid: "бери первый",
           runId,
           task: "бери первый",
@@ -7001,7 +7053,7 @@ describe("browser_task keeps sign-ins", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "cancel", personWants: "look", runId },
+      { action: "cancel", personWants: "look" as const, runId },
       toolContext("better-auth:alice")
     );
 
@@ -7021,7 +7073,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
-        personWants: "look",
+        personWants: "look" as const,
         personSaid: "Код из смс 992130",
         runId,
         task: "Код из смс 992130",
