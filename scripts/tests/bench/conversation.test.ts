@@ -787,3 +787,215 @@ describe("observeCase", () => {
     expect(saved.driver.observations).toHaveLength(1);
   });
 });
+
+describe("held cards persist across send (26.09 live bug)", () => {
+  it("holds a retried card of the same tool after the tester cancels it, even though send leaves --hold off", async () => {
+    const card = (requestId: string): MessageStreamEvent => ({
+      data: {
+        requests: [
+          {
+            action: {
+              callId: `call_${requestId}`,
+              input: { attendees: [], summary: "Dinner with Sam" },
+              kind: "tool-call",
+              toolName: "calendar-create-event",
+            },
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve tool call: calendar-create-event",
+            requestId,
+          },
+        ],
+        sequence: 0,
+        stepIndex: 1,
+        turnId,
+      },
+      meta: meta(),
+      type: "input.requested",
+    });
+    const fake = await startFakeEve((post) => {
+      if (post.inputResponses) {
+        const optionId = post.inputResponses[0]?.optionId;
+        if (optionId === "cancel") {
+          return [
+            {
+              data: {
+                resolutions: [
+                  {
+                    kind: "tool-approval",
+                    outcome: "denied",
+                    requestId: "req_1",
+                  },
+                ],
+                sequence: 0,
+                stepIndex: 1,
+                turnId,
+              },
+              meta: meta(),
+              type: "input.resolved",
+            },
+            card("req_2"),
+            sessionWaiting(),
+          ];
+        }
+        return turn(delivered("создал"));
+      }
+      return [turnStarted(), card("req_1"), sessionWaiting()];
+    });
+    stopFake = () => fake.close();
+    const client = new Client({ host: fake.url });
+    const settings = {
+      ...(await settingsFor(fake.url)),
+      heldTools: ["calendar-create-event"],
+    };
+
+    const first = await runCase(client, benchCase, [step], [], settings);
+    expect(first.driver.status).toBe("waiting-for-tester");
+
+    // `pnpm bench send --option cancel` does not repeat `--hold`.
+    const sendSettings = { ...settings, heldTools: [] };
+    const record = await continueCase(client, first, sendSettings, {
+      code: undefined,
+      kind: "approval",
+      respond: (pending) =>
+        pending.map((request) => ({
+          optionId: "cancel",
+          requestId: request.requestId,
+        })),
+      text: "cancel",
+    });
+
+    expect(fake.posts.at(-1)?.inputResponses).toEqual([
+      { optionId: "cancel", requestId: "req_1" },
+    ]);
+    // The retried card of the same tool is held, not auto-approved as an
+    // own-data tool would be by default.
+    expect(record.driver.status).toBe("waiting-for-tester");
+    expect(
+      record.driver.pendingInputs.map((request) => request.requestId)
+    ).toEqual(["req_2"]);
+    expect(record.driver.declinedTools).toEqual(["calendar-create-event"]);
+    const log = await readFile(
+      join(settings.outDir, "case-under-test.log"),
+      "utf8"
+    );
+    expect(log).toContain("тестировщик отменил «calendar-create-event»");
+    expect(log).toContain("держит карточку calendar-create-event");
+  });
+});
+
+describe("driver settings persist across follow", () => {
+  it("keeps the run's --hold, --approve and --confirm-payment-up-to after follow leaves them off", async () => {
+    const fake = await startFakeEve(() =>
+      turn(browserRunning(), delivered("запустил"))
+    );
+    stopFake = () => fake.close();
+    setTimeout(() => {
+      fake.append(turn(browserReport(), delivered("нашёл два поезда")));
+    }, 300);
+    const settings = {
+      ...(await settingsFor(fake.url, 0)),
+      approvedTools: [...ownDataTools, "gmail-send"],
+      confirmPaymentUpToRub: 1000,
+      heldTools: ["browser_task"],
+    };
+    const client = new Client({ host: fake.url });
+
+    const first = await runCase(client, benchCase, [step], [], settings);
+    expect(first.driver.status).toBe("timed-out");
+
+    // A later `follow` leaves --hold, --approve and --confirm-payment-up-to
+    // off; the record must keep what `run` set for the rest of the case.
+    const followSettings = {
+      ...settings,
+      approvedTools: ownDataTools,
+      backgroundWaitMs: 1500,
+      confirmPaymentUpToRub: undefined,
+      heldTools: [],
+    };
+    const record = await followCase(client, first, followSettings);
+
+    expect(record.driver.status).toBe("completed");
+    const saved = await readRunRecord(settings.outDir, "case-under-test");
+    expect(saved.driver.heldTools).toEqual(["browser_task"]);
+    expect(saved.driver.approvedTools).toEqual([...ownDataTools, "gmail-send"]);
+    expect(saved.driver.confirmPaymentUpToRub).toBe(1000);
+  }, 20_000);
+});
+
+describe("driver settings persist across next", () => {
+  it("reuses the payment cap from the record when next leaves --confirm-payment-up-to off", async () => {
+    const paymentCard: MessageStreamEvent = {
+      data: {
+        requests: [
+          {
+            action: {
+              callId: "call_pay2",
+              input: {
+                action: "continue",
+                allowPayment: true,
+                submission: { chargeRub: 900 },
+              },
+              kind: "tool-call",
+              toolName: "browser_task",
+            },
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve tool call: browser_task",
+            requestId: "req_pay2",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 1,
+        turnId,
+      },
+      meta: meta(),
+      type: "input.requested",
+    };
+    const fake = await startFakeEve((post) => {
+      if (post.inputResponses) return turn(delivered("оплатил"));
+      if (post.message === "через неделю") {
+        return [turnStarted(), paymentCard, sessionWaiting()];
+      }
+      return turn(delivered("ок"));
+    });
+    stopFake = () => fake.close();
+    const settings = {
+      ...(await settingsFor(fake.url)),
+      confirmPaymentUpToRub: 1000,
+      paced: true,
+    };
+    const client = new Client({ host: fake.url });
+    const weekLaterSteps: PlannedStep[] = [
+      step,
+      { ...step, at: "T+7д", text: "через неделю" },
+    ];
+
+    const first = await runCase(
+      client,
+      benchCase,
+      weekLaterSteps,
+      [],
+      settings
+    );
+    expect(first.driver.status).toBe("scheduled");
+
+    // `pnpm bench next` leaves --confirm-payment-up-to off; the cap from
+    // `run`'s record must still confirm the payment on the owner's behalf.
+    const nextSettings = { ...settings, confirmPaymentUpToRub: undefined };
+    const done = await nextCase(client, first, nextSettings, { early: true });
+
+    const paymentDecision = done.driver.decisions.find(
+      (decision) => decision.tool === "browser_task"
+    );
+    expect(paymentDecision).toMatchObject({ optionId: "approve" });
+    expect(paymentDecision?.reason).toContain("1000");
+    expect(done.driver.status).toBe("completed");
+  });
+});
