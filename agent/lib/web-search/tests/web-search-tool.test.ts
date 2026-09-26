@@ -307,6 +307,155 @@ describe("web_search tool selection", () => {
     );
   });
 
+  /**
+   * RU d03 (26.09): «Авокадо» named first with «несколько кафе под одной
+   * маркой» as its minus under «не сетевое», while restoran.cafe said «сеть
+   * вегетарианских кафе» and 2GIS cards «6 филиалов»; two of three options
+   * went out with «чек нигде не подтвердил». EN D3: «Джаганнат» passed as no
+   * chain beside 2GIS's «3 филиала», and two options where the results held a
+   * third.
+   */
+  it("marks a chain by its branches and holds a pick to three checked options with sources", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const results = [
+      {
+        content:
+          "Средний чек ~1200₽ … Авокадо – сеть вегетарианских кафе в Москве. Одно из заведений находится на Чистопрудном бульваре.",
+        title: "Кафе Авокадо на Чистых Прудах — Restoran.Cafe",
+        url: "https://restoran.cafe/moskva/restaurants/avokado-na-chistykh-prudakh",
+      },
+      {
+        content: "Kulёk, кафе … Улица Покровка 1/6 ст2, 1 этаж 6 филиалов",
+        title: "Kulёk, кафе — 2ГИС",
+        url: "https://2gis.ru/moscow/firm/70000001089355304",
+      },
+      {
+        content: "Джаганнат, вегетарианское кафе. 3 филиала. Чек 1500 ₽",
+        title: "Джаганнат — 2ГИС",
+        url: "https://2gis.ru/moscow/firm/1",
+      },
+      {
+        content:
+          "Рецептор — несетевое кафе во дворе библиотеки, 1 филиал. Не сетевое заведение.",
+        title: "Рецептор",
+        url: "https://a-a-ah.ru/receptor-chistoprudny",
+      },
+      {
+        content: "Jagannath is a vegetarian restaurant chain with 4 locations.",
+        title: "Jagannath",
+        url: "https://example.com/jagannath",
+      },
+    ];
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: results.map((result) => ({
+                    type: "url_citation",
+                    url_citation: result,
+                  })),
+                },
+              },
+            ],
+          })
+        )
+    );
+    const { openRouterWebSearch } = await loadTool();
+
+    const pick = await openRouterWebSearch.execute(
+      { query: "ресторан Чистые пруды вегетарианское меню не сеть" },
+      toolContext()
+    );
+    expect(pick).toContain(
+      "Одно из заведений находится на Чистопрудном бульваре.\n(this result says «сеть вегетарианских кафе»: the place it is about has more than one branch under its name — a chain, so it does not pass «не сеть» when the person asked for that)"
+    );
+    expect(pick).toContain("1 этаж 6 филиалов\n(this result says «6 филиалов»");
+    expect(pick).toContain("3 филиала. Чек 1500 ₽\n(this result says «3 филиала»");
+    // One branch, or «несетевое», is no chain.
+    expect(pick).toContain(
+      "Не сетевое заведение.\n\n5. Jagannath"
+    );
+    expect(pick).toContain("(this result says «restaurant chain»");
+
+    expect(pick).toContain(
+      "«Не сеть» is checked by the number of branches: a map card with «2 филиала» or more, «сеть …», several addresses under one name, or «N locations» is a chain, and a chain is dropped, not named first with a minus."
+    );
+    expect(pick).toContain(
+      "search by its name now — «<название> средний чек часы работы» with sites yandex.ru/maps or 2gis.ru — rather than reply with «не проверил»"
+    );
+    expect(pick).toContain(
+      "Aim at three options that pass every condition: while the results name more candidates, check the next one instead of replying with two"
+    );
+    expect(pick).toContain(
+      "Write «цены подтверждены» or «всё проверено» only when each option's own result shows it, and give that result's link."
+    );
+    expect(pick).toContain(
+      "A conclusion that nothing fits (nothing within the budget, nothing open) only after two or three different sources, naming any that did not open and why."
+    );
+    expect(pick).toContain(
+      "Saved preferences in memory are conditions only where they bear on this pick («Saved preferences for this request» names them)"
+    );
+
+    // A narrow search for one place's bill is part of the pick too.
+    expect(
+      await openRouterWebSearch.execute(
+        { query: "Kiosk 1936 средний чек", sites: ["yandex.ru/maps"] },
+        toolContext()
+      )
+    ).toContain("Note for a pick of places");
+  });
+
+  /**
+   * RU d01 (26.09): ticket.rzd.ru did not open, and the fee on tutu.ru went
+   * unsaid; RU d02 and EN D1 drew «nothing fits» from one site. RU d01 on
+   * prod: «нижняя полка» and «у прохода» went with a «Сапсан» window seat.
+   */
+  it("asks a ticket search for fallback sellers, what failed and every fee", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content: "Расписание «Сапсанов» и цены от 1 916 ₽.",
+                        title: "Сапсан Москва — Санкт-Петербург",
+                        url: "https://www.tutu.ru/poezda/sapsan/",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        )
+    );
+    const { openRouterWebSearch } = await loadTool();
+
+    const note = await openRouterWebSearch.execute(
+      { query: "сапсан Москва Петербург 2 октября места у окна" },
+      toolContext()
+    );
+    expect(note).toContain(
+      "never one the person's own words override (a seat they name wins over a saved one) and no berth for a seated train such as «Сапсан» or «Ласточка»"
+    );
+    expect(note).toContain(
+      "Name two fallback sellers in the task in order («если на ticket.rzd.ru не выходит — tutu.ru, потом …»)"
+    );
+    expect(note).toContain(
+      "ask the run to return which sites it checked, which did not open and why, and every fee on top of the fare (a seller's service or agent fee) apart from it: «nothing in the budget» or «no seats» holds only after two or three sites."
+    );
+  });
+
   it("surfaces a failed search as tool result text", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     fetchMock.mockImplementation(
@@ -325,6 +474,9 @@ describe("web_search tool selection", () => {
     expect(text).toContain("search failed: OpenRouter 503");
     // Both engines were already asked; the model should not hammer them.
     expect(text).toContain("Do not repeat this query as is");
+    expect(text).toContain(
+      "A source that stays unread is named in the reply as not checked, with why — not left out, and not the ground for «nothing fits»."
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
