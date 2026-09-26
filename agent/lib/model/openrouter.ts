@@ -42,8 +42,17 @@ const keyOrderedHosts = ["alibaba", "morph", "wafer"];
  * timed out. Modal and Parasail answered a forced tool call with empty `{}`
  * arguments in 3 of 3 tries on 25.09, Phala in 1 of 2, with or without an
  * image; under `auto` they were right, so a forced step there fails.
+ * InferenceNet answered a forced `ask_question` with `{}` in 8 of 27 tries
+ * on 26.09, whatever the key order (0 of 8 under `auto`), and dropped the
+ * required `kind` of a forced `send_message` in 1 of 8.
  */
-const brokenHosts = ["sail-research", "modal", "parasail", "phala"];
+const brokenHosts = [
+  "sail-research",
+  "modal",
+  "parasail",
+  "phala",
+  "inference-net",
+];
 
 /**
  * The hosts above were measured on DeepSeek only. Another model a workspace

@@ -149,6 +149,7 @@ describe("model selection", () => {
             "modal",
             "parasail",
             "phala",
+            "inference-net",
           ],
         },
       }
@@ -700,6 +701,7 @@ describe("model selection", () => {
             "modal",
             "parasail",
             "phala",
+            "inference-net",
           ],
           order: ["alibaba"],
         },
