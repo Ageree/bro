@@ -28,12 +28,18 @@ describe("messageLanguage", () => {
     }
   );
 
-  it.each(["Cancel", "Approve", "Подтвердить", "Отмена", " отменить. ", "2"])(
-    "finds no language in the card answer %j",
-    (text) => {
-      expect(messageLanguage(text)).toBeUndefined();
-    }
-  );
+  it.each([
+    "Cancel",
+    "Approve",
+    "Подтвердить",
+    "Отмена",
+    " отменить. ",
+    "2",
+    "Да",
+    "Нет",
+  ])("finds no language in the card answer %j", (text) => {
+    expect(messageLanguage(text)).toBeUndefined();
+  });
 
   it("still reads a sentence that opens with a card word", () => {
     expect(messageLanguage("Cancel the taxi please")).toBe("en");

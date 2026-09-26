@@ -130,11 +130,11 @@ describe("approvals", () => {
     );
 
     expect(notion.prompt).toBe(
-      "Добавить задачу в Notion:\n«Q3 planning»\nСрок: 2026-09-24"
+      "Добавлю задачу в Notion: Q3 planning.\nСрок — 2026-09-24.\nДобавить?"
     );
     // A line break in the text cannot pass for another line of the card.
     expect(slack.prompt).toBe(
-      "Отправить сообщение в Slack:\nКому: Sam\nТекст: Встреча в четверг. Кабинет 5"
+      "Отправлю в Slack Sam:\n\nВстреча в четверг. Кабинет 5\n\nОтправить?"
     );
   });
 
@@ -179,19 +179,19 @@ describe("approvals", () => {
 
   it("shows what a read would open on its card", () => {
     expect(readCard("notion-search", { query: "Пароли" })).toBe(
-      "Найти в Notion: «Пароли»"
+      "Поищу в Notion: Пароли.\nПоискать?"
     );
     expect(readCard("notion-search", {})).toBe(
-      "Найти в Notion: недавно изменённые страницы"
+      "Посмотрю в Notion недавно изменённые страницы.\nПосмотреть?"
     );
     expect(readCard("notion-read", { id: "page-1" })).toBe(
-      "Открыть в Notion: page-1"
+      "Открою в Notion page-1.\nОткрыть?"
     );
     expect(readCard("slack-read", { from: "#general", threadTs: "17.1" })).toBe(
-      "Прочитать сообщения в Slack: #general (ветка 17.1)"
+      "Прочитаю сообщения в Slack: #general (ветка 17.1).\nПрочитать?"
     );
     expect(readCard("slack-search", { query: "invoice" })).toBe(
-      "Найти в Slack: «invoice»"
+      "Поищу в Slack: invoice.\nПоискать?"
     );
   });
 });
