@@ -77,7 +77,7 @@ describe("public-service instructions", () => {
 
   it("keeps a look at fares a search, on the seller's own site", () => {
     expect(browser).toContain(
-      "При `\"look\"` («сколько стоит», «посмотри варианты») запуск только ищет и называет цены, без оформления."
+      'При `"look"` («сколько стоит», «посмотри варианты») запуск только ищет и называет цены, без оформления.'
     );
     expect(browser).toContain(
       "В `site` ставь сайт перевозчика или продавца, где будет покупка"
