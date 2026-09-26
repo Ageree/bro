@@ -37,14 +37,9 @@ export type InputDecision =
     }
   | { readonly kind: "ask-tester"; readonly reason: string };
 
-/**
- * `heldTools` are cards the tester answers themselves (`--hold`), as a
- * person would in the chat — with a button or in their own words.
- */
 export function decideInputRequest(
   request: InputRequest,
-  approvedTools: readonly string[],
-  heldTools: readonly string[] = []
+  approvedTools: readonly string[]
 ): InputDecision {
   if (request.kind === "question") {
     return {
@@ -61,12 +56,6 @@ export function decideInputRequest(
     };
   }
   const tool = request.action.toolName;
-  if (heldTools.includes(tool)) {
-    return {
-      kind: "ask-tester",
-      reason: `карточку «${tool}» тестировщик отвечает сам: pnpm bench send --kind approval`,
-    };
-  }
   const approve =
     approvedTools.includes(tool) &&
     !invitesSomeoneSchema.safeParse(request.action.input).success;
@@ -85,14 +74,11 @@ export function decideInputRequest(
 /**
  * The reply to a pending request from what the tester typed: the option
  * whose id or label matches, otherwise free text where the card allows it.
- * Other words for an approval («да», «отправляй», «не надо») are nothing
- * here: they go to Bro as the message a person types in the chat, and eve
- * reads the answer from them.
  */
 export function responseFromText(
   request: InputRequest,
   text: string
-): InputResponse | undefined {
+): InputResponse {
   const wanted = text.trim().toLowerCase();
   const option = request.options?.find(
     (candidate) =>
@@ -103,7 +89,6 @@ export function responseFromText(
   if (request.allowFreeform !== false && request.kind === "question") {
     return { requestId: request.requestId, text };
   }
-  if (request.kind === "tool-approval") return undefined;
   const choices = (request.options ?? [])
     .map((candidate) => `${candidate.id} («${candidate.label}»)`)
     .join(", ");
