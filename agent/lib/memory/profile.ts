@@ -7,6 +7,7 @@ import {
 import type { MemoryDocumentBackend } from "eve/memory/file";
 import { defineTool } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
+import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -436,16 +437,157 @@ async function recallProfile(
   await importLegacyIfNeeded(context, legacyProvider, legacyBackend, scope);
   const records = await listCurrentMemories(scope, context.memory.scope.key);
   context.abortSignal.throwIfAborted();
+  const forRequest = renderPreferencesForRequest(
+    records,
+    requestText(context.turn?.input ?? [])
+  );
   return {
     messages: [
       { id: "file-memory-document", content: renderProfile(records) },
       {
         id: "profile-relevant-memory",
-        content:
+        content: [
           "No query-specific profile memories are active. Use profile__semantic_find with a short, non-sensitive topical query when deeper recall is needed.",
+          ...(forRequest === undefined ? [] : [forRequest]),
+        ].join("\n"),
       },
     ],
   };
+}
+
+/** What the turn's own messages say: the person's request or a run's report. */
+function requestText(input: readonly ModelMessage[]) {
+  return input
+    .filter((message) => message.role === "user")
+    .map((message) =>
+      Array.isArray(message.content)
+        ? message.content
+            .flatMap((part) => (part.type === "text" ? [part.text] : []))
+            .join("\n")
+        : message.content
+    )
+    .join("\n");
+}
+
+/**
+ * What a request is about, as far as a saved preference can bear on it.
+ * «Сапсан», «Ласточка» and suburban trains have seats and no berths.
+ */
+const requestTopics = {
+  // Not «вагон-ресторан»: a train's own car is no pick of food.
+  food: /(?<![\p{L}-])(?:поужин|пообед|позавтрак|ужин|обед|завтрак|ресторан|кафе(?!\p{L})|кофейн|бар(?:а|е|ы|ов)?(?!\p{L})|бистро|столик|еды|еду(?!\p{L})|продукт|меню|пицц|суши|dinner|lunch|breakfast|brunch|restaurants?(?!\p{L})|cafes?(?!\p{L})|bars?(?!\p{L})|food|groceries|meals?(?!\p{L}))/iu,
+  flight:
+    /(?<!\p{L})(?:самол[её]т|рейс|перел[её]т|авиа|вылет|аэропорт|flights?(?!\p{L})|fly(?!\p{L})|plane|airlines?(?!\p{L})|airport)/iu,
+  seatedTrain:
+    /(?<!\p{L})(?:сапсан|ласточк|электричк|аэроэкспресс|sapsan|lastochka)/iu,
+  stay: /(?<!\p{L})(?:отел|гостиниц|хостел|апартамент|hotels?(?!\p{L})|hostels?(?!\p{L})|airbnb)/iu,
+  train:
+    /(?<!\p{L})(?:поезд|сапсан|ласточк|электричк|(?:жд|ж\/д|ржд)(?!\p{L})|купе|плацкарт|trains?(?!\p{L})|rail|sapsan|lastochka)/iu,
+};
+
+/** What a saved preference is about, clause by clause. */
+const preferenceTopics = {
+  berth:
+    /(?:полк|купе|плацкарт|(?<!\p{L})св(?!\p{L})|berths?(?!\p{L})|sleeper|compartment)/iu,
+  food: /(?:свинин|говядин|баранин|мяс|рыб|морепродукт|вегетариан|веган|глютен|лактоз|молочн|орех|арахис|(?<!\p{L})лук(?:а|ом)?(?!\p{L})|чеснок|гриб|кинз|сахар|халял|кошер|остр(?:ое|ую|ого)|алкогол|кухн|onions?(?!\p{L})|garlic|mushroom|cilantro|sugar|(?<!\p{L})(?:не\s+ем|не\s+ест|не\s+пь[ёе]т?)(?!\p{L})|pork|beef|lamb|meat|fish|seafood|vegetarian|vegan|gluten|lactose|dairy|nuts?(?!\p{L})|peanut|halal|kosher|spicy|alcohol|cuisine|(?:don'?t|do\s+not|doesn'?t|never)\s+(?:eat|drink))/iu,
+  flightScope:
+    /(?:самол[её]т|рейс|перел[её]т|авиа|flights?(?!\p{L})|plane|fly(?:ing)?(?!\p{L}))/iu,
+  seat: /(?:(?<!\p{L})(?:у\s+)?окн|проход|(?<!\p{L})ряд|window|aisle|middle\s+seat|(?<!\p{L})row(?!\p{L}))/iu,
+  stay: /(?:отел|гостиниц|хостел|номер(?!\p{L}*\s+телефон)|этаж|hotels?(?!\p{L})|room|floor)/iu,
+  trainScope: /(?:поезд|(?:жд|ж\/д|ржд)(?!\p{L})|trains?(?!\p{L})|rail)/iu,
+};
+
+/** A seat or a berth the request names itself, which a saved one yields to. */
+const requestSeat =
+  /(?:(?<!\p{L})(?:у|возле)\s+окн|(?<!\p{L})окн[оау](?!\p{L})|(?:у|возле)\s+проход|window|aisle|middle\s+seat)/iu;
+const requestBerth =
+  /(?:(?:нижн|верхн|боков)\p{L}*\s+(?:полк|мест)|(?:lower|upper|side)\s+berth)/iu;
+
+/**
+ * Splits a preference into its clauses: «В поезде только нижняя полка, в
+ * самолёте у прохода, свинину не ест» or «I always want aisle seats and I
+ * don't eat pork» is three or two preferences in one record. A clause that
+ * names no topic of its own («без лука и чеснока») is read with the one
+ * before it.
+ */
+function preferenceClauses(text: string) {
+  const clauses = text
+    .split(/[.;!?\n]+|,\s*|\s+(?:и|а\s+также|and|but)\s+/iu)
+    .map((clause) => clause.trim())
+    .filter((clause) => /\p{L}{2,}/u.test(clause));
+  let context = "";
+  return clauses.map((clause) => {
+    const topical = Object.values(preferenceTopics).some((topic) =>
+      topic.test(clause)
+    );
+    if (topical) context = clause;
+    return { clause, readAs: topical ? clause : `${context} ${clause}` };
+  });
+}
+
+/**
+ * Whether one clause of a saved preference bears on the request, and is not
+ * overridden by the request's own words. A clause that names nothing this
+ * can tell stays in: it may bear on it.
+ */
+function clauseApplies(clause: string, request: string) {
+  const train = requestTopics.train.test(request);
+  const flight = requestTopics.flight.test(request);
+  const scopedTo = preferenceTopics.flightScope.test(clause)
+    ? "flight"
+    : preferenceTopics.trainScope.test(clause)
+      ? "train"
+      : undefined;
+  if (scopedTo === "flight" && !flight) return false;
+  if (scopedTo === "train" && !train) return false;
+  if (preferenceTopics.berth.test(clause)) {
+    return (
+      train &&
+      !requestTopics.seatedTrain.test(request) &&
+      !requestBerth.test(request)
+    );
+  }
+  if (preferenceTopics.seat.test(clause)) {
+    return (train || flight) && !requestSeat.test(request);
+  }
+  if (preferenceTopics.food.test(clause)) {
+    return requestTopics.food.test(request);
+  }
+  if (preferenceTopics.stay.test(clause)) {
+    return requestTopics.stay.test(request);
+  }
+  return true;
+}
+
+/**
+ * Which saved preferences bear on this request, for the note beside the
+ * profile. Without a request this can place — a follow-up, a card's answer,
+ * or no preferences at all — there is nothing to say.
+ */
+export function renderPreferencesForRequest(
+  records: Awaited<ReturnType<typeof listCurrentMemories>>,
+  request: string
+) {
+  const preferences = records.flatMap((record) =>
+    record.content?.category === "preference" ? [record.content.text] : []
+  );
+  if (preferences.length === 0) return undefined;
+  if (!Object.values(requestTopics).some((topic) => topic.test(request))) {
+    return undefined;
+  }
+  const applied = preferences
+    .flatMap(preferenceClauses)
+    .flatMap(({ clause, readAs }) =>
+      clauseApplies(readAs, request) ? [clause] : []
+    );
+  const ownWords =
+    requestSeat.test(request) || requestBerth.test(request)
+      ? " The seat or berth this message names is the one to look for, whatever a saved preference says."
+      : "";
+  if (applied.length === 0) {
+    return `Saved preferences for this request: none bears on it. Apply none of them, put none into a browser errand, and name none as applied («учёл: …»).${ownWords}`;
+  }
+  return `Saved preferences for this request: ${applied.map((clause) => `«${clause}»`).join(", ")}. Apply these as conditions — in the search and in a browser errand — and name only these as applied («учёл: …»); leave the other saved preferences out of this request and out of the reply.${ownWords}`;
 }
 
 async function importLegacyIfNeeded(
@@ -554,11 +696,14 @@ const rulesHeading = [
 /**
  * A preference is a condition of every pick, booking and purchase it bears
  * on. In RU d13 (25.09) «свинину не ем» sat among the other records, and
- * neither dinner pick filtered by it or said so.
+ * neither dinner pick filtered by it or said so; in RU d01 the reply to «места
+ * у окна» in a «Сапсан» opened with «Учёл: нижняя полка, место у прохода, без
+ * свинины» — every preference, one against the request and two that do not
+ * bear on a seated train.
  */
 const preferencesHeading = [
   "## The user's preferences",
-  "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), each preference that bears on it is a condition like one named in the message: filter by it, put it into a browser errand, and name in the reply the ones you applied («учёл: без свинины»).",
+  "When you recommend, search, book or buy for the user (food, places, trips, seats, gifts), a preference is a condition only where it bears on that very request — a diet on food, a berth on a train that has berths, a seat on that kind of trip — and never against the user's own words in it: a seat, berth or diet the message names wins over a saved one. Filter by the ones that bear on it, put them into a browser errand, and name in the reply only those («учёл: …»). The note «Saved preferences for this request» names them for the current request.",
 ];
 const recordsHeading = "## Other records";
 

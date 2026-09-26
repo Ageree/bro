@@ -27,7 +27,7 @@ export const openRouterWebSearch = defineTool({
         : results;
     } catch (error) {
       if (ctx.abortSignal.aborted) throw error;
-      return `search failed: ${failureReason(error)}. Do not repeat this query as is: try one shorter or differently worded query${input.sites ? " or drop sites" : ""}, or read a page you already know with web_fetch.`;
+      return `search failed: ${failureReason(error)}. Do not repeat this query as is: try one shorter or differently worded query${input.sites ? " or drop sites" : ""}, or read a page you already know with web_fetch. A source that stays unread is named in the reply as not checked, with why — not left out, and not the ground for «nothing fits».`;
     }
   },
 });
@@ -74,7 +74,7 @@ const statusWords =
  * субботу»), nor a stay's own dinner («отель с завтраком и ужином»).
  */
 const pickWords =
-  /(?<!\p{L})(?:(?:рядом|возле|около|недалеко|пешком|напротив)(?:\s+(?:с|со|от|до))?\s+(?:отел|гостиниц|хостел)|ресторан|кафе|кофейн|бар(?:а|ы|ов)?(?!\p{L})|поужин|пообед|мастер|сборк|шкаф|мебел|(?:near|by|around|close\s+to)\s+(?:the\s+)?hotel|(?:restaurants?|cafes?|bars?|dinner|lunch)(?!\p{L}))/iu;
+  /(?<!\p{L})(?:(?:рядом|возле|около|недалеко|пешком|напротив)(?:\s+(?:с|со|от|до))?\s+(?:отел|гостиниц|хостел)|ресторан|кафе|кофейн|бар(?:а|ы|ов)?(?!\p{L})|поужин|пообед|средн\p{L}*\s+чек|мастер|сборк|шкаф|мебел|(?:near|by|around|close\s+to)\s+(?:the\s+)?hotel|(?:restaurants?|cafes?|bars?|dinner|lunch|average\s+bill)(?!\p{L}))/iu;
 
 /** Tickets to a show, not to a train, a flight or a room. */
 const eventWords =
@@ -114,7 +114,7 @@ function ticketSearch(input: WebSearchInput) {
  * and gpt-6-luna answered from the timetable instead.
  */
 const ticketSearchNote =
-  "Note: these pages show timetables and typical fares, not what is on sale on those dates. When the person wants a train, a flight or a room on given dates — what is on sale, the fare, a lower berth, an aisle seat — start browser_task now without allowSubmit on the seller's site (ticket.rzd.ru or tutu.ru for trains, the airline's site for flights, ostrovok.ru for hotels), with the dates, the route and their saved preferences in the task (for example «в поезде только нижняя полка»). It needs no card and no approval: the run searches, picks the best fit and reports it with its price. Do not hand the person a timetable link instead of that search.";
+  "Note: these pages show timetables and typical fares, not what is on sale on those dates. When the person wants a train, a flight or a room on given dates — what is on sale, the fare, a lower berth, an aisle seat — start browser_task now without allowSubmit on the seller's site (ticket.rzd.ru or tutu.ru for trains, the airline's site for flights, ostrovok.ru for hotels), with the dates, the route and the saved preferences that bear on this very trip in the task (for example «в поезде только нижняя полка» for a train with berths) — never one the person's own words override (a seat they name wins over a saved one) and no berth for a seated train such as «Сапсан» or «Ласточка». Name two fallback sellers in the task in order («если на ticket.rzd.ru не выходит — tutu.ru, потом …»), and ask the run to return which sites it checked, which did not open and why, and every fee on top of the fare (a seller's service or agent fee) apart from it: «nothing in the budget» or «no seats» holds only after two or three sites. It needs no card and no approval: the run searches, picks the best fit and reports it with its price. Do not hand the person a timetable link instead of that search.";
 
 /**
  * How a pick of places is put together, in the result the model reads just
@@ -126,7 +126,21 @@ const ticketSearchNote =
  * recommendations.md alone did not hold.
  */
 const pickSearchNote =
-  "Note for a pick of places: give each option only facts that a result about that very option shows (its bill, menu, hours on the day asked, its own route_time walk); write «все …» about the options only when every one of them has it confirmed; an option that breaks a condition is replaced by searching on, not kept with a caveat; saved preferences in memory (diet, budget, seats) are conditions too — filter by them and name the ones you applied («учёл: без свинины»).";
+  "Note for a pick of places: give each option only facts that a result about that very option shows (its bill, menu, hours on the day asked, its own route_time walk); write «все …» about the options only when every one of them has it confirmed; an option that breaks a condition is replaced by searching on, not kept with a caveat. «Не сеть» is checked by the number of branches: a map card with «2 филиала» or more, «сеть …», several addresses under one name, or «N locations» is a chain, and a chain is dropped, not named first with a minus. What an option still lacks (its bill, its hours that day), search by its name now — «<название> средний чек часы работы» with sites yandex.ru/maps or 2gis.ru — rather than reply with «не проверил». Aim at three options that pass every condition: while the results name more candidates, check the next one instead of replying with two; fewer only when a search for new candidates found none, and then say how many fit and why. Write «цены подтверждены» or «всё проверено» only when each option's own result shows it, and give that result's link. A conclusion that nothing fits (nothing within the budget, nothing open) only after two or three different sources, naming any that did not open and why. Saved preferences in memory are conditions only where they bear on this pick («Saved preferences for this request» names them): filter by those and name the ones you applied («учёл: без свинины»).";
+
+/**
+ * A result that shows the place has several branches under one name: 2GIS
+ * cards say «6 филиалов», Yandex and aggregators «сеть вегетарианских кафе».
+ * On 26.09 (RU d03) the pick named «Авокадо» first with «несколько кафе под
+ * одной маркой» as its minus, though the person asked for «не сетевое», and
+ * in EN D3 «Джаганнат» passed as no chain beside 2GIS's «3 филиала».
+ */
+const chainMarker =
+  /(?<![\d\p{L}])(?:[2-9]|[1-9]\d+)\s+филиал(?:а|ов)?(?!\p{L})|(?<!\p{L})(?:ещё|еще)\s+\d+\s+филиал|(?<!\p{L})(?:все|другие)\s+филиалы|(?<!\p{L}|не\s)сеть\s+(?:\p{L}+\s+){0,2}?(?:ресторан|кафе|кофе|бар|пиццери|пекар|столов|закусоч|бистро|заведени)\p{L}*|(?<!\p{L}|не\s?)сетев(?:ое|ой|ого|ая|ые)\s+(?:кафе|ресторан|заведени|кофейн|бар)\p{L}*|(?<![\d\p{L}])(?:[2-9]|[1-9]\d+)\s+(?:locations|branches)(?!\p{L})|(?<!\p{L})(?:restaurant|cafe|coffee|pizza)\s+chain(?!\p{L})|(?<!\p{L})chain\s+of\s+(?:restaurants|cafes|coffee)/iu;
+
+function chainNote(marker: string) {
+  return `(this result says «${marker}»: the place it is about has more than one branch under its name — a chain, so it does not pass «не сеть» when the person asked for that)`;
+}
 
 /**
  * A site saying in its own voice that it takes no bookings: «Мы не бронируем
@@ -146,9 +160,15 @@ function formatResults(results: readonly WebSearchResult[]) {
     .map((result, index) => {
       const heading = `${String(index + 1)}. ${result.title}\n${result.url}`;
       if (!result.snippet) return heading;
-      return siteTakesNoBookings.test(result.snippet)
-        ? `${heading}\n${result.snippet}\n${siteTakesNoBookingsNote}`
-        : `${heading}\n${result.snippet}`;
+      const chain = chainMarker.exec(result.snippet)?.[0];
+      return [
+        heading,
+        result.snippet,
+        ...(siteTakesNoBookings.test(result.snippet)
+          ? [siteTakesNoBookingsNote]
+          : []),
+        ...(chain === undefined ? [] : [chainNote(chain)]),
+      ].join("\n");
     })
     .join("\n\n");
 }

@@ -787,7 +787,9 @@ const pickSize = 3;
  * lookups the next call measures as usual. From a start that may be
  * another place (`farStart`) it looks for no candidates near it: in RU d13
  * «0 of 3 within a walk, find others near the start» would have sent the
- * model to look for dinner in Юдино.
+ * model to look for dinner in Юдино. With three within a walk, on 26.09 (RU
+ * d03) the reply still led with a chain and named two bills and one day's
+ * hours as not checked, so the note says what the rest of the check is.
  */
 function pickNote(
   routes: readonly { readonly minutes?: number }[],
@@ -816,7 +818,7 @@ function pickNote(
   const next =
     lacking > 0
       ? `${String(lacking)} more ${lacking === 1 ? "is" : "are"} needed: before you reply, find other candidates near the start that fit the rest of the conditions (web_search with sites yandex.ru/maps or 2gis.ru)${refusing ? ", and while the map service refuses give their walk as not checked instead of measuring them" : " and measure them here in one more call"}. Reply with fewer only when that search found none, and say how many fit and why`
-      : "Before you reply, check each of them against the rest of the conditions";
+      : "Before you reply, check each of them against the rest of the conditions — its bill and its hours that day from a result about that very place, and «не сеть» by the branch count on its own map card (2 or more branches is a chain) — searching by its name for what no result has shown yet, and replace one that fails with the next candidate rather than keep it with a minus";
   return `If these are candidates for a pick of places («где поужинать пешком от…»): ${counted}. A pick aims at ${String(pickSize)} options that each pass every condition the person named, the walk included (${String(walkLimitMinutes)} minutes unless they named their own limit).${service} ${next}; give each option only the minutes of its own row — one not measured here has no walk to state — and name whatever you could not check as not checked.`;
 }
 
