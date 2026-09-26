@@ -407,8 +407,11 @@ selection: `OPENROUTER_MODEL` is the default id for a workspace that has not
 chosen one, `OPENROUTER_MODEL_CONTEXT_TOKENS` declares the context window,
 `OPENROUTER_PROVIDER_ORDER` pins upstream hosts, and
 `OPENROUTER_REASONING_EFFORT` turns the thinking phase on at `low`, `medium`, or
-`high`. The workspace page switches its model picker to an OpenRouter id field
-whenever the key is present.
+`high`. `OPENROUTER_MAX_OUTPUT_TOKENS` caps what one step may write, reasoning
+included (16,384 by default, 32,768 with reasoning on): OpenRouter reserves
+credit for that many tokens before it answers, and without a cap it reserves
+the model's whole limit. The workspace page switches its model picker to an
+OpenRouter id field whenever the key is present.
 
 `web_search` changes shape with the provider. The framework tool is
 provider-managed: an AI Gateway model searches through Exa, and a direct

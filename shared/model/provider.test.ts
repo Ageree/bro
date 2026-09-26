@@ -57,6 +57,14 @@ describe("model provider environment", () => {
     expect(defaultModelId()).toBe("google/gemini-3-flash");
   });
 
+  it("rejects an output cap that is not a positive whole number", async () => {
+    vi.stubEnv("OPENROUTER_MAX_OUTPUT_TOKENS", "0");
+
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
+  });
+
   it("rejects an unsupported reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "extreme");
 

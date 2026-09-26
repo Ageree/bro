@@ -223,6 +223,9 @@ export const env = createEnv({
       "google/gemini-3.1-flash-lite-image"
     ),
     OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
+    // Caps what one model step may write, reasoning included. Left unset it
+    // is 16,384 tokens, or 32,768 with reasoning on.
+    OPENROUTER_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().optional(),
     OPENROUTER_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     OPENROUTER_MODEL_CONTEXT_TOKENS: z.coerce
       .number()
