@@ -44,11 +44,17 @@ const step: PlannedStep = {
   text: "привет",
 };
 
-async function settingsFor(host: string, backgroundWaitMs = 0) {
+async function settingsFor(
+  host: string,
+  backgroundWaitMs = 0,
+  confirmPaymentUpToRub?: number
+) {
   return {
     approvedTools: ownDataTools,
     backgroundWaitMs,
+    confirmPaymentUpToRub,
     extraFiles: [],
+    heldTools: [],
     hintText: "ну что там?",
     host,
     nudges: 1,
@@ -236,6 +242,97 @@ describe("runCase against eve's session routes", () => {
       optionId: "cancel",
       tool: "browser_task",
     });
+    expect(record.driver.status).toBe("completed");
+  });
+
+  it("holds a payment card for the owner instead of cancelling it (--hold)", async () => {
+    const card: MessageStreamEvent = {
+      data: {
+        requests: [
+          {
+            action: {
+              callId: "call_hold",
+              input: { action: "continue", allowPayment: true },
+              kind: "tool-call",
+              toolName: "browser_task",
+            },
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve tool call: browser_task",
+            requestId: "req_hold",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 1,
+        turnId,
+      },
+      meta: meta(),
+      type: "input.requested",
+    };
+    const fake = await startFakeEve((post) =>
+      post.inputResponses
+        ? turn(
+            {
+              data: {
+                resolutions: [
+                  {
+                    kind: "tool-approval",
+                    outcome: "approved",
+                    requestId: "req_hold",
+                  },
+                ],
+                sequence: 0,
+                stepIndex: 1,
+                turnId,
+              },
+              meta: meta(),
+              type: "input.resolved",
+            },
+            delivered("оплатил")
+          )
+        : [turnStarted(), card, sessionWaiting()]
+    );
+    stopFake = () => fake.close();
+    const settings = {
+      ...(await settingsFor(fake.url)),
+      heldTools: ["browser_task"],
+    };
+    const client = new Client({ host: fake.url });
+
+    const first = await runCase(client, benchCase, [step], [], settings);
+
+    // Held instead of the default cancel: the owner decides the payment.
+    expect(first.driver.status).toBe("waiting-for-tester");
+    expect(first.driver.statusDetail).toContain("browser_task");
+    expect(first.driver.statusDetail).toContain("pnpm bench send");
+    expect(
+      first.driver.pendingInputs.map((request) => request.requestId)
+    ).toEqual(["req_hold"]);
+    const log = await readFile(
+      join(settings.outDir, "case-under-test.log"),
+      "utf8"
+    );
+    expect(log).toContain("держит карточку browser_task");
+    expect(log).toContain("Approve tool call: browser_task");
+
+    // `pnpm bench send --option approve` answers the held card later.
+    const record = await continueCase(client, first, settings, {
+      code: undefined,
+      kind: "approval",
+      respond: (pending) =>
+        pending.map((request) => ({
+          optionId: "approve",
+          requestId: request.requestId,
+        })),
+      text: "approve",
+    });
+
+    expect(fake.posts.at(-1)?.inputResponses).toEqual([
+      { optionId: "approve", requestId: "req_hold" },
+    ]);
     expect(record.driver.status).toBe("completed");
   });
 });

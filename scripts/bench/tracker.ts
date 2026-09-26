@@ -180,10 +180,13 @@ export class TurnTracker {
 
   /**
    * Why the driver cannot go on by itself, once the turn has settled: a
-   * consent screen only a person can pass, or a question only the tester
-   * can answer.
+   * consent screen only a person can pass, a question only the tester can
+   * answer, or an approval card of a `--hold`-ed tool that only the owner
+   * decides (real purchases on prod).
    */
-  blocked(): readonly [DriverStatus, string] | undefined {
+  blocked(
+    heldTools: readonly string[] = []
+  ): readonly [DriverStatus, string] | undefined {
     if (this.authorizationPending) {
       return [
         "needs-authorization",
@@ -197,6 +200,19 @@ export class TurnTracker {
       return [
         "waiting-for-tester",
         `вопрос: ${questions.map((request) => request.prompt).join(" | ")}`,
+      ];
+    }
+    const held = [...this.pending.values()].filter(
+      (request) =>
+        request.kind === "tool-approval" &&
+        heldTools.includes(request.action.toolName)
+    );
+    if (held.length > 0) {
+      return [
+        "waiting-for-tester",
+        `карточка на удержании — ${held
+          .map((request) => `«${request.action.toolName}»: ${request.prompt}`)
+          .join(" | ")}`,
       ];
     }
     return undefined;

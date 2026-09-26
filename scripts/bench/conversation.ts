@@ -34,7 +34,13 @@ export interface DriverSettings {
   readonly approvedTools: readonly string[];
   /** How long to follow a session for background results; 0 skips it. */
   readonly backgroundWaitMs: number;
+  /** Upper bound, in roubles, up to which a payment card is confirmed for
+   * the owner (`--confirm-payment-up-to`); undefined keeps every payment
+   * card cancelled, as before the flag existed. */
+  readonly confirmPaymentUpToRub: number | undefined;
   readonly extraFiles: readonly OutgoingFile[];
+  /** Tools whose approval card the driver leaves for the owner (`--hold`). */
+  readonly heldTools: readonly string[];
   readonly hintText: string;
   readonly host: string;
   /** Follow-and-ask rounds while a background errand stays silent. */
@@ -122,9 +128,17 @@ class CaseRun {
    * browser errand's result, or done.
    */
   async settle() {
-    const blocked = this.tracker.blocked();
+    const blocked = this.tracker.blocked(this.settings.heldTools);
     if (blocked) {
-      await this.save(blocked[0], blocked[1]);
+      const held = [...this.tracker.pending.values()].some(
+        (request) =>
+          request.kind === "tool-approval" &&
+          this.settings.heldTools.includes(request.action.toolName)
+      );
+      const detail = held
+        ? `${blocked[1]} — ответить: pnpm bench send --out ${this.settings.outDir} --case ${this.record.caseId} --option approve|cancel`
+        : blocked[1];
+      await this.save(blocked[0], detail);
       return;
     }
     if (this.tracker.awaitingBackground()) {
@@ -248,8 +262,24 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
     const responses: InputResponse[] = [];
     for (const request of run.tracker.pending.values()) {
       if (answered.has(request.requestId)) continue;
-      const decision = decideInputRequest(request, run.settings.approvedTools);
-      if (decision.kind !== "respond") continue;
+      const decision = decideInputRequest(
+        request,
+        run.settings.approvedTools,
+        run.settings.heldTools,
+        run.settings.confirmPaymentUpToRub
+      );
+      if (decision.kind !== "respond") {
+        if (request.kind === "tool-approval") {
+          const cardOptions = (request.options ?? [])
+            .map((option) => `${option.id} («${option.label}»)`)
+            .join(", ");
+          // oxlint-disable-next-line eslint/no-await-in-loop -- log lines keep the order of the decisions
+          await run.journal.line(
+            `== драйвер держит карточку ${request.action.toolName} — ${decision.reason}\n   ${request.prompt}${cardOptions ? ` [${cardOptions}]` : ""}\n   ответить: pnpm bench send --out ${run.settings.outDir} --case ${run.record.caseId} --option approve|cancel`
+          );
+        }
+        continue;
+      }
       answered.add(request.requestId);
       responses.push(decision.response);
       run.record.driver.decisions.push({
@@ -304,7 +334,7 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
     } finally {
       clearTimeout(timer);
     }
-    if (run.tracker.blocked()) break;
+    if (run.tracker.blocked(run.settings.heldTools)) break;
     // oxlint-disable-next-line eslint/no-await-in-loop -- a card raised by the background turn is answered before waiting on
     await settleInputs(run, session);
     // oxlint-disable-next-line eslint/no-await-in-loop -- a pause before reopening an idle stream
@@ -318,7 +348,12 @@ async function finishBackground(run: CaseRun, session: ClientSession) {
   for (let round = 0; round <= run.settings.nudges; round += 1) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- each round waits for the previous one's result
     if (await awaitBackground(run, session)) return;
-    if (round === run.settings.nudges || run.tracker.blocked()) return;
+    if (
+      round === run.settings.nudges ||
+      run.tracker.blocked(run.settings.heldTools)
+    ) {
+      return;
+    }
     const hint = run.settings.hintText;
     // oxlint-disable-next-line eslint/no-await-in-loop -- the hint goes only after the wait ran out
     await run.noteTurn(session, "hint", "после ожидания фонового итога", hint);
@@ -462,7 +497,7 @@ async function sendSteps(
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
     run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
-    if (run.tracker.blocked()) {
+    if (run.tracker.blocked(run.settings.heldTools)) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
       await run.settle();
       return undefined;
@@ -506,7 +541,7 @@ export async function runCase(
       extrasOnFirst: true,
       session: undefined,
     });
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.settings.heldTools)) return run.record;
     if (session) await finishBackground(run, session);
     await run.settle();
   } catch (error) {
@@ -573,7 +608,7 @@ export async function continueCase(
       }));
     }
     await settleInputs(run, session);
-    if (run.tracker.blocked()) {
+    if (run.tracker.blocked(run.settings.heldTools)) {
       await run.settle();
       return run.record;
     }
@@ -587,7 +622,7 @@ export async function continueCase(
             session,
           })
         : session;
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.settings.heldTools)) return run.record;
     if (last) await finishBackground(run, last);
     await run.settle();
   } catch (error) {
@@ -677,7 +712,7 @@ export async function nextCase(
       extrasOnFirst: false,
       session,
     });
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.settings.heldTools)) return run.record;
     // Background errands are waited for only after a message went out.
     if (last && run.record.driver.turns.length > turnsBefore) {
       await finishBackground(run, last);
