@@ -99,6 +99,42 @@ describe("decideInputRequest", () => {
     );
     expect(decision.kind).toBe("ask-tester");
   });
+
+  it("leaves a held tool's card to the owner instead of cancelling it", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", { allowPayment: true }),
+      ownDataTools,
+      ["browser_task"]
+    );
+    expect(decision).toMatchObject({ kind: "ask-tester" });
+  });
+
+  it("cancels the same tool as before when it is not held", () => {
+    const decision = decideInputRequest(
+      approvalCard("browser_task", { allowPayment: true }),
+      ownDataTools,
+      []
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "cancel", requestId: "req_1" },
+    });
+  });
+
+  it("still approves an own-data tool that is not held", () => {
+    const decision = decideInputRequest(
+      approvalCard("calendar-create-event", {
+        attendees: [],
+        summary: "Лекция",
+      }),
+      ownDataTools,
+      ["browser_task"]
+    );
+    expect(decision).toMatchObject({
+      kind: "respond",
+      response: { optionId: "approve" },
+    });
+  });
 });
 
 describe("responseFromText", () => {

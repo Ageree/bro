@@ -11,6 +11,11 @@ import { z } from "zod";
  *
  * Questions are not answered: the answer is the tester's, and an invented
  * one would be a hint. The driver stops and says how to reply.
+ *
+ * A card of a tool named by `--hold` is not answered either, even where it
+ * would otherwise be cancelled: real purchases against prod (`u8`) need the
+ * owner to decide the payment card himself, so the driver stops on it too
+ * and leaves it for `pnpm bench send --option approve|cancel`.
  */
 
 /**
@@ -39,7 +44,8 @@ export type InputDecision =
 
 export function decideInputRequest(
   request: InputRequest,
-  approvedTools: readonly string[]
+  approvedTools: readonly string[],
+  heldTools: readonly string[] = []
 ): InputDecision {
   if (request.kind === "question") {
     return {
@@ -56,6 +62,12 @@ export function decideInputRequest(
     };
   }
   const tool = request.action.toolName;
+  if (heldTools.includes(tool)) {
+    return {
+      kind: "ask-tester",
+      reason: `карточка «${tool}» на удержании (--hold): ответ даёт владелец через \`pnpm bench send --option approve|cancel\``,
+    };
+  }
   const approve =
     approvedTools.includes(tool) &&
     !invitesSomeoneSchema.safeParse(request.action.input).success;
