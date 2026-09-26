@@ -1,6 +1,9 @@
 import { lookup } from "node:dns/promises";
+import { z } from "zod";
 
 const lookupTimeoutMs = 3_000;
+
+const resolverErrorSchema = z.object({ code: z.string() });
 
 /** The host of a site named as an origin or as a bare domain. */
 export function siteHostname(site: string) {
@@ -32,13 +35,7 @@ export async function siteHostMissing(site: string) {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      lookup(host).then(
-        () => false,
-        (error: unknown) =>
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "ENOTFOUND"
-      ),
+      nameNotFound(host),
       new Promise<false>((resolve) => {
         timer = setTimeout(() => {
           resolve(false);
@@ -47,5 +44,14 @@ export async function siteHostMissing(site: string) {
     ]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function nameNotFound(host: string) {
+  try {
+    await lookup(host);
+    return false;
+  } catch (error) {
+    return resolverErrorSchema.safeParse(error).data?.code === "ENOTFOUND";
   }
 }
