@@ -57,8 +57,11 @@ async function loadEve(): Promise<EveQuestionPath> {
   return { ...extraction, ...inputErrors, ...definitions, ...schemas };
 }
 
-/** The question cards eve puts up for one model step that calls the tool. */
-async function cardsFor(input: string) {
+/**
+ * The question cards eve puts up for one model step that calls the tool,
+ * and the errors the model gets back for the calls it has to rewrite.
+ */
+async function stepFor(input: string) {
   const eve = await loadEve();
   const { definition } = eve.normalizeToolDefinition(
     tool,
@@ -92,16 +95,23 @@ async function cardsFor(input: string) {
     },
   });
   // As eve's step handling does: an invalid call becomes a tool error.
-  const invalid = new Set(
-    result.toolCalls
-      .filter((call) => eve.isInvalidToolCall(call))
-      .map((call) => call.toolCallId)
+  const invalid = result.toolCalls.filter((call) =>
+    eve.isInvalidToolCall(call)
   );
-  return eve.extractQuestionInputRequests({
-    excludedCallIds: invalid,
-    toolCalls: result.toolCalls,
-    tools: new Map([["ask_question", definition]]),
-  });
+  return {
+    cards: eve.extractQuestionInputRequests({
+      excludedCallIds: new Set(invalid.map((call) => call.toolCallId)),
+      toolCalls: result.toolCalls,
+      tools: new Map([["ask_question", definition]]),
+    }),
+    errors: invalid.map((call) =>
+      "error" in call && call.error instanceof Error ? call.error.message : ""
+    ),
+  };
+}
+
+async function cardsFor(input: string) {
+  return (await stepFor(input)).cards;
 }
 
 describe("ask_question", () => {
@@ -134,10 +144,32 @@ describe("ask_question", () => {
       "agent/tools/ask_question.ts"
     );
 
-    expect(definition.inputSchema.properties.prompt.pattern).toBe("\\S");
+    expect(definition.inputSchema.properties.prompt.pattern).toBe(
+      "[?？؟]|\\S+\\s+\\S+\\s+\\S"
+    );
     expect(definition.behavior).toEqual(
       Object.getOwnPropertyDescriptor(askQuestion, toolBehavior)?.value
     );
+  });
+
+  it("lists the prompt first, as the model writes it", async () => {
+    // Hosts that decode keys in schema order dropped the options DeepSeek
+    // wrote after a prompt listed last.
+    const eve = await loadEve();
+    const { definition } = eve.normalizeToolDefinition(
+      tool,
+      "agent/tools/ask_question.ts"
+    );
+
+    expect(Object.keys(definition.inputSchema.properties)).toEqual([
+      "prompt",
+      "options",
+      "allowFreeform",
+    ]);
+    expect(definition.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ["prompt"],
+    });
   });
 
   it.each([
@@ -146,8 +178,32 @@ describe("ask_question", () => {
       '{"prompt":"","options":[],"allowFreeform":true}',
     ],
     ["a question of only spaces", '{"prompt":"  \\n ","allowFreeform":true}'],
+    ["one letter (EN d03, d12)", '{"prompt":"I"}'],
+    ["one letter and a space", '{"prompt":"I ","allowFreeform":true}'],
+    ["two words and no question mark", '{"prompt":"Hotel name"}'],
+    ["a Russian fragment", '{"prompt":"Какой отель"}'],
   ])("puts up no card for %s", async (_case, input) => {
     expect(await cardsFor(input)).toEqual([]);
+  });
+
+  it("gives a one-letter question back to the model to rewrite", async () => {
+    const { cards, errors } = await stepFor('{"prompt":"I"}');
+
+    expect(cards).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Invalid input for tool ask_question");
+    expect(errors[0]).toContain('"prompt"');
+  });
+
+  it.each([
+    ["a short question", "Which hotel?"],
+    ["an imperative", "Tell me your hotel"],
+    ["a Russian question", "Какой отель?"],
+    ["a question in full-width script", "你住哪个酒店？"],
+  ])("puts up the card for %s", async (_case, prompt) => {
+    expect(await cardsFor(JSON.stringify({ prompt }))).toMatchObject([
+      { kind: "question", prompt },
+    ]);
   });
 
   it("puts up the card for a question with words", async () => {

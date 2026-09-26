@@ -12,29 +12,41 @@ const askQuestionDescription =
   "Ask the person one question and wait for the answer. Use it only when the request cannot be carried out without their answer: a detail that has no sensible default, that you cannot find in the conversation, memory, profile or tools, and where a wrong guess would cost money or reach another person. Never use it to confirm what the person already asked for in so many words («запомни», «напомни», «поставь в календарь», «запиши меня», «забронируй»): do it, and an action that needs consent shows its own approval card, which is the only confirmation. Never ask which of several requested things to do: do all of them. Never ask what a date like «завтра» or «в пятницу» means or what a card will show. At most one question per request, together with what you already found.";
 
 /**
- * eve's input with a prompt that says something. On 25.09 (RU d13)
- * gpt-6-luna saved a memory and then called `ask_question` with
- * `{"prompt":"","options":[]}`: the person got an empty question card, and
- * the turn waited for their answer to it. `eve build` keeps a static tool's
+ * eve's input with a prompt that is a question. The person got an empty
+ * card from gpt-6-luna (`{"prompt":"","options":[]}`, RU d13 25.09) and a
+ * card reading «I» from DeepSeek (EN d03 and d12), and each turn waited for
+ * an answer to it. A prompt passes with a question mark or three words:
+ * «Which hotel?», «Tell me your hotel». `eve build` keeps a static tool's
  * input schema as JSON Schema and validates each call against it again at
  * run time (`eve/dist/src/tools/schema.js`); a call that fails reaches the
- * model as a tool error, and eve puts up no card for it
+ * model as a tool error to rewrite, and eve puts up no card for it
  * (`eve/dist/src/harness/input-extraction.js`). So the rule has to be one
- * JSON Schema can carry — a pattern, not a refinement. eve's schema comes
- * from its own copy of zod, which `instanceof` still recognizes.
+ * JSON Schema can carry — a pattern, not a refinement. The host never sees
+ * this search pattern (`withoutSearchPattern` in
+ * `agent/lib/model/openrouter.ts`).
+ *
+ * `prompt` comes first, as the model writes it: hosts that decode keys in
+ * schema order dropped the answer options DeepSeek wrote after a prompt
+ * listed last (DeepInfra, Krea, OpenInference: 0 of 6 calls kept them, 6 of
+ * 6 with `prompt` first, 26.09). eve's schema comes from its own copy of
+ * zod, which `instanceof` still recognizes.
  */
 const eveInputSchema = askQuestion.inputSchema;
 if (!(eveInputSchema instanceof z.ZodObject)) {
   throw new TypeError("eve's ask_question input is no longer a zod object.");
 }
-const inputSchema = eveInputSchema.extend({
-  prompt: z
-    .string()
-    .regex(/\S/u)
-    .describe(
-      "The question itself, in the person's language, as they will read it. Never empty."
-    ),
-});
+const inputSchema = eveInputSchema
+  .omit({ allowFreeform: true, options: true, prompt: true })
+  .extend({
+    prompt: z
+      .string()
+      .regex(/[?？؟]|\S+\s+\S+\s+\S/u)
+      .describe(
+        "The question itself, in the person's language, as they will read it: a whole question that names what you need, with a question mark or at least three words. Never empty, never a fragment."
+      ),
+  })
+  .extend(eveInputSchema.pick({ options: true }).shape)
+  .extend(eveInputSchema.pick({ allowFreeform: true }).shape);
 
 /**
  * eve keeps a native tool's pause-for-input behavior under a non-enumerable
