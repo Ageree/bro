@@ -47,7 +47,49 @@ interface RunSummary {
 }
 
 const readBrowserRun = vi.hoisted(() =>
-  vi.fn<(runId: string) => Promise<BrowserRunRow>>()
+  vi.fn<(runId: string) => Promise<BrowserRunRow | undefined>>()
+);
+const createBrowserRun = vi.hoisted(() =>
+  vi.fn<
+    (
+      scope: { userId: string; workspaceId: string },
+      input: {
+        id: string;
+        sessionId?: string | null;
+        status: string;
+        task: string;
+      }
+    ) => Promise<BrowserRunRow>
+  >((scope, input) =>
+    Promise.resolve({
+      captchaAttempt: 1,
+      completedAt: null,
+      conversationChannel: "photon",
+      conversationId: "imessage:chat-1",
+      createdByUserId: scope.userId,
+      id: input.id,
+      liveViewUrl: "https://live.browser-use.test/abc",
+      task: input.task,
+      workspaceId: scope.workspaceId,
+    })
+  )
+);
+const moveSpendReservation = vi.hoisted(() =>
+  vi.fn<(fromRunId: string, toRunId: string) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
+const listBrowserUseSessionQueue = vi.hoisted(() =>
+  vi.fn<
+    () => Promise<
+      { createdAt: string; runId?: string | null; status: string }[]
+    >
+  >(() => Promise.resolve([]))
+);
+const readBrowserUseSession = vi.hoisted(() =>
+  vi.fn<() => Promise<{ latestRunId: string; status: "completed" }>>(() =>
+    Promise.resolve({ latestRunId: runId, status: "completed" })
+  )
 );
 const claimBrowserRunCompletion = vi.hoisted(() =>
   vi.fn<
@@ -197,6 +239,7 @@ vi.mock("@db/services/browser-runs", () => ({
   ),
   claimBrowserRunBrowser,
   claimBrowserRunCompletion,
+  createBrowserRun,
   finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   parkBrowserRunForRetry,
   claimBrowserRunReport,
@@ -216,6 +259,7 @@ vi.mock("@db/services/spending", () => ({
     Promise.resolve([
       { amountRub: 1200, category: null, feeRub: 0, merchant: "shop.example" },
     ]),
+  moveSpendReservation,
   readSpendEntryForRun,
   readSpendLimit: () =>
     Promise.resolve({
@@ -240,6 +284,8 @@ vi.mock("@db/services/orders", () => ({ recordOrder }));
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseClient>()),
   cancelBrowserUseRun,
+  listBrowserUseSessionQueue,
+  readBrowserUseSession,
   stopBrowserUseSessionBrowsers,
   readBrowserUseRun,
 }));
@@ -264,6 +310,13 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  listBrowserUseSessionQueue.mockReset();
+  listBrowserUseSessionQueue.mockResolvedValue([]);
+  readBrowserUseSession.mockReset();
+  readBrowserUseSession.mockResolvedValue({
+    latestRunId: runId,
+    status: "completed",
+  });
   readSpendEntryForRun.mockResolvedValue(undefined);
   settleSpendReservation.mockResolvedValue(undefined);
   ledger.claimed = false;
@@ -1819,6 +1872,112 @@ describe("what the report turn retells", () => {
     expect(prompt).toContain(
       "Items:\n1. Яйца С1, 10 шт — 149 ₽ — qty 1\n2. Батон нарезной — 64 ₽ — qty 1\n3. Молоко 3,2%, 1 л — 99 ₽ — qty 1\n4. [fee] Доставка — 100 ₽"
     );
+  });
+
+  it("holds the report while a message queued into the live run has not become its turn", async () => {
+    // The message waits on the session and runs as the next turn. Settling
+    // now would tell the person what happened before their message and stop
+    // the browser that turn still needs.
+    listBrowserUseSessionQueue.mockResolvedValue([
+      {
+        createdAt: "2026-09-26T10:00:00.000Z",
+        runId: null,
+        status: "pending",
+      },
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    const settled = await settleBrowserRun({ to }, runId);
+
+    expect(settled).toEqual({ kind: "queued_follow_up" });
+    expect(send).not.toHaveBeenCalled();
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("delivers on its own once a message queued into the live run has waited out", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-26T10:00:00.000Z"));
+    listBrowserUseSessionQueue.mockResolvedValue([
+      {
+        createdAt: "2026-09-26T09:50:00.000Z",
+        runId: null,
+        status: "pending",
+      },
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    try {
+      expect(await settleBrowserRun({ to }, runId)).toEqual({
+        kind: "queued_follow_up",
+      });
+      vi.setSystemTime(new Date("2026-09-26T10:01:31.000Z"));
+
+      await settleBrowserRun({ to }, runId);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(createBrowserRun).not.toHaveBeenCalled();
+  });
+
+  it("tracks the run a message queued into the live errand became, and still delivers", async () => {
+    const followUpId = "22222222-2222-4222-8222-222222222222";
+    readBrowserRun.mockImplementation((id) =>
+      Promise.resolve(
+        id === followUpId
+          ? undefined
+          : {
+              ...row,
+              sessionId: "session-1",
+              task: "Собери корзину: десяток яиц и батон",
+            }
+      )
+    );
+    readBrowserUseSession.mockResolvedValue({
+      latestRunId: followUpId,
+      status: "running",
+    });
+    const tracked = {
+      ...row,
+      completedAt: new Date(),
+      sessionId: "session-1",
+      task: "Собери корзину: десяток яиц и батон",
+    };
+    claimBrowserRunCompletion.mockReset();
+    claimBrowserRunCompletion.mockResolvedValueOnce(tracked);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(createBrowserRun).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:user-1", workspaceId: "workspace:user-1" },
+      expect.objectContaining({
+        id: followUpId,
+        sessionId: "session-1",
+        status: "running",
+        task: "Собери корзину: десяток яиц и батон",
+      })
+    );
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      followUpId
+    );
+    expect(claimBrowserRunCompletion).toHaveBeenCalledWith(
+      runId,
+      expect.objectContaining({ retriedAsRunId: followUpId })
+    );
+    expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("Errand: Собери корзину: десяток яиц и батон");
   });
 
   it("has the basket read back before any payment when the stop lists nothing", async () => {

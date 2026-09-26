@@ -216,6 +216,18 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
       cloud.stopped.push(sessionId);
       return Promise.resolve("stopped" as const);
     },
+    // A finished turn looks at the session before it stops the browser. These
+    // stand-ins have no message waiting and no later run than the one stored.
+    listBrowserUseSessionQueue: () => Promise.resolve([]),
+    readBrowserUseSession: (sessionId: string) => {
+      const match = [...cloud.runs.entries()].find(
+        ([, run]) => run.sessionId === sessionId
+      );
+      return Promise.resolve({
+        latestRunId: match?.[0] ?? sessionId,
+        status: "completed" as const,
+      });
+    },
   };
 });
 

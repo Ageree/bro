@@ -3,6 +3,7 @@ import type { ScheduleToFn } from "eve/schedules";
 import {
   claimBrowserRunCompletion,
   claimBrowserRunReport,
+  createBrowserRun,
   finishWalledBrowserRun,
   holdBrowserRunReportForTurn,
   parkBrowserRunForRetry,
@@ -16,7 +17,9 @@ import telegram from "@agent/channels/telegram";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import {
   cancelBrowserUseRun,
+  listBrowserUseSessionQueue,
   readBrowserUseRun,
+  readBrowserUseSession,
   type BrowserUseRunStatus,
 } from "./client";
 import {
@@ -30,7 +33,10 @@ import {
   settleBrowserRunSpend,
 } from "./spend";
 import { recordOrder } from "@db/services/orders";
-import { readSpendEntryForRun } from "@db/services/spending";
+import {
+  moveSpendReservation,
+  readSpendEntryForRun,
+} from "@db/services/spending";
 import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import { within } from "./deadline";
 import {
@@ -119,6 +125,21 @@ export async function settleBrowserRun(
     return { kind: "open" as const, summaryStatus: run.status };
   }
 
+  // A message queued into this still-running turn does not join it. Browser
+  // Use holds it and runs it as the next turn, a new run id. Until that run
+  // exists, settling this one would deliver a report from before the message
+  // and stop the browser the next turn still needs. On 26.09 a code (and
+  // «и добавь ещё молоко») went into a live errand this way, and the cart it
+  // then finished never reached the person until they asked.
+  const followUpId = await queuedFollowUpRun(row, run.sessionId, status);
+  if (followUpId === "wait") {
+    console.info("[browser-use] run finished with a message still queued", {
+      runId,
+      sessionId: run.sessionId,
+    });
+    return { kind: "queued_follow_up" as const };
+  }
+
   const { interrupted, missingSite, parsed } = await networkVerdict(
     row,
     run,
@@ -170,11 +191,15 @@ export async function settleBrowserRun(
         ? unreachableCause(parsed, run.error)
         : undefined,
   };
+  if (followUpId !== undefined) {
+    await recordQueuedFollowUp(row, followUpId, run.sessionId);
+  }
   const claimed = await claimBrowserRunCompletion(runId, {
     outcome,
     // The plain report is kept with the claim, so the person hears about the
     // run even when this settle is cut off before the full report is ready.
     report: retryAt ? undefined : browserRunReport(row, reportFacts),
+    retriedAsRunId: followUpId,
     status: settledStatus(status),
   });
   if (!claimed) return { kind: "closed" as const };
@@ -310,6 +335,123 @@ async function networkVerdict(
     return { interrupted: error, parsed: { ...reported, needs: "info" } };
   }
   return { parsed: { ...reported, needs: "captcha" } };
+}
+
+/**
+ * How long a finished turn keeps its browser while a queued message has not
+ * yet become the next run. The message was sent while the turn was still
+ * going, so its age is not how long the next run has had to start.
+ */
+const queuedFollowUpWaitMs = 90_000;
+const queuedFollowUpSince = new Map<string, number>();
+
+/**
+ * The run a message queued into this one became, `"wait"` while that turn
+ * has not started yet, or nothing when the session has no such message.
+ * A lookup that fails does not hold the report: the person still hears what
+ * this turn itself finished.
+ */
+async function queuedFollowUpRun(
+  row: BrowserRunRow,
+  sessionId: string,
+  status: BrowserUseRunStatus
+): Promise<"wait" | string | undefined> {
+  if (status === "cancelled" || row.sessionId === null) {
+    queuedFollowUpSince.delete(row.id);
+    return undefined;
+  }
+  const session = row.sessionId ?? sessionId;
+  try {
+    const [info, queue] = await Promise.all([
+      readBrowserUseSession(session),
+      listBrowserUseSessionQueue(session),
+    ]);
+    const candidates = [
+      info.latestRunId === row.id ? undefined : info.latestRunId,
+      ...queue.map((message) =>
+        message.runId && message.runId !== row.id ? message.runId : undefined
+      ),
+    ];
+    for (const candidate of candidates) {
+      if (candidate === undefined) continue;
+      if ((await readBrowserRun(candidate)) === undefined) {
+        queuedFollowUpSince.delete(row.id);
+        return candidate;
+      }
+    }
+    const pending = queue.some(
+      (message) =>
+        message.status === "pending" || message.status === "dispatching"
+    );
+    // A later run Bro already tracks will see a message still waiting behind
+    // it. Only a turn that is still the session's latest has to stay open so
+    // its browser is there when the message becomes the next run.
+    if (!pending || info.latestRunId !== row.id) {
+      queuedFollowUpSince.delete(row.id);
+      return undefined;
+    }
+    const now = Date.now();
+    const remembered = queuedFollowUpSince.get(row.id);
+    const since =
+      remembered === undefined || remembered > now ? now : remembered;
+    queuedFollowUpSince.set(row.id, since);
+    if (now - since < queuedFollowUpWaitMs) return "wait";
+    queuedFollowUpSince.delete(row.id);
+    return undefined;
+  } catch (error) {
+    console.warn("[browser-use] the session queue could not be read", {
+      cause: error,
+      runId: row.id,
+    });
+    queuedFollowUpSince.delete(row.id);
+    return undefined;
+  }
+}
+
+/**
+ * Track the turn a queued message became, and keep the errand's payment
+ * reservation on it. This turn ended so that message could run; charging or
+ * releasing here would close a payment the next turn has not made yet.
+ */
+async function recordQueuedFollowUp(
+  row: BrowserRunRow,
+  followUpId: string,
+  sessionId: string
+) {
+  if ((await readBrowserRun(followUpId)) === undefined) {
+    await createBrowserRun(
+      { userId: row.createdByUserId, workspaceId: row.workspaceId },
+      {
+        conversationChannel: row.conversationChannel,
+        conversationId: row.conversationId,
+        id: followUpId,
+        liveViewUrl: row.liveViewUrl,
+        paymentAllowed: row.paymentAllowed,
+        profileId: row.profileId,
+        replyAnchorMessageId: row.replyAnchorMessageId,
+        rootSessionId: row.rootSessionId,
+        sessionId: row.sessionId ?? sessionId,
+        site: row.site,
+        status: "running",
+        submission: row.submission,
+        task: row.task,
+      }
+    );
+  }
+  try {
+    await moveSpendReservation(row.id, followUpId);
+  } catch (error) {
+    console.warn("[browser-use] the reservation could not follow the message", {
+      cause: error,
+      followUpId,
+      runId: row.id,
+    });
+  }
+  console.info("[browser-use] queued message became its own run", {
+    followUpId,
+    runId: row.id,
+    sessionId: row.sessionId ?? sessionId,
+  });
 }
 
 /**

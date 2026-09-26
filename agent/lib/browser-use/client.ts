@@ -357,6 +357,34 @@ const sessionInfoSchema = z.object({
   status: runStatusSchema,
 });
 
+const sessionQueueSchema = z.object({
+  queue: z.array(
+    z.object({
+      createdAt: z.string(),
+      runId: z.string().min(1).nullish(),
+      status: z.string(),
+    })
+  ),
+});
+
+/**
+ * Messages still waiting on a session, oldest first. A busy session does not
+ * take a message into the turn it is running: the message waits here and
+ * becomes the next turn, a new run.
+ */
+export async function listBrowserUseSessionQueue(sessionId: string) {
+  return sessionQueueSchema.parse(
+    await request("GET", `/sessions/${encodeURIComponent(sessionId)}/queue`)
+  ).queue;
+}
+
+/** The session's latest turn. A message that already drained names its run here. */
+export async function readBrowserUseSession(sessionId: string) {
+  return sessionInfoSchema.parse(
+    await request("GET", `/sessions/${encodeURIComponent(sessionId)}`)
+  );
+}
+
 /**
  * Stop every live browser a session holds, once the run that just settled is
  * still the session's latest and it has ended. A profile keeps the cookies of

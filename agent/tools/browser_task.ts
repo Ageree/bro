@@ -2699,10 +2699,11 @@ const terminalRunStatuses = new Set<BrowserUseRunStatus>([
 ]);
 
 /**
- * Whether the tracked run can still accept a queued message. Browser Use
- * drains a message queued onto an idle session immediately — as a new run the
- * caller never learns the id of — so a run that has already finished must be
- * continued with a run of its own instead.
+ * Whether the tracked run can still take a queued message. A busy session
+ * holds the message and runs it as the next turn: the queue names that run
+ * once it has dispatched, and a message still waiting is adopted when this
+ * turn settles. A run that has already finished is continued with a run of
+ * its own instead.
  */
 async function trackedRunIsLive(runId: string, completedAt: Date | null) {
   if (completedAt) return false;
@@ -3493,13 +3494,24 @@ async function runBrowserTask(
           }
           // Bindings exist per run, so a busy session takes the message but
           // not the card: whatever was reserved for it is not going to be paid.
-          await queueBrowserUseSessionMessage(
+          const queued = await queueBrowserUseSessionMessage(
             row.sessionId,
             [
               withCodeEntry(instruction, codeEntry, carriesCode),
               queuedIntoErrandContract(row.task),
             ].join("\n\n")
           );
+          // Idle between the busy answer and the queue: the message already
+          // is a run, and it reports only once that run is tracked.
+          if (queued.runId && queued.runId !== runId) {
+            return {
+              followUp: { id: queued.runId, sessionId: row.sessionId },
+              kind: "continued" as const,
+              profileId,
+              reusedSession: true,
+              secrets: { aliases: [], bindings: [] },
+            };
+          }
           return {
             carriesPayment: false,
             kind: "replied" as const,

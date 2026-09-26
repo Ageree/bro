@@ -158,6 +158,11 @@ export async function claimBrowserRunCompletion(
   runId: string,
   input: Pick<BrowserRunInsert, "outcome" | "status"> & {
     readonly report?: string;
+    /**
+     * The run a message queued into this one became, once that turn has
+     * started. The conversation still knows the errand by this id.
+     */
+    readonly retriedAsRunId?: string;
   }
 ) {
   const completedAt = new Date();
