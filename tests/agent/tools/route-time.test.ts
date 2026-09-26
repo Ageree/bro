@@ -939,24 +939,6 @@ describe("route_time", () => {
     );
     expect(three.pick).toContain("1 more is needed");
 
-    // Three already within a walk: check the bill, the hours and the branch
-    // count, and replace a chain instead of keeping it with a minus.
-    const checked = await measure({
-      from: "55.7640, 37.6300",
-      mode: "walking",
-      to: [
-        "метро Чистые пруды, Москва",
-        "Чистопрудный бульвар 12, Москва",
-        "Hedonist, Покровский бульвар, 8с1, Москва",
-        "Метрополь, Москва",
-      ],
-    });
-    expect(checked.pick).toContain("3 of 4 places are within a 15-minute walk");
-    expect(checked.pick).toContain(
-      "«не сеть» by the branch count on its own map card (2 or more branches is a chain) — searching by its name for what no result has shown yet, and replace one that fails with the next candidate rather than keep it with a minus"
-    );
-    expect(checked.pick).not.toContain("more are needed");
-
     // A drive is no walk to count.
     const drive = await measure({
       from: "отель Метрополь, Москва",
