@@ -771,7 +771,7 @@ describe("the browser run poller", () => {
     expect((await readRun("waiting-run"))?.browserReleasedAt).toBeNull();
   }, 30_000);
 
-  it("answers a payment stop with one card, not a question in text", async () => {
+  it("answers a payment stop with one question, not a payment", async () => {
     await runningErrand(
       "payment-run",
       [
@@ -787,9 +787,11 @@ describe("the browser run poller", () => {
 
     const report = sentText(send.mock.calls[0]?.[0]);
     expect(report).toContain(
-      "do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged"
+      "Ask the person once, in one short message, and end this turn: the item, the total, every fee, and the delivery or the time."
     );
-    expect(report).toContain("the real total with every fee in chargeRub");
+    expect(report).toContain(
+      "Do not call allowSubmit or allowPayment in this turn, and do not pay."
+    );
   }, 30_000);
 
   it("reports a basket and hotels as a list of what the run found", async () => {

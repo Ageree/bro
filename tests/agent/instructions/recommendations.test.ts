@@ -105,10 +105,10 @@ describe("recommendation instructions", () => {
     expect(content).toContain("Закончи одним вопросом");
     expect(content).toContain("Других вопросов в этом сообщении нет");
     expect(content).toContain(
-      "`browser_task start` без `allowSubmit` найдёт слот и остановится"
+      "`browser_task start` без `allowSubmit` дойдёт до последнего шага перед кнопкой, и тогда один вопрос"
     );
     expect(content).toContain(
-      "единственная карточка, второго вопроса текстом нет"
+      "дойдёт до последнего шага перед кнопкой, и тогда один вопрос с вариантом, суммой и временем"
     );
     expect(content).toContain("До его «да» браузер не запускай");
     expect(content).not.toContain("Проверить свободный стол");

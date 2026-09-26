@@ -356,7 +356,11 @@ describe("agent instructions", () => {
       "Для поиска и сравнения цен карта и разрешение не нужны"
     );
     expect(selected?.content).toContain(
-      "только с `allowSubmit: true` (кроме входа по его телефону, см. ниже). Ставь его, только когда человек прямо попросил именно это"
+      "Желание человека, чтобы дело было сделано, — согласие на всё до оплаты, без промежуточных вопросов."
+    );
+    expect(selected?.content).toContain('`personWants: "done"`');
+    expect(selected?.content).toContain(
+      "В поручение не пиши «не вводи данные»"
     );
     // The phone goes as a secret for the errand's own site, never as text.
     expect(selected?.content).toContain(
@@ -371,7 +375,10 @@ describe("agent instructions", () => {
       "`allowSubmit` всегда идёт вместе с `submission` и показывает человеку одну нативную карточку подтверждения"
     );
     expect(selected?.content).toContain(
-      "Карточка с `chargeRub` — это и разрешение заплатить"
+      "Желание сделать дело не разрешает заплатить и не прибавляет запас к сумме."
+    );
+    expect(selected?.content).toContain(
+      "Один вопрос перед оплатой называет вещь, итог, сборы и доставку"
     );
     expect(selected?.content).toContain("Подтверждение принадлежит поручению.");
     expect(selected?.content).toContain(

@@ -9,14 +9,6 @@ const concreteOptionTerms =
   "what — the train or flight and its departure, the room, the item and seller, the doctor and slot, the meter readings with each meter's serial number; the seats or quantity; the date and time; for a basket or an order, every line from Items in submission.items; and the real total with every fee in chargeRub";
 
 /**
- * What the person asked for when they asked for the errand to be done. A
- * search that names a seat («найди билеты… место у прохода») is still a
- * search: it ends on the options and one short question, not on a buy card.
- */
-const purchaseRequest =
-  "the user asked for this errand to be done — booked, bought, ordered, signed up, passed —";
-
-/**
  * The Госуслуги screen that hands a site the person's profile is theirs to
  * allow: the run stops on it (`gosuslugiSignInRule`), and the card names the
  * site and the data, apart from the booking or order that comes after it.
@@ -49,13 +41,11 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
     "The site is waiting for a one-time code it sent by email. Before any message, call browser_task continue on this run id with codeFrom: \"mail\" and nothing else: when the user's Gmail is connected, the tool finds the site's own letter, reads the code and types it in itself — you never see it, and the user is not asked for it. When it answers that the code went to the run, send one message: a short line that you took the code from their mail, then what the run did and found so far. When it answers that nothing was sent, open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
   password:
     "The site asks for a sign-in the run has no password for: call request_vault_setup so the user can save the password, and open your one message with a short line naming the site and giving that link; never ask for the password in chat.",
-  // A run that searched first stops here with the option it picked: one card
-  // naming that option answers it, never a question in text before it.
-  decision: `The run stopped at the final step without acting in the user's name. When ${purchaseRequest} and the report names an option that fits their conditions, do not ask in text: continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}), so the user confirms it on one card. When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${gosuslugiAccessLine} ${declinedCardLine}`,
-  // A run stops here only when paying was not approved, or the total came
-  // out above what was: one card with the real total answers it, never a
-  // question in text and a card after it.
-  payment: `The run stopped before paying, with the total in Total. When ${purchaseRequest} and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
+  // The run stopped before the final button. One question in text is the
+  // confirmation; this turn does not press it.
+  decision: `The run stopped at the last step before anything is submitted. Ask the person once, in one short message, and end this turn: the option (${concreteOptionTerms}), and the delivery or the time. Do not call allowSubmit or allowPayment in this turn. Their own next message is the answer. When Details begins with «Differs:», say how it differs. When they only asked to look, show the options and ask one short question. ${gosuslugiAccessLine} ${declinedCardLine}`,
+  // Paying is that same one question. A wish to have it done is not a payment.
+  payment: `The run stopped before paying, with the total in Total. Ask the person once, in one short message, and end this turn: the item, the total, every fee, and the delivery or the time. Do not call allowSubmit or allowPayment in this turn, and do not pay. Their own next message is the answer. When Details begins with «Differs:», say how it differs («дороже на 1 200 ₽»). When the payment fits their standing spend limit, continue this run with allowPayment and withinSpendLimit instead of asking. When they only asked to look, give them the total and offer to order. ${declinedCardLine}`,
   // RU 25.09, d04: Ozon showed a QR code to scan with its app, and Bro only
   // said «подтвердите в приложении» — the person had nothing to scan.
   push: "The site is waiting for the user to approve the sign-in in their app — a push, or a QR code on the page to scan with the site's app. Open your one message with a short line asking them to approve it, and give them the Live view link that comes with this outcome: it shows the page as it is. For a QR code, tell them to open that link on a computer or another screen and scan the code there with the site's app on their phone. Say too that if they cannot, you will sign in with a code by SMS instead. What the run did so far follows in that same message. Then end this turn: their own reply — that they have approved it, or that they want the SMS code — continues the run, with browser_task continue on this run id.",

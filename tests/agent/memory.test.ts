@@ -666,33 +666,24 @@ describe("the person's rules in the profile", () => {
     }
   });
 
-  it("knows a rule that has Bro ask before buying, in any conversation", async () => {
+  it("narrows paying and booking, and leaves a rule about mail alone", async () => {
+    expect(await ruleAsksBeforeBuying(alice)).toBe(false);
     await saveMemory(
       alice,
       "scope-a",
-      { category: "rule", text: "Никогда не пиши маме после десяти." },
-      "save:mother",
-      { sessionId: "session", turnId: "turn-1" }
-    );
-    await saveMemory(
-      alice,
-      "scope-a",
-      { category: "preference", text: "Не любит платить без спроса." },
-      "save:preference",
-      { sessionId: "session", turnId: "turn-2" }
+      { category: "rule", text: "Никогда не пиши маме." },
+      "save:mom",
+      { sessionId: "session", turnId: "turn-mom" }
     );
     expect(await ruleAsksBeforeBuying(alice)).toBe(false);
-
     await saveMemory(
       alice,
       "scope-b",
       { category: "rule", text: "Ничего не оплачивай без моего ок." },
-      "save:rule",
-      { sessionId: "session", turnId: "turn-3" }
+      "save:pay",
+      { sessionId: "session", turnId: "turn-pay" }
     );
-
     expect(await ruleAsksBeforeBuying(alice)).toBe(true);
-    expect(await ruleAsksBeforeBuying(bob)).toBe(false);
   });
 
   it("reads as it always did while the person has set no rule or preference", () => {

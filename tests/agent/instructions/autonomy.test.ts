@@ -68,7 +68,13 @@ describe("autonomy defaults", () => {
     expect(content).toContain("готовый результат, а не вопросы");
     expect(content).toContain("«взял на 19:00 — поменяю, если что»");
     expect(content).toContain("бесплатную бронь с бесплатной отменой");
-    expect(content).toContain("Когда человек сам попросил забронировать");
+    expect(content).toContain(
+      "это согласие на всё до оплаты и до финальной кнопки, без промежуточных вопросов"
+    );
+    expect(content).toContain("Это никогда не согласие заплатить");
+    expect(content).toContain(
+      "спроси один раз: что именно, итоговая сумма, сборы и доставка или время"
+    );
     expect(content).toContain(
       "заканчивается рекомендацией. Не бронируй, не записывай и не оставляй заявку сам"
     );
@@ -76,7 +82,7 @@ describe("autonomy defaults", () => {
       "отправляй, только когда он прямо попросил именно это действие"
     );
     expect(content).toContain(
-      "только через карточку подтверждения `browser_task`, даже когда оно бесплатное, или по постоянному разрешению"
+      "завершается одним вопросом перед этой кнопкой, даже когда оно бесплатное, или идёт по постоянному разрешению"
     );
     // The limit's own exception is named where the card is required, so the
     // two rules never read as opposite answers to one case.

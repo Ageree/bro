@@ -1210,7 +1210,7 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).toContain("with the real total");
   });
 
-  it("turns the option a search staged into one card, and keeps it on a declined card", async () => {
+  it("turns the option a search staged into one question, and keeps the options on a declined card", async () => {
     readBrowserUseRun.mockResolvedValue({
       error: null,
       id: runId,
@@ -1233,9 +1233,12 @@ describe("settling a browser run", () => {
     await settleBrowserRun({ to }, runId);
 
     const prompt = send.mock.calls[0]?.[0];
-    // One card naming the option the run found, not a question before it.
+    // One question naming the option the run found; this turn does not submit it.
     expect(prompt).toContain(
-      "continue this run now with allowSubmit and a submission naming exactly that option"
+      "Ask the person once, in one short message, and end this turn"
+    );
+    expect(prompt).toContain(
+      "Do not call allowSubmit or allowPayment in this turn."
     );
     expect(prompt).toContain("the train or flight and its departure");
     expect(prompt).toContain("the real total with every fee in chargeRub");
@@ -2003,7 +2006,7 @@ describe("what the report turn retells", () => {
     // «Найди билеты… у прохода» is still a search: options and a question.
     expect(prompt).not.toContain("a ticket search that also asks for a seat");
     expect(prompt).toContain(
-      "When no option fits, or the user only asked to find or compare, show the options and ask one short question."
+      "When they only asked to look, show the options and ask one short question."
     );
   });
 
