@@ -342,6 +342,20 @@ function outcomeContract() {
 }
 
 /**
+ * A message queued into a running errand is taken into that same run, and the
+ * run's final answer then answers the message alone: on 26.09 a run asked
+ * «what is the first heading on example.org» mid-errand ended with only that
+ * heading, the errand's own report and its footer gone. So the message says
+ * whose part it is and what the final answer still owes.
+ */
+function queuedIntoErrandContract(errand: string) {
+  return [
+    `This message joins the errand «${errand}» you are running now; it does not replace it. Take it into that errand, then finish the errand as it asks. Your final answer reports the whole errand — everything it asked for together with this message — not only this message, and ends with the full labelled footer below. For a basket, a cart or an order, ITEMS lists every line in it as it stands when you finish.`,
+    outcomeContract(),
+  ].join("\n\n");
+}
+
+/**
  * The check is the run's to solve, straight away. Browser Use also runs its
  * own solver in the background, and clicking into it can cost that solve a
  * restart, but a minute spent waiting on every check costs the errand more:
@@ -3282,7 +3296,7 @@ async function runBrowserTask(
           const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;
-          await queueBrowserUseSessionMessage(
+          const queued = await queueBrowserUseSessionMessage(
             row.sessionId,
             [
               withCodeEntry(message, codeEntry, carriesCode),
@@ -3291,12 +3305,25 @@ async function runBrowserTask(
                 ? gosuslugiSignInRule(site, true)
                 : undefined,
               details,
+              queuedIntoErrandContract(row.task),
             ]
               .filter((part) => part !== undefined)
               .join("\n\n")
           );
           if (confirmedNow?.kind === "confirmed") {
             await recordBrowserRunSubmission(runId, confirmedNow.submission);
+          }
+          // The run ended between the check and the queue: the idle session
+          // drained the message as a run of its own, which reports only once
+          // Bro tracks it as the errand's follow-up.
+          if (queued.runId && queued.runId !== runId) {
+            return {
+              followUp: { id: queued.runId, sessionId: row.sessionId },
+              kind: "continued" as const,
+              profileId: row.profileId,
+              reusedSession: true,
+              secrets: { aliases: [], bindings: [] },
+            };
           }
           return {
             // The run was started with the card bound, so what this call
@@ -3458,7 +3485,10 @@ async function runBrowserTask(
           // not the card: whatever was reserved for it is not going to be paid.
           await queueBrowserUseSessionMessage(
             row.sessionId,
-            withCodeEntry(instruction, codeEntry, carriesCode)
+            [
+              withCodeEntry(instruction, codeEntry, carriesCode),
+              queuedIntoErrandContract(row.task),
+            ].join("\n\n")
           );
           return {
             carriesPayment: false,

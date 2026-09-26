@@ -64,6 +64,12 @@ const sessionId = "22222222-2222-4222-8222-222222222222";
 const codeTyping =
   "Enter this one-time code first, before you navigate, read or click anything else: it expires within minutes. If the page splits it into one box per digit, click the first box and enter the code there, as keystrokes, so the focus moves on box by box, and check that every box shows its digit before you confirm. If the boxes stay empty or show the wrong digits, clear them and enter the same code once more — it stays valid for a few minutes — before you stop for a new one.";
 const followUpRunId = "33333333-3333-4333-8333-333333333333";
+/**
+ * What a message queued into the running errand adds after the person's
+ * words, so the run's final answer still reports the whole errand.
+ */
+const joinsErrand =
+  "This message joins the errand «Войди в аккаунт на taxi.yandex.ru» you are running now; it does not replace it. Take it into that errand, then finish the errand as it asks. Your final answer reports the whole errand — everything it asked for together with this message — not only this message, and ends with the full labelled footer below. For a basket, a cart or an order, ITEMS lists every line in it as it stands when you finish.";
 const freshSessionId = "44444444-4444-4444-8444-444444444444";
 const liveViewUrl = "https://live.browser-use.com/session-1";
 
@@ -110,8 +116,18 @@ const cancelBrowserUseRun = vi.hoisted(() =>
   vi.fn<() => Promise<void>>(() => Promise.resolve())
 );
 const queueBrowserUseSessionMessage = vi.hoisted(() =>
-  vi.fn<(sessionId: string, message: string) => Promise<void>>(() =>
-    Promise.resolve()
+  vi.fn<
+    (
+      sessionId: string,
+      message: string
+    ) => Promise<{
+      id: number;
+      runId?: string | null;
+      sessionId: string;
+      status: string;
+    }>
+  >((queuedSessionId) =>
+    Promise.resolve({ id: 1, sessionId: queuedSessionId, status: "pending" })
   )
 );
 const readBrowserUseRunStatus = vi.hoisted(() =>
@@ -692,12 +708,46 @@ describe("browser_task continuation", () => {
   it("queues the message while the tracked run is still live", async () => {
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
-    );
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    const [queuedTo, queued] = queueBrowserUseSessionMessage.mock.calls[0] ?? [];
+    expect(queuedTo).toBe(sessionId);
+    expect(
+      queued?.startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\nBefore the labelled footer, write a complete useful report`
+      )
+    ).toBe(true);
+    expect(queued).toContain("\nNEEDS: exactly one of ");
+    expect(queued).toContain("\nITEMS: a JSON array with one object per option");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId, status: "running" });
+  });
+
+  it("tracks the run an idle session drained the queued message into", async () => {
+    queueBrowserUseSessionMessage.mockResolvedValueOnce({
+      id: 7,
+      runId: followUpRunId,
+      sessionId,
+      status: "dispatching",
+    });
+
+    const result = await continueErrand({});
+
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({
+        id: followUpRunId,
+        sessionId,
+        status: "running",
+        task: "Человек написал: «Код из смс 992130»",
+      })
+    );
+    expect(result).toMatchObject({
+      previousRunId: runId,
+      runId: followUpRunId,
+      status: "running",
+    });
   });
 
   it("hands a live run the person's approval to submit with their details", async () => {
@@ -723,10 +773,12 @@ describe("browser_task continuation", () => {
   it("queues a code into a confirmed live run without restating the card", async () => {
     await continueErrand({ confirmed: cardSubmission });
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
-    );
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(
+      queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+      )
+    ).toBe(true);
     expect(recordBrowserRunSubmission).not.toHaveBeenCalled();
   });
 
@@ -827,10 +879,13 @@ describe("browser_task continuation", () => {
 
     const result = await continueErrand({});
 
-    expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-      sessionId,
-      `Человек написал: «Код из смс 992130»\n\n${codeTyping}`
-    );
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(queueBrowserUseSessionMessage.mock.calls[0]?.[0]).toBe(sessionId);
+    expect(
+      queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+        `Человек написал: «Код из смс 992130»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+      )
+    ).toBe(true);
     expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId });
   });
@@ -5638,10 +5693,13 @@ describe("browser_task passes on only what the person sent", () => {
       expect(findBrowserUseSessionCdpUrl).toHaveBeenCalledExactlyOnceWith(
         sessionId
       );
-      expect(queueBrowserUseSessionMessage).toHaveBeenCalledExactlyOnceWith(
-        sessionId,
-        `Человек написал: «739204»\n\n${codeTyping}`
-      );
+      expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+      expect(queueBrowserUseSessionMessage.mock.calls[0]?.[0]).toBe(sessionId);
+      expect(
+        queueBrowserUseSessionMessage.mock.calls[0]?.[1].startsWith(
+          `Человек написал: «739204»\n\n${codeTyping}\n\n${joinsErrand}\n\n`
+        )
+      ).toBe(true);
       // Any other code is still made up.
       await expect(
         tool.execute(

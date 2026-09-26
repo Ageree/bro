@@ -1702,6 +1702,44 @@ describe("what the report turn retells", () => {
     });
   }
 
+  it("reports by itself an errand that took the person's message mid-run", async () => {
+    // RU 26.09, d05: «и добавь ещё молоко» went into the running errand,
+    // and its report arrived as «Total 1 396 ₽, Needs: payment» alone.
+    const basket = {
+      ...row,
+      paymentAllowed: false,
+      site: "https://vkusvill.ru",
+      submission: null,
+      task: "Собери корзину: десяток яиц и батон",
+    };
+    readBrowserRun.mockResolvedValue(basket);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...basket, completedAt: new Date() });
+    finishedRun(
+      [
+        "В корзине яйца, батон и молоко, которое попросили добавить.",
+        "RESULT: корзина собрана, молоко добавлено",
+        "TOTAL: 412 ₽",
+        "NEEDS: none",
+        'ITEMS: [{"name":"Яйца С1, 10 шт","price":"149 ₽","quantity":"1"},{"name":"Батон нарезной","price":"64 ₽","quantity":"1"},{"name":"Молоко 3,2%, 1 л","price":"99 ₽","quantity":"1"},{"name":"Доставка","price":"100 ₽","fee":true}]',
+      ],
+      basket.task
+    );
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("Errand: Собери корзину: десяток яиц и батон");
+    expect(prompt).toContain(
+      "Items:\n1. Яйца С1, 10 шт — 149 ₽ — qty 1\n2. Батон нарезной — 64 ₽ — qty 1\n3. Молоко 3,2%, 1 л — 99 ₽ — qty 1\n4. [fee] Доставка — 100 ₽"
+    );
+  });
+
   it("tells every charge with what it is for, never an amount alone", async () => {
     // RU 24.09, d06: «висит 500 ₽ к оплате» and nothing on what for.
     finishedRun(
