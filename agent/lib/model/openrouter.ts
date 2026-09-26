@@ -489,6 +489,33 @@ function silentEndMiddleware(): LanguageModelMiddleware {
   };
 }
 
+/**
+ * The most one step may write. Without `max_tokens` OpenRouter reserves credit
+ * for the model's whole output limit, 131,072 tokens for DeepSeek, and answers
+ * 402 «requires more credits, or fewer max_tokens» once the balance affords
+ * less, though a reply takes one to three thousand: on 26.09 turns failed on
+ * their first step at a balance that afforded 24,969. 16,384 holds a long letter
+ * or a browser task written out in full. Reasoning tokens count against the
+ * same limit, so a thinking step gets twice that.
+ */
+function maxOutputTokens() {
+  return (
+    env.OPENROUTER_MAX_OUTPUT_TOKENS ??
+    (env.OPENROUTER_REASONING_EFFORT === "off" ? 16_384 : 32_768)
+  );
+}
+
+function outputCapMiddleware(limit: number): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      return {
+        ...params,
+        maxOutputTokens: Math.min(params.maxOutputTokens ?? limit, limit),
+      };
+    },
+  };
+}
+
 /** eve model selection that calls OpenRouter directly instead of the Gateway. */
 export function openRouterSelection(
   modelId: string,
@@ -538,6 +565,7 @@ export function openRouterSelection(
       : options.delivered
         ? [quietEndMiddleware()]
         : []),
+    outputCapMiddleware(maxOutputTokens()),
   ];
 
   return {
