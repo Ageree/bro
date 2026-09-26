@@ -12,7 +12,6 @@ import { isNight } from "./clock.ts";
 import {
   CaseJournal,
   deliveredText,
-  failedTurnStatusDetail,
   isoWithOffset,
   type DriverStatus,
   type ObservationChannel,
@@ -125,25 +124,10 @@ class CaseRun {
   }
 
   /**
-   * A turn that ended in `turn.failed` is not a finished case and not a
-   * reason to plan the next scripted step: nothing that turn was supposed
-   * to do happened, so a later «T+7д» would score work that never ran.
-   */
-  async stopIfTurnFailed() {
-    const failure = this.tracker.turnFailure;
-    if (!failure) return false;
-    this.deferred = undefined;
-    this.record.driver.remainingSteps = [];
-    await this.save("failed", failedTurnStatusDetail(failure));
-    return true;
-  }
-
-  /**
-   * Saves where the case ended: a failed turn, blocked on a person, still
-   * waiting for a browser errand's result, or done.
+   * Saves where the case ended: blocked on a person, still waiting for a
+   * browser errand's result, or done.
    */
   async settle() {
-    if (await this.stopIfTurnFailed()) return;
     const blocked = this.tracker.blocked(this.settings.heldTools);
     if (blocked) {
       const held = [...this.tracker.pending.values()].some(
@@ -343,25 +327,14 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
         const settledTurn =
           event.type === "session.waiting" &&
           (!run.tracker.awaitingBackground() || run.tracker.pending.size > 0);
-        if (
-          settledTurn ||
-          run.tracker.authorizationPending ||
-          run.tracker.turnFailure
-        ) {
-          break;
-        }
+        if (settledTurn || run.tracker.authorizationPending) break;
       }
     } catch (error) {
       if (!controller.signal.aborted) throw error;
     } finally {
       clearTimeout(timer);
     }
-    if (
-      run.tracker.blocked(run.settings.heldTools) ||
-      run.tracker.turnFailure
-    ) {
-      break;
-    }
+    if (run.tracker.blocked(run.settings.heldTools)) break;
     // oxlint-disable-next-line eslint/no-await-in-loop -- a card raised by the background turn is answered before waiting on
     await settleInputs(run, session);
     // oxlint-disable-next-line eslint/no-await-in-loop -- a pause before reopening an idle stream
@@ -377,8 +350,7 @@ async function finishBackground(run: CaseRun, session: ClientSession) {
     if (await awaitBackground(run, session)) return;
     if (
       round === run.settings.nudges ||
-      run.tracker.blocked(run.settings.heldTools) ||
-      run.tracker.turnFailure
+      run.tracker.blocked(run.settings.heldTools)
     ) {
       return;
     }
@@ -524,8 +496,6 @@ async function sendSteps(
     });
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
-    // oxlint-disable-next-line eslint/no-await-in-loop -- a failed turn ends the case before the next step is planned
-    if (await run.stopIfTurnFailed()) return undefined;
     run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
     if (run.tracker.blocked(run.settings.heldTools)) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
@@ -638,7 +608,6 @@ export async function continueCase(
       }));
     }
     await settleInputs(run, session);
-    if (await run.stopIfTurnFailed()) return run.record;
     if (run.tracker.blocked(run.settings.heldTools)) {
       await run.settle();
       return run.record;

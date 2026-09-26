@@ -54,11 +54,6 @@ export class TurnTracker {
   readonly pending = new Map<string, InputRequest>();
   authorizationPending = false;
   productVersion: string | undefined;
-  /**
-   * The latest turn that ended in `turn.failed`. A later `turn.completed`
-   * clears it: only the turn that just finished decides the case.
-   */
-  turnFailure: { readonly code: string; readonly message: string } | undefined;
   /** Errands due to report, oldest first. */
   readonly #runs: Set<string>;
   /** `browser_task` calls in flight: the run each one named. */
@@ -140,18 +135,6 @@ export class TurnTracker {
       }
       case "authorization.completed": {
         this.authorizationPending = false;
-        break;
-      }
-      case "turn.completed":
-      case "turn.cancelled": {
-        this.turnFailure = undefined;
-        break;
-      }
-      case "turn.failed": {
-        this.turnFailure = {
-          code: event.data.code,
-          message: event.data.message,
-        };
         break;
       }
       default: {

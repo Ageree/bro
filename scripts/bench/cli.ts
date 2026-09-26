@@ -36,12 +36,7 @@ import {
   runCase,
   type DriverSettings,
 } from "./conversation.ts";
-import {
-  formatCaseSummary,
-  readRunRecord,
-  runCommandExitCode,
-  type RunRecord,
-} from "./journal.ts";
+import { readRunRecord, type RunRecord } from "./journal.ts";
 import {
   sendSignInCode,
   signedInSession,
@@ -238,7 +233,15 @@ function settings(flags: Values, host: string, outDir: string): DriverSettings {
   };
 }
 
-const summaryLine = formatCaseSummary;
+function summaryLine(record: RunRecord) {
+  const { driver } = record;
+  const detail = driver.statusDetail ? ` — ${driver.statusDetail}` : "";
+  const observed =
+    driver.observations.length > 0
+      ? `, наблюдений ${String(driver.observations.length)}`
+      : "";
+  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}${observed}) → ${record.transcript}`;
+}
 
 /** The script as the record's notes: what the tester does and when. */
 const scriptNotes = (benchCase: BenchCase) =>
@@ -396,10 +399,9 @@ async function runCommand(flags: Values) {
       2
     )}\n`
   );
-  const exitCode = runCommandExitCode(
-    records.map((record) => record.driver.status)
-  );
-  if (exitCode !== 0) process.exitCode = exitCode;
+  if (records.some((record) => record.driver.status === "failed")) {
+    process.exitCode = 1;
+  }
 }
 
 function recordLocation(flags: Values) {

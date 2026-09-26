@@ -231,36 +231,6 @@ export async function readRunRecord(outDir: string, caseId: string) {
 const truncate = (text: string, limit: number) =>
   text.length > limit ? `${text.slice(0, limit)}…` : text;
 
-/**
- * `statusDetail` keeps the start of a `turn.failed` message. The provider
- * dump in `details` is already in the event log; the summary only needs
- * the code and enough of the message to see why the turn died.
- */
-const failedMessageStart = 118;
-
-export function failedTurnStatusDetail(failure: {
-  readonly code: string;
-  readonly message: string;
-}) {
-  return `${failure.code}: ${truncate(failure.message, failedMessageStart)}`;
-}
-
-/** One case line of the console summary `pnpm bench run` prints. */
-export function formatCaseSummary(record: RunRecord) {
-  const { driver } = record;
-  const detail = driver.statusDetail ? ` — ${driver.statusDetail}` : "";
-  const observed =
-    driver.observations.length > 0
-      ? `, наблюдений ${String(driver.observations.length)}`
-      : "";
-  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}${observed}) → ${record.transcript}`;
-}
-
-/** Exit status of `pnpm bench run`: 1 when any case failed. */
-export function runCommandExitCode(statuses: readonly DriverStatus[]): 0 | 1 {
-  return statuses.some((status) => status === "failed") ? 1 : 0;
-}
-
 /** A tool's input or output as eve streams it. */
 type ToolPayload = ActionResultStreamEvent["data"]["result"]["output"];
 

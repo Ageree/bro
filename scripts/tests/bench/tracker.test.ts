@@ -234,47 +234,6 @@ describe("TurnTracker and background errands", () => {
   });
 });
 
-describe("TurnTracker and a failed turn", () => {
-  const credits =
-    "This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford 24969. To increase, visit https://openrouter.ai/settings/credits and add more credits";
-  const stepFailed = (): MessageStreamEvent => ({
-    data: {
-      code: "MODEL_CALL_FAILED",
-      message: credits,
-      sequence: 1,
-      stepIndex: 0,
-      turnId: "turn_0",
-    },
-    meta,
-    type: "step.failed",
-  });
-  const turnFailed = (): MessageStreamEvent => ({
-    data: {
-      code: "MODEL_CALL_FAILED",
-      message: credits,
-      sequence: 2,
-      turnId: "turn_0",
-    },
-    meta,
-    type: "turn.failed",
-  });
-
-  it("keeps the turn.failed code and message, and a later completed turn clears it", () => {
-    const tracker = new TurnTracker();
-    tracker.observe(stepFailed());
-    expect(tracker.turnFailure).toBeUndefined();
-
-    tracker.observe(turnFailed());
-    expect(tracker.turnFailure).toEqual({
-      code: "MODEL_CALL_FAILED",
-      message: credits,
-    });
-
-    observeAll(tracker, turn("turn_1", [said("ок")]));
-    expect(tracker.turnFailure).toBeUndefined();
-  });
-});
-
 describe("TurnTracker.blocked", () => {
   it("stops at an authorization only a person can pass", () => {
     const tracker = new TurnTracker();
