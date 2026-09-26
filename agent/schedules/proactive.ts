@@ -1,6 +1,6 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
-import { probeGoogleSignals } from "@agent/lib/proactive/probe";
+import { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
 import { quietHoursEnd } from "@agent/lib/proactive/quiet-hours";
 import {
   mailSearchStart,
@@ -13,6 +13,7 @@ import {
   deferProactiveWatch,
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
+  type ProactiveSignal,
   pruneProactiveSignals,
   queueProactiveRun,
 } from "@db/services/proactive";
@@ -119,23 +120,49 @@ async function checkByDay(watch: ClaimedWatch, now: Date, timeZone: string) {
     return { outcome: "nothing_new", signalCount: 0 };
   }
   // After a pause (a reconnect, the end of quiet hours, turning proactive
-  // messages back on) the backlog becomes one catch-up run with the newest
-  // items; the watermark moves past the rest instead of queuing batch after
-  // batch of old mail.
+  // messages back on) the backlog becomes one catch-up run; the watermark
+  // moves past the rest instead of queuing batch after batch of old mail.
+  const { droppedMail, signals } = await catchUpSignals(watch, unseen);
   const queued = await queueProactiveRun({
     jobId: watch.jobId,
     mailCheckedAt: now,
     maxRunsPerDay,
     now,
-    signals: selectRunSignals(unseen),
+    signals,
     workspaceId: watch.workspaceId,
   });
-  return { outcome: queued.status, signalCount: unseen.length };
+  return {
+    outcome: queued.status,
+    signalCount: unseen.length,
+    ...(droppedMail > 0 && { droppedMail }),
+  };
 }
 
 /**
- * At night only what cannot wait starts a run: a flight leaving within hours,
- * mail about a flight or an account's security. The watermark stays, so the
+ * The signals of one run. When the new mail does not fit, what matters goes
+ * first — flights, security, parcels, people — and newsletters are what is
+ * left out (`mailRank`); the count left out goes to the check's log line.
+ */
+async function catchUpSignals(
+  watch: ClaimedWatch,
+  unseen: readonly ProactiveSignal[]
+) {
+  const mail = unseen.filter((signal) => signal.source === "gmail");
+  const newest = selectRunSignals(unseen);
+  const droppedMail =
+    mail.length - newest.filter((signal) => signal.source === "gmail").length;
+  if (droppedMail === 0) return { droppedMail, signals: newest };
+  const ranks = await rankMail(
+    { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+    mail
+  );
+  return { droppedMail, signals: selectRunSignals(unseen, ranks) };
+}
+
+/**
+ * At night only what cannot wait starts a run: a flight leaving within hours
+ * or, until 23:00, tonight's reminder of one tomorrow morning, and mail about
+ * a flight or an account's security. The watermark stays, so the
  * morning check reads the rest of the night's mail as one batch, and the
  * check after the last night one runs right when the night ends. Subjects are
  * read only for mail since the previous night check (`nightMailWindowMs`):

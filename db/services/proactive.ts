@@ -474,6 +474,7 @@ export async function queueProactiveRun(input: {
 export async function listProactiveRunSignals(runId: string) {
   return db
     .select({
+      dedupeKey: proactiveSignals.dedupeKey,
       itemId: proactiveSignals.itemId,
       source: proactiveSignals.source,
       threadId: proactiveSignals.threadId,

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   calendarSignals,
+  flightReminders,
   gmailProbeQuery,
   gmailSignals,
   isNightFlight,
   isNightSubject,
+  mailRank,
   mailSearchStart,
   proactiveRunPrompt,
+  reminderOf,
   selectRunSignals,
 } from "@agent/lib/proactive/signals";
 import { emptyUserProfile } from "@shared/user-profile/schema";
@@ -121,14 +124,56 @@ describe("proactive signals", () => {
     expect(selected[1]?.itemId).toBe("m0");
   });
 
+  it("keeps what matters over newsletters when a backlog does not fit, newest first within a rank", () => {
+    const mail = gmailSignals(
+      ["n1", "n2", "friend", "n3", "parcel", "n4", "boss"].map((id) => ({
+        id,
+      }))
+    );
+    const ranks = new Map([
+      ["n1", 3],
+      ["n2", 3],
+      ["n3", 3],
+      ["n4", 3],
+      ["parcel", 0],
+      ["boss", 1],
+      ["friend", 1],
+    ]);
+    const selected = selectRunSignals(mail, ranks).map(({ itemId }) => itemId);
+    expect(selected).toEqual([
+      "parcel",
+      "friend",
+      "boss",
+      "n1",
+      "n2",
+      "n3",
+      "n4",
+    ]);
+    // Mail that was not ranked stands after known senders, before bulk.
+    expect(
+      selectRunSignals(
+        mail,
+        new Map([
+          ["n1", 3],
+          ["boss", 1],
+        ])
+      ).map(({ itemId }) => itemId)
+    ).toEqual(["boss", "n2", "friend", "n3", "parcel", "n4", "n1"]);
+  });
+
   it("names only the new threads and events and the calendar window", () => {
     const prompt = proactiveRunPrompt({
       home: noHome,
       scheduledFor: now,
       signals: [
-        { itemId: "m1", source: "gmail", threadId: "t1" },
-        { itemId: "m2", source: "gmail", threadId: "t1" },
-        { itemId: "flight", source: "calendar", threadId: null },
+        { dedupeKey: "m1", itemId: "m1", source: "gmail", threadId: "t1" },
+        { dedupeKey: "m2", itemId: "m2", source: "gmail", threadId: "t1" },
+        {
+          dedupeKey: "flight@2026-09-24T07:40:00Z",
+          itemId: "flight",
+          source: "calendar",
+          threadId: null,
+        },
       ],
     });
     expect(prompt).toContain("gmail-read-thread): t1\n");
@@ -137,6 +182,7 @@ describe("proactive signals", () => {
     );
     expect(prompt).toContain("these ids): flight");
     expect(prompt).not.toContain("quiet hours");
+    expect(prompt).not.toContain("Flight reminders");
     expect(
       proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
     ).toContain("No new mail.");
@@ -159,6 +205,38 @@ describe("proactive signals", () => {
     expect(
       proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
     ).toContain("count a leave-by time from the city centre and say so");
+  });
+
+  it("tells the worker a reminder is due for a flight it may have seen, and what to say", () => {
+    const prompt = proactiveRunPrompt({
+      home: noHome,
+      scheduledFor: now,
+      signals: [
+        {
+          dedupeKey: "flight@2026-09-24T07:05:00+03:00#checkin",
+          itemId: "flight",
+          source: "calendar",
+          threadId: null,
+        },
+        {
+          dedupeKey: "flight@2026-09-24T07:05:00+03:00#evening",
+          itemId: "flight",
+          source: "calendar",
+          threadId: null,
+        },
+      ],
+    });
+    expect(prompt).toContain(
+      "No new calendar events. For the flights below, call calendar-list-events once with timeMin 2026-09-23T12:00:00.000Z"
+    );
+    expect(prompt).toContain("Earlier checks may have seen these flights");
+    expect(prompt).toContain("- flight: online check-in is open now");
+    expect(prompt).toContain("Also, it leaves tomorrow morning");
+    expect(prompt).toContain(
+      "Make [срочно] the first line of your handover: it has to reach the person tonight"
+    );
+    // One line per flight, however many reminders it has.
+    expect(prompt.match(/^- flight:/gmu)).toHaveLength(1);
   });
 
   it("warns a night run that its handover waits unless marked urgent", () => {
@@ -238,5 +316,160 @@ describe("what may wake the person at night", () => {
     ]) {
       expect(isNightSubject(subject)).toBe(false);
     }
+  });
+});
+
+/** A moment on the Moscow clock, `YYYY-MM-DDTHH:mm:ss`. */
+function at(time: string) {
+  return new Date(`${time}+03:00`);
+}
+
+describe("flight reminders by the clock", () => {
+  const moscow = "Europe/Moscow";
+  // DP 405 tomorrow at 07:05 in Moscow, the checks saw it days ago.
+  const flight = {
+    id: "dp405",
+    location: "Аэропорт Внуково (VKO), терминал A",
+    start: { dateTime: "2026-09-24T07:05:00+03:00" },
+    status: "confirmed",
+    summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  };
+  const due = (clock: Date, night = false, events = [flight]) =>
+    flightReminders(events, clock, moscow, { night }).map(
+      ({ dedupeKey }) => dedupeKey
+    );
+
+  it("reminds the evening before an early flight, before the night", () => {
+    expect(due(at("2026-09-23T17:59:00"))).not.toContain(
+      "dp405@2026-09-24T07:05:00+03:00#evening"
+    );
+    expect(due(at("2026-09-23T18:00:00"))).toContain(
+      "dp405@2026-09-24T07:05:00+03:00#evening"
+    );
+    expect(due(at("2026-09-23T21:45:00"))).toContain(
+      "dp405@2026-09-24T07:05:00+03:00#evening"
+    );
+  });
+
+  it("still reminds a night check until 23:00, and never after", () => {
+    expect(due(at("2026-09-23T22:27:00"), true)).toEqual([
+      "dp405@2026-09-24T07:05:00+03:00#evening",
+    ]);
+    expect(due(at("2026-09-23T23:00:00"), true)).toEqual([]);
+    expect(due(at("2026-09-24T03:00:00"), true)).toEqual([]);
+  });
+
+  it("reminds at check-in opening, by day only, and not once the person is on the way", () => {
+    const opens = "dp405@2026-09-24T07:05:00+03:00#checkin";
+    // 24 hours before departure is 07:05 the day before: still night for Bro.
+    expect(due(at("2026-09-23T07:05:00"), true)).not.toContain(opens);
+    expect(due(at("2026-09-23T07:00:00"))).not.toContain(opens);
+    expect(due(at("2026-09-23T08:00:00"))).toEqual([opens]);
+    expect(due(at("2026-09-23T12:20:00"))).toEqual([opens]);
+    expect(due(at("2026-09-24T04:30:00"))).not.toContain(opens);
+  });
+
+  it("keys each reminder apart from the event, so seeing the flight does not silence it", () => {
+    const [checkin, evening] = flightReminders(
+      [flight],
+      at("2026-09-23T19:00:00"),
+      moscow,
+      { night: false }
+    );
+    expect(checkin).toEqual({
+      dedupeKey: "dp405@2026-09-24T07:05:00+03:00#checkin",
+      itemId: "dp405",
+      source: "calendar",
+      threadId: null,
+    });
+    expect(evening?.dedupeKey).toBe("dp405@2026-09-24T07:05:00+03:00#evening");
+    const [seen] = calendarSignals([flight], at("2026-09-23T12:00:00"), moscow);
+    expect(seen?.dedupeKey).not.toBe(checkin?.dedupeKey);
+    expect(reminderOf(checkin?.dedupeKey ?? "")).toBe("checkin");
+    expect(reminderOf(evening?.dedupeKey ?? "")).toBe("evening");
+    expect(reminderOf(seen?.dedupeKey ?? "")).toBeUndefined();
+  });
+
+  it("leaves an afternoon flight, a meeting, a cancelled flight and a far one to the other checks", () => {
+    const evening = at("2026-09-23T19:00:00");
+    expect(
+      due(evening, false, [
+        {
+          ...flight,
+          id: "afternoon",
+          start: { dateTime: "2026-09-24T15:30:00+03:00" },
+        },
+      ])
+    ).toEqual(["afternoon@2026-09-24T15:30:00+03:00#checkin"]);
+    expect(
+      due(evening, false, [
+        {
+          id: "standup",
+          location: "Офис",
+          start: { dateTime: "2026-09-24T09:00:00+03:00" },
+          status: "confirmed",
+          summary: "Планёрка",
+        },
+        { ...flight, id: "cancelled", status: "cancelled" },
+        {
+          ...flight,
+          id: "far",
+          start: { dateTime: "2026-09-26T07:05:00+03:00" },
+        },
+      ])
+    ).toEqual([]);
+  });
+});
+
+describe("what matters in a backlog of mail", () => {
+  const letter = {
+    bulk: false,
+    from: "",
+    labels: ["INBOX", "UNREAD"],
+    subject: "",
+  };
+
+  it("puts flights, security, phishing by its sender and parcels first", () => {
+    for (const mail of [
+      { ...letter, subject: "Изменение выхода на посадку: рейс SU 1234" },
+      { ...letter, subject: "Новый вход в аккаунт Google", bulk: true },
+      {
+        ...letter,
+        from: "Служба безопасности банка <security@bank-notice.example.com>",
+        subject: "Подтвердите операцию по карте",
+      },
+      {
+        ...letter,
+        bulk: true,
+        from: "СДЭК <noreply@cdek.example.com>",
+        labels: ["INBOX", "CATEGORY_UPDATES"],
+        subject: "Заказ 1234567890: изменился срок доставки",
+      },
+    ]) {
+      expect(mailRank(mail)).toBe(0);
+    }
+  });
+
+  it("puts known people before strangers, and newsletters last", () => {
+    expect(
+      mailRank({
+        ...letter,
+        from: "Андрей Волков <andrey@example.org>",
+        labels: ["INBOX", "IMPORTANT", "CATEGORY_PERSONAL"],
+        subject: "Q3",
+      })
+    ).toBe(1);
+    expect(
+      mailRank({ ...letter, from: "someone@example.net", subject: "Вопрос" })
+    ).toBe(2);
+    expect(
+      mailRank({
+        ...letter,
+        bulk: true,
+        from: "Дайджест <news@example.com>",
+        labels: ["INBOX", "CATEGORY_UPDATES", "IMPORTANT"],
+        subject: "Лучшее за неделю",
+      })
+    ).toBe(3);
   });
 });
