@@ -38,6 +38,13 @@ if [ -z "$TESTER_ID" ] && [ -n "${COMPOSIO_API_KEY:-}" ]; then
     -H "x-api-key: $COMPOSIO_API_KEY" | json 'j=>(j.items?.[0]?.user_id??"").replace(/^better-auth:/,"")')
 fi
 TESTER_ID="${TESTER_ID:-local-tester}"
+# Without the auth config ids Bro registers no Gmail, Calendar, Drive or Notion
+# tools at all, and every Google case silently runs without Google.
+AUTH_CONFIGS=""
+if [ -n "${COMPOSIO_API_KEY:-}" ]; then
+  AUTH_CONFIGS=$(curl -s -m 20 "https://backend.composio.dev/api/v3/auth_configs?limit=50" -H "x-api-key: $COMPOSIO_API_KEY" \
+    | json 'j=>{const a=(j.items??[]).filter(c=>c.status==="ENABLED");const pick=(slug,ro)=>a.find(c=>c.toolkit?.slug===slug&&/read.?only/i.test(c.name??"")===ro)?.id;return [["COMPOSIO_GOOGLE_AUTH_CONFIG_ID",pick("googlesuper",false)],["COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID",pick("googlesuper",true)],["COMPOSIO_NOTION_AUTH_CONFIG_ID",pick("notion",false)],["COMPOSIO_SLACK_AUTH_CONFIG_ID",pick("slack",false)]].filter(([,v])=>v).map(([k,v])=>k+"="+v).join("\n")}')
+fi
 WORKSPACE=$(node -e "console.log('personal:'+require('crypto').createHash('sha256').update('better-auth:$TESTER_ID').digest('hex').slice(0,32))")
 
 exec 9>/tmp/bro-run.lock
@@ -47,12 +54,18 @@ echo "$NAME $(date +%T)" > /tmp/bro-run.holder
 
 psql -h 127.0.0.1 -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 \
   || psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE $DB" >/dev/null
+# The environment beats .env.local: an inherited DATABASE_URL would point this
+# Bro and its migrations at another branch's database.
+export DATABASE_URL="$PGURL" DATABASE_URL_UNPOOLED="$PGURL" BETTER_AUTH_URL=http://localhost:3000 NODE_ENV=development
+# shellcheck disable=SC2086
+[ -n "$AUTH_CONFIGS" ] && export $AUTH_CONFIGS
 cat > "$WT/.env.local" <<EOF
 DATABASE_URL=$PGURL
 DATABASE_URL_UNPOOLED=$PGURL
 BETTER_AUTH_URL=http://localhost:3000
 NODE_ENV=development
 BENCH_TIMEZONE=Europe/Moscow
+$AUTH_CONFIGS
 EOF
 (cd "$WT" && pnpm -s db:migrate >/dev/null)
 # On prod the tester was introduced long ago; without the workspace row every
