@@ -22,9 +22,13 @@ function recordFor(journal: CaseJournal, promptSent: string): RunRecord {
     cleanupDone: false,
     codesRequested: 0,
     driver: {
+      approvedTools: [],
       backgroundRuns: [],
+      confirmPaymentUpToRub: null,
       decisions: [],
+      declinedTools: [],
       fixtures: [],
+      heldTools: [],
       host: "http://127.0.0.1:9",
       observations: [],
       paced: false,
