@@ -7,7 +7,8 @@
 # <script.sh> with `bench` and `tick` shell functions, then stops Bro. One
 # session at a time per machine (flock): one Bro needs about 2.7 GB.
 #
-# Needs Postgres on 127.0.0.1:5432 (user and password `postgres`),
+# Needs Postgres on 127.0.0.1:5432 (PGUSER and PGPASSWORD, both default to
+# the compose.yaml user),
 # OPENROUTER_API_KEY, and for Google cases COMPOSIO_API_KEY with the tester's
 # active connection. BENCH_TESTER_ID overrides the tester's Bro user id, which
 # is otherwise read from that Composio connection.
@@ -17,10 +18,11 @@ HERE=$(dirname "$(realpath "$0")")
 # A number that does not exist: a site's sign-in code must not text a stranger.
 TESTER_PHONE=+70000000001
 DB="bro_$(echo "$NAME" | tr -c 'a-z0-9\n' '_')"
-PGURL="postgresql://postgres:postgres@127.0.0.1:5432/$DB"
+export PGUSER="${PGUSER:-postgres}"
+export PGPASSWORD="${PGPASSWORD:-$PGUSER}"
+PGURL="postgresql://$PGUSER:$PGPASSWORD@127.0.0.1:5432/$DB"
 LOG="/tmp/bro-dev-$NAME.log"
 COOKIE="$HOME/.bro-bench/$NAME.cookies"
-export PGPASSWORD=postgres
 
 json() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(($1)(JSON.parse(s)))}catch{console.log('')}})"; }
 
@@ -52,8 +54,8 @@ echo "[session] $(date +%T) waiting for the run lock (holder: $(cat /tmp/bro-run
 flock 9
 echo "$NAME $(date +%T)" > /tmp/bro-run.holder
 
-psql -h 127.0.0.1 -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 \
-  || psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE $DB" >/dev/null
+psql -h 127.0.0.1 -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 \
+  || psql -h 127.0.0.1 -c "CREATE DATABASE $DB" >/dev/null
 # The environment beats .env.local: an inherited DATABASE_URL would point this
 # Bro and its migrations at another branch's database.
 export DATABASE_URL="$PGURL" DATABASE_URL_UNPOOLED="$PGURL" BETTER_AUTH_URL=http://localhost:3000 NODE_ENV=development
@@ -70,7 +72,7 @@ EOF
 (cd "$WT" && pnpm -s db:migrate >/dev/null)
 # On prod the tester was introduced long ago; without the workspace row every
 # fresh database opens its first case with Bro's first-contact greeting.
-psql -h 127.0.0.1 -U postgres "$DB" >/dev/null <<SQL
+psql -h 127.0.0.1 "$DB" >/dev/null <<SQL
 INSERT INTO "user"(id, name, email, "emailVerified", "phoneNumber", "phoneNumberVerified")
   VALUES ('$TESTER_ID', 'Тестировщик', 'bench-local@bro.invalid', false, '$TESTER_PHONE', true)
   ON CONFLICT (id) DO UPDATE SET "phoneNumber" = '$TESTER_PHONE';

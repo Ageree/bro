@@ -293,7 +293,7 @@ scripts/bench/local/session.sh "$PWD" my-branch /tmp/a1.sh
   свою базу `bro_<имя>` и cookie, поднимает `pnpm dev:app` из указанного
   дерева, входит драйвером, выполняет скрипт и гасит Бро. В скрипте есть
   `bench <команда> …` (хост и cookie подставлены) и `tick <расписание>`.
-- Нужны Postgres на `127.0.0.1:5432` (`postgres`/`postgres`),
+- Нужны Postgres на `127.0.0.1:5432` (пользователь из `PGUSER`, по умолчанию как в `compose.yaml`),
   `OPENROUTER_API_KEY`, для Google-кейсов `COMPOSIO_API_KEY`. Пользователь
   локального Бро получает id тестировщика из его подключения в Composio
   (или `BENCH_TESTER_ID`), поэтому почта, календарь и Notion настоящие. Меньше
