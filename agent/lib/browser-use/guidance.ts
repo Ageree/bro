@@ -22,14 +22,22 @@ const purchaseRequest =
  * site and the data, apart from the booking or order that comes after it.
  */
 const gosuslugiAccessLine =
-  "If Details says Госуслуги asks to give a site access to the user's data, that is a sign-in consent, not the errand's own submission: only for the errand's own public-service site, and only when the user asked for the errand to be done, continue this run with allowSubmit and a submission of kind other — what «вход на <site> через Госуслуги с доступом к данным профиля», where that site, personalData the data Details lists — so the user confirms that access on one card; the booking or order itself comes later on its own card. For any other site, tell the user it asked for their Госуслуги data and that you did not give it.";
+  "If Details says Госуслуги asks to give a site access to the user's data, that is a sign-in consent, not the errand's own submission: only for the errand's own public-service site, and only when the user asked for the errand to be done, continue this run with allowSubmit and a submission of kind other — what «вход на <site> через Госуслуги с доступом к данным профиля», where that site, personalData the data Details lists — so the user confirms that access on one card; the booking or order itself comes after it. For any other site, tell the user it asked for their Госуслуги data and that you did not give it.";
 
 /**
  * A declined card used to end the errand in «билеты не куплены, скажи —
- * запущу заново», with nothing found shown. The options are still there.
+ * запущу заново», with nothing found shown. The options are still there,
+ * and so they are after a «нет» to paying.
  */
 const declinedCardLine =
-  "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link, and ask what to change — another time, seat, item or price — instead of saying only that nothing was booked or bought.";
+  "If the user declines that card or says no to paying, nothing is lost: show them the options this run found, each with its price and link, and ask what to change — another time, seat, item or price — instead of saying only that nothing was booked or bought.";
+
+/**
+ * Paying is the one question, asked in Bro's own words: a card cannot take
+ * a payment, and the person answers it in their next message.
+ */
+const paymentQuestionLine =
+  'When it costs money, do not continue it yet: write the user one short message in your own voice — what exactly, the total with every fee from Total, the delivery or the date — ending with «Оплачиваю?» (in English "Shall I pay?"), and end the turn. Only their plain yes in the next message («да», «оплачивай», «давай») continues this run with allowSubmit and a submission naming that option with the real chargeRub; anything else they write is a new message to answer.';
 
 /**
  * What the person has to hand over for an errand stopped on them, said
@@ -49,13 +57,13 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
     "The site is waiting for a one-time code it sent by email. Before any message, call browser_task continue on this run id with codeFrom: \"mail\" and nothing else: when the user's Gmail is connected, the tool finds the site's own letter, reads the code and types it in itself — you never see it, and the user is not asked for it. When it answers that the code went to the run, send one message: a short line that you took the code from their mail, then what the run did and found so far. When it answers that nothing was sent, open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
   password:
     "The site asks for a sign-in the run has no password for: call request_vault_setup so the user can save the password, and open your one message with a short line naming the site and giving that link; never ask for the password in chat.",
-  // A run that searched first stops here with the option it picked: one card
-  // naming that option answers it, never a question in text before it.
-  decision: `The run stopped at the final step without acting in the user's name. When ${purchaseRequest} and the report names an option that fits their conditions, do not ask in text: continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}), so the user confirms it on one card. When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${gosuslugiAccessLine} ${declinedCardLine}`,
+  // A run that searched first stops here with the option it picked: a free
+  // one goes through on the person's word, a paid one on their yes.
+  decision: `The run stopped at the final step without acting in the user's name. When ${purchaseRequest} and the report names an option that fits their conditions, and it is free, continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}). ${paymentQuestionLine} When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${gosuslugiAccessLine} ${declinedCardLine}`,
   // A run stops here only when paying was not approved, or the total came
-  // out above what was: one card with the real total answers it, never a
-  // question in text and a card after it.
-  payment: `The run stopped before paying, with the total in Total. When ${purchaseRequest} and not only found or compared, do not ask in text: continue this run now with allowSubmit and a submission naming exactly the option it staged (${concreteOptionTerms}), so the user confirms it on one card, or with allowPayment and withinSpendLimit when it fits their standing spend limit. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
+  // out above what was: one question in text with the real total answers
+  // it, and nothing pays before the person's yes.
+  payment: `The run stopped before paying, with the total in Total. When ${purchaseRequest} and not only found or compared, continue it with allowPayment and withinSpendLimit when it fits their standing spend limit, without asking. Otherwise write the user one short message in your own voice — what exactly you are buying, the total with every fee from Total, the delivery or the date — ending with «Оплачиваю?» (in English "Shall I pay?"), and end the turn; only their plain yes in the next message continues this run with allowSubmit and a submission naming exactly the option it staged with the real chargeRub. When they only asked to find or compare, give them the total and offer to order. ${declinedCardLine}`,
   // RU 25.09, d04: Ozon showed a QR code to scan with its app, and Bro only
   // said «подтвердите в приложении» — the person had nothing to scan.
   push: "The site is waiting for the user to approve the sign-in in their app — a push, or a QR code on the page to scan with the site's app. Open your one message with a short line asking them to approve it, and give them the Live view link that comes with this outcome: it shows the page as it is. For a QR code, tell them to open that link on a computer or another screen and scan the code there with the site's app on their phone. Say too that if they cannot, you will sign in with a code by SMS instead. What the run did so far follows in that same message. Then end this turn: their own reply — that they have approved it, or that they want the SMS code — continues the run, with browser_task continue on this run id.",

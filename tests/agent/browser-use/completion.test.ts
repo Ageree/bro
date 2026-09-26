@@ -1233,15 +1233,16 @@ describe("settling a browser run", () => {
     await settleBrowserRun({ to }, runId);
 
     const prompt = send.mock.calls[0]?.[0];
-    // One card naming the option the run found, not a question before it.
+    // A free option goes through at once; a paid one gets the one question.
     expect(prompt).toContain(
-      "continue this run now with allowSubmit and a submission naming exactly that option"
+      "and it is free, continue this run now with allowSubmit and a submission naming exactly that option"
     );
+    expect(prompt).toContain("ending with «Оплачиваю?»");
     expect(prompt).toContain("the train or flight and its departure");
     expect(prompt).toContain("the real total with every fee in chargeRub");
     // A declined card still leaves the person with what was found.
     expect(prompt).toContain(
-      "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link"
+      "If the user declines that card or says no to paying, nothing is lost: show them the options this run found, each with its price and link"
     );
     expect(prompt).toContain("Сапсан №783");
     // The page stays open on the checkout for the card's follow-up; the
