@@ -79,6 +79,12 @@ function observeAll(
 }
 
 describe("TurnTracker on recorded turns", () => {
+  it("does not clear a failed turn when an unrelated turn completes", () => {
+    const tracker = new TurnTracker([], [], "MODEL_CALL_FAILED: unavailable");
+    observeAll(tracker, turn("background", []));
+    expect(tracker.turnFailure).toBe("MODEL_CALL_FAILED: unavailable");
+  });
+
   it("ends a plain answer with nothing pending", () => {
     const tracker = new TurnTracker();
     observeAll(tracker, recordedEvents("uc-mo-split"));
@@ -156,6 +162,30 @@ describe("TurnTracker and background errands", () => {
     );
 
     expect(tracker.backgroundRuns()).toEqual(["run_2"]);
+  });
+
+  it("ignores a superseded run's late report across a restart, but accepts an unknown retry", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", [running("old")]));
+    observeAll(
+      tracker,
+      turn("turn_1", [
+        browserResult(
+          { previousRunId: "old", runId: "new", status: "running" },
+          "call_continue"
+        ),
+      ])
+    );
+    const resumed = new TurnTracker(
+      [],
+      tracker.backgroundRuns(),
+      undefined,
+      tracker.supersededRuns()
+    );
+    resumed.observe(browserReport("old"));
+    expect(resumed.backgroundRuns()).toEqual(["new"]);
+    resumed.observe(browserReport("retried-unknown"));
+    expect(resumed.awaitingBackground()).toBe(false);
   });
 
   it("takes a report from a background retry for the errand it continues", () => {

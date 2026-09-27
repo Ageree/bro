@@ -13,7 +13,9 @@ import {
   type MessageStreamEvent,
 } from "eve/client";
 import { z } from "zod";
+import { oneTimeCodesIn } from "@agent/lib/browser-use/said";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { maskPersonalData } from "./personal-data.ts";
 
@@ -39,21 +41,29 @@ import { maskPersonalData } from "./personal-data.ts";
  */
 
 const codeMask = "******";
-// «код 123456», «your code is 1234», «пароль из смс: 12 34 56»: four or more
-// digits shortly after a word for a code are a code, whoever wrote them.
-// Masking a stray article number too is the cheap side of that trade.
-const codeNearWord =
-  /((?:код|code|парол|pin|смс|sms)\D{0,24}?)(\d[\d \t-]{2,10}\d)/giu;
+const namedCodePhrase =
+  /(?<!\p{L})(?:код\s+(?:подтверждения|входа|авторизации)|(?:verification|login)\s+code)(?!\p{L})[^\d.!?;\n]{0,140}:\s*(\d(?:[ \u00a0-]?\d){3,7})(?!\d)/giu;
+
+function codesIn(text: string, awaitingCode: boolean) {
+  const codes = new Set(oneTimeCodesIn(text, { awaitingCode }));
+  for (const match of text.matchAll(namedCodePhrase)) {
+    if (match[1]) codes.add(match[1].replaceAll(/\D/gu, ""));
+  }
+  return codes;
+}
 
 /** Masks one-time codes: the ones the tester sent and any that look like one. */
 export function maskCodes(text: string, knownCodes: ReadonlySet<string>) {
   let masked = text;
-  for (const code of knownCodes) {
-    if (code.length > 0) masked = masked.replaceAll(code, codeMask);
+  for (const code of new Set([...knownCodes, ...codesIn(text, false)])) {
+    if (!/^\d{4,8}$/u.test(code)) continue;
+    const grouped = new RegExp(
+      `(?<!\\d)${code.split("").join("[ \\u00a0-]?")}(?!\\d)`,
+      "gu"
+    );
+    masked = masked.replaceAll(grouped, codeMask);
   }
-  return masked.replaceAll(codeNearWord, (_match, prefix: string) => {
-    return `${prefix}${codeMask}`;
-  });
+  return masked;
 }
 
 /** ISO 8601 in the tester's time zone, offset included (§2.3). */
@@ -162,6 +172,7 @@ export const runRecordSchema = z.object({
     approvedTools: z.array(z.string()).default([]),
     /** Browser errands still due to report, for `send` and `follow`. */
     backgroundRuns: z.array(z.string()).default([]),
+    supersededRuns: z.array(z.string()).default([]),
     /**
      * Upper bound, in roubles, up to which a payment card is confirmed for
      * the owner (`--confirm-payment-up-to`), reused when a later command
@@ -451,7 +462,22 @@ export class CaseJournal {
     return maskCodes(maskPersonalData(text), this.knownCodes);
   }
 
+  rememberCodes(text: string, explicit = false) {
+    for (const code of codesIn(text, explicit)) this.knownCodes.add(code);
+  }
+
+  rememberMessage(event: MessageStreamEvent) {
+    if (
+      event.type === "message.received" &&
+      !event.data.kind &&
+      !isBackgroundTurnText(event.data.message)
+    ) {
+      this.rememberCodes(event.data.message);
+    }
+  }
+
   async event(sessionId: string, event: MessageStreamEvent) {
+    this.rememberMessage(event);
     const line = maskJsonStrings(JSON.stringify({ event, sessionId }), (text) =>
       this.#mask(text)
     );
@@ -480,6 +506,7 @@ export class CaseJournal {
     // lookalike inside an id must not break that.
     masked.driver.sessions = parsed.driver.sessions;
     masked.driver.backgroundRuns = parsed.driver.backgroundRuns;
+    masked.driver.supersededRuns = parsed.driver.supersededRuns;
     await writeFile(this.paths.record, `${JSON.stringify(masked, null, 2)}\n`);
   }
 }

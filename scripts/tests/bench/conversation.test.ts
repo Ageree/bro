@@ -127,6 +127,20 @@ const turn = (...inner: MessageStreamEvent[]): MessageStreamEvent[] => [
   },
   sessionWaiting(),
 ];
+const failedTurn = (): MessageStreamEvent[] => [
+  turnStarted(),
+  {
+    data: {
+      code: "MODEL_CALL_FAILED",
+      message: "Provider unavailable",
+      sequence: 0,
+      turnId,
+    },
+    meta: meta(),
+    type: "turn.failed",
+  },
+  sessionWaiting(),
+];
 
 describe("runCase against eve's session routes", () => {
   it("answers recorded approval cards and journals every event", async () => {
@@ -334,6 +348,100 @@ describe("runCase against eve's session routes", () => {
       { optionId: "approve", requestId: "req_hold" },
     ]);
     expect(record.driver.status).toBe("completed");
+  });
+});
+
+describe("terminal turn failures", () => {
+  const steps = [step, { ...step, text: "second" }];
+
+  it("records a failed turn and leaves later scripted steps unsent", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create" ? failedTurn() : turn(delivered("second"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      steps,
+      [],
+      settings
+    );
+
+    expect(record.driver.status).toBe("failed");
+    expect(record.driver.statusDetail).toBe(
+      "MODEL_CALL_FAILED: Provider unavailable"
+    );
+    expect(record.driver.remainingSteps.map((item) => item.text)).toEqual([
+      "second",
+    ]);
+    expect(fake.posts).toHaveLength(1);
+    expect(
+      (await readRunRecord(settings.outDir, benchCase.id)).driver.status
+    ).toBe("failed");
+  });
+
+  it("does not confuse a recovered step failure with a failed turn", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create"
+        ? turn({
+            data: {
+              code: "TOOL_FAILED",
+              message: "Recovered",
+              sequence: 0,
+              stepIndex: 0,
+              turnId,
+            },
+            meta: meta(),
+            type: "step.failed",
+          })
+        : turn(delivered("second"))
+    );
+    stopFake = () => fake.close();
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      steps,
+      [],
+      await settingsFor(fake.url)
+    );
+
+    expect(record.driver.status).toBe("completed");
+    expect(fake.posts).toHaveLength(2);
+  });
+
+  it("keeps failure across follow, observe and next until an explicit successful answer", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create" ? failedTurn() : turn(delivered("recovered"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+    const failed = await runCase(client, benchCase, steps, [], settings);
+    const followed = await followCase(client, failed, settings);
+    expect(followed.driver.status).toBe("failed");
+    const observed = await observeCase(client, benchCase, followed, settings, {
+      channel: "web",
+      durationMs: 0,
+      notes: [],
+      sessionId: undefined,
+      since: new Date(0),
+    });
+    expect(observed.driver.status).toBe("failed");
+    await expect(
+      nextCase(client, observed, settings, { early: true })
+    ).rejects.toThrow("last turn failed");
+    expect(fake.posts).toHaveLength(1);
+
+    const recovered = await continueCase(client, observed, settings, {
+      kind: "answer",
+      respond: () => undefined,
+      text: "try again",
+      code: undefined,
+    });
+    expect(recovered.driver.status).toBe("completed");
+    expect(recovered.driver.remainingSteps).toEqual([]);
+    expect(fake.posts).toHaveLength(3);
   });
 });
 
@@ -596,6 +704,87 @@ describe("continueCase", () => {
     );
     for (const text of written) expect(text).not.toContain("481516");
   });
+
+  it.each([
+    [
+      "Письмо от Ozon теперь пришло. Код подтверждения учётных данных из этого письма: 654321. Введи его на сайте",
+      "654321",
+    ],
+    [
+      "Это код входа из уведомления Ozon, его нужно ввести на открытой странице: 123 456",
+      "123 456",
+    ],
+  ])(
+    "redacts a mixed OTP phrase across a later follow process: %s",
+    async (message, code) => {
+      const codeAction: MessageStreamEvent = {
+        data: {
+          actions: [
+            {
+              callId: "call_code",
+              input: {
+                personSaid: code,
+                task: `Введите ${code.replaceAll(" ", "")} на странице`,
+              },
+              kind: "tool-call",
+              toolName: "browser_task",
+            },
+          ],
+          sequence: 0,
+          stepIndex: 1,
+          turnId,
+        },
+        meta: meta(),
+        type: "actions.requested",
+      };
+      const fake = await startFakeEve((post) =>
+        post.route === "create"
+          ? turn(browserRunning(), delivered("пришли код"))
+          : turn(
+              {
+                data: {
+                  message,
+                  sequence: 0,
+                  turnId,
+                },
+                meta: meta(),
+                type: "message.received",
+              },
+              codeAction,
+              browserRunning()
+            )
+      );
+      stopFake = () => fake.close();
+      const settings = await settingsFor(fake.url);
+      const client = new Client({ host: fake.url });
+      const first = await runCase(client, benchCase, [step], [], settings);
+      const continued = await continueCase(client, first, settings, {
+        code: undefined,
+        kind: "code",
+        respond: () => undefined,
+        text: message,
+      });
+      fake.append([codeAction]);
+      await followCase(client, continued, {
+        ...settings,
+        backgroundWaitMs: 50,
+      });
+
+      const writtenFiles = await Promise.all(
+        ["events.jsonl", "log", "json"].map((extension) =>
+          readFile(
+            join(settings.outDir, `case-under-test.${extension}`),
+            "utf8"
+          )
+        )
+      );
+      for (const written of writtenFiles) {
+        expect(written).not.toContain(code);
+        expect(written).not.toContain(code.replaceAll(" ", ""));
+      }
+      expect(fake.posts.at(-1)?.message).toBe(message);
+    }
+  );
 });
 
 describe("paced runs and nextCase", () => {
