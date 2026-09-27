@@ -1,6 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
-import { resolveModeValue } from "@agent/lib/mode";
+import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { composioConfigured } from "@shared/composio/api";
 import {
@@ -32,11 +32,14 @@ export const connectAppResultSchema = z.discriminatedUnion("status", [
 type ConnectAppResult = z.infer<typeof connectAppResultSchema>;
 
 export const connectApp = defineTool({
-  // Disconnecting revokes the person's grant, so it waits for them.
+  // Disconnecting revokes the person's grant: their own message does it at
+  // once, a turn Bro opened waits for their card.
   approval: (ctx) =>
-    ctx.toolInput?.action === "disconnect" ? "user-approval" : "not-applicable",
+    ctx.toolInput?.action === "disconnect"
+      ? ownTurnApproval(ctx)
+      : "not-applicable",
   description:
-    "Check, connect, or disconnect one of the person's own apps other than Google: Notion, Slack, Todoist, Trello, Linear, GitHub, Asana, ClickUp, Airtable, Dropbox, Zoom, Discord, HubSpot, Figma, Miro, Outlook, or Calendly. Call this immediately, without clarifying questions, whenever the person asks to connect, link, or give you access to one of them, asks whether one is connected, or asks to disconnect it; and whenever a tool for that app fails because authorization is missing. The result is one of: status `connected` with the account label, meaning the task can proceed; status `authorize` with a URL that must be delivered to the person with send_message (kind `link`, or the bare URL on its own line of a message) — the link expires in 10 minutes, and once the person finishes the consent screen the app works without further setup; status `disconnected` (action `disconnect`, after the person approves), meaning Bro no longer reaches the app; status `not_configured`, meaning this deployment cannot connect that app, which must be told to the person plainly and never presented as success; or status `error`, meaning the connection service did not answer just now — relay the detail and suggest trying again in a minute.",
+    "Check, connect, or disconnect one of the person's own apps other than Google: Notion, Slack, Todoist, Trello, Linear, GitHub, Asana, ClickUp, Airtable, Dropbox, Zoom, Discord, HubSpot, Figma, Miro, Outlook, or Calendly. Call this immediately, without clarifying questions, whenever the person asks to connect, link, or give you access to one of them, asks whether one is connected, or asks to disconnect it; and whenever a tool for that app fails because authorization is missing. The result is one of: status `connected` with the account label, meaning the task can proceed; status `authorize` with a URL that must be delivered to the person with send_message (kind `link`, or the bare URL on its own line of a message) — the link expires in 10 minutes, and once the person finishes the consent screen the app works without further setup; status `disconnected` (action `disconnect`), meaning Bro no longer reaches the app; status `not_configured`, meaning this deployment cannot connect that app, which must be told to the person plainly and never presented as success; or status `error`, meaning the connection service did not answer just now — relay the detail and suggest trying again in a minute.",
   inputSchema: z.object({
     action: z
       .enum(["connect", "disconnect"])

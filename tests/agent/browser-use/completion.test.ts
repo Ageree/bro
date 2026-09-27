@@ -1314,15 +1314,16 @@ describe("settling a browser run", () => {
     await settleBrowserRun({ to }, runId);
 
     const prompt = send.mock.calls[0]?.[0];
-    // One card naming the option the run found, not a question before it.
+    // A free option goes through at once; a paid one gets the one question.
     expect(prompt).toContain(
-      "continue this run now with allowSubmit and a submission naming exactly that option"
+      "and it is free, continue this run now with allowSubmit and a submission naming exactly that option"
     );
+    expect(prompt).toContain("ending with «Оплачиваю?»");
     expect(prompt).toContain("the train or flight and its departure");
     expect(prompt).toContain("the real total with every fee in chargeRub");
     // A declined card still leaves the person with what was found.
     expect(prompt).toContain(
-      "If the user declines that card, nothing is lost: show them the options this run found, each with its price and link"
+      "If the user declines that card or says no to paying, nothing is lost: show them the options this run found, each with its price and link"
     );
     expect(prompt).toContain("Сапсан №783");
     // The page stays open on the checkout for the card's follow-up; the
@@ -2157,9 +2158,14 @@ describe("what the report turn retells", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    expect(send.mock.calls[0]?.[0]).toContain(
-      "The user already confirmed this errand on a card or by a standing permission, so it is a purchase in progress, not a search: do not ask whether to go ahead."
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "The user asked for this errand or gave a standing permission, so it is in progress, not a search: do not ask a generic question about going ahead. Neither that request nor the standing permission authorizes a new payment."
     );
+    expect(prompt).toContain(
+      "When it costs money, write the user one short message in your own voice with the exact order, what changed, the real total with every fee and the delivery or date, ending with «Оплачиваю?»"
+    );
+    expect(prompt).not.toContain("confirms the change on one card");
   });
 
   it("leaves a search that stopped at its final step to the usual card", async () => {
@@ -2172,7 +2178,7 @@ describe("what the report turn retells", () => {
     await settleBrowserRun({ to }, runId);
 
     const prompt = send.mock.calls[0]?.[0];
-    expect(prompt).not.toContain("purchase in progress");
+    expect(prompt).not.toContain("so it is in progress, not a search");
     // «Найди билеты… у прохода» is still a search: options and a question.
     expect(prompt).not.toContain("a ticket search that also asks for a seat");
     expect(prompt).toContain(

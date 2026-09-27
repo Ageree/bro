@@ -2,6 +2,7 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type * as GmailModule from "@agent/lib/google-workspace/gmail";
+import type { listCurrentRules } from "@db/services/memory/records";
 import type {
   GmailCompose,
   readGmailThread,
@@ -23,6 +24,9 @@ const gmail = vi.hoisted(() => ({
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "full",
+}));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
 }));
 
 vi.mock("@agent/lib/google-workspace/gmail", async (importOriginal) => ({

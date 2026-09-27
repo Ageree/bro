@@ -155,6 +155,11 @@
 - `watchedModelFetch` (`agent/lib/model/stream-watchdog.ts`): тишина 90 с — один
   повтор до первого `data:`, нет `data:` 240 с (480 с с reasoning) — сбой;
   комментарии `: OPENROUTER PROCESSING` — жизнь, в них идёт рассуждение.
+- Мини-классификатор сохранённых правил с JSON-ответом и лимитом 96 токенов
+  не должен наследовать reasoning основного агента: он съедает тот же бюджет и
+  может оставить ответ пустым. Явный `reasoning.enabled=false` только в его
+  OpenRouter-вызове (`agent/lib/memory/rule-approval.ts`) сохраняет fail-closed
+  проверку правил, а не обходит её.
 - Слабые модели заполняют каждый необязательный параметр: пустое и `*` там —
   пропуск (`givenScope`). gpt-6-luna после доставки отвечает пустым шагом, и eve
   валит ход — `quietEndMiddleware` меняет его на `<eve-empty-delivery/>`.
@@ -268,6 +273,10 @@
 - `schedules-answer` принимает лишь run id, чей вопрос доставлен в этот чат
   после прошлого сообщения человека (`answerableScheduledQuestions`).
 - `eve dev` не запускает расписания по cron: `POST /eve/v1/dev/schedules/<имя>`.
+  Через `next dev` этому POST нужна локальная сессионная cookie: без неё
+  middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200
+  вместо dispatch. V4 Browser Use не присылает вебхук, так что локальный
+  `browser-runs` без этого тика не доставит законченный отчёт в чат.
 - `next_check_at` захваченной проактивной проверки — её аренда: отсрочка
   проходит, лишь пока аренда и `google_state` те же (`deferProactiveWatch`).
 - Воркер с сессией без начатого хода сторож ждёт ещё 20 минут: Workflow держит

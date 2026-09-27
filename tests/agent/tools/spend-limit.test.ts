@@ -412,11 +412,8 @@ describe("spend_limit clear", () => {
     expect(noteOf(result)).toContain("the rules listed here still hold");
   });
 
-  /**
-   * Review of #191: a paid standing permission pays without asking too, so
-   * «every payment already needs a card» is true only with none left.
-   */
-  it("names the paid permissions a scoped clear leaves paying", async () => {
+  /** A scoped clear leaves paid permissions configured, not payment consent. */
+  it("names the paid permissions a scoped clear leaves configured", async () => {
     const taxi = { kind: "taxi" as const, maxRub: 1500, merchant: null };
     stored = { ...monthly, actions: [taxi], rules: [] };
 
@@ -426,8 +423,9 @@ describe("spend_limit clear", () => {
       cleared: [],
       stillPaying: [describeStandingAction(taxi)],
     });
-    expect(noteOf(result)).toContain("still pay without asking");
-    expect(noteOf(result)).not.toContain("already needs");
+    expect(noteOf(result)).toContain(
+      "Every new payment still needs the user's plain yes to the exact order and total"
+    );
     // The clear the person's «не плати без ок» needs takes it back.
     const all = await clear({ action: "clear" });
     expect(all).toMatchObject({

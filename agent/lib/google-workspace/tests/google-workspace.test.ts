@@ -7,6 +7,7 @@ import type {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { wakeProactiveWatch } from "@db/services/proactive";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
+import type { listCurrentRules } from "@db/services/memory/records";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
@@ -20,6 +21,9 @@ const proactive = vi.hoisted(() => ({
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
+}));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
 }));
 vi.mock("@db/services/proactive", () => ({
   wakeProactiveWatch: proactive.wake,
@@ -203,10 +207,39 @@ describe("Google Workspace", () => {
     expect(await approvalOf(calendarUpdateEvent)).toBe("user-approval");
     expect(await approvalOf(calendarDeleteEvent)).toBe("user-approval");
     expect(await approvalOf(gmailDraft)).toBe("not-applicable");
-    expect(await approvalOf(gmailUpdate)).toBe("not-applicable");
+    expect(await approvalOf(gmailUpdate)).toBe("user-approval");
     expect(settings.access).toHaveBeenCalledWith(scope);
     expect(gmailSearch.approval).toBeUndefined();
     expect(gmailReadThread.approval).toBeUndefined();
+  });
+
+  // Owner 26.09: nothing but a payment is confirmed. What the person asked
+  // for in their own message is sent, created or deleted at once; a browser
+  // run's report is the page's text, so there it waits for the card.
+  it("sends and changes the calendar at once in the person's own turn", async () => {
+    settings.access.mockResolvedValue("full");
+    composio.connect({ toolkit: "googlesuper", userId });
+    const approvalsIn = async (authenticator: string) =>
+      Promise.all([
+        approvalOf(gmailSend, undefined, authenticator),
+        approvalOf(calendarCreateEvent, undefined, authenticator),
+        approvalOf(calendarUpdateEvent, undefined, authenticator),
+        approvalOf(calendarDeleteEvent, undefined, authenticator),
+      ]);
+
+    expect(await approvalsIn("telegram-webhook")).toEqual(
+      Array.from({ length: 4 }, () => "not-applicable")
+    );
+    expect(await approvalsIn("browser-result")).toEqual(
+      Array.from({ length: 4 }, () => "user-approval")
+    );
+    expect(
+      await approvalOf(
+        gmailUpdate,
+        { messageIds: ids(12), update: "mark_read" },
+        "photon-imessage"
+      )
+    ).toBe("not-applicable");
   });
 
   it("asks before changing more than three emails at once", async () => {
@@ -215,10 +248,17 @@ describe("Google Workspace", () => {
 
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(3), update: "archive" })
-    ).toBe("not-applicable");
+    ).toBe("user-approval");
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
     ).toBe("user-approval");
+    expect(
+      await approvalOf(
+        gmailUpdate,
+        { messageIds: ids(4), update: "archive" },
+        "photon-imessage"
+      )
+    ).toBe("not-applicable");
     expect(
       await approvalOf(gmailUpdate, {
         messageIds: ids(12),
@@ -234,7 +274,7 @@ describe("Google Workspace", () => {
         messageIds: ["a", "a", "b", "b", "c"],
         update: "mark_read",
       })
-    ).toBe("not-applicable");
+    ).toBe("user-approval");
   });
 
   it("shows no write card while Google is not connected, and says so", async () => {
@@ -315,11 +355,12 @@ async function approvalOf<TInput>(
   tool: {
     readonly approval?: Approval<TInput> | undefined;
   },
-  toolInput?: ApprovalContext<TInput>["toolInput"]
+  toolInput?: ApprovalContext<TInput>["toolInput"],
+  authenticator?: string
 ) {
   const policy = policyOf(tool.approval);
   return policy({
-    ...sessionContext(),
+    ...sessionContext(authenticator),
     toolInput,
     abortSignal: new AbortController().signal,
     approvedTools: new Set(),
@@ -328,7 +369,7 @@ async function approvalOf<TInput>(
   });
 }
 
-function sessionContext() {
+function sessionContext(authenticator = "google-workspace-test") {
   return {
     async getSandbox() {
       throw new Error("Sandbox access is outside this focused test.");
@@ -340,7 +381,7 @@ function sessionContext() {
       auth: {
         current: {
           attributes: { workspaceId: scope.workspaceId },
-          authenticator: "google-workspace-test",
+          authenticator,
           principalId: userId,
           principalType: "user",
         },

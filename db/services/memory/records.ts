@@ -64,6 +64,24 @@ export async function listCurrentMemories(
   return rows.map(memoryResult);
 }
 
+export async function listCurrentRules(scope: AccessScope) {
+  const rows = await db
+    .select({ index: memoryRecords.index, content: memoryRecords.content })
+    .from(memoryRecords)
+    .where(
+      and(
+        eq(memoryRecords.workspaceId, scope.workspaceId),
+        isNotNull(memoryRecords.content),
+        sql`${memoryRecords.content}->>'category' = 'rule'`,
+        currentValidity()
+      )
+    )
+    .limit(maximumRecords);
+  return rows.flatMap(({ index, content }) =>
+    content ? [{ index, text: content.text }] : []
+  );
+}
+
 export async function findMemories(
   scope: AccessScope,
   scopeKey: string,
