@@ -119,7 +119,11 @@ class CaseRun {
     this.settings = settings;
     this.tracker = new TurnTracker(
       record.driver.pendingInputs,
-      record.driver.backgroundRuns
+      record.driver.backgroundRuns,
+      record.driver.status === "failed"
+        ? (record.driver.statusDetail ?? "Ход Бро завершился ошибкой")
+        : undefined,
+      record.driver.supersededRuns
     );
   }
 
@@ -141,6 +145,19 @@ class CaseRun {
     this.#handles.add(session);
     this.tracker.observe(event);
     await this.journal.event(session.state.sessionId, event);
+  }
+
+  async rememberPastCodes(session: ClientSession, streamIndex: number) {
+    if (streamIndex === 0) return;
+    let seen = 0;
+    for await (const event of session.stream({
+      follow: false,
+      startIndex: 0,
+    })) {
+      this.journal.rememberMessage(event);
+      seen += 1;
+      if (seen === streamIndex) break;
+    }
   }
 
   /**
@@ -177,6 +194,7 @@ class CaseRun {
     driver.statusDetail = detail;
     driver.pendingInputs = [...this.tracker.pending.values()];
     driver.backgroundRuns = this.tracker.backgroundRuns();
+    driver.supersededRuns = this.tracker.supersededRuns();
     driver.approvedTools = [...this.settings.approvedTools];
     driver.confirmPaymentUpToRub = this.settings.confirmPaymentUpToRub ?? null;
     driver.heldTools = [...this.settings.heldTools];
@@ -197,6 +215,10 @@ class CaseRun {
    * browser errand's result, or done.
    */
   async settle() {
+    if (this.tracker.turnFailure) {
+      await this.save("failed", this.tracker.turnFailure);
+      return;
+    }
     const blocked = this.tracker.blocked(this.heldTools);
     if (blocked) {
       const held = [...this.tracker.pending.values()].some(
@@ -285,12 +307,15 @@ async function readTurn(
   session: ClientSession,
   events: AsyncIterable<MessageStreamEvent>
 ) {
+  let completed = false;
   for await (const event of events) {
     await run.observe(session, event);
+    if (event.type === "turn.completed") completed = true;
     if (event.type === "session.waiting" && run.tracker.authorizationPending) {
       break;
     }
   }
+  return completed;
 }
 
 /** Runs one exchange with a deadline covering the POST and the stream. */
@@ -299,7 +324,8 @@ async function exchange(
   start: (signal: AbortSignal) => Promise<{
     readonly events: AsyncIterable<MessageStreamEvent>;
     readonly session: ClientSession;
-  }>
+  }>,
+  recoverOnSuccess = false
 ) {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -307,7 +333,8 @@ async function exchange(
   }, run.settings.turnTimeoutMs);
   try {
     const { events, session } = await start(controller.signal);
-    await readTurn(run, session, events);
+    const completed = await readTurn(run, session, events);
+    if (recoverOnSuccess && completed) run.tracker.recovered();
     return session;
   } catch (error) {
     if (controller.signal.aborted) {
@@ -327,6 +354,7 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
   // A card is answered once, even if eve never reports it resolved.
   const answered = new Set<string>();
   for (;;) {
+    if (run.tracker.turnFailure) return;
     if (run.tracker.authorizationPending) return;
     const responses: InputResponse[] = [];
     for (const request of run.tracker.pending.values()) {
@@ -377,14 +405,23 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
  */
 async function awaitBackground(run: CaseRun, session: ClientSession) {
   const { backgroundWaitMs } = run.settings;
-  if (!run.tracker.awaitingBackground() || backgroundWaitMs <= 0) return true;
+  if (
+    run.tracker.turnFailure ||
+    !run.tracker.awaitingBackground() ||
+    backgroundWaitMs <= 0
+  )
+    return true;
   await run.journal.line(
     `== драйвер ждёт фоновый итог до ${String(Math.round(backgroundWaitMs / 60_000))} мин`
   );
   const deadline = Date.now() + backgroundWaitMs;
   // A manual stream gives up after a few idle reconnects, far sooner than an
   // errand reports, so it is reopened until the deadline.
-  while (run.tracker.awaitingBackground() && Date.now() < deadline) {
+  while (
+    !run.tracker.turnFailure &&
+    run.tracker.awaitingBackground() &&
+    Date.now() < deadline
+  ) {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
@@ -403,7 +440,7 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
     } finally {
       clearTimeout(timer);
     }
-    if (run.tracker.blocked(run.heldTools)) break;
+    if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools)) break;
     // oxlint-disable-next-line eslint/no-await-in-loop -- a card raised by the background turn is answered before waiting on
     await settleInputs(run, session);
     // oxlint-disable-next-line eslint/no-await-in-loop -- a pause before reopening an idle stream
@@ -416,7 +453,8 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
 async function finishBackground(run: CaseRun, session: ClientSession) {
   for (let round = 0; round <= run.settings.nudges; round += 1) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- each round waits for the previous one's result
-    if (await awaitBackground(run, session)) return;
+    if (run.tracker.turnFailure || (await awaitBackground(run, session)))
+      return;
     if (round === run.settings.nudges || run.tracker.blocked(run.heldTools)) {
       return;
     }
@@ -448,6 +486,7 @@ function newRecord(
     driver: {
       approvedTools: [...settings.approvedTools],
       backgroundRuns: [],
+      supersededRuns: [],
       confirmPaymentUpToRub: settings.confirmPaymentUpToRub ?? null,
       decisions: [],
       declinedTools: [],
@@ -567,6 +606,9 @@ async function sendSteps(
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
     run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
+    if (run.tracker.turnFailure) {
+      return run.settle().then(() => undefined);
+    }
     if (run.tracker.blocked(run.heldTools)) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
       await run.settle();
@@ -611,7 +653,8 @@ export async function runCase(
       extrasOnFirst: true,
       session: undefined,
     });
-    if (run.tracker.blocked(run.heldTools)) return run.record;
+    if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools))
+      return run.record;
     if (session) await finishBackground(run, session);
     await run.settle();
   } catch (error) {
@@ -647,7 +690,8 @@ export async function continueCase(
     record.caseId,
     settings.timeZone
   );
-  if (input.code) journal.knownCodes.add(input.code);
+  if (input.code) journal.rememberCodes(input.code, true);
+  if (input.kind === "code") journal.rememberCodes(input.text, true);
   const run = new CaseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   if (!cursor) throw new Error(`${record.caseId} has no session to continue.`);
@@ -655,6 +699,7 @@ export async function continueCase(
     streamIndex: cursor.streamIndex,
   });
   try {
+    await run.rememberPastCodes(session, cursor.streamIndex);
     // Background events since the driver last looked; `send` would skip them.
     for await (const event of session.stream({ follow: false })) {
       await run.observe(session, event);
@@ -664,23 +709,31 @@ export async function continueCase(
     await run.noteTurn(session, input.kind, "продолжение", input.text);
     if (responses) {
       await run.noteDeclines(pendingBeforeAnswer, responses);
-      await exchange(run, async (signal) => ({
-        events: await session.respond(responses, { signal }),
-        session,
-      }));
+      await exchange(
+        run,
+        async (signal) => ({
+          events: await session.respond(responses, { signal }),
+          session,
+        }),
+        true
+      );
     } else {
       const message = await messageContent(
         input.text,
         settings.extraFiles,
         settings.voice
       );
-      await exchange(run, async (signal) => ({
-        events: await session.send(message, { signal }),
-        session,
-      }));
+      await exchange(
+        run,
+        async (signal) => ({
+          events: await session.send(message, { signal }),
+          session,
+        }),
+        true
+      );
     }
     await settleInputs(run, session);
-    if (run.tracker.blocked(run.heldTools)) {
+    if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools)) {
       await run.settle();
       return run.record;
     }
@@ -694,7 +747,8 @@ export async function continueCase(
             session,
           })
         : session;
-    if (run.tracker.blocked(run.heldTools)) return run.record;
+    if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools))
+      return run.record;
     if (last) await finishBackground(run, last);
     await run.settle();
   } catch (error) {
@@ -725,6 +779,7 @@ export async function followCase(
   });
   run.tracker.expectBackground();
   try {
+    await run.rememberPastCodes(session, cursor.streamIndex);
     await awaitBackground(run, session);
     await run.settle();
   } catch (error) {
@@ -748,6 +803,11 @@ export async function nextCase(
   settings: DriverSettings,
   options: { readonly early: boolean }
 ) {
+  if (record.driver.status === "failed") {
+    throw new Error(
+      `${record.caseId}: the last turn failed; recover with pnpm bench send before continuing scripted steps.`
+    );
+  }
   const steps = plannedSteps(record.driver.remainingSteps);
   if (steps.length === 0) {
     throw new Error(`${record.caseId}: every scripted step has been sent.`);
@@ -774,17 +834,23 @@ export async function nextCase(
   const turnsBefore = record.driver.turns.length;
   try {
     if (session) {
+      await run.rememberPastCodes(session, cursor?.streamIndex ?? 0);
       // Whatever Bro wrote since the driver last looked; `send` would skip it.
       for await (const event of session.stream({ follow: false })) {
         await run.observe(session, event);
       }
+    }
+    if (run.tracker.turnFailure) {
+      await run.settle();
+      return run.record;
     }
     const last = await sendSteps(run, client, steps, {
       early: options.early,
       extrasOnFirst: false,
       session,
     });
-    if (run.tracker.blocked(run.heldTools)) return run.record;
+    if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools))
+      return run.record;
     // Background errands are waited for only after a message went out.
     if (last && run.record.driver.turns.length > turnsBefore) {
       await finishBackground(run, last);
@@ -891,19 +957,23 @@ export async function observeCase(
     streamIndex: known?.streamIndex ?? 0,
   });
   run.attach(session);
+  await run.rememberPastCodes(session, known?.streamIndex ?? 0);
   const until = new Date(Date.now() + options.durationMs);
   // A case with scripted steps still due stays `scheduled`: watching it
   // between steps must not hide what `next` has left to send.
   const { status: before, statusDetail: beforeDetail } = run.record.driver;
   const keepStatus =
-    before === "scheduled" && run.record.driver.remainingSteps.length > 0;
+    before === "failed" ||
+    (before === "scheduled" && run.record.driver.remainingSteps.length > 0);
   const saveWatch = () =>
-    keepStatus
-      ? run.save(before, beforeDetail)
-      : run.save(
-          "observing",
-          `наблюдение до ${isoWithOffset(until, settings.timeZone)}, сообщений: ${String(run.record.driver.observations.length)}; продолжить: pnpm bench observe --out ${settings.outDir} --case ${benchCase.id}`
-        );
+    run.tracker.turnFailure
+      ? run.save("failed", run.tracker.turnFailure)
+      : keepStatus
+        ? run.save(before, beforeDetail)
+        : run.save(
+            "observing",
+            `наблюдение до ${isoWithOffset(until, settings.timeZone)}, сообщений: ${String(run.record.driver.observations.length)}; продолжить: pnpm bench observe --out ${settings.outDir} --case ${benchCase.id}`
+          );
   const see = async (event: MessageStreamEvent) => {
     await run.observe(session, event);
     const text = deliveredText(event);

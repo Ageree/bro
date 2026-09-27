@@ -37,6 +37,9 @@
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
+- Перед последовательным `pnpm check --concurrency=1` запустите
+  `pnpm types:generate`: иначе type-aware lint не видит сгенерированные
+  `PageProps` и ложно сообщает об unsafe-типах.
 - PGlite-тест с `vi.resetModules()` должен в каждом кейсе заново импортировать
   `@db` и подменять `db`, иначе висит на `pg.Pool`
   (`db/tests/proactive.test.ts`). Наружу тесты не пускает `tests/setup-env.ts`.

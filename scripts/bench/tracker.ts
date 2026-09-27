@@ -54,18 +54,24 @@ export class TurnTracker {
   readonly pending = new Map<string, InputRequest>();
   authorizationPending = false;
   productVersion: string | undefined;
+  turnFailure: string | undefined;
   /** Errands due to report, oldest first. */
   readonly #runs: Set<string>;
+  readonly #superseded: Set<string>;
   /** `browser_task` calls in flight: the run each one named. */
   readonly #calls = new Map<string, string>();
   #expectReport = false;
 
   constructor(
     pending: readonly InputRequest[] = [],
-    backgroundRuns: readonly string[] = []
+    backgroundRuns: readonly string[] = [],
+    turnFailure?: string,
+    supersededRuns: readonly string[] = []
   ) {
     for (const request of pending) this.pending.set(request.requestId, request);
     this.#runs = new Set(backgroundRuns);
+    this.#superseded = new Set(supersededRuns);
+    this.turnFailure = turnFailure;
   }
 
   observe(event: MessageStreamEvent) {
@@ -108,8 +114,10 @@ export class TurnTracker {
           for (const replaced of [previousRunId, requested]) {
             if (replaced !== undefined && replaced !== runId) {
               this.#runs.delete(replaced);
+              this.#superseded.add(replaced);
             }
           }
+          this.#superseded.delete(runId);
           this.#runs.add(runId);
         } else if (settledStatuses.has(status)) {
           this.#runs.delete(runId);
@@ -137,6 +145,10 @@ export class TurnTracker {
         this.authorizationPending = false;
         break;
       }
+      case "turn.failed": {
+        this.turnFailure = `${event.data.code}: ${event.data.message}`;
+        break;
+      }
       default: {
         break;
       }
@@ -151,6 +163,14 @@ export class TurnTracker {
   /** The errands still due to report, for the run record. */
   backgroundRuns() {
     return [...this.#runs];
+  }
+
+  supersededRuns() {
+    return [...this.#superseded];
+  }
+
+  recovered() {
+    this.turnFailure = undefined;
   }
 
   /**
@@ -172,6 +192,7 @@ export class TurnTracker {
    * one that got its browser: it settles the oldest errand still due.
    */
   #settleReport(runId: string) {
+    if (this.#superseded.has(runId)) return;
     this.#expectReport = false;
     if (this.#runs.delete(runId)) return;
     const [oldest] = this.#runs;

@@ -24,6 +24,7 @@ function recordFor(journal: CaseJournal, promptSent: string): RunRecord {
     driver: {
       approvedTools: [],
       backgroundRuns: [],
+      supersededRuns: [],
       confirmPaymentUpToRub: null,
       decisions: [],
       declinedTools: [],
@@ -82,6 +83,17 @@ describe("maskCodes", () => {
   it("leaves prices and times alone", () => {
     const text = "поезд в 18:40, 5 900 ₽ за место у окна";
     expect(maskCodes(text, new Set())).toBe(text);
+    expect(maskCodes("2500", new Set())).toBe("2500");
+    expect(maskCodes("runId 481516", new Set())).toBe("runId 481516");
+  });
+
+  it("extracts only the OTP from a mixed code turn, including 3+3 digits", () => {
+    const journal = new CaseJournal("/unused", "code", "UTC");
+    journal.rememberCodes("Это код входа: 123 456, 2 упаковки, 3DS", true);
+    expect([...journal.knownCodes]).toEqual(["123456"]);
+    expect(maskCodes("Введите 123 456", journal.knownCodes)).toBe(
+      "Введите ******"
+    );
   });
 });
 
@@ -177,7 +189,10 @@ describe("CaseJournal", () => {
     };
 
     await journal.event("wrun_test", received);
-    await journal.save(recordFor(journal, personal));
+    journal.knownCodes.add("551177");
+    const record = recordFor(journal, personal);
+    record.driver.supersededRuns.push("run_551177");
+    await journal.save(record);
 
     const written = await Promise.all(
       Object.values(journal.paths).map((path) => readFile(path, "utf8"))
@@ -199,6 +214,7 @@ describe("CaseJournal", () => {
     expect(saved.driver.sessions).toEqual([
       { sessionId: "wrun_4111111111111111", streamIndex: 3 },
     ]);
+    expect(saved.driver.supersededRuns).toEqual(["run_551177"]);
   });
 
   it("moves a previous run's files aside instead of appending to them", async () => {
