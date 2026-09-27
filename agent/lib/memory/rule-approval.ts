@@ -34,7 +34,6 @@ export async function outboundRuleApproval(
     if (actionJson === undefined) return refusal;
     const action = z.json().parse(JSON.parse(actionJson));
     const modelId = await getWorkspaceModelId(scope);
-    if (/^(?:xai|grok)\//u.test(modelId)) return unavailable;
     const selection = openRouterActive()
       ? openRouterSelection(modelId, { toolChoice: "none" })
       : null;
