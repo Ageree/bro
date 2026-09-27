@@ -864,9 +864,9 @@ function budgetLine(allowPayment: boolean) {
  */
 function personStepLine() {
   return [
-    "First rule of this run: when the site asks for something only the person has — a one-time code sent by SMS or email, an approval in their app, a 3-D Secure step, or a password that is not attached — and this task does not already give it to you, stop there at once and end your final answer.",
-    "Nobody can give you that code while you are running: it goes to the person's phone or inbox, and they can hand it over only after your final answer reaches them. Waiting on the page, reloading, resending the code or looking for another way in or another site only lets the code expire. This comes before the time budget and the fallback sites below.",
-    "End your final answer with NEEDS: sms_code, email_code, push, 3ds or password, and say in DETAILS what the page asks for and where the code went (the masked phone number or email it shows). The page stays open, and the person's answer is typed into it.",
+    "First rule of this run: during the sign-in this errand authorizes, finish the ordinary step that actually sends a code — including a normal sign-in or continue button on a page saying it WILL email or text a code. Do not report that a code was sent while the page only offers to send it. Then, when the site asks for something only the person has — a one-time code sent by SMS, email or an app notification, an approval in their app, a 3-D Secure step, or a password that is not attached — and this task does not already give it to you, stop there at once and end your final answer.",
+    "Nobody can give you that code while you are running: they can hand it over only after your final answer reaches them. Once the code was actually sent, do not wait, reload or try another site. If a code you already entered is rejected or expired, use the site's available resend once and stop for the new code; never claim sign-in succeeded without observing it. This comes before the time budget and the fallback sites below.",
+    "End your final answer with NEEDS: sms_code for SMS, email_code for email, push for either an app-notification code or an app approval/QR, 3ds or password. In DETAILS distinguish digits to type from a tap approval or a visible QR, and say where the code went exactly as the page shows (the masked phone or email, or the app notification). The page stays open, and only the person's answer supplies a code.",
   ].join(" ");
 }
 
@@ -918,7 +918,7 @@ function phoneSignInLine(aliases: readonly string[], site: string | undefined) {
   const digits = aliases.includes(browserSecretAliases.signinPhoneDigits)
     ? ` If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.signinPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`
     : "";
-  return `No saved password is available for ${where}. ${phoneSignInSentence}${digits} ${smsCodeOverAppLine} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Stop right after the site sends the code, with NEEDS: sms_code (or push), and put the masked phone the page shows in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
+  return `No saved password is available for ${where}. ${phoneSignInSentence}${digits} ${smsCodeOverAppLine} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Complete the ordinary send-code step before stopping; do not assume an offer to send a code means it arrived. Once sent, stop with NEEDS: sms_code for SMS or push for either a code in the app notification or an app approval, and put exactly what the page asks for and any masked destination in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
 }
 
 /**
@@ -1894,6 +1894,7 @@ const codeNeeds = new Set<string>([
   "3ds",
   "email_code",
   "password",
+  "push",
   "sms_code",
 ]);
 
@@ -3631,6 +3632,7 @@ async function runBrowserTask(
         queueBrowserErrand(scope, {
           ...conversation,
           composedTask: continued.continuation,
+          fromRunId: runId,
           paymentAllowed: allowPayment,
           profileId: continued.profileId,
           retryAfterMs: continued.retryAfterMs,
@@ -3657,18 +3659,22 @@ async function runBrowserTask(
     await browserUseCreditsRestored();
     await carrySpend(followUp.id);
     await recordStartedRun(followUp.id, () =>
-      createBrowserRun(scope, {
-        ...conversation,
-        id: followUp.id,
-        liveViewUrl: sameBrowser ? row.liveViewUrl : null,
-        paymentAllowed: allowPayment,
-        profileId,
-        sessionId: followUp.sessionId,
-        site: site ?? null,
-        status: "running",
-        submission: confirmedSubmission(consent),
-        task: message,
-      })
+      createBrowserRun(
+        scope,
+        {
+          ...conversation,
+          id: followUp.id,
+          liveViewUrl: sameBrowser ? row.liveViewUrl : null,
+          paymentAllowed: allowPayment,
+          profileId,
+          sessionId: followUp.sessionId,
+          site: site ?? null,
+          status: "running",
+          submission: confirmedSubmission(consent),
+          task: message,
+        },
+        runId
+      )
     );
     // The follow-up holds the errand's browser now, a fresh one or the same.
     // Never fatal: the run is already going.

@@ -872,7 +872,8 @@ describe("browser_task continuation", () => {
         sessionId,
         status: "running",
         task: "Человек написал: «Код из смс 992130»",
-      })
+      }),
+      runId
     );
     expect(result).toMatchObject({
       previousRunId: runId,
@@ -945,7 +946,8 @@ describe("browser_task continuation", () => {
         site: "https://taxi.yandex.ru",
         status: "running",
         task: "Человек написал: «Код из смс 992130»",
-      })
+      }),
+      runId
     );
     expect(result).toMatchObject({
       boundSecrets: ["login_username", "login_password"],
@@ -1040,7 +1042,8 @@ describe("browser_task continuation", () => {
     expect(createBrowserUseRun.mock.calls[1]?.[0].profileId).toBe("profile-1");
     expect(createBrowserRun).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId })
+      expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId }),
+      runId
     );
     expect(continuationNote(result)).toContain(
       "opened a fresh browser on the same profile"
@@ -2162,6 +2165,7 @@ describe("browser_task standing spend limit", () => {
     expect(createBrowserRun.mock.calls[0]).toEqual([
       accessScopeForUser("better-auth:alice"),
       expect.objectContaining({ paymentAllowed: true }),
+      runId,
     ]);
     expect(result).toMatchObject({ runId, status: "running" });
     expect(continuationNote(result)).toContain(
@@ -2402,6 +2406,8 @@ describe("browser_task standing spend limit", () => {
     );
 
     expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(followUpRunId);
+    expect(createBrowserRun.mock.calls[0]?.[2]).toBe(runId);
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
     expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
       followUpRunId,
       { charged: false }
@@ -4452,7 +4458,7 @@ describe("browser_task sign-in by the person's phone", () => {
       "describing what the field expects. If the site offers to sign in with a QR code or a confirmation in its app and also with a code by SMS or a call («Войти другим способом», «По номеру телефона», «Получить код в SMS»), choose the code by SMS or call. It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
     );
     expect(task).toContain(
-      "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
+      "Complete the ordinary send-code step before stopping; do not assume an offer to send a code means it arrived. Once sent, stop with NEEDS: sms_code for SMS or push for either a code in the app notification or an app approval"
     );
     expect(task).toContain(
       "Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else."
@@ -7250,7 +7256,8 @@ describe("browser_task on Госуслуги", () => {
       expect.objectContaining({
         site: "https://www.mos.ru",
         waitsForAccount: "gosuslugi.ru",
-      })
+      }),
+      undefined
     );
     expect(note).toContain(
       "Another errand of the user is working in Bro's browser on gosuslugi.ru right now"
@@ -7533,7 +7540,8 @@ describe("browser_task keeps sign-ins", () => {
       expect.objectContaining({
         sessionId,
         waitsForAccount: "gosuslugi.ru",
-      })
+      }),
+      runId
     );
 
     // With the account free it starts, and Bro warns of the code rather

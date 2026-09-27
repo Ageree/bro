@@ -78,9 +78,42 @@ export async function saveBrowserProfileId(
 
 export async function createBrowserRun(
   scope: AccessScope,
-  input: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">
+  input: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">,
+  fromRunId?: string
 ) {
   await ensureScope(scope);
+  if (fromRunId !== undefined) {
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(browserRuns)
+        .values({
+          ...input,
+          createdByUserId: scope.userId,
+          workspaceId: scope.workspaceId,
+        })
+        .returning();
+      if (!row) throw new Error("The browser run could not be recorded.");
+      const now = new Date();
+      const [linked] = await tx
+        .update(browserRuns)
+        .set({
+          retriedAsRunId: row.id,
+          reportClaimedAt: null,
+          reportDeliveredAt: sql`coalesce(${browserRuns.reportDeliveredAt}, ${now})`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(browserRuns.id, fromRunId),
+            eq(browserRuns.workspaceId, scope.workspaceId),
+            isNull(browserRuns.retriedAsRunId)
+          )
+        )
+        .returning({ id: browserRuns.id });
+      if (!linked) throw new Error("The predecessor run was already replaced.");
+      return row;
+    });
+  }
   const [row] = await db
     .insert(browserRuns)
     .values({
@@ -405,13 +438,18 @@ export async function createQueuedBrowserRun(
   > & {
     readonly pendingTask: string;
     readonly retryAt: Date;
-  }
+  },
+  fromRunId?: string
 ) {
-  return createBrowserRun(scope, {
-    ...input,
-    id: `queued:${crypto.randomUUID()}`,
-    status: "queued",
-  });
+  return createBrowserRun(
+    scope,
+    {
+      ...input,
+      id: `queued:${crypto.randomUUID()}`,
+      status: "queued",
+    },
+    fromRunId
+  );
 }
 
 function queuedAndDue(now: Date) {
