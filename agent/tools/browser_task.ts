@@ -2395,8 +2395,6 @@ async function paymentUnanswered(
     return paymentQuestionRefusal(chargeRub);
   try {
     const modelId = await getWorkspaceModelId(scope);
-    if (/^(?:xai|grok)\//u.test(modelId))
-      return paymentQuestionRefusal(chargeRub);
     const selection = openRouterActive()
       ? openRouterSelection(modelId, { toolChoice: "none" })
       : null;
