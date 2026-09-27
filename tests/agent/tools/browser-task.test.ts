@@ -362,6 +362,9 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   createBrowserRun,
   claimBrowserRunBrowser,
   listBrowserHoldingRuns,
+  linkBrowserRunFollowUp: vi.fn<() => Promise<boolean>>(() =>
+    Promise.resolve(true)
+  ),
   releaseBrowserRunBrowser,
   unclaimBrowserRunBrowser,
   createQueuedBrowserRun,
@@ -4133,7 +4136,7 @@ describe("browser_task sign-in by the person's phone", () => {
       "describing what the field expects. If the site offers to sign in with a QR code or a confirmation in its app and also with a code by SMS or a call («Войти другим способом», «По номеру телефона», «Получить код в SMS»), choose the code by SMS or call. It works only on ozon.ru and its own sign-in pages; never try it on another site, and no other personal detail goes with it."
     );
     expect(task).toContain(
-      "Stop right after the site sends the code, with NEEDS: sms_code (or push)"
+      "Complete the ordinary send-code step before stopping; do not assume an offer to send a code means it arrived. Once sent, stop with NEEDS: sms_code for SMS or push for either a code in the app notification or an app approval"
     );
     expect(task).toContain(
       "Their phone goes only where the sign-in paragraph below allows, to sign in and for nothing else."
