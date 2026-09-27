@@ -2,7 +2,6 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import * as Database from "@db";
 import * as schema from "@db/schema";
 import {
   browserRunReportDelivered,
@@ -17,15 +16,18 @@ const client = new PGlite();
 const database = drizzle(client, { schema });
 const scope = { userId: "better-auth:alice", workspaceId: "workspace:alice" };
 
+vi.mock("@db", async (importOriginal) => ({
+  ...(await importOriginal()),
+  get db() {
+    return database;
+  },
+}));
+
 beforeAll(async () => {
   await migrate(database, { migrationsFolder: "db/migrations" });
-  // SAFETY: PGlite implements the same Drizzle query-builder contract as the service's database driver.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- PGlite implements the service's Drizzle contract.
-  vi.spyOn(Database, "db", "get").mockReturnValue(database as never);
 }, 60_000);
 
 afterAll(async () => {
-  vi.restoreAllMocks();
   await client.close();
 });
 
