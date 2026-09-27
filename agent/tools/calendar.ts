@@ -1,4 +1,5 @@
 import { defineDynamic, defineTool } from "eve/tools";
+import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
 import {
   calendarAvailabilityInputSchema,
@@ -13,8 +14,16 @@ import {
   updateCalendarEvent,
 } from "@agent/lib/google-workspace/calendar";
 import { googleWriteApproval } from "@agent/lib/google-workspace/client";
-import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
+import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
+import { resolveModeValue } from "@agent/lib/mode";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
+
+async function calendarWriteApproval(context: ApprovalContext) {
+  const rule = await outboundRuleApproval(context, context.toolInput);
+  return rule === "not-applicable" || rule === "user-approval"
+    ? googleWriteApproval(context, rule)
+    : rule;
+}
 
 export const calendarListEvents = defineTool({
   description:
@@ -44,7 +53,7 @@ const overlapNote =
   "`overlapsWith` lists other events at the same time: tell the person about the clash plainly, as a fact («в 15:30 у тебя уже «Стоматолог»»).";
 
 export const calendarCreateEvent = defineTool({
-  approval: (ctx) => googleWriteApproval(ctx, ownTurnApproval(ctx)),
+  approval: calendarWriteApproval,
   description:
     "Create a confirmed private Google Calendar event. When the person asked for it in their own message it is created at once, without a card or a question; with guests, Google mails them an invitation, so tell the person who was invited. Put the address or link of the meeting in `location` and details that matter (who, what to bring, the booking from the email) in `description`. For a vague window, check free time first and put the event in a free window.",
   inputSchema: calendarEventSchema,
@@ -64,7 +73,7 @@ export const calendarCreateEvent = defineTool({
 });
 
 export const calendarUpdateEvent = defineTool({
-  approval: (ctx) => googleWriteApproval(ctx, ownTurnApproval(ctx)),
+  approval: calendarWriteApproval,
   description:
     "Move or rename one existing Google Calendar event, or change its notes or place. Take eventId, its current title (`eventTitle`), its current start (`eventStart`) and calendarId from calendar-list-events; for a recurring event that id changes only that one occurrence. The whole series only when the person asked for it: its `recurringEventId` as eventId and `series: true`. To move the event pass both start and end; fields you omit stay as they are. When the person asked for it in their own message it is changed at once, without a card or a question, and attendees get Google's update.",
   inputSchema: calendarEventUpdateSchema,
@@ -87,7 +96,7 @@ export const calendarUpdateEvent = defineTool({
 });
 
 export const calendarDeleteEvent = defineTool({
-  approval: (ctx) => googleWriteApproval(ctx, ownTurnApproval(ctx)),
+  approval: calendarWriteApproval,
   description:
     "Delete one existing Google Calendar event. Take eventId, its current title (`eventTitle`), its start (`eventStart`) and calendarId from calendar-list-events; for a recurring event that id deletes only that one occurrence. The whole series only when the person asked for it: its `recurringEventId` as eventId and `series: true`. When the person asked for it in their own message it is deleted at once, without a card or a question, and attendees get Google's cancellation.",
   inputSchema: calendarEventDeleteSchema,

@@ -45,6 +45,7 @@ import {
 } from "@agent/lib/google-workspace/turn-reads";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
+import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import {
   capFilename,
   maximumAttachmentBytes,
@@ -397,7 +398,11 @@ function defineGmailSend(
 ) {
   return defineTool({
     approval: async (ctx) => {
-      const access = await googleWriteApproval(ctx, ownTurnApproval(ctx));
+      const rule = await outboundRuleApproval(ctx, ctx.toolInput);
+      const access =
+        rule === "not-applicable" || rule === "user-approval"
+          ? await googleWriteApproval(ctx, rule)
+          : rule;
       return access === "not-applicable" || access === "user-approval"
         ? (replyBeforeRead(ctx.toolInput, readMessageIds) ??
             voiceUnfollowed(ctx.toolInput, voices) ??
