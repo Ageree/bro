@@ -186,6 +186,11 @@
 
 ## Браузерные поручения
 
+План перехода — `docs/browser-cloud-migration.md`: сначала свой браузер на
+Cloud.ru VM по запросу с постоянным профилем; общий Бро не копируем в каждую
+VM. JEV — заменяемый selector, его hosted API не равен self-host inference.
+Это целевая архитектура, не уже переключённый runtime.
+
 Файлы без пути — в `agent/lib/browser-use/`.
 
 - Текст поручения — `composeBrowserTask` (`agent/tools/browser_task.ts`), тесты
