@@ -158,6 +158,18 @@ describe("model selection", () => {
       model: { modelId: "deepseek/deepseek-v4.1-flash" },
       modelContextWindowTokens: 163_840,
       modelOptions: {
+        providerOptions: { openrouter: { reasoning: { effort: "low" } } },
+      },
+    });
+  });
+
+  it("still disables reasoning when explicitly set to off", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "off");
+
+    const { modelSelection } = await import("@agent/lib/model/selection");
+    expect(modelSelection("deepseek/deepseek-v4.1-flash")).toMatchObject({
+      modelOptions: {
         providerOptions: { openrouter: { reasoning: { enabled: false } } },
       },
     });
