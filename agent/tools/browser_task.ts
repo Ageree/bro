@@ -2404,7 +2404,7 @@ async function paymentUnanswered(
       abortSignal: AbortSignal.timeout(20_000),
       model: selection?.model ?? modelId,
       providerOptions: selection?.modelOptions.providerOptions,
-      maxOutputTokens: 96,
+      maxOutputTokens: 256,
       output: Output.object({ schema: z.object({ matches: z.boolean() }) }),
       prompt: JSON.stringify({
         question: said.paymentAsked,
@@ -2561,14 +2561,11 @@ export async function browserTaskApproval(
   };
   const consent = await consentFor(input, scope, errand, said);
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
-  if (consent.by === "card") {
-    return { reason: backgroundConsentRefusal, type: "denied" };
-  }
   const unchosen =
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
   if (unchosen) return { reason: unchosen, type: "denied" };
-  return "not-applicable";
+  return consent.by === "card" ? "user-approval" : "not-applicable";
 }
 
 /**
@@ -2590,7 +2587,6 @@ async function consentFromInput(
     throw new Error(paymentQuestionRefusal(undefined));
   const consent = await consentFor(input, scope, errand, said);
   if (!consent) throw new Error(missingSubmissionRefusal);
-  if (consent.by === "card") throw new Error(backgroundConsentRefusal);
   const unchosen =
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
@@ -3842,11 +3838,14 @@ const browserTaskDescription =
 export const browserTask = defineTool({
   approval: async (ctx) => {
     const decision = await browserTaskApproval(ctx.toolInput, ctx);
-    return decision === "not-applicable" &&
-      ctx.toolInput &&
-      actsForPerson(ctx.toolInput)
-      ? outboundRuleApproval(ctx, JSON.stringify(ctx.toolInput))
-      : decision;
+    if (
+      !ctx.toolInput ||
+      !actsForPerson(ctx.toolInput) ||
+      (decision !== "not-applicable" && decision !== "user-approval")
+    )
+      return decision;
+    const rule = await outboundRuleApproval(ctx, JSON.stringify(ctx.toolInput));
+    return rule === "not-applicable" ? decision : rule;
   },
   description: browserTaskDescription,
   inputSchema,
@@ -3876,11 +3875,17 @@ export default defineDynamic({
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);
-          return decision === "not-applicable" &&
-            ctx.toolInput &&
-            actsForPerson(ctx.toolInput)
-            ? outboundRuleApproval(ctx, JSON.stringify(ctx.toolInput))
-            : decision;
+          if (
+            !ctx.toolInput ||
+            !actsForPerson(ctx.toolInput) ||
+            (decision !== "not-applicable" && decision !== "user-approval")
+          )
+            return decision;
+          const rule = await outboundRuleApproval(
+            ctx,
+            JSON.stringify(ctx.toolInput)
+          );
+          return rule === "not-applicable" ? decision : rule;
         },
         description: browserTaskDescription,
         inputSchema,

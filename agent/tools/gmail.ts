@@ -296,10 +296,11 @@ function defineGmailUpdate(updatedInTurn: number) {
         ctx,
         JSON.stringify(ctx.toolInput)
       );
-      if (rule !== "not-applicable") return rule;
+      if (rule !== "not-applicable" && rule !== "user-approval") return rule;
       return googleWriteApproval(
         ctx,
-        gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
+        rule === "user-approval" ||
+          gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
           ? ownTurnApproval(ctx)
           : "not-applicable"
       );

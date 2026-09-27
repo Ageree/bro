@@ -183,11 +183,11 @@ async function appsApproval(
   if (reads && startedByPerson(ctx)) return "not-applicable";
   if (!reads) {
     const rule = await outboundRuleApproval(ctx, JSON.stringify(input.data));
-    if (rule !== "not-applicable") return rule;
+    if (rule !== "not-applicable" && rule !== "user-approval") return rule;
   }
   if (!reads && input.data.app === "google") {
-    const access = await googleWriteApproval(ctx, "user-approval");
-    if (access !== "user-approval") return access;
+    const access = await googleWriteApproval(ctx, "not-applicable");
+    if (access !== "not-applicable") return access;
   }
   if (input.data.app !== "google") {
     const app = input.data.app;

@@ -7,6 +7,7 @@ import type {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { wakeProactiveWatch } from "@db/services/proactive";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
+import type { listCurrentRules } from "@db/services/memory/records";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
@@ -20,6 +21,9 @@ const proactive = vi.hoisted(() => ({
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
+}));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
 }));
 vi.mock("@db/services/proactive", () => ({
   wakeProactiveWatch: proactive.wake,
@@ -203,7 +207,7 @@ describe("Google Workspace", () => {
     expect(await approvalOf(calendarUpdateEvent)).toBe("user-approval");
     expect(await approvalOf(calendarDeleteEvent)).toBe("user-approval");
     expect(await approvalOf(gmailDraft)).toBe("not-applicable");
-    expect(await approvalOf(gmailUpdate)).toBe("not-applicable");
+    expect(await approvalOf(gmailUpdate)).toBe("user-approval");
     expect(settings.access).toHaveBeenCalledWith(scope);
     expect(gmailSearch.approval).toBeUndefined();
     expect(gmailReadThread.approval).toBeUndefined();
@@ -244,10 +248,17 @@ describe("Google Workspace", () => {
 
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(3), update: "archive" })
-    ).toBe("not-applicable");
+    ).toBe("user-approval");
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
     ).toBe("user-approval");
+    expect(
+      await approvalOf(
+        gmailUpdate,
+        { messageIds: ids(4), update: "archive" },
+        "photon-imessage"
+      )
+    ).toBe("not-applicable");
     expect(
       await approvalOf(gmailUpdate, {
         messageIds: ids(12),
@@ -263,7 +274,7 @@ describe("Google Workspace", () => {
         messageIds: ["a", "a", "b", "b", "c"],
         update: "mark_read",
       })
-    ).toBe("not-applicable");
+    ).toBe("user-approval");
   });
 
   it("shows no write card while Google is not connected, and says so", async () => {

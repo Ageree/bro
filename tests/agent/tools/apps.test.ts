@@ -2,6 +2,7 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { getGoogleWorkspaceAccess } from "@db/services/settings";
+import type { listCurrentRules } from "@db/services/memory/records";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import {
@@ -16,6 +17,9 @@ const settings = vi.hoisted(() => ({
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
+}));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
 }));
 
 import appsTools, { apps } from "@agent/tools/apps";

@@ -11,6 +11,11 @@ import { appsNamedByPerson } from "@agent/lib/connected-apps/mentions";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import type { listCurrentRules } from "@db/services/memory/records";
+
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
+}));
 
 import connectAppTools, { connectApp } from "@agent/tools/connect_app";
 import notionTools, {

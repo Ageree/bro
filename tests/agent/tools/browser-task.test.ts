@@ -16,6 +16,7 @@ import type * as browserUseMailCode from "@agent/lib/browser-use/mail-code";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
 import type * as browserRunsService from "@db/services/browser-runs";
+import type { listCurrentRules } from "@db/services/memory/records";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -353,6 +354,9 @@ const mailCodeFromSite = vi.hoisted(() =>
 type Unused = () => never;
 
 vi.mock("@db/services/browser-sign-ins", () => ({ readBrowserSignIns }));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
+}));
 vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
     .browserRunReportOwed,
