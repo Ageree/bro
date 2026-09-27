@@ -19,7 +19,10 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 
 async function calendarWriteApproval(context: ApprovalContext) {
-  const rule = await outboundRuleApproval(context, context.toolInput);
+  const rule = await outboundRuleApproval(
+    context,
+    JSON.stringify(context.toolInput)
+  );
   return rule === "not-applicable" || rule === "user-approval"
     ? googleWriteApproval(context, rule)
     : rule;

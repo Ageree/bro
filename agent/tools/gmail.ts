@@ -291,13 +291,19 @@ function failedAttachment(request: GmailAttachmentRequest, reason: string) {
  */
 function defineGmailUpdate(updatedInTurn: number) {
   return defineTool({
-    approval: (ctx) =>
-      googleWriteApproval(
+    approval: async (ctx) => {
+      const rule = await outboundRuleApproval(
+        ctx,
+        JSON.stringify(ctx.toolInput)
+      );
+      if (rule !== "not-applicable") return rule;
+      return googleWriteApproval(
         ctx,
         gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
           ? ownTurnApproval(ctx)
           : "not-applicable"
-      ),
+      );
+    },
     description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. Changing more than ${String(gmailUpdateWithoutApproval)} messages in one turn, across all calls, waits for the person's card only in a turn Bro opened itself (a browser report); in the person's own turn it is done at once. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
     inputSchema: gmailUpdateInputSchema,
     async execute(input, ctx) {
@@ -398,7 +404,10 @@ function defineGmailSend(
 ) {
   return defineTool({
     approval: async (ctx) => {
-      const rule = await outboundRuleApproval(ctx, ctx.toolInput);
+      const rule = await outboundRuleApproval(
+        ctx,
+        JSON.stringify(ctx.toolInput)
+      );
       const access =
         rule === "not-applicable" || rule === "user-approval"
           ? await googleWriteApproval(ctx, rule)

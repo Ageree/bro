@@ -25,6 +25,7 @@ import {
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   ComposioError,
@@ -180,6 +181,10 @@ async function appsApproval(
   }
   const reads = composioToolReadsOnly(checked.tool);
   if (reads && startedByPerson(ctx)) return "not-applicable";
+  if (!reads) {
+    const rule = await outboundRuleApproval(ctx, JSON.stringify(input.data));
+    if (rule !== "not-applicable") return rule;
+  }
   if (!reads && input.data.app === "google") {
     const access = await googleWriteApproval(ctx, "user-approval");
     if (access !== "user-approval") return access;
