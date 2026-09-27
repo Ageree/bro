@@ -241,7 +241,7 @@ export const env = createEnv({
       .trim()
       .toLowerCase()
       .pipe(z.enum(["off", "low", "medium", "high"]))
-      .default("off"),
+      .default("low"),
     // Inbound voice notes are transcribed through OpenRouter's audio endpoint
     // with the same key. The fallback model takes over when the first one
     // rejects the clip; the language is an ISO 639-1 hint, `auto` lets the

@@ -44,7 +44,7 @@ describe("model provider environment", () => {
     expect(openRouterActive()).toBe(true);
     expect(defaultModelId()).toBe("deepseek/deepseek-v4.1-flash");
     expect(env.OPENROUTER_MODEL_CONTEXT_TOKENS).toBe(1_000_000);
-    expect(env.OPENROUTER_REASONING_EFFORT).toBe("off");
+    expect(env.OPENROUTER_REASONING_EFFORT).toBe("low");
     expect(env.OPENROUTER_PROVIDER_ORDER).toBeUndefined();
   });
 

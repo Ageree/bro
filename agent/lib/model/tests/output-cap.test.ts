@@ -87,12 +87,22 @@ afterEach(() => {
 });
 
 describe("OpenRouter output cap", () => {
-  it("caps a normal step at 16,384 tokens", async () => {
+  it("gives the default low-reasoning step room for thinking", async () => {
     const body = await runStep("deepseek/deepseek-v4.1-flash");
 
     expect(body).toMatchObject({
-      max_tokens: 16_384,
+      max_tokens: 32_768,
       model: "deepseek/deepseek-v4.1-flash",
+      reasoning: { effort: "low" },
+    });
+  });
+
+  it("keeps the smaller output cap when reasoning is explicitly off", async () => {
+    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "off");
+
+    const body = await runStep("deepseek/deepseek-v4.1-flash");
+    expect(body).toMatchObject({
+      max_tokens: 16_384,
       reasoning: { enabled: false },
     });
   });
@@ -119,6 +129,7 @@ describe("OpenRouter output cap", () => {
   });
 
   it("keeps a smaller limit the caller set and lowers a larger one", async () => {
+    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "off");
     expect(
       (await runStep("deepseek/deepseek-v4.1-flash", { maxOutputTokens: 800 }))
         .max_tokens

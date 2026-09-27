@@ -87,9 +87,9 @@ function providerRouting(modelId: string) {
  * eve's provider-agnostic `reasoning` effort never reaches OpenRouter: the
  * provider package builds its request body from its own settings and ignores
  * that call option. Reasoning therefore travels as an OpenRouter provider
- * option, and stays off by default because DeepSeek still spends roughly 1,600
- * hidden tokens before the first visible character at the lowest effort.
- * `enabled: false` is the only switch the model honors.
+ * option. The default is low for source-grounded comparison, accepting the
+ * extra hidden tokens and latency. Explicit `off` uses `enabled: false`, the
+ * only switch the model honors for disabling reasoning.
  */
 function reasoningOptions(): AgentModelOptionsDefinition {
   const effort = env.OPENROUTER_REASONING_EFFORT;
