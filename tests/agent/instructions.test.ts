@@ -43,7 +43,8 @@ describe("agent instructions", () => {
     const selected = await resolve({}, proactive);
     expect(selected?.content).toContain("без просьбы человека");
     expect(selected?.content).toContain("Личное и социальное");
-    expect(selected?.content).toContain("`<eve-empty-delivery/>`");
+    expect(selected?.content).toContain("«Передавать нечего.»");
+    expect(selected?.content).not.toContain("eve-empty-delivery");
     expect(selected?.content).not.toContain("заведённую человеком");
   });
 

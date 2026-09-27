@@ -154,8 +154,20 @@ export const runRecordSchema = z.object({
   cleanupDone: z.boolean(),
   codesRequested: z.number().int().nonnegative(),
   driver: z.object({
+    /**
+     * `--approve tool` of `run` (plus `ownDataTools`), widened by any later
+     * `send`/`follow`/`next`/`observe` that names more: reused whether or
+     * not a follow-up command repeats it.
+     */
+    approvedTools: z.array(z.string()).default([]),
     /** Browser errands still due to report, for `send` and `follow`. */
     backgroundRuns: z.array(z.string()).default([]),
+    /**
+     * Upper bound, in roubles, up to which a payment card is confirmed for
+     * the owner (`--confirm-payment-up-to`), reused when a later command
+     * leaves the flag off.
+     */
+    confirmPaymentUpToRub: z.number().nonnegative().nullable().default(null),
     decisions: z.array(
       z.object({
         optionId: z.string().optional(),
@@ -164,7 +176,22 @@ export const runRecordSchema = z.object({
         tool: z.string(),
       })
     ),
+    /**
+     * Tools whose held card the tester explicitly cancelled at least once
+     * in this case: held for the rest of the case even where the default
+     * rule would otherwise approve a retried call (26.09 live bug — a
+     * retry of `calendar-create-event` after «Отмена» was auto-approved as
+     * an own-data tool).
+     */
+    declinedTools: z.array(z.string()).default([]),
     fixtures: z.array(z.object({ file: z.string(), shows: z.string() })),
+    /**
+     * Tools whose approval card `run` (or a later `send`/`follow`/`next`/
+     * `observe`) leaves for the owner (`--hold`), widened the same way as
+     * `approvedTools`: a hold from an earlier command is never silently
+     * lost because a later one did not repeat `--hold`.
+     */
+    heldTools: z.array(z.string()).default([]),
     host: z.string().min(1),
     observations: z.array(observationSchema).default([]),
     /**

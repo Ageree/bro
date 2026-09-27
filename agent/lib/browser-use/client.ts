@@ -68,6 +68,8 @@ const runEventsResponseSchema = z.object({
 
 const queuedMessageSchema = z.object({
   id: z.number().int(),
+  /** The run that takes the message: a new one when the session was idle. */
+  runId: z.string().min(1).nullish(),
   sessionId: z.string().min(1),
   status: z.string(),
 });

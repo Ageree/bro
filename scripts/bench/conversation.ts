@@ -34,7 +34,13 @@ export interface DriverSettings {
   readonly approvedTools: readonly string[];
   /** How long to follow a session for background results; 0 skips it. */
   readonly backgroundWaitMs: number;
+  /** Upper bound, in roubles, up to which a payment card is confirmed for
+   * the owner (`--confirm-payment-up-to`); undefined keeps every payment
+   * card cancelled, as before the flag existed. */
+  readonly confirmPaymentUpToRub: number | undefined;
   readonly extraFiles: readonly OutgoingFile[];
+  /** Tools whose approval card the driver leaves for the owner (`--hold`). */
+  readonly heldTools: readonly string[];
   readonly hintText: string;
   readonly host: string;
   /** Follow-and-ask rounds while a background errand stays silent. */
@@ -54,6 +60,35 @@ export interface DriverSettings {
  * ends the run as `scheduled` until `pnpm bench next`.
  */
 const inlineWaitMs = 15 * 60_000;
+
+const union = (...lists: readonly (readonly string[])[]) => [
+  ...new Set(lists.flat()),
+];
+
+/**
+ * The effective settings for continuing an existing case: `--hold`,
+ * `--approve` and `--confirm-payment-up-to` as `run` (or an earlier `send`,
+ * `follow`, `next` or `observe`) already set them for it, widened by
+ * whatever this command's own flags add. A follow-up command that leaves a
+ * flag off keeps what an earlier one set for the rest of the case — a hold
+ * is never silently lost because `--hold` was not repeated (26.09 live
+ * bug: a `send --option cancel` without `--hold` let a retried card of the
+ * same tool fall through to the default rule and auto-approve).
+ */
+function extendSettings(
+  record: RunRecord,
+  settings: DriverSettings
+): DriverSettings {
+  return {
+    ...settings,
+    approvedTools: union(record.driver.approvedTools, settings.approvedTools),
+    confirmPaymentUpToRub:
+      settings.confirmPaymentUpToRub ??
+      record.driver.confirmPaymentUpToRub ??
+      undefined,
+    heldTools: union(record.driver.heldTools, settings.heldTools),
+  };
+}
 
 class TurnTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -88,6 +123,15 @@ class CaseRun {
     );
   }
 
+  /**
+   * `--hold` widened by every tool the tester has ever cancelled a held
+   * card of in this case: once cancelled, a tool stays held for the rest
+   * of the case even if a later command's flags do not name it.
+   */
+  get heldTools(): readonly string[] {
+    return union(this.settings.heldTools, this.record.driver.declinedTools);
+  }
+
   /** Saves this session's cursor with the record even if nothing arrives. */
   attach(session: ClientSession) {
     this.#handles.add(session);
@@ -99,12 +143,43 @@ class CaseRun {
     await this.journal.event(session.state.sessionId, event);
   }
 
+  /**
+   * When the tester's own answer cancels a held tool-approval card, the
+   * tool is held for the rest of the case: a call the model retries after
+   * «Отмена» must not fall through to the default rule and auto-approve
+   * (26.09 live bug on `calendar-create-event`, an own-data tool).
+   */
+  async noteDeclines(
+    pending: readonly InputRequest[],
+    responses: readonly InputResponse[]
+  ) {
+    const byId = new Map(
+      pending.map((request) => [request.requestId, request])
+    );
+    for (const response of responses) {
+      const request = byId.get(response.requestId);
+      if (request?.kind !== "tool-approval" || response.optionId !== "cancel") {
+        continue;
+      }
+      const tool = request.action.toolName;
+      if (this.record.driver.declinedTools.includes(tool)) continue;
+      this.record.driver.declinedTools.push(tool);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- log lines keep the order of the decisions
+      await this.journal.line(
+        `== драйвер: тестировщик отменил «${tool}» — держит карточки этого инструмента до конца кейса, не одобряет их автоматически`
+      );
+    }
+  }
+
   async save(status: DriverStatus, detail: string | null = null) {
     const { driver } = this.record;
     driver.status = status;
     driver.statusDetail = detail;
     driver.pendingInputs = [...this.tracker.pending.values()];
     driver.backgroundRuns = this.tracker.backgroundRuns();
+    driver.approvedTools = [...this.settings.approvedTools];
+    driver.confirmPaymentUpToRub = this.settings.confirmPaymentUpToRub ?? null;
+    driver.heldTools = [...this.settings.heldTools];
     for (const { state } of this.#handles) {
       const known = driver.sessions.find(
         (cursor) => cursor.sessionId === state.sessionId
@@ -122,9 +197,17 @@ class CaseRun {
    * browser errand's result, or done.
    */
   async settle() {
-    const blocked = this.tracker.blocked();
+    const blocked = this.tracker.blocked(this.heldTools);
     if (blocked) {
-      await this.save(blocked[0], blocked[1]);
+      const held = [...this.tracker.pending.values()].some(
+        (request) =>
+          request.kind === "tool-approval" &&
+          this.heldTools.includes(request.action.toolName)
+      );
+      const detail = held
+        ? `${blocked[1]} — ответить: pnpm bench send --out ${this.settings.outDir} --case ${this.record.caseId} --option approve|cancel`
+        : blocked[1];
+      await this.save(blocked[0], detail);
       return;
     }
     if (this.tracker.awaitingBackground()) {
@@ -248,8 +331,24 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
     const responses: InputResponse[] = [];
     for (const request of run.tracker.pending.values()) {
       if (answered.has(request.requestId)) continue;
-      const decision = decideInputRequest(request, run.settings.approvedTools);
-      if (decision.kind !== "respond") continue;
+      const decision = decideInputRequest(
+        request,
+        run.settings.approvedTools,
+        run.heldTools,
+        run.settings.confirmPaymentUpToRub
+      );
+      if (decision.kind !== "respond") {
+        if (request.kind === "tool-approval") {
+          const cardOptions = (request.options ?? [])
+            .map((option) => `${option.id} («${option.label}»)`)
+            .join(", ");
+          // oxlint-disable-next-line eslint/no-await-in-loop -- log lines keep the order of the decisions
+          await run.journal.line(
+            `== драйвер держит карточку ${request.action.toolName} — ${decision.reason}\n   ${request.prompt}${cardOptions ? ` [${cardOptions}]` : ""}\n   ответить: pnpm bench send --out ${run.settings.outDir} --case ${run.record.caseId} --option approve|cancel`
+          );
+        }
+        continue;
+      }
       answered.add(request.requestId);
       responses.push(decision.response);
       run.record.driver.decisions.push({
@@ -304,7 +403,7 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
     } finally {
       clearTimeout(timer);
     }
-    if (run.tracker.blocked()) break;
+    if (run.tracker.blocked(run.heldTools)) break;
     // oxlint-disable-next-line eslint/no-await-in-loop -- a card raised by the background turn is answered before waiting on
     await settleInputs(run, session);
     // oxlint-disable-next-line eslint/no-await-in-loop -- a pause before reopening an idle stream
@@ -318,7 +417,9 @@ async function finishBackground(run: CaseRun, session: ClientSession) {
   for (let round = 0; round <= run.settings.nudges; round += 1) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- each round waits for the previous one's result
     if (await awaitBackground(run, session)) return;
-    if (round === run.settings.nudges || run.tracker.blocked()) return;
+    if (round === run.settings.nudges || run.tracker.blocked(run.heldTools)) {
+      return;
+    }
     const hint = run.settings.hintText;
     // oxlint-disable-next-line eslint/no-await-in-loop -- the hint goes only after the wait ran out
     await run.noteTurn(session, "hint", "после ожидания фонового итога", hint);
@@ -345,11 +446,15 @@ function newRecord(
     cleanupDone: false,
     codesRequested: 0,
     driver: {
+      approvedTools: [...settings.approvedTools],
       backgroundRuns: [],
+      confirmPaymentUpToRub: settings.confirmPaymentUpToRub ?? null,
       decisions: [],
+      declinedTools: [],
       fixtures: steps.flatMap((step) =>
         step.files.map((file) => ({ file: file.path, shows: file.shows }))
       ),
+      heldTools: [...settings.heldTools],
       host: settings.host,
       observations: [],
       paced: settings.paced,
@@ -462,7 +567,7 @@ async function sendSteps(
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
     run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
-    if (run.tracker.blocked()) {
+    if (run.tracker.blocked(run.heldTools)) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
       await run.settle();
       return undefined;
@@ -506,7 +611,7 @@ export async function runCase(
       extrasOnFirst: true,
       session: undefined,
     });
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.heldTools)) return run.record;
     if (session) await finishBackground(run, session);
     await run.settle();
   } catch (error) {
@@ -543,7 +648,7 @@ export async function continueCase(
     settings.timeZone
   );
   if (input.code) journal.knownCodes.add(input.code);
-  const run = new CaseRun(journal, record, settings);
+  const run = new CaseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   if (!cursor) throw new Error(`${record.caseId} has no session to continue.`);
   const session = client.sessions.attach(cursor.sessionId, {
@@ -554,9 +659,11 @@ export async function continueCase(
     for await (const event of session.stream({ follow: false })) {
       await run.observe(session, event);
     }
-    const responses = input.respond([...run.tracker.pending.values()]);
+    const pendingBeforeAnswer = [...run.tracker.pending.values()];
+    const responses = input.respond(pendingBeforeAnswer);
     await run.noteTurn(session, input.kind, "продолжение", input.text);
     if (responses) {
+      await run.noteDeclines(pendingBeforeAnswer, responses);
       await exchange(run, async (signal) => ({
         events: await session.respond(responses, { signal }),
         session,
@@ -573,7 +680,7 @@ export async function continueCase(
       }));
     }
     await settleInputs(run, session);
-    if (run.tracker.blocked()) {
+    if (run.tracker.blocked(run.heldTools)) {
       await run.settle();
       return run.record;
     }
@@ -587,7 +694,7 @@ export async function continueCase(
             session,
           })
         : session;
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.heldTools)) return run.record;
     if (last) await finishBackground(run, last);
     await run.settle();
   } catch (error) {
@@ -610,7 +717,7 @@ export async function followCase(
     record.caseId,
     settings.timeZone
   );
-  const run = new CaseRun(journal, record, settings);
+  const run = new CaseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   if (!cursor) throw new Error(`${record.caseId} has no session to follow.`);
   const session = client.sessions.attach(cursor.sessionId, {
@@ -657,7 +764,7 @@ export async function nextCase(
     record.caseId,
     settings.timeZone
   );
-  const run = new CaseRun(journal, record, settings);
+  const run = new CaseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   const session = cursor
     ? client.sessions.attach(cursor.sessionId, {
@@ -677,7 +784,7 @@ export async function nextCase(
       extrasOnFirst: false,
       session,
     });
-    if (run.tracker.blocked()) return run.record;
+    if (run.tracker.blocked(run.heldTools)) return run.record;
     // Background errands are waited for only after a message went out.
     if (last && run.record.driver.turns.length > turnsBefore) {
       await finishBackground(run, last);
@@ -725,7 +832,9 @@ async function observationRun(
     benchCase.id,
     settings.timeZone
   );
-  if (existing) return new CaseRun(journal, existing, settings);
+  if (existing) {
+    return new CaseRun(journal, existing, extendSettings(existing, settings));
+  }
   await journal.open();
   const run = new CaseRun(
     journal,

@@ -264,6 +264,19 @@ export async function stopBrowserRunErrand(runId: string) {
   return rows.length > 0;
 }
 
+export async function supersedeBrowserRunReport(runId: string, nextRunId: string) {
+  const now = new Date();
+  await db
+    .update(browserRuns)
+    .set({
+      reportClaimedAt: null,
+      reportDeliveredAt: now,
+      retriedAsRunId: nextRunId,
+      updatedAt: now,
+    })
+    .where(and(eq(browserRuns.id, runId), isNull(browserRuns.retriedAsRunId)));
+}
+
 /** The walled errand is over: nothing is parked and nothing will retry. */
 export async function finishWalledBrowserRun(runId: string) {
   await db
