@@ -2,11 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ai from "ai";
 import { composioToolContext } from "@tests/helpers/composio";
 
-const calls = vi.hoisted(() => ({
-  generate:
-    vi.fn<() => Promise<{ output: { violatedRuleIndex: number | null } }>>(),
-  rules: vi.fn<() => Promise<{ index: number; text: string }[]>>(),
-}));
+const calls = vi.hoisted(() => {
+  const selection = {
+    model: "openrouter-test-model",
+    modelOptions: {
+      providerOptions: { openrouter: { reasoning: { effort: "low" } } },
+    },
+  };
+  return {
+    generate:
+      vi.fn<() => Promise<{ output: { violatedRuleIndex: number | null } }>>(),
+    rules: vi.fn<() => Promise<{ index: number; text: string }[]>>(),
+    openRouterActive: vi.fn<() => boolean>(),
+    openRouterSelection: vi.fn<() => typeof selection>(() => selection),
+  };
+});
 
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
@@ -17,6 +27,12 @@ vi.mock("@db/services/memory/records", () => ({
 }));
 vi.mock("@db/services/settings", () => ({
   getWorkspaceModelId: async () => "openai/gpt-5.6-sol-fast",
+}));
+vi.mock("@shared/model/provider", () => ({
+  openRouterActive: calls.openRouterActive,
+}));
+vi.mock("@agent/lib/model/openrouter", () => ({
+  openRouterSelection: calls.openRouterSelection,
 }));
 
 import { outboundRuleApproval } from "./rule-approval";
@@ -31,6 +47,7 @@ function context(authenticator = "photon-imessage") {
 beforeEach(() => {
   vi.clearAllMocks();
   calls.rules.mockResolvedValue([]);
+  calls.openRouterActive.mockReturnValue(false);
 });
 
 describe("outbound saved rules", () => {
@@ -50,6 +67,29 @@ describe("outbound saved rules", () => {
     );
     expect(result).toMatchObject({ type: "denied" });
     expect(JSON.stringify(result)).toContain("saved rule #7 stops this action");
+    expect(calls.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ providerOptions: undefined })
+    );
+  });
+
+  it("disables OpenRouter reasoning for the bounded classifier without losing rule zero", async () => {
+    calls.openRouterActive.mockReturnValue(true);
+    calls.rules.mockResolvedValue([{ index: 0, text: "Never write Mum" }]);
+    calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 0 } });
+
+    const result = await outboundRuleApproval(
+      context(),
+      JSON.stringify({ to: "mum@example.com" })
+    );
+
+    expect(result).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(result)).toContain("saved rule #0 stops this action");
+    expect(calls.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: 96,
+        providerOptions: { openrouter: { reasoning: { enabled: false } } },
+      })
+    );
   });
 
   it("requires the person's card before an action from a browser report", async () => {
