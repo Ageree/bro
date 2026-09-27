@@ -320,7 +320,39 @@ describe("settling a browser run", () => {
       `Live view (share only for 3-D Secure, a push approval or a manual sign-in — never for an anti-bot check): ${row.liveViewUrl}`
     );
     expect(prompt).toContain(
-      "give them the Live view link that comes with this outcome: it shows the page as it is. For a QR code, tell them to open that link on a computer or another screen and scan the code there with the site's app on their phone. Say too that if they cannot, you will sign in with a code by SMS instead."
+      "Only if the page actually shows a QR code, give the Live view link and explain that they can open it on another screen and scan the code with the site's app."
+    );
+    expect(prompt).toContain(
+      "Do not claim the app code is an SMS, promise an SMS fallback"
+    );
+  });
+
+  it("asks for app-notification digits rather than assuming a push approval", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: ожидает код из уведомления приложения",
+        "NEEDS: push",
+        "DETAILS: ввести код из push-уведомления в поле на странице",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Войти в личный кабинет",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain(
+      "If Details asks for a code from the app notification, ask the user for those digits"
+    );
+    expect(prompt).toContain("DETAILS: ввести код из push-уведомления");
+    expect(prompt).toContain(
+      "Do not claim the app code is an SMS, promise an SMS fallback"
     );
   });
 

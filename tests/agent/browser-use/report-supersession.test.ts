@@ -18,6 +18,7 @@ const scope = { userId: "better-auth:alice", workspaceId: "workspace:alice" };
 
 beforeAll(async () => {
   await migrate(database, { migrationsFolder: "db/migrations" });
+  // SAFETY: PGlite implements the same Drizzle query-builder contract as the service's database driver.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- PGlite implements the service's Drizzle contract.
   vi.spyOn(Database, "db", "get").mockReturnValue(database as never);
 }, 60_000);
@@ -41,7 +42,9 @@ describe("a queued predecessor report after a follow-up", () => {
     });
 
     expect(await browserRunReportDelivered("old-run")).toBe(false);
-    expect(await linkBrowserRunFollowUp(scope, "old-run", "missing-run")).toBe(false);
+    expect(await linkBrowserRunFollowUp(scope, "old-run", "missing-run")).toBe(
+      false
+    );
     expect(await claimBrowserRunReport("old-run")).toBeDefined();
 
     await createBrowserRun(scope, {
@@ -53,7 +56,9 @@ describe("a queued predecessor report after a follow-up", () => {
       status: "running",
     });
 
-    expect(await linkBrowserRunFollowUp(scope, "old-run", "new-run")).toBe(true);
+    expect(await linkBrowserRunFollowUp(scope, "old-run", "new-run")).toBe(
+      true
+    );
     expect(await browserRunReportDelivered("old-run")).toBe(true);
     expect((await readLatestBrowserRunForScope(scope, "old-run"))?.id).toBe(
       "new-run"

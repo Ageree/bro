@@ -106,10 +106,7 @@ export async function linkBrowserRunFollowUp(
     .select({ id: nextRun.id })
     .from(nextRun)
     .where(
-      and(
-        eq(nextRun.id, toRunId),
-        eq(nextRun.workspaceId, scope.workspaceId)
-      )
+      and(eq(nextRun.id, toRunId), eq(nextRun.workspaceId, scope.workspaceId))
     );
   const [linked] = await db
     .update(browserRuns)
