@@ -43,7 +43,12 @@ export async function outboundRuleApproval(
         AbortSignal.timeout(20_000),
       ]),
       model: selection?.model ?? modelId,
-      providerOptions: selection?.modelOptions.providerOptions,
+      providerOptions: selection
+        ? {
+            ...selection.modelOptions.providerOptions,
+            openrouter: { reasoning: { enabled: false } },
+          }
+        : undefined,
       maxOutputTokens: 96,
       output: Output.object({
         schema: z.object({ violatedRuleIndex: z.number().int().nullable() }),

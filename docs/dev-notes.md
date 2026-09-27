@@ -155,6 +155,11 @@
 - `watchedModelFetch` (`agent/lib/model/stream-watchdog.ts`): тишина 90 с — один
   повтор до первого `data:`, нет `data:` 240 с (480 с с reasoning) — сбой;
   комментарии `: OPENROUTER PROCESSING` — жизнь, в них идёт рассуждение.
+- Мини-классификатор сохранённых правил с JSON-ответом и лимитом 96 токенов
+  не должен наследовать reasoning основного агента: он съедает тот же бюджет и
+  может оставить ответ пустым. Явный `reasoning.enabled=false` только в его
+  OpenRouter-вызове (`agent/lib/memory/rule-approval.ts`) сохраняет fail-closed
+  проверку правил, а не обходит её.
 - Слабые модели заполняют каждый необязательный параметр: пустое и `*` там —
   пропуск (`givenScope`). gpt-6-luna после доставки отвечает пустым шагом, и eve
   валит ход — `quietEndMiddleware` меняет его на `<eve-empty-delivery/>`.
