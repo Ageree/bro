@@ -1,4 +1,6 @@
 import type { ModelMessage } from "ai";
+import type * as ai from "ai";
+import type * as settingsService from "@db/services/settings";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import {
   afterEach,
@@ -16,6 +18,7 @@ import type * as browserUseMailCode from "@agent/lib/browser-use/mail-code";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
 import type * as browserRunsService from "@db/services/browser-runs";
+import type { listCurrentRules } from "@db/services/memory/records";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -27,6 +30,7 @@ import type {
   updateQueuedBrowserRun as updateQueuedRun,
 } from "@db/services/browser-runs";
 import {
+  browserSubmissionSchema as submissionSchema,
   type BrowserSubmission,
   type ConfirmedSubmission,
   paymentCeilingRub,
@@ -53,6 +57,43 @@ import {
   serializeContactVaultPayload,
 } from "@shared/vault/schema";
 import type * as browserUseHost from "@agent/lib/browser-use/host";
+
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof ai>()),
+  generateText: vi.fn<
+    (input: { prompt: string }) => Promise<{ output: { matches: boolean } }>
+  >(async (input) => {
+    const { question, staged, submission } = z
+      .object({
+        question: z.string(),
+        staged: z.string(),
+        submission: submissionSchema,
+      })
+      .parse(JSON.parse(input.prompt));
+    const questionDigits = question.replace(/\D/gu, "");
+    const stagedDigits = staged.replace(/\D/gu, "");
+    const totalDigits = String(submission.chargeRub ?? "");
+    return {
+      output: {
+        matches:
+          staged.includes("Needs: payment") &&
+          question.includes(submission.what) &&
+          question.includes(submission.when ?? "") &&
+          question.includes(submission.where) &&
+          totalDigits !== "" &&
+          questionDigits.includes(totalDigits) &&
+          staged.includes(submission.what) &&
+          staged.includes(submission.when ?? "") &&
+          staged.includes(submission.where) &&
+          stagedDigits.includes(totalDigits),
+      },
+    };
+  }),
+}));
+vi.mock("@db/services/settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof settingsService>()),
+  getWorkspaceModelId: vi.fn<() => Promise<string>>(async () => "test-model"),
+}));
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "22222222-2222-4222-8222-222222222222";
@@ -353,6 +394,9 @@ const mailCodeFromSite = vi.hoisted(() =>
 type Unused = () => never;
 
 vi.mock("@db/services/browser-sign-ins", () => ({ readBrowserSignIns }));
+vi.mock("@db/services/memory/records", () => ({
+  listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
+}));
 vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
     .browserRunReportOwed,
@@ -595,16 +639,39 @@ async function startErrand(
     status: "running",
   });
   const { browserTask } = await import("@agent/tools/browser_task");
-  return browserTask.execute(
+  // Paying waits for the person's «да» to Bro's question about it.
+  const tool =
+    allowPayment === true
+      ? await resolvedBrowserTask(
+          [],
+          "да",
+          askedToPay(1500, { ...cardSubmission, chargeRub: 1500 })
+        )
+      : browserTask;
+  if (allowPayment === true) {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment({ ...cardSubmission, chargeRub: 1500 }),
+        { ...cardSubmission, chargeRub: 1500 }
+      )
+    );
+  }
+  return tool.execute(
     {
-      action: "start",
+      action: allowPayment === true ? "continue" : "start",
+      personWants: "look",
       allowPayment,
       allowSubmit,
-      // The approval card's details travel with every confirmed call.
+      // What the person agreed to travels with every confirmed call.
       submission:
         allowSubmit === true || allowPayment === true
-          ? cardSubmission
+          ? allowPayment === true
+            ? { ...cardSubmission, chargeRub: 1500 }
+            : cardSubmission
           : undefined,
+      runId: allowPayment === true ? runId : undefined,
+      personSaid: allowPayment === true ? "да" : undefined,
       site: "https://example.com",
       task: "Order the usual",
     },
@@ -627,27 +694,49 @@ async function continueErrand(input: {
   readonly allowPayment?: boolean;
   readonly allowSubmit?: boolean;
   readonly authenticator?: string;
-  readonly completedAt?: Date;
+  readonly completedAt?: Date | null;
   readonly confirmed?: ConfirmedSubmission;
-  readonly outcome?: string;
+  readonly outcome?: string | null;
+  /** The person's «да» to Bro's question before paying. */
+  readonly paid?: boolean;
   readonly personSaid?: string | null;
   readonly said?: string;
   readonly site?: string;
   readonly submission?: BrowserSubmission;
   readonly task?: string;
 }) {
+  const submission =
+    input.submission ??
+    (input.paid
+      ? { ...cardSubmission, amount: "1 500 ₽", chargeRub: 1500 }
+      : undefined);
+  const completedAt =
+    input.completedAt === undefined
+      ? input.paid
+        ? new Date()
+        : null
+      : input.completedAt;
   readBrowserRunForScope.mockResolvedValue(
     browserRunRow(
-      input.completedAt ?? null,
-      input.outcome ?? null,
+      completedAt,
+      input.paid && submission && completedAt !== null
+        ? `${stagedPayment(submission)}${input.outcome ? `\n${input.outcome}` : ""}`
+        : (input.outcome ?? null),
       input.confirmed ?? null
     )
   );
-  const task = input.task ?? "Код из смс 992130";
-  const tool = await resolvedBrowserTask([], input.said ?? task);
+  const task = input.task ?? (input.paid ? "да" : "Код из смс 992130");
+  const tool = await resolvedBrowserTask(
+    [],
+    input.said ?? task,
+    input.paid
+      ? askedToPay(submission?.chargeRub, submission ?? cardSubmission)
+      : []
+  );
   return tool.execute(
     {
       action: "continue",
+      personWants: "look",
       allowPayment: input.allowPayment,
       allowSubmit: input.allowSubmit,
       personSaid:
@@ -655,7 +744,7 @@ async function continueErrand(input: {
       runId,
       site: input.site,
       submission:
-        input.submission ??
+        submission ??
         (input.allowSubmit === true || input.allowPayment === true
           ? cardSubmission
           : undefined),
@@ -801,7 +890,7 @@ describe("browser_task continuation", () => {
     const queued = String(queueBrowserUseSessionMessage.mock.calls[0]?.[1]);
     expect(queued.startsWith("Человек написал: «Да, записывай»")).toBe(true);
     expect(queued).toContain(
-      "The person confirmed on an approval card this one submission in their name."
+      "The person asked in their own message for this one submission in their name."
     );
     expect(queued).toContain("What: запись к терапевту");
     expect(queued).toContain("Phone: +79990000001");
@@ -898,13 +987,11 @@ describe("browser_task continuation", () => {
       bindings: [{ alias: "card_number" }],
     });
 
-    const result = await continueErrand({ allowPayment: true });
+    const result = await continueErrand({ allowPayment: true, paid: true });
 
-    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(runId);
-    expect(claimBrowserRunCompletion).toHaveBeenCalledExactlyOnceWith(runId, {
-      outcome: "Заменён продолжением с привязанной картой",
-      status: "stopped",
-    });
+    expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(stopBrowserRunErrand).toHaveBeenCalledExactlyOnceWith(runId);
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
       { allowPayment: true, phoneSignIn: false, site: "https://taxi.yandex.ru" }
@@ -1015,6 +1102,7 @@ describe("browser_task pictures", () => {
     await browserTask.execute(
       {
         action: "start",
+        personWants: "look",
         collectImages: true,
         site: "https://www.ozon.ru",
         task: "Найди такой же фитнес-браслет и покажи фото",
@@ -1035,6 +1123,7 @@ describe("browser_task pictures", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         collectImages: true,
         personSaid: "скинь фотки",
         runId,
@@ -1469,6 +1558,7 @@ describe("browser_task search discipline", () => {
       allowPayment: true,
       completedAt: new Date(),
       outcome: "Result: всё готово к оплате\nNeeds: payment",
+      paid: true,
       task: "Да, оплачивай",
     });
 
@@ -1517,12 +1607,12 @@ describe("browser_task payment boundary", () => {
     );
   });
 
-  it("lets a confirmed errand submit exactly what the card showed", async () => {
+  it("lets an errand the person asked for submit exactly that", async () => {
     await startErrand("", undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
-      "The person confirmed on an approval card this one submission in their name."
+      "The person asked in their own message for this one submission in their name."
     );
     expect(task).toContain("What: запись к терапевту");
     expect(task).toContain("Where: поликлиника №12 через ЕМИАС (emias.info)");
@@ -1553,7 +1643,7 @@ describe("browser_task payment boundary", () => {
     await startErrand("", true);
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      "The person confirmed on an approval card this one submission in their name."
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
   });
 
@@ -1565,6 +1655,7 @@ describe("browser_task payment boundary", () => {
       browserTask.execute(
         {
           action: "start",
+          personWants: "look",
           allowSubmit: true,
           site: "https://www.gosuslugi.ru",
           task: "Подай заявление на справку об отсутствии судимости",
@@ -1617,7 +1708,9 @@ describe("browser_task payment boundary", () => {
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).not.toContain("Nothing has been approved to pay for");
-    expect(task).toContain("finish it rather than abandoning it at the mark");
+    expect(task).toContain(
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
+    );
   });
 
   it("carries the stop into an unapproved follow-up", async () => {
@@ -1635,12 +1728,14 @@ describe("browser_task payment boundary", () => {
     await continueErrand({
       allowPayment: true,
       completedAt: new Date(),
-      task: "Бери второй отель",
+      paid: true,
     });
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).not.toContain("Nothing has been approved to pay for");
-    expect(task).toContain("finish it rather than abandoning it at the mark");
+    expect(task).toContain(
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
+    );
   });
 });
 
@@ -1656,7 +1751,12 @@ describe("browser_task one question per errand", () => {
     where: "Яндекс Go (taxi.yandex.ru)",
   };
 
-  async function start(submission: BrowserSubmission, authenticator?: string) {
+  /** `paid`: the person said «да» to Bro's question naming the total. */
+  async function start(
+    submission: BrowserSubmission,
+    authenticator?: string,
+    paid = false
+  ) {
     vi.resetModules();
     createBrowserUseRun.mockResolvedValue({
       id: runId,
@@ -1665,10 +1765,25 @@ describe("browser_task one question per errand", () => {
       status: "running",
     });
     const { browserTask } = await import("@agent/tools/browser_task");
-    return browserTask.execute(
+    const tool = paid
+      ? await resolvedBrowserTask(
+          [],
+          "да",
+          askedToPay(submission.chargeRub, submission)
+        )
+      : browserTask;
+    if (paid) {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), stagedPayment(submission), submission)
+      );
+    }
+    return tool.execute(
       {
-        action: "start",
+        action: paid ? "continue" : "start",
+        personWants: "look",
         allowSubmit: true,
+        personSaid: paid ? "да" : undefined,
+        runId: paid ? runId : undefined,
         site: "https://taxi.yandex.ru",
         submission,
         task: "Закажи такси домой",
@@ -1677,12 +1792,12 @@ describe("browser_task one question per errand", () => {
     );
   }
 
-  it("pays within the total the one card approved, without a second card", async () => {
-    await start(taxi);
+  it("pays within the total the person said yes to, without asking again", async () => {
+    await start(taxi, undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
-      "The person confirmed on an approval card this one submission in their name."
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
     // 900 ₽ and the 100 ₽ margin a small order gets.
     expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
@@ -1743,18 +1858,19 @@ describe("browser_task one question per errand", () => {
       standingPolicy([{ kind: "taxi", maxRub: 1500, merchant: null }])
     );
 
-    const result = await start(taxi);
+    const result = await start(taxi, undefined, true);
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
-      "The person gave a standing permission that covers this one submission in their name (заказы такси без спроса"
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
-    // The permission's own ceiling holds the run, not the card's margin.
-    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1500)}`);
-    expect(continuationNote(result)).toContain("No approval card was shown");
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
+    expect(continuationNote(result)).not.toContain(
+      "No approval card was shown"
+    );
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
-      submission: { ...taxi, paymentCapRub: 1500 },
+      submission: { ...taxi, paymentCapRub: 1000 },
     });
   });
 
@@ -1771,22 +1887,22 @@ describe("browser_task one question per errand", () => {
 
   it("keeps an approved payment with an errand still waiting in the queue", async () => {
     readBrowserRunForScope.mockResolvedValue({
-      ...browserRunRow(),
+      ...browserRunRow(null, null, { ...taxi, paymentCapRub: 1000 }),
       id: "queued:errand-1",
-      pendingTask: "Закажи такси домой\n\nNothing has been approved to pay for",
+      pendingTask:
+        "Закажи такси домой\n\nPayment is pre-approved up to 1 000 ₽ for this taxi order.",
       sessionId: null,
       status: "queued",
     });
-    const tool = await resolvedBrowserTask([], "Оплачивай картой");
+    const tool = await resolvedBrowserTask([], "Продолжай заказ");
 
     const result = await tool.execute(
       {
         action: "continue",
-        allowPayment: true,
-        personSaid: "Оплачивай картой",
+        personWants: "look",
+        personSaid: "Продолжай заказ",
         runId: "queued:errand-1",
-        submission: taxi,
-        task: "Оплачивай картой",
+        task: "Продолжай заказ",
       },
       toolContext("better-auth:alice")
     );
@@ -1800,11 +1916,10 @@ describe("browser_task one question per errand", () => {
       submission: { ...taxi, paymentCapRub: 1000 },
     });
     expect(String(update?.pendingTask)).toContain(
-      `Payment is pre-approved up to ${formatRub(1000)}`
+      "Payment is pre-approved up to 1 000 ₽ for this taxi order."
     );
-    expect(String(update?.pendingTask)).toContain(
-      "the earlier line saying nothing was approved to pay no longer applies"
-    );
+    expect(reserveConsentPayment).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 });
 
@@ -1814,7 +1929,7 @@ describe("browser_task scoping", () => {
 
     await expect(
       browserTask.execute(
-        { action: "status", runId },
+        { action: "status", personWants: "look", runId },
         toolContext("better-auth:bob")
       )
     ).rejects.toThrow("That browser run is not part of this workspace.");
@@ -1834,7 +1949,7 @@ describe("browser_task scoping", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -1856,7 +1971,7 @@ describe("browser_task scoping", () => {
       const tool = await resolvedBrowserTask([], said);
       return continuationNote(
         await tool.execute(
-          { action: "status", runId },
+          { action: "status", personWants: "look", runId },
           toolContext("better-auth:alice")
         )
       );
@@ -1879,7 +1994,7 @@ describe("browser_task scoping", () => {
     // outcome.
     const { browserTask } = await import("@agent/tools/browser_task");
     const worker = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice", "scheduled-worker")
     );
     expect(continuationNote(worker)).not.toContain("quick web_search");
@@ -1900,7 +2015,10 @@ describe("browser_task scoping", () => {
     } satisfies ToolContext;
 
     await expect(
-      browserTask.execute({ action: "status", runId }, anonymous)
+      browserTask.execute(
+        { action: "status", personWants: "look", runId },
+        anonymous
+      )
     ).rejects.toThrow("An authenticated user is required");
   });
 });
@@ -1944,11 +2062,15 @@ function toolContext(principalId: string, authenticator = "photon-imessage") {
 }
 
 describe("browser_task standing spend limit", () => {
-  async function startPaidErrand(withinSpendLimit: {
-    feeRub?: number;
-    recurring?: boolean;
-    totalRub: number;
-  }) {
+  async function startPaidErrand(
+    withinSpendLimit: {
+      feeRub?: number;
+      recurring?: boolean;
+      totalRub: number;
+    },
+    includeLimit = true,
+    failStart = false
+  ) {
     vi.resetModules();
     createBrowserUseRun.mockResolvedValue({
       id: runId,
@@ -1956,20 +2078,48 @@ describe("browser_task standing spend limit", () => {
       sessionId,
       status: "running",
     });
-    const { browserTask } = await import("@agent/tools/browser_task");
-    return browserTask.execute(
+    if (failStart) {
+      createBrowserUseRun.mockRejectedValue(new Error("Browser Use is down"));
+    }
+    const submission: BrowserSubmission = {
+      amount: `${withinSpendLimit.totalRub.toLocaleString("ru-RU")} ₽ с доставкой`,
+      chargeRub: withinSpendLimit.totalRub,
+      forWhom: "Алиса",
+      kind: "order",
+      personalData: ["имя", "адрес"],
+      what: "заказ корма для кота",
+      when: "доставка завтра",
+      where: "shop.example",
+    };
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), stagedPayment(submission), submission),
+      site: "https://www.shop.example",
+    });
+    const tool = await resolvedBrowserTask(
+      [],
+      "да",
+      askedToPay(withinSpendLimit.totalRub, submission)
+    );
+    return tool.execute(
       {
-        action: "start",
+        action: "continue",
+        personWants: "done",
+        allowSubmit: true,
         allowPayment: true,
+        personSaid: "да",
+        runId,
         site: "https://www.shop.example",
+        submission,
         task: "Купи корм для кота",
-        withinSpendLimit: {
-          category: "Зоотовары",
-          currency: "RUB",
-          feeRub: withinSpendLimit.feeRub ?? 0,
-          recurring: withinSpendLimit.recurring ?? false,
-          totalRub: withinSpendLimit.totalRub,
-        },
+        withinSpendLimit: includeLimit
+          ? {
+              category: "Зоотовары",
+              currency: "RUB",
+              feeRub: withinSpendLimit.feeRub ?? 0,
+              recurring: withinSpendLimit.recurring ?? false,
+              totalRub: withinSpendLimit.totalRub,
+            }
+          : undefined,
       },
       toolContext("better-auth:alice")
     );
@@ -1998,7 +2148,7 @@ describe("browser_task standing spend limit", () => {
       accessScopeForUser("better-auth:alice"),
       {
         allowPayment: true,
-        phoneSignIn: true,
+        phoneSignIn: false,
         site: "https://www.shop.example",
       }
     );
@@ -2015,9 +2165,12 @@ describe("browser_task standing spend limit", () => {
     expect(createBrowserRun.mock.calls[0]).toEqual([
       accessScopeForUser("better-auth:alice"),
       expect.objectContaining({ paymentAllowed: true }),
+      runId,
     ]);
     expect(result).toMatchObject({ runId, status: "running" });
-    expect(continuationNote(result)).toContain("do not ask them about it");
+    expect(continuationNote(result)).toContain(
+      "Nothing has happened on the site yet"
+    );
   });
 
   it("holds a card guarantee on the limit with nothing to charge", async () => {
@@ -2073,12 +2226,34 @@ describe("browser_task standing spend limit", () => {
       reason: "recurring",
     });
     vi.resetModules();
-    const { browserTask } = await import("@agent/tools/browser_task");
+    const submission: BrowserSubmission = {
+      amount: "900 ₽ за подписку",
+      chargeRub: 900,
+      forWhom: "Алиса",
+      kind: "order",
+      personalData: ["имя", "адрес"],
+      what: "подписка на доставку корма ежемесячно",
+      when: "ежемесячно",
+      where: "shop.example",
+    };
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(submission), submission)
+    );
+    const tool = await resolvedBrowserTask(
+      [],
+      "да",
+      askedToPay(900, submission)
+    );
 
-    const result = await browserTask.execute(
+    const result = await tool.execute(
       {
-        action: "start",
+        action: "continue",
+        personWants: "done",
+        allowSubmit: true,
         allowPayment: true,
+        personSaid: "да",
+        runId,
+        submission,
         site: "https://www.shop.example",
         task: "Оформи подписку на доставку корма раз в месяц",
         withinSpendLimit: {
@@ -2120,26 +2295,9 @@ describe("browser_task standing spend limit", () => {
       exposureRub: 1500,
       remainingAfterRub: 3500,
     });
-    vi.resetModules();
-    createBrowserUseRun.mockRejectedValue(new Error("Browser Use is down"));
-    const { browserTask } = await import("@agent/tools/browser_task");
-
+    readBrowserUseRunStatus.mockResolvedValue("completed");
     await expect(
-      browserTask.execute(
-        {
-          action: "start",
-          allowPayment: true,
-          site: "https://shop.example",
-          task: "Купи корм",
-          withinSpendLimit: {
-            currency: "RUB",
-            feeRub: 0,
-            recurring: false,
-            totalRub: 1500,
-          },
-        },
-        toolContext("better-auth:alice")
-      )
+      startPaidErrand({ totalRub: 1500 }, true, true)
     ).rejects.toThrow("Browser Use is down");
 
     const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
@@ -2159,50 +2317,22 @@ describe("browser_task standing spend limit", () => {
       allowed: false,
       note: "Лимит браузерных поручений на этот месяц исчерпан.",
     });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
 
     const result = await startPaidErrand({ totalRub: 1500 });
 
-    expect(result).toMatchObject({ status: "quota_exhausted" });
-    const placeholder = reserveAutoPayment.mock.calls[0]?.[1].browserRunId;
-    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
-      placeholder,
-      { charged: false }
-    );
-    expect(createBrowserUseRun).not.toHaveBeenCalled();
-    expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "running" });
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
   });
 
   it("keeps an explicitly approved payment off the limit", async () => {
-    vi.resetModules();
-    createBrowserUseRun.mockResolvedValue({
-      id: runId,
-      model: "hosted-agent",
-      sessionId,
-      status: "running",
-    });
-    const { browserTask } = await import("@agent/tools/browser_task");
-
-    await browserTask.execute(
-      {
-        action: "start",
-        allowPayment: true,
-        site: "https://shop.example",
-        submission: {
-          amount: "1 500 ₽",
-          forWhom: "Алиса",
-          personalData: ["имя", "адрес"],
-          kind: "order",
-          what: "заказ корма для кота",
-          where: "shop.example",
-        },
-        task: "Купи корм — я разрешаю оплату",
-      },
-      toolContext("better-auth:alice")
-    );
+    await startPaidErrand({ totalRub: 1500 }, false);
 
     expect(reserveAutoPayment).not.toHaveBeenCalled();
-    expect(createBrowserUseRun.mock.calls[0]?.[0].task).not.toContain(
-      "pre-approved"
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "answered yes when asked to pay its total"
     );
   });
 
@@ -2225,6 +2355,7 @@ describe("browser_task standing spend limit", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Возьми другой корм",
         runId,
         task: "Возьми другой корм",
@@ -2237,12 +2368,32 @@ describe("browser_task standing spend limit", () => {
   });
 
   it("releases a standing-limit reservation once the person approves the payment themselves", async () => {
-    await continueErrand({ allowPayment: true, completedAt: new Date() });
-
-    expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(runId, {
-      charged: false,
+    await continueErrand({
+      allowPayment: true,
+      completedAt: new Date(),
+      paid: true,
+      submission: {
+        amount: "900 ₽ по тарифу «Комфорт»",
+        chargeRub: 900,
+        forWhom: "Алиса",
+        kind: "taxi",
+        personalData: ["имя", "телефон"],
+        what: "заказ такси домой",
+        when: "сейчас",
+        where: "Яндекс Go (taxi.yandex.ru)",
+      },
     });
-    expect(moveSpendReservation).not.toHaveBeenCalled();
+
+    expect(reserveConsentPayment.mock.calls[0]?.[1]).toMatchObject({
+      amountRub: 1000,
+      replacingRunId: runId,
+      source: "card",
+    });
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^pending:/u),
+      followUpRunId
+    );
   });
 
   it("stops the new run and gives its reservation back when it cannot be recorded", async () => {
@@ -2264,15 +2415,34 @@ describe("browser_task standing spend limit", () => {
 
 describe("browser_task spend limit on a follow-up", () => {
   async function continueOnLimit(totalRub: number) {
-    readBrowserRunForScope.mockResolvedValue(browserRunRow(new Date()));
-    const tool = await resolvedBrowserTask([], "Оформляй");
+    const submission: BrowserSubmission = {
+      amount: `${totalRub.toLocaleString("ru-RU")} ₽ с доставкой`,
+      chargeRub: totalRub,
+      forWhom: "Алиса",
+      kind: "order",
+      personalData: ["имя", "адрес"],
+      what: "заказ корма для кота",
+      when: "доставка завтра",
+      where: "shop.example",
+    };
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(submission))
+    );
+    const tool = await resolvedBrowserTask(
+      [],
+      "да",
+      askedToPay(totalRub, submission)
+    );
     return tool.execute(
       {
         action: "continue",
+        personWants: "done",
+        allowSubmit: true,
         allowPayment: true,
-        personSaid: "Оформляй",
+        personSaid: "да",
         runId,
-        task: "Оформляй",
+        submission,
+        task: "да",
         withinSpendLimit: {
           currency: "RUB",
           feeRub: 0,
@@ -2351,7 +2521,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "cancel", runId },
+      { action: "cancel", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -2374,7 +2544,7 @@ describe("browser_task on an errand waiting for a background retry", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -2393,6 +2563,7 @@ describe("browser_task background runs", () => {
       browserTask.execute(
         {
           action: "start",
+          personWants: "look",
           allowSubmit: true,
           site: "https://www.gosuslugi.ru",
           submission: cardSubmission,
@@ -2411,6 +2582,7 @@ describe("browser_task background runs", () => {
     await browserTask.execute(
       {
         action: "start",
+        personWants: "look",
         site: "https://emias.info",
         task: "Проверь свободные слоты к терапевту",
       },
@@ -2492,7 +2664,7 @@ describe("browser_task approval", () => {
     where: "ресторан «Пушкин» (cafe-pushkin.ru)",
   };
 
-  it("puts every submission in the person's name in front of them on a card", async () => {
+  it("does a free submission the person asked for without a card", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
     const statuses = await Promise.all([
@@ -2503,52 +2675,90 @@ describe("browser_task approval", () => {
         )
       ),
       // In every conversation channel, the web chat included.
-      ...["telegram-webhook", "better-auth"].map(async (authenticator) =>
+      ...["telegram-webhook", "authjs"].map(async (authenticator) =>
         browserTaskApproval(
           { action: "start", allowSubmit: true, submission: cardSubmission },
           approvalSession(authenticator)
         )
       ),
     ]);
-    expect(statuses).toEqual(statuses.map(() => "user-approval"));
-  });
-
-  it("puts a card bound on the user's say-so in front of the user", async () => {
-    const { browserTaskApproval } = await import("@agent/tools/browser_task");
-
+    expect(statuses).toEqual(statuses.map(() => "not-applicable"));
+    // A browser report is written by the page: there the card stays.
     expect(
       await browserTaskApproval(
-        { action: "start", allowPayment: true, submission: cardSubmission },
-        conversation
-      )
-    ).toBe("user-approval");
-    expect(
-      await browserTaskApproval(
-        { action: "continue", allowPayment: true, submission: cardSubmission },
-        conversation
+        { action: "start", allowSubmit: true, submission: cardSubmission },
+        approvalSession("browser-result")
       )
     ).toBe("user-approval");
   });
 
-  it("asks once for a paid errand: the card that names the total is the payment's too", async () => {
+  it("pays only on the person's yes to Bro's question, never on a card", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
-    expect(
-      await browserTaskApproval(
-        {
-          action: "start",
-          allowSubmit: true,
-          site: "https://taxi.yandex.ru",
-          submission: taxiSubmission,
-          task: "Закажи такси домой",
-        },
-        conversation
-      )
-    ).toBe("user-approval");
-    // The run stops at the payment step, and the follow-up pays within what
-    // the card approved: no second card.
     readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), "Result: готово к оплате\nNeeds: payment", {
+      browserRunRow(
+        new Date(),
+        stagedPayment({ ...cardSubmission, chargeRub: 1500 })
+      )
+    );
+    const inputs = (["start", "continue"] as const).map((action) => ({
+      action,
+      allowPayment: true,
+      personSaid: action === "continue" ? "да" : undefined,
+      task: action === "continue" ? "да" : undefined,
+      runId,
+      submission: { ...cardSubmission, amount: "1 500 ₽", chargeRub: 1500 },
+    }));
+    const unanswered = await Promise.all(
+      inputs.map(async (input) => browserTaskApproval(input, conversation))
+    );
+    expect(unanswered).toEqual([paymentQuestion, paymentQuestion]);
+    const answered = await Promise.all(
+      inputs.map(async (input) =>
+        browserTaskApproval(
+          input,
+          conversation,
+          paidTurn(1500, input.submission)
+        )
+      )
+    );
+    expect(answered).toEqual([paymentQuestion, "not-applicable"]);
+    // A browser report cannot say yes for the person, and gets no card.
+    const reported = await Promise.all(
+      inputs.map(async (input) =>
+        browserTaskApproval(input, approvalSession("browser-result"))
+      )
+    );
+    expect(reported).toEqual([paymentQuestion, paymentQuestion]);
+  });
+
+  it("asks once for a paid errand: the yes to its total covers the payment step", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const input = {
+      action: "start",
+      allowSubmit: true,
+      site: "https://taxi.yandex.ru",
+      submission: taxiSubmission,
+      task: "Закажи такси домой",
+    } as const;
+
+    expect(await browserTaskApproval(input, conversation)).toEqual(
+      paymentQuestion
+    );
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(taxiSubmission), taxiSubmission)
+    );
+    expect(
+      await browserTaskApproval(
+        { ...input, action: "continue", personSaid: "да", runId },
+        conversation,
+        paidTurn(900, taxiSubmission)
+      )
+    ).toBe("not-applicable");
+    // The run stops at the payment step, and the follow-up pays within the
+    // total the person said yes to: no second question.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "ITEMS: заказ такси домой\nNeeds: payment", {
         ...taxiSubmission,
         paymentCapRub: 1000,
       })
@@ -2566,15 +2776,15 @@ describe("browser_task approval", () => {
           },
           { action: "continue", allowSubmit: true, runId, task: "Код 4821" },
         ] as const
-      ).map(async (input) => browserTaskApproval(input, conversation))
+      ).map(async (followUp) => browserTaskApproval(followUp, conversation))
     );
     expect(statuses).toEqual(statuses.map(() => "not-applicable"));
   });
 
-  it("asks again only when the errand changed or costs more than approved", async () => {
+  it("asks again only when the errand changed or costs more than the yes", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), "Needs: payment", {
+      browserRunRow(new Date(), "ITEMS: заказ такси домой\nNeeds: payment", {
         ...taxiSubmission,
         paymentCapRub: 1000,
       })
@@ -2598,23 +2808,48 @@ describe("browser_task approval", () => {
         )
       )
     );
-    expect(statuses).toEqual(statuses.map(() => "user-approval"));
-    // A free errand whose card named no total pays only on a card of its own.
-    readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), "Needs: payment", cardSubmission)
-    );
+    expect(statuses).toEqual(statuses.map(() => paymentQuestion));
+    // A yes to 900 ₽ does not cover 1 400 ₽.
     expect(
       await browserTaskApproval(
         {
           action: "continue",
-          allowPayment: true,
+          allowSubmit: true,
+          personSaid: "да",
           runId,
-          submission: { ...cardSubmission, chargeRub: 1500 },
-          task: "Оплачивай",
+          submission: { ...taxiSubmission, chargeRub: 1400 },
+          task: "да",
         },
-        conversation
+        conversation,
+        paidTurn(900, taxiSubmission)
       )
-    ).toBe("user-approval");
+    ).toEqual(paymentQuestion);
+    // A free errand pays only once the person said yes to its total.
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment({ ...cardSubmission, chargeRub: 1500 }),
+        cardSubmission
+      )
+    );
+    const paying = {
+      action: "continue",
+      allowPayment: true,
+      personSaid: "да",
+      runId,
+      submission: { ...cardSubmission, chargeRub: 1500 },
+      task: "да",
+    } as const;
+    expect(await browserTaskApproval(paying, conversation)).toEqual(
+      paymentQuestion
+    );
+    expect(
+      await browserTaskApproval(
+        paying,
+        conversation,
+        paidTurn(1500, paying.submission)
+      )
+    ).toBe("not-applicable");
   });
 
   it("does not ask when a standing permission covers the errand", async () => {
@@ -2649,7 +2884,7 @@ describe("browser_task approval", () => {
         },
         conversation
       )
-    ).toBe("not-applicable");
+    ).toEqual(paymentQuestion);
   });
 
   it("still asks when the standing permission does not cover the errand", async () => {
@@ -2698,10 +2933,17 @@ describe("browser_task approval", () => {
         )
       )
     );
-    expect(statuses).toEqual(statuses.map(() => "user-approval"));
+    // What pays waits for the person's yes; the free ones are just done.
+    expect(statuses).toEqual([
+      paymentQuestion,
+      paymentQuestion,
+      paymentQuestion,
+      "not-applicable",
+      "not-applicable",
+    ]);
   });
 
-  it("does not let the spend limit stand in for a submission's card", async () => {
+  it("does not let the spend limit stand in for a submission's yes", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
 
     // The standing limit is its own approval for paying, checked by the tool.
@@ -2710,8 +2952,8 @@ describe("browser_task approval", () => {
         { action: "start", allowPayment: true, withinSpendLimit: onLimit },
         conversation
       )
-    ).toBe("not-applicable");
-    // Anything else in the person's name still meets the card.
+    ).toEqual(paymentQuestion);
+    // Paying for a submission in the person's name still waits for their yes.
     expect(
       await browserTaskApproval(
         {
@@ -2723,7 +2965,7 @@ describe("browser_task approval", () => {
         },
         conversation
       )
-    ).toBe("user-approval");
+    ).toEqual(paymentQuestion);
   });
 
   it("refuses a card without the details it has to show", async () => {
@@ -2873,6 +3115,7 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     return browserTask.execute(
       {
         action: "start",
+        personWants: "look",
         allowSubmit: input.allowSubmit,
         site: "https://restaurant.example",
         submission: input.allowSubmit === true ? cardSubmission : undefined,
@@ -2906,7 +3149,7 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
       task: "Забронируй столик на пятницу",
     });
     expect(String(queued?.pendingTask)).toContain(
-      "The person confirmed on an approval card this one submission"
+      "The person asked in their own message for this one submission"
     );
     expect(queued?.retryAt).toBeInstanceOf(Date);
   });
@@ -2976,11 +3219,11 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const status = await browserTask.execute(
-      { action: "status", runId: "queued:errand-1" },
+      { action: "status", personWants: "look", runId: "queued:errand-1" },
       toolContext("better-auth:alice")
     );
     const cancel = await browserTask.execute(
-      { action: "cancel", runId: "queued:errand-1" },
+      { action: "cancel", personWants: "look", runId: "queued:errand-1" },
       toolContext("better-auth:alice")
     );
 
@@ -3009,7 +3252,7 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const status = await browserTask.execute(
-      { action: "status", runId: "queued:errand-1" },
+      { action: "status", personWants: "look", runId: "queued:errand-1" },
       toolContext("better-auth:alice")
     );
 
@@ -3055,7 +3298,7 @@ describe("browser_task starts per turn", () => {
     ]);
 
     const result = await tool.execute(
-      { action: "start", task: "Найди отель в Сочи" },
+      { action: "start", personWants: "look", task: "Найди отель в Сочи" },
       toolContext("better-auth:alice")
     );
 
@@ -3070,7 +3313,7 @@ describe("browser_task starts per turn", () => {
     ]);
 
     await tool.execute(
-      { action: "start", task: "Найди отель в Сочи" },
+      { action: "start", personWants: "look", task: "Найди отель в Сочи" },
       toolContext("better-auth:alice")
     );
 
@@ -3100,9 +3343,10 @@ describe("browser_task consent boundaries", () => {
   };
   const paidTaxi = { ...taxi, paymentCapRub: 1000 };
 
+  /** `paid`: the person said «да» to Bro's question naming the total. */
   async function startWith(
     submission: BrowserSubmission,
-    options: { authenticator?: string; site?: string } = {}
+    options: { authenticator?: string; paid?: boolean; site?: string } = {}
   ) {
     vi.resetModules();
     createBrowserUseRun.mockResolvedValue({
@@ -3112,10 +3356,26 @@ describe("browser_task consent boundaries", () => {
       status: "running",
     });
     const { browserTask } = await import("@agent/tools/browser_task");
-    return browserTask.execute(
+    const tool =
+      options.paid === true
+        ? await resolvedBrowserTask(
+            [],
+            "да",
+            askedToPay(submission.chargeRub, submission)
+          )
+        : browserTask;
+    if (options.paid === true) {
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), stagedPayment(submission), submission)
+      );
+    }
+    return tool.execute(
       {
-        action: "start",
+        action: options.paid === true ? "continue" : "start",
+        personWants: "look",
         allowSubmit: true,
+        personSaid: options.paid === true ? "да" : undefined,
+        runId: options.paid === true ? runId : undefined,
         site: "site" in options ? options.site : "https://cafe-pushkin.ru",
         submission,
         task: "Забронируй столик",
@@ -3146,7 +3406,7 @@ describe("browser_task consent boundaries", () => {
       ).toBe("user-approval");
     });
 
-    it("shows the card where the errand's own confirmation would have carried", async () => {
+    it("asks the person where the errand's own yes would have carried", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readBrowserRunForScope.mockResolvedValue(
         browserRunRow(new Date(), "Needs: payment", paidTaxi)
@@ -3164,7 +3424,7 @@ describe("browser_task consent boundaries", () => {
       ).toBe("not-applicable");
       expect(
         await browserTaskApproval(call, approvalSession("browser-result"))
-      ).toBe("user-approval");
+      ).toEqual(paymentQuestion);
     });
 
     it("holds the run to the card the person answered, not a standing permission", async () => {
@@ -3215,6 +3475,7 @@ describe("browser_task consent boundaries", () => {
       const result = await browserTask.execute(
         {
           action: "continue",
+          personWants: "look",
           runId: "queued:errand-1",
           task: "Вместо этого закажи бизнес-класс до Шереметьево",
         },
@@ -3281,7 +3542,7 @@ describe("browser_task consent boundaries", () => {
       );
     });
 
-    it("shows the card for an errand with no site to hold it to", async () => {
+    it("does a free errand with no site to hold it to on the person's own word", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readSpendLimit.mockResolvedValue(
         standingPolicy([{ kind: "table", maxRub: null, merchant: null }])
@@ -3297,7 +3558,7 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      ).toBe("not-applicable");
     });
   });
 
@@ -3327,7 +3588,7 @@ describe("browser_task consent boundaries", () => {
       });
     });
 
-    it("asks for a card before paying again on it, not while it waits on a code", async () => {
+    it("asks before paying again on it, not while it waits on a code", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       const call = {
         action: "continue" as const,
@@ -3342,7 +3603,7 @@ describe("browser_task consent boundaries", () => {
       );
       expect(
         await browserTaskApproval(call, approvalSession("photon-imessage"))
-      ).toBe("user-approval");
+      ).toEqual(paymentQuestion);
       readBrowserRunForScope.mockResolvedValue(
         browserRunRow(new Date(), "Needs: sms_code", paidTaxi)
       );
@@ -3351,7 +3612,7 @@ describe("browser_task consent boundaries", () => {
       ).toBe("not-applicable");
     });
 
-    it("asks again when the kind of submission changed", async () => {
+    it("takes a changed kind of submission as the person's new request", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readBrowserRunForScope.mockResolvedValue(
         browserRunRow(new Date(), "Needs: sms_code", {
@@ -3371,7 +3632,7 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      ).toBe("not-applicable");
     });
 
     it("refuses a card field that would break onto a line of its own", async () => {
@@ -3425,13 +3686,13 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      ).toEqual(paymentQuestion);
     });
   });
 
   describe("what a card or a standing permission allowed to pay is held", () => {
-    it("holds the card's ceiling for the run so a charge past it is caught", async () => {
-      await startWith(taxi, { site: "https://taxi.yandex.ru" });
+    it("holds the ceiling of the yes for the run so a charge past it is caught", async () => {
+      await startWith(taxi, { paid: true, site: "https://taxi.yandex.ru" });
 
       const [, held] = reserveConsentPayment.mock.calls[0] ?? [];
       expect(held).toMatchObject({
@@ -3459,21 +3720,17 @@ describe("browser_task consent boundaries", () => {
       const rule = { kind: "taxi" as const, maxRub: 1500, merchant: null };
       readSpendLimit.mockResolvedValue(standingPolicy([rule]));
 
-      await startWith(taxi, { site: "https://taxi.yandex.ru" });
+      await startWith(taxi, { paid: true, site: "https://taxi.yandex.ru" });
 
-      expect(listSpendEntries).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringMatching(/^\d{4}-\d{2}$/u),
-        { exceptRunId: undefined, source: "standing" }
-      );
+      expect(listSpendEntries).not.toHaveBeenCalled();
       expect(reserveConsentPayment.mock.calls[0]?.[1]).toMatchObject({
-        amountRub: 1500,
-        source: "standing",
-        standing: rule,
+        amountRub: 1000,
+        replacingRunId: runId,
+        source: "card",
       });
     });
 
-    it("shows the card once the permission's month is used up", async () => {
+    it("asks the person once the permission's month is used up", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readSpendLimit.mockResolvedValue(
         standingPolicy([{ kind: "taxi", maxRub: 1500, merchant: null }])
@@ -3498,7 +3755,7 @@ describe("browser_task consent boundaries", () => {
           },
           approvalSession("photon-imessage")
         )
-      ).toBe("user-approval");
+      ).toEqual(paymentQuestion);
     });
 
     it("starts nothing when another errand took the month's last share", async () => {
@@ -3507,20 +3764,24 @@ describe("browser_task consent boundaries", () => {
       );
       reserveConsentPayment.mockResolvedValue({ allowed: false });
 
-      const result = await startWith(taxi, { site: "https://taxi.yandex.ru" });
+      const result = await startWith(taxi, {
+        paid: true,
+        site: "https://taxi.yandex.ru",
+      });
 
       expect(result).toMatchObject({ status: "needs_approval" });
       expect(createBrowserUseRun).not.toHaveBeenCalled();
     });
 
-    it("replaces what the errand held when a new card raises the total", async () => {
+    it("replaces what the errand held when a new yes raises the total", async () => {
       await continueErrand({
         allowSubmit: true,
         completedAt: new Date(),
         confirmed: paidTaxi,
         outcome: "Total: 1 400 ₽\nNeeds: payment",
+        paid: true,
         submission: { ...taxi, chargeRub: 1400 },
-        task: "Оплачивай по новой цене",
+        task: "Да, оплачивай",
       });
 
       const [, held] = reserveConsentPayment.mock.calls[0] ?? [];
@@ -3535,20 +3796,23 @@ describe("browser_task consent boundaries", () => {
       );
     });
 
-    it("keeps the new ceiling with a live run that already has the card", async () => {
-      await continueErrand({
-        allowSubmit: true,
-        confirmed: paidTaxi,
-        submission: { ...taxi, chargeRub: 1400 },
-        task: "Подтверждаю новую цену",
-      });
+    it("refuses a higher ceiling on a live run before its payment step", async () => {
+      await expect(
+        continueErrand({
+          allowSubmit: true,
+          completedAt: null,
+          confirmed: paidTaxi,
+          outcome: null,
+          paid: true,
+          submission: { ...taxi, chargeRub: 1400 },
+          task: "да",
+        })
+      ).rejects.toThrow("Nothing was paid and no card was shown");
 
-      const [, held] = reserveConsentPayment.mock.calls[0] ?? [];
-      expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
-      expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
-        held?.browserRunId,
-        runId
-      );
+      expect(reserveConsentPayment).not.toHaveBeenCalled();
+      expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+      expect(moveSpendReservation).not.toHaveBeenCalled();
       expect(settleSpendReservation).not.toHaveBeenCalled();
     });
   });
@@ -3558,6 +3822,7 @@ describe("browser_task consent boundaries", () => {
 function submitStart(submission: BrowserSubmission, site = "https://rzd.ru") {
   return {
     action: "start" as const,
+    personWants: "done" as const,
     allowSubmit: true,
     site,
     submission,
@@ -3644,7 +3909,7 @@ describe("browser_task finds the option before the one card", () => {
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
-  it("puts a named table on the card at once", async () => {
+  it("books a named table at once", async () => {
     const { browserTaskApproval, openSubmissionTerms } =
       await import("@agent/tools/browser_task");
 
@@ -3653,7 +3918,7 @@ describe("browser_task finds the option before the one card", () => {
         submitStart(pushkinTable, "https://cafe-pushkin.ru"),
         conversation
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(openSubmissionTerms(sapsanFound)).toEqual([]);
     expect(openSubmissionTerms(cardSubmission)).toEqual([]);
     // An hour said the way people say it is still one slot.
@@ -3731,7 +3996,7 @@ describe("browser_task finds the option before the one card", () => {
     }
   });
 
-  it("sends a card for a kind of place near somewhere to a search first", async () => {
+  it("sends a booking at a kind of place near somewhere to a search first", async () => {
     const { browserTask, browserTaskApproval } =
       await import("@agent/tools/browser_task");
     // RU 25.09, d15: «запиши меня завтра в барбершоп на профсоюзной, к
@@ -3771,7 +4036,8 @@ describe("browser_task finds the option before the one card", () => {
     ).rejects.toThrow("a kind of place and an area");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
 
-    // The barbershop the search found, with Artur's slot, goes on the card.
+    // The barbershop the search found, with Artur's slot, is booked: a free
+    // booking asks nothing.
     expect(
       await browserTaskApproval(
         submitStart(
@@ -3785,7 +4051,7 @@ describe("browser_task finds the option before the one card", () => {
         ),
         conversation
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // A table «где-нибудь с верандой» is no place either (RU 25.09, d13).
     expect(
       await browserTaskApproval(
@@ -3873,26 +4139,28 @@ describe("browser_task finds the option before the one card", () => {
       standingPolicy([{ kind: "order", maxRub: 3000, merchant: null }])
     );
 
-    expect(
-      await browserTaskApproval(
-        submitStart(
-          {
-            amount: "около 2 000 ₽",
-            chargeRub: 2000,
-            forWhom: "Алиса",
-            kind: "order",
-            personalData: ["имя", "адрес"],
-            what: "продукты по списку",
-            where: "Лавка (lavka.yandex.ru)",
-          },
-          "https://lavka.yandex.ru"
-        ),
-        conversation
-      )
-    ).toBe("not-applicable");
+    const status = await browserTaskApproval(
+      submitStart(
+        {
+          amount: "около 2 000 ₽",
+          chargeRub: 2000,
+          forWhom: "Алиса",
+          kind: "order",
+          personalData: ["имя", "адрес"],
+          what: "продукты по списку",
+          where: "Лавка (lavka.yandex.ru)",
+        },
+        "https://lavka.yandex.ru"
+      ),
+      conversation
+    );
+    expect(status).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(status)).toContain(
+      "instead of the one option the run is held to"
+    );
   });
 
-  it("shows no card for a continue sent while the search is still running", async () => {
+  it("submits nothing for a continue sent while the search is still running", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     // RU 24.09, d07: ten seconds after the start, before any slot was found.
     readBrowserRunForScope.mockResolvedValue(browserRunRow());
@@ -3917,13 +4185,13 @@ describe("browser_task finds the option before the one card", () => {
     expect(JSON.stringify(refusal)).toContain(
       "Do not ask the user to approve anything now"
     );
-    // A slot the person named themselves is one option: it goes on the card.
+    // A slot the person named themselves is one option: it is booked.
     expect(
       await browserTaskApproval(
         { ...early, submission: cardSubmission },
         conversation
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // An errand retried past an anti-bot wall has found nothing yet either.
     readBrowserRunForScope.mockResolvedValue({
       ...browserRunRow(new Date(), "Result: проверка\nNeeds: captcha"),
@@ -3935,7 +4203,7 @@ describe("browser_task finds the option before the one card", () => {
     });
   });
 
-  it("asks once, on the card that names what the search found", async () => {
+  it("asks once, naming the total of what the search found", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     // The search ran without consent and stopped on the chosen trains.
     readBrowserRunForScope.mockResolvedValue(
@@ -3952,14 +4220,24 @@ describe("browser_task finds the option before the one card", () => {
       task: "Оформляй выбранные поезда",
     };
 
-    // Whether the person or the run's report continues it, the card shows.
-    expect(await browserTaskApproval(found, conversation)).toBe(
-      "user-approval"
+    // Whether the person or the run's report continues it, Bro asks first.
+    expect(await browserTaskApproval(found, conversation)).toEqual(
+      paymentQuestion
     );
     expect(
       await browserTaskApproval(found, approvalSession("browser-result"))
-    ).toBe("user-approval");
-    // Once confirmed, the payment step and a code need no second card.
+    ).toEqual(paymentQuestion);
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(sapsanFound), sapsanFound)
+    );
+    expect(
+      await browserTaskApproval(
+        { ...found, personSaid: "да", task: "да" },
+        conversation,
+        paidTurn(11_480, sapsanFound)
+      )
+    ).toBe("not-applicable");
+    // Once the person said yes, the payment step and a code ask nothing more.
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(null, null, {
         ...sapsanFound,
@@ -3974,13 +4252,14 @@ describe("browser_task finds the option before the one card", () => {
     ).toBe("not-applicable");
   });
 
-  it("continues on the checkout page the search left open, with the card's terms", async () => {
+  it("continues on the checkout page the search left open, with the terms the person said yes to", async () => {
     await continueErrand({
       allowSubmit: true,
       completedAt: new Date(),
-      outcome: "Result: выбраны поезда\nNeeds: decision",
+      outcome:
+        "ITEMS: «Сапсан» №781 Москва — Санкт-Петербург, пт 03.10 18:40, место 34 у окна\nTotal: 11 480 ₽ с сервисным сбором\nNeeds: payment",
+      paid: true,
       submission: sapsanFound,
-      task: "Оформляй выбранные поезда",
     });
 
     const created = createBrowserUseRun.mock.calls[0]?.[0];
@@ -3990,7 +4269,7 @@ describe("browser_task finds the option before the one card", () => {
       "Keep the tab that is open and the account already signed in"
     );
     expect(created?.task).toContain(
-      "The person confirmed on an approval card this one submission in their name."
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
     expect(created?.task).toContain("What: «Сапсан» №781");
     expect(created?.task).toContain("Payment is pre-approved up to");
@@ -4089,6 +4368,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "start",
+        personWants: "look",
         site: options.site,
         task: "Закажи тот же корм коту, что в прошлый раз",
       },
@@ -4176,7 +4456,12 @@ describe("browser_task sign-in by the person's phone", () => {
     );
 
     await report.execute(
-      { action: "continue", runId, task: "Положи этот корм в корзину" },
+      {
+        action: "continue",
+        personWants: "look",
+        runId,
+        task: "Положи этот корм в корзину",
+      },
       toolContext("better-auth:alice", "browser-result")
     );
 
@@ -4200,7 +4485,12 @@ describe("browser_task sign-in by the person's phone", () => {
     );
 
     await report.execute(
-      { action: "continue", runId, task: "Проверь цену ещё раз" },
+      {
+        action: "continue",
+        personWants: "look",
+        runId,
+        task: "Проверь цену ещё раз",
+      },
       toolContext("better-auth:alice", "browser-result")
     );
 
@@ -4217,6 +4507,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Возьми на озоне",
         runId,
         site: "https://www.ozon.ru",
@@ -4244,6 +4535,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4273,6 +4565,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4294,6 +4587,7 @@ describe("browser_task sign-in by the person's phone", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Да, продолжай",
         runId,
         task: "Да, продолжай",
@@ -4353,6 +4647,7 @@ describe("browser_task delivery address before the card", () => {
     await browserTask.execute(
       {
         action: "start",
+        personWants: "look",
         deliveryAddress,
         site: "https://lavka.yandex.ru",
         task,
@@ -4560,7 +4855,7 @@ describe("browser_task errand text", () => {
     expect(task).not.toContain("Delivery address:");
   });
 
-  it("asks again when the basket on the card changes, not when it is reordered", async () => {
+  it("asks again when the basket the person said yes to changes, not when it is reordered", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     const food = "Корм Whiskas 1,9 кг × 2 — 1 298 ₽";
     const bag = "Пакет — 0 ₽";
@@ -4592,8 +4887,8 @@ describe("browser_task errand text", () => {
       );
 
     expect(await continued([bag, food])).toBe("not-applicable");
-    expect(await continued(["Корм Whiskas 1,9 кг × 3 — 1 947 ₽"])).toBe(
-      "user-approval"
+    expect(await continued(["Корм Whiskas 1,9 кг × 3 — 1 947 ₽"])).toEqual(
+      paymentQuestion
     );
   });
 
@@ -4884,7 +5179,13 @@ describe("browser_task on a finished errand the person has not heard about", () 
   async function follow(task: string, authenticator?: string) {
     const tool = await resolvedBrowserTask([], task);
     return tool.execute(
-      { action: "continue", personSaid: task, runId, task },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: task,
+        runId,
+        task,
+      },
       toolContext("better-auth:alice", authenticator)
     );
   }
@@ -4967,6 +5268,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Бери первый, но с местом у окна",
         runId,
         task: "Бери первый, но с местом у окна",
@@ -5000,7 +5302,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -5027,7 +5329,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -5040,7 +5342,7 @@ describe("browser_task on a finished errand the person has not heard about", () 
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "status", runId },
+      { action: "status", personWants: "look", runId },
       toolContext("better-auth:alice", "scheduled-worker")
     );
 
@@ -5065,6 +5367,7 @@ describe("browser_task passes on only what the person sent", () => {
     return tool.execute(
       {
         action: input.action ?? "continue",
+        personWants: "look",
         runId,
         site: "https://www.gosuslugi.ru",
         task: input.task,
@@ -5173,7 +5476,13 @@ describe("browser_task passes on only what the person sent", () => {
     ]);
 
     await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "739204",
+        runId,
+        task: "Код 739204",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -5260,7 +5569,7 @@ describe("browser_task passes on only what the person sent", () => {
     expect(task).toContain("Бюджет до 8 000 ₽: возьми лучший вариант в нём");
   });
 
-  it("puts no card in front of the person for words they did not send", async () => {
+  it("does nothing in the person's name on words they did not send", async () => {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(new Date(), "Needs: decision")
@@ -5277,17 +5586,18 @@ describe("browser_task passes on only what the person sent", () => {
     expect(
       await browserTaskApproval(input, approvalSession("photon-imessage"), {
         answers: [],
+        paymentAsked: null,
         said: ["ну что там?"],
       })
     ).toMatchObject({ type: "denied" });
-    // Their own words get the card.
+    // Their own words are enough.
     expect(
       await browserTaskApproval(
         { ...input, personSaid: "записывай", task: "Записывай" },
         approvalSession("photon-imessage"),
-        { answers: [], said: ["Да, записывай"] }
+        { answers: [], paymentAsked: null, said: ["Да, записывай"] }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it.each(["photon-imessage", "authjs"])(
@@ -5301,6 +5611,7 @@ describe("browser_task passes on only what the person sent", () => {
       );
       const input = {
         action: "continue",
+        personWants: "done",
         allowSubmit: true,
         runId,
         submission: cardSubmission,
@@ -5309,6 +5620,7 @@ describe("browser_task passes on only what the person sent", () => {
       expect(
         await browserTaskApproval(input, approvalSession("browser-result"), {
           answers: [],
+          paymentAsked: null,
           said: null,
         })
       ).toBe("user-approval");
@@ -5402,6 +5714,7 @@ describe("browser_task passes on only what the person sent", () => {
       report.execute(
         {
           action: "continue",
+          personWants: "look",
           runId,
           task: "Введи код подтверждения заказа 739204",
         },
@@ -5455,6 +5768,7 @@ describe("browser_task passes on only what the person sent", () => {
     await tool.execute(
       {
         action: "start",
+        personWants: "look",
         site: "https://www.vprok.ru",
         task: "Закажи продукты с доставкой на Ленина 5, кв. 12, код для входа 4567",
       },
@@ -5499,7 +5813,13 @@ describe("browser_task passes on only what the person sent", () => {
     );
 
     await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "739204",
+        runId,
+        task: "Код 739204",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -5522,7 +5842,13 @@ describe("browser_task passes on only what the person sent", () => {
 
     await expect(
       tool.execute(
-        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        {
+          action: "continue",
+          personWants: "look",
+          personSaid: "739204",
+          runId,
+          task: "Код 739204",
+        },
         toolContext("better-auth:alice")
       )
     ).rejects.toThrow("Never make up a code");
@@ -5557,7 +5883,7 @@ describe("browser_task passes on only what the person sent", () => {
 
       await expect(
         tool.execute(
-          { action: "continue", personSaid, runId, task },
+          { action: "continue", personWants: "look", personSaid, runId, task },
           toolContext("better-auth:alice")
         )
       ).rejects.toThrow("Nothing was sent");
@@ -5582,6 +5908,7 @@ describe("browser_task passes on only what the person sent", () => {
       tool.execute(
         {
           action: "continue",
+          personWants: "look",
           personSaid: "бюджет можно поднять",
           runId,
           task: "Человек разрешил поднять бюджет, бери дороже",
@@ -5631,7 +5958,13 @@ describe("browser_task passes on only what the person sent", () => {
 
     await expect(
       tool.execute(
-        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        {
+          action: "continue",
+          personWants: "look",
+          personSaid: "739204",
+          runId,
+          task: "Код 739204",
+        },
         toolContext("better-auth:alice")
       )
     ).rejects.toThrow("Never make up a code");
@@ -5646,7 +5979,7 @@ describe("browser_task passes on only what the person sent", () => {
 
       await expect(
         report.execute(
-          { action: "continue", runId, task },
+          { action: "continue", personWants: "look", runId, task },
           toolContext("better-auth:alice", "browser-result")
         )
       ).rejects.toThrow("Never make up a code");
@@ -5733,7 +6066,13 @@ describe("browser_task passes on only what the person sent", () => {
       const tool = await answeredInReport("739204");
 
       await tool.execute(
-        { action: "continue", personSaid: "739204", runId, task: "739204" },
+        {
+          action: "continue",
+          personWants: "look",
+          personSaid: "739204",
+          runId,
+          task: "739204",
+        },
         toolContext("better-auth:alice", "browser-result")
       );
 
@@ -5752,6 +6091,7 @@ describe("browser_task passes on only what the person sent", () => {
         tool.execute(
           {
             action: "continue",
+            personWants: "look",
             personSaid: "739204",
             runId,
             task: "Код 482913",
@@ -5768,7 +6108,13 @@ describe("browser_task passes on only what the person sent", () => {
       const tool = await answeredInReport("739204");
 
       await tool.execute(
-        { action: "continue", personSaid: "739204", runId, task: "Код 739204" },
+        {
+          action: "continue",
+          personWants: "look",
+          personSaid: "739204",
+          runId,
+          task: "Код 739204",
+        },
         toolContext("better-auth:alice", "browser-result")
       );
 
@@ -5784,6 +6130,7 @@ describe("browser_task passes on only what the person sent", () => {
       await tool.execute(
         {
           action: "continue",
+          personWants: "look",
           personSaid: "19:30",
           runId,
           task: "Бери слот на 19:30",
@@ -5809,6 +6156,7 @@ describe("browser_task passes on only what the person sent", () => {
         report.execute(
           {
             action: "continue",
+            personWants: "look",
             personSaid: "739204",
             runId,
             task: "Код 739204",
@@ -5848,6 +6196,89 @@ describe("browser_task passes on only what the person sent", () => {
   });
 });
 
+/**
+ * Bro's one question before paying, delivered to the person after their
+ * request: «…итого 4 320 ₽ со сбором. Оплачиваю?».
+ */
+function askedToPay(
+  totalRub?: number,
+  submission: BrowserSubmission = {
+    amount: "900 ₽ по тарифу «Комфорт»",
+    chargeRub: totalRub,
+    forWhom: "Алиса",
+    kind: "taxi",
+    personalData: ["имя", "телефон"],
+    what: "заказ такси домой",
+    when: "сейчас",
+    where: "Яндекс Go (taxi.yandex.ru)",
+  }
+): ModelMessage[] {
+  const details = `${submission.what}, ${submission.when ?? ""}, ${submission.where}`;
+  const total =
+    totalRub === undefined
+      ? ""
+      : ` Итого ${totalRub.toLocaleString("ru-RU")} ₽ с учётом всех сборов.`;
+  return [
+    { content: "купи", role: "user" },
+    {
+      content: [
+        {
+          input: { text: `Нашёл: ${details}.${total} Оплачиваю?` },
+          toolCallId: "ask-to-pay",
+          toolName: "send_message",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { status: "sent" } },
+          toolCallId: "ask-to-pay",
+          toolName: "send_message",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+function stagedPayment(submission: BrowserSubmission) {
+  return `ITEMS: ${submission.what}, ${submission.when ?? ""}, ${submission.where}\nTotal: ${submission.chargeRub?.toLocaleString("ru-RU") ?? "0"} ₽ с учётом сборов\nNeeds: payment`;
+}
+
+/** The refusal that has Bro ask its one question before paying. */
+const paymentQuestionReason: unknown = expect.stringContaining(
+  "ending with «Оплачиваю?»"
+);
+const paymentQuestion: unknown = expect.objectContaining({
+  reason: paymentQuestionReason,
+  type: "denied",
+});
+
+/** The person's plain «да» to Bro's question before paying `totalRub`. */
+function paidTurn(
+  totalRub?: number,
+  submission: BrowserSubmission = {
+    amount: "900 ₽ по тарифу «Комфорт»",
+    chargeRub: totalRub,
+    forWhom: "Алиса",
+    kind: "taxi",
+    personalData: ["имя", "телефон"],
+    what: "заказ такси домой",
+    when: "сейчас",
+    where: "Яндекс Go (taxi.yandex.ru)",
+  }
+) {
+  return {
+    answers: [],
+    paymentAsked: `Нашёл: ${submission.what}, ${submission.when ?? ""}, ${submission.where}.${totalRub === undefined ? "" : ` Итого ${totalRub.toLocaleString("ru-RU")} ₽ с учётом всех сборов.`} Оплачиваю?`,
+    said: ["да"],
+  };
+}
+
 /** A tool result of an earlier step, as eve keeps it in the history. */
 function toolResult(
   toolName: string,
@@ -5872,7 +6303,8 @@ function toolResult(
  */
 async function resolvedBrowserTask(
   messages: readonly ModelMessage[],
-  said = "ну что там?"
+  said = "ну что там?",
+  earlier: readonly ModelMessage[] = []
 ) {
   const { default: dynamic } = await import("@agent/tools/browser_task");
   const resolve = dynamic.events["step.started"];
@@ -5880,7 +6312,7 @@ async function resolvedBrowserTask(
   const context = toolContext("better-auth:alice");
   const tools = await resolve({}, {
     channel: { kind: "channel:photon", metadata: {} },
-    messages: [{ content: said, role: "user" }, ...messages],
+    messages: [...earlier, { content: said, role: "user" }, ...messages],
     model: null,
     session: { auth: context.session.auth, id: context.session.id },
   } satisfies DynamicResolveContext);
@@ -5890,6 +6322,155 @@ async function resolvedBrowserTask(
   }
   return tool;
 }
+
+describe("browser_task asks only before paying, in text", () => {
+  const tickets: BrowserSubmission = {
+    amount: "4 320 ₽ с сервисным сбором",
+    chargeRub: 4320,
+    forWhom: "Алиса",
+    kind: "booking",
+    personalData: ["имя", "паспорт"],
+    what: "«Сапсан» №781 Москва — Санкт-Петербург, место 34 у окна",
+    when: "пт 03.10, 18:40",
+    where: "РЖД (rzd.ru)",
+  };
+  const pay = {
+    action: "continue",
+    personWants: "done",
+    allowPayment: true,
+    personSaid: "да",
+    runId,
+    submission: tickets,
+    task: "да",
+  } as const;
+
+  function stoppedAtPayment() {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(tickets))
+    );
+  }
+
+  it("shows no card and pays nothing before the person answered Bro's question", async () => {
+    stoppedAtPayment();
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const tool = await resolvedBrowserTask([], "купи эти билеты");
+
+    // The one question is Bro's own message, not a card.
+    expect(
+      await browserTaskApproval(pay, approvalSession("photon-imessage"))
+    ).toEqual(paymentQuestion);
+    await expect(
+      tool.execute(
+        { ...pay, personSaid: "купи эти билеты", task: "купи эти билеты" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow(
+      "write the user one short message in your own voice: what exactly you are buying, the total (4320 ₽, as a number) with every fee, and the delivery or the date, ending with «Оплачиваю?»"
+    );
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("pays once the next message is a plain yes to the question naming the total", async () => {
+    stoppedAtPayment();
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await tool.execute(pay, toolContext("better-auth:alice"));
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(
+      "The person asked for this one submission in their name and answered yes when asked to pay its total."
+    );
+    expect(task).toContain(
+      `Payment is pre-approved up to ${formatRub(paymentCeilingRub(4320))}`
+    );
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+  });
+
+  it.each(["да", "Оплачивай", "давай", "yes", "go ahead"])(
+    "takes «%s» as the yes",
+    async (answer) => {
+      stoppedAtPayment();
+      const tool = await resolvedBrowserTask(
+        [],
+        answer,
+        askedToPay(4320, tickets)
+      );
+
+      await tool.execute(
+        { ...pay, personSaid: answer, task: answer },
+        toolContext("better-auth:alice")
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("takes «а дешевле нет?» as a new message, not a yes", async () => {
+    stoppedAtPayment();
+    const tool = await resolvedBrowserTask(
+      [],
+      "а дешевле нет?",
+      askedToPay(4320, tickets)
+    );
+
+    await expect(
+      tool.execute(
+        { ...pay, personSaid: "а дешевле нет?", task: "а дешевле нет?" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("anything else they write is a new message to answer");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["нет", "не надо", "no"])(
+    "pays nothing and asks nothing again on «%s»",
+    async (answer) => {
+      stoppedAtPayment();
+      const tool = await resolvedBrowserTask(
+        [],
+        answer,
+        askedToPay(4320, tickets)
+      );
+
+      await expect(
+        tool.execute(
+          { ...pay, personSaid: answer, task: answer },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow("the user said no to paying");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not take a yes to another total, or a report turn, as the answer", async () => {
+    stoppedAtPayment();
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    expect(
+      await browserTaskApproval(
+        pay,
+        approvalSession("photon-imessage"),
+        paidTurn(3900)
+      )
+    ).toEqual(paymentQuestion);
+    // A browser report is not the person's message, whatever it says.
+    expect(
+      await browserTaskApproval(pay, approvalSession("browser-result"), {
+        ...paidTurn(4320),
+        said: null,
+      })
+    ).toEqual(paymentQuestion);
+    expect(
+      await browserTaskApproval(
+        pay,
+        approvalSession("photon-imessage"),
+        paidTurn(4320, tickets)
+      )
+    ).toBe("not-applicable");
+  });
+});
 
 describe("browser_task takes a code the site emailed from the person's mailbox", () => {
   // RU 25.09, d04: Ozon asked for a code it had mailed to the person's own
@@ -5917,7 +6498,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
   async function fromMail(authenticator = "browser-result") {
     const tool = await resolvedBrowserTask([], report);
     return tool.execute(
-      { action: "continue", codeFrom: "mail", runId },
+      { action: "continue", personWants: "look", codeFrom: "mail", runId },
       toolContext("better-auth:alice", authenticator)
     );
   }
@@ -5987,7 +6568,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     // The person can still ask for another look themselves.
     const tool = await resolvedBrowserTask([], "посмотри код в почте ещё раз");
     await tool.execute(
-      { action: "continue", codeFrom: "mail", runId },
+      { action: "continue", personWants: "look", codeFrom: "mail", runId },
       toolContext("better-auth:alice")
     );
     expect(mailCodeFromSite).toHaveBeenCalledOnce();
@@ -6059,6 +6640,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
       tool.execute(
         {
           action: "continue",
+          personWants: "look",
           allowSubmit: true,
           codeFrom: "mail",
           personSaid: "да, оформляй",
@@ -6076,7 +6658,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     const tool = await resolvedBrowserTask([], report);
     const call = (input: { codeFrom?: "mail"; task: string }) =>
       tool.execute(
-        { action: "continue", runId, ...input },
+        { action: "continue", personWants: "look", runId, ...input },
         toolContext("better-auth:alice", "browser-result")
       );
 
@@ -6099,7 +6681,13 @@ describe("browser_task passes on a code to enter first", () => {
     const tool = await resolvedBrowserTask([], "739204");
 
     await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "739204" },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "739204",
+        runId,
+        task: "739204",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -6117,7 +6705,13 @@ describe("browser_task passes on a code to enter first", () => {
     const tool = await resolvedBrowserTask([], "739204");
 
     await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "739204" },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "739204",
+        runId,
+        task: "739204",
+      },
       toolContext("better-auth:alice")
     );
 
@@ -6137,6 +6731,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Возьми второй вариант",
         runId,
         task: "Возьми второй вариант",
@@ -6162,6 +6757,7 @@ describe("browser_task passes on a code to enter first", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: said,
         runId,
         task: "Запросите код на email заново. Пункт выдачи — прошлый, иначе ближайший к адресу Мичуринский проспект, 5, Москва, 119192.",
@@ -6178,40 +6774,87 @@ describe("browser_task passes on a code to enter first", () => {
 
 describe("browser_task takes an errand the person asked to be done to its last step", () => {
   const staged =
-    "The person asked for this to be done — booked, bought, ordered or signed up for — not only found. Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is submitted, typed or paid before they confirm";
+    "The person asked for this to be done — booked, bought, ordered or signed up for — not only found.";
+  const stagedByPerson = `${staged} Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is paid, placed or submitted before they answer`;
+  const stagedInReport = `${staged} Whatever the errand above says about only finding, collecting or comparing options, or about not booking, not ordering or not typing their details, it means only that nothing is submitted, typed or paid before they confirm`;
+  const fillsDetails =
+    "Take it up to that point yourself: sign in as the sign-in paragraph below allows, choose the option, the seats or the slot, and fill in the form with the person's known details below wherever it asks for them. Never leave their details for them to type and never tell them not to enter them.";
+  const stopsBeforePaying =
+    "Never press the button that pays, places the order, books, submits or sends, and never register, subscribe or write to anyone beyond this errand: stop right before that button, with NEEDS: payment and the final TOTAL with every fee when it charges or commits money";
+  const closestOption =
+    "When no option meets every condition of the errand, still take the closest real one up to that step and put it first in ITEMS, its details opening with «Differs:» and what differs, in the errand's language — «Differs: дороже на 400 ₽»";
+  const noDetails =
+    "The person has not approved acting in their name on this errand.";
 
   async function startFor(
     said: string,
     task: string,
+    personWants: "done" | "look",
     authenticator = "photon-imessage"
   ) {
     const tool = await resolvedBrowserTask([], said);
     await tool.execute(
-      { action: "start", site: "https://2gis.ru", task },
+      { action: "start", personWants, site: "https://2gis.ru", task },
       toolContext("better-auth:alice", authenticator)
     );
     return String(createBrowserUseRun.mock.calls[0]?.[0].task);
   }
 
-  it("stages a booking the person asked for, whatever the errand says", async () => {
+  it("stages what the person asked to be done, whatever the errand says", async () => {
     // RU 25.09, d13: «забронируй на субботу столик» went out as «Ничего не
     // бронировать и не вводить данные — только собрать варианты и ссылки».
     const task = await startFor(
       "забронируй на субботу столик на двоих, где-нибудь с верандой",
-      "Найти ресторан в Казани с верандой для ужина в субботу, столик на двоих. Ничего не бронировать и не вводить данные — только собрать варианты и ссылки."
+      "Найти ресторан в Казани с верандой для ужина в субботу, столик на двоих. Ничего не бронировать и не вводить данные — только собрать варианты и ссылки.",
+      "done"
     );
 
-    expect(task).toContain(staged);
+    expect(task).toContain(stagedByPerson);
+    expect(task).toContain(fillsDetails);
+    expect(task).toContain(stopsBeforePaying);
+    expect(task).toContain(closestOption);
+    // RU 26.09, d01: «после 18:00, до 6 тыс» staged a 15:40 train at 8 238 ₽.
     expect(task).toContain(
-      "Stop right before typing the person's details or pressing the button that places, books, submits or pays, and end with NEEDS: decision (or NEEDS: payment at a payment step)"
+      "The closest one keeps the dates and times the person named and the kind of seat or room they asked for, and differs in price before it differs in time."
     );
-    // It still acts in nobody's name without the card.
-    expect(task).toContain(
-      "The person has not approved acting in their name on this errand."
-    );
+    expect(task).not.toContain(noDetails);
+    expect(task).not.toContain("Never type the person's name");
     // Right after the first rule of the run, before the search paragraphs.
     expect(task.indexOf(staged)).toBeLessThan(
       task.indexOf("Honour the exact kind of thing")
+    );
+  });
+
+  it("gives a run staged in the person's turn their details to fill in", async () => {
+    readAccountPhoneNumber.mockResolvedValue("+79990000001");
+
+    const staging = await startFor(
+      "возьми мне сапсан в питер на пятницу",
+      "Найти Сапсан на пятницу",
+      "done"
+    );
+    expect(staging).toContain("Known details you may type into forms:");
+    expect(staging).toContain("Phone: +79990000001");
+
+    createBrowserUseRun.mockClear();
+    const search = await startFor(
+      "сколько стоит сапсан в питер в пятницу?",
+      "Найти цены на Сапсан в пятницу",
+      "look"
+    );
+    expect(search).not.toContain("Known details you may type into forms:");
+    expect(search).not.toContain("+79990000001");
+  });
+
+  it("types no document number, and picks one the account saved", async () => {
+    const task = await startFor(
+      "возьми мне сапсан в питер на пятницу",
+      "Найти Сапсан на пятницу",
+      "done"
+    );
+
+    expect(task).toContain(
+      "Never type the number of any of their documents either — a passport, СНИЛС, the OMS policy, a vehicle registration (СТС) or a driving licence — even when the errand text gives one. Choose instead a passenger or a document the signed-in account already saved"
     );
   });
 
@@ -6220,7 +6863,8 @@ describe("browser_task takes an errand the person asked to be done to its last s
     // chocolate bar already in the cart removed without a word.
     const task = await startFor(
       "закажи продукты к восьми вечера",
-      "Собрать корзину продуктов с доставкой к 20:00"
+      "Собрать корзину продуктов с доставкой к 20:00",
+      "done"
     );
 
     expect(task).toContain(
@@ -6234,7 +6878,7 @@ describe("browser_task takes an errand the person asked to be done to its last s
     );
   });
 
-  it("signs in for the real total when it can", async () => {
+  it("signs in for the real total and the payment step when it can", async () => {
     resolveBrowserSecretBindings.mockResolvedValue({
       aliases: ["signin_phone", "signin_phone_digits"],
       bindings: [{ alias: "signin_phone" }, { alias: "signin_phone_digits" }],
@@ -6242,193 +6886,70 @@ describe("browser_task takes an errand the person asked to be done to its last s
 
     const task = await startFor(
       "закажи продукты к восьми вечера",
-      "Собрать корзину продуктов с доставкой к 20:00"
+      "Собрать корзину продуктов с доставкой к 20:00",
+      "done"
     );
 
     expect(task).toContain(
-      "When the site shows that final total, the slots or the saved pickup point only to a signed-in account, sign in as the sign-in paragraph below allows."
+      "When the site shows that final total, the seats, the slots or the saved pickup point only to a signed-in account, or needs one to reach the payment step, sign in as the sign-in paragraph below allows."
+    );
+    // RU 26.09, d01: ticket.rzd.ru asked for a password at the passenger step
+    // and the run stopped there, with tutu.ru named as a fallback and unused.
+    expect(task).toContain(
+      "When it asks for a password you do not have, do not stop there yet: take the same option up to the payment step on a fallback site the errand names that lets you go on as a guest, and say in the report which site and why; stop with NEEDS: password only when none does."
     );
   });
 
-  it("stages an errand whose own text asks for it, in a report turn", async () => {
+  it("stages an errand the person asked done in a report turn without their details", async () => {
+    readAccountPhoneNumber.mockResolvedValue("+79990000001");
+
     const task = await startFor(
       `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
       "Закажи на Ozon тот же корм коту, 2 пачки, в пункт выдачи",
+      "done",
       "browser-result"
     );
 
-    expect(task).toContain(staged);
-  });
-
-  it("leaves a search a search", async () => {
-    const task = await startFor(
-      "найди мне поезд до казани на следующие выходные",
-      "Найти поезда Москва — Казань на выходные. Ничего не покупать и не вводить данные пассажира, только найти и показать варианты."
+    expect(task).toContain(stagedInReport);
+    expect(task).toContain(
+      "Stop right before typing the person's details or pressing the button that places, books, submits or pays"
     );
-
-    expect(task).not.toContain("The person asked for this to be done");
+    expect(task).toContain(noDetails);
+    expect(task).not.toContain(fillsDetails);
+    expect(task).not.toContain("Known details you may type into forms:");
   });
 
-  // RU review: each of these read as «do it», and a price question became
-  // a run that edited the person's basket and asked for an SMS code.
+  // What the person meant is the model's to read, not a word list's: a
+  // price question with «возьми» stays a search, a wish with no verb for
+  // buying is done.
   it.each([
-    [
-      "Найди билеты в Сочи на выходные, бронировать пока не надо",
-      "Найти билеты в Сочи на выходные",
-    ],
-    [
-      "Посмотри цены на Сапсан, не надо ничего бронировать",
-      "Найти цены на Сапсан",
-    ],
-    ["Не хочу пока бронировать, просто сравни отели", "Сравнить отели"],
-    ["Бронировать не будем, только цены", "Найти отели и их цены"],
-    ["Найди, где дешевле купить AirPods", "Найди, где дешевле купить AirPods"],
-    [
-      "Узнай, сколько стоит продлить ОСАГО",
-      "Узнай, сколько стоит продлить ОСАГО",
-    ],
-    ["не бронируй пока, просто найди столик", "Найди столик на двоих"],
-    [
-      "пока не заказывай, только посмотри, что есть",
-      "Собери корзину продуктов",
-    ],
-    ["ничего не покупай, только сравни цены", "Сравни цены на iPhone 16"],
-    [
-      "где дешевле купить айфон 16? просто сравни цены",
-      "Найди, где выгоднее купить iPhone 16 на Ozon и WB",
-    ],
-    // The purchase is not this errand, whose message also asks to look.
-    [
-      "Купи молоко по дороге и найди билеты в кино",
-      "Найти билеты в кино на вечер",
-    ],
-  ])("leaves «%s» a search", async (said, errand) => {
-    expect(await startFor(said, errand)).not.toContain(
-      "The person asked for this to be done"
+    "сколько стоит сапсан в питер в пятницу?",
+    "почём airpods pro 2 на озоне? возьми только оригинал",
+    "Не хочу пока бронировать, просто сравни отели",
+  ])("leaves «%s» a search when the person only looks", async (said) => {
+    expect(await startFor(said, "Найти варианты", "look")).not.toContain(
+      staged
     );
   });
 
   it.each([
-    "Find the cheapest price for this book",
-    "Compare prices in order to pick the cheapest",
-    "Sort the options by price in ascending order",
-    "Найди, где выгоднее купить iPhone 16",
-  ])("leaves the errand «%s» a search in a report turn", async (errand) => {
-    const task = await startFor(
-      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
-      errand,
-      "browser-result"
-    );
-
-    expect(task).not.toContain("The person asked for this to be done");
-  });
-
-  it.each([
-    ["возьми мне сапсан в питер на пятницу", "Найти Сапсан на пятницу"],
-    [
-      "запиши меня завтра в барбершоп к Артуру",
-      "Найти барбершоп на Профсоюзной",
-    ],
-    ["Book a table for two at 7 tonight", "Find a table for two at 7"],
-    // The benchmark's own requests (RU 25.09).
-    [
-      "возьми мне сапсан в питер на пятницу через неделю, после 18:00, обратно в воскресенье вечером. места у окна, до 6 тыс в одну сторону",
-      "Найти Сапсан Москва — Санкт-Петербург на пятницу после 18:00",
-    ],
-    [
-      "закажи на озоне тот же корм коту, что в прошлый раз, две пачки, в мой пункт выдачи",
-      "Найти в истории заказов Ozon корм для кота",
-    ],
-    [
-      "закажи продукты к восьми вечера: молоко 3,2, десяток яиц, 2 авокадо, куриное филе около кило и чего-нибудь к чаю. если чего-то нет, замени похожим, но скажи что заменил",
-      "Собрать корзину продуктов с доставкой к 20:00",
-    ],
-    [
-      "забронируй на субботу столик на двоих, где-нибудь с верандой",
-      "Найти ресторан с верандой. Ничего не бронировать — только собрать варианты.",
-    ],
-    [
-      "[голосовое] слушай, короче, запиши меня завтра в барбершоп на профсоюзной, к артуру, часов на семь. и напомни в восемь маме позвонить, у неё днюха. а, и в пятницу созвон с петровым в 15:30, поставь",
-      "Найти барбершоп на Профсоюзной с мастером Артуром",
-    ],
-    [
-      "в пятницу я к стоматологу, запись где-то в почте. поставь в календарь, закажи такси чтобы точно успеть, и скинь лёше, что освобожусь не раньше восьми",
-      "Такси до стоматологии в пятницу к 18:30",
-    ],
-  ])("stages «%s»", async (said, errand) => {
-    expect(await startFor(said, errand)).toContain(staged);
-  });
-
-  // RU review, second round: everyday wording read as «buy it».
-  it.each([
-    [
-      "почём airpods pro 2 на озоне? возьми только оригинал",
-      "Найди на Ozon AirPods Pro 2, только оригинал. Ничего не покупать, только найти.",
-    ],
-    [
-      "что по рейсам в сочи на пятницу? бери только прямые",
-      "Найти прямые рейсы в Сочи на пятницу",
-    ],
-    [
-      "Какие отели в Сочи на 10–12 октября до 8 тысяч? Бери только с завтраком",
-      "Найти отели в Сочи на 10–12 октября до 8 000 ₽ с завтраком",
-    ],
-    [
-      "Сколько стоит сапсан до питера в пятницу вечером? оформи табличкой",
-      "Найти цены на Сапсан до Санкт-Петербурга в пятницу вечером",
-    ],
-    ["Покажи отели в Сочи, бери только с завтраком", "Найти отели в Сочи"],
-    // The person asked nothing either way; the errand's verbs report a search.
-    [
-      "сколько сейчас стоят airpods pro 2 на озоне?",
-      "Найди на Ozon AirPods Pro 2, возьми 3 самых дешёвых предложения. Ничего не покупать.",
-    ],
-    [
-      "сколько сейчас стоят airpods pro 2 на озоне?",
-      "Найди AirPods Pro 2 на Ozon. Для каждого запиши цену, продавца и ссылку. Ничего не покупать.",
-    ],
-    [
-      "сколько сейчас стоят airpods pro 2 на озоне?",
-      "Найди AirPods Pro 2 на Ozon. Оформи результат списком.",
-    ],
-    [
-      "вот показания, скажи, сколько за квартиру",
-      "Найди квитанцию ЕПД на mos.ru: за какой месяц и до какого числа нужно оплатить. Ничего не оплачивать.",
-    ],
-    [
-      "глянь на госуслугах, нет ли у меня штрафов",
-      "Проверить штрафы на Госуслугах: сумма и до какого числа оплатить со скидкой",
-    ],
-  ])("leaves «%s» with its errand a search", async (said, errand) => {
-    expect(await startFor(said, errand)).not.toContain(
-      "The person asked for this to be done"
+    "хочу эти кроссовки, 42 размер",
+    "возьми мне сапсан в питер на пятницу",
+  ])("stages «%s» when the person wants it done", async (said) => {
+    expect(await startFor(said, "Найти варианты", "done")).toContain(
+      stagedByPerson
     );
   });
 
-  it.each([
-    "Найди на Ozon AirPods Pro 2, возьми 3 самых дешёвых предложения. Ничего не покупать.",
-    "Найди AirPods Pro 2 на Ozon. Для каждого запиши цену, продавца и ссылку.",
-    "Найди AirPods Pro 2 на Ozon. Оформи результат списком.",
-    "Найди квитанцию ЕПД на mos.ru: за какой месяц и до какого числа нужно оплатить. Ничего не оплачивать.",
-    "Проверить штрафы на Госуслугах: сумма и до какого числа оплатить со скидкой",
-  ])("leaves the errand «%s» a search in a report turn too", async (errand) => {
-    const task = await startFor(
-      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
-      errand,
-      "browser-result"
-    );
-
-    expect(task).not.toContain("The person asked for this to be done");
-  });
-
-  it("stages an errand that orders tickets, in a report turn", async () => {
+  it("leaves a search a search in a report turn", async () => {
     const task = await startFor(
       `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
       "Оформи заказ билетов на Сапсан на tutu.ru",
+      "look",
       "browser-result"
     );
 
-    expect(task).toContain(staged);
+    expect(task).not.toContain(staged);
   });
 
   it("drops the rule once the person says not to book", async () => {
@@ -6448,19 +6969,25 @@ describe("browser_task takes an errand the person asked to be done to its last s
         facts: undefined,
         home: undefined,
         site: "https://www.ozon.ru",
-        staging: true,
+        staging: "person",
       }),
     });
     const said = "Не бронируй, лучше покажи ещё варианты";
     const tool = await resolvedBrowserTask([], said);
 
     await tool.execute(
-      { action: "continue", personSaid: said, runId, task: said },
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: said,
+        runId,
+        task: said,
+      },
       toolContext("better-auth:alice")
     );
 
     expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).not.toContain(
-      "The person asked for this to be done"
+      staged
     );
   });
 
@@ -6481,19 +7008,64 @@ describe("browser_task takes an errand the person asked to be done to its last s
         facts: undefined,
         home: undefined,
         site: "https://www.ozon.ru",
-        staging: true,
+        staging: "person",
       }),
     });
     const tool = await resolvedBrowserTask([], "739204");
 
     await tool.execute(
-      { action: "continue", personSaid: "739204", runId, task: "739204" },
+      {
+        action: "continue",
+        personWants: "done",
+        personSaid: "739204",
+        runId,
+        task: "739204",
+      },
       toolContext("better-auth:alice")
     );
 
-    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
-      staged
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(stagedByPerson);
+    expect(task).toContain(fillsDetails);
+  });
+
+  it("keeps a staged errand staged, without details, when a report continues it", async () => {
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
     );
+    readBrowserUseRun.mockResolvedValue({
+      task: composeBrowserTask({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand: "Закажи тот же корм коту",
+        facts: undefined,
+        home: undefined,
+        site: "https://www.ozon.ru",
+        staging: "person",
+      }),
+    });
+    const tool = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        runId,
+        task: "Проверь, что корзина на месте",
+      },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(stagedInReport);
+    expect(task).toContain(noDetails);
   });
 
   it("does not stage an errand the person confirmed on a card", async () => {
@@ -6509,10 +7081,10 @@ describe("browser_task takes an errand the person asked to be done to its last s
       facts: undefined,
       home: undefined,
       site: "https://emias.info",
-      staging: true,
+      staging: "person",
     });
 
-    expect(task).not.toContain("The person asked for this to be done");
+    expect(task).not.toContain(staged);
     expect(task).toContain(
       "The person confirmed on an approval card this one submission in their name."
     );
@@ -6531,7 +7103,12 @@ describe("browser_task on Госуслуги", () => {
     );
     return continuationNote(
       await tool.execute(
-        { action: "start", site, task: "Проверь штрафы на Госуслугах" },
+        {
+          action: "start",
+          personWants: "look",
+          site,
+          task: "Проверь штрафы на Госуслугах",
+        },
         toolContext("better-auth:alice")
       )
     );
@@ -6700,6 +7277,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "покажи другие варианты",
         runId,
         task: "покажи другие варианты",
@@ -6735,6 +7313,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "на Ленина 5",
         runId,
         task: "на Ленина 5",
@@ -6767,6 +7346,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Код из смс 992130",
         runId,
         task: "Код из смс 992130",
@@ -6802,7 +7382,13 @@ describe("browser_task keeps sign-ins", () => {
       const tool = await resolvedBrowserTask([], said);
       return continuationNote(
         await tool.execute(
-          { action: "continue", personSaid: said, runId, task: said },
+          {
+            action: "continue",
+            personWants: "look",
+            personSaid: said,
+            runId,
+            task: said,
+          },
           toolContext("better-auth:alice")
         )
       );
@@ -6839,7 +7425,7 @@ describe("browser_task keeps sign-ins", () => {
 
     await expect(
       tool.execute(
-        { action: "continue", codeFrom: "mail", runId },
+        { action: "continue", personWants: "look", codeFrom: "mail", runId },
         toolContext("better-auth:alice", "browser-result")
       )
     ).rejects.toThrow(
@@ -6862,6 +7448,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "а закажи ещё такое же",
         runId,
         task: "а закажи ещё такое же",
@@ -6898,6 +7485,7 @@ describe("browser_task keeps sign-ins", () => {
       return tool.execute(
         {
           action: "continue",
+          personWants: "look",
           personSaid: "бери этот слот",
           runId,
           task: "бери этот слот",
@@ -6947,6 +7535,7 @@ describe("browser_task keeps sign-ins", () => {
     await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "подтвердил в приложении",
         runId,
         task: "подтвердил в приложении",
@@ -6973,6 +7562,7 @@ describe("browser_task keeps sign-ins", () => {
       tool.execute(
         {
           action: "continue",
+          personWants: "look",
           personSaid: "бери первый",
           runId,
           task: "бери первый",
@@ -6995,7 +7585,7 @@ describe("browser_task keeps sign-ins", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "cancel", runId },
+      { action: "cancel", personWants: "look", runId },
       toolContext("better-auth:alice")
     );
 
@@ -7015,6 +7605,7 @@ describe("browser_task keeps sign-ins", () => {
     const result = await tool.execute(
       {
         action: "continue",
+        personWants: "look",
         personSaid: "Код из смс 992130",
         runId,
         task: "Код из смс 992130",

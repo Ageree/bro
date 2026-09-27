@@ -1,7 +1,7 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
-import { startsTurn } from "@agent/lib/delivery/turn-sends";
+import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
 
 const taggedMessageSchema = z.object({ kind: z.string() });
 
@@ -101,19 +101,153 @@ function personBurst(messages: readonly ModelMessage[], opening: number) {
     .map((said) => messageText(said));
 }
 
+const sentTextSchema = z.object({ text: z.string() });
+
+/** The last message of Bro's that reached the person among `messages`. */
+function lastDelivered(messages: readonly ModelMessage[]) {
+  const delivered = new Set(
+    messages.flatMap((message) =>
+      message.role === "tool"
+        ? message.content.flatMap((part) =>
+            part.type === "tool-result" &&
+            part.toolName === "send_message" &&
+            sendReachedPerson(part.output)
+              ? [part.toolCallId]
+              : []
+          )
+        : []
+    )
+  );
+  return messages
+    .flatMap((message) =>
+      message.role === "assistant" && Array.isArray(message.content)
+        ? message.content.flatMap((part) =>
+            part.type === "tool-call" &&
+            part.toolName === "send_message" &&
+            delivered.has(part.toolCallId)
+              ? [sentTextSchema.safeParse(part.input).data?.text ?? ""]
+              : []
+          )
+        : []
+    )
+    .at(-1);
+}
+
+/**
+ * Bro's one question before a payment ends its message and asks about
+ * paying: «…Итого 3 450 ₽ с доставкой. Оплачиваю?», "Shall I pay?".
+ */
+const paymentQuestionPattern =
+  /(?<!\p{L})(?:оплач\p{L}*|оплат\p{L}*|заплат\p{L}*|плати\p{L}*|плачу|pay\p{L}*)(?!\p{L})[^.!?\n]*[?？]\s*$/iu;
+
+/**
+ * What Bro asked right before the person's message, when it was the one
+ * question before paying: its last message before their turn, which ends by
+ * asking whether to pay. Undefined for anything else — a courtesy question,
+ * a report, a message a turn of Bro's own sent after the question.
+ */
+function paymentQuestionBefore(
+  messages: readonly ModelMessage[],
+  opening: number
+) {
+  if (personBurst(messages, opening) === null) return undefined;
+  const question = lastDelivered(messages.slice(0, opening));
+  return question !== undefined && paymentQuestionPattern.test(question.trim())
+    ? question
+    : undefined;
+}
+
 /**
  * What the person wrote in this turn. `said`: the messages they opened it
  * with, null when Bro opened it — a browser report, a scheduled result, a
  * wakeup, whose text a page or a worker wrote. `answers`: what they answered
- * to its questions, in either kind of turn. A follow-up acts on these words
- * only; only a turn they opened is theirs for consent.
+ * to its questions, in either kind of turn. `paymentAsked`: Bro's question
+ * about paying that their message answers, if it is one. A follow-up acts on
+ * these words only; only a turn they opened is theirs for consent.
  */
 export function personWordsThisTurn(messages: readonly ModelMessage[]) {
   const opening = messages.findLastIndex(startsTurn);
   return {
     answers: opening === -1 ? [] : answersThisTurn(messages.slice(opening + 1)),
+    paymentAsked: paymentQuestionBefore(messages, opening) ?? null,
     said: personBurst(messages, opening),
   };
+}
+
+/**
+ * The person's plain «yes» to paying, and the words that may ride with it:
+ * «да», «давай, оплачивай», «ок», "yes", "go ahead".
+ */
+const yesWords = new Set([
+  "ага",
+  "бери",
+  "бро",
+  "go",
+  "ahead",
+  "да",
+  "давай",
+  "действуй",
+  "картой",
+  "конечно",
+  "ок",
+  "окей",
+  "оплати",
+  "оплачивай",
+  "подтверждаю",
+  "пожалуйста",
+  "покупай",
+  "плати",
+  "угу",
+  "ok",
+  "okay",
+  "pay",
+  "please",
+  "sure",
+  "yeah",
+  "yep",
+  "yes",
+]);
+
+/** «нет», «не надо», «отмена», "no", "don't". */
+const noWords = new Set([
+  "cancel",
+  "dont",
+  "don",
+  "t",
+  "нет",
+  "не",
+  "надо",
+  "нужно",
+  "no",
+  "nope",
+  "not",
+  "now",
+  "отмена",
+  "отмени",
+  "пока",
+  "стоп",
+]);
+
+/**
+ * How the person answered Bro's question before a payment: `yes` only for
+ * a message that is nothing but a yes — «да», «оплачивай», «давай»,
+ * "go ahead"; `no` for one that is nothing but a no — «нет», «не надо»;
+ * undefined for anything else, which is a new message and confirms
+ * nothing: «а дешевле нет?», «да, но с багажом».
+ */
+export function paymentAnswer(
+  words: readonly string[] | null
+): "no" | "yes" | undefined {
+  const tokens = (words ?? []).flatMap((text) =>
+    comparable(text).split(" ").filter(Boolean)
+  );
+  if (tokens.length === 0) return undefined;
+  if (tokens.every((token) => noWords.has(token))) return "no";
+  const fillers = new Set(["бро", "пожалуйста", "please"]);
+  return tokens.every((token) => yesWords.has(token)) &&
+    tokens.some((token) => !fillers.has(token))
+    ? "yes"
+    : undefined;
 }
 
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */

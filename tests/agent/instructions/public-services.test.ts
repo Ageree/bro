@@ -19,12 +19,17 @@ describe("public-service instructions", () => {
     );
   });
 
-  it("stages the readings and asks once, on a card with the values", async () => {
+  it("sends the readings the person sent at once, with a card only in a report", async () => {
     const content = await resolveContent("telegram-webhook", "bu-key");
 
     expect(content).toContain("дойди до кнопки передачи и остановись");
     expect(content).toContain("в `what` — все показания с номерами счётчиков");
-    expect(content).toContain("Это одна карточка на сайт.");
+    expect(content).toContain(
+      "Показания, которые человек прислал, передавай сразу, без вопроса и без карточки."
+    );
+    expect(content).toContain(
+      "В ходе человека они уходят сразу; в ответе на отчёт браузера — одна карточка на сайт."
+    );
     expect(content).toContain("сначала почта");
   });
 
@@ -77,7 +82,7 @@ describe("public-service instructions", () => {
 
   it("keeps «найди билеты» a search, on the seller's own site", () => {
     expect(browser).toContain(
-      "«найди» остаётся поиском, даже если человек назвал место («у прохода») или регистрацию"
+      '«найди» и «сколько стоит» остаются поиском (`personWants: "look"`), даже если человек назвал место («у прохода») или регистрацию'
     );
     expect(browser).toContain(
       "В `site` ставь сайт перевозчика или продавца, где будет покупка"

@@ -75,6 +75,21 @@ export function startedByPerson(context: AgentModeContext) {
   );
 }
 
+/**
+ * The approval of an action in the person's name that is not a payment — an
+ * email or a Slack message, a calendar change, a Notion task, forgetting a
+ * memory. The person asked for it in their own message, so it is done
+ * without a card: the one question Bro still asks is before paying (owner,
+ * 26.09). A turn Bro opened — a browser run's report, a schedule's report —
+ * speaks for nobody, since a page or an email writes its text: there nothing
+ * runs until the person decides on its card.
+ */
+export function ownTurnApproval(context: AgentModeContext) {
+  return startedByPerson(context)
+    ? ("not-applicable" as const)
+    : ("user-approval" as const);
+}
+
 export function resolveModeInstructions(
   context: DynamicResolveContext,
   contentByMode: Partial<Record<AgentMode, string>>

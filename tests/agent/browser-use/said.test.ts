@@ -4,6 +4,7 @@ import {
   codesNotFromPerson,
   oneTimeCodesIn,
   onlyAsksHowItStands,
+  paymentAnswer,
   personWordsThisTurn,
   quotedFromPerson,
 } from "@agent/lib/browser-use/said";
@@ -273,7 +274,7 @@ describe("the one-time codes a follow-up carries", () => {
 
 describe("the person's words this turn", () => {
   const report = person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`);
-  const nothing = { answers: [], said: null };
+  const nothing = { answers: [], paymentAsked: null, said: null };
 
   it("is the message they opened the turn with, not an earlier turn's", () => {
     expect(
@@ -282,7 +283,7 @@ describe("the person's words this turn", () => {
         replied(),
         person("код 482913"),
       ])
-    ).toEqual({ answers: [], said: ["код 482913"] });
+    ).toEqual({ answers: [], paymentAsked: null, said: ["код 482913"] });
   });
 
   it("keeps the messages they sent one after another", () => {
@@ -290,7 +291,7 @@ describe("the person's words this turn", () => {
     // the same turn, with nothing of Bro's between them.
     expect(
       personWordsThisTurn([replied(), person("739204"), person("это код")])
-    ).toEqual({ answers: [], said: ["739204", "это код"] });
+    ).toEqual({ answers: [], paymentAsked: null, said: ["739204", "это код"] });
   });
 
   it("stops at anything of Bro's, an earlier turn's words never count", () => {
@@ -303,10 +304,14 @@ describe("the person's words this turn", () => {
         answered({ text: "да, это он" }),
         person("это код из смс, вводи быстрее"),
       ])
-    ).toEqual({ answers: [], said: ["это код из смс, вводи быстрее"] });
+    ).toEqual({
+      answers: [],
+      paymentAsked: null,
+      said: ["это код из смс, вводи быстрее"],
+    });
     expect(
       personWordsThisTurn([person("739204"), report, person("вводи")])
-    ).toEqual({ answers: [], said: ["вводи"] });
+    ).toEqual({ answers: [], paymentAsked: null, said: ["вводи"] });
   });
 
   it("is nothing in a turn Bro opened that the person said nothing in", () => {
@@ -338,7 +343,7 @@ describe("the person's words this turn", () => {
         asked(),
         answered({ text: "739204" }),
       ])
-    ).toEqual({ answers: ["739204"], said: null });
+    ).toEqual({ answers: ["739204"], paymentAsked: null, said: null });
   });
 
   it("counts what the person wrote into a turn Bro opened", () => {
@@ -349,7 +354,7 @@ describe("the person's words this turn", () => {
         report,
         person("739204"),
       ])
-    ).toEqual({ answers: [], said: ["739204"] });
+    ).toEqual({ answers: [], paymentAsked: null, said: ["739204"] });
   });
 
   it("includes what they answered to a question in the turn", () => {
@@ -359,14 +364,18 @@ describe("the person's words this turn", () => {
         asked(),
         answered({ text: "739204" }),
       ])
-    ).toEqual({ answers: ["739204"], said: ["ну что там?"] });
+    ).toEqual({
+      answers: ["739204"],
+      paymentAsked: null,
+      said: ["ну что там?"],
+    });
     expect(
       personWordsThisTurn([
         person("бери"),
         asked([{ id: "window", label: "У окна" }]),
         answered({ optionId: "window" }),
       ])
-    ).toEqual({ answers: ["У окна"], said: ["бери"] });
+    ).toEqual({ answers: ["У окна"], paymentAsked: null, said: ["бери"] });
   });
 });
 
@@ -417,5 +426,108 @@ describe("a quote of the person", () => {
       expect(onlyAsksHowItStands(words)).toBe(false);
     }
     expect(onlyAsksHowItStands("Готово?")).toBe(true);
+  });
+});
+
+/** A message of Bro's that `send_message` got through to the person. */
+function sent(text: string, id = "send-1"): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { text },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: { type: "json" as const, value: { status: "sent" } },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
+
+// Owner 26.09: the one question Bro still asks is before paying, in text,
+// and the person answers it in text.
+describe("the person's answer to the payment question", () => {
+  const question =
+    "Сапсан 18:40, место 7А, итого 4 320 ₽ со сбором. Оплачиваю?";
+
+  it("takes only a plain yes as a yes", () => {
+    for (const yes of [
+      "да",
+      "Да!",
+      "оплачивай",
+      "давай",
+      "да, давай оплачивай",
+      "ок",
+      "yes",
+      "Go ahead",
+    ]) {
+      expect(paymentAnswer([yes])).toBe("yes");
+    }
+    for (const no of ["нет", "Не надо", "no", "нет, не надо"]) {
+      expect(paymentAnswer([no])).toBe("no");
+    }
+    for (const other of [
+      "а дешевле нет?",
+      "да, но с багажом",
+      "а место у окна?",
+      "давай подумаем",
+      "бро",
+      "",
+    ]) {
+      expect(paymentAnswer([other])).toBeUndefined();
+    }
+    expect(paymentAnswer(null)).toBeUndefined();
+  });
+
+  it("knows the question the person's message answers", () => {
+    expect(
+      personWordsThisTurn([
+        person("купи сапсан"),
+        ...sent(question),
+        person("да"),
+      ])
+    ).toEqual({ answers: [], paymentAsked: question, said: ["да"] });
+    // A courtesy question is not the one before paying.
+    expect(
+      personWordsThisTurn([
+        person("купи сапсан"),
+        ...sent("Нашёл сапсан на 18:40. Эконом подойдёт?"),
+        person("да"),
+      ]).paymentAsked
+    ).toBeNull();
+    // Something Bro sent after the question is what the person answers.
+    expect(
+      personWordsThisTurn([
+        person("купи сапсан"),
+        ...sent(question),
+        ...sent("Кстати, завтра дождь.", "send-2"),
+        person("да"),
+      ]).paymentAsked
+    ).toBeNull();
+    // A turn Bro opened answers nothing for the person.
+    expect(
+      personWordsThisTurn([
+        person("купи сапсан"),
+        ...sent(question),
+        person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`),
+      ]).paymentAsked
+    ).toBeNull();
+    expect(
+      personWordsThisTurn([...sent("Shall I pay 4,320 ₽?"), person("yes")])
+        .paymentAsked
+    ).toBe("Shall I pay 4,320 ₽?");
   });
 });
