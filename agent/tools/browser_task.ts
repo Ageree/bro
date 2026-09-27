@@ -3329,7 +3329,6 @@ async function runBrowserTask(
           // drained the message as a run of its own, which reports only once
           // Bro tracks it as the errand's follow-up.
           if (queued.runId && queued.runId !== runId) {
-            await linkBrowserRunFollowUp(scope, runId, queued.runId);
             return {
               followUp: { id: queued.runId, sessionId: row.sessionId },
               kind: "continued" as const,
@@ -3597,20 +3596,23 @@ async function runBrowserTask(
     await browserUseCreditsRestored();
     await carrySpend(followUp.id);
     await recordStartedRun(followUp.id, () =>
-      createBrowserRun(scope, {
-        ...conversation,
-        id: followUp.id,
-        liveViewUrl: sameBrowser ? row.liveViewUrl : null,
-        paymentAllowed: allowPayment,
-        profileId,
-        sessionId: followUp.sessionId,
-        site: site ?? null,
-        status: "running",
-        submission: confirmedSubmission(consent),
-        task: message,
-      })
+      createBrowserRun(
+        scope,
+        {
+          ...conversation,
+          id: followUp.id,
+          liveViewUrl: sameBrowser ? row.liveViewUrl : null,
+          paymentAllowed: allowPayment,
+          profileId,
+          sessionId: followUp.sessionId,
+          site: site ?? null,
+          status: "running",
+          submission: confirmedSubmission(consent),
+          task: message,
+        },
+        runId
+      )
     );
-    await linkBrowserRunFollowUp(scope, runId, followUp.id);
     // The follow-up holds the errand's browser now, a fresh one or the same.
     // Never fatal: the run is already going.
     try {

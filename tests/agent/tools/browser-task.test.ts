@@ -786,7 +786,8 @@ describe("browser_task continuation", () => {
         sessionId,
         status: "running",
         task: "Человек написал: «Код из смс 992130»",
-      })
+      }),
+      runId
     );
     expect(result).toMatchObject({
       previousRunId: runId,
@@ -859,7 +860,8 @@ describe("browser_task continuation", () => {
         site: "https://taxi.yandex.ru",
         status: "running",
         task: "Человек написал: «Код из смс 992130»",
-      })
+      }),
+      runId
     );
     expect(result).toMatchObject({
       boundSecrets: ["login_username", "login_password"],
@@ -956,7 +958,8 @@ describe("browser_task continuation", () => {
     expect(createBrowserUseRun.mock.calls[1]?.[0].profileId).toBe("profile-1");
     expect(createBrowserRun).toHaveBeenCalledWith(
       accessScopeForUser("better-auth:alice"),
-      expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId })
+      expect.objectContaining({ liveViewUrl: null, sessionId: freshSessionId }),
+      runId
     );
     expect(continuationNote(result)).toContain(
       "opened a fresh browser on the same profile"
@@ -2253,6 +2256,8 @@ describe("browser_task standing spend limit", () => {
     );
 
     expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(followUpRunId);
+    expect(createBrowserRun.mock.calls[0]?.[2]).toBe(runId);
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
     expect(settleSpendReservation).toHaveBeenCalledExactlyOnceWith(
       followUpRunId,
       { charged: false }

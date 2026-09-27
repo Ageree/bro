@@ -9,6 +9,7 @@ import {
   claimBrowserRunReport,
   createBrowserRun,
   linkBrowserRunFollowUp,
+  readBrowserRun,
   readLatestBrowserRunForScope,
 } from "@db/services/browser-runs";
 
@@ -47,22 +48,57 @@ describe("a queued predecessor report after a follow-up", () => {
     );
     expect(await claimBrowserRunReport("old-run")).toBeDefined();
 
-    await createBrowserRun(scope, {
-      id: "new-run",
-      conversationChannel: "eve",
-      conversationId: "00000000-0000-4000-8000-000000000001",
-      sessionId: "00000000-0000-4000-8000-000000000001",
-      task: "Enter the code",
-      status: "running",
-    });
-
-    expect(await linkBrowserRunFollowUp(scope, "old-run", "new-run")).toBe(
-      true
+    await createBrowserRun(
+      scope,
+      {
+        id: "new-run",
+        conversationChannel: "eve",
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        task: "Enter the code",
+        status: "running",
+      },
+      "old-run"
     );
     expect(await browserRunReportDelivered("old-run")).toBe(true);
     expect((await readLatestBrowserRunForScope(scope, "old-run"))?.id).toBe(
       "new-run"
     );
     expect(await claimBrowserRunReport("old-run")).toBeUndefined();
+  });
+
+  it("rolls back a successor when its predecessor cannot be linked", async () => {
+    const otherScope = {
+      userId: "better-auth:bob",
+      workspaceId: "workspace:bob",
+    };
+    await createBrowserRun(scope, {
+      id: "pending-run",
+      conversationChannel: "eve",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      task: "Sign in",
+      status: "done",
+      completedAt: new Date(),
+      report: "Needs: push",
+    });
+
+    await expect(
+      createBrowserRun(
+        otherScope,
+        {
+          id: "rejected-run",
+          conversationChannel: "eve",
+          conversationId: "00000000-0000-4000-8000-000000000002",
+          sessionId: "00000000-0000-4000-8000-000000000002",
+          task: "Enter the code",
+          status: "running",
+        },
+        "pending-run"
+      )
+    ).rejects.toThrow("predecessor run was already replaced");
+    expect(await readBrowserRun("rejected-run")).toBeUndefined();
+    expect(await browserRunReportDelivered("pending-run")).toBe(false);
+    expect(await claimBrowserRunReport("pending-run")).toBeDefined();
   });
 });
