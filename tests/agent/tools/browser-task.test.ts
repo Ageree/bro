@@ -1799,8 +1799,8 @@ describe("browser_task one question per errand", () => {
     expect(task).toContain(
       "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
-    // 900 ₽ and the 100 ₽ margin a small order gets.
-    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
+    // A new yes authorizes exactly the 900 ₽ Bro named, not the old card margin.
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(900)}`);
     expect(task).not.toContain("Nothing has been approved to pay for");
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       expect.anything(),
@@ -1808,7 +1808,7 @@ describe("browser_task one question per errand", () => {
     );
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
-      submission: { ...taxi, paymentCapRub: 1000 },
+      submission: { ...taxi, paymentCapRub: 900 },
     });
   });
 
@@ -1864,13 +1864,13 @@ describe("browser_task one question per errand", () => {
     expect(task).toContain(
       "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
-    expect(task).toContain(`Payment is pre-approved up to ${formatRub(1000)}`);
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(900)}`);
     expect(continuationNote(result)).not.toContain(
       "No approval card was shown"
     );
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
-      submission: { ...taxi, paymentCapRub: 1000 },
+      submission: { ...taxi, paymentCapRub: 900 },
     });
   });
 
@@ -2282,7 +2282,9 @@ describe("browser_task standing spend limit", () => {
 
     expect(result).toMatchObject({ status: "needs_approval" });
     expect(continuationNote(result)).toContain("more than is left");
-    expect(continuationNote(result)).toContain("Ask the user once");
+    expect(continuationNote(result)).toContain(
+      "The limit never replaces the user's answer: stage the exact order first"
+    );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(resolveBrowserSecretBindings).not.toHaveBeenCalled();
     // A refused payment does not cost the month an errand either.
@@ -2385,7 +2387,7 @@ describe("browser_task standing spend limit", () => {
     });
 
     expect(reserveConsentPayment.mock.calls[0]?.[1]).toMatchObject({
-      amountRub: 1000,
+      amountRub: 900,
       replacingRunId: runId,
       source: "card",
     });
@@ -3696,7 +3698,7 @@ describe("browser_task consent boundaries", () => {
 
       const [, held] = reserveConsentPayment.mock.calls[0] ?? [];
       expect(held).toMatchObject({
-        amountRub: 1000,
+        amountRub: 900,
         category: "taxi",
         merchant: "taxi.yandex.ru",
         source: "card",
@@ -3706,7 +3708,7 @@ describe("browser_task consent boundaries", () => {
         held?.browserRunId,
         runId
       );
-      // The card's payment is not the spend limit's.
+      // The person's yes is not a spend-limit bypass.
       expect(reserveAutoPayment).not.toHaveBeenCalled();
     });
 
@@ -3724,7 +3726,7 @@ describe("browser_task consent boundaries", () => {
 
       expect(listSpendEntries).not.toHaveBeenCalled();
       expect(reserveConsentPayment.mock.calls[0]?.[1]).toMatchObject({
-        amountRub: 1000,
+        amountRub: 900,
         replacingRunId: runId,
         source: "card",
       });
@@ -3786,7 +3788,7 @@ describe("browser_task consent boundaries", () => {
 
       const [, held] = reserveConsentPayment.mock.calls[0] ?? [];
       expect(held).toMatchObject({
-        amountRub: 1540,
+        amountRub: 1400,
         replacingRunId: runId,
         source: "card",
       });
@@ -3794,6 +3796,44 @@ describe("browser_task consent boundaries", () => {
         held?.browserRunId,
         followUpRunId
       );
+
+      const exact = { ...taxi, chargeRub: 1400, paymentCapRub: 1400 };
+      expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+        submission: exact,
+      });
+      const { browserTaskApproval } = await import("@agent/tools/browser_task");
+      const followUp = {
+        action: "continue" as const,
+        allowPayment: true,
+        runId,
+        submission: { ...taxi, chargeRub: 1400 },
+        task: "Продолжай уже согласованную оплату",
+      };
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Total: 1 400 ₽\nNeeds: payment", exact)
+      );
+      expect(
+        await browserTaskApproval(followUp, approvalSession("photon-imessage"))
+      ).toBe("not-applicable");
+      expect(
+        await browserTaskApproval(
+          { ...followUp, submission: { ...taxi, chargeRub: 1401 } },
+          approvalSession("photon-imessage")
+        )
+      ).toMatchObject({ type: "denied" });
+
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Total: 1 400 ₽\nNeeds: payment", {
+          ...exact,
+          paymentCapRub: 1540,
+        })
+      );
+      expect(
+        await browserTaskApproval(
+          { ...followUp, submission: { ...taxi, chargeRub: 1401 } },
+          approvalSession("photon-imessage")
+        )
+      ).toBe("not-applicable");
     });
 
     it("refuses a higher ceiling on a live run before its payment step", async () => {
@@ -6380,9 +6420,7 @@ describe("browser_task asks only before paying, in text", () => {
     expect(task).toContain(
       "The person asked for this one submission in their name and answered yes when asked to pay its total."
     );
-    expect(task).toContain(
-      `Payment is pre-approved up to ${formatRub(paymentCeilingRub(4320))}`
-    );
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(4320)}`);
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
     });

@@ -90,7 +90,7 @@ export const browserSubmissionSchema = z.object({
     .max(10_000_000)
     .optional()
     .describe(
-      "The total in roubles the user pays on this errand, every fee included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money: the tool then pays only after the user's plain yes to your one question naming this total, and that yes covers paying up to it plus a small margin, so they are never asked a second time. 0, together with allowPayment, for a card guarantee that charges nothing today. Leave it out when the errand is free or not priced in roubles."
+      "The total in roubles the user pays on this errand, every fee included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money: the tool then pays only after the user's plain yes to your one question naming this exact total, with no extra margin. A higher total needs a new question and yes. 0, together with allowPayment, for a card guarantee that charges nothing today; ask about binding the card first too. Leave it out when the errand is free or not priced in roubles."
     ),
 });
 

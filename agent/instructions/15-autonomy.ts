@@ -21,9 +21,8 @@ import autonomy from "./content/autonomy.md?raw";
 import followThrough from "./content/follow-through.md?raw";
 
 /**
- * The person's standing spend limit as it stands this month. Without it the
- * model cannot tell a purchase it may simply make from one it must ask about,
- * and falls back to asking about everything.
+ * The person's monthly spending budget and standing permissions. Neither
+ * replaces their answer to Bro's question before each new payment.
  */
 export function spendLimitInstructions(
   policy: SpendLimitPolicy | undefined,
@@ -35,14 +34,14 @@ export function spendLimitInstructions(
   // A category is the spend limit's: standing permissions are per kind of
   // errand and no category matches them.
   const never = [
-    sites.length > 0 ? `Без спроса никогда: ${sites.join(", ")}.` : undefined,
+    sites.length > 0
+      ? `Лимит и постоянные разрешения не действуют для сайтов: ${sites.join(", ")}.`
+      : undefined,
     categories.length > 0
-      ? `По лимиту без спроса не оплачивай: ${categories.map((category) => `«${category}»`).join(", ")}.`
+      ? `Лимит не действует для категорий: ${categories.map((category) => `«${category}»`).join(", ")}.`
       : undefined,
   ];
-  // «Снимать нечего» holds only with nothing that pays on its own: a paid
-  // standing permission is spending without asking too, and `clear` is what
-  // takes it back when the person says «не плати без моего ок».
+  // «Снимать нечего» holds only with neither a budget nor paid permissions.
   const paidPermissions = (policy?.actions ?? []).some(
     (rule) => rule.maxRub !== null
   );
@@ -50,11 +49,11 @@ export function spendLimitInstructions(
     !policy || policy.rules.length === 0
       ? [
           paidPermissions
-            ? "Лимита трат без спроса нет, но платные постоянные разрешения ниже платят сами. Запрет платить без ок («ничего не оплачивай без моего ок») снимает их одним `spend_limit` с `clear` без магазина и категории."
-            : "Лимит трат без спроса не задан и платных постоянных разрешений нет: платить без разрешения человека можно только то, что бесплатно, и снимать нечего.",
+            ? "Лимита трат на месяц нет, но ниже есть платные постоянные разрешения с потолком. Они не заменяют вопрос «Оплачиваю?» перед каждой новой оплатой; «ничего не оплачивай без моего ок» снимает их одним `spend_limit` с `clear` без магазина и категории."
+            : "Лимит трат на месяц и платные постоянные разрешения не заданы: перед каждой новой оплатой всё равно спроси «Оплачиваю?» и дождись «да»; снимать нечего.",
         ]
       : [
-          "Лимит трат без спроса на этот месяц:",
+          "Бюджет трат на этот месяц (не разрешение платить без вопроса):",
           ...policy.rules.map(
             (rule) =>
               `- ${describeSpendRule(rule)}: потрачено ${formatRub(spentUnderRule(rule, entries))}, осталось ${formatRub(remainingUnderRule(rule, entries))}.`
@@ -86,7 +85,7 @@ function standingPermissionLines(
     ];
   }
   return [
-    "Постоянные разрешения — когда человек сам просит такое поручение, запускай его сразу, без вопроса и без карточки (инструмент сверит сам; на отчёт браузера и в фоновой работе они не действуют):",
+    "Постоянные разрешения — когда человек сам просит такое поручение, запускай его сразу без карточки: бесплатное делай без вопроса, платное доведи до итоговой суммы и перед каждой новой оплатой или привязкой карты спроси «Оплачиваю?» и дождись «да». Лимит и потолок этого не заменяют; на отчёт браузера и в фоновой работе разрешения не действуют:",
     ...actions.map((rule) =>
       standingActionOverridden(policy, rule)
         ? `- ${describeStandingAction(rule)} — не действует: сайт в исключениях.`
