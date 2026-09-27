@@ -2160,10 +2160,10 @@ describe("what the report turn retells", () => {
 
     const prompt = send.mock.calls[0]?.[0];
     expect(prompt).toContain(
-      "The user already confirmed this errand — their yes to paying, their own request or a standing permission — so it is a purchase in progress, not a search: do not ask whether to go ahead."
+      "The user asked for this errand or gave a standing permission, so it is in progress, not a search: do not ask a generic question about going ahead. Neither that request nor the standing permission authorizes a new payment."
     );
     expect(prompt).toContain(
-      "When it costs money, write the user one short message in your own voice with what changed and the real total with every fee, ending with «Оплачиваю?»"
+      "When it costs money, write the user one short message in your own voice with the exact order, what changed, the real total with every fee and the delivery or date, ending with «Оплачиваю?»"
     );
     expect(prompt).not.toContain("confirms the change on one card");
   });
@@ -2178,7 +2178,7 @@ describe("what the report turn retells", () => {
     await settleBrowserRun({ to }, runId);
 
     const prompt = send.mock.calls[0]?.[0];
-    expect(prompt).not.toContain("purchase in progress");
+    expect(prompt).not.toContain("so it is in progress, not a search");
     // «Найди билеты… у прохода» is still a search: options and a question.
     expect(prompt).not.toContain("a ticket search that also asks for a seat");
     expect(prompt).toContain(
