@@ -362,9 +362,6 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   createBrowserRun,
   claimBrowserRunBrowser,
   listBrowserHoldingRuns,
-  linkBrowserRunFollowUp: vi.fn<() => Promise<boolean>>(() =>
-    Promise.resolve(true)
-  ),
   releaseBrowserRunBrowser,
   unclaimBrowserRunBrowser,
   createQueuedBrowserRun,
@@ -6644,7 +6641,8 @@ describe("browser_task on Госуслуги", () => {
       expect.objectContaining({
         site: "https://www.mos.ru",
         waitsForAccount: "gosuslugi.ru",
-      })
+      }),
+      undefined
     );
     expect(note).toContain(
       "Another errand of the user is working in Bro's browser on gosuslugi.ru right now"
@@ -6916,7 +6914,8 @@ describe("browser_task keeps sign-ins", () => {
       expect.objectContaining({
         sessionId,
         waitsForAccount: "gosuslugi.ru",
-      })
+      }),
+      runId
     );
 
     // With the account free it starts, and Bro warns of the code rather

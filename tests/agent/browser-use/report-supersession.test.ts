@@ -8,7 +8,7 @@ import {
   browserRunReportDelivered,
   claimBrowserRunReport,
   createBrowserRun,
-  linkBrowserRunFollowUp,
+  createQueuedBrowserRun,
   readBrowserRun,
   readLatestBrowserRunForScope,
 } from "@db/services/browser-runs";
@@ -43,9 +43,6 @@ describe("a queued predecessor report after a follow-up", () => {
     });
 
     expect(await browserRunReportDelivered("old-run")).toBe(false);
-    expect(await linkBrowserRunFollowUp(scope, "old-run", "missing-run")).toBe(
-      false
-    );
     expect(await claimBrowserRunReport("old-run")).toBeDefined();
 
     await createBrowserRun(
@@ -65,6 +62,51 @@ describe("a queued predecessor report after a follow-up", () => {
       "new-run"
     );
     expect(await claimBrowserRunReport("old-run")).toBeUndefined();
+  });
+
+  it("links a queued successor atomically, without leaving an orphan when the predecessor is missing", async () => {
+    await createBrowserRun(scope, {
+      id: "old-queued-run",
+      conversationChannel: "eve",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      task: "Sign in",
+      status: "done",
+      completedAt: new Date(),
+      report: "Needs: push",
+    });
+    const queued = {
+      conversationChannel: "eve" as const,
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      pendingTask: "Resume sign-in",
+      retryAt: new Date(Date.now() + 60_000),
+      task: "Resume sign-in",
+    };
+
+    const before = await database
+      .select({ id: schema.browserRuns.id })
+      .from(schema.browserRuns);
+    await expect(
+      createQueuedBrowserRun(scope, queued, "missing-run")
+    ).rejects.toThrow("predecessor run was already replaced");
+    expect(
+      await database
+        .select({ id: schema.browserRuns.id })
+        .from(schema.browserRuns)
+    ).toEqual(before);
+    expect(await browserRunReportDelivered("old-queued-run")).toBe(false);
+
+    const successor = await createQueuedBrowserRun(
+      scope,
+      queued,
+      "old-queued-run"
+    );
+    expect(successor.status).toBe("queued");
+    expect(
+      (await readLatestBrowserRunForScope(scope, "old-queued-run"))?.id
+    ).toBe(successor.id);
+    expect(await browserRunReportDelivered("old-queued-run")).toBe(true);
+    expect(await claimBrowserRunReport("old-queued-run")).toBeUndefined();
   });
 
   it("rolls back a successor when its predecessor cannot be linked", async () => {

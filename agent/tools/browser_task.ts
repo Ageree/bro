@@ -38,7 +38,6 @@ import {
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   createBrowserRun,
-  linkBrowserRunFollowUp,
   readBrowserProfileId,
   claimBrowserRunBrowser,
   readLatestBrowserRunForScope,
@@ -3569,6 +3568,7 @@ async function runBrowserTask(
         queueBrowserErrand(scope, {
           ...conversation,
           composedTask: continued.continuation,
+          fromRunId: runId,
           paymentAllowed: allowPayment,
           profileId: continued.profileId,
           retryAfterMs: continued.retryAfterMs,
@@ -3580,7 +3580,6 @@ async function runBrowserTask(
         })
       );
       await carrySpend(queued.runId);
-      await linkBrowserRunFollowUp(scope, runId, queued.runId);
       return {
         note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
         previousRunId: runId,

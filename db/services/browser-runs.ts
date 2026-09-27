@@ -3,7 +3,6 @@ import {
   asc,
   desc,
   eq,
-  exists,
   gt,
   inArray,
   isNotNull,
@@ -15,7 +14,6 @@ import {
   sql,
 } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { alias } from "drizzle-orm/pg-core";
 import { browserProfiles, browserRuns, db, spendEntries } from "@db";
 import { ensureScope } from "./scope";
 
@@ -126,39 +124,6 @@ export async function createBrowserRun(
     .returning();
   if (!row) throw new Error("The browser run could not be recorded.");
   return row;
-}
-
-export async function linkBrowserRunFollowUp(
-  scope: AccessScope,
-  fromRunId: string,
-  toRunId: string
-) {
-  const now = new Date();
-  const nextRun = alias(browserRuns, "next_run");
-  const successor = db
-    .select({ id: nextRun.id })
-    .from(nextRun)
-    .where(
-      and(eq(nextRun.id, toRunId), eq(nextRun.workspaceId, scope.workspaceId))
-    );
-  const [linked] = await db
-    .update(browserRuns)
-    .set({
-      retriedAsRunId: toRunId,
-      reportClaimedAt: null,
-      reportDeliveredAt: sql`coalesce(${browserRuns.reportDeliveredAt}, ${now})`,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(browserRuns.id, fromRunId),
-        eq(browserRuns.workspaceId, scope.workspaceId),
-        isNull(browserRuns.retriedAsRunId),
-        exists(successor)
-      )
-    )
-    .returning({ id: browserRuns.id });
-  return linked !== undefined;
 }
 
 export async function readBrowserRunForScope(
@@ -473,13 +438,18 @@ export async function createQueuedBrowserRun(
   > & {
     readonly pendingTask: string;
     readonly retryAt: Date;
-  }
+  },
+  fromRunId?: string
 ) {
-  return createBrowserRun(scope, {
-    ...input,
-    id: `queued:${crypto.randomUUID()}`,
-    status: "queued",
-  });
+  return createBrowserRun(
+    scope,
+    {
+      ...input,
+      id: `queued:${crypto.randomUUID()}`,
+      status: "queued",
+    },
+    fromRunId
+  );
 }
 
 function queuedAndDue(now: Date) {

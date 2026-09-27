@@ -81,18 +81,23 @@ export async function queueBrowserErrand(
     "pendingTask" | "retryAt"
   > & {
     readonly composedTask: string;
+    readonly fromRunId?: string;
     readonly retryAfterMs?: number;
   },
   now = new Date()
 ) {
-  const { composedTask, retryAfterMs, ...row } = input;
+  const { composedTask, fromRunId, retryAfterMs, ...row } = input;
   const account = row.waitsForAccount ?? undefined;
   const ahead = account === undefined ? await countQueuedBrowserRuns() : 0;
-  const queued = await createQueuedBrowserRun(scope, {
-    ...row,
-    pendingTask: composedTask,
-    retryAt: queueRetryAt(now, retryAfterMs),
-  });
+  const queued = await createQueuedBrowserRun(
+    scope,
+    {
+      ...row,
+      pendingTask: composedTask,
+      retryAt: queueRetryAt(now, retryAfterMs),
+    },
+    fromRunId
+  );
   if (account !== undefined) {
     return {
       minutes: undefined,
