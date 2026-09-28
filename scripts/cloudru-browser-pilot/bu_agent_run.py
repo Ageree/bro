@@ -16,6 +16,7 @@ parser.add_argument("--model", default=os.environ.get("BU_AGENT_MODEL", "deepsee
 parser.add_argument("--max-steps", type=int, default=20)
 parser.add_argument("--deadline", type=int, default=420)
 parser.add_argument("--screenshot")
+parser.add_argument("--allowed-domains", help="comma-separated, e.g. ozon.ru,*.ozon.ru; keeps the agent on the site")
 args = parser.parse_args()
 faulthandler.dump_traceback_later(args.deadline, exit=True)
 
@@ -23,7 +24,10 @@ faulthandler.dump_traceback_later(args.deadline, exit=True)
 async def main():
     started = time.perf_counter()
     result = {"engine": "browser-use-agent", "model": args.model, "url": args.url, "goal": args.goal}
-    session = BrowserSession(cdp_url=os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"), keep_alive=True)
+    allowed = [d.strip() for d in args.allowed_domains.split(",")] if args.allowed_domains else None
+    result["allowed_domains"] = allowed
+    session = BrowserSession(cdp_url=os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"), keep_alive=True,
+                             allowed_domains=allowed)
     try:
         agent = Agent(
             task=f"Open {args.url}. {args.goal}",

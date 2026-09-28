@@ -47,6 +47,10 @@ stage caddy
 retry curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 retry apt-get install -yq /tmp/chrome.deb xvfb git fonts-noto-color-emoji fonts-liberation jq
 rm -f /tmp/chrome.deb
+# Chrome 154 ignores --force-webrtc-ip-handling-policy: without this policy WebRTC hands sites the
+# VM's own address past the residential proxy (srflx candidate).
+mkdir -p /etc/opt/chrome/policies/managed
+echo '{"WebRtcIPHandling": "disable_non_proxied_udp"}' > /etc/opt/chrome/policies/managed/bro-webrtc.json
 cat > /etc/systemd/system/bro-xvfb.service <<'UNIT'
 [Unit]
 Description=Xvfb display :99 for the pilot Chrome
@@ -65,7 +69,9 @@ After=bro-xvfb.service network-online.target
 [Service]
 User=bro
 Environment=DISPLAY=:99
-ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 about:blank
+# Extra flags, e.g. the residential proxy: CHROME_EXTRA_FLAGS=--proxy-server=http://127.0.0.1:3128 ...
+EnvironmentFile=-/etc/bro/chrome.env
+ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 $CHROME_EXTRA_FLAGS about:blank
 # SIGTERM lets Chrome flush cookies and localStorage to the profile before power-off.
 KillMode=mixed
 TimeoutStopSec=30
@@ -73,8 +79,21 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Residential proxy forwarder for Chrome (proxy_forward.py arrives with the runners).
+cat > /etc/systemd/system/bro-proxy.service <<'UNIT'
+[Unit]
+Description=Pilot proxy forwarder 127.0.0.1:3128 -> residential proxy
+ConditionPathExists=/opt/bro/runners/proxy_forward.py
+[Service]
+User=bro
+ExecStart=/usr/bin/python3 /opt/bro/runners/proxy_forward.py
+Restart=always
+[Install]
+WantedBy=multi-user.target
+UNIT
 systemctl daemon-reload
 systemctl enable --now bro-xvfb bro-chrome
+systemctl enable bro-proxy
 stage chrome
 
 # 3. uv, jev-ultrafast at the pinned commit, browser-use 0.13.10 in its own venv.
