@@ -1,7 +1,7 @@
-"""Bro browser pilot suite. Runs once per boot as user `bro`; writes JSON results for the results page.
+"""Bro browser pilot suite. Run once per boot as user `bro` (vm.py starts it over the control endpoint).
 
-No inbound control: the task list is fixed here. Results go to $RESULTS_DIR/boot-<n>.json,
-updated after every step, so progress is visible while the suite runs.
+Results go to $RESULTS_DIR/boot-<n>.json, updated after every step, so progress is visible while the
+suite runs; screenshots of the final pages sit next to it for independent success checks.
 """
 
 import json
@@ -55,6 +55,7 @@ def run(name, argv, cwd=None, timeout=480):
     except Exception as e:
         result = {"status": "suite_error", "error": repr(e)}
     result["wall_ms"] = round((time.perf_counter() - started) * 1000)
+    result["started_at"], result["finished_at"] = time.time() - result["wall_ms"] / 1000, time.time()
     report["steps"][name] = result
     save()
     return result
@@ -86,6 +87,13 @@ for name, url in {
     "egress_ip": "https://ipinfo.io/json",
     "typesafe": "https://api.typesafe.ai/",
     "openrouter": "https://openrouter.ai/api/v1/models",
+    "openai": "https://api.openai.com/v1/models",
+    "anthropic": "https://api.anthropic.com/v1/models",
+    "inception": "https://api.inceptionlabs.ai/v1/models",
+    "vercel_ai_gateway": "https://ai-gateway.vercel.sh/v1/models",
+    "cloudru_foundation_models": "https://foundation-models.api.cloud.ru/v1/models",
+    "neon": "https://console.neon.tech/",
+    "composio": "https://backend.composio.dev/",
     "browser_use_cloud": "https://api.browser-use.com/",
     "wikipedia_en": "https://en.wikipedia.org/wiki/Main_Page",
     "wikipedia_ru": "https://ru.wikipedia.org/",
@@ -133,28 +141,35 @@ JEV_TASKS = {
     "ozon": ("https://www.ozon.ru/",
              "Найди беспроводные наушники. Остановись, когда видны результаты поиска с ценами."),
 }
-BU_TASKS = ["wiki_ru", "rasp", "ozon"]
-DIRECT = {
-    "ozon": "https://www.ozon.ru/",
-    "rasp": "https://rasp.yandex.ru/",
-    "gosuslugi": "https://www.gosuslugi.ru/",
+# Click-only goals: no TYPE_TEXT, so they need TypeSafe but not the text helper (OpenRouter refuses RU).
+JEV_CLICK_TASKS = {
+    "wiki_en_click": ("https://en.wikipedia.org/wiki/Main_Page",
+                      "Open the full article of today's featured article. Do not type anything."),
+    "rasp_click": ("https://rasp.yandex.ru/",
+                   "Открой расписание из Москвы в Санкт-Петербург по ссылке в популярных направлениях. "
+                   "Ничего не вводи с клавиатуры."),
 }
+DIRECT = {**{name: url for name, (url, _) in JEV_TASKS.items()}, "gosuslugi": "https://www.gosuslugi.ru/"}
 
 if boot == 1:
-    for name, (url, goal) in JEV_TASKS.items():
+    for name, (url, goal) in {**JEV_TASKS, **JEV_CLICK_TASKS}.items():
         run(f"jev_{name}", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/jev_run.py", "--url", url, "--goal", goal,
                             "--screenshot", str(RESULTS / f"boot-{boot}-jev_{name}.jpg")], cwd=JEV_DIR, timeout=300)
     for name, url in DIRECT.items():
-        run(f"direct_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_direct.py", "--url", url], timeout=120)
-    for name in BU_TASKS:
-        url, goal = JEV_TASKS[name]
+        run(f"direct_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_direct.py", "--url", url,
+                               "--screenshot", str(RESULTS / f"boot-{boot}-direct_{name}.jpg")], timeout=120)
+    for name, (url, goal) in JEV_TASKS.items():
         run(f"bu_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_agent_run.py", "--model",
-                           "openai/gpt-5.6-luna", "--url", url, "--goal", goal, "--max-steps", "20"], timeout=480)
+                           "openai/gpt-5.6-luna", "--url", url, "--goal", goal, "--max-steps", "20",
+                           "--screenshot", str(RESULTS / f"boot-{boot}-bu_{name}.jpg")], timeout=480)
 else:
-    # After a stop/start: the same short task on a restarted machine.
-    url, goal = JEV_TASKS["wiki_en"]
-    run("jev_wiki_en", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/jev_run.py", "--url", url, "--goal", goal,
-                        "--screenshot", str(RESULTS / f"boot-{boot}-jev_wiki_en.jpg")], cwd=JEV_DIR, timeout=300)
+    # After a stop/start: short tasks on the restarted machine, with the profile left by the previous boot.
+    for name, (url, goal) in JEV_CLICK_TASKS.items():
+        run(f"jev_{name}", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/jev_run.py", "--url", url, "--goal", goal,
+                            "--screenshot", str(RESULTS / f"boot-{boot}-jev_{name}.jpg")], cwd=JEV_DIR, timeout=300)
+    for name in ("rasp", "gosuslugi"):
+        run(f"direct_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_direct.py", "--url", DIRECT[name],
+                               "--screenshot", str(RESULTS / f"boot-{boot}-direct_{name}.jpg")], timeout=120)
 
 report["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 report["uptime_at_finish_s"] = uptime()

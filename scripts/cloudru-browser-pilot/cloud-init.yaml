@@ -1,0 +1,21 @@
+#cloud-config
+# Rendered by vm.py: __TOKEN_SHA256__ is the SHA-256 of the control token (the token itself stays
+# with the operator), __CONTROL_PY__ and __PROVISION_SH__ are base64 of control.py and provision.sh.
+# Model keys are not here: they arrive later over the control endpoint into /etc/bro/secrets.env.
+write_files:
+  - path: /etc/bro/control.sha256
+    permissions: "0600"
+    content: __TOKEN_SHA256__
+  - path: /opt/bro/control.py
+    encoding: b64
+    content: __CONTROL_PY__
+  - path: /opt/bro/provision.sh
+    permissions: "0755"
+    encoding: b64
+    content: __PROVISION_SH__
+runcmd:
+  - [
+      bash,
+      -c,
+      '/opt/bro/provision.sh > /var/log/bro-provision.log 2>&1 || echo "failed:$(cat /var/lib/bro/stage)" > /var/lib/bro/stage',
+    ]

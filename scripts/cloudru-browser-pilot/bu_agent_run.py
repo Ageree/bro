@@ -15,6 +15,7 @@ parser.add_argument("--goal", required=True)
 parser.add_argument("--model", default=os.environ.get("BU_AGENT_MODEL", "deepseek/deepseek-v4.1-flash"))
 parser.add_argument("--max-steps", type=int, default=20)
 parser.add_argument("--deadline", type=int, default=420)
+parser.add_argument("--screenshot")
 args = parser.parse_args()
 faulthandler.dump_traceback_later(args.deadline, exit=True)
 
@@ -29,6 +30,7 @@ async def main():
             llm=ChatOpenRouter(model=args.model),
             browser_session=session,
             use_vision=False,
+            calculate_cost=True,
         )
         history = await agent.run(max_steps=args.max_steps)
         result.update(
@@ -40,6 +42,12 @@ async def main():
             errors=[e for e in history.errors() if e][:5],
             agent_seconds=round(history.total_duration_seconds(), 2),
         )
+        # Success is judged from the final page, not from the agent's own "done".
+        state = await session.get_browser_state_summary(include_screenshot=False)
+        result.update(final_url=state.url, title=state.title,
+                      visible_text=state.dom_state.llm_representation()[:3000])
+        if args.screenshot:
+            await session.take_screenshot(path=args.screenshot, format="jpeg", quality=70)
         usage = getattr(history, "usage", None)
         if usage is not None:
             result["usage"] = usage.model_dump() if hasattr(usage, "model_dump") else str(usage)

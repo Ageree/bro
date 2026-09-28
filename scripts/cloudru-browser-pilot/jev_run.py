@@ -19,9 +19,11 @@ faulthandler.dump_traceback_later(args.deadline, exit=True)
 
 started = time.perf_counter()
 result = {"engine": "jev", "url": args.url, "goal": args.goal}
+live = None
 try:
     with Agent(args.url, args.goal) as agent:
         opened_ms = round((time.perf_counter() - started) * 1000)
+        live = agent.state  # on failure it still holds the decision that led to the error
         state = None
         for state in agent.run():
             print(f"{state['elapsed_ms']:>6} ms {len(state['history'])} actions {state['status']}", file=sys.stderr)
@@ -38,14 +40,31 @@ try:
             decisions=len(state["decisions"]),
             text_calls=len(state["text_calls"]),
             usage=[d.get("usage") for d in state["decisions"]],
+            text_usage=[t.get("usage") for t in state["text_calls"]],
             visible_text=(state["page"].get("text") or "")[:3000],
         )
         if args.screenshot:
             import base64
 
-            shot = agent.browser.call("Page.captureScreenshot", format="jpeg", quality=70)
-            open(args.screenshot, "wb").write(base64.b64decode(shot["data"]))
-except Exception as e:  # report, never hide
+            # jev drives a background tab; bring it to front or the capture can hang. A failed shot
+            # must not turn a finished run into an error.
+            try:
+                from browser_harness.helpers import cdp
+
+                cdp("Target.activateTarget", targetId=agent.browser.target)
+                shot = agent.browser.call("Page.captureScreenshot", format="jpeg", quality=70)
+                open(args.screenshot, "wb").write(base64.b64decode(shot["data"]))
+            except Exception as e:
+                result["screenshot_error"] = f"{type(e).__name__}: {e}"
+except Exception as e:  # report, never hide, with the steps made before the failure
     result.update(status="error", error=f"{type(e).__name__}: {e}")
+    if live:
+        result.update(
+            final_url=live["page"]["url"],
+            actions=[{k: h.get(k) for k in ("action", "kind", "latency_ms")} for h in live["history"]],
+            decisions=len(live["decisions"]),
+            last_decision={k: live["decisions"][-1].get(k) for k in ("operation", "choice", "latency_ms")}
+            if live["decisions"] else None,
+        )
 result["total_ms"] = round((time.perf_counter() - started) * 1000)
 print(json.dumps(result, ensure_ascii=False))
