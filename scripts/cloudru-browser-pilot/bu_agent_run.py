@@ -35,7 +35,7 @@ async def main():
     started = time.perf_counter()
     result = {"engine": "browser-use-agent", "model": args.model, "url": args.url, "goal": args.goal}
     allowed = [d.strip() for d in args.allowed_domains.split(",")] if args.allowed_domains else None
-    if allowed:
+    if allowed and os.environ.get("BU_CDP_URL", "http://").startswith("http"):
         fresh_tab(os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"))
     result["allowed_domains"] = allowed
     session = BrowserSession(cdp_url=os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"), keep_alive=True,

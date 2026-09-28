@@ -33,13 +33,15 @@ STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 STATE = STATE_DIR / "state.json"
 COMPUTE = "https://compute.api.cloud.ru/api"
 ZONE = "ru.AZ-3"
-RUNNERS = ["suite.py", "jev_run.py", "bu_agent_run.py", "bu_direct.py", "persist.py", "proxy_forward.py"]
+RUNNERS = ["suite.py", "jev_run.py", "bu_agent_run.py", "bu_direct.py", "persist.py", "proxy_forward.py",
+           "leak_check.py", "steel_session.py"]
 # Keys the runners need on the VM (cleaned by clean()).
 SECRETS = {
     "TYPESAFE_API_KEY": "JEV_API_KEY",
     "TEXT_MODEL_API_KEY": "OPENROUTER_API_KEY",
     "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
 }
+OPTIONAL_SECRETS = {"STEEL_API_KEY": "STEEL_API_KEY"}
 ROUTERAI = "https://routerai.ru/api/v1"
 RUNNER_ENV = {
     "TYPESAFE_MODEL": "jev-latest",
@@ -264,6 +266,7 @@ def main():
         print(json.dumps(health()))
     elif args.cmd == "secrets":
         env = {k: clean(os.environ[v]) for k, v in SECRETS.items()} | RUNNER_ENV
+        env |= {k: clean(os.environ[v]) for k, v in OPTIONAL_SECRETS.items() if os.environ.get(v)}
         if os.environ.get("ROUTERAI_API_KEY"):
             # RouterAI (OpenAI-compatible, hosted in RU) answers Cloud.ru; OpenRouter does not.
             key = clean(os.environ["ROUTERAI_API_KEY"])
