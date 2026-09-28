@@ -4,7 +4,8 @@ State (control token, VM id, IP, timings) lives in $PILOT_STATE_DIR (default ~/.
 
   python vm.py create               security group + VM, wait for the ready browser, print timings
   python vm.py health               /health of the VM
-  python vm.py secrets              upload /etc/bro/secrets.env from CLOUDRU-free env vars (see SECRETS)
+  python vm.py secrets              upload /etc/bro/secrets.env (SECRETS; with ROUTERAI_API_KEY set,
+                                    the jev helper and browser-use go to RouterAI instead of OpenRouter)
   python vm.py runners              upload runner scripts to /opt/bro/runners
   python vm.py exec CMD [--user bro] [--timeout 120]
   python vm.py job NAME CMD         background command; `python vm.py job NAME` shows its status
@@ -38,6 +39,7 @@ SECRETS = {
     "TEXT_MODEL_API_KEY": "OPENROUTER_API_KEY",
     "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
 }
+ROUTERAI = "https://routerai.ru/api/v1"
 RUNNER_ENV = {
     "TYPESAFE_MODEL": "jev-latest",
     "TEXT_MODEL_BASE_URL": "https://openrouter.ai/api/v1",
@@ -258,10 +260,16 @@ def main():
     elif args.cmd == "health":
         print(json.dumps(health()))
     elif args.cmd == "secrets":
-        lines = [f"{k}={clean(os.environ[v])}" for k, v in SECRETS.items()]
-        lines += [f"{k}={v}" for k, v in RUNNER_ENV.items()]
+        env = {k: clean(os.environ[v]) for k, v in SECRETS.items()} | RUNNER_ENV
+        if os.environ.get("ROUTERAI_API_KEY"):
+            # RouterAI (OpenAI-compatible, hosted in RU) answers Cloud.ru; OpenRouter does not.
+            key = clean(os.environ["ROUTERAI_API_KEY"])
+            env.update(TEXT_MODEL_API_KEY=key, BU_LLM_API_KEY=key, TEXT_MODEL_BASE_URL=ROUTERAI,
+                       BU_LLM_BASE_URL=ROUTERAI,
+                       TEXT_MODEL=os.environ.get("PILOT_TEXT_MODEL", "deepseek/deepseek-v4.1-flash"))
+        lines = [f"{k}={v}" for k, v in env.items()]
         upload("/etc/bro/secrets.env", ("\n".join(lines) + "\n").encode(), "0600", "bro")
-        print("secrets.env written:", ", ".join(SECRETS))
+        print("secrets.env written:", ", ".join(k for k in env if "KEY" in k))
     elif args.cmd == "runners":
         for name in RUNNERS:
             upload(f"/opt/bro/runners/{name}", (HERE / name).read_bytes())
