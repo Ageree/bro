@@ -53,8 +53,18 @@ def llm_spent():
         return None
 
 
+def proxy_bytes():
+    """Residential traffic so far (proxy_forward.py); the per-step delta is what the step cost in GB."""
+    try:
+        data = json.loads(Path("/var/lib/bro/proxy-bytes.json").read_text())
+        return data["up"] + data["down"]
+    except Exception:
+        return None
+
+
 def run(name, argv, cwd=None, timeout=480):
     spent_before = llm_spent()
+    bytes_before = proxy_bytes()
     started = time.perf_counter()
     try:
         p = subprocess.run(argv, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=timeout)
@@ -69,6 +79,10 @@ def run(name, argv, cwd=None, timeout=480):
         result = {"status": "suite_error", "error": repr(e)}
     result["wall_ms"] = round((time.perf_counter() - started) * 1000)
     result["started_at"], result["finished_at"] = time.time() - result["wall_ms"] / 1000, time.time()
+    time.sleep(1.2)  # proxy_forward.py writes its counter once a second
+    bytes_after = proxy_bytes()
+    if bytes_before is not None and bytes_after is not None:
+        result["proxy_mb"] = round((bytes_after - bytes_before) / 1e6, 2)
     if spent_before is not None:
         time.sleep(3)  # the key's usage counter trails the last generation
         spent_after = llm_spent()
@@ -169,8 +183,45 @@ JEV_CLICK_TASKS = {
 }
 DIRECT = {**{name: url for name, (url, _) in JEV_TASKS.items()}, "gosuslugi": "https://www.gosuslugi.ru/"}
 
-# SUITE_FULL=1 repeats the full set on a later boot (e.g. after switching the model provider).
 BU_MODELS = os.environ.get("BU_AGENT_MODELS", "openai/gpt-5.6-luna").split(",")
+
+# SUITE_PROXY=1: Chrome goes through the residential proxy; the sites that refuse Cloud.ru plus controls.
+PROXY_TASKS = {
+    "ozon": JEV_TASKS["ozon"],
+    "avito": ("https://www.avito.ru/moskva",
+              "Найди объявления о продаже велосипедов в Москве. Остановись, когда видны объявления с ценами."),
+    "rzd": ("https://www.rzd.ru/",
+            "Найди поезда из Москвы в Санкт-Петербург на 20 ноября 2026 года. "
+            "Остановись, когда видны варианты поездов с ценами."),
+    "rasp": JEV_TASKS["rasp"],
+    "flights": JEV_TASKS["flights"],
+}
+PROXY_DOMAINS = {"ozon": "ozon.ru,*.ozon.ru", "avito": "avito.ru,*.avito.ru", "rzd": "rzd.ru,*.rzd.ru",
+                 "rasp": "rasp.yandex.ru,*.yandex.ru,yandex.ru", "flights": "www.google.com,google.com"}
+
+if os.environ.get("SUITE_PROXY"):
+    run("leak_check", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/leak_check.py"], cwd=JEV_DIR, timeout=90)
+    for name, (url, _) in {**PROXY_TASKS, "gosuslugi": (DIRECT["gosuslugi"], None),
+                           "wiki_ru": JEV_TASKS["wiki_ru"]}.items():
+        run(f"direct_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_direct.py", "--url", url,
+                               "--screenshot", str(RESULTS / f"boot-{boot}-direct_{name}.jpg")], timeout=120)
+    for name in ("ozon", "avito", "rzd"):
+        url, goal = PROXY_TASKS[name]
+        run(f"jev_{name}", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/jev_run.py", "--url", url, "--goal", goal,
+                            "--screenshot", str(RESULTS / f"boot-{boot}-jev_{name}.jpg")], cwd=JEV_DIR, timeout=300)
+    for model in BU_MODELS:
+        short = model.split("/")[-1]
+        for name, (url, goal) in PROXY_TASKS.items():
+            run(f"bu_{short}_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_agent_run.py", "--model",
+                                       model, "--url", url, "--goal", goal, "--max-steps", "20",
+                                       "--allowed-domains", PROXY_DOMAINS[name],
+                                       "--screenshot", str(RESULTS / f"boot-{boot}-bu_{short}_{name}.jpg")],
+                timeout=480)
+    report["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    save()
+    raise SystemExit
+
+# SUITE_FULL=1 repeats the full set on a later boot (e.g. after switching the model provider).
 
 if boot == 1 or os.environ.get("SUITE_FULL"):
     for name, (url, goal) in {**JEV_TASKS, **JEV_CLICK_TASKS}.items():

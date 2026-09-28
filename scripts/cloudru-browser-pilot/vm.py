@@ -7,6 +7,7 @@ State (control token, VM id, IP, timings) lives in $PILOT_STATE_DIR (default ~/.
   python vm.py secrets              upload /etc/bro/secrets.env (SECRETS; with ROUTERAI_API_KEY set,
                                     the jev helper and browser-use go to RouterAI instead of OpenRouter)
   python vm.py runners              upload runner scripts to /opt/bro/runners
+  python vm.py proxies FILE         upload `host:port:user:password` lines to /etc/bro/proxies.txt (600)
   python vm.py exec CMD [--user bro] [--timeout 120]
   python vm.py job NAME CMD         background command; `python vm.py job NAME` shows its status
   python vm.py get REMOTE LOCAL     download a file
@@ -34,13 +35,15 @@ STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 STATE = STATE_DIR / "state.json"
 COMPUTE = "https://compute.api.cloud.ru/api"
 ZONE = "ru.AZ-3"
-RUNNERS = ["suite.py", "jev_run.py", "bu_agent_run.py", "bu_direct.py", "persist.py"]
+RUNNERS = ["suite.py", "jev_run.py", "bu_agent_run.py", "bu_direct.py", "persist.py", "proxy_forward.py",
+           "leak_check.py", "steel_session.py"]
 # Keys the runners need on the VM (cleaned by clean()).
 SECRETS = {
     "TYPESAFE_API_KEY": "JEV_API_KEY",
     "TEXT_MODEL_API_KEY": "OPENROUTER_API_KEY",
     "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
 }
+OPTIONAL_SECRETS = {"STEEL_API_KEY": "STEEL_API_KEY"}
 ROUTERAI = "https://routerai.ru/api/v1"
 RUNNER_ENV = {
     "TYPESAFE_MODEL": "jev-latest",
@@ -261,6 +264,8 @@ def main():
     sub.add_parser("health")
     sub.add_parser("secrets")
     sub.add_parser("runners")
+    px = sub.add_parser("proxies")
+    px.add_argument("file")
     e = sub.add_parser("exec")
     e.add_argument("command")
     e.add_argument("--user", default="root")
@@ -287,6 +292,7 @@ def main():
         print(json.dumps(health()))
     elif args.cmd == "secrets":
         env = {k: clean(os.environ[v]) for k, v in SECRETS.items()} | RUNNER_ENV
+        env |= {k: clean(os.environ[v]) for k, v in OPTIONAL_SECRETS.items() if os.environ.get(v)}
         if os.environ.get("ROUTERAI_API_KEY"):
             # RouterAI (OpenAI-compatible, hosted in RU) answers Cloud.ru; OpenRouter does not.
             key = clean(os.environ["ROUTERAI_API_KEY"])
@@ -300,6 +306,11 @@ def main():
         for name in RUNNERS:
             upload(f"/opt/bro/runners/{name}", (HERE / name).read_bytes())
         print("uploaded", ", ".join(RUNNERS))
+    elif args.cmd == "proxies":
+        lines = [line.strip() for line in Path(args.file).read_text().splitlines() if line.strip()]
+        assert all(len(line.split(":", 3)) == 4 for line in lines), "expected host:port:user:password"
+        upload("/etc/bro/proxies.txt", ("\n".join(lines) + "\n").encode(), "0600", "bro")
+        print(f"{len(lines)} proxies written")
     elif args.cmd == "exec":
         code, out = control("POST", "/exec", {"cmd": args.command, "user": args.user, "timeout": args.timeout},
                             timeout=args.timeout + 30)
