@@ -17,6 +17,7 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
 | `persist.py`       | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                      |
 | `bu_remote_run.py` | Агент browser-use вне VM на её Chrome через CDP (`vm.py cdp`); `--skill` дописывает скилл в системный промпт     |
 | `skill_ab.py`      | Задачи на выгрузку списков без скилла и со скиллом через `bu_remote_run.py`                                      |
+| `skills/`          | Копия скилла browser-optimizer для `skill_ab.py`; итоги A/B — раздел 12 плана                                    |
 
 Состояние оператора (токен, id VM, IP) — в `$PILOT_STATE_DIR` вне репозитория.
 Порядок: `vm.py create` → `vm.py secrets` → `vm.py runners` →
@@ -63,6 +64,13 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
   отдельно в `/api/v1/security-groups/{id}/rules` (`port_range: "443:443"`).
 - Питание: `POST /api/v1/vms/{id}/set-power` с `{"state": "power_off" | "power_on" | "reboot"}`
   (ответ 204; состояния `stopping` → `stopped`); удаление: `DELETE /api/v1/vms/{id}`.
+- Консоль: `POST /api/v1/vms/{id}/remote-console` с `{"protocol": "serial" | "vnc"}`
+  (204), затем `remote_console_ws` в `GET /api/v1/vms/{id}` — websocket с
+  подпротоколом `binary`, байты консоли как есть; после перезагрузки адрес
+  запрашивайте заново. Первая загрузка может встать в `(initramfs)`: корень
+  цел, но initramfs его не смонтировал; `set-power reboot` лечит, cloud-init
+  отрабатывает на следующей загрузке. Порты 80/443 закрыты снаружи — смотрите
+  консоль, а не сеть.
 - Расход: `GET https://organization.api.cloud.ru/v1/consumption?agreement_id=…` с
   `start_date=…T00:00:00Z&end_date=…` **и** `start_date_msk.year/month/day`,
   `end_date_msk.…` (без любой из пар — 400). `agreement_id` —

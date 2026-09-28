@@ -47,7 +47,8 @@ async def main():
         extra = SKILL_PREAMBLE + Path(args.skill).read_text() + "\n</skill>" if args.skill else None
         agent = Agent(
             task=f"Open {args.url}. {args.goal}",
-            llm=ChatOpenRouter(model=args.model, api_key=os.environ["OPENROUTER_API_KEY"]),
+            # The environment key arrives with line breaks inside (see clean() in vm.py).
+            llm=ChatOpenRouter(model=args.model, api_key="".join(os.environ["OPENROUTER_API_KEY"].split())),
             browser_session=session,
             use_vision=False,
             extend_system_message=extra,

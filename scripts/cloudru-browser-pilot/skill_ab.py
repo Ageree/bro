@@ -1,6 +1,7 @@
 """A/B of a skill for Browser Use Agent on the VM's Chrome: each task runs without and with `--skill`.
 
-  python skill_ab.py --python <venv with browser-use>/bin/python --skill SKILL.md --out results.json [--only a,b]
+  python skill_ab.py --python <venv with browser-use>/bin/python --skill skills/browser-optimizer.md \
+      --out results.json [--only a,b] [--repeat n]
 
 Runs are sequential (one Chrome); results.json is rewritten after every run. Success is judged later
 from `final_result` against the page, not from the agent's own verdict.

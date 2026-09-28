@@ -207,6 +207,10 @@ OpenRouter) и TypeSafe. luna через RouterAI ломает JSON шага bro
 домену итоговой страницы.
 Ключи окружения приходили с переводами строк (`OPENROUTER_API_KEY`) и в
 типографских кавычках (`JEV_API_KEY`, отсюда 401): чистит `clean()` в `vm.py`.
+Без ключа модели на VM агента гоняйте из сессии на Chrome VM: `vm.py cdp`,
+`bu_remote_run.py`. Ключ Foundation Models Cloud.ru — отдельный: ключ доступа
+даёт только список моделей. VM без ответа на 443 — смотрите серийную консоль
+(`remote-console`, README стенда): первая загрузка вставала в `(initramfs)`.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
