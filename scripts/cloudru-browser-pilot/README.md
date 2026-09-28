@@ -4,20 +4,29 @@
 Evolution, два self-host-исполнителя — `jev-ultrafast` и open-source
 `browser-use` — без Browser Use Cloud. Скрипты — тестовый стенд, не код Бро.
 
-| Файл              | Что делает                                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json` |
-| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                               |
-| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                          |
-| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                  |
-| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                   |
+| Файл              | Что делает                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `vm.py`           | Сторона оператора: группа безопасности, VM, ожидание готовности, ключи, раннеры, команды, питание                |
+| `cloud-init.yaml` | Шаблон user data: хеш управляющего токена, `control.py` и `provision.sh` (ключей в нём нет)                      |
+| `provision.sh`    | Первая загрузка: эндпоинт, Caddy на `<ip>.sslip.io`, Chrome в Xvfb как сервис, uv, jev, browser-use              |
+| `control.py`      | Эндпоинт на `127.0.0.1:8080` за Caddy: `/health`, `/exec`, `/jobs`, `/files`; bearer-токен, на VM — лишь его хеш |
+| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`    |
+| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                  |
+| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                             |
+| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                     |
+| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                      |
+
+Состояние оператора (токен, id VM, IP) — в `$PILOT_STATE_DIR` вне репозитория.
+Порядок: `vm.py create` → `vm.py secrets` → `vm.py runners` →
+`vm.py job suite '<source /etc/bro/secrets.env; suite.py>'` → `vm.py power off|on`
+→ второй прогон `suite.py` (метка профиля и короткие задачи).
 
 Всё только на чтение: поиск без входа, без отправки форм и оплаты.
 
 ## Окружение раннеров
 
 - Chrome с `--remote-debugging-port=9222 --user-data-dir=<постоянный профиль>`
-  (на VM — Xvfb и `google-chrome`, не headless), `BU_CDP_URL=http://127.0.0.1:9222`,
+  (на VM — Xvfb и `google-chrome`, не headless; `provision.sh`), `BU_CDP_URL=http://127.0.0.1:9222`,
   `BH_UPDATE_CHECK=0`, `ANONYMIZED_TELEMETRY=false`, `BROWSER_USE_CLOUD_SYNC=false`.
 - jev: `TYPESAFE_API_KEY` (ключ JEV), `TYPESAFE_MODEL=jev-latest`,
   `TEXT_MODEL_API_KEY` = ключ OpenRouter, `TEXT_MODEL_BASE_URL=https://openrouter.ai/api/v1`,
@@ -37,14 +46,27 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
   `flavor_name` (`gen-2-4` — 2 vCPU/4 ГБ 1:1), `image_name` (`ubuntu-22.04`),
   `disks: [{name, size, disk_type_name: "SSD"}]`,
   `interfaces: [{type: "regular", subnet_name: "Default_ru.AZ-3", new_external_ip: true, security_group_names: [...]}]`,
-  `cloud_init` (строка). Лишние поля API отвергает с `extra_forbidden` — так
+  `cloud_init` — строка **в base64** (сырой YAML — 422 «Cannot decode cloud init
+  template from base64»). Лишние поля API отвергает с `extra_forbidden` — так
   удобно узнавать схему.
 - Группа безопасности: `POST /api/v1/security-groups` без правил, правила —
   отдельно в `/api/v1/security-groups/{id}/rules` (`port_range: "443:443"`).
-- Питание: `POST /api/v1/vms/{id}/set-power`; удаление: `DELETE /api/v1/vms/{id}`.
+- Питание: `POST /api/v1/vms/{id}/set-power` с `{"state": "power_off" | "power_on" | "reboot"}`
+  (ответ 204; состояния `stopping` → `stopped`); удаление: `DELETE /api/v1/vms/{id}`.
+- Расход: `GET https://organization.api.cloud.ru/v1/consumption?agreement_id=…` с
+  `start_date=…T00:00:00Z&end_date=…` **и** `start_date_msk.year/month/day`,
+  `end_date_msk.…` (без любой из пар — 400). `agreement_id` —
+  `GET /v1/agreements?customer_id=…`. Баланса в API нет; расход отстаёт на
+  десятки минут.
 
-## Итоги на локальной форме (песочница, не Cloud.ru)
+## Итоги
 
-Форма «Откуда/Куда/Найти»: jev — 2,7 с (3 действия, 4 решения TypeSafe,
-2 вызова helper); browser-use Agent на luna — 14 с (5 шагов); снимок состояния
-в прямом режиме — 30–50 мс. На VM прогон ещё не делался.
+На VM Cloud.ru (28.09.2026) — `docs/browser-cloud-migration.md`, раздел 12:
+OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403, поэтому helper jev
+и агент browser-use из VM не работают; TypeSafe доступен (≈ 0,3 с на решение);
+прямой режим работает везде, кроме Ozon (антибот). Создание → готовый браузер
+231 с, включение → готовый браузер 47 с, профиль переживает stop/start.
+
+До VM, на локальной форме «Откуда/Куда/Найти» в песочнице: jev — 2,7 с
+(3 действия, 4 решения TypeSafe, 2 вызова helper); browser-use Agent на luna —
+14 с (5 шагов); снимок состояния в прямом режиме — 30–50 мс.

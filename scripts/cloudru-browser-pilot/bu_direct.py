@@ -11,6 +11,8 @@ from browser_use import BrowserSession
 parser = argparse.ArgumentParser()
 parser.add_argument("--url", required=True)
 parser.add_argument("--repeat", type=int, default=3)
+parser.add_argument("--screenshot")
+parser.add_argument("--settle", type=float, default=5, help="seconds for interstitials (Gosuslugi) to pass")
 args = parser.parse_args()
 
 
@@ -24,6 +26,7 @@ async def main():
         t = time.perf_counter()
         await session.navigate_to(args.url)
         result["navigate_ms"] = round((time.perf_counter() - t) * 1000)
+        await asyncio.sleep(args.settle)
         timings = []
         for _ in range(args.repeat):
             t = time.perf_counter()
@@ -38,6 +41,8 @@ async def main():
             llm_text_chars=len(state.dom_state.llm_representation()),
             llm_text_head=state.dom_state.llm_representation()[:1500],
         )
+        if args.screenshot:
+            await session.take_screenshot(path=args.screenshot, format="jpeg", quality=70)
     except Exception as e:  # report, never hide
         result.update(status="error", error=f"{type(e).__name__}: {e}"[:2000])
     finally:
