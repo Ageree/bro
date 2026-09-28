@@ -79,6 +79,7 @@ def run(name, argv, cwd=None, timeout=480):
         result = {"status": "suite_error", "error": repr(e)}
     result["wall_ms"] = round((time.perf_counter() - started) * 1000)
     result["started_at"], result["finished_at"] = time.time() - result["wall_ms"] / 1000, time.time()
+    time.sleep(1.2)  # proxy_forward.py writes its counter once a second
     bytes_after = proxy_bytes()
     if bytes_before is not None and bytes_after is not None:
         result["proxy_mb"] = round((bytes_after - bytes_before) / 1e6, 2)

@@ -21,10 +21,22 @@ args = parser.parse_args()
 faulthandler.dump_traceback_later(args.deadline, exit=True)
 
 
+def fresh_tab(cdp_url):
+    """Leave one blank tab: with allowed_domains, a leftover tab on another site stalls BrowserSession start."""
+    import urllib.request
+
+    pages = [t for t in json.load(urllib.request.urlopen(cdp_url + "/json/list")) if t.get("type") == "page"]
+    urllib.request.urlopen(urllib.request.Request(cdp_url + "/json/new?about:blank", method="PUT")).read()
+    for page in pages:
+        urllib.request.urlopen(cdp_url + "/json/close/" + page["id"]).read()
+
+
 async def main():
     started = time.perf_counter()
     result = {"engine": "browser-use-agent", "model": args.model, "url": args.url, "goal": args.goal}
     allowed = [d.strip() for d in args.allowed_domains.split(",")] if args.allowed_domains else None
+    if allowed:
+        fresh_tab(os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"))
     result["allowed_domains"] = allowed
     session = BrowserSession(cdp_url=os.environ.get("BU_CDP_URL", "http://127.0.0.1:9222"), keep_alive=True,
                              allowed_domains=allowed)
