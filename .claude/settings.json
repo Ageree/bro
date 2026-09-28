@@ -2,9 +2,18 @@
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [
-      "Bash", "Read", "Edit", "Write", "Glob", "Grep",
-      "WebFetch", "WebSearch", "NotebookEdit",
-      "mcp__github", "mcp__Vercel", "mcp__Claude_Code_Remote"
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "mcp__github",
+      "mcp__Vercel",
+      "mcp__Claude_Code_Remote"
     ]
   },
   "skipDangerousModePermissionPrompt": true

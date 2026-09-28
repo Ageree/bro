@@ -193,6 +193,11 @@ VM. JEV — заменяемый selector, его hosted API не равен sel
 Ключ доступа Cloud.ru — `CLOUDRU_KEY_ID` и `CLOUDRU_KEY_SECRET`: заданы в
 облачном окружении агентских сессий и в Vercel `bro-next` (prod и preview,
 sensitive). В `shared/environment/env.ts` их добавляют вместе с первым кодом.
+Стенд пилота и схема Compute API (тело `POST /api/v1.1/vms` — массив, поле
+`cloud_init`) — `scripts/cloudru-browser-pilot/README.md`. Из облачной сессии
+наружу только HTTPS:443: управлять VM по SSH нельзя, нужен HTTPS-канал.
+`OPENROUTER_API_KEY` облачного окружения приходил с переводами строк внутри:
+перед использованием склейте без пробелов, иначе «Illegal header value».
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
