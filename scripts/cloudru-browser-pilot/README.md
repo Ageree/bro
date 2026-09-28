@@ -4,17 +4,19 @@
 Evolution, два self-host-исполнителя — `jev-ultrafast` и open-source
 `browser-use` — без Browser Use Cloud. Скрипты — тестовый стенд, не код Бро.
 
-| Файл              | Что делает                                                                                                       |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `vm.py`           | Сторона оператора: группа безопасности, VM, ожидание готовности, ключи, раннеры, команды, питание                |
-| `cloud-init.yaml` | Шаблон user data: хеш управляющего токена, `control.py` и `provision.sh` (ключей в нём нет)                      |
-| `provision.sh`    | Первая загрузка: эндпоинт, Caddy на `<ip>.sslip.io`, Chrome в Xvfb как сервис, uv, jev, browser-use              |
-| `control.py`      | Эндпоинт на `127.0.0.1:8080` за Caddy: `/health`, `/exec`, `/jobs`, `/files`; bearer-токен, на VM — лишь его хеш |
-| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`    |
-| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                  |
-| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                             |
-| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                     |
-| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                      |
+| Файл               | Что делает                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `vm.py`            | Сторона оператора: группа безопасности, VM, ожидание готовности, ключи, раннеры, команды, питание                            |
+| `cloud-init.yaml`  | Шаблон user data: хеш управляющего токена, `control.py` и `provision.sh` (ключей в нём нет)                                  |
+| `provision.sh`     | Первая загрузка: эндпоинт, Caddy на `<ip>.sslip.io`, Chrome в Xvfb как сервис, uv, jev, browser-use                          |
+| `control.py`       | Эндпоинт на `127.0.0.1:8080` за Caddy: `/health`, `/exec`, `/jobs`, `/files`; bearer-токен, на VM — лишь его хеш             |
+| `suite.py`         | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`                |
+| `jev_run.py`       | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                              |
+| `bu_agent_run.py`  | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                                         |
+| `bu_direct.py`     | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                                 |
+| `proxy_forward.py` | `127.0.0.1:3128` → резидентский прокси из `/etc/bro/proxies.txt` (строка `/etc/bro/proxy-index`) с его логином; счёт трафика |
+| `leak_check.py`    | Какой адрес видит сайт (ipinfo) и какие адреса отдаёт WebRTC                                                                 |
+| `persist.py`       | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                                  |
 
 Состояние оператора (токен, id VM, IP) — в `$PILOT_STATE_DIR` вне репозитория.
 Порядок: `vm.py create` → `vm.py secrets` → `vm.py runners` →
@@ -39,6 +41,10 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
   (`PILOT_TEXT_MODEL`, по умолчанию `deepseek/deepseek-v4.1-flash`). Полный
   повтор набора — `SUITE_FULL=1`, модели агента — `BU_AGENT_MODELS` через
   запятую; расход модели за шаг — `llm_spent`.
+- Прокси: `vm.py proxies FILE` (строки `host:port:user:password`), Chrome берёт
+  `--proxy-server=http://127.0.0.1:3128` из `/etc/bro/chrome.env`
+  (`CHROME_EXTRA_FLAGS`). `SUITE_PROXY=1` гоняет Ozon, Avito, rzd и контрольные
+  сайты, пишет трафик за шаг (`proxy_mb`); агенту — `--allowed-domains`.
 
 ## Cloud.ru Evolution API (проверено 28.09.2026)
 
