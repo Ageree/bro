@@ -23,7 +23,8 @@
 - Бэклог с приоритетами и критериями «готово» — `docs/roadmap.md` (сделанное
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
-  мёрджит их PR, — `docs/orchestrator-prompt.md`.
+  мёрджит их PR, — `docs/orchestrator-prompt.md`; проект своего браузера в РФ
+  вместо Browser Use Cloud — `docs/self-hosted-browser.md`.
 
 ## Процесс
 
