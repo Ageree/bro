@@ -45,16 +45,20 @@ if args.action == "release":
 else:
     # Captcha solving on Steel Cloud needs ≥ $10 of paid balance (403 otherwise); own proxy and stealth do not.
     body = {"blockAds": False, "solveCaptcha": args.captcha, "dimensions": {"width": 1366, "height": 900}}
-    if args.stealth:
+    if args.stealth and args.target == "cloud":
         body["stealthConfig"] = {"humanizeInteractions": True, "skipFingerprintInjection": False}
+    if args.stealth and args.target == "local":
+        # Self-hosted steel-browser: fingerprint injection on, a real (non-headless) window, Moscow time.
+        body.update(skipFingerprintInjection=False, headless=False, timezone="Europe/Moscow")
     if args.target == "cloud":
         body.update(useProxy=False, timeout=900000)
     if args.proxy_index is not None:
-        lines = [x for x in Path("/etc/bro/proxies.txt").read_text().splitlines() if x.strip()]
+        proxies = Path(os.environ.get("PILOT_PROXIES", "/etc/bro/proxies.txt"))
+        lines = [x for x in proxies.read_text().splitlines() if x.strip()]
         host, port, user, password = lines[args.proxy_index].split(":", 3)
         body["proxyUrl"] = f"http://{user}:{password}@{host}:{port}"
     session = call(args.target, "POST", "/sessions", body)
-    cdp = session.get("websocketUrl") or ""
+    cdp = (session.get("websocketUrl") or "").replace("0.0.0.0", "127.0.0.1")
     if args.target == "cloud":
         cdp += ("&" if "?" in cdp else "?") + "apiKey=" + os.environ["STEEL_API_KEY"]
     print(json.dumps({"id": session["id"], "cdp_url": cdp, "viewer": session.get("sessionViewerUrl"),
