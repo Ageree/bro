@@ -4,13 +4,13 @@
 Evolution, два self-host-исполнителя — `jev-ultrafast` и open-source
 `browser-use` — без Browser Use Cloud. Скрипты — тестовый стенд, не код Бро.
 
-| Файл              | Что делает                                                                                                                |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`             |
-| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                           |
-| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                                      |
-| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                              |
-| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                               |
+| Файл              | Что делает                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- |
+| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json` |
+| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                               |
+| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                          |
+| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                  |
+| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                   |
 
 Всё только на чтение: поиск без входа, без отправки форм и оплаты.
 
