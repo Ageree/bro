@@ -197,9 +197,12 @@ sensitive). В `shared/environment/env.ts` их добавляют вместе 
 `cloud_init` — base64, питание — `power_off`/`power_on`) —
 `scripts/cloudru-browser-pilot/README.md`, итоги — раздел 12 плана. Из облачной
 сессии наружу только HTTPS:443: VM управляется HTTPS-эндпоинтом стенда, не SSH.
-OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403: модели из VM —
-только через шлюз вне РФ (пересылать трафик через облачную сессию её политика
-запрещает); TypeSafe из РФ доступен. Ozon и Avito датацентровый адрес не пускают.
+OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403; из VM работает
+RouterAI (`routerai.ru/api/v1`, OpenAI-совместимый, `GET /key` как у
+OpenRouter) и TypeSafe. luna через RouterAI ломает JSON шага browser-use —
+агента гоняйте на `deepseek/deepseek-v4.1-flash`. Ozon и Avito датацентровый
+адрес не пускают, а агент тогда «находит» Ozon в web.archive.org: успех — по
+домену итоговой страницы.
 Ключи окружения приходили с переводами строк (`OPENROUTER_API_KEY`) и в
 типографских кавычках (`JEV_API_KEY`, отсюда 401): чистит `clean()` в `vm.py`.
 

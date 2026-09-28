@@ -32,8 +32,13 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
   `TEXT_MODEL_API_KEY` = ключ OpenRouter, `TEXT_MODEL_BASE_URL=https://openrouter.ai/api/v1`,
   `TEXT_MODEL=inception/mercury-2.5`, `TEXT_MODEL_REASONING=none`.
 - browser-use: `OPENROUTER_API_KEY`, модель `openai/gpt-5.6-luna` (та же, что у
-  Бро в Browser Use Cloud). На `deepseek/deepseek-v4.1-flash` шаг агента не
-  укладывался в 90 с.
+  Бро в Browser Use Cloud). На `deepseek/deepseek-v4.1-flash` через OpenRouter
+  шаг агента не укладывался в 90 с.
+- С VM OpenRouter недоступен (403): `ROUTERAI_API_KEY` у `vm.py secrets` задаёт
+  на VM `TEXT_MODEL_*` и `BU_LLM_BASE_URL`/`BU_LLM_API_KEY` для RouterAI
+  (`PILOT_TEXT_MODEL`, по умолчанию `deepseek/deepseek-v4.1-flash`). Полный
+  повтор набора — `SUITE_FULL=1`, модели агента — `BU_AGENT_MODELS` через
+  запятую; расход модели за шаг — `llm_spent`.
 
 ## Cloud.ru Evolution API (проверено 28.09.2026)
 
@@ -62,9 +67,10 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
 ## Итоги
 
 На VM Cloud.ru (28.09.2026) — `docs/browser-cloud-migration.md`, раздел 12:
-OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403, поэтому helper jev
-и агент browser-use из VM не работают; TypeSafe доступен (≈ 0,3 с на решение);
-прямой режим работает везде, кроме Ozon (антибот). Создание → готовый браузер
+OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403; через RouterAI jev
+прошёл поиск в Википедии за 3–5 с, агент browser-use на DeepSeek V4.1 Flash —
+4 из 5 задач (Ozon не пускает адрес Cloud.ru); TypeSafe ≈ 0,3 с на решение;
+прямой режим работает везде, кроме Ozon. Создание → готовый браузер
 231 с, включение → готовый браузер 47 с, профиль переживает stop/start.
 
 До VM, на локальной форме «Откуда/Куда/Найти» в песочнице: jev — 2,7 с
