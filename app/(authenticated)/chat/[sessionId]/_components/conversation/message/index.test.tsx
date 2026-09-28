@@ -186,12 +186,14 @@ describe("agent messages", () => {
     );
 
     expect(markup).toContain(
-      "Постоянное разрешение — такие поручения дальше без подтверждения:"
+      [
+        "Постоянное разрешение: брони столиков без спроса, на любых сайтах, только бесплатное.",
+        "Такие поручения дальше буду делать без спроса — в этом разговоре, пока разрешение не снимут; каждое остаётся на своём сайте, а фоновая работа им не пользуется.",
+        "Разрешить?",
+      ].join("\n")
     );
-    expect(markup).toContain(
-      "брони столиков без спроса, на любых сайтах, только бесплатное"
-    );
-    expect(markup).toContain("Подтвердить");
+    expect(markup).toContain(">Да</button>");
+    expect(markup).toContain(">Нет</button>");
     expect(markup).not.toContain("Approve tool call");
   });
 
@@ -245,10 +247,19 @@ describe("agent messages", () => {
       />
     );
 
-    expect(markup).toContain("Отправить письмо:");
-    expect(markup).toContain("Кому: irina@example.com");
-    expect(markup).toContain("│ Ирина Павловна, добрый день!");
-    expect(markup).toContain("│ Спасибо! Хорошего дня.");
+    expect(markup).toContain(
+      [
+        "Отвечу irina@example.com в той же ветке, тема — Встреча в четверг.",
+        "",
+        "Ирина Павловна, добрый день!",
+        "",
+        "В четверг не смогу.",
+        "",
+        "Спасибо! Хорошего дня.",
+        "",
+        "Отправить?",
+      ].join("\n")
+    );
     expect(markup).not.toContain("Approve tool call");
   });
 });
