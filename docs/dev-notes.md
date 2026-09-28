@@ -190,6 +190,9 @@
 Cloud.ru VM по запросу с постоянным профилем; общий Бро не копируем в каждую
 VM. JEV — заменяемый selector, его hosted API не равен self-host inference.
 Это целевая архитектура, не уже переключённый runtime.
+Ключ доступа Cloud.ru — `CLOUDRU_KEY_ID` и `CLOUDRU_KEY_SECRET`: заданы в
+облачном окружении агентских сессий и в Vercel `bro-next` (prod и preview,
+sensitive). В `shared/environment/env.ts` их добавляют вместе с первым кодом.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
