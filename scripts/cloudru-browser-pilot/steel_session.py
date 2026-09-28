@@ -48,8 +48,9 @@ else:
     if args.stealth and args.target == "cloud":
         body["stealthConfig"] = {"humanizeInteractions": True, "skipFingerprintInjection": False}
     if args.stealth and args.target == "local":
-        # Self-hosted steel-browser: fingerprint injection on, a real (non-headless) window, Moscow time.
-        body.update(skipFingerprintInjection=False, headless=False, timezone="Europe/Moscow")
+        # Self-hosted steel-browser: fingerprint injection on, Moscow time. headless=False fails: the image
+        # launches Chrome with only HOME and TZ in its environment, so DISPLAY never reaches it.
+        body.update(skipFingerprintInjection=False, timezone="Europe/Moscow")
     if args.target == "cloud":
         body.update(useProxy=False, timeout=900000)
     if args.proxy_index is not None:
