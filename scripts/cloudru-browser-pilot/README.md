@@ -3,6 +3,8 @@
 Этап 1 из `docs/browser-cloud-migration.md`: свой Chrome на VM Cloud.ru
 Evolution, два self-host-исполнителя — `jev-ultrafast` и open-source
 `browser-use` — без Browser Use Cloud. Скрипты — тестовый стенд, не код Бро.
+Отладочный `control.py` (произвольные команды) в рабочей схеме заменён
+типизированным worker и образом из [`browser-vm/`](../../browser-vm/README.md).
 
 | Файл               | Что делает                                                                                                                   |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -65,6 +67,16 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
   отдельно в `/api/v1/security-groups/{id}/rules` (`port_range: "443:443"`).
 - Питание: `POST /api/v1/vms/{id}/set-power` с `{"state": "power_off" | "power_on" | "reboot"}`
   (ответ 204; состояния `stopping` → `stopped`); удаление: `DELETE /api/v1/vms/{id}`.
+- Консоль (из PR #226): `POST /api/v1/vms/{id}/remote-console` с `{"protocol": "serial" | "vnc"}`
+  (204), затем `remote_console_ws` в `GET /api/v1/vms/{id}` — websocket с
+  подпротоколом `binary`, байты консоли как есть; после перезагрузки адрес
+  запрашивайте заново. Первая загрузка может встать в `(initramfs)`: корень
+  цел, но initramfs его не смонтировал; `set-power reboot` лечит, cloud-init
+  отрабатывает на следующей загрузке. Порты 80/443 закрыты снаружи — смотрите
+  консоль, а не сеть.
+- Полная схема Compute API — `https://cloud.ru/docs/api/specs/virtual-machines/ug/_specs/openapi-v3.yaml`;
+  асинхронные операции видны в `GET /api/v1/tasks?project_id=…`, использование
+  квот — `GET /api/v1/project-entity-usage?project_id=…`.
 - Расход: `GET https://organization.api.cloud.ru/v1/consumption?agreement_id=…` с
   `start_date=…T00:00:00Z&end_date=…` **и** `start_date_msk.year/month/day`,
   `end_date_msk.…` (без любой из пар — 400). `agreement_id` —

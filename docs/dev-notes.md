@@ -186,36 +186,53 @@
 
 ## Браузерные поручения
 
-План перехода — `docs/browser-cloud-migration.md`: сначала свой браузер на
-Cloud.ru VM по запросу с постоянным профилем; общий Бро не копируем в каждую
-VM. JEV — заменяемый selector, его hosted API не равен self-host inference.
-Человеку браузер не показываем (ни трансляции, ни ручного управления): коды и
-согласия — только через чат.
-Это целевая архитектура, не уже переключённый runtime.
-Ключ доступа Cloud.ru — `CLOUDRU_KEY_ID` и `CLOUDRU_KEY_SECRET`: заданы в
-облачном окружении агентских сессий и в Vercel `bro-next` (prod и preview,
-sensitive). В `shared/environment/env.ts` их добавляют вместе с первым кодом.
-Стенд пилота и схема Compute API (тело `POST /api/v1.1/vms` — массив,
-`cloud_init` — base64, питание — `power_off`/`power_on`) —
-`scripts/cloudru-browser-pilot/README.md`, итоги — раздел 12 плана. Из облачной
-сессии наружу только HTTPS:443: VM управляется HTTPS-эндпоинтом стенда, не SSH.
-OpenRouter, OpenAI и Anthropic отвечают адресам Cloud.ru 403; из VM работает
-RouterAI (`routerai.ru/api/v1`, OpenAI-совместимый, `GET /key` как у
-OpenRouter) и TypeSafe. luna через RouterAI ломает JSON шага browser-use —
-агента гоняйте на `deepseek/deepseek-v4.1-flash`. Ozon и Avito датацентровый
-адрес не пускают, а агент тогда «находит» Ozon в web.archive.org: успех — по
-домену итоговой страницы.
-Прокси Chrome на VM — только с политикой `WebRtcIPHandling` (флаг Chrome 154
-игнорирует, WebRTC сдавал адрес VM) и с первого запуска профиля. Ozon даёт
-капчу или заглушку самому окружению (Chrome на Linux в VM) даже через домашний
-IP, чистый профиль и без CDP — не поддерживается; Wildberries и Avito проходят.
-Steel Cloud из Cloud.ru нестабилен (Cloudflare), его зовут извне РФ; капчи и
-прокси Steel — только при ≥ $10 купленного баланса; self-host steel-browser
-окна не даёт (Chrome без `DISPLAY`) и на Avito хуже нашего Chrome
-(`steel_session.py`).
-Выход Geonode меняется и внутри sticky-сессии — проверяйте его перед задачей.
-Ключи окружения приходили с переводами строк (`OPENROUTER_API_KEY`) и в
-типографских кавычках (`JEV_API_KEY`, отсюда 401): чистит `clean()` в `vm.py`.
+План перехода — `docs/browser-cloud-migration.md` (итоги проверок — раздел
+12): свой браузер на VM Cloud.ru по запросу с постоянным профилем, общий Бро не
+копируем в VM. Человеку браузер не показываем: коды и согласия — только в чате.
+Сторона VM — `browser-vm/` (worker, образ), пилотный стенд — `scripts/cloudru-browser-pilot/`.
+
+- Ключ Cloud.ru — `CLOUDRU_KEY_ID`/`CLOUDRU_KEY_SECRET` (облачное окружение
+  сессий и Vercel `bro-next`, prod и preview). Из облачной сессии наружу только
+  HTTPS:443, и её прокси показывает сбой TLS апстрима (нет сертификата,
+  самоподписанный) как таймаут: VM — только за Caddy с Let's Encrypt.
+- Compute API: `POST /api/v1.1/vms` — массив, `cloud_init` — base64; v1.1
+  требует новый диск, VM с существующего загрузочного — только `POST /api/v1/vms`,
+  и cloud-init на таком диске заново не отрабатывает. Образ — только из
+  отсоединённого диска, зоны — объекты, состояние образа — в
+  `availability_zones[].state`. Полная схема — ссылка в README стенда.
+- STOP не освобождает vCPU/RAM квоты (8 vCPU по умолчанию — 4 VM `gen-2-4`),
+  освобождает только удаление. `DELETE` VM всегда удаляет загрузочный диск, а
+  публичный IP — только если он назван в `delete_attachments.external_ips`.
+- Первая загрузка новой VM иногда встаёт в `(initramfs)` (порт 443 молчит) —
+  лечит `set-power reboot`; изредка VM зависает в `creating`, и её нельзя
+  удалить (`vm_can_not_be_deleted_from_current_state`). Первые VM из нового
+  образа готовятся ≈ 6 минут, дальше ≈ 1 минута: `build.py` прогревает образ.
+- Горячее подключение диска, который ещё восстанавливается из бэкапа (он
+  `available` раньше, чем кончилась задача), кончается `error`, но диск
+  остаётся подключён, и VM может загрузиться с него: загрузочные диски вторыми
+  не подключайте. Профиль с другой VM Chrome не откроет из-за `SingletonLock`
+  со старым именем хоста — юнит Chrome в образе снимает его перед стартом.
+- Модели из РФ: OpenRouter, OpenAI и Anthropic отвечают 403, RouterAI
+  (`routerai.ru/api/v1`, `GET /key` как у OpenRouter) работает; luna через
+  RouterAI ломает JSON шага — агент на `deepseek/deepseek-v4.1-flash`. Ключ
+  Foundation Models Cloud.ru — отдельный: ключ доступа даёт лишь список моделей.
+- Steel Cloud из Cloud.ru нестабилен (Cloudflare); его капчи и прокси — только
+  при ≥ $10 купленного баланса; self-host steel-browser окна не даёт и на Avito
+  хуже нашего Chrome.
+- Прокси Geonode: логин с любым `-session-<id>` — своя sticky-сессия,
+  `lifetime` до 1440; выход меняется и внутри сессии и бывает медленным
+  (Махачкала: страница WB 25–73 с) — проверяйте его перед задачей. WebRTC
+  закрывает только политика Chrome `WebRtcIPHandling`.
+- Ozon не пускает само окружение (Chrome на Linux в VM) — не поддерживается;
+  Wildberries и Avito проходят через домашний прокси. rzd.ru — корень НУЦ,
+  владелец решил ему не доверять. Агент «находил» сайт в web.archive.org —
+  worker закрывает архивы и кэши и отдаёт итоговый адрес.
+- Вход WB — на `id.wb.ru` (WB ID) в shadow DOM: телефон, привязанный к
+  `wildberries.ru`, туда не подставлялся; код, набранный по ячейкам, путался
+  (365578 → 336655). Работает фокус на `autocomplete=one-time-code` и один
+  `Input.insertText` (действие `enter_code` worker).
+- Ключи окружения приходили с переводами строк и в типографских кавычках:
+  чистит `clean()` в `vm.py` и `build.py`.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
