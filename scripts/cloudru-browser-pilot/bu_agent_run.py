@@ -27,7 +27,13 @@ async def main():
     try:
         agent = Agent(
             task=f"Open {args.url}. {args.goal}",
-            llm=ChatOpenRouter(model=args.model),
+            # OpenRouter refuses RU addresses; BU_LLM_BASE_URL points at an OpenAI-compatible
+            # provider reachable from the VM (RouterAI in the pilot).
+            llm=ChatOpenRouter(
+                model=args.model,
+                base_url=os.environ.get("BU_LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+                api_key=os.environ.get("BU_LLM_API_KEY") or os.environ.get("OPENROUTER_API_KEY"),
+            ),
             browser_session=session,
             use_vision=False,
             calculate_cost=True,

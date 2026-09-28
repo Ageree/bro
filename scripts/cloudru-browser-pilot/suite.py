@@ -41,7 +41,20 @@ def uptime():
     return float(Path("/proc/uptime").read_text().split()[0])
 
 
+def llm_spent():
+    """Spend on the model key (OpenRouter-style GET /key); the per-step delta is that step's model cost."""
+    base, key = os.environ.get("BU_LLM_BASE_URL"), os.environ.get("BU_LLM_API_KEY")
+    if not (base and key):
+        return None
+    try:
+        request = urllib.request.Request(base + "/key", headers={"Authorization": "Bearer " + key})
+        return json.load(urllib.request.urlopen(request, timeout=10))["data"]["usage"]
+    except Exception:
+        return None
+
+
 def run(name, argv, cwd=None, timeout=480):
+    spent_before = llm_spent()
     started = time.perf_counter()
     try:
         p = subprocess.run(argv, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=timeout)
@@ -56,6 +69,11 @@ def run(name, argv, cwd=None, timeout=480):
         result = {"status": "suite_error", "error": repr(e)}
     result["wall_ms"] = round((time.perf_counter() - started) * 1000)
     result["started_at"], result["finished_at"] = time.time() - result["wall_ms"] / 1000, time.time()
+    if spent_before is not None:
+        time.sleep(3)  # the key's usage counter trails the last generation
+        spent_after = llm_spent()
+        if spent_after is not None:
+            result["llm_spent"] = round(spent_after - spent_before, 4)
     report["steps"][name] = result
     save()
     return result
@@ -151,17 +169,23 @@ JEV_CLICK_TASKS = {
 }
 DIRECT = {**{name: url for name, (url, _) in JEV_TASKS.items()}, "gosuslugi": "https://www.gosuslugi.ru/"}
 
-if boot == 1:
+# SUITE_FULL=1 repeats the full set on a later boot (e.g. after switching the model provider).
+BU_MODELS = os.environ.get("BU_AGENT_MODELS", "openai/gpt-5.6-luna").split(",")
+
+if boot == 1 or os.environ.get("SUITE_FULL"):
     for name, (url, goal) in {**JEV_TASKS, **JEV_CLICK_TASKS}.items():
         run(f"jev_{name}", [f"{JEV_DIR}/.venv/bin/python", f"{RUNNERS}/jev_run.py", "--url", url, "--goal", goal,
                             "--screenshot", str(RESULTS / f"boot-{boot}-jev_{name}.jpg")], cwd=JEV_DIR, timeout=300)
     for name, url in DIRECT.items():
         run(f"direct_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_direct.py", "--url", url,
                                "--screenshot", str(RESULTS / f"boot-{boot}-direct_{name}.jpg")], timeout=120)
-    for name, (url, goal) in JEV_TASKS.items():
-        run(f"bu_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_agent_run.py", "--model",
-                           "openai/gpt-5.6-luna", "--url", url, "--goal", goal, "--max-steps", "20",
-                           "--screenshot", str(RESULTS / f"boot-{boot}-bu_{name}.jpg")], timeout=480)
+    for model in BU_MODELS:
+        short = model.split("/")[-1]
+        for name, (url, goal) in JEV_TASKS.items():
+            run(f"bu_{short}_{name}", ["/opt/bro/bu/.venv/bin/python", f"{RUNNERS}/bu_agent_run.py", "--model",
+                                       model, "--url", url, "--goal", goal, "--max-steps", "20",
+                                       "--screenshot", str(RESULTS / f"boot-{boot}-bu_{short}_{name}.jpg")],
+                timeout=480)
 else:
     # After a stop/start: short tasks on the restarted machine, with the profile left by the previous boot.
     for name, (url, goal) in JEV_CLICK_TASKS.items():
