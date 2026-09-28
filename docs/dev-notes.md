@@ -209,6 +209,10 @@ OpenRouter) и TypeSafe. luna через RouterAI ломает JSON шага bro
 игнорирует, WebRTC сдавал адрес VM) и с первого запуска профиля. Ozon даёт
 капчу или заглушку самому окружению (Chrome на Linux в VM) даже через домашний
 IP, чистый профиль и без CDP — не поддерживается; Wildberries и Avito проходят.
+Steel Cloud из Cloud.ru нестабилен (Cloudflare), его зовут извне РФ; капчи и
+прокси Steel — только при ≥ $10 купленного баланса; self-host steel-browser
+окна не даёт (Chrome без `DISPLAY`) и на Avito хуже нашего Chrome
+(`steel_session.py`).
 Выход Geonode меняется и внутри sticky-сессии — проверяйте его перед задачей.
 Ключи окружения приходили с переводами строк (`OPENROUTER_API_KEY`) и в
 типографских кавычках (`JEV_API_KEY`, отсюда 401): чистит `clean()` в `vm.py`.

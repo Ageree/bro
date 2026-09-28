@@ -16,6 +16,7 @@ Evolution, два self-host-исполнителя — `jev-ultrafast` и open-s
 | `bu_direct.py`     | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                                 |
 | `proxy_forward.py` | `127.0.0.1:3128` → резидентский прокси из `/etc/bro/proxies.txt` (строка `/etc/bro/proxy-index`) с его логином; счёт трафика |
 | `leak_check.py`    | Какой адрес видит сайт (ipinfo) и какие адреса отдаёт WebRTC                                                                 |
+| `steel_session.py` | Сессии Steel Cloud и self-host `steel-browser` (Docker на VM, `127.0.0.1:3000`): прокси, маскировка, капчи                   |
 | `persist.py`       | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                                  |
 
 Состояние оператора (токен, id VM, IP) — в `$PILOT_STATE_DIR` вне репозитория.
