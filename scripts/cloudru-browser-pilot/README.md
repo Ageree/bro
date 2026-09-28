@@ -4,22 +4,27 @@
 Evolution, два self-host-исполнителя — `jev-ultrafast` и open-source
 `browser-use` — без Browser Use Cloud. Скрипты — тестовый стенд, не код Бро.
 
-| Файл              | Что делает                                                                                                       |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `vm.py`           | Сторона оператора: группа безопасности, VM, ожидание готовности, ключи, раннеры, команды, питание                |
-| `cloud-init.yaml` | Шаблон user data: хеш управляющего токена, `control.py` и `provision.sh` (ключей в нём нет)                      |
-| `provision.sh`    | Первая загрузка: эндпоинт, Caddy на `<ip>.sslip.io`, Chrome в Xvfb как сервис, uv, jev, browser-use              |
-| `control.py`      | Эндпоинт на `127.0.0.1:8080` за Caddy: `/health`, `/exec`, `/jobs`, `/files`; bearer-токен, на VM — лишь его хеш |
-| `suite.py`        | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`    |
-| `jev_run.py`      | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                  |
-| `bu_agent_run.py` | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                             |
-| `bu_direct.py`    | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                     |
-| `persist.py`      | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                      |
+| Файл               | Что делает                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `vm.py`            | Сторона оператора: группа безопасности, VM, ожидание готовности, ключи, раннеры, команды, питание                |
+| `cloud-init.yaml`  | Шаблон user data: хеш управляющего токена, `control.py` и `provision.sh` (ключей в нём нет)                      |
+| `provision.sh`     | Первая загрузка: эндпоинт, Caddy на `<ip>.sslip.io`, Chrome в Xvfb как сервис, uv, jev, browser-use              |
+| `control.py`       | Эндпоинт на `127.0.0.1:8080` за Caddy: `/health`, `/exec`, `/jobs`, `/files`; bearer-токен, на VM — лишь его хеш |
+| `suite.py`         | Набор на каждую загрузку VM: готовность CDP, сеть из РФ, профиль, задачи; JSON в `$RESULTS_DIR/boot-<n>.json`    |
+| `jev_run.py`       | Один ограниченный запуск jev-ultrafast (venv репозитория jev, commit `1231850`)                                  |
+| `bu_agent_run.py`  | Автономный `browser_use.Agent` 0.13.10 на локальном Chrome через CDP                                             |
+| `bu_direct.py`     | Прямой режим: `BrowserSession.get_browser_state_summary()` без `Agent.run()`                                     |
+| `persist.py`       | Метка в cookie и localStorage: следующий запуск читает метку прошлого (проверка stop/start)                      |
+| `bu_remote_run.py` | Агент browser-use вне VM на её Chrome через CDP (`vm.py cdp`); `--skill` дописывает скилл в системный промпт     |
+| `skill_ab.py`      | Задачи на выгрузку списков без скилла и со скиллом через `bu_remote_run.py`                                      |
 
 Состояние оператора (токен, id VM, IP) — в `$PILOT_STATE_DIR` вне репозитория.
 Порядок: `vm.py create` → `vm.py secrets` → `vm.py runners` →
 `vm.py job suite '<source /etc/bro/secrets.env; suite.py>'` → `vm.py power off|on`
 → второй прогон `suite.py` (метка профиля и короткие задачи).
+
+Модели OpenRouter из VM не ответят (403): `vm.py cdp` открывает CDP через Caddy по
+секретному пути, и агент `bu_remote_run.py` работает там, где OpenRouter доступен.
 
 Всё только на чтение: поиск без входа, без отправки форм и оплаты.
 

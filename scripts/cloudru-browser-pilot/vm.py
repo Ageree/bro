@@ -11,6 +11,8 @@ State (control token, VM id, IP, timings) lives in $PILOT_STATE_DIR (default ~/.
   python vm.py job NAME CMD         background command; `python vm.py job NAME` shows its status
   python vm.py get REMOTE LOCAL     download a file
   python vm.py power off|on         set-power and wait (on: until CDP is ready)
+  python vm.py cdp                  expose CDP through Caddy at /cdp/<secret>/ and print the wss URL
+                                    (the agent then runs outside the VM, where the model APIs answer)
   python vm.py api METHOD URL [JSON]
 """
 
@@ -225,6 +227,29 @@ def upload(remote, data, mode="0644", owner="bro"):
     assert code == 200, (code, out)
 
 
+def cdp_url():
+    """Browser websocket behind Caddy; the secret path segment is the only guard, so it stays in state."""
+    state = load()
+    if "cdp_secret" not in state:
+        secret = random.token_hex(24)
+        prefix = f"/cdp/{secret}"
+        # Chrome serves DevTools only to a loopback Host header.
+        caddyfile = (f"{host().removeprefix('https://')} {{\n"
+                     f"\thandle_path {prefix}/* {{\n"
+                     f"\t\treverse_proxy 127.0.0.1:9222 {{\n\t\t\theader_up Host 127.0.0.1:9222\n\t\t}}\n\t}}\n"
+                     f"\treverse_proxy 127.0.0.1:8080\n}}\n")
+        upload("/etc/caddy/Caddyfile", caddyfile.encode(), "0640", "caddy")
+        code, out = control("POST", "/exec", {"cmd": "systemctl reload caddy", "timeout": 30})
+        assert code == 200 and out.get("rc") == 0, (code, out)
+        state["cdp_secret"] = secret
+        save(state)
+    prefix = f"{host()}/cdp/{state['cdp_secret']}"
+    code, version = http("GET", prefix + "/json/version", timeout=20)
+    assert code == 200, (code, version)
+    path = version["webSocketDebuggerUrl"].split("/devtools/", 1)[1]
+    return f"{prefix.replace('https://', 'wss://')}/devtools/{path}"
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -249,6 +274,7 @@ def main():
     g.add_argument("local")
     p = sub.add_parser("power")
     p.add_argument("state", choices=["on", "off"])
+    sub.add_parser("cdp")
     a = sub.add_parser("api")
     a.add_argument("method")
     a.add_argument("url")
@@ -314,6 +340,8 @@ def main():
         else:
             seconds, h = wait_ready(started)
             print(json.dumps({"power_on_to_ready_s": round(seconds, 1), "vm_uptime_s": h["uptime_s"]}))
+    elif args.cmd == "cdp":
+        print(cdp_url())
     elif args.cmd == "api":
         print(json.dumps(api(args.method, args.url, json.loads(args.body) if args.body else None),
                          ensure_ascii=False, indent=1)[:20000])
