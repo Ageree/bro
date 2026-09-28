@@ -106,8 +106,10 @@ export function InputRequestActions({
   const requested = part.toolMetadata?.eve?.inputRequest;
   if (!requested) return null;
   // eve titles a card «Approve tool call: <tool>»; the person reads what it
-  // lets through instead — the booking, the standing permission, the limit.
-  // The web chat speaks Russian, as the rest of the product does.
+  // lets through instead — the booking, the standing permission, the limit —
+  // as Bro's own message ending in its question, which a typed «да» answers
+  // as well as the buttons. The web chat speaks Russian, as the rest of the
+  // product does.
   const inputRequest = withApprovalCard(
     {
       ...requested,
@@ -115,7 +117,7 @@ export function InputRequestActions({
     },
     "ru"
   );
-  const [title, ...details] = inputRequest.prompt.split("\n");
+  const carded = inputRequest.prompt !== requested.prompt;
 
   const inputResponse = part.toolMetadata.eve.inputResponse;
   const selectedOption = inputRequest.options?.find(
@@ -124,10 +126,10 @@ export function InputRequestActions({
 
   return (
     <Alert variant="warning">
-      <AlertTitle>{title}</AlertTitle>
+      {carded ? null : <AlertTitle>{inputRequest.prompt}</AlertTitle>}
       <AlertDescription>
-        {details.length > 0 ? (
-          <p className="whitespace-pre-line">{details.join("\n")}</p>
+        {carded ? (
+          <p className="whitespace-pre-line">{inputRequest.prompt}</p>
         ) : null}
         {inputResponse ? (
           <p>

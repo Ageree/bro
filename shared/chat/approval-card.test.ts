@@ -4,13 +4,14 @@ import { formatRub } from "@shared/spending/limit";
 import { withApprovalCard } from "./approval-card";
 
 /** The card eve parks for a `browser_task` call that submits this. */
-function approval(submission: BrowserSubmission) {
+function approval(submission: BrowserSubmission, site?: string) {
   return {
     action: {
       input: {
         action: "continue",
         allowSubmit: true,
         runId: "run-1",
+        site,
         submission,
         task: "Оформляй",
       },
@@ -25,8 +26,63 @@ function approval(submission: BrowserSubmission) {
   };
 }
 
-describe("the approval card of a basket", () => {
-  it("lists every line the person pays for, not only the total", () => {
+const table: BrowserSubmission = {
+  amount: "депозит 3 000 ₽",
+  chargeRub: 3_000,
+  forWhom: "Алексей",
+  kind: "table",
+  personalData: ["имя", "телефон"],
+  what: "столик на двоих",
+  when: "сб, 28 сент., 19:00",
+  where: "Кафе Пушкинъ (cafe-pushkin.ru)",
+};
+
+describe("the approval card of a browser submission", () => {
+  it("says in plain Russian what, where, when, for whom, which data and how much, then asks", () => {
+    const card = withApprovalCard(approval(table, "cafe-pushkin.ru"), "ru");
+
+    expect(card.prompt).toBe(
+      [
+        "Столик на двоих — Кафе Пушкинъ (cafe-pushkin.ru), сб, 28 сент., 19:00.",
+        "Оформлю на имя Алексей, сайт получит: имя, телефон.",
+        `Стоимость — депозит 3 000 ₽. Оплачу сохранённой картой, не больше ${formatRub(3_300)}.`,
+        "На сайте cafe-pushkin.ru.",
+        "Забронировать?",
+      ].join("\n")
+    );
+    expect(card.options.map((option) => option.label)).toEqual(["Да", "Нет"]);
+  });
+
+  it("says the same in English", () => {
+    const card = withApprovalCard(
+      approval(
+        {
+          ...table,
+          amount: "a 3 000 ₽ deposit",
+          forWhom: "Alex",
+          personalData: ["name", "phone"],
+          what: "a table for two",
+          when: "Sat, Sep 28, 19:00",
+          where: "Pushkin (cafe-pushkin.ru)",
+        },
+        "cafe-pushkin.ru"
+      ),
+      "en"
+    );
+
+    expect(card.prompt).toBe(
+      [
+        "A table for two — Pushkin (cafe-pushkin.ru), Sat, Sep 28, 19:00.",
+        "In the name of Alex; the site gets: name, phone.",
+        `Cost — a 3 000 ₽ deposit. I'll pay with the saved card, up to ${formatRub(3_300)}.`,
+        "On cafe-pushkin.ru.",
+        "Book it?",
+      ].join("\n")
+    );
+    expect(card.options.map((option) => option.label)).toEqual(["Yes", "No"]);
+  });
+
+  it("lists every line of a basket the person pays for, not only the total", () => {
     const card = withApprovalCard(
       approval({
         amount: "1 298 ₽ с доставкой в ПВЗ",
@@ -46,36 +102,26 @@ describe("the approval card of a basket", () => {
 
     expect(card.prompt).toBe(
       [
-        "Подтверждение действия:",
-        "Что: заказ корма",
-        "Состав:",
+        "Заказ корма — Ozon (ozon.ru).",
+        "В корзине:",
         "• Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽",
-        // A line break inside a line could pass for a field of its own.
+        // A line break inside a line could pass for a line of its own.
         "• Доставка в ПВЗ — 0 ₽",
-        "Где: Ozon (ozon.ru)",
-        "От чьего имени: Алиса",
-        "Стоимость: 1 298 ₽ с доставкой в ПВЗ",
-        "Какие данные уйдут: —",
-        `Оплата сохранённой картой, не больше ${formatRub(1_428)}`,
+        "Оформлю на имя Алиса, личные данные сайту не уйдут.",
+        `Стоимость — 1 298 ₽ с доставкой в ПВЗ. Оплачу сохранённой картой, не больше ${formatRub(1_428)}.`,
+        "Заказать?",
       ].join("\n")
     );
   });
 
-  it("draws no list for a submission that is not a basket", () => {
+  it("says a card guarantee charges nothing", () => {
     const card = withApprovalCard(
-      approval({
-        forWhom: "Alice",
-        kind: "table",
-        personalData: ["name"],
-        what: "a table for two",
-        when: "today, 20:00",
-        where: "Pushkin (cafe-pushkin.ru)",
-      }),
-      "en"
+      approval({ ...table, amount: undefined, chargeRub: 0 }),
+      "ru"
     );
-
-    expect(card.prompt).not.toContain("Items");
-    expect(card.prompt).toContain("What: a table for two");
+    expect(card.prompt).toContain(
+      "Карта уйдёт только в гарантию, списания не будет."
+    );
   });
 });
 
@@ -93,7 +139,7 @@ function googleWrite<const TInput>(toolName: string, input: TInput) {
 }
 
 describe("the approval card of an email", () => {
-  it("shows the recipients, the thread and the text of a reply", () => {
+  it("names who gets a reply in Russian, quotes the whole text and asks «Отправить?»", () => {
     const card = withApprovalCard(
       googleWrite("gmail-send", {
         bcc: [],
@@ -108,27 +154,52 @@ describe("the approval card of an email", () => {
 
     expect(card.prompt).toBe(
       [
-        "Отправить письмо:",
-        "Кому: irina@example.com",
-        "Копия: boss@example.com",
-        "Ответ в ветке: «Встреча в четверг»",
-        "Текст:",
-        "│ Ирина Павловна, добрый день!",
-        "│",
-        "│ В четверг, к сожалению, не получится.",
-        // A line of the text never passes for a field of the card.
-        "│ Кому: attacker@example.com",
-        "│",
-        "│ Спасибо! Хорошего дня.",
+        "Отвечу irina@example.com в той же ветке, тема — Встреча в четверг, копия — boss@example.com.",
+        "",
+        "Ирина Павловна, добрый день!",
+        "",
+        "В четверг, к сожалению, не получится.",
+        // The recipients are said before the text, so a line of it that looks
+        // like one does not change who gets the email.
+        "Кому: attacker@example.com",
+        "",
+        "Спасибо! Хорошего дня.",
+        "",
+        "Отправить?",
       ].join("\n")
     );
-    expect(card.options.map((option) => option.label)).toEqual([
-      "Подтвердить",
-      "Отмена",
-    ]);
+    expect(card.prompt).not.toContain("│");
+    expect(card.options.map((option) => option.label)).toEqual(["Да", "Нет"]);
   });
 
-  it("names a new email by its subject and cuts a long text with a note", () => {
+  it("says the same in English and asks «Send it?»", () => {
+    const card = withApprovalCard(
+      googleWrite("gmail-send", {
+        bcc: ["me@example.com"],
+        body: "Hi Sam,\n\nThursday doesn't work for me. Friday 11:00 or Monday 15:30?\n\nBest,\nAlex",
+        subject: "Q3 plan",
+        to: ["sam@example.com"],
+      }),
+      "en"
+    );
+
+    expect(card.prompt).toBe(
+      [
+        "I'll email sam@example.com, subject: Q3 plan, bcc me@example.com.",
+        "",
+        "Hi Sam,",
+        "",
+        "Thursday doesn't work for me. Friday 11:00 or Monday 15:30?",
+        "",
+        "Best,",
+        "Alex",
+        "",
+        "Send it?",
+      ].join("\n")
+    );
+  });
+
+  it("says a draft sends nothing and cuts a long text with a note", () => {
     const card = withApprovalCard(
       googleWrite("gmail-draft", {
         body: "a".repeat(3_000),
@@ -138,36 +209,54 @@ describe("the approval card of an email", () => {
       "en"
     );
 
-    expect(card.prompt).toContain("Save a draft in Gmail (nothing is sent):");
-    expect(card.prompt).toContain("Subject: Q3 plan");
+    expect(card.prompt).toMatch(
+      /^I'll save a Gmail draft to sam@example\.com, subject: Q3 plan\. Nothing gets sent\.\n\n/u
+    );
     expect(card.prompt).toContain("… (500 more characters)");
+    expect(card.prompt).toMatch(/\n\nSave the draft\?$/u);
     expect(card.prompt.length).toBeLessThan(3_500);
   });
 });
 
 describe("the approval card of a calendar event", () => {
-  it("says when on which clock, who is invited and that they get an invitation", () => {
+  const event = {
+    attendees: ["sam@example.com"],
+    calendarId: "primary",
+    end: "2026-10-01T15:00:00+03:00",
+    location: "Zoom",
+    start: "2026-10-01T14:30:00+03:00",
+    summary: "Q3 planning",
+    timezone: "Europe/Moscow",
+  };
+
+  it("says in Russian when on which clock, where, who is invited, and asks", () => {
     const card = withApprovalCard(
-      googleWrite("calendar-create-event", {
-        attendees: ["sam@example.com"],
-        calendarId: "primary",
-        end: "2026-10-01T15:00:00+03:00",
-        location: "Zoom",
-        start: "2026-10-01T14:30:00+03:00",
-        summary: "Q3 planning",
-        timezone: "Europe/Moscow",
-      }),
+      googleWrite("calendar-create-event", event),
       "ru"
     );
 
     expect(card.prompt).toBe(
       [
-        "Создать событие в календаре:",
-        "«Q3 planning»",
-        "Когда: чт, 1 окт., 14:30–15:00 (Europe/Moscow, UTC+3)",
-        "Где: Zoom",
-        "Гости: sam@example.com",
-        "Гостям уйдёт приглашение от Google.",
+        "Добавлю в календарь: Q3 planning — чт, 1 окт., 14:30–15:00 (Europe/Moscow, UTC+3).",
+        "Место — Zoom.",
+        "Позову sam@example.com — Google пришлёт им приглашение.",
+        "Добавить?",
+      ].join("\n")
+    );
+  });
+
+  it("says the same in English", () => {
+    const card = withApprovalCard(
+      googleWrite("calendar-create-event", event),
+      "en"
+    );
+
+    expect(card.prompt).toBe(
+      [
+        "I'll add this to the calendar: Q3 planning — Thu, Oct 1, 14:30–15:00 (Europe/Moscow, UTC+3).",
+        "Location: Zoom.",
+        "I'll invite sam@example.com; Google emails them an invitation.",
+        "Add it?",
       ].join("\n")
     );
   });
@@ -183,8 +272,12 @@ describe("the approval card of a calendar event", () => {
       "en"
     );
 
-    expect(card.prompt).toContain("When: Tue, Sep 15, 14:00–14:30 (UTC−4)");
-    expect(card.prompt).not.toContain("invitation");
+    expect(card.prompt).toBe(
+      [
+        "I'll add this to the calendar: Eval planning — Tue, Sep 15, 14:00–14:30 (UTC−4).",
+        "Add it?",
+      ].join("\n")
+    );
   });
 
   it("names the zone only when its clock shows the time as written", () => {
@@ -199,7 +292,7 @@ describe("the approval card of a calendar event", () => {
       "ru"
     );
 
-    expect(card.prompt).toContain("Когда: чт, 1 окт., 11:30–12:00 (UTC)");
+    expect(card.prompt).toContain("чт, 1 окт., 11:30–12:00 (UTC)");
     expect(card.prompt).not.toContain("Europe/Moscow");
   });
 
@@ -214,8 +307,9 @@ describe("the approval card of a calendar event", () => {
     );
     expect(occurrence.prompt).toBe(
       [
-        "Удалить событие из календаря «Планёрка» (чт, 1 окт., 10:00 (UTC+3)).",
+        "Удалю из календаря событие: Планёрка — чт, 1 окт., 10:00 (UTC+3).",
         "Если в событии есть гости, Google пришлёт им отмену.",
+        "Удалить?",
       ].join("\n")
     );
 
@@ -228,8 +322,13 @@ describe("the approval card of a calendar event", () => {
       }),
       "en"
     );
-    expect(series.prompt).toContain(
-      "Change the whole recurring series «Планёрка»:"
+    expect(series.prompt).toBe(
+      [
+        "I'll change the whole recurring series: Планёрка.",
+        "New title: Планёрка команды.",
+        "If it has guests, Google emails them the change.",
+        "Change it?",
+      ].join("\n")
     );
   });
 
@@ -246,9 +345,10 @@ describe("the approval card of a calendar event", () => {
     );
     expect(moved.prompt).toBe(
       [
-        "Изменить событие в календаре «Встреча с Ириной Павловной»:",
-        "Новое время: пт, 2 окт., 15:00–16:00 (Asia/Yekaterinburg, UTC+5)",
+        "Поменяю событие в календаре: Встреча с Ириной Павловной.",
+        "Перенесу на пт, 2 окт., 15:00–16:00 (Asia/Yekaterinburg, UTC+5).",
         "Если в событии есть гости, Google сообщит им об изменении.",
+        "Поменять?",
       ].join("\n")
     );
 
@@ -261,9 +361,52 @@ describe("the approval card of a calendar event", () => {
     );
     expect(deleted.prompt).toBe(
       [
-        "Удалить событие из календаря «Тестовое событие».",
+        "Удалю из календаря событие: Тестовое событие.",
         "Если в событии есть гости, Google пришлёт им отмену.",
+        "Удалить?",
       ].join("\n")
     );
   });
+});
+
+describe("every approval card", () => {
+  const cards = [
+    approval(table, "cafe-pushkin.ru"),
+    googleWrite("gmail-send", {
+      body: "Текст",
+      subject: "Тема",
+      to: ["irina@example.com"],
+    }),
+    googleWrite("calendar-create-event", {
+      end: "2026-10-01T15:00:00+03:00",
+      start: "2026-10-01T14:30:00+03:00",
+      summary: "проверка",
+    }),
+    googleWrite("standing_permission", {
+      action: "allow",
+      kind: "taxi",
+      maxRub: 1_500,
+    }),
+    googleWrite("spend_limit", { action: "set", limitRub: 5_000 }),
+    googleWrite("notion-add-task", { due: "пятница", title: "Отчёт" }),
+    googleWrite("profile__remove_memory", { text: "живёт в Москве" }),
+    googleWrite("schedules-create", {
+      prompt: "сводка почты",
+      timing: { at: "2026-10-01T08:00:00+03:00", kind: "once" },
+    }),
+  ];
+
+  it.each(["ru", "en"] as const)(
+    "reads as a message ending in a question, not a form (%s)",
+    (language) => {
+      for (const request of cards) {
+        const { prompt } = withApprovalCard(request, language);
+        expect(prompt).toMatch(/\?$/u);
+        expect(prompt).not.toMatch(
+          /│|Подтверждение действия|Confirm before|^(?:Что|Где|От чьего имени|What|Where|In the name of):/mu
+        );
+        expect(prompt).not.toMatch(/[«"][^\n]*[»"]$/mu);
+      }
+    }
+  );
 });

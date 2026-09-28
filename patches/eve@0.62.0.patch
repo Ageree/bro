@@ -1,3 +1,35 @@
+diff --git a/dist/src/channel/resolve-text.d.ts b/dist/src/channel/resolve-text.d.ts
+index 8b88a5aa2f0d30bb240a5948146cbf5a2733bf29..f5d5a28137668aa5e2164a112c265dc4dcd39256 100644
+--- a/dist/src/channel/resolve-text.d.ts
++++ b/dist/src/channel/resolve-text.d.ts
+@@ -9,6 +9,8 @@ import type { InputRequest, InputResponse } from "#shared/input.js";
+  * 1. Exact option ID (case-insensitive)
+  * 2. Exact option label (case-insensitive)
+  * 3. 1-based numeric index into the options array
++ * 3a. For a tool approval, a short yes or no in the person's own words
++ *     («да», «отправляй», «не надо», «go ahead», «no»)
+  * 4. Freeform text if {@link InputRequest.allowFreeform} is not `false`
+  */
+ export declare function resolveTextToResponse(text: string, request: InputRequest): InputResponse | undefined;
+diff --git a/dist/src/channel/resolve-text.js b/dist/src/channel/resolve-text.js
+index 7e26393673fb769a0f5861aa0bcd150471203de6..a4d991d6ce56009c887be9c12045498f5802beb9 100644
+--- a/dist/src/channel/resolve-text.js
++++ b/dist/src/channel/resolve-text.js
+@@ -1 +1,12 @@
+-function resolveTextToResponse(e,t){let n=e.trim();if(n.length===0)return;let r=n.toLowerCase();if(t.options!==void 0&&t.options.length>0){let e=matchOption(r,t.options);if(e!==void 0)return{requestId:t.requestId,optionId:e.id}}if((t.allowFreeform===!0||t.options===void 0||t.options.length===0)&&n.length>0)return{requestId:t.requestId,text:n}}function resolveTextToResponses(e,t){let n=[];for(let r of t){let t=resolveTextToResponse(e,r);t!==void 0&&n.push(t)}return n}function matchOption(e,t){let n=t.find(t=>t.id.toLowerCase()===e);if(n!==void 0)return n;let r=t.find(t=>t.label.toLowerCase()===e);if(r!==void 0)return r;let i=Number(e);if(Number.isInteger(i)&&i>0&&i<=t.length)return t[i-1]}export{resolveTextToResponse,resolveTextToResponses};
+\ No newline at end of file
++function resolveTextToResponse(e,t){let n=e.trim();if(n.length===0)return;let r=n.toLowerCase();if(t.options!==void 0&&t.options.length>0){let e=matchOption(r,t.options)??matchApprovalAnswer(n,t);if(e!==void 0)return{requestId:t.requestId,optionId:e.id}}if((t.allowFreeform===!0||t.options===void 0||t.options.length===0)&&n.length>0)return{requestId:t.requestId,text:n}}function resolveTextToResponses(e,t){let n=[];for(let r of t){let t=resolveTextToResponse(e,r);t!==void 0&&n.push(t)}return n}function matchOption(e,t){let n=t.find(t=>t.id.toLowerCase()===e);if(n!==void 0)return n;let r=t.find(t=>t.label.toLowerCase()===e);if(r!==void 0)return r;let i=Number(e);if(Number.isInteger(i)&&i>0&&i<=t.length)return t[i-1]}
++// A tool approval answered in the person's own words: «да», «отправляй»,
++// «не надо», «go ahead», «no». Every word of a short reply has to be a yes, a
++// no or a filler, and all of them agree; a question, a condition or anything
++// else stays a message for the model, with the card still waiting.
++const approvalYes=new Set(["да","ага","угу","ок","окей","хорошо","конечно","давай","давайте","го","можно","верно","точно","согласен","согласна","подтверждаю","подтвердить","одобряю","разрешаю","надо","нужно","годится","пойдет","идет","вперед","отлично","супер","норм","отправляй","отправляйте","отправь","отправьте","отправить","отправлять","шли","делай","делайте","сделай","сделайте","создавай","создай","создайте","добавляй","добавь","добавьте","удаляй","удали","удалите","бронируй","бронируйте","забронируй","заказывай","закажи","оформляй","оформи","записывай","запиши","плати","оплати","оплачивай","сохраняй","сохрани","ставь","поставь","меняй","поменяй","забудь","снимай","сними","жми","yes","yeah","yep","yup","ya","sure","ok","okay","fine","course","absolutely","definitely","go","send","confirm","confirmed","approve","approved","proceed","do","book","order","create","add","delete","save","pay","submit","allow","lgtm","👍","✅"]);
++const approvalNo=new Set(["нет","неа","нельзя","отмена","отменить","отмени","отменяй","отмените","стоп","стой","погоди","подожди","отбой","передумал","передумала","no","nope","nah","cancel","stop","wait","hold","decline","deny","reject","👎","❌"]);
++const approvalNegations=new Set(["не","don't","dont","not"]);
++const approvalNegatable=new Set(["сейчас","стоит","now","yet"]);
++const approvalFillers=new Set(["пожалуйста","пжл","плиз","спасибо","ну","же","уж","тогда","бро","всё","все","и","а","сейчас","please","pls","thanks","thank","you","it","ahead","on","then","just","and","now","of","right"]);
++function matchApprovalAnswer(e,t){if(t.kind!==`tool-approval`)return;let n=t.options.find(e=>e.id===`approve`),r=t.options.find(e=>e.id===`cancel`);if(n===void 0||r===void 0)return;let i=e.normalize(`NFKC`).toLowerCase().replaceAll(`ё`,`е`).replaceAll(`’`,`'`).trim();if(i.endsWith(`?`))return;let a=i.match(/[\p{L}\p{N}']+|👍|👎|✅|❌/gu)??[];if(a.length===0||a.length>6)return;let o;for(let s=0;s<a.length;s++){let c=a[s],l;if(approvalNegations.has(c)||c===`do`&&a[s+1]===`not`){let u=c===`do`?s+2:s+1,d=a[u];if(d===void 0||!approvalYes.has(d)&&!approvalNegatable.has(d))return;l=`cancel`,s=u}else if(approvalYes.has(c))l=`approve`;else if(approvalNo.has(c))l=`cancel`;else if(approvalFillers.has(c))continue;else return;if(o!==void 0&&o!==l)return;o=l}return o===`approve`?n:o===`cancel`?r:void 0}
++export{resolveTextToResponse,resolveTextToResponses};
 diff --git a/dist/src/channel/schedule.js b/dist/src/channel/schedule.js
 index 8e9c92834801e2d94fbb5ff8d7b8835605c7cdbb..cf51c88420fa56b3f385056e4fa8dd054ccfd734 100644
 --- a/dist/src/channel/schedule.js

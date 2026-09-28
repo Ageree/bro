@@ -30,15 +30,19 @@ const answerHint = {
 } as const;
 
 /**
- * One request as an iMessage. The chat has no buttons, so each option is
- * numbered: eve resolves a reply that is an option's number (as well as its
- * own id or English label), and a number is the one answer that works in any
- * language. An approval says what it lets through — a submission in the
- * person's name, a standing permission, a spend limit — as the Telegram card
- * does.
+ * One request as an iMessage. An approval says what it lets through — a
+ * submission in the person's name, a standing permission, a spend limit —
+ * as the Telegram card does, and ends with its own question: eve takes a
+ * plain «да», «отправляй» or «нет» for it. The chat has no buttons, so the
+ * options of anything else are numbered: eve resolves a reply that is an
+ * option's number (as well as its own id or English label), and a number is
+ * the one answer that works in any language.
  */
 function requestText(request: InputRequestText, language: ReplyLanguage) {
   const shown = withApprovalCard(request, language);
+  if (shown.kind === "tool-approval" && shown.prompt !== request.prompt) {
+    return shown.prompt;
+  }
   const hint = answerHint[language];
   const options = shown.options ?? [];
   if (options.length === 0) return [shown.prompt, hint.open].join("\n\n");

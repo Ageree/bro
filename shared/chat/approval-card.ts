@@ -25,173 +25,239 @@ import {
  * messenger — and in the web chat's own view — is all the person sees. A
  * card is the one place where the person confirms a booking or an order in
  * their name, or lets Bro act and pay without asking from then on, so it
- * says exactly that, in their language: what, where, for whom, which of
- * their details go, when and for how much; or which errands, on which sites
- * and up to what sum a standing permission or a spend limit lets through.
- * The wording is neutral, since the person may have chosen «вы» or «ты».
+ * says exactly that: what, where, for whom, which of their details go, when
+ * and for how much; or which errands, on which sites and up to what sum a
+ * standing permission or a spend limit lets through.
+ *
+ * It reads as Bro's own message in the person's language, not as a form:
+ * plain sentences with the values as they are, no field labels, bars or
+ * quotes around them, and a plain question at the end that «да», «нет» or
+ * the buttons answer. The wording is neutral, since the person may have
+ * chosen «вы» or «ты», and Bro's gender is the person's choice too.
  */
 const cardText = {
   en: {
-    amount: "Cost",
-    app: "App",
-    appAction: "Action",
-    appArguments: "Data",
-    appTool: "Tool",
-    approve: "Approve",
-    calendarCreate: "Create a calendar event:",
-    calendarDelete: "Delete the calendar event",
-    calendarDeleteSeries: "Delete the whole recurring series",
-    calendarDeleteFooter:
-      "If the event has guests, Google emails them the cancellation.",
-    calendarGuests: "Guests",
-    calendarInvitation: "Google emails the guests an invitation.",
-    calendarNewTime: "New time",
-    calendarNewTitle: "New title",
-    calendarNotes: "Notes",
-    calendarUpdate: "Change the calendar event",
-    calendarUpdateSeries: "Change the whole recurring series",
-    calendarUpdateFooter:
-      "If the event has guests, Google emails them the change.",
-    cancel: "Cancel",
-    card: "Pays with the saved card",
-    cardUpTo: "Pays with the saved card, up to",
-    emailBcc: "Bcc",
-    emailBody: "Text",
-    emailCc: "Cc",
-    emailDraft: "Save a draft in Gmail (nothing is sent):",
-    emailMore: (count: number) => `… (${String(count)} more characters)`,
-    emailReply: "Reply in the thread",
-    emailReplyUnnamed: "Reply in the thread of the email",
-    emailSend: "Send an email:",
-    emailSubject: "Subject",
-    emailTo: "To",
-    forWhom: "In the name of",
-    guarantee: "The saved card as a guarantee only, nothing charged",
-    items: "Items",
-    limitChange: "Change the spend limit:",
-    limitClear: "Take back the rule",
-    limitInclude: "Pay without asking again on",
-    limitSet:
-      "Spend limit — payments within it go through without asking from now on:",
-    memoryForget: "Forget this from memory:",
-    memoryForgetAll: "Forget these records from memory:",
-    notionDatabase: "Database",
-    notionDue: "Due",
-    notionNotes: "Notes",
-    notionRead: "Open in Notion:",
-    notionRecent: "recently edited pages",
-    notionSearch: "Search Notion:",
-    notionTask: "Add a task to Notion:",
-    permissionFooter:
-      "It holds in the conversation until it is taken back; each errand stays on its own site, and background work never uses it.",
-    permissionRevoke: "Take back the standing permission:",
-    permissionSet:
-      "Standing permission — such errands go ahead without asking from now on:",
-    personalData: "Details sent",
-    scheduleCreate: "Set up a scheduled task:",
-    scheduleRunNow: "Run it once now, beside its regular runs",
-    scheduleStatus: "Status",
-    scheduleStatuses: {
-      active: "resume",
-      deleted: "delete",
-      paused: "pause",
+    appCall: (tool: string) => `I'll call ${tool} with:`,
+    appCallBare: (tool: string) => `I'll call ${tool} with no data.`,
+    appDo: (app: string, summary: string) => `In ${app}: ${summary}`,
+    appDoBare: (app: string) => `I'll make a call in ${app}.`,
+    approve: "Yes",
+    askApp: "Go ahead?",
+    askBrowser: {
+      application: "Submit it?",
+      appointment: "Book it?",
+      booking: "Book it?",
+      job_application: "Send the applications?",
+      message: "Send it?",
+      order: "Place the order?",
+      other: "Go ahead?",
+      table: "Book it?",
+      taxi: "Order the taxi?",
     },
-    scheduleUpdate: "Change a scheduled task:",
-    site: "Site",
-    slackMessage: "Send a Slack message:",
-    slackRead: "Read Slack messages:",
-    slackSearch: "Search Slack:",
-    slackText: "Text",
-    slackThread: "thread",
-    slackTo: "To",
-    title: "Confirm before this is done in your name:",
-    when: "When",
-    what: "What",
-    where: "Where",
-    workstreamForget: "Forget the saved work on",
-    workstreamForgetAll: "Forget this saved work:",
+    askBrowserUnknown: "Go ahead?",
+    askCalendarCreate: "Add it?",
+    askCalendarDelete: "Delete it?",
+    askCalendarUpdate: "Change it?",
+    askDraft: "Save the draft?",
+    askForget: "Forget it?",
+    askForgetAll: "Forget them?",
+    askLimitChange: "Change it?",
+    askLimitClear: "Take it back?",
+    askLimitInclude: "Allow it again?",
+    askLimitSet: "Set it?",
+    askNotionRead: "Open it?",
+    askNotionTask: "Add it?",
+    askPermissionRevoke: "Take it back?",
+    askPermissionSet: "Allow it?",
+    askScheduleCreate: "Set it up?",
+    askScheduleUpdate: "Change it?",
+    askLook: "Take a look?",
+    askSearch: "Search?",
+    askSend: "Send it?",
+    askSlackRead: "Read them?",
+    basket: "In the basket:",
+    calendarCreate: (title: string, when: string) =>
+      `I'll add this to the calendar: ${title} — ${when}.`,
+    calendarDelete: "I'll delete the calendar event",
+    calendarDeleteSeries: "I'll delete the whole recurring series",
+    calendarDeleteFooter:
+      "If it has guests, Google emails them the cancellation.",
+    calendarGuests: (guests: string) =>
+      `I'll invite ${guests}; Google emails them an invitation.`,
+    calendarNewTime: (when: string) => `Moving it to ${when}.`,
+    calendarNewTitle: (title: string) => `New title: ${title}`,
+    calendarNotes: (notes: string) => `Notes: ${notes}`,
+    calendarPlace: (place: string) => `Location: ${place}`,
+    calendarUpdate: "I'll change the calendar event",
+    calendarUpdateSeries: "I'll change the whole recurring series",
+    calendarUpdateFooter: "If it has guests, Google emails them the change.",
+    cancel: "No",
+    card: "I'll pay with the saved card.",
+    cardUpTo: (ceiling: string) =>
+      `I'll pay with the saved card, up to ${ceiling}.`,
+    cost: (amount: string) => `Cost — ${amount}`,
+    emailBcc: (list: string) => `, bcc ${list}`,
+    emailCc: (list: string) => `, cc ${list}`,
+    emailDraft: (to: string) => `I'll save a Gmail draft to ${to}`,
+    emailDraftFooter: "Nothing gets sent.",
+    emailDraftReply: (to: string) =>
+      `I'll save a Gmail draft of the reply to ${to} in the same thread`,
+    emailMore: (count: number) => `… (${String(count)} more characters)`,
+    emailReply: (to: string) => `I'll reply to ${to} in the same thread`,
+    emailSend: (to: string) => `I'll email ${to}`,
+    emailSubject: (subject: string) => `, subject: ${subject}`,
+    forWhom: (name: string) => `In the name of ${name}`,
+    guarantee: "The saved card goes only as a guarantee, nothing is charged.",
+    limitClear: "I'll take back the spend limit rule",
+    limitChange: "I'll change the spend limit.",
+    limitInclude: "I'll pay without asking again",
+    limitSet: (rule: string) =>
+      `Spend limit: ${rule}. Within it I'll pay without asking from now on.`,
+    memoryForget: (record: string) => `I'll forget this: ${record}`,
+    memoryForgetAll: "I'll forget these records:",
+    noPersonalData: "; no personal details go to the site.",
+    notionDatabase: (name: string) => `In the ${name} database.`,
+    notionDue: (due: string) => `Due ${due}`,
+    notionNotes: (notes: string) => `Notes: ${notes}`,
+    notionRead: (id: string) => `I'll open ${id} in Notion.`,
+    notionRecent: "I'll look at the recently edited pages in Notion.",
+    notionSearch: (query: string) => `I'll search Notion for ${query}`,
+    notionTask: (title: string) => `I'll add a task to Notion: ${title}`,
+    onSite: (site: string) => `On ${site}.`,
+    permissionFooter:
+      "From now on I'll do such errands without asking, in this conversation, until it is taken back; each errand stays on its own site, and background work never uses it.",
+    permissionRevoke: (rule: string) =>
+      `I'll take back the standing permission: ${rule}.`,
+    permissionRevokeAll: "I'll take back every standing permission.",
+    permissionSet: (rule: string) => `Standing permission: ${rule}.`,
+    personalData: (data: string) => `; the site gets: ${data}.`,
+    scheduleCreate: "I'll set up a scheduled task",
+    scheduleRunNow: "I'll run it once now, beside its regular runs.",
+    scheduleStatuses: {
+      active: "I'll resume it.",
+      deleted: "I'll delete it.",
+      paused: "I'll pause it.",
+    },
+    scheduleUpdate: "I'll change a scheduled task",
+    scheduleWhen: (when: string) => `Schedule: ${when}.`,
+    slackMessage: (to: string) => `I'll send this to ${to} in Slack:`,
+    slackRead: (from: string) => `I'll read the Slack messages in ${from}`,
+    slackSearch: (query: string) => `I'll search Slack for ${query}`,
+    slackThread: (thread: string) => ` (thread ${thread})`,
+    workstreamForget: (title: string) =>
+      `I'll forget the saved work on ${title}`,
+    workstreamForgetAll: "I'll forget this saved work:",
   },
   ru: {
-    amount: "Стоимость",
-    app: "Приложение",
-    appAction: "Действие",
-    appArguments: "Данные",
-    appTool: "Инструмент",
-    approve: "Подтвердить",
-    calendarCreate: "Создать событие в календаре:",
-    calendarDelete: "Удалить событие из календаря",
-    calendarDeleteSeries:
-      "Удалить из календаря всю серию повторяющихся событий",
+    appCall: (tool: string) => `Вызову ${tool} с такими данными:`,
+    appCallBare: (tool: string) => `Вызову ${tool} без данных.`,
+    appDo: (app: string, summary: string) => `В ${app}: ${summary}`,
+    appDoBare: (app: string) => `Сделаю вызов в ${app}.`,
+    approve: "Да",
+    askApp: "Сделать?",
+    askBrowser: {
+      application: "Подать?",
+      appointment: "Записать?",
+      booking: "Забронировать?",
+      job_application: "Откликнуться?",
+      message: "Отправить?",
+      order: "Заказать?",
+      other: "Сделать?",
+      table: "Забронировать?",
+      taxi: "Заказать?",
+    },
+    askBrowserUnknown: "Оформить?",
+    askCalendarCreate: "Добавить?",
+    askCalendarDelete: "Удалить?",
+    askCalendarUpdate: "Поменять?",
+    askDraft: "Сохранить черновик?",
+    askForget: "Забыть?",
+    askForgetAll: "Забыть?",
+    askLimitChange: "Поменять?",
+    askLimitClear: "Снять?",
+    askLimitInclude: "Вернуть?",
+    askLimitSet: "Поставить?",
+    askNotionRead: "Открыть?",
+    askNotionTask: "Добавить?",
+    askPermissionRevoke: "Снять?",
+    askPermissionSet: "Разрешить?",
+    askScheduleCreate: "Поставить?",
+    askScheduleUpdate: "Поменять?",
+    askLook: "Посмотреть?",
+    askSearch: "Поискать?",
+    askSend: "Отправить?",
+    askSlackRead: "Прочитать?",
+    basket: "В корзине:",
+    calendarCreate: (title: string, when: string) =>
+      `Добавлю в календарь: ${title} — ${when}.`,
+    calendarDelete: "Удалю из календаря событие",
+    calendarDeleteSeries: "Удалю из календаря всю серию повторяющихся событий",
     calendarDeleteFooter:
       "Если в событии есть гости, Google пришлёт им отмену.",
-    calendarGuests: "Гости",
-    calendarInvitation: "Гостям уйдёт приглашение от Google.",
-    calendarNewTime: "Новое время",
-    calendarNewTitle: "Новое название",
-    calendarNotes: "Заметки",
-    calendarUpdate: "Изменить событие в календаре",
-    calendarUpdateSeries:
-      "Изменить в календаре всю серию повторяющихся событий",
+    calendarGuests: (guests: string) =>
+      `Позову ${guests} — Google пришлёт им приглашение.`,
+    calendarNewTime: (when: string) => `Перенесу на ${when}.`,
+    calendarNewTitle: (title: string) => `Новое название — ${title}`,
+    calendarNotes: (notes: string) => `В описании — ${notes}`,
+    calendarPlace: (place: string) => `Место — ${place}`,
+    calendarUpdate: "Поменяю событие в календаре",
+    calendarUpdateSeries: "Поменяю в календаре всю серию повторяющихся событий",
     calendarUpdateFooter:
       "Если в событии есть гости, Google сообщит им об изменении.",
-    cancel: "Отмена",
-    card: "Оплата сохранённой картой",
-    cardUpTo: "Оплата сохранённой картой, не больше",
-    emailBcc: "Скрытая копия",
-    emailBody: "Текст",
-    emailCc: "Копия",
-    emailDraft: "Сохранить черновик в Gmail (ничего не отправляется):",
+    cancel: "Нет",
+    card: "Оплачу сохранённой картой.",
+    cardUpTo: (ceiling: string) =>
+      `Оплачу сохранённой картой, не больше ${ceiling}.`,
+    cost: (amount: string) => `Стоимость — ${amount}`,
+    emailBcc: (list: string) => `, скрытая копия — ${list}`,
+    emailCc: (list: string) => `, копия — ${list}`,
+    emailDraft: (to: string) => `Сохраню в Gmail черновик письма на ${to}`,
+    emailDraftFooter: "Отправлять ничего не буду.",
+    emailDraftReply: (to: string) =>
+      `Сохраню в Gmail черновик ответа ${to} в той же ветке`,
     emailMore: (count: number) => `… (ещё ${String(count)} зн.)`,
-    emailReply: "Ответ в ветке",
-    emailReplyUnnamed: "Ответ в ветке письма",
-    emailSend: "Отправить письмо:",
-    emailSubject: "Тема",
-    emailTo: "Кому",
-    forWhom: "От чьего имени",
-    guarantee: "Сохранённая карта только в гарантию, без списания",
-    items: "Состав",
-    limitChange: "Изменение лимита трат без спроса:",
-    limitClear: "Снять правило",
-    limitInclude: "Снова платить без спроса",
-    limitSet:
-      "Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:",
-    memoryForget: "Забыть из памяти:",
-    memoryForgetAll: "Забыть из памяти эти записи:",
-    notionDatabase: "База",
-    notionDue: "Срок",
-    notionNotes: "Заметки",
-    notionRead: "Открыть в Notion:",
-    notionRecent: "недавно изменённые страницы",
-    notionSearch: "Найти в Notion:",
-    notionTask: "Добавить задачу в Notion:",
+    emailReply: (to: string) => `Отвечу ${to} в той же ветке`,
+    emailSend: (to: string) => `Отправлю письмо на ${to}`,
+    emailSubject: (subject: string) => `, тема — ${subject}`,
+    forWhom: (name: string) => `Оформлю на имя ${name}`,
+    guarantee: "Карта уйдёт только в гарантию, списания не будет.",
+    limitClear: "Сниму правило лимита трат без спроса",
+    limitChange: "Поменяю лимит трат без спроса.",
+    limitInclude: "Снова буду платить без спроса",
+    limitSet: (rule: string) =>
+      `Лимит трат без спроса: ${rule}. В этих пределах дальше буду платить без подтверждения.`,
+    memoryForget: (record: string) => `Забуду из памяти: ${record}`,
+    memoryForgetAll: "Забуду из памяти эти записи:",
+    noPersonalData: ", личные данные сайту не уйдут.",
+    notionDatabase: (name: string) => `База — ${name}.`,
+    notionDue: (due: string) => `Срок — ${due}`,
+    notionNotes: (notes: string) => `В описании — ${notes}`,
+    notionRead: (id: string) => `Открою в Notion ${id}.`,
+    notionRecent: "Посмотрю в Notion недавно изменённые страницы.",
+    notionSearch: (query: string) => `Поищу в Notion: ${query}`,
+    notionTask: (title: string) => `Добавлю задачу в Notion: ${title}`,
+    onSite: (site: string) => `На сайте ${site}.`,
     permissionFooter:
-      "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
-    permissionRevoke: "Снять постоянное разрешение:",
-    permissionSet:
-      "Постоянное разрешение — такие поручения дальше без подтверждения:",
-    personalData: "Какие данные уйдут",
-    scheduleCreate: "Поставить задачу по расписанию:",
-    scheduleRunNow: "Запустить один раз сейчас, вне расписания",
-    scheduleStatus: "Статус",
+      "Такие поручения дальше буду делать без спроса — в этом разговоре, пока разрешение не снимут; каждое остаётся на своём сайте, а фоновая работа им не пользуется.",
+    permissionRevoke: (rule: string) => `Сниму постоянное разрешение: ${rule}.`,
+    permissionRevokeAll: "Сниму все постоянные разрешения.",
+    permissionSet: (rule: string) => `Постоянное разрешение: ${rule}.`,
+    personalData: (data: string) => `, сайт получит: ${data}.`,
+    scheduleCreate: "Поставлю задачу по расписанию",
+    scheduleRunNow: "Запущу её один раз сейчас, вне расписания.",
     scheduleStatuses: {
-      active: "возобновить",
-      deleted: "удалить",
-      paused: "поставить на паузу",
+      active: "Возобновлю её.",
+      deleted: "Удалю её.",
+      paused: "Поставлю её на паузу.",
     },
-    scheduleUpdate: "Изменить задачу по расписанию:",
-    site: "Сайт",
-    slackMessage: "Отправить сообщение в Slack:",
-    slackRead: "Прочитать сообщения в Slack:",
-    slackSearch: "Найти в Slack:",
-    slackText: "Текст",
-    slackThread: "ветка",
-    slackTo: "Кому",
-    title: "Подтверждение действия:",
-    when: "Когда",
-    what: "Что",
-    where: "Где",
-    workstreamForget: "Забыть сохранённое дело",
-    workstreamForgetAll: "Забыть сохранённые дела:",
+    scheduleUpdate: "Поменяю задачу по расписанию",
+    scheduleWhen: (when: string) => `Расписание — ${when}.`,
+    slackMessage: (to: string) => `Отправлю в Slack ${to}:`,
+    slackRead: (from: string) => `Прочитаю сообщения в Slack: ${from}`,
+    slackSearch: (query: string) => `Поищу в Slack: ${query}`,
+    slackThread: (thread: string) => ` (ветка ${thread})`,
+    workstreamForget: (title: string) => `Забуду сохранённое дело: ${title}`,
+    workstreamForgetAll: "Забуду сохранённые дела:",
   },
 } as const;
 
@@ -201,17 +267,39 @@ type CardText = (typeof cardText)[CardLanguage];
 /**
  * One line of the card. The tool's schema already refuses a line break in a
  * field, but a call parked before that, or a site, is drawn all the same: a
- * value that broke its line could pass for another field of the card.
+ * value that broke its line could pass for another line of the card.
  */
 function oneLine(value: string) {
   return value.replaceAll(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
 }
 
+/** A sentence that ends on a value: its full stop, unless it has one. */
+function sentence(text: string) {
+  return /[.!?…]$/u.test(text) ? text : `${text}.`;
+}
+
+/** «заказ корма» opens its sentence as «Заказ корма». */
+function capitalized(text: string) {
+  return text.charAt(0).toLocaleUpperCase() + text.slice(1);
+}
+
+/** The text after a colon: «Добавить платёж» → «добавить платёж», «CRM» stays. */
+function lowerFirst(text: string) {
+  const [first = "", second = ""] = text;
+  return second === second.toLocaleLowerCase()
+    ? first.toLocaleLowerCase() + text.slice(first.length)
+    : text;
+}
+
+/** The card: its lines, then the question the person answers. */
+function card(lines: readonly (string | undefined)[], question: string) {
+  return [...lines.filter((line) => line !== undefined), question].join("\n");
+}
+
 const confirmedCallSchema = z.object({
   allowPayment: z.boolean().optional(),
   site: z.string().optional(),
-  // The card does not show the kind, and a call parked before kinds existed
-  // still deserves its details.
+  // A call parked before kinds existed still deserves its details.
   submission: browserSubmissionSchema.partial({ kind: true }).extend({
     // Drawn line by line below, so a stray line break costs nothing here.
     amount: z.string().optional(),
@@ -235,9 +323,7 @@ function paymentLine(
   const { chargeRub } = call.submission;
   if (chargeRub !== undefined) {
     const ceiling = paymentCeilingRub(chargeRub);
-    return ceiling === 0
-      ? text.guarantee
-      : `${text.cardUpTo} ${formatRub(ceiling)}`;
+    return ceiling === 0 ? text.guarantee : text.cardUpTo(formatRub(ceiling));
   }
   return call.allowPayment === true ? text.card : undefined;
 }
@@ -249,25 +335,33 @@ function browserTaskPrompt(
 ) {
   const { submission } = call;
   const items = submission.items ?? [];
-  return [
-    text.title,
-    `${text.what}: ${oneLine(submission.what)}`,
-    // A basket is confirmed line by line: what is in it, not only its total.
-    ...(items.length > 0
-      ? [`${text.items}:`, ...items.map((item) => `• ${oneLine(item)}`)]
-      : []),
-    `${text.where}: ${oneLine(submission.where)}`,
-    `${text.forWhom}: ${oneLine(submission.forWhom)}`,
-    submission.when ? `${text.when}: ${oneLine(submission.when)}` : undefined,
+  const details = submission.personalData.map(oneLine).join(", ");
+  const cost = [
     submission.amount
-      ? `${text.amount}: ${oneLine(submission.amount)}`
+      ? sentence(text.cost(oneLine(submission.amount)))
       : undefined,
-    `${text.personalData}: ${submission.personalData.length > 0 ? submission.personalData.map(oneLine).join(", ") : "—"}`,
     paymentLine(call, text),
-    call.site ? `${text.site}: ${oneLine(call.site)}` : undefined,
   ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+    .filter((part) => part !== undefined)
+    .join(" ");
+  const where = oneLine(submission.where);
+  return card(
+    [
+      sentence(
+        `${capitalized(oneLine(submission.what))} — ${submission.when ? `${where}, ${oneLine(submission.when)}` : where}`
+      ),
+      // A basket is confirmed line by line: what is in it, not only its total.
+      ...(items.length > 0
+        ? [text.basket, ...items.map((item) => `• ${oneLine(item)}`)]
+        : []),
+      `${text.forWhom(oneLine(submission.forWhom))}${details ? text.personalData(details) : text.noPersonalData}`,
+      cost || undefined,
+      call.site ? text.onSite(oneLine(call.site)) : undefined,
+    ],
+    submission.kind === undefined
+      ? text.askBrowserUnknown
+      : text.askBrowser[submission.kind]
+  );
 }
 
 const standingKindLabelsEn: Record<
@@ -337,18 +431,22 @@ function standingPermissionPrompt(
     monthRub: call.maxRub === undefined ? null : (call.monthRub ?? null),
   };
   if (call.action === "revoke") {
-    return [
-      text.permissionRevoke,
-      call.kind === undefined && site === undefined
-        ? "—"
-        : describeStandingActionIn(language, rule),
-    ].join("\n");
+    return card(
+      [
+        call.kind === undefined && site === undefined
+          ? text.permissionRevokeAll
+          : text.permissionRevoke(describeStandingActionIn(language, rule)),
+      ],
+      text.askPermissionRevoke
+    );
   }
-  return [
-    text.permissionSet,
-    describeStandingActionIn(language, rule),
-    text.permissionFooter,
-  ].join("\n");
+  return card(
+    [
+      text.permissionSet(describeStandingActionIn(language, rule)),
+      text.permissionFooter,
+    ],
+    text.askPermissionSet
+  );
 }
 
 const spendLimitCallSchema = z.object({
@@ -371,28 +469,29 @@ function spendLimitPrompt(
   const named = givenScope(call.category);
   const category =
     named === undefined ? null : (normalizeCategory(named) ?? oneLine(named));
-  const scope = [merchant, category === null ? null : `«${category}»`]
-    .filter((part) => part !== null)
-    .join(", ");
+  const scope = [merchant, category].filter((part) => part !== null).join(", ");
+  const scoped = (lead: string) => sentence(scope ? `${lead}: ${scope}` : lead);
   if (call.action === "set" && call.limitRub !== undefined) {
-    return [
-      text.limitSet,
-      describeSpendRuleIn(language, {
-        category,
-        limitRub: call.limitRub,
-        merchant,
-      }),
-    ].join("\n");
-  }
-  if (call.action === "include") {
-    return [text.limitChange, `${text.limitInclude}: ${scope || "—"}`].join(
-      "\n"
+    return card(
+      [
+        text.limitSet(
+          describeSpendRuleIn(language, {
+            category,
+            limitRub: call.limitRub,
+            merchant,
+          })
+        ),
+      ],
+      text.askLimitSet
     );
   }
-  if (call.action === "clear") {
-    return [text.limitChange, `${text.limitClear}: ${scope || "—"}`].join("\n");
+  if (call.action === "include") {
+    return card([scoped(text.limitInclude)], text.askLimitInclude);
   }
-  return text.limitChange;
+  if (call.action === "clear") {
+    return card([scoped(text.limitClear)], text.askLimitClear);
+  }
+  return card([text.limitChange], text.askLimitChange);
 }
 
 const notionTaskCallSchema = z.object({
@@ -407,17 +506,15 @@ function notionTaskPrompt(
   call: z.infer<typeof notionTaskCallSchema>,
   text: CardText
 ) {
-  return [
-    text.notionTask,
-    `«${oneLine(call.title)}»`,
-    call.due ? `${text.notionDue}: ${oneLine(call.due)}` : undefined,
-    call.database
-      ? `${text.notionDatabase}: ${oneLine(call.database)}`
-      : undefined,
-    call.notes ? `${text.notionNotes}: ${oneLine(call.notes)}` : undefined,
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  return card(
+    [
+      sentence(text.notionTask(oneLine(call.title))),
+      call.due ? sentence(text.notionDue(oneLine(call.due))) : undefined,
+      call.database ? text.notionDatabase(oneLine(call.database)) : undefined,
+      call.notes ? sentence(text.notionNotes(oneLine(call.notes))) : undefined,
+    ],
+    text.askNotionTask
+  );
 }
 
 const slackMessageCallSchema = z.object({ text: z.string(), to: z.string() });
@@ -428,9 +525,11 @@ function slackMessagePrompt(
   text: CardText
 ) {
   return [
-    text.slackMessage,
-    `${text.slackTo}: ${oneLine(call.to)}`,
-    `${text.slackText}: ${oneLine(call.text)}`,
+    text.slackMessage(oneLine(call.to)),
+    "",
+    oneLine(call.text),
+    "",
+    text.askSend,
   ].join("\n");
 }
 
@@ -448,9 +547,9 @@ const emailBodyMaxLength = 2_500;
 const emailBodyMaxLines = 40;
 
 /**
- * The email's text as the card quotes it: line by line under a rule, so no
- * line of the text can pass for a field of the card («Кому: …»), and cut
- * with a note of how much is left when it is longer than a card holds.
+ * The email's text as the card quotes it: as it will be sent, between blank
+ * lines after the sentence that names who gets it, and cut with a note of
+ * how much is left when it is longer than a card holds.
  */
 function quotedBody(body: string, text: CardText) {
   const normalized = body
@@ -468,9 +567,7 @@ function quotedBody(body: string, text: CardText) {
     }
     shown = next;
   }
-  const quoted = shown
-    .split("\n")
-    .map((line) => `│ ${oneLine(line)}`.trimEnd());
+  const quoted = shown.split("\n").map((line) => oneLine(line));
   const rest = normalized.length - shown.length;
   return rest > 0 ? [...quoted, text.emailMore(rest)] : quoted;
 }
@@ -486,26 +583,25 @@ function emailPrompt(
 ) {
   const list = (addresses: readonly string[]) =>
     addresses.map(oneLine).join(", ");
-  const subject = call.subject ? oneLine(call.subject) : undefined;
-  let topic: string | undefined;
-  if (call.replyToMessageId !== undefined) {
-    topic = subject
-      ? `${text.emailReply}: «${subject}»`
-      : text.emailReplyUnnamed;
-  } else if (subject) {
-    topic = `${text.emailSubject}: ${subject}`;
-  }
+  const to = list(call.to);
+  const reply = call.replyToMessageId !== undefined;
+  let lead: string;
+  if (draft) lead = reply ? text.emailDraftReply(to) : text.emailDraft(to);
+  else lead = reply ? text.emailReply(to) : text.emailSend(to);
+  const subject = call.subject ? oneLine(call.subject) : "";
+  const header = [
+    lead,
+    subject ? text.emailSubject(subject) : "",
+    call.cc.length > 0 ? text.emailCc(list(call.cc)) : "",
+    call.bcc.length > 0 ? text.emailBcc(list(call.bcc)) : "",
+  ].join("");
   return [
-    draft ? text.emailDraft : text.emailSend,
-    `${text.emailTo}: ${list(call.to)}`,
-    call.cc.length > 0 ? `${text.emailCc}: ${list(call.cc)}` : undefined,
-    call.bcc.length > 0 ? `${text.emailBcc}: ${list(call.bcc)}` : undefined,
-    topic,
-    `${text.emailBody}:`,
+    draft ? `${sentence(header)} ${text.emailDraftFooter}` : sentence(header),
+    "",
     ...quotedBody(call.body, text),
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+    "",
+    draft ? text.askDraft : text.askSend,
+  ].join("\n");
 }
 
 /** A moment as the tool received it: wall clock and the offset it is in. */
@@ -649,21 +745,24 @@ function calendarCreatePrompt(
   text: CardText,
   language: CardLanguage
 ) {
-  return [
-    text.calendarCreate,
-    `«${oneLine(call.summary)}»`,
-    `${text.when}: ${eventWhen(call.start, call.end, call.timezone, language)}`,
-    call.location ? `${text.where}: ${oneLine(call.location)}` : undefined,
-    call.attendees.length > 0
-      ? `${text.calendarGuests}: ${call.attendees.map(oneLine).join(", ")}`
-      : undefined,
-    call.description
-      ? `${text.calendarNotes}: ${notesLine(call.description)}`
-      : undefined,
-    call.attendees.length > 0 ? text.calendarInvitation : undefined,
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  return card(
+    [
+      text.calendarCreate(
+        oneLine(call.summary),
+        eventWhen(call.start, call.end, call.timezone, language)
+      ),
+      call.location
+        ? sentence(text.calendarPlace(oneLine(call.location)))
+        : undefined,
+      call.attendees.length > 0
+        ? text.calendarGuests(call.attendees.map(oneLine).join(", "))
+        : undefined,
+      call.description
+        ? sentence(text.calendarNotes(notesLine(call.description)))
+        : undefined,
+    ],
+    text.askCalendarCreate
+  );
 }
 
 const calendarUpdateCallSchema = z.object({
@@ -693,12 +792,14 @@ function eventHeading(
   series: string,
   language: CardLanguage
 ) {
-  const title = call.eventTitle ? ` «${oneLine(call.eventTitle)}»` : "";
-  if (call.series === true) return `${series}${title}`;
-  const when = call.eventStart
-    ? ` (${momentLabel(call.eventStart, language)})`
-    : "";
-  return `${single}${title}${when}`;
+  const when =
+    call.series !== true && call.eventStart
+      ? momentLabel(call.eventStart, language)
+      : undefined;
+  const title = call.eventTitle ? oneLine(call.eventTitle) : undefined;
+  const lead = call.series === true ? series : single;
+  if (title) return sentence(`${lead}: ${when ? `${title} — ${when}` : title}`);
+  return sentence(when ? `${lead} ${when}` : lead);
 }
 
 /** The card for moving or changing an event: which one, and what changes. */
@@ -707,22 +808,32 @@ function calendarUpdatePrompt(
   text: CardText,
   language: CardLanguage
 ) {
-  return [
-    `${eventHeading(call, text.calendarUpdate, text.calendarUpdateSeries, language)}:`,
-    call.start !== undefined && call.end !== undefined
-      ? `${text.calendarNewTime}: ${eventWhen(call.start, call.end, call.timezone, language)}`
-      : undefined,
-    call.summary
-      ? `${text.calendarNewTitle}: «${oneLine(call.summary)}»`
-      : undefined,
-    call.location ? `${text.where}: ${oneLine(call.location)}` : undefined,
-    call.description
-      ? `${text.calendarNotes}: ${notesLine(call.description)}`
-      : undefined,
-    text.calendarUpdateFooter,
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  return card(
+    [
+      eventHeading(
+        call,
+        text.calendarUpdate,
+        text.calendarUpdateSeries,
+        language
+      ),
+      call.start !== undefined && call.end !== undefined
+        ? text.calendarNewTime(
+            eventWhen(call.start, call.end, call.timezone, language)
+          )
+        : undefined,
+      call.summary
+        ? sentence(text.calendarNewTitle(oneLine(call.summary)))
+        : undefined,
+      call.location
+        ? sentence(text.calendarPlace(oneLine(call.location)))
+        : undefined,
+      call.description
+        ? sentence(text.calendarNotes(notesLine(call.description)))
+        : undefined,
+      text.calendarUpdateFooter,
+    ],
+    text.askCalendarUpdate
+  );
 }
 
 /**
@@ -736,8 +847,15 @@ const approvalCardMaxLength = 3_500;
  * What forgetting several records at once shows: every record by its own
  * text, or every saved work by its title, one per line.
  */
-function forgetAllPrompt(heading: string, names: readonly string[]) {
-  return [heading, ...names.map((name) => `• «${oneLine(name)}»`)].join("\n");
+function forgetAllPrompt(
+  heading: string,
+  names: readonly string[],
+  question: string
+) {
+  return card(
+    [heading, ...names.map((name) => `• ${oneLine(name)}`)],
+    question
+  );
 }
 
 /**
@@ -753,7 +871,8 @@ export function forgetAllCardFits(
     (text) =>
       forgetAllPrompt(
         kind === "memory" ? text.memoryForgetAll : text.workstreamForgetAll,
-        names
+        names,
+        text.askForgetAll
       ).length <= approvalCardMaxLength
   );
 }
@@ -800,16 +919,19 @@ function argumentLines(argumentsJson: string | undefined) {
  * words cannot promise less than the call does.
  */
 function appsPrompt(call: z.infer<typeof appsCallSchema>, text: CardText) {
-  return [
-    text.title,
-    `${text.app}: ${appName(call.app)}`,
-    call.summary ? `${text.appAction}: ${oneLine(call.summary)}` : undefined,
-    `${text.appTool}: ${oneLine(call.tool)}`,
-    `${text.appArguments}:`,
-    ...argumentLines(call.arguments),
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  const app = appName(call.app);
+  const summary = call.summary ? lowerFirst(oneLine(call.summary)) : "";
+  const tool = oneLine(call.tool);
+  const args = argumentLines(call.arguments).filter((line) => line.trim());
+  return card(
+    [
+      summary ? sentence(text.appDo(app, summary)) : text.appDoBare(app),
+      ...(args.length > 0
+        ? [text.appCall(tool), ...args]
+        : [text.appCallBare(tool)]),
+    ],
+    text.askApp
+  );
 }
 
 /**
@@ -840,12 +962,14 @@ function connectedAppReadPrompt(
       .safeParse(action.input);
     if (!call.success) return undefined;
     const { query } = call.data;
-    return `${text.notionSearch} ${query ? `«${oneLine(query)}»` : text.notionRecent}`;
+    return query
+      ? card([sentence(text.notionSearch(oneLine(query)))], text.askSearch)
+      : card([text.notionRecent], text.askLook);
   }
   if (action.toolName === "notion-read") {
     const call = z.object({ id: z.string() }).safeParse(action.input);
     return call.success
-      ? `${text.notionRead} ${oneLine(call.data.id)}`
+      ? card([text.notionRead(oneLine(call.data.id))], text.askNotionRead)
       : undefined;
   }
   if (action.toolName === "slack-read") {
@@ -854,14 +978,20 @@ function connectedAppReadPrompt(
       .safeParse(action.input);
     if (!call.success) return undefined;
     const thread = call.data.threadTs
-      ? ` (${text.slackThread} ${oneLine(call.data.threadTs)})`
+      ? text.slackThread(oneLine(call.data.threadTs))
       : "";
-    return `${text.slackRead} ${oneLine(call.data.from)}${thread}`;
+    return card(
+      [sentence(`${text.slackRead(oneLine(call.data.from))}${thread}`)],
+      text.askSlackRead
+    );
   }
   if (action.toolName === "slack-search") {
     const call = z.object({ query: z.string() }).safeParse(action.input);
     return call.success
-      ? `${text.slackSearch} «${oneLine(call.data.query)}»`
+      ? card(
+          [sentence(text.slackSearch(oneLine(call.data.query)))],
+          text.askSearch
+        )
       : undefined;
   }
   return undefined;
@@ -915,21 +1045,22 @@ function schedulePrompt(
   text: CardText,
   created: boolean
 ) {
-  return [
-    created ? text.scheduleCreate : text.scheduleUpdate,
-    call.prompt === undefined
-      ? undefined
-      : `${text.what}: ${oneLine(call.prompt)}`,
-    call.timing === undefined
-      ? undefined
-      : `${text.when}: ${scheduleWhen(call.timing)}`,
-    call.status === undefined
-      ? undefined
-      : `${text.scheduleStatus}: ${text.scheduleStatuses[call.status]}`,
-    call.runNow === true ? text.scheduleRunNow : undefined,
-  ]
-    .filter((line) => line !== undefined)
-    .join("\n");
+  const lead = created ? text.scheduleCreate : text.scheduleUpdate;
+  return card(
+    [
+      sentence(
+        call.prompt === undefined ? lead : `${lead}: ${oneLine(call.prompt)}`
+      ),
+      call.timing === undefined
+        ? undefined
+        : text.scheduleWhen(scheduleWhen(call.timing)),
+      call.status === undefined
+        ? undefined
+        : text.scheduleStatuses[call.status],
+      call.runNow === true ? text.scheduleRunNow : undefined,
+    ],
+    created ? text.askScheduleCreate : text.askScheduleUpdate
+  );
 }
 
 /** The approval card's text for the call, read from its input, or none. */
@@ -993,7 +1124,18 @@ function cardPrompt(
       })
       .safeParse(action.input);
     return call.success
-      ? `${eventHeading(call.data, text.calendarDelete, text.calendarDeleteSeries, language)}.\n${text.calendarDeleteFooter}`
+      ? card(
+          [
+            eventHeading(
+              call.data,
+              text.calendarDelete,
+              text.calendarDeleteSeries,
+              language
+            ),
+            text.calendarDeleteFooter,
+          ],
+          text.askCalendarDelete
+        )
       : undefined;
   }
   const read = connectedAppReadPrompt(action, text);
@@ -1011,7 +1153,10 @@ function cardPrompt(
   if (action.toolName === "profile__remove_memory") {
     const call = z.object({ text: z.string() }).safeParse(action.input);
     return call.success
-      ? `${text.memoryForget}\n«${oneLine(call.data.text)}»`
+      ? card(
+          [sentence(text.memoryForget(oneLine(call.data.text)))],
+          text.askForget
+        )
       : undefined;
   }
   if (action.toolName === "profile__forget_all") {
@@ -1021,7 +1166,8 @@ function cardPrompt(
     return call.success
       ? forgetAllPrompt(
           text.memoryForgetAll,
-          call.data.records.map((record) => record.text)
+          call.data.records.map((record) => record.text),
+          text.askForgetAll
         )
       : undefined;
   }
@@ -1032,7 +1178,8 @@ function cardPrompt(
     return call.success
       ? forgetAllPrompt(
           text.workstreamForgetAll,
-          call.data.workstreams.map((workstream) => workstream.title)
+          call.data.workstreams.map((workstream) => workstream.title),
+          text.askForgetAll
         )
       : undefined;
   }
@@ -1043,7 +1190,14 @@ function cardPrompt(
       .object({ id: z.string(), title: z.string().optional() })
       .safeParse(action.input);
     return call.success
-      ? `${text.workstreamForget} «${oneLine(call.data.title ?? call.data.id)}»`
+      ? card(
+          [
+            sentence(
+              text.workstreamForget(oneLine(call.data.title ?? call.data.id))
+            ),
+          ],
+          text.askForget
+        )
       : undefined;
   }
   return undefined;

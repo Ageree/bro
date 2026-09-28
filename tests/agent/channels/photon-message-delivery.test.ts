@@ -882,20 +882,13 @@ describe("Photon approval cards", () => {
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: [
-        [
-          "Подтверждение действия:",
-          "Что: столик на двоих",
-          "Где: ресторан «Пушкин» (cafe-pushkin.ru)",
-          "От чьего имени: Алиса",
-          "Когда: сегодня, 20:00",
-          "Стоимость: бесплатно",
-          "Какие данные уйдут: имя, телефон",
-          "Сайт: https://cafe-pushkin.ru",
-        ].join("\n"),
-        "1 — Подтвердить\n2 — Отмена",
-        // eve resolves a reply that is the option's number.
-        "Ответ — цифрой: 1 или 2.",
-      ].join("\n\n"),
+        // eve's patched resolver takes a typed «да» or «не надо» as the answer.
+        "Столик на двоих — ресторан «Пушкин» (cafe-pushkin.ru), сегодня, 20:00.",
+        "Оформлю на имя Алиса, сайт получит: имя, телефон.",
+        "Стоимость — бесплатно.",
+        "На сайте https://cafe-pushkin.ru.",
+        "Забронировать?",
+      ].join("\n"),
     });
   });
 
@@ -903,17 +896,31 @@ describe("Photon approval cards", () => {
     const { context, post } = handlerContext();
 
     await handleInputRequested(
-      approval("browser_task", booking),
+      approval("browser_task", {
+        ...booking,
+        submission: {
+          ...booking.submission,
+          amount: "free",
+          forWhom: "Alice",
+          personalData: ["name", "phone"],
+          what: "a table for two",
+          when: "today, 20:00",
+          where: "Pushkin (cafe-pushkin.ru)",
+        },
+      }),
       context,
       englishSessionContext()
     );
 
-    const [message] = post.mock.calls[0] ?? [];
-    expect(JSON.stringify(message)).toContain(
-      "Confirm before this is done in your name:"
-    );
-    expect(JSON.stringify(message)).toContain("1 — Approve");
-    expect(JSON.stringify(message)).toContain("Reply with the number: 1 or 2.");
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        "A table for two — Pushkin (cafe-pushkin.ru), today, 20:00.",
+        "In the name of Alice; the site gets: name, phone.",
+        "Cost — free.",
+        "On https://cafe-pushkin.ru.",
+        "Book it?",
+      ].join("\n"),
+    });
   });
 
   it("says whom an email goes to and its whole text", async () => {
@@ -934,20 +941,16 @@ describe("Photon approval cards", () => {
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: [
-        [
-          "Отправить письмо:",
-          "Кому: irina@example.com",
-          "Ответ в ветке: «Встреча в четверг»",
-          "Текст:",
-          "│ Ирина Павловна, добрый день!",
-          "│",
-          "│ В четверг не смогу.",
-          "│",
-          "│ Спасибо! Хорошего дня.",
-        ].join("\n"),
-        "1 — Подтвердить\n2 — Отмена",
-        "Ответ — цифрой: 1 или 2.",
-      ].join("\n\n"),
+        "Отвечу irina@example.com в той же ветке, тема — Встреча в четверг.",
+        "",
+        "Ирина Павловна, добрый день!",
+        "",
+        "В четверг не смогу.",
+        "",
+        "Спасибо! Хорошего дня.",
+        "",
+        "Отправить?",
+      ].join("\n"),
     });
   });
 
@@ -987,14 +990,10 @@ describe("Photon approval cards", () => {
 
     expect(post).toHaveBeenCalledExactlyOnceWith({
       raw: [
-        [
-          "Постоянное разрешение — такие поручения дальше без подтверждения:",
-          `заказы такси без спроса, на любых сайтах, до ${formatRub(1500)} за раз и до ${formatRub(4500)} в месяц`,
-          "Действует в разговоре, пока его не снимут; каждое поручение остаётся на своём сайте, фоновая работа им не пользуется.",
-        ].join("\n"),
-        "1 — Подтвердить\n2 — Отмена",
-        "Ответ — цифрой: 1 или 2.",
-      ].join("\n\n"),
+        `Постоянное разрешение: заказы такси без спроса, на любых сайтах, до ${formatRub(1500)} за раз и до ${formatRub(4500)} в месяц.`,
+        "Такие поручения дальше буду делать без спроса — в этом разговоре, пока разрешение не снимут; каждое остаётся на своём сайте, а фоновая работа им не пользуется.",
+        "Разрешить?",
+      ].join("\n"),
     });
   });
 
@@ -1011,13 +1010,12 @@ describe("Photon approval cards", () => {
       sessionContext()
     );
 
-    const [message] = post.mock.calls[0] ?? [];
-    expect(JSON.stringify(message)).toContain(
-      JSON.stringify(
-        `Лимит трат без спроса — в этих пределах оплата дальше без подтверждения:\nдо ${formatRub(5000)} в месяц на ozon.ru`
-      ).slice(1, -1)
-    );
-    expect(JSON.stringify(message)).not.toContain("spend_limit");
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      raw: [
+        `Лимит трат без спроса: до ${formatRub(5000)} в месяц на ozon.ru. В этих пределах дальше буду платить без подтверждения.`,
+        "Поставить?",
+      ].join("\n"),
+    });
   });
 
   it("keeps a line break in a field from passing for another line of the card", async () => {
@@ -1037,7 +1035,7 @@ describe("Photon approval cards", () => {
 
     const [message] = post.mock.calls[0] ?? [];
     expect(JSON.stringify(message)).toContain(
-      "Что: столик на двоих Стоимость: бесплатно"
+      "Столик на двоих Стоимость: бесплатно — ресторан"
     );
   });
 });
