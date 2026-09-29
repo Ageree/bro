@@ -593,6 +593,55 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(created)
         await self.settled("r2")
 
+    async def test_a_step_that_hangs_past_the_budget_is_cut_off_and_frees_the_browser(self):
+        self.enterContext(mock.patch.object(worker, "OVERRUN_S", 0))
+        in_step = asyncio.Event()
+
+        async def hangs(agent, on_step_start):
+            await on_step_start(agent)
+            in_step.set()
+            await asyncio.Event().wait()  # a step browser-use could not time out
+
+        FakeAgent.script = hangs
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a phone.",
+                                     "timeoutSeconds": 1})
+        await self.reached(in_step)
+        run = await self.settled("r1")
+        self.assertEqual((run.status, run.error), ("failed", "The run ran out of its time budget."))
+        self.assertFalse(self.worker.busy())
+        FakeAgent.script = one_step
+        _, created = await self.worker.start_run({"id": "r2", "sessionId": "s1", "llm": LLM,
+                                                  "task": "Open the first one."})
+        self.assertTrue(created)
+        self.assertEqual((await self.settled("r2")).status, "completed")
+
+    async def test_a_cancel_cuts_off_a_hung_step_and_restarts_chrome_under_one_that_ignores_it(self):
+        self.enterContext(mock.patch.object(worker, "CANCEL_WAIT_S", 0.2))
+        self.enterContext(mock.patch.object(worker, "UNWIND_S", 0.2))
+        chrome_gone, in_step = asyncio.Event(), asyncio.Event()
+
+        async def restart(action, unit="bro-chrome"):
+            chrome_gone.set()
+            return 0, ""
+
+        self.enterContext(mock.patch.object(worker, "systemctl", restart))
+
+        async def ignores_the_cancel(agent, on_step_start):
+            await on_step_start(agent)
+            in_step.set()
+            while not chrome_gone.is_set():  # a CDP call that swallows the cancel
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.05)
+            raise ConnectionError("CDP connection closed")
+
+        FakeAgent.script = ignores_the_cancel
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a phone."})
+        await self.reached(in_step)
+        status, run = await self.call("POST", "/v1/runs/r1/cancel")
+        self.assertEqual((status, run["status"], run["error"]), (200, "cancelled", "Stopped by Bro."))
+        self.assertTrue(chrome_gone.is_set())
+        self.assertFalse(self.worker.busy())
+
     async def test_the_session_follows_the_agent_into_a_tab_it_opened(self):
         async def opens_a_tab(agent, on_step_start):
             await on_step_start(agent)
