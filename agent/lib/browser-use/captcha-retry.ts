@@ -27,6 +27,10 @@ type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
  */
 export const maximumCaptchaAttempts = 5;
 const retryDelaysMinutes = [2, 5, 9, 14] as const;
+// On the workspace's own VM a retry goes out through another residential
+// exit, and a site that blocked the address (Avito's «Доступ ограничен:
+// проблема с IP») lets the next one in at once: waiting buys nothing there.
+const vmRetryDelaysMinutes = [1, 2, 5, 9] as const;
 
 export const captchaRetryWindowMinutes = retryDelaysMinutes.reduce(
   (sum, minutes) => sum + minutes,
@@ -37,10 +41,11 @@ export const captchaRetryWindowMinutes = retryDelaysMinutes.reduce(
  * When the next attempt runs after attempt `failedAttempt` lost to an
  * anti-bot check, or nothing when the errand is out of attempts.
  */
-export function captchaRetryAt(failedAttempt: number, now: Date) {
+export function captchaRetryAt(failedAttempt: number, now: Date, onVm = false) {
   if (failedAttempt >= maximumCaptchaAttempts) return undefined;
-  const index = Math.min(Math.max(failedAttempt, 1), retryDelaysMinutes.length);
-  const minutes = retryDelaysMinutes[index - 1] ?? 1;
+  const delays = onVm ? vmRetryDelaysMinutes : retryDelaysMinutes;
+  const index = Math.min(Math.max(failedAttempt, 1), delays.length);
+  const minutes = delays[index - 1] ?? 1;
   return new Date(now.getTime() + minutes * 60_000);
 }
 
@@ -62,7 +67,7 @@ export function captchaRetryTask(
 ) {
   const base = previousTask.split(`\n\n${retryMarker}`, 1)[0] ?? previousTask;
   const fresh = onVm
-    ? "a new tab of the same browser, with the same saved profile, cookies and sign-ins"
+    ? "a new tab of the same browser, with the same saved profile, cookies and sign-ins, through another network address when one could be had"
     : "a fresh browser on a different network address, with the same saved profile, cookies and sign-ins";
   return [
     base,
@@ -258,7 +263,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       cause: error,
       runId: row.id,
     });
-    const retryAt = captchaRetryAt(attempt, now);
+    const retryAt = captchaRetryAt(attempt, now, onVm);
     if (retryAt === undefined) return { status: "exhausted" as const };
     await parkBrowserRunForRetry(row.id, { captchaAttempt: attempt, retryAt });
     return { status: "parked" as const };

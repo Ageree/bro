@@ -23,6 +23,9 @@ const runId = `vm:${workspaceId}:r:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`;
 const origin = "https://45-132-176-116.sslip.io";
 const composedTask =
   "Errand: 7\nAttempt: 1\nFind the parcel on the courier site";
+// What the VM's agent gets: the composed errand and the line that has it
+// hand an address wall to the anti-bot retry at once.
+const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP») or a puzzle captcha is still there after one press of its continue button, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
 
 const claimsSchema = z.object({
   env: z.string(),
@@ -253,7 +256,7 @@ describe("starting a run on a workspace's browser VM", () => {
       id: run.id,
       sessionId: run.sessionId,
       status: "dispatching",
-      task: composedTask,
+      task: vmTask,
       workspaceId,
     });
     expect(
@@ -280,7 +283,7 @@ describe("starting a run on a workspace's browser VM", () => {
         { alias: "phone", allowedDomains: ["ozon.ru"], value: "9161234567" },
       ],
       sessionId: run.sessionId,
-      task: composedTask,
+      task: vmTask,
       timeoutSeconds: 1500,
     });
   });
@@ -330,7 +333,7 @@ describe("starting a run on a workspace's browser VM", () => {
       id: run.id,
       sessionId,
       status: "dispatching",
-      task: composedTask,
+      task: vmTask,
       workspaceId,
     });
     expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(

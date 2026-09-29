@@ -19,6 +19,7 @@ import {
   readBrowserUseRun,
   type BrowserUseRunStatus,
 } from "./client";
+import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import {
   captchaRetryAt,
   captchaRetryWindowMinutes,
@@ -138,7 +139,11 @@ export async function settleBrowserRun(
   // or the attempts have run out.
   const retryAt =
     parsed.needs === "captcha"
-      ? captchaRetryAt(row.captchaAttempt, new Date())
+      ? captchaRetryAt(
+          row.captchaAttempt,
+          new Date(),
+          isBrowserVmId(row.profileId ?? "")
+        )
       : undefined;
   // Only a finished run has an order to record; one still waiting on the
   // person has bought nothing yet.

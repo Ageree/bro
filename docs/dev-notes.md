@@ -243,7 +243,8 @@
   разбирайте с конца (`ids.ts`). Кому VM — `BROWSER_BACKEND` и пилотный
   `BROWSER_VM_WORKSPACES` (id или email владельца). У входа по телефону email
   служебный (`phone-…@local-vault.invalid`): такому аккаунту пишите id
-  воркспейса (`accessScopeForUser`). Env Vercel действует лишь со следующего
+  воркспейса: `personal:` + первые 32 hex SHA-256 от `better-auth:<id пользователя>`
+  (`agent/channels/eve.ts`, `accessScopeForUser`). Env Vercel действует лишь со следующего
   деплоя. Своих образов в проекте — не больше двух: старые удаляйте до сборки.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.

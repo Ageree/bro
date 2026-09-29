@@ -96,6 +96,15 @@ export function browserVmReconcileConfigured() {
 }
 
 /**
+ * The VM's agent has no captcha solver, and a site that blocked the exit
+ * (Avito's «Доступ ограничен: проблема с IP» with a slider) only let it burn
+ * minutes on the puzzle before it gave up: the anti-bot retry from another
+ * address gets in faster, so the run hands over at once.
+ */
+const addressWallLine =
+  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP») or a puzzle captcha is still there after one press of its continue button, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
+
+/**
  * Start a run on the workspace's VM, powering the VM on or creating it
  * first: until it is up the start answers 429 with the wait, and the errand
  * waits in the queue as it does for a busy Browser Use project.
@@ -159,6 +168,7 @@ export async function createBrowserVmRun(input: {
   });
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
+  const task = `${input.task}\n\n${addressWallLine}`;
   // Recorded before the worker is asked: a start whose answer is lost still
   // has a row to be found by, and the task outlives the VM. Until the
   // worker takes it the run is only being sent (`dispatching`), and a
@@ -167,7 +177,7 @@ export async function createBrowserVmRun(input: {
     id,
     sessionId,
     status: "dispatching",
-    task: input.task,
+    task,
     workspaceId,
   });
   const llm = browserVmLlm();
@@ -181,7 +191,7 @@ export async function createBrowserVmRun(input: {
       value: binding.source.value,
     })),
     sessionId,
-    task: input.task,
+    task,
     timeoutSeconds: runTimeoutSeconds,
   });
   // The worker has it: the record says what the worker says from here. The
