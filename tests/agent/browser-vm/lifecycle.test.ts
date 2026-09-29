@@ -297,6 +297,7 @@ beforeEach(() => {
   });
   records.listOpenBrowserVmRuns.mockResolvedValue([]);
   cloud.findCloudRuVmByName.mockResolvedValue(undefined);
+  cloud.readCloudRuVm.mockResolvedValue(cloudVm("running"));
   sleep.mockResolvedValue();
   listWorkspacesHoldingBrowsers.mockResolvedValue([]);
   cloud.setCloudRuVmPower.mockResolvedValue();
@@ -365,7 +366,55 @@ describe("bringing a workspace's browser VM up for an errand", () => {
     expect(result.kind).toBe("ready");
     expect(stored().lastUsedAt).toEqual(now);
     expect(records.claimBrowserVmLease).not.toHaveBeenCalled();
-    expect(cloud.readCloudRuVm).not.toHaveBeenCalled();
+    // Cloud.ru confirms the address is still this VM's before any secret goes.
+    expect(cloud.readCloudRuVm).toHaveBeenCalledExactlyOnceWith("vm-1");
+  });
+
+  it("sends nothing to an address whose VM is gone from Cloud.ru, and forgets the VM", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow({ generation: 2 }));
+    // Another machine got the address and answers health like our worker.
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
+    expect(stored()).toMatchObject({
+      host: null,
+      profileGeneration: 2,
+      state: "stopped",
+      vmId: null,
+    });
+    expect(records.releaseBrowserVmLease).toHaveBeenCalled();
+  });
+
+  it("follows a VM that Cloud.ru now has on another address", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow());
+    cloud.readCloudRuVm.mockResolvedValue({
+      ...cloudVm("running"),
+      host: "203.0.113.9",
+    });
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
+    expect(stored()).toMatchObject({ host: "203.0.113.9", state: "ready" });
+  });
+
+  it("keeps the errand waiting while Cloud.ru cannot confirm the VM", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow();
+    rows.set(workspaceId, vm);
+    cloud.readCloudRuVm.mockRejectedValue(new TypeError("fetch failed"));
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(stored()).toEqual(vm);
+    expect(records.claimBrowserVmLease).not.toHaveBeenCalled();
   });
 
   it.each([

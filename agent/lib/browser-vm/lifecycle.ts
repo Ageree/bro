@@ -191,12 +191,14 @@ async function writeHeld(
  */
 export async function ensureBrowserVm(workspaceId: string, now = new Date()) {
   const record = await ensureBrowserVmRecord(workspaceId);
-  if (record.state === "ready") return readyForErrand(record, now);
+  if (record.state === "ready") return readyForErrand(record, now, false);
   const claimed = await claimBrowserVmLease(workspaceId, now, leaseMs);
   if (!claimed) return starting(leaseHeldRetryMs);
   try {
     // The reconcile that held the lease may have brought it up meanwhile.
-    if (claimed.state === "ready") return await readyForErrand(claimed, now);
+    if (claimed.state === "ready") {
+      return await readyForErrand(claimed, now, true);
+    }
     return starting(await bringUpForErrand(claimed, now));
   } finally {
     await releaseBrowserVmLease(workspaceId, claimed.leaseUntil ?? undefined);
@@ -332,14 +334,60 @@ function overdue(vm: BrowserVm, now: Date, afterMs: number) {
  * The touch reads the state back: an idle stop that began between the two
  * reads has the VM, and the errand waits for it instead.
  */
-async function readyForErrand(vm: BrowserVm, now: Date) {
+async function readyForErrand(vm: BrowserVm, now: Date, held: boolean) {
   if (vm.profileResetPending || (await aliveWorker(vm)) === undefined) {
+    return starting(transitionRetryMs);
+  }
+  // The address is Cloud.ru's to hand on. A VM deleted outside Bro leaves
+  // the record pointing at an address that may be another machine's by now,
+  // whose worker answers the unsigned health check like ours does: the
+  // errand would send it the proxy login, the model key and the site's
+  // secrets before its worker refused the signature. So the errand goes out
+  // only while Cloud.ru still has this VM, running, on this address; a
+  // record that says otherwise is set right under the lease (`bringUp`
+  // forgets a VM that is gone, and the next errand creates one).
+  let cloud: CloudVm | undefined;
+  try {
+    cloud = vm.vmId === null ? undefined : await readCloudRuVm(vm.vmId);
+  } catch (error) {
+    // Unconfirmed is not ours: the errand waits for Cloud.ru to answer.
+    console.warn("[browser-vm] Cloud.ru could not confirm the VM", {
+      cause: error,
+      workspaceId: vm.workspaceId,
+    });
+    return starting(transitionRetryMs);
+  }
+  if (cloud?.state !== "running" || cloud.host !== vm.host) {
+    await relocate(vm, now, held);
     return starting(transitionRetryMs);
   }
   const touched = await touchBrowserVm(vm.workspaceId, now);
   return touched.state === "ready"
     ? { kind: "ready" as const, vm: touched }
     : starting(transitionRetryMs);
+}
+
+/**
+ * Take a ready VM that Cloud.ru no longer has as it was recorded back to
+ * `starting` and follow it up there: gone, it is forgotten; moved to another
+ * address, the record follows it; off, the watchdog brings it back.
+ */
+async function relocate(vm: BrowserVm, now: Date, held: boolean) {
+  const claimed = held
+    ? vm
+    : await claimBrowserVmLease(vm.workspaceId, now, leaseMs);
+  if (!claimed) return;
+  try {
+    if (claimed.state !== "ready") return;
+    await bringUp(await writeHeld(claimed, { state: "starting" }, now), now);
+  } finally {
+    if (!held) {
+      await releaseBrowserVmLease(
+        vm.workspaceId,
+        claimed.leaseUntil ?? undefined
+      );
+    }
+  }
 }
 
 /**
