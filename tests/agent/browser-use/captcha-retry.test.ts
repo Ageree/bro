@@ -418,7 +418,8 @@ describe("the anti-bot retry policy", () => {
     ).toEqual({ status: "parked" });
     expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
       captchaAttempt: 3,
-      retryAt: new Date("2026-09-23T12:49:00.000Z"),
+      // A VM's retry goes out through another exit, so it waits less.
+      retryAt: new Date("2026-09-23T12:45:00.000Z"),
     });
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
   });

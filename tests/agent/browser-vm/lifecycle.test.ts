@@ -613,7 +613,7 @@ describe("reconciling browser VMs", () => {
     });
   });
 
-  it("reboots a VM with no healthy worker seven minutes after it was started, once", async () => {
+  it("reboots a VM with no healthy worker four minutes after it was started, once", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(
       workspaceId,
@@ -635,11 +635,11 @@ describe("reconciling browser VMs", () => {
     expect(alertOwner).not.toHaveBeenCalled();
   });
 
-  it("waits for a VM that is still inside its first seven minutes", async () => {
+  it("waits for a VM that is still inside its first four minutes", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(
       workspaceId,
-      vmRow({ state: "creating", stateChangedAt: minutesAgo(6) })
+      vmRow({ state: "creating", stateChangedAt: minutesAgo(3) })
     );
     cloud.readCloudRuVm.mockResolvedValue(cloudVm("running"));
     worker.readBrowserVmWorkerHealth.mockResolvedValue(

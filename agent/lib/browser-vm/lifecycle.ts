@@ -65,8 +65,15 @@ const transitionRetryMs = 45_000;
 const quotaRetryMs = 10 * 60_000;
 /** Cloud.ru could not be asked at all (its key, IAM, the project): soon again. */
 const unsentRetryMs = 60_000;
-/** A VM with no healthy worker this long after it was started is rebooted once. */
-const rebootAfterMs = 7 * 60_000;
+/**
+ * A VM with no healthy worker this long after it was started is rebooted
+ * once. A healthy one answers in about a minute (63–113 s from a warmed
+ * image); the first boot that hangs (`initramfs`) never does, and only the
+ * reboot brings it up, so waiting longer only delays the person's errand.
+ * A VM Cloud.ru still lays the image out for is not `running` yet, and the
+ * watchdog leaves it alone.
+ */
+const rebootAfterMs = 4 * 60_000;
 /** ...and given up on this long after it, for the owner to look at. */
 const failAfterMs = 20 * 60_000;
 /**
