@@ -18,7 +18,7 @@ const createBrowserUseRun = vi.hoisted(() =>
   >()
 );
 const readBrowserUseRun = vi.hoisted(() =>
-  vi.fn<(runId: string) => Promise<{ task: string }>>()
+  vi.fn<(runId: string) => Promise<{ sessionId?: string; task: string }>>()
 );
 const findRecentBrowserUseRunByTaskLine = vi.hoisted(() =>
   vi.fn<
