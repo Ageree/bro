@@ -72,7 +72,7 @@ const worker = vi.hoisted(() => ({
 }));
 
 const alertOwner = vi.hoisted(() =>
-  vi.fn<typeof ownerAlert.alertOwner>(() => Promise.resolve(true))
+  vi.fn<typeof ownerAlert.alertOwner>(() => Promise.resolve(true)),
 );
 
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
@@ -159,7 +159,7 @@ function claimsOf(url: string, before: string) {
   const token = url.split(before)[1]?.split("/")[0] ?? "";
   const payload = token.split(".")[1] ?? "";
   return claimsSchema.parse(
-    JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
+    JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
   );
 }
 
@@ -169,14 +169,14 @@ beforeEach(() => {
   records.readBrowserVmRun.mockResolvedValue(runRecord());
   records.recordBrowserVmRun.mockResolvedValue();
   records.updateBrowserVmRun.mockImplementation((id, patch) =>
-    Promise.resolve(runRecord({ id, ...patch }))
+    Promise.resolve(runRecord({ id, ...patch })),
   );
   records.updateBrowserVm.mockImplementation((id, patch) =>
-    Promise.resolve(vmRow({ workspaceId: id, ...patch }))
+    Promise.resolve(vmRow({ workspaceId: id, ...patch })),
   );
   lifecycle.ensureBrowserVm.mockResolvedValue({ kind: "ready", vm });
   lifecycle.prepareBrowserVmSession.mockImplementation((ready) =>
-    Promise.resolve(ready)
+    Promise.resolve(ready),
   );
   lifecycle.touchBrowserVm.mockResolvedValue(vm);
 });
@@ -190,14 +190,14 @@ afterEach(() => {
 async function loadClient() {
   return importWithSettings(
     browserVmTestEnvironment,
-    async () => import("@agent/lib/browser-use/client")
+    async () => import("@agent/lib/browser-use/client"),
   );
 }
 
 async function loadRuns() {
   return importWithSettings(
     browserVmTestEnvironment,
-    async () => import("@agent/lib/browser-vm/runs")
+    async () => import("@agent/lib/browser-vm/runs"),
   );
 }
 
@@ -227,7 +227,7 @@ describe("starting a run on a workspace's browser VM", () => {
         id: input.id,
         sessionId: input.sessionId ?? "",
         status: "queued",
-      })
+      }),
     );
 
     const run = await client.createBrowserUseRun({
@@ -247,10 +247,10 @@ describe("starting a run on a workspace's browser VM", () => {
     });
 
     expect(run.id).toMatch(
-      new RegExp(`^vm:${workspaceId}:r:[\\da-f-]{36}$`, "u")
+      new RegExp(`^vm:${workspaceId}:r:[\\da-f-]{36}$`, "u"),
     );
     expect(run.sessionId).toMatch(
-      new RegExp(`^vm:${workspaceId}:s:[\\da-f-]{36}$`, "u")
+      new RegExp(`^vm:${workspaceId}:s:[\\da-f-]{36}$`, "u"),
     );
     expect(run).toMatchObject({
       model: "deepseek/deepseek-v4.1-flash",
@@ -266,15 +266,15 @@ describe("starting a run on a workspace's browser VM", () => {
       workspaceId,
     });
     expect(
-      records.recordBrowserVmRun.mock.invocationCallOrder[0] ?? Infinity
+      records.recordBrowserVmRun.mock.invocationCallOrder[0] ?? Infinity,
     ).toBeLessThan(
-      worker.startBrowserVmWorkerRun.mock.invocationCallOrder[0] ?? 0
+      worker.startBrowserVmWorkerRun.mock.invocationCallOrder[0] ?? 0,
     );
     expect(
       records.updateBrowserVmRun.mock.calls.map(([id, patch]) => [
         id,
         patch.status,
-      ])
+      ]),
     ).toEqual([[run.id, "queued"]]);
     expect(worker.startBrowserVmWorkerRun).toHaveBeenCalledOnce();
     expect(worker.startBrowserVmWorkerRun.mock.calls[0]?.[1]).toEqual({
@@ -300,7 +300,7 @@ describe("starting a run on a workspace's browser VM", () => {
         id: input.id,
         sessionId: input.sessionId ?? "",
         status: "queued",
-      })
+      }),
     );
     const start = { profileId, task: composedTask };
 
@@ -308,12 +308,12 @@ describe("starting a run on a workspace's browser VM", () => {
     vi.resetModules();
     const withKey = await importWithSettings(
       { ...browserVmTestEnvironment, BROWSER_VM_TWOCAPTCHA_API_KEY: "2c-key" },
-      async () => import("@agent/lib/browser-use/client")
+      async () => import("@agent/lib/browser-use/client"),
     );
     await withKey.createBrowserUseRun(start);
 
     const inputs = worker.startBrowserVmWorkerRun.mock.calls.map(
-      ([, input]) => input.captcha
+      ([, input]) => input.captcha,
     );
     expect(inputs).toEqual([undefined, { twoCaptchaKey: "2c-key" }]);
   });
@@ -325,7 +325,7 @@ describe("starting a run on a workspace's browser VM", () => {
         id: input.id,
         sessionId: input.sessionId ?? "",
         status: "queued",
-      })
+      }),
     );
 
     await client.createBrowserUseRun({ profileId, task: composedTask });
@@ -337,8 +337,8 @@ describe("starting a run on a workspace's browser VM", () => {
 
     expect(
       lifecycle.prepareBrowserVmSession.mock.calls.map(
-        ([, , options]) => options
-      )
+        ([, , options]) => options,
+      ),
     ).toEqual([{ rotate: true }, { rotate: false }]);
   });
 
@@ -349,7 +349,7 @@ describe("starting a run on a workspace's browser VM", () => {
         id: input.id,
         sessionId: input.sessionId ?? "",
         status: "queued",
-      })
+      }),
     );
 
     const run = await client.createBrowserUseRun({
@@ -369,7 +369,7 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(
       expect.anything(),
       expect.anything(),
-      { freshExit: true, rotate: false }
+      { freshExit: true, rotate: false },
     );
   });
 
@@ -381,10 +381,10 @@ describe("starting a run on a workspace's browser VM", () => {
         id: input.id,
         sessionId: input.sessionId ?? "",
         status: "running",
-      })
+      }),
     );
     records.updateBrowserVmRun.mockRejectedValue(
-      new Error("connection terminated")
+      new Error("connection terminated"),
     );
 
     // The run acts for the person already: the caller must get it to track.
@@ -402,10 +402,10 @@ describe("starting a run on a workspace's browser VM", () => {
   it("adopts a start whose answer was lost instead of sending it twice", async () => {
     const client = await loadClient();
     worker.startBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
     worker.readBrowserVmWorkerRun.mockImplementation((_vm, id) =>
-      Promise.resolve(workerRun({ id, sessionId }))
+      Promise.resolve(workerRun({ id, sessionId })),
     );
 
     const run = await client.createBrowserUseRun({
@@ -419,22 +419,22 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(worker.startBrowserVmWorkerRun).toHaveBeenCalledOnce();
     expect(worker.readBrowserVmWorkerRun).toHaveBeenCalledExactlyOnceWith(
       expect.anything(),
-      run.id
+      run.id,
     );
     expect(
-      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status)
+      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status),
     ).toEqual(["running"]);
   });
 
   it("closes the record of a start the worker never got, and says it failed", async () => {
     const client = await loadClient();
     worker.startBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
     worker.readBrowserVmWorkerRun.mockResolvedValue(undefined);
 
     await expect(
-      client.createBrowserUseRun({ profileId, task: composedTask })
+      client.createBrowserUseRun({ profileId, task: composedTask }),
     ).rejects.toThrow("fetch failed");
 
     expect(worker.startBrowserVmWorkerRun).toHaveBeenCalledOnce();
@@ -447,20 +447,20 @@ describe("starting a run on a workspace's browser VM", () => {
     const client = await loadClient();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     worker.startBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
     worker.readBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
 
     await expect(
-      client.createBrowserUseRun({ profileId, task: composedTask })
+      client.createBrowserUseRun({ profileId, task: composedTask }),
     ).rejects.toThrow("fetch failed");
 
     // Nobody knows whether it landed: the record stays as it was written,
     // dispatching, and a later lookup asks the worker.
     expect(records.recordBrowserVmRun.mock.calls[0]?.[0].status).toBe(
-      "dispatching"
+      "dispatching",
     );
     expect(records.updateBrowserVmRun).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -475,19 +475,19 @@ describe("starting a run on a workspace's browser VM", () => {
       new BrowserVmWorkerError(
         409,
         "/v1/runs",
-        JSON.stringify({ error: "busy", runId: otherRunId })
-      )
+        JSON.stringify({ error: "busy", runId: otherRunId }),
+      ),
     );
 
     records.readBrowserVmRun.mockResolvedValue(
-      runRecord({ id: otherRunId, sessionId })
+      runRecord({ id: otherRunId, sessionId }),
     );
     const sameSession = await client
       .createBrowserUseRun({ profileId, sessionId, task: composedTask })
       .catch((cause: unknown) => cause);
 
     records.readBrowserVmRun.mockResolvedValue(
-      runRecord({ id: otherRunId, sessionId: `vm:${workspaceId}:s:other` })
+      runRecord({ id: otherRunId, sessionId: `vm:${workspaceId}:s:other` }),
     );
     const otherErrand = await client
       .createBrowserUseRun({ profileId, sessionId, task: composedTask })
@@ -498,7 +498,7 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(records.readBrowserVmRun).toHaveBeenCalledWith(otherRunId);
     // Neither refused start ran, so no later lookup may adopt it.
     expect(
-      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status)
+      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status),
     ).toEqual(["cancelled", "cancelled"]);
   });
 
@@ -527,7 +527,7 @@ describe("reading a VM run", () => {
         finishedAt: "2026-09-28T11:58:00Z",
         result: "RESULT: the parcel is in Moscow",
         status: "completed",
-      })
+      }),
     );
 
     const run = await client.readBrowserUseRun(runId);
@@ -561,7 +561,7 @@ describe("reading a VM run", () => {
         error: "Error code: 402 - {'error': 'Insufficient balance'}",
         finishedAt: "2026-09-28T11:58:00Z",
         status: "failed",
-      })
+      }),
     );
 
     const run = await client.readBrowserUseRun(runId);
@@ -572,7 +572,7 @@ describe("reading a VM run", () => {
     expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
       "browser-vm-model-balance",
       expect.stringContaining("RouterAI"),
-      { repeatAfterMs: 6 * 60 * 60_000 }
+      { repeatAfterMs: 6 * 60 * 60_000 },
     );
   });
 
@@ -583,7 +583,7 @@ describe("reading a VM run", () => {
         finishedAt: "2026-09-28T11:58:00Z",
         status: "completed",
         unreadMessages: ["и с завтраком"],
-      })
+      }),
     );
 
     const run = await client.readBrowserUseRun(runId);
@@ -601,7 +601,7 @@ describe("reading a VM run", () => {
   it("answers [] for unread messages once the worker no longer reports any", async () => {
     const client = await loadClient();
     worker.readBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({ status: "running" })
+      workerRun({ status: "running" }),
     );
 
     const run = await client.readBrowserUseRun(runId);
@@ -642,7 +642,7 @@ describe("reading a VM run", () => {
   it("keeps a run open while its VM is only unreachable", async () => {
     const client = await loadClient();
     worker.readBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
 
     const run = await client.readBrowserUseRun(runId);
@@ -659,13 +659,13 @@ describe("reading a VM run", () => {
       "Errand: 7",
       3,
       undefined,
-      profileId
+      profileId,
     );
 
     expect(found).toMatchObject({ id: runId, sessionId, task: composedTask });
     expect(records.findBrowserVmRunByTaskLine).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
-      "Errand: 7"
+      "Errand: 7",
     );
     // A run the worker took is not asked about again.
     expect(worker.readBrowserVmWorkerRun).not.toHaveBeenCalled();
@@ -678,10 +678,10 @@ describe("reading a VM run", () => {
         "Errand: 7",
         3,
         undefined,
-        profileId
+        profileId,
       );
     records.findBrowserVmRunByTaskLine.mockResolvedValue(
-      runRecord({ status: "dispatching" })
+      runRecord({ status: "dispatching" }),
     );
 
     // It landed: adopted, with what the worker says of it.
@@ -703,7 +703,7 @@ describe("reading a VM run", () => {
     // Nobody answered: the caller tries again later, and nothing changes.
     records.updateBrowserVmRun.mockClear();
     worker.readBrowserVmWorkerRun.mockRejectedValueOnce(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
     await expect(find()).rejects.toThrow("fetch failed");
     expect(records.updateBrowserVmRun).not.toHaveBeenCalled();
@@ -726,7 +726,7 @@ describe("cancelling a VM run", () => {
 
     expect(worker.cancelBrowserVmWorkerRun).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ host: "45.132.176.116" }),
-      runId
+      runId,
     );
     expect(records.updateBrowserVmRun).toHaveBeenCalledOnce();
     const [closed, patch] = records.updateBrowserVmRun.mock.calls[0] ?? [];
@@ -745,7 +745,7 @@ describe("cancelling a VM run", () => {
         error: "Stopped by Bro.",
         finishedAt: "2026-09-28T11:58:00Z",
         status: "cancelled",
-      })
+      }),
     );
 
     const run = await client.cancelBrowserUseRun(runId);
@@ -761,11 +761,11 @@ describe("cancelling a VM run", () => {
     const client = await loadClient();
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "starting" }));
     worker.cancelBrowserVmWorkerRun.mockRejectedValue(
-      new TypeError("fetch failed")
+      new TypeError("fetch failed"),
     );
 
     await expect(client.cancelBrowserUseRun(runId)).rejects.toThrow(
-      "fetch failed"
+      "fetch failed",
     );
 
     // The run may still be acting: it is not recorded as cancelled.
@@ -781,14 +781,14 @@ describe("cancelling a VM run", () => {
     records.readBrowserVm.mockResolvedValueOnce(vmRow({ state: "stopped" }));
     const vmOff = await client.cancelBrowserUseRun(runId);
     worker.cancelBrowserVmWorkerRun.mockRejectedValueOnce(
-      new BrowserVmWorkerError(404, "/v1/runs/x/cancel", "no such run")
+      new BrowserVmWorkerError(404, "/v1/runs/x/cancel", "no such run"),
     );
     const unknown = await client.cancelBrowserUseRun(runId);
 
     expect([vmOff.status, unknown.status]).toEqual(["cancelled", "cancelled"]);
     expect(worker.cancelBrowserVmWorkerRun).toHaveBeenCalledOnce();
     expect(
-      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status)
+      records.updateBrowserVmRun.mock.calls.map(([, patch]) => patch.status),
     ).toEqual(["cancelled", "cancelled"]);
   });
 
@@ -799,7 +799,7 @@ describe("cancelling a VM run", () => {
         finishedAt: "2026-09-28T11:58:00Z",
         result: "RESULT: done",
         status: "completed",
-      })
+      }),
     );
 
     const run = await client.cancelBrowserUseRun(runId);
@@ -863,7 +863,7 @@ describe("a VM session's browser", () => {
     const cdpUrl = await client.findBrowserUseSessionCdpUrl(sessionId);
 
     expect(cdpUrl).toMatch(
-      /^wss:\/\/45-132-176-116\.sslip\.io\/v1\/cdp\/v1\./u
+      /^wss:\/\/45-132-176-116\.sslip\.io\/v1\/cdp\/v1\./u,
     );
     expect(claimsOf(cdpUrl ?? "", "/v1/cdp/")).toMatchObject({
       env: workspaceId,
@@ -897,7 +897,7 @@ describe("a VM session's browser", () => {
     expect(claimsOf(browser.cdpUrl, "/v1/cdp/").ses).toBe("b:A1B2C3D4E5F6");
     expect(worker.closeBrowserVmWorkerTab).toHaveBeenCalledExactlyOnceWith(
       expect.anything(),
-      "A1B2C3D4E5F6"
+      "A1B2C3D4E5F6",
     );
     // A keep-alive visit continues the workspace's one profile like a
     // follow-up run: it must not itself rotate the exit the sign-in it is
@@ -905,7 +905,7 @@ describe("a VM session's browser", () => {
     expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspaceId }),
       expect.any(Date),
-      { rotate: false }
+      { rotate: false },
     );
 
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "stopped" }));
@@ -929,7 +929,7 @@ describe("a VM session's browser", () => {
 
     const listed = await client.listBrowserUseWorkspaceFiles(
       sessionId,
-      "report/"
+      "report/",
     );
 
     const [file] = listed.files;
@@ -941,7 +941,7 @@ describe("a VM session's browser", () => {
     const url = file?.url ?? "";
     expect(url.startsWith(`${origin}/v1/dl/v1.`)).toBe(true);
     expect(
-      url.endsWith(`/${encodeURIComponent(sessionId)}/report/item%201.jpg`)
+      url.endsWith(`/${encodeURIComponent(sessionId)}/report/item%201.jpg`),
     ).toBe(true);
     const claims = claimsOf(url, "/v1/dl/");
     expect(claims.ses).toBe(sessionId);
@@ -950,12 +950,12 @@ describe("a VM session's browser", () => {
     expect(worker.listBrowserVmWorkerFiles).toHaveBeenCalledExactlyOnceWith(
       expect.anything(),
       sessionId,
-      "report/"
+      "report/",
     );
 
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "stopped" }));
     expect(
-      await client.listBrowserUseWorkspaceFiles(sessionId, "report/")
+      await client.listBrowserUseWorkspaceFiles(sessionId, "report/"),
     ).toEqual({ files: [] });
   });
 
@@ -966,12 +966,12 @@ describe("a VM session's browser", () => {
         runId: message.runId ?? "",
         sessionId: id,
         status: "started",
-      })
+      }),
     );
 
     const queued = await client.queueBrowserUseSessionMessage(
       sessionId,
-      "The code is 4812"
+      "The code is 4812",
     );
 
     expect(queued).toMatchObject({ id: 0, sessionId, status: "started" });
@@ -992,12 +992,12 @@ describe("a VM session's browser", () => {
     expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspaceId }),
       expect.any(Date),
-      { rotate: false }
+      { rotate: false },
     );
 
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "stopped" }));
     await expect(
-      client.queueBrowserUseSessionMessage(sessionId, "Anything else?")
+      client.queueBrowserUseSessionMessage(sessionId, "Anything else?"),
     ).rejects.toMatchObject({ status: 409 });
   });
 
@@ -1017,7 +1017,7 @@ describe("a VM session's browser", () => {
 
     const queued = await client.queueBrowserUseSessionMessage(
       sessionId,
-      "The code is 4812"
+      "The code is 4812",
     );
 
     expect(queued).toMatchObject({ runId, status: "queued" });
@@ -1028,7 +1028,7 @@ describe("a VM session's browser", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     // Long enough since the VM was last used that the message touches it.
     records.readBrowserVm.mockResolvedValue(
-      vmRow({ lastUsedAt: new Date(Date.now() - 3_600_000) })
+      vmRow({ lastUsedAt: new Date(Date.now() - 3_600_000) }),
     );
     worker.readBrowserVmWorkerSession.mockResolvedValue({
       id: sessionId,
@@ -1042,15 +1042,15 @@ describe("a VM session's browser", () => {
       status: "queued",
     });
     records.updateBrowserVmRun.mockRejectedValue(
-      new Error("connection terminated")
+      new Error("connection terminated"),
     );
     lifecycle.touchBrowserVm.mockRejectedValue(
-      new Error("connection terminated")
+      new Error("connection terminated"),
     );
 
     const queued = await client.queueBrowserUseSessionMessage(
       sessionId,
-      "The code is 4812"
+      "The code is 4812",
     );
 
     expect(queued).toMatchObject({ runId, status: "queued" });
@@ -1069,7 +1069,7 @@ describe("forgetting a VM profile", () => {
     expect(worker.resetBrowserVmWorkerProfile).toHaveBeenCalledOnce();
     expect(records.updateBrowserVm).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
-      { profileGeneration: 2, profileResetPending: false }
+      { profileGeneration: 2, profileResetPending: false },
     );
   });
 
@@ -1082,7 +1082,7 @@ describe("forgetting a VM profile", () => {
     expect(worker.resetBrowserVmWorkerProfile).not.toHaveBeenCalled();
     expect(records.updateBrowserVm).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
-      { profileGeneration: 2, profileResetPending: true }
+      { profileGeneration: 2, profileResetPending: true },
     );
   });
 
@@ -1103,14 +1103,14 @@ describe("looking after the VMs", () => {
       browserVmTestEnvironment;
     const keysOnly = await importWithSettings(
       { BROWSER_VM_SIGNING_KEY, CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET },
-      async () => import("@agent/lib/browser-vm/runs")
+      async () => import("@agent/lib/browser-vm/runs"),
     );
     expect(keysOnly.browserVmReconcileConfigured()).toBe(true);
 
     clearBrowserVmSettings();
     const unsigned = await importWithSettings(
       { CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET },
-      async () => import("@agent/lib/browser-vm/runs")
+      async () => import("@agent/lib/browser-vm/runs"),
     );
     expect(unsigned.browserVmReconcileConfigured()).toBe(false);
   });
