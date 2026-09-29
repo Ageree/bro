@@ -149,7 +149,7 @@ export async function createBrowserVmRun(input: {
     throw new BrowserUseError(
       404,
       "browser-vm",
-      "The session is not on this workspace's browser VM.",
+      "The session is not on this workspace's browser VM."
     );
   }
   const now = new Date();
@@ -159,7 +159,7 @@ export async function createBrowserVmRun(input: {
       429,
       "browser-vm",
       "The browser is starting.",
-      started.retryAfterMs,
+      started.retryAfterMs
     );
   }
   // A follow-up in the errand's own session keeps the exit its sign-ins were
@@ -210,7 +210,7 @@ export async function createBrowserVmRun(input: {
         finishedAt: settledStatuses.has(accepted.status) ? now : null,
         status: accepted.status,
       },
-      now,
+      now
     );
   });
   return {
@@ -254,7 +254,7 @@ export async function readBrowserVmRun(runId: string) {
   const failed = await updateBrowserVmRun(
     runId,
     { error: stoppedBeforeFinishing, finishedAt: now, status: "failed" },
-    now,
+    now
   );
   // Undefined when another read settled it first: that one stands.
   return fromRecord(failed ?? (await readBrowserVmRunRecord(runId)) ?? record);
@@ -289,7 +289,7 @@ export async function cancelBrowserVmRun(runId: string) {
   if (running !== undefined) {
     try {
       const run = await onWorker(async () =>
-        cancelBrowserVmWorkerRun(running, runId),
+        cancelBrowserVmWorkerRun(running, runId)
       );
       if (record === undefined || settledStatuses.has(run.status)) {
         await mirror(record, run, now);
@@ -308,7 +308,7 @@ export async function cancelBrowserVmRun(runId: string) {
   const cancelled = await updateBrowserVmRun(
     runId,
     { finishedAt: now, status: "cancelled" },
-    now,
+    now
   );
   return stopping === undefined
     ? fromRecord(cancelled ?? record)
@@ -330,7 +330,7 @@ export async function cancelBrowserVmRun(runId: string) {
  */
 export async function queueBrowserVmSessionMessage(
   sessionId: string,
-  text: string,
+  text: string
 ) {
   const workspaceId = browserVmWorkspace(sessionId);
   const running = await readyVm(workspaceId);
@@ -338,12 +338,12 @@ export async function queueBrowserVmSessionMessage(
     throw new BrowserUseError(
       409,
       "browser-vm",
-      "The browser VM is not running.",
+      "The browser VM is not running."
     );
   }
   const now = new Date();
   const session = await onWorker(async () =>
-    readBrowserVmWorkerSession(running, sessionId),
+    readBrowserVmWorkerSession(running, sessionId)
   );
   const vm =
     session?.status === "running"
@@ -395,7 +395,7 @@ export async function findBrowserVmSessionCdpUrl(sessionId: string) {
   const vm = await readyVm(browserVmWorkspace(sessionId));
   if (vm === undefined) return undefined;
   const session = await onWorker(async () =>
-    readBrowserVmWorkerSession(vm, sessionId),
+    readBrowserVmWorkerSession(vm, sessionId)
   );
   return session?.tabOpen === true
     ? browserVmCdpUrl(vm, { sessionId })
@@ -410,12 +410,12 @@ export async function findBrowserVmSessionCdpUrl(sessionId: string) {
  */
 export async function stopBrowserVmSessionBrowsers(
   sessionId: string,
-  settledRunId: string,
+  settledRunId: string
 ) {
   const vm = await readyVm(browserVmWorkspace(sessionId));
   if (vm === undefined) return "stopped" as const;
   const session = await onWorker(async () =>
-    readBrowserVmWorkerSession(vm, sessionId),
+    readBrowserVmWorkerSession(vm, sessionId)
   );
   if (session === undefined) return "stopped" as const;
   if (session.latestRunId !== settledRunId) return "moved_on" as const;
@@ -444,7 +444,7 @@ export async function createBrowserVmBrowser(input: {
     throw new BrowserUseError(
       429,
       "browser-vm",
-      "The browser VM is off; a keep-alive visit does not start it.",
+      "The browser VM is off; a keep-alive visit does not start it."
     );
   }
   // Continues the workspace's one profile, like a queued message or a
@@ -501,12 +501,12 @@ export async function deleteBrowserVmProfile(profileId: string) {
  */
 export async function listBrowserVmWorkspaceFiles(
   sessionId: string,
-  prefix: string,
+  prefix: string
 ) {
   const vm = await readyVm(browserVmWorkspace(sessionId));
   if (vm === undefined) return { files: [] };
   const files = await onWorker(async () =>
-    listBrowserVmWorkerFiles(vm, sessionId, prefix),
+    listBrowserVmWorkerFiles(vm, sessionId, prefix)
   );
   return {
     files: files.map((file) => ({
@@ -542,7 +542,7 @@ export function listBrowserVmRunEvents() {
  */
 export async function findBrowserVmRunByTaskLine(
   profileId: string,
-  line: string,
+  line: string
 ) {
   const workspaceId = browserVmWorkspace(profileId);
   const record = await findBrowserVmRunRecordByTaskLine(workspaceId, line);
@@ -570,7 +570,7 @@ export async function findBrowserVmRunByTaskLine(
  */
 async function startRun(
   vm: BrowserVm,
-  request: Parameters<typeof startBrowserVmWorkerRun>[1],
+  request: Parameters<typeof startBrowserVmWorkerRun>[1]
 ) {
   try {
     return await startBrowserVmWorkerRun(vm, request);
@@ -592,10 +592,10 @@ async function startRun(
           {
             cause,
             runId: request.id,
-          },
+          }
         );
         return null;
-      },
+      }
     );
     if (landed) return landed;
     // The worker does not have it: nothing started.
@@ -623,14 +623,14 @@ async function busyError(busyRunId: string | undefined, sessionId?: string) {
     return new BrowserUseError(
       409,
       "browser-vm",
-      "The session is busy with its own run.",
+      "The session is busy with its own run."
     );
   }
   return new BrowserUseError(
     429,
     "browser-vm",
     "The browser is busy with another errand.",
-    busyRetryMs,
+    busyRetryMs
   );
 }
 
@@ -666,7 +666,7 @@ async function askWorker(vm: BrowserVm | undefined, runId: string) {
 async function mirror(
   record: BrowserVmRunRecord | undefined,
   run: WorkerRun,
-  now: Date,
+  now: Date
 ) {
   if (record === undefined) {
     await recordBrowserVmRun({
@@ -703,7 +703,7 @@ async function mirror(
       // the coordinator to act on (`agent/lib/browser-use/completion.ts`).
       unreadMessages: run.unreadMessages ?? [],
     },
-    now,
+    now
   );
 }
 
@@ -800,7 +800,7 @@ async function keepAwake(vm: BrowserVm, now: Date) {
  */
 async function stopBrowserVmTab(
   id: string,
-  close: (vm: BrowserVm) => Promise<void>,
+  close: (vm: BrowserVm) => Promise<void>
 ) {
   const vm = await readyVm(browserVmWorkspace(id));
   if (vm === undefined) return;
@@ -860,7 +860,7 @@ async function reportModelOutOfBalance(runId: string) {
         "Модель агента на VM браузера ответила 402: на RouterAI кончился баланс.",
         "Поручения на своих VM обрываются, ничего на сайтах не делается. Пополни баланс RouterAI (ключ BROWSER_VM_LLM_API_KEY).",
       ].join("\n"),
-      { repeatAfterMs: modelBalanceAlertRepeatMs },
+      { repeatAfterMs: modelBalanceAlertRepeatMs }
     );
   } catch (error) {
     console.warn("[browser-vm] the owner could not be alerted", {
