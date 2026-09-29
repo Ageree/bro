@@ -25,9 +25,7 @@ const composedTask =
   "Errand: 7\nAttempt: 1\nFind the parcel on the courier site";
 // What the VM's agent gets: the composed errand and the line that has it
 // hand an address wall to the anti-bot retry at once.
-const vmTask = expect.stringMatching(
-  /^Errand: 7\nAttempt: 1\nFind the parcel on the courier site\n\nIf the site blocks this network address/u
-);
+const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP») or a puzzle captcha is still there after one press of its continue button, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
 
 const claimsSchema = z.object({
   env: z.string(),
