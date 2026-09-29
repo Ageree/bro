@@ -26,7 +26,7 @@ const composedTask =
   "Errand: 7\nAttempt: 1\nFind the parcel on the courier site";
 // What the VM's agent gets: the composed errand and the line that has it
 // hand an address wall to the anti-bot retry at once.
-const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP») or a puzzle captcha is still there after one press of its continue button, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
+const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. If the wall is still there after it, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
 
 const claimsSchema = z.object({
   env: z.string(),
@@ -292,6 +292,30 @@ describe("starting a run on a workspace's browser VM", () => {
       task: vmTask,
       timeoutSeconds: 1500,
     });
+  });
+
+  it("gives the worker the 2Captcha key only when the deployment has one", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const start = { profileId, task: composedTask };
+
+    await (await loadClient()).createBrowserUseRun(start);
+    vi.resetModules();
+    const withKey = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_VM_TWOCAPTCHA_API_KEY: "2c-key" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    await withKey.createBrowserUseRun(start);
+
+    const inputs = worker.startBrowserVmWorkerRun.mock.calls.map(
+      ([, input]) => input.captcha
+    );
+    expect(inputs).toEqual([undefined, { twoCaptchaKey: "2c-key" }]);
   });
 
   it("keeps the errand's exit for a follow-up in its session, and may move a new errand's", async () => {

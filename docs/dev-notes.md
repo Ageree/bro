@@ -39,6 +39,8 @@
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
+- Формат проверяет `oxfmt` (`pnpm format:check`), не Prettier: `npx prettier`
+  переформатирует TypeScript иначе, и CI падает. Чините `pnpm exec oxfmt <файлы>`.
 - Перед последовательным `pnpm check --concurrency=1` запустите
   `pnpm types:generate`: иначе type-aware lint не видит сгенерированные
   `PageProps` и ложно сообщает об unsafe-типах.
@@ -254,6 +256,10 @@
 - browser-use проверяет срок запуска только между шагами: запуск, застрявший
   в шаге, держал worker занятым часами. Предел держит worker (`bounded`,
   `cut_off` в `worker.py`), а не browser-use.
+- Стена Avito — слайдер GeeTest v4 за кнопкой «Продолжить»: его решает worker
+  (`solve_captcha`: вырез по картинкам пазла в OpenCV, запасной — 2Captcha с
+  `BROWSER_VM_TWOCAPTCHA_API_KEY`). Модели со зрением через RouterAI мажут
+  (qwen 1 из 6), DeepSeek там картинку не получает вовсе.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит

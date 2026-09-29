@@ -144,6 +144,8 @@ const llmSchema = z.object({
 });
 
 const runInputSchema = z.object({
+  /** A slider puzzle the worker cannot place goes to 2Captcha with this key. */
+  captcha: z.object({ twoCaptchaKey: z.string().min(1) }).optional(),
   engine: z.enum(["agent", "jev-then-agent"]).optional(),
   /** Start the session's agent memory over instead of continuing it. */
   freshMemory: z.boolean().optional(),
