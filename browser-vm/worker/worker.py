@@ -98,6 +98,12 @@ TERMINAL = {"completed", "failed", "cancelled"}
 # Bro starts its follow-up in the same session right after a cancel: the cancel answers once the agent's
 # step has ended, so that start is not refused as busy, but a step that hangs does not hold the answer.
 CANCEL_WAIT_S = 20
+# A run past its own budget by this much is cut off. browser-use checks the budget only between steps, and a
+# step it could not time out (an Avito run sat in one for over half an hour) kept the worker busy for good:
+# the VM never idled off and every errand of the workspace queued behind it.
+OVERRUN_S = 90
+# How long a cut-off step gets to unwind before Chrome is restarted under it, failing whatever it awaits.
+UNWIND_S = 15
 # Where restored memory ends: the steps before it served an earlier request of the session.
 NEW_REQUEST = "<sys>A new request starts here: the steps above served an earlier one in this session.</sys>"
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -376,6 +382,7 @@ class Run:
         self.messages = []
         self.cancel_requested = False
         self.agent = None
+        self.work = None  # the task working the run, while it does: a cut-off or a cancel stops it
         self.unread_messages = []  # messages queued into this run the agent never read (set once terminal)
         self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
         self.stored = None  # the status its record on disk has
@@ -860,7 +867,11 @@ class Worker:
             if run.cancel_requested:  # stopped during the jev segment: the agent does not start
                 status, result, error = "cancelled", None, "Stopped by Bro."
             else:
-                status, result, error = await self.run_agent(run, session, text)
+                limit = int(session.options.get("timeoutSeconds") or 1500) + OVERRUN_S
+                outcome = await self.bounded(run, self.run_agent(run, session, text), limit)
+                status, result, error = outcome or (
+                    ("cancelled", None, "Stopped by Bro.") if run.cancel_requested
+                    else ("failed", None, "The run ran out of its time budget."))
         except Exception as crash:  # a crash is a failed run with its reason, never a silent loss
             log.exception("run %s failed", run.id)
             status, error = "failed", f"{type(crash).__name__}: {crash}"[:2000]
@@ -893,6 +904,48 @@ class Worker:
                 log.exception("run %s: its end was not written", run.id)
             if self.current is run:
                 self.current = None
+
+    async def bounded(self, run, work, limit):
+        """Work a run for at most `limit` seconds, or until a cancel cuts it off (`cut_off`). A cut-off run
+        answers None; its agent's memory is kept for a follow-up, as a finished run's is."""
+        run.work = asyncio.ensure_future(work)
+        try:
+            await asyncio.wait({run.work}, timeout=limit)
+            overran = not run.work.done()
+            if overran:
+                log.warning("run %s: cut off past its budget", run.id)
+                await self.cut_off(run)
+            work = run.work
+            if not work.done() or work.cancelled():
+                return None
+            # A step failing under a cut-off (Chrome restarted beneath it) ended by the cut-off, not a crash.
+            if (overran or run.cancel_requested) and work.exception() is not None:
+                return None
+            return work.result()
+        finally:
+            run.work = None
+
+    async def cut_off(self, run):
+        """Stop the task working `run`, if it still does. A step that ignores the cancel is failed from under
+        it by a Chrome restart, and is left behind only if even that does not end it."""
+        work = run.work
+        if work is None or work.done():
+            return
+        agent = run.agent
+        if agent is not None:
+            # Stopped, the agent folds the messages its cut-off step had read back into the run's unread.
+            with contextlib.suppress(Exception):
+                agent.stop()
+        work.cancel()
+        await asyncio.wait({work}, timeout=UNWIND_S)
+        if not work.done():
+            log.warning("run %s: the cut-off step did not unwind; restarting Chrome", run.id)
+            await systemctl("restart")
+            await asyncio.wait({work}, timeout=UNWIND_S)
+        session = self.sessions.get(run.session_id)
+        if agent is not None and session is not None:
+            with contextlib.suppress(Exception):
+                session.agent_state = agent.state.model_dump(mode="json")
 
     def begin(self, run, session):
         """Hand the browser to a run. Nothing here waits, so no other start slips in between the caller's
@@ -1132,6 +1185,11 @@ async def cancel_run(request):
         deadline = time.monotonic() + CANCEL_WAIT_S
         while run.status not in TERMINAL and time.monotonic() < deadline:
             await asyncio.sleep(0.2)
+        # A step that did not end by then hangs: it is cut off rather than left to hold the browser.
+        if run.status not in TERMINAL:
+            await worker.cut_off(run)
+            while run.status not in TERMINAL and time.monotonic() < deadline + UNWIND_S:
+                await asyncio.sleep(0.2)
     return web.json_response(run.public())
 
 

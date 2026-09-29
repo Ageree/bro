@@ -246,6 +246,9 @@
   воркспейса: `personal:` + первые 32 hex SHA-256 от `better-auth:<id пользователя>`
   (`agent/channels/eve.ts`, `accessScopeForUser`). Env Vercel действует лишь со следующего
   деплоя. Своих образов в проекте — не больше двух: старые удаляйте до сборки.
+- browser-use проверяет срок запуска только между шагами: запуск, застрявший
+  в шаге, держал worker занятым часами. Предел держит worker (`bounded`,
+  `cut_off` в `worker.py`), а не browser-use.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
