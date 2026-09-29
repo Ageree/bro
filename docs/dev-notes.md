@@ -241,7 +241,10 @@
   префиксу id `vm:` (профиль `vm:<ws>:p<поколение>`), так что backend закреплён
   за поручением. В id воркспейса есть двоеточие (`personal:<hex>`): id VM
   разбирайте с конца (`ids.ts`). Кому VM — `BROWSER_BACKEND` и пилотный
-  `BROWSER_VM_WORKSPACES` (id или email владельца).
+  `BROWSER_VM_WORKSPACES` (id или email владельца). У входа по телефону email
+  служебный (`phone-…@local-vault.invalid`): такому аккаунту пишите id
+  воркспейса (`accessScopeForUser`). Env Vercel действует лишь со следующего
+  деплоя. Своих образов в проекте — не больше двух: старые удаляйте до сборки.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
