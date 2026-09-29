@@ -55,6 +55,12 @@ export async function usesBrowserVm(scope: {
  * The model the VM's agent runs on. It goes with every run and follow-up,
  * since the VM keeps no key on its disk.
  */
+/** The 2Captcha key a run takes to its worker, when this deployment has one. */
+export function browserVmCaptcha() {
+  const twoCaptchaKey = env.BROWSER_VM_TWOCAPTCHA_API_KEY;
+  return twoCaptchaKey === undefined ? undefined : { twoCaptchaKey };
+}
+
 export function browserVmLlm() {
   const apiKey = env.BROWSER_VM_LLM_API_KEY;
   if (apiKey === undefined) {

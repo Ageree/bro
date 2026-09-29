@@ -10,7 +10,7 @@ import {
 } from "@db/services/browser-vms";
 import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
-import { browserVmLlm } from "./backend";
+import { browserVmCaptcha, browserVmLlm } from "./backend";
 import {
   browserVmBrowserId,
   browserVmProfileId,
@@ -97,13 +97,15 @@ export function browserVmReconcileConfigured() {
 }
 
 /**
- * The VM's agent has no captcha solver, and a site that blocked the exit
- * (Avito's «Доступ ограничен: проблема с IP» with a slider) only let it burn
- * minutes on the puzzle before it gave up: the anti-bot retry from another
- * address gets in faster, so the run hands over at once.
+ * A site that blocked the exit (Avito's «Доступ ограничен: проблема с IP»)
+ * opens a GeeTest slider behind its continue button. The agent cannot drag
+ * one well by itself and only burned minutes on it, so the worker's
+ * `solve_captcha` places it (and hands it to 2Captcha when it cannot); any
+ * other check, or a wall that stays, hands over to the anti-bot retry from
+ * another address at once.
  */
 const addressWallLine =
-  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP») or a puzzle captcha is still there after one press of its continue button, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
+  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP»), press its continue button once; a slider puzzle that opens goes to the solve_captcha action, once. If the wall is still there after that, or it is another kind of check, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
 
 /**
  * Start a run on the workspace's VM, powering the VM on or creating it
@@ -183,6 +185,7 @@ export async function createBrowserVmRun(input: {
   });
   const llm = browserVmLlm();
   const accepted = await startRun(vm, {
+    captcha: browserVmCaptcha(),
     id,
     llm,
     maxSteps: runMaxSteps,

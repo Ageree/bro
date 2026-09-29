@@ -66,7 +66,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-28.7"
+VERSION = "2026-09-29.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -349,6 +349,7 @@ class Session:
         self.latest_run_id = None
         self.agent_state = None  # browser_use AgentState JSON of the last finished run
         self.llm = None
+        self.captcha = None  # {"twoCaptchaKey": ...} when Bro lets a puzzle go to 2Captcha; memory only
         self.sensitive_data = None
         self.options = {}
         self.released = False
@@ -689,6 +690,27 @@ class Worker:
             return ActionResult(extracted_content=f"Entered the code into {where}.",
                                 long_term_memory="Entered the one-time code.")
 
+        @tools.action("Solve a slider puzzle check (drag a piece into its gap, GeeTest) that is open on the page. "
+                      "Press the page's own button that opens the check first (such as «Продолжить»), then call "
+                      "this once: it moves the slider itself and says whether the page accepted it.")
+        async def solve_captcha(browser_session):
+            cdp = await browser_session.get_or_create_cdp_session()
+
+            async def evaluate(expression):
+                answer = await cdp.cdp_client.send.Runtime.evaluate(
+                    params={"expression": expression, "returnByValue": True, "awaitPromise": True},
+                    session_id=cdp.session_id)
+                return (answer.get("result") or {}).get("value")
+
+            async def mouse(params):
+                await cdp.cdp_client.send.Input.dispatchMouseEvent(params=params, session_id=cdp.session_id)
+
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as http:
+                solved, message = await solve_slider(evaluate, mouse, http,
+                                                     (session.captcha or {}).get("twoCaptchaKey"))
+            return (ActionResult(extracted_content=message, long_term_memory=message) if solved
+                    else ActionResult(error=message))
+
         return tools
 
     async def release_direct(self, session):
@@ -988,6 +1010,10 @@ class Worker:
             # password, a payment field) just because its caller did not resend `secrets`.
             if "secrets" in body:
                 session.sensitive_data = secrets_to_sensitive_data(body.get("secrets") or [])
+            if "captcha" in body:
+                captcha = body.get("captcha") or {}
+                key = captcha.get("twoCaptchaKey") if isinstance(captcha, dict) else None
+                session.captcha = {"twoCaptchaKey": key} if isinstance(key, str) and key else None
             session.options = {k: body.get(k) for k in ("maxSteps", "timeoutSeconds", "allowedDomains", "vision",
                                                          "jev", "jevCanFinish", "continueMemory")}
             run = Run(run_id, session_id, task)
@@ -1039,13 +1065,151 @@ FIND_CODE_FIELD = r"""(() => {
     : field.maxLength === 1 ? 'the first of the code boxes' : 'the code field';
 })()"""
 
+# A GeeTest v4 slider puzzle on the page: the background with the gap, the piece and the knob (by their
+# class names, which end in a per-page hash), and the captcha id its loader script was given.
+GEETEST_STATE = r"""(() => {
+  const first = re => [...document.querySelectorAll('[class*=geetest_]')]
+    .find(e => re.test(e.className.toString().split(' ')[0]));
+  const box = e => { if (!e) return null; const b = e.getBoundingClientRect();
+    return b.width && b.height ? {x: b.x, y: b.y, w: b.width, h: b.height} : null; };
+  const url = e => { const m = e && /url\("?([^")]+)"?\)/.exec(getComputedStyle(e).backgroundImage);
+    return m ? m[1] : null; };
+  const bg = first(/^geetest_bg_[0-9a-f]+$/), slice = first(/^geetest_slice_bg_[0-9a-f]+$/),
+    btn = first(/^geetest_btn_[0-9a-f]+$/);
+  const loader = [...document.scripts].map(s => s.src).find(s => /geetest\.com\/load\?.*captcha_id=/.test(s));
+  return {bg: box(bg), bgUrl: url(bg), sliceUrl: url(slice), btn: box(btn),
+          captchaId: loader ? new URL(loader).searchParams.get('captcha_id') : null, url: location.href};
+})()"""
+
+# Where a page takes a GeeTest v4 answer: its hidden response field, the form of which is then submitted.
+GEETEST_ANSWER = r"""((answer) => {
+  const field = document.querySelector('input[name=captcha-response]');
+  const form = field && field.closest('form');
+  if (!form) return false;
+  field.value = answer;
+  form.dispatchEvent(new Event('submit', {cancelable: true}));
+  return true;
+})"""
+
+
+def slider_gap(background_png, piece_png):
+    """Where the piece fits: the x of its left edge in the background's own pixels, the background's width
+    and how well it matched. The piece is matched by its edges against the background's, which finds the
+    cut-out outline whatever the picture."""
+    import cv2
+    import numpy as np
+
+    background = cv2.imdecode(np.frombuffer(background_png, np.uint8), cv2.IMREAD_UNCHANGED)
+    piece = cv2.imdecode(np.frombuffer(piece_png, np.uint8), cv2.IMREAD_UNCHANGED)
+    left = 0
+    if piece.ndim == 3 and piece.shape[2] == 4:
+        ys, xs = np.nonzero(piece[:, :, 3] > 40)
+        piece, left = piece[ys.min():ys.max() + 1, xs.min():xs.max() + 1], int(xs.min())
+
+    def edges(image):
+        colour = image[:, :, :3] if image.ndim == 3 else image
+        grey = cv2.cvtColor(colour, cv2.COLOR_BGR2GRAY) if colour.ndim == 3 else colour
+        return cv2.Canny(grey, 100, 200)
+
+    scores = cv2.matchTemplate(edges(background), edges(piece), cv2.TM_CCOEFF_NORMED)
+    _, score, _, (x, _) = cv2.minMaxLoc(scores)
+    return x - left, background.shape[1], float(score)
+
+
+async def drag_slider(mouse, knob, distance):
+    """Drag the knob `distance` CSS pixels the way a hand does: eased, a little shaky, a small overshoot
+    taken back. `mouse` sends one CDP Input.dispatchMouseEvent."""
+    import random
+
+    x0, y0 = knob["x"] + knob["w"] / 2, knob["y"] + knob["h"] / 2
+    await mouse({"type": "mouseMoved", "x": x0 - 30, "y": y0 + 12})
+    await asyncio.sleep(0.2)
+    await mouse({"type": "mouseMoved", "x": x0, "y": y0})
+    await asyncio.sleep(0.15)
+    await mouse({"type": "mousePressed", "x": x0, "y": y0, "button": "left", "clickCount": 1})
+    overshoot, steps = random.uniform(2, 5), random.randint(28, 38)
+    for k in range(1, steps + 1):
+        eased = 1 - (1 - k / steps) ** 3
+        await mouse({"type": "mouseMoved", "x": x0 + (distance + overshoot) * eased,
+                     "y": y0 + random.uniform(-1.5, 1.5), "button": "left", "buttons": 1})
+        await asyncio.sleep(random.uniform(0.012, 0.03))
+    for k in range(1, 5):
+        await mouse({"type": "mouseMoved", "x": x0 + distance + overshoot * (1 - k / 4), "y": y0,
+                     "button": "left", "buttons": 1})
+        await asyncio.sleep(random.uniform(0.04, 0.08))
+    await asyncio.sleep(random.uniform(0.1, 0.25))
+    await mouse({"type": "mouseReleased", "x": x0 + distance, "y": y0, "button": "left", "clickCount": 1})
+
+
+async def two_captcha_geetest(http, key, page_url, captcha_id, timeout=120):
+    """A GeeTest v4 answer from 2Captcha: its workers see the captcha id and the page's address, nothing
+    of the person."""
+    api = "https://api.2captcha.com"
+    async with http.post(f"{api}/createTask", json={"clientKey": key, "task": {
+            "type": "GeeTestTaskProxyless", "websiteURL": page_url, "gt": captcha_id, "version": 4,
+            "initParameters": {"captcha_id": captcha_id}}}) as response:
+        task = await response.json(content_type=None)
+    if task.get("errorId"):
+        raise RuntimeError(f"2Captcha refused the task: {task.get('errorCode')}")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(5)
+        async with http.post(f"{api}/getTaskResult", json={"clientKey": key, "taskId": task["taskId"]}) as response:
+            result = await response.json(content_type=None)
+        if result.get("errorId"):
+            raise RuntimeError(f"2Captcha could not solve it: {result.get('errorCode')}")
+        if result.get("status") == "ready":
+            return result["solution"]
+    raise RuntimeError("2Captcha did not answer in time")
+
+
+async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
+    """Solve an open GeeTest v4 slider puzzle and say how it went. The piece is found in the puzzle's own
+    pictures and dragged into place (free, a few seconds); a puzzle that is still there after `attempts`
+    drags goes to 2Captcha when Bro gave a key, whose answer is put where the page's own success handler
+    puts it. `evaluate` runs page JavaScript and returns its value; `mouse` sends one mouse event."""
+    state = await evaluate(GEETEST_STATE)
+    if not state or not state.get("bg") or not state.get("btn") or not state.get("bgUrl"):
+        return False, "No slider puzzle is open on this page. Press the page's own button that opens the check first."
+    for _ in range(attempts):
+        try:
+            async with http.get(state["bgUrl"]) as response:
+                background = await response.read()
+            async with http.get(state["sliceUrl"]) as response:
+                piece = await response.read()
+            x, natural_width, _score = slider_gap(background, piece)
+            distance = x * state["bg"]["w"] / natural_width
+        except Exception as error:  # an image that would not load or decode: the next way is tried
+            log.warning("slider puzzle not read: %s", error)
+            break
+        if 5 < distance < state["bg"]["w"]:
+            await drag_slider(mouse, state["btn"], distance)
+            await asyncio.sleep(4)
+        after = await evaluate(GEETEST_STATE)
+        if not after or not after.get("bg"):
+            return True, "The puzzle was accepted."
+        state = after  # a missed drag brings a new picture
+    if two_captcha_key and state.get("captchaId"):
+        try:
+            answer = await two_captcha_geetest(http, two_captcha_key, state["url"], state["captchaId"])
+        except Exception as error:
+            return False, f"The puzzle was not accepted, and the solving service failed: {error}"
+        placed = await evaluate(f"{GEETEST_ANSWER}({json.dumps(json.dumps({**answer, 'captcha_id': state['captchaId']}))})")
+        if placed:
+            await asyncio.sleep(6)
+            return True, "The solving service's answer was sent; check that the page moved on."
+        return False, "The service solved the puzzle, but this page has no field to take its answer."
+    return False, "The puzzle was not accepted."
+
 EXTEND_SYSTEM = """
 Workspace: a file you are asked to save under report/ is saved with the save_screenshot action (a whole
 visible page, e.g. report/final.png) or save_element_picture (one item photo, by element index). Never
 use web archives, caches or mirrors (web.archive.org and the like) instead of the live site: if the live
 site does not open, say so. Credentials and codes come as <secret>alias</secret> placeholders: type the
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
-one-time code you are given goes in with the enter_code action, never digit by digit. To read a long list
+one-time code you are given goes in with the enter_code action, never digit by digit. A slider puzzle
+check (drag a piece into its gap) goes to the solve_captcha action once the page's own button opened it;
+never drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
 (async () => { ... })()) over scrolling and reading it screen by screen.
 """.strip()

@@ -10,6 +10,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import importlib.util
 import itertools
 import json
 import sys
@@ -1048,6 +1049,89 @@ class ExitProbe:
         if isinstance(answer, Exception):
             raise answer
         yield types.SimpleNamespace(json=mock.AsyncMock(return_value=answer), read=mock.AsyncMock(return_value=answer))
+
+
+class FakeHttp:
+    """aiohttp.ClientSession for the slider solver: puzzle pictures by URL, 2Captcha answers in turn."""
+
+    def __init__(self, pictures=None, answers=()):
+        self.pictures, self.answers, self.posted = pictures or {}, list(answers), []
+
+    @contextlib.asynccontextmanager
+    async def get(self, url):
+        yield types.SimpleNamespace(read=mock.AsyncMock(return_value=self.pictures[url]))
+
+    @contextlib.asynccontextmanager
+    async def post(self, url, json):
+        self.posted.append((url, json))
+        yield types.SimpleNamespace(json=mock.AsyncMock(return_value=self.answers.pop(0)))
+
+
+PUZZLE = {"bg": {"x": 100, "y": 200, "w": 300, "h": 200}, "bgUrl": "https://static.test/bg.png",
+          "sliceUrl": "https://static.test/slice.png", "btn": {"x": 100, "y": 410, "w": 80, "h": 50},
+          "captchaId": "c1d2", "url": "https://shop.test/blocked"}
+
+
+def synthetic_puzzle(gap_x):
+    """A 300x200 textured background with a darkened square gap at `gap_x` and the matching piece."""
+    import cv2
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    background = cv2.GaussianBlur(rng.integers(0, 255, (200, 300, 3), dtype=np.uint8), (5, 5), 0)
+    piece = np.zeros((200, 80, 4), np.uint8)
+    piece[60:120, 10:70, :3] = background[60:120, gap_x:gap_x + 60]
+    piece[60:120, 10:70, 3] = 255
+    background[60:120, gap_x:gap_x + 60] //= 3
+    cv2.rectangle(background, (gap_x, 60), (gap_x + 59, 119), (255, 255, 255), 1)
+    cv2.rectangle(piece, (10, 60), (69, 119), (255, 255, 255, 255), 1)
+    return cv2.imencode(".png", background)[1].tobytes(), cv2.imencode(".png", piece)[1].tobytes()
+
+
+class SliderTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()))
+        self.moves = []
+
+    async def mouse(self, params):
+        self.moves.append(params)
+
+    async def test_no_puzzle_on_the_page_asks_for_the_pages_own_button(self):
+        solved, message = await worker.solve_slider(mock.AsyncMock(return_value={"bg": None}), self.mouse, FakeHttp())
+        self.assertFalse(solved)
+        self.assertIn("button that opens the check", message)
+        self.assertEqual(self.moves, [])
+
+    @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV is installed on the VM image")
+    async def test_drags_the_piece_into_the_gap_it_finds_in_the_pictures(self):
+        background, piece = synthetic_puzzle(170)
+        http = FakeHttp({PUZZLE["bgUrl"]: background, PUZZLE["sliceUrl"]: piece})
+        solved, message = await worker.solve_slider(mock.AsyncMock(side_effect=[PUZZLE, {"bg": None}]),
+                                                    self.mouse, http)
+        self.assertEqual((solved, message), (True, "The puzzle was accepted."))
+        released = [m for m in self.moves if m["type"] == "mouseReleased"][0]
+        start = PUZZLE["btn"]["x"] + PUZZLE["btn"]["w"] / 2
+        # The piece's left edge sits 10 px into its picture; the gap's is at 170.
+        self.assertAlmostEqual(released["x"] - start, 160, delta=3)
+
+    async def test_hands_a_puzzle_it_cannot_place_to_2captcha_and_submits_its_answer_as_the_page_would(self):
+        answered = {"lot_number": "l1", "pass_token": "p1", "gen_time": "1", "captcha_output": "o1"}
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 5}, {"errorId": 0, "status": "processing"},
+                                 {"errorId": 0, "status": "ready", "solution": answered}])
+        evaluate = mock.AsyncMock(side_effect=[PUZZLE, True])
+        with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
+            solved, message = await worker.solve_slider(evaluate, self.mouse, http, "key-1")
+        self.assertTrue(solved)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["websiteURL"], task["gt"], task["version"]), (PUZZLE["url"], "c1d2", 4))
+        submitted = evaluate.await_args_list[-1].args[0]
+        self.assertIn('\\"captcha_id\\": \\"c1d2\\"', submitted)
+        self.assertIn('\\"pass_token\\": \\"p1\\"', submitted)
+
+    async def test_without_a_key_a_puzzle_it_cannot_place_is_reported_not_accepted(self):
+        with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
+            solved, message = await worker.solve_slider(mock.AsyncMock(return_value=PUZZLE), self.mouse, FakeHttp())
+        self.assertEqual((solved, message), (False, "The puzzle was not accepted."))
 
 
 if __name__ == "__main__":

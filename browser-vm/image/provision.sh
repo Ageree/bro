@@ -162,12 +162,13 @@ chmod 440 /etc/sudoers.d/bro-chrome
 visudo -cf /etc/sudoers.d/bro-chrome
 stage chrome
 
-# Python: browser-use 0.13.10 (the agent), aiohttp (the worker); jev-ultrafast at the pinned commit for
-# the jev-then-agent engine.
+# Python: browser-use 0.13.10 (the agent), aiohttp (the worker), OpenCV (slider puzzles); jev-ultrafast
+# at the pinned commit for the jev-then-agent engine.
 export UV_PYTHON_INSTALL_DIR=/opt/bro/python UV_CACHE_DIR=/opt/bro/uv-cache
 retry sh -c 'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh'
 retry uv venv -q --python 3.12 /opt/bro/bu/.venv
-retry uv pip install -q --python /opt/bro/bu/.venv/bin/python browser-use==0.13.10 aiohttp==3.14.3
+retry uv pip install -q --python /opt/bro/bu/.venv/bin/python browser-use==0.13.10 aiohttp==3.14.3 \
+  opencv-python-headless==5.0.0.93 numpy==2.5.3
 retry apt-get install -yq git
 retry git clone -q https://github.com/browser-use/jev-ultrafast.git /opt/bro/jev-ultrafast
 git -C /opt/bro/jev-ultrafast checkout -q 1231850

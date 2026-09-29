@@ -236,6 +236,9 @@ export const env = createEnv({
       .max(240, "BROWSER_VM_IDLE_MINUTES must be at most 240")
       .default(20),
     BROWSER_VM_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    // 2Captcha, for a slider puzzle the VM's worker could not place itself:
+    // it gets the puzzle and the page's address, nothing of the person.
+    BROWSER_VM_TWOCAPTCHA_API_KEY: pastedKeySchema.optional(),
     BROWSER_VM_PROXY: browserVmProxySchema.optional(),
     // Each VM's worker key is derived from this one and the workspace id, so
     // the key a VM holds opens no other VM (`agent/lib/browser-vm/token.ts`).
