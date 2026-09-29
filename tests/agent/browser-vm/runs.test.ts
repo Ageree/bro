@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as ownerAlert from "@agent/lib/owner-alert";
 import { z } from "zod";
 import type * as lifecycleModule from "@agent/lib/browser-vm/lifecycle";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
@@ -70,6 +71,11 @@ const worker = vi.hoisted(() => ({
   startBrowserVmWorkerRun: vi.fn<typeof workerModule.startBrowserVmWorkerRun>(),
 }));
 
+const alertOwner = vi.hoisted(() =>
+  vi.fn<typeof ownerAlert.alertOwner>(() => Promise.resolve(true))
+);
+
+vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
 vi.mock("@db/services/browser-vms", () => records);
 vi.mock("@agent/lib/browser-vm/lifecycle", () => lifecycle);
 vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
@@ -522,6 +528,28 @@ describe("reading a VM run", () => {
       status: "completed",
       unreadMessages: [],
     });
+  });
+
+  it("tells a run its model refused for billing as such, and alerts the owner", async () => {
+    const client = await loadClient();
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        error: "Error code: 402 - {'error': 'Insufficient balance'}",
+        finishedAt: "2026-09-28T11:58:00Z",
+        status: "failed",
+      })
+    );
+
+    const run = await client.readBrowserUseRun(runId);
+
+    // Not the raw 402, which Bro's model read as the cloud browser's credits.
+    expect(run.error).toMatch(/^Nothing was done on the site: the AI model/u);
+    expect(run.error).toContain("only the service owner can fix");
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      "browser-vm-model-balance",
+      expect.stringContaining("RouterAI"),
+      { repeatAfterMs: 6 * 60 * 60_000 }
+    );
   });
 
   it("surfaces messages the run ended without reading, and persists them", async () => {

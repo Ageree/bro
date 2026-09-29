@@ -8,6 +8,7 @@ import {
   updateBrowserVm,
   updateBrowserVmRun,
 } from "@db/services/browser-vms";
+import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
 import { browserVmLlm } from "./backend";
 import {
@@ -681,6 +682,7 @@ async function mirror(
   }
   const finishedAt =
     run.finishedAt === null ? Number.NaN : Date.parse(run.finishedAt);
+  if (modelRefusedForBilling(run.error)) await reportModelOutOfBalance(run.id);
   await updateBrowserVmRun(
     run.id,
     {
@@ -710,7 +712,7 @@ async function mirror(
 function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
   return {
     createdAt: run.createdAt,
-    error: run.error,
+    error: explainedError(run.error),
     id: run.id,
     result: run.result,
     sessionId: run.sessionId,
@@ -724,7 +726,7 @@ function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
 function fromRecord(record: BrowserVmRunRecord) {
   return {
     createdAt: record.createdAt.toISOString(),
-    error: record.error,
+    error: explainedError(record.error),
     id: record.id,
     result: record.result,
     sessionId: record.sessionId,
@@ -822,4 +824,43 @@ async function onWorker<T>(call: () => Promise<T>) {
 
 function missing(error: unknown): error is BrowserUseError {
   return error instanceof BrowserUseError && error.status === 404;
+}
+
+/**
+ * The model the VM's agent runs on answered 402 (RouterAI: «Insufficient
+ * balance»). The raw error read to Bro's model as the cloud browser running
+ * out of credits, and to the person as a fault of the service they use; it
+ * is the owner's balance, so they are told, and the person hears plainly
+ * that nothing was done.
+ */
+const modelBillingError = /\b402\b|insufficient balance/iu;
+const modelBalanceAlertRepeatMs = 6 * 60 * 60_000;
+
+function modelRefusedForBilling(error: string | null | undefined) {
+  return modelBillingError.test(error ?? "");
+}
+
+function explainedError(error: string | null | undefined) {
+  if (!modelRefusedForBilling(error)) return error;
+  return "Nothing was done on the site: the AI model the browser's agent runs on refused the run for billing reasons (402, insufficient balance), which only the service owner can fix and has been told about. Tell the user in one short sentence that the browser is unavailable for a while and that nothing was ordered or charged; it is not about their card or the site.";
+}
+
+async function reportModelOutOfBalance(runId: string) {
+  console.error("[browser-vm] the agent's model refused the run: no balance", {
+    runId,
+  });
+  try {
+    await alertOwner(
+      "browser-vm-model-balance",
+      [
+        "Модель агента на VM браузера ответила 402: на RouterAI кончился баланс.",
+        "Поручения на своих VM обрываются, ничего на сайтах не делается. Пополни баланс RouterAI (ключ BROWSER_VM_LLM_API_KEY).",
+      ].join("\n"),
+      { repeatAfterMs: modelBalanceAlertRepeatMs }
+    );
+  } catch (error) {
+    console.warn("[browser-vm] the owner could not be alerted", {
+      cause: error,
+    });
+  }
 }
