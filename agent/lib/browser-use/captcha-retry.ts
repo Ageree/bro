@@ -69,12 +69,16 @@ export function captchaRetryTask(
   const fresh = onVm
     ? "a new tab of the same browser, with the same saved profile, cookies and sign-ins, through another network address when one could be had"
     : "a fresh browser on a different network address, with the same saved profile, cookies and sign-ins";
+  const start = onVm
+    ? "Go straight back to the site and carry on from where the previous attempt stopped: what it already found is in your memory, so do not check those pages again."
+    : "Go straight to the site and do the errand.";
   return [
     base,
     [
       retryMarker,
       `An anti-bot check, or a connection that would not load the site, stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: ${fresh}.`,
-      "Go straight to the site and do the errand. When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
+      start,
+      "When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
     ].join(" "),
     reference,
   ].join("\n\n");
@@ -187,6 +191,11 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           model: env.BROWSER_USE_MODEL,
           profileId: row.profileId ?? undefined,
           secretBindings: secrets.bindings,
+          // On the VM the retry goes on in the attempt's own session, whose
+          // agent keeps what it found: walls there come after a while on
+          // an address, and an attempt that started over spent its new one
+          // on the pages the last one had already read.
+          sessionId: onVm ? previous.sessionId : undefined,
           task: captchaRetryTask(previous.task, attempt, reference, onVm),
         });
       }
