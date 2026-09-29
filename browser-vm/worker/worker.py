@@ -99,7 +99,7 @@ TERMINAL = {"completed", "failed", "cancelled"}
 # step has ended, so that start is not refused as busy, but a step that hangs does not hold the answer.
 CANCEL_WAIT_S = 20
 # A run past its own budget by this much is cut off. browser-use checks the budget only between steps, and a
-# step it could not time out (an Avito run sat in one for over half an hour) kept the worker busy for good:
+# step it could not time out (an Avito run hung after its 34th step for over half an hour) kept the worker busy:
 # the VM never idled off and every errand of the workspace queued behind it.
 OVERRUN_S = 90
 # How long a cut-off step gets to unwind before Chrome is restarted under it, failing whatever it awaits.
