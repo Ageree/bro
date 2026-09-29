@@ -11,6 +11,7 @@ import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
   BrowserUseError,
   browserUseBusy,
+  browserUseCloudConfigured,
   browserUseConfigured,
   browserUseOutOfCredits,
   cancelBrowserUseRun,
@@ -29,6 +30,8 @@ import {
   typeOneTimeCodeOverCdp,
   type OneTimeCodeEntry,
 } from "@agent/lib/browser-use/cdp";
+import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
+import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import {
   browserSecretAliases,
   phoneSignInDomains,
@@ -41,17 +44,22 @@ import {
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   createBrowserRun,
+  readBrowserProfile,
   readBrowserProfileId,
   claimBrowserRunBrowser,
   readLatestBrowserRunForScope,
   recordBrowserRunSubmission,
   releaseBrowserRunBrowser,
+  replaceBrowserProfileId,
   saveBrowserProfileId,
   stopBrowserRunErrand,
   unclaimBrowserRunBrowser,
   updateBrowserRunProgress,
   updateQueuedBrowserRun,
 } from "@db/services/browser-runs";
+import { forgetBrowserSignIns } from "@db/services/browser-sign-ins";
+import { ensureBrowserVmRecord } from "@db/services/browser-vms";
+import { ensureScope } from "@db/services/scope";
 import {
   listSpendEntries,
   moveSpendReservation,
@@ -1334,15 +1342,73 @@ function conversationTarget(context: ToolContext) {
   };
 }
 
-async function workspaceProfileId(scope: {
-  readonly userId: string;
-  readonly workspaceId: string;
-}) {
+/**
+ * The browser profile the workspace's next errand starts on. A workspace on
+ * its own browser VM (`onVm`, from `usesBrowserVm`) starts on the VM's
+ * current profile: forgetting sign-ins moves its generation on, and a
+ * workspace moved to the VM, or back to Browser Use, leaves the other
+ * backend's profile behind. Errands already started keep the profile on
+ * their own rows. A workspace on Browser Use needs Browser Use set up
+ * (`browserUseCloudConfigured`), which the caller checks first.
+ */
+async function workspaceProfileId(scope: AccessScope, onVm: boolean) {
   const existing = await readBrowserProfileId(scope);
-  if (existing) return existing;
+  if (onVm) {
+    // The VM's record hangs off the workspace row, which the workspace's
+    // first errand may be the first to need.
+    if (existing === undefined) await ensureScope(scope);
+    const vm = await ensureBrowserVmRecord(scope.workspaceId);
+    const current = browserVmProfileId(scope.workspaceId, vm.profileGeneration);
+    return existing === current
+      ? current
+      : switchWorkspaceProfile(scope.workspaceId, existing, current);
+  }
+  if (existing !== undefined && !isBrowserVmId(existing)) return existing;
   const profile = await createBrowserUseProfile("Bro workspace", scope.userId);
-  return saveBrowserProfileId(scope, profile.id);
+  return existing === undefined
+    ? saveBrowserProfileId(scope, profile.id)
+    : switchWorkspaceProfile(scope.workspaceId, existing, profile.id);
 }
+
+/**
+ * Point the workspace at another profile. The sign-ins on record were
+ * earned in the browser of the profile it leaves: moved between Browser Use
+ * and its own VM, it starts in a browser that has none of them, so they are
+ * forgotten as «забудь мои входы» forgets them — a site the person told Bro
+ * not to open stays so. A VM's next generation had them forgotten already.
+ */
+async function switchWorkspaceProfile(
+  workspaceId: string,
+  previous: string | undefined,
+  next: string
+) {
+  await replaceBrowserProfileId(workspaceId, next);
+  if (previous !== undefined && !sameBrowserBackend(previous, next)) {
+    await forgetBrowserSignIns(workspaceId);
+  }
+  return next;
+}
+
+/** Whether two profiles are both on Browser Use, or both on a VM. */
+function sameBrowserBackend(left: string, right: string) {
+  return isBrowserVmId(left) === isBrowserVmId(right);
+}
+
+/**
+ * Nothing was started: the workspace is not on a browser VM, and Browser Use
+ * is not set up on this deployment.
+ */
+const browserServiceOffNote =
+  "Nothing was started: the cloud browser service is not available right now. Tell the user honestly in one short sentence that the browser service is temporarily unavailable, and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
+
+/**
+ * The cancel was asked for, but the run's last step had not finished when
+ * the worker answered, so it is not stopped yet: closing its row now would
+ * hide whatever it actually goes on to do. Tell the user it is stopping
+ * rather than stopped.
+ */
+const stopStillGoingThroughNote =
+  "The stop was asked for, but the errand's last step had not finished yet, so it is still stopping rather than fully stopped. Tell the user in one short sentence that the stop is going through and its outcome will still be reported. Do not call browser_task cancel again in this turn.";
 
 /**
  * What the finished run stopped on. The outcome column holds the
@@ -2783,12 +2849,56 @@ async function trackedRunIsLive(runId: string, completedAt: Date | null) {
 }
 
 /**
+ * Ask the run to stop, and say whether it actually has: a VM worker answers
+ * a cancel once its wait (20s) is up even with the agent still mid-step, so
+ * a resolved call is not by itself a stopped run — only its returned status
+ * says that. A call that throws is read the same way `trackedRunIsLive`'s
+ * failure is: Browser Use itself is taken as stopped (asking again would not
+ * succeed either), but a VM run is not, since it may still be acting in its
+ * session and must not be closed out from under it.
+ */
+async function cancelTrackedRun(runId: string): Promise<boolean> {
+  try {
+    const cancelled = await cancelBrowserUseRun(runId);
+    return terminalRunStatuses.has(cancelled.status);
+  } catch (error) {
+    console.warn("[browser-use] the run could not be cancelled", {
+      cause: error,
+      runId,
+    });
+    return !isBrowserVmId(runId);
+  }
+}
+
+/**
+ * A message into the live run's session. A session on the workspace's
+ * browser VM answers 409 when the VM is not up, or when its worker will not
+ * take the message: the follow-up then goes on as it does after a busy or
+ * idle session, as a run of its own, which waits for the VM if it has to.
+ * Undefined then.
+ */
+async function queueIntoLiveSession(sessionId: string, text: string) {
+  try {
+    return await queueBrowserUseSessionMessage(sessionId, text);
+  } catch (error) {
+    if (
+      isBrowserVmId(sessionId) &&
+      error instanceof BrowserUseError &&
+      error.status === 409
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/**
  * The follow-up run inside the errand's own session. A busy session answers
  * 409 and the caller falls back to the queue; a session that no longer exists
  * answers 404, and the run is made again without one so it opens a fresh
  * browser on the same profile, where the signed-in cookies live.
  */
-async function createFollowUpRun(input: BrowserUseCreateRunInput) {
+export async function createFollowUpRun(input: BrowserUseCreateRunInput) {
   const asked = input.sessionId !== undefined;
   try {
     return { reusedSession: asked, run: await createBrowserUseRun(input) };
@@ -2805,12 +2915,13 @@ async function createFollowUpRun(input: BrowserUseCreateRunInput) {
 
 // The live browser takes a few seconds to come up, and its takeover URL only
 // exists once it has. Recursion rather than a loop keeps each attempt one
-// awaited step instead of a sequential await inside an iteration.
+// awaited step instead of a sequential await inside an iteration. A run on
+// a browser VM has no live view at all, and the turn does not wait for one.
 async function waitForLiveViewUrl(
   runId: string,
   attemptsLeft = liveViewPollAttempts
 ): Promise<string | undefined> {
-  if (attemptsLeft <= 0) return undefined;
+  if (attemptsLeft <= 0 || isBrowserVmId(runId)) return undefined;
   await new Promise((resolve) => setTimeout(resolve, liveViewPollMs));
   try {
     const page = await listBrowserUseRunEvents(runId);
@@ -2925,6 +3036,13 @@ async function runBrowserTask(
       .parse(input.task);
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
+    // A deployment may run its errands on browser VMs alone: a workspace
+    // that is not on one has no browser at all, and hears so before
+    // anything is reserved or counted.
+    const onVm = await usesBrowserVm(scope);
+    if (!onVm && !browserUseCloudConfigured()) {
+      return { note: browserServiceOffNote, status: "unavailable" };
+    }
     // A site whose name does not exist is found, not waited on: no browser
     // is spent on it, and nothing is reserved or counted for the month.
     if (input.site !== undefined && (await siteHostMissing(input.site))) {
@@ -2969,7 +3087,7 @@ async function runBrowserTask(
         return { kind: "quota_exhausted" as const, note: quota.note };
       }
       const [profileId, secrets, facts] = await Promise.all([
-        workspaceProfileId(scope),
+        workspaceProfileId(scope, onVm),
         resolveBrowserSecretBindings(scope, {
           allowPayment,
           // Only an errand the person asked for signs in with their phone:
@@ -3014,7 +3132,7 @@ async function runBrowserTask(
       // While errands wait for a browser, the cap was full a minute ago:
       // this one joins the back of the line instead of taking the slot
       // the first in line is about to get.
-      if (await browserQueueOccupied()) {
+      if (await browserQueueOccupied(scope.workspaceId, profileId)) {
         return {
           aliases: secrets.aliases,
           kind: "queued" as const,
@@ -3302,17 +3420,40 @@ async function runBrowserTask(
         ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
         : message;
     // After «забудь мои входы» the errand's profile is gone: its follow-up
-    // moves to the workspace's new one, in a new browser.
+    // moves to the workspace's new one, in a new browser. A profile of the
+    // other backend is gone only when the sign-ins were forgotten since the
+    // errand started (the workspace's profile is newer than it): otherwise
+    // the workspace just moved between Browser Use and its own VM, and the
+    // errand carries on where it started, with its sign-ins.
+    const current = await readBrowserProfile(scope);
     const forgotten =
       row.profileId !== null &&
-      row.profileId !== (await readBrowserProfileId(scope));
+      (current === undefined ||
+        (row.profileId !== current.profileId &&
+          (sameBrowserBackend(row.profileId, current.profileId) ||
+            row.createdAt < current.createdAt)));
+    // An errand that moves to the workspace's profile runs where the
+    // workspace's errands run now; any other where it started. On Browser
+    // Use either needs Browser Use set up.
+    const needsProfile = forgotten || row.profileId === null;
+    const onVm = needsProfile
+      ? await usesBrowserVm(scope)
+      : row.profileId !== null && isBrowserVmId(row.profileId);
+    if (!onVm && !browserUseCloudConfigured()) {
+      if (placeholder) await releaseReservation(placeholder);
+      return { note: browserServiceOffNote, runId, status: "unavailable" };
+    }
     const page = forgotten
       ? { claimedAt: undefined, closing: false, held: false }
       : await takeKeptPage(row);
+    // The errand last stopped on an anti-bot wall: the shop has already
+    // judged that browser and that address, so the follow-up gets a fresh
+    // one of each (`sessionId`, `freshExit`), not the same verdict again.
+    const walled = endedNeeding(row.outcome) === "captcha";
     // A page the idle stop closed: why decides what the follow-up is told.
     const closed: ClosedPage | undefined = forgotten
       ? "forgotten"
-      : page.held || endedNeeding(row.outcome) === "captcha"
+      : page.held || walled
         ? undefined
         : closedPage(row.outcome);
     // The code in the mail belonged to that page.
@@ -3367,7 +3508,7 @@ async function runBrowserTask(
           const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;
-          const queued = await queueBrowserUseSessionMessage(
+          const queued = await queueIntoLiveSession(
             row.sessionId,
             [
               withCodeEntry(message, codeEntry, carriesCode),
@@ -3381,56 +3522,57 @@ async function runBrowserTask(
               .filter((part) => part !== undefined)
               .join("\n\n")
           );
-          if (confirmedNow?.kind === "confirmed") {
-            await recordBrowserRunSubmission(runId, confirmedNow.submission);
-          }
-          // The run ended between the check and the queue: the idle session
-          // drained the message as a run of its own, which reports only once
-          // Bro tracks it as the errand's follow-up.
-          if (queued.runId && queued.runId !== runId) {
+          // A VM session that took no message falls through to a follow-up
+          // run of its own, below.
+          if (queued !== undefined) {
+            if (confirmedNow?.kind === "confirmed") {
+              await recordBrowserRunSubmission(runId, confirmedNow.submission);
+            }
+            // The run ended between the check and the queue: the idle
+            // session drained the message as a run of its own, which reports
+            // only once Bro tracks it as the errand's follow-up.
+            if (queued.runId && queued.runId !== runId) {
+              return {
+                followUp: { id: queued.runId, sessionId: row.sessionId },
+                kind: "continued" as const,
+                profileId: row.profileId,
+                reusedSession: true,
+                secrets: { aliases: [], bindings: [] },
+              };
+            }
             return {
-              followUp: { id: queued.runId, sessionId: row.sessionId },
-              kind: "continued" as const,
-              profileId: row.profileId,
-              reusedSession: true,
-              secrets: { aliases: [], bindings: [] },
+              // The run was started with the card bound, so what this call
+              // allowed it to pay is its to pay.
+              carriesPayment: true,
+              kind: "replied" as const,
+              reply: {
+                note: [
+                  codeEntryNote(codeEntry) === undefined
+                    ? "The message was queued into the running errand. Its outcome still arrives as a new message."
+                    : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
+                  nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
+                ].join(" "),
+                runId,
+                status: row.status,
+              },
             };
           }
-          return {
-            // The run was started with the card bound, so what this call
-            // allowed it to pay is its to pay.
-            carriesPayment: true,
-            kind: "replied" as const,
-            reply: {
-              note: [
-                codeEntryNote(codeEntry) === undefined
-                  ? "The message was queued into the running errand. Its outcome still arrives as a new message."
-                  : "The code went straight into the page, and the message was queued into the running errand as well. Its outcome still arrives as a new message.",
-                nothingDoneYetNote(codeEntryNote(codeEntry) !== undefined),
-              ].join(" "),
-              runId,
-              status: row.status,
-            },
-          };
         }
         if (live) {
-          try {
-            await cancelBrowserUseRun(runId);
-          } catch (error) {
-            console.warn(
-              "[browser-use] the replaced run could not be cancelled",
-              {
-                cause: error,
-                runId,
-              }
-            );
-          }
+          // A VM run whose stop did not get through may still be acting in
+          // its session: it is not closed here, so it still settles as it
+          // ends, and the follow-up waits for the session (below).
+          const stopAsked = await cancelTrackedRun(runId);
           // Claiming the completion here is what keeps the webhook and the
           // poller from reporting the replaced run as an outcome of its own.
-          await claimBrowserRunCompletion(runId, {
-            outcome: "Заменён продолжением с привязанной картой",
-            status: "stopped",
-          });
+          if (stopAsked) {
+            await claimBrowserRunCompletion(runId, {
+              outcome: bindsCardNow
+                ? "Заменён продолжением с привязанной картой"
+                : "Заменён продолжением",
+              status: "stopped",
+            });
+          }
         } else {
           // The person is steering a settled errand now: a background retry
           // waiting for it, or being started, would only race this follow-up.
@@ -3467,7 +3609,7 @@ async function runBrowserTask(
           : bound;
         const profileId =
           forgotten || row.profileId === null
-            ? await workspaceProfileId(scope)
+            ? await workspaceProfileId(scope, onVm)
             : row.profileId;
         // A browser that lost to an anti-bot wall keeps losing: the shop has
         // already judged that address and that browser, and a follow-up queued
@@ -3475,7 +3617,7 @@ async function runBrowserTask(
         // carries the sign-in, so dropping the session keeps the account and
         // gets a fresh browser on a fresh address.
         const sessionId =
-          endedNeeding(row.outcome) === "captcha" || page.closing || forgotten
+          walled || page.closing || forgotten
             ? undefined
             : (row.sessionId ?? undefined);
         const continuation = composeBrowserContinuation({
@@ -3525,6 +3667,8 @@ async function runBrowserTask(
         try {
           followUp = await createFollowUpRun({
             customProxy: customProxy(),
+            // A VM profile only (cloud ignores it).
+            freshExit: onVm && walled,
             maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
             model: env.BROWSER_USE_MODEL,
             profileId,
@@ -3556,15 +3700,42 @@ async function runBrowserTask(
           if (row.sessionId === null) {
             throw new Error("A busy browser session needs its session id.");
           }
+          // A VM session is busy with a run of its own, as a rule the one
+          // this replaces, whose stop has not landed yet: its worker takes no
+          // message from a run being stopped, and a message would not carry
+          // the card anyway. The follow-up waits in the queue for the
+          // session instead, and starts there once it is free.
+          if (isBrowserVmId(row.sessionId)) {
+            return {
+              continuation,
+              kind: "queued" as const,
+              profileId,
+              retryAfterMs: undefined,
+              sessionId,
+              waitsForAccount: undefined,
+            };
+          }
           // Bindings exist per run, so a busy session takes the message but
           // not the card: whatever was reserved for it is not going to be paid.
-          await queueBrowserUseSessionMessage(
+          const queued = await queueBrowserUseSessionMessage(
             row.sessionId,
             [
               withCodeEntry(instruction, codeEntry, carriesCode),
               queuedIntoErrandContract(row.task),
             ].join("\n\n")
           );
+          // The session was idle by then and drained the message as a run
+          // of its own, which reports only once Bro tracks it as the
+          // errand's follow-up.
+          if (queued.runId && queued.runId !== runId) {
+            return {
+              followUp: { id: queued.runId, sessionId: row.sessionId },
+              kind: "continued" as const,
+              profileId,
+              reusedSession: true,
+              secrets: { aliases: [], bindings: [] },
+            };
+          }
           return {
             carriesPayment: false,
             kind: "replied" as const,
@@ -3700,7 +3871,9 @@ async function runBrowserTask(
         closed === undefined
           ? reusedSession
             ? undefined
-            : `The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address. ${freshGosuslugiNote(site, secrets.aliases) ?? "The signed-in cookies came with it."}`
+            : onVm
+              ? `The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up continues in the same browser, on a new tab, with a new exit address when one was available. ${freshGosuslugiNote(site, secrets.aliases) ?? "The signed-in cookies never left it."}`
+              : `The previous browser session was not reused — it was gone, or it had ended against an anti-bot check — so the follow-up opened a fresh browser on the same profile, on a new address. ${freshGosuslugiNote(site, secrets.aliases) ?? "The signed-in cookies came with it."}`
           : closedPageNote(
               closed,
               recordedNeed(row.outcome),
@@ -3732,7 +3905,16 @@ async function runBrowserTask(
       // It started in the meantime: cancel the run that carries it now.
       const started = await readLatestBrowserRunForScope(scope, runId);
       if (!started || started.id === runId) return { runId, status: "stopped" };
-      await cancelBrowserUseRun(started.id);
+      if (!(await cancelTrackedRun(started.id))) {
+        // It may still be acting in its session: not closed here, so it
+        // settles on its own as it ends, and its browser and reservation
+        // stay held rather than freed out from under it.
+        return {
+          note: stopStillGoingThroughNote,
+          runId: started.id,
+          status: "running",
+        };
+      }
       await claimBrowserRunCompletion(started.id, {
         outcome: "The user cancelled this browser run.",
         status: "stopped",
@@ -3746,7 +3928,11 @@ async function runBrowserTask(
     // row is what keeps a background retry from starting for it, including
     // one the poller is starting right now.
     if (!row.completedAt) {
-      await cancelBrowserUseRun(runId);
+      if (!(await cancelTrackedRun(runId))) {
+        // Same as above: it may still be acting, so the row is left open
+        // for the normal settle path, and nothing here is released yet.
+        return { note: stopStillGoingThroughNote, runId, status: "running" };
+      }
       await claimBrowserRunCompletion(runId, {
         outcome: "The user cancelled this browser run.",
         status: "stopped",

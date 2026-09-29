@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { env } from "@shared/environment";
 import {
   handOffBrowserRunRetry,
@@ -7,6 +8,7 @@ import {
 } from "@db/services/browser-runs";
 import {
   BrowserUseError,
+  browserUseBusy,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -48,19 +50,25 @@ const retryMarker = "[Retry after an anti-bot check]";
  * The previous attempt's instruction with a note about where this one
  * stands. The note replaces the one before it rather than piling up. The
  * waiting advice is Browser Use's own: its solver works a challenge by
- * itself, and a reload or a click in the middle restarts it.
+ * itself, and a reload or a click in the middle restarts it. On the
+ * workspace's own browser VM (`onVm`) the attempt gets a new tab of the one
+ * browser there, whose address stays unless the VM's exit went bad.
  */
 export function captchaRetryTask(
   previousTask: string,
   attempt: number,
-  reference: string
+  reference: string,
+  onVm = false
 ) {
   const base = previousTask.split(`\n\n${retryMarker}`, 1)[0] ?? previousTask;
+  const fresh = onVm
+    ? "a new tab of the same browser, with the same saved profile, cookies and sign-ins"
+    : "a fresh browser on a different network address, with the same saved profile, cookies and sign-ins";
   return [
     base,
     [
       retryMarker,
-      `An anti-bot check, or a connection that would not load the site, stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: a fresh browser on a different network address, with the same saved profile, cookies and sign-ins.`,
+      `An anti-bot check, or a connection that would not load the site, stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: ${fresh}.`,
       "Go straight to the site and do the errand. When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
     ].join(" "),
     reference,
@@ -119,17 +127,19 @@ async function abandonRetryRun(runId: string) {
  * old row is still waiting; a run started for an errand that was stopped
  * meanwhile is cancelled at once. A start Browser Use refused counts as a
  * failed attempt and is parked again, until the attempts run out and the
- * caller reports the wall. A run this attempt already started before its
- * poller died is found by its reference line and adopted, not started again;
- * any other failure up to and including the start keeps the attempt's
- * number while the wall is recent, so the next claim looks for that very
- * line.
+ * caller reports the wall; the workspace's own VM starting, or busy, ran
+ * no attempt and costs none while the wall is recent. A run this attempt
+ * already started before its poller died is found by its reference line and
+ * adopted, not started again; any other failure up to and including the
+ * start keeps the attempt's number while the wall is recent, so the next
+ * claim looks for that very line.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
   if (row.captchaAttempt >= maximumCaptchaAttempts) {
     return { status: "exhausted" as const };
   }
   const attempt = row.captchaAttempt + 1;
+  const onVm = row.profileId !== null && isBrowserVmId(row.profileId);
   try {
     const reference = retryReference(row.id, attempt);
     let run: Pick<
@@ -142,7 +152,12 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       if (current?.status !== "waiting" || current.retriedAsRunId) {
         return { status: "stopped" as const };
       }
-      const adopted = await findRecentBrowserUseRunByTaskLine(reference);
+      const adopted = await findRecentBrowserUseRunByTaskLine(
+        reference,
+        undefined,
+        undefined,
+        row.profileId ?? undefined
+      );
       if (adopted) {
         run = adopted;
       } else {
@@ -160,14 +175,24 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         starting = true;
         run = await createBrowserUseRun({
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
+          // A VM profile only (cloud ignores it): the wall has already
+          // judged the address the last attempt came from.
+          freshExit: true,
           maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
           model: env.BROWSER_USE_MODEL,
           profileId: row.profileId ?? undefined,
           secretBindings: secrets.bindings,
-          task: captchaRetryTask(previous.task, attempt, reference),
+          task: captchaRetryTask(previous.task, attempt, reference, onVm),
         });
       }
     } catch (error) {
+      // The workspace's own VM starting, or busy with another errand of
+      // its workspace, ran no attempt at all: the attempt keeps its number
+      // and waits as long as the VM asked, while the wall is recent.
+      const vmWaitMs =
+        onVm && starting && browserUseBusy(error)
+          ? Math.max(error.retryAfterMs ?? 0, uncertainStartRetryMs)
+          : undefined;
       // Only a clear refusal (4xx) of the start is a failed attempt. A
       // timeout, a dropped connection or a 5xx on the start says nothing
       // about what Browser Use did, and it takes no idempotency key. Nor
@@ -175,7 +200,10 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       // been cut off, the outage that cut it off usually fails this claim's
       // reads as well, and the next number would miss the run it started.
       const refused =
-        starting && error instanceof BrowserUseError && error.status < 500;
+        vmWaitMs === undefined &&
+        starting &&
+        error instanceof BrowserUseError &&
+        error.status < 500;
       if (refused || !recentlyWalled(row, now)) throw error;
       // The next claim looks for this very attempt's line and adopts what it
       // finds, instead of taking the next number and opening a second
@@ -188,7 +216,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       });
       await parkBrowserRunForRetry(row.id, {
         captchaAttempt: row.captchaAttempt,
-        retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+        retryAt: new Date(now.getTime() + (vmWaitMs ?? uncertainStartRetryMs)),
       });
       return { status: "parked" as const };
     }
@@ -210,6 +238,10 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         // to submit, and nothing more: its task is the previous attempt's.
         submission: row.submission,
         task: row.task,
+        // Whatever the parked row still holds unread carries to the row that
+        // takes the errand over: a message queued in during an earlier
+        // attempt must reach whichever attempt finally reports the errand.
+        unreadMessages: row.unreadMessages,
       });
     } catch (error) {
       await abandonRetryRun(run.id);

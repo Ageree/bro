@@ -44,7 +44,7 @@ async function googleNow(scope: AccessScope) {
 }
 
 const reply =
-  "Answer from these facts, briefly and in your own words, in one message: what is kept and where (kept), which outside services process it (processors), that you do not know the servers' countries (serverLocation), Google as it stands now with how to narrow or switch it off (google), and how the person deletes each part (remove). Name the services as given and add none of your own. Do not ask whether to delete or disconnect anything.";
+  "Answer from these facts, briefly and in your own words, in one message: what is kept and where (kept), which outside services process it (processors), what you do and do not know of the servers' countries (serverLocation), Google as it stands now with how to narrow or switch it off (google), and how the person deletes each part (remove). Name the services as given and add none of your own. Do not ask whether to delete or disconnect anything.";
 
 export const privacy = defineTool({
   description:
@@ -63,7 +63,7 @@ export const privacy = defineTool({
     return {
       kept: keptData(),
       processors: dataProcessors(modelId),
-      serverLocation,
+      serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
       remove: [
         "Память и сохранённые дела — «удали всё, что ты про меня помнишь» или «забудь …»: стираются сразу.",

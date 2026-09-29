@@ -149,6 +149,15 @@ export const browserRuns = pgTable(
     // codes that cancel each other. Null for an errand waiting only for a
     // free browser.
     waitsForAccount: text("waits_for_account"),
+    // Messages queued into the run's session that this run never read before
+    // it settled (`run.unreadMessages` in the settle, or a VM session's own
+    // `unreadMessages`), accumulated across every background retry against an
+    // anti-bot wall: a park for retry merges the settling attempt's own
+    // unread messages in rather than replacing what an earlier attempt left,
+    // and a hand-off to the next attempt's row carries the merged list
+    // forward, so none of them are lost to a retry that never surfaces a
+    // report of its own. Absent or empty when there is nothing unread.
+    unreadMessages: jsonb("unread_messages").$type<string[]>(),
   },
   (table) => [
     foreignKey({

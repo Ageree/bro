@@ -1,5 +1,6 @@
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { customProxy } from "@agent/lib/browser-use/proxy";
+import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
@@ -35,17 +36,18 @@ export function dataProcessors(modelId: string) {
     openRouterActive()
       ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через OpenRouter к провайдеру, который эту модель запускает. Голосовые сообщения распознаёт и картинки рисует тоже модель через OpenRouter, а запросы веб-поиска OpenRouter передаёт поисковикам Exa и Perplexity.`
       : `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через Vercel AI Gateway к её провайдеру.`,
-    ...(browserUseConfigured()
-      ? [
+    ...(env.BROWSER_USE_API_KEY === undefined
+      ? []
+      : [
           "Поручения на сайтах выполняет облачный браузер Browser Use: он видит страницы и данные, нужные поручению, получает пароль или карту из сейфа только на время запуска и только для сайта поручения и хранит куки сайтов, куда входил, в профиле браузера.",
-          ...keepAliveVisits(),
-        ]
-      : []),
-    ...(customProxy() !== undefined && browserUseConfigured()
+        ]),
+    ...(customProxy() !== undefined && env.BROWSER_USE_API_KEY !== undefined
       ? [
           "Облачный браузер ходит на сайты через прокси-сервер деплоя: прокси видит, на какие сайты он заходит.",
         ]
       : []),
+    ...browserVms(),
+    ...(browserUseConfigured() ? keepAliveVisits() : []),
     ...(composioConfigured()
       ? [
           "Доступ к Google, Notion, Slack и другим подключённым приложениям держит Composio: там хранятся ключи от этих аккаунтов, и через него идут запросы к ним.",
@@ -64,6 +66,38 @@ export function dataProcessors(modelId: string) {
       : []),
     ...messengers(),
   ];
+}
+
+/**
+ * The browser VMs: where each stands, what its disk keeps between errands,
+ * and the two services every errand on one goes through — the model that
+ * drives its browser and the residential proxy that is its only way out.
+ * Each is named by the address this deployment set for it.
+ */
+function browserVms() {
+  const proxyHost = env.BROWSER_VM_PROXY?.host;
+  if (!browserVmConfigured() || proxyHost === undefined) return [];
+  const modelHost = URL.parse(env.BROWSER_VM_LLM_BASE_URL)?.hostname ?? "";
+  const modelService = /(?:^|\.)routerai\.ru$/iu.test(modelHost)
+    ? "RouterAI"
+    : `сервис ${modelHost}`;
+  const proxyService = /geonode/iu.test(proxyHost)
+    ? "Geonode"
+    : `сервис ${proxyHost}`;
+  return [
+    `Поручения на сайтах выполняет браузер Бро на виртуальной машине в облаке Cloud.ru (${browserVmZone()}), у каждого человека своей: он видит страницы и данные, нужные поручению, и получает пароль или карту из сейфа только на время запуска и только для сайта поручения. На диске машины, даже выключенной, хранятся профиль браузера с куки сайтов, куда он входил, тексты и итоги поручений и снимки страниц.`,
+    `Браузером на этой машине управляет языковая модель ${env.BROWSER_VM_MODEL} через ${modelService}: модель видит текст поручения и страницы, которые открывает браузер.`,
+    `Браузер на этой машине ходит на сайты через резидентный прокси ${proxyService}: прокси видит, на какие сайты он заходит.`,
+  ];
+}
+
+/**
+ * The one place the settings do name: the Cloud.ru zone the browser VMs are
+ * created in. Zones named `ru.*` are Cloud.ru's Russian data centres.
+ */
+function browserVmZone() {
+  const zone = env.CLOUDRU_ZONE;
+  return zone.startsWith("ru.") ? `зона ${zone}, Россия` : `зона ${zone}`;
 }
 
 /**
@@ -102,7 +136,12 @@ function messengers() {
 /**
  * Neither the deployment's settings nor its code name a region for any of
  * these services, so Bro cannot say where the servers stand — and must not
- * guess «в России» for a person who asks because of 152-ФЗ.
+ * guess «в России» for a person who asks because of 152-ФЗ. The browser VMs
+ * are the one exception: the Cloud.ru zone they are created in is a setting.
  */
-export const serverLocation =
-  "В каких странах стоят серверы этих сервисов, Бро не знает: регион нигде в его настройках не записан. Утверждать, что данные хранятся в России (или что за её пределами), он не может.";
+export function serverLocation() {
+  if (!browserVmConfigured()) {
+    return "В каких странах стоят серверы этих сервисов, Бро не знает: регион нигде в его настройках не записан. Утверждать, что данные хранятся в России (или что за её пределами), он не может.";
+  }
+  return `Виртуальные машины браузера стоят в облаке Cloud.ru (${browserVmZone()}): зона записана в настройках Бро. В каких странах стоят серверы остальных сервисов, Бро не знает: регион нигде в его настройках не записан. Утверждать, что остальные данные хранятся в России (или что за её пределами), он не может.`;
+}

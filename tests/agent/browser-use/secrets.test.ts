@@ -3,6 +3,7 @@ import {
   browserSecretBindings,
   loginAllowedDomains,
   nationalPhoneDigits,
+  phoneSignInDomains,
   phoneSignInSentence,
   signsInByPhone,
   paymentAllowedDomains,
@@ -94,6 +95,30 @@ describe("browser secret domains", () => {
     expect(loginAllowedDomains("https://taxi.yandex.ru")).not.toContain(
       "yookassa.ru"
     );
+  });
+
+  it("lets a Wildberries sign-in reach WB ID, and nothing else of it", () => {
+    // Wildberries signs people in on id.wb.ru, a registrable domain of its own.
+    expect(loginAllowedDomains("https://www.wildberries.ru/lk")).toEqual([
+      "wildberries.ru",
+      "wb.ru",
+    ]);
+    expect(
+      loginAllowedDomains(
+        "https://www.wildberries.ru",
+        "https://id.wb.ru/login"
+      )
+    ).toEqual(["wildberries.ru", "id.wb.ru", "wb.ru"]);
+    expect(phoneSignInDomains("https://www.wildberries.ru")).toEqual([
+      "wildberries.ru",
+      "wb.ru",
+    ]);
+    // An alias only widens the site it belongs to, and never a card.
+    expect(loginAllowedDomains("https://id.wb.ru")).toEqual(["wb.ru"]);
+    expect(phoneSignInDomains("https://www.ozon.ru")).toEqual(["ozon.ru"]);
+    const payment = paymentAllowedDomains("https://www.wildberries.ru");
+    expect(payment).not.toContain("wb.ru");
+    expect(payment.length).toBeLessThanOrEqual(10);
   });
 });
 
@@ -519,6 +544,45 @@ describe("browser secret bindings", () => {
       "+79991234567",
       "9991234567",
     ]);
+  });
+
+  it("binds a Wildberries phone and login for WB ID too, and its card not", () => {
+    const phone = browserSecretBindings({
+      card: undefined,
+      login: undefined,
+      signInPhone: "+7 999 123-45-67",
+      site: "https://www.wildberries.ru",
+    });
+    expect(phone.aliases).toEqual(["signin_phone", "signin_phone_digits"]);
+    for (const binding of phone.bindings) {
+      expect(binding.allowedDomains).toEqual(["wildberries.ru", "wb.ru"]);
+    }
+
+    const saved = browserSecretBindings({
+      card,
+      login: serializeLoginVaultPayload({
+        authentication: { password, type: "password" },
+        identifier: { type: "phone", value: "+7 999 123-45-67" },
+        kind: "login",
+        origin: "https://www.wildberries.ru",
+        version: 2,
+      }),
+      site: "https://www.wildberries.ru",
+    });
+    const domainsOf = (prefix: string) =>
+      saved.bindings
+        .filter((binding) => binding.alias.startsWith(prefix))
+        .map((binding) => binding.allowedDomains);
+    expect(domainsOf("login_")).toEqual([
+      ["wildberries.ru", "wb.ru"],
+      ["wildberries.ru", "wb.ru"],
+      ["wildberries.ru", "wb.ru"],
+    ]);
+    expect(domainsOf("card_")).toHaveLength(4);
+    for (const domains of domainsOf("card_")) {
+      expect(domains).not.toContain("wb.ru");
+    }
+    expect(saved.aliases).toContain("card_number");
   });
 
   it("binds no phone where a saved login signs in, or on a public suffix", () => {

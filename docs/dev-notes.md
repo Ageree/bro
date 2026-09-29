@@ -203,6 +203,10 @@
 - STOP не освобождает vCPU/RAM квоты (8 vCPU по умолчанию — 4 VM `gen-2-4`),
   освобождает только удаление. `DELETE` VM всегда удаляет загрузочный диск, а
   публичный IP — только если он назван в `delete_attachments.external_ips`.
+- `settledFloatingIpId` (`lifecycle.ts`) ждёт адрес поллингом, только если его
+  правда не с чем сравнить: `giveUpAbandoned`/`giveUp` берут уже прочитанный
+  `cloud` вызывающего (`bringUp`), а не читают VM заново — повторное чтение
+  без паузы отвечает тем же «ещё нет» и просто съедает попытку settle вхолостую.
 - Первая загрузка новой VM иногда встаёт в `(initramfs)` (порт 443 молчит) —
   лечит `set-power reboot`; изредка VM зависает в `creating`, и её нельзя
   удалить (`vm_can_not_be_deleted_from_current_state`). Первые VM из нового
@@ -233,6 +237,18 @@
   `Input.insertText` (действие `enter_code` worker).
 - Ключи окружения приходили с переводами строк и в типографских кавычках:
   чистит `clean()` в `vm.py` и `build.py`.
+- Своя VM в Бро — `agent/lib/browser-vm/`; `client.ts` уводит туда всё по
+  префиксу id `vm:` (профиль `vm:<ws>:p<поколение>`), так что backend закреплён
+  за поручением. В id воркспейса есть двоеточие (`personal:<hex>`): id VM
+  разбирайте с конца (`ids.ts`). Кому VM — `BROWSER_BACKEND` и пилотный
+  `BROWSER_VM_WORKSPACES` (id или email владельца).
+- Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
+  `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
+- Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
+  `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
+- `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
+  вставляет весь код одним `Input.insertText`; ошибка CDP-команды теперь
+  отвергает вызов, а не даёт пустой ответ.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 

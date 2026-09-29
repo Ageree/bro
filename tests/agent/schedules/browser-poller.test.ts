@@ -17,8 +17,11 @@ import {
 import { z } from "zod";
 import * as Database from "@db";
 import * as schema from "@db/schema";
+import type { BrowserUseSecretBinding } from "@agent/lib/browser-use/client";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
+import type * as browserVmLifecycle from "@agent/lib/browser-vm/lifecycle";
+import type * as browserVmRuns from "@agent/lib/browser-vm/runs";
 import type * as browserRunsService from "@db/services/browser-runs";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import type { BrowserSubmission } from "@shared/browser/submission";
@@ -29,6 +32,10 @@ import type * as browserUseHost from "@agent/lib/browser-use/host";
 // channels and the owner's Telegram are stand-ins — no live run is started.
 
 interface CloudRun {
+  // A VM run that ended with messages it never read: nothing reads them
+  // before it settles, and neither the worker nor Bro starts a follow-up
+  // for them — the settle path reports them for the coordinator instead.
+  unread?: readonly string[];
   result: string | null;
   sessionId: string;
   status: "completed" | "failed" | "running";
@@ -38,10 +45,17 @@ interface CloudRun {
 }
 
 const cloud = vi.hoisted(() => ({
+  // Whether Browser Use itself is set up: a deployment may run on VMs alone.
+  browserUse: true,
   // What happens while Browser Use is starting a run, e.g. a `continue`.
   beforeCreate: new Array<() => Promise<void>>(),
   cancelled: new Array<string>(),
-  created: new Array<{ sessionId?: string; task: string }>(),
+  created: new Array<{
+    id?: string;
+    secretBindings?: readonly BrowserUseSecretBinding[];
+    sessionId?: string;
+    task: string;
+  }>(),
   // Runs whose status Browser Use keeps failing to answer.
   failing: new Set<string>(),
   // Runs whose summary Browser Use never answers at all.
@@ -50,8 +64,10 @@ const cloud = vi.hoisted(() => ({
   statusChecks: 0,
   // The sessions whose browsers Bro stopped, in order.
   stopped: new Array<string>(),
-  // What the next create answers: a new run, or Browser Use's refusal.
-  nextCreate: new Array<"busy" | "down" | "no_credits" | "ok">(),
+  // What the next create answers: a new run, or a refusal — Browser Use's
+  // own (`busy`, `down`, `no_credits`), or a VM session busy with its own
+  // run (`vm_busy`, 409).
+  nextCreate: new Array<"busy" | "down" | "no_credits" | "ok" | "vm_busy">(),
   runs: new Map<string, CloudRun>(),
 }));
 
@@ -82,12 +98,18 @@ vi.mock("@agent/lib/browser-use/images", () => ({
 }));
 // The vault can be made to fail, the way a transient outage does.
 const vaultFails = vi.hoisted(() => ({ value: false }));
-vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
-  ...(await importOriginal<typeof browserUseSecrets>()),
-  resolveBrowserSecretBindings: () =>
+// A vi.fn so a test can see what it was resolved for (the scope and site a
+// D1 follow-up must resupply secrets for), and what it hands back.
+const resolveBrowserSecretBindings = vi.hoisted(() =>
+  vi.fn<typeof browserUseSecrets.resolveBrowserSecretBindings>(() =>
     vaultFails.value
       ? Promise.reject(new Error("vault unavailable"))
-      : Promise.resolve({ aliases: [], bindings: [] }),
+      : Promise.resolve({ aliases: [], bindings: [] })
+  )
+);
+vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseSecrets>()),
+  resolveBrowserSecretBindings,
 }));
 vi.mock("@db/services/orders", () => ({
   recordOrder: vi.fn<() => Promise<void>>(() => Promise.resolve()),
@@ -119,6 +141,28 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => {
         : original.parkQueuedBrowserRun(...args),
   };
 });
+// The browser VMs' lifecycle is its own suite's: here only whether, and
+// when in the tick, the poller hands them over. It notes what the tick had
+// done by then: the runs the queue started, and the reports sent.
+const browserVms = vi.hoisted(() => ({
+  configured: false,
+  reconciled: new Array<{ readonly sent: number; readonly started: number }>(),
+  sent: (): number => 0,
+}));
+vi.mock("@agent/lib/browser-vm/runs", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserVmRuns>()),
+  browserVmReconcileConfigured: () => browserVms.configured,
+}));
+vi.mock("@agent/lib/browser-vm/lifecycle", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserVmLifecycle>()),
+  reconcileBrowserVms: () => {
+    browserVms.reconciled.push({
+      sent: browserVms.sent(),
+      started: cloud.created.length,
+    });
+    return Promise.resolve();
+  },
+}));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 vi.mock("@agent/channels/telegram", () => ({ default: { id: "telegram" } }));
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
@@ -135,12 +179,15 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
   }
   return {
     ...original,
+    browserUseCloudConfigured: () => cloud.browserUse,
     browserUseConfigured: () => true,
     cancelBrowserUseRun: (runId: string) => {
       cloud.cancelled.push(runId);
       return Promise.resolve();
     },
     createBrowserUseRun: async (input: {
+      id?: string;
+      secretBindings?: readonly BrowserUseSecretBinding[];
       sessionId?: string;
       task: string;
     }) => {
@@ -160,14 +207,24 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
           )
         );
       }
+      if (next === "vm_busy") {
+        return Promise.reject(
+          new original.BrowserUseError(
+            409,
+            "/v1/runs",
+            '{"error":"busy","runId":"' + (input.sessionId ?? "") + '"}'
+          )
+        );
+      }
       if (next === "no_credits") {
         return Promise.reject(
           new original.BrowserUseError(402, "/runs", "Insufficient credits")
         );
       }
       cloud.created.push(input);
-      const id = `cloud-run-${String(cloud.created.length)}`;
-      const sessionId = `cloud-session-${String(cloud.created.length)}`;
+      const id = input.id ?? `cloud-run-${String(cloud.created.length)}`;
+      const sessionId =
+        input.sessionId ?? `cloud-session-${String(cloud.created.length)}`;
       cloud.runs.set(id, {
         result: null,
         sessionId,
@@ -206,6 +263,7 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
         sessionId: run.sessionId,
         status: run.summaryStatus ?? run.status,
         task: run.task,
+        unreadMessages: run.unread,
       });
     },
     readBrowserUseRunStatus: (runId: string) => {
@@ -241,6 +299,7 @@ beforeEach(async () => {
   await database.delete(schema.spendEntries);
   await database.delete(schema.browserRuns);
   await database.delete(schema.browserSignIns);
+  cloud.browserUse = true;
   cloud.beforeCreate.length = 0;
   cloud.cancelled.length = 0;
   cloud.created.length = 0;
@@ -254,7 +313,11 @@ beforeEach(async () => {
   cloud.hanging.clear();
   cloud.nextCreate.length = 0;
   cloud.runs.clear();
+  browserVms.configured = false;
+  browserVms.reconciled.length = 0;
+  browserVms.sent = () => 0;
   alertOwner.mockClear();
+  resolveBrowserSecretBindings.mockClear();
 });
 
 afterEach(() => {
@@ -899,7 +962,82 @@ const cardSubmission: BrowserSubmission = {
   where: "ресторан «Пушкин»",
 };
 
-async function queuedErrand(index: number, submission?: BrowserSubmission) {
+describe("a VM run that ended with messages it never read", () => {
+  const runId = `vm:${alice.workspaceId}:r:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`;
+  const sessionId = `vm:${alice.workspaceId}:s:5e7d2c1a-8b9f-4e3d-a2c1-0f9e8d7c6b5a`;
+
+  async function trackVmErrand() {
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(5),
+      id: runId,
+      profileId: `vm:${alice.workspaceId}:p1`,
+      rootSessionId: "web-session",
+      sessionId,
+      status: "running",
+      task: "Найди отель в Казани",
+      updatedAt: minutesAgo(5),
+    });
+  }
+
+  // The message came during the run's last step: nothing read it before it
+  // settled. The worker never starts a follow-up on its own (D1), and
+  // neither does Bro any more: no run of its own, only a line in the report.
+  it("tells the coordinator about the message in the report, and starts nothing itself", async () => {
+    cloud.runs.set(runId, {
+      result: "RESULT: нашёл отель «Казанская»\nNEEDS: none",
+      sessionId,
+      status: "completed",
+      task: "errand",
+      unread: ["и с завтраком"],
+    });
+    await trackVmErrand();
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    // No follow-up run, on this session or any other.
+    expect(cloud.created).toHaveLength(0);
+    expect(send).toHaveBeenCalledOnce();
+    const report = sentText(send.mock.calls[0]?.[0]);
+    expect(report).toContain("«и с завтраком»");
+    expect(report).toContain("browser_task continue");
+    // Never folded into the untrusted-browser-data disclaimer above it, and
+    // never claimed as the page's own text.
+    expect(report).toContain("never something the page displayed");
+    const ended = await readRun(runId);
+    expect(ended?.completedAt).toBeInstanceOf(Date);
+    expect(ended?.retriedAsRunId).toBeNull();
+  }, 30_000);
+
+  it("says nothing about unread messages for a run that ended with none", async () => {
+    cloud.runs.set(runId, {
+      result: "RESULT: нашёл отель «Казанская»\nNEEDS: none",
+      sessionId,
+      status: "completed",
+      task: "errand",
+    });
+    await trackVmErrand();
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.created).toHaveLength(0);
+    expect(send).toHaveBeenCalledOnce();
+    const report = sentText(send.mock.calls[0]?.[0]);
+    expect(report).not.toContain(
+      "reached the browser only as this run was ending"
+    );
+  }, 30_000);
+});
+
+async function queuedErrand(
+  index: number,
+  submission?: BrowserSubmission,
+  profileId = "profile-1"
+) {
   const { createQueuedBrowserRun } = await import("@db/services/browser-runs");
   return createQueuedBrowserRun(alice, {
     conversationChannel: "eve",
@@ -907,7 +1045,7 @@ async function queuedErrand(index: number, submission?: BrowserSubmission) {
     createdAt: minutesAgo(10 - index),
     paymentAllowed: false,
     pendingTask: `Полный текст поручения ${String(index)}`,
-    profileId: "profile-1",
+    profileId,
     retryAt: minutesAgo(1),
     rootSessionId: "web-session",
     site: "https://example.ru",
@@ -933,6 +1071,77 @@ describe("the browser queue", () => {
     expect(row?.status).toBe("queued");
     expect(row?.retryAt?.getTime()).toBeGreaterThan(Date.now());
     expect(send).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("goes on past an errand whose workspace's VM is starting or busy", async () => {
+    // A VM belongs to one workspace: its 429 says nothing about Browser
+    // Use's cap, nor about any other workspace's VM.
+    const onVm = await queuedErrand(0, undefined, `vm:${alice.workspaceId}:p1`);
+    await queuedErrand(1);
+    cloud.nextCreate.push("busy");
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    expect(cloud.created).toHaveLength(1);
+    expect(cloud.created[0]?.task).toContain("Полный текст поручения 1");
+    const parked = await readRun(onVm.id);
+    expect(parked?.status).toBe("queued");
+    expect(parked?.retryAt?.getTime()).toBeGreaterThan(Date.now());
+  }, 30_000);
+
+  it("goes on with errands on a VM once Browser Use is at its cap, and with no one else's", async () => {
+    const first = await queuedErrand(0);
+    await queuedErrand(1, undefined, `vm:${alice.workspaceId}:p1`);
+    const last = await queuedErrand(2);
+    cloud.nextCreate.push("busy");
+    const { attachSession } = webChat();
+
+    await tick(attachSession);
+
+    // The VM's errand does not wait on Browser Use's cap; Browser Use's next
+    // errand would only get the same 429, so it is not tried.
+    expect(cloud.created).toHaveLength(1);
+    expect(cloud.created[0]?.task).toContain("Полный текст поручения 1");
+    expect((await readRun(first.id))?.retryAt?.getTime()).toBeGreaterThan(
+      Date.now()
+    );
+    expect((await readRun(last.id))?.retryAt?.getTime()).toBeLessThan(
+      Date.now()
+    );
+  }, 30_000);
+
+  it("looks after the browser VMs after the reports, and only where Cloud.ru is set up", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { attachSession, send } = webChat();
+    browserVms.sent = () => send.mock.calls.length;
+
+    await tick(attachSession);
+
+    expect(browserVms.reconciled).toEqual([]);
+
+    browserVms.configured = true;
+    await queuedErrand(0);
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    // Settled three minutes ago; its first delivery never landed.
+    await createBrowserRun(alice, {
+      completedAt: minutesAgo(3),
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      id: "owed-run",
+      report: "Browser run owed-run finished.",
+      sessionId: "session-owed",
+      status: "done",
+      task: "Найди отель",
+    });
+
+    await tick(attachSession);
+
+    // A Cloud.ru outage must not hold the queue or a report back: the VMs
+    // are looked after once both are done, and an errand whose VM came up
+    // starts on the next tick.
+    expect(browserVms.reconciled).toEqual([{ sent: 1, started: 1 }]);
+    warn.mockRestore();
   }, 30_000);
 
   it("starts the errand once a browser frees up and carries the person's approval", async () => {
@@ -1260,6 +1469,7 @@ describe("the browser queue", () => {
     const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
 
     const note = queuedStatusNote({
+      profileId: "profile-1",
       retryAt: null,
       waitsForAccount: "gosuslugi.ru",
     });
@@ -1268,6 +1478,28 @@ describe("the browser queue", () => {
     expect(note).not.toContain("instead of sending a second code");
     expect(note).toContain("Госуслуги asks for one in every new browser");
     expect(note).toContain("do not promise there will be none");
+  });
+
+  it("tells Bro an errand waiting for the person's own VM that their browser is starting", async () => {
+    const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
+    const waiting = { retryAt: null, waitsForAccount: null };
+
+    const onVm = queuedStatusNote({
+      ...waiting,
+      profileId: `vm:${alice.workspaceId}:p1`,
+    });
+    const onBrowserUse = queuedStatusNote({
+      ...waiting,
+      profileId: "profile-1",
+    });
+
+    expect(onVm).toContain(
+      "Bro's own browser for the user is still starting (about a minute, up to about six on its very first start)"
+    );
+    expect(onVm).not.toContain("cloud browser service");
+    expect(onBrowserUse).toContain(
+      "the cloud browser service had no free browser for it yet"
+    );
   });
 
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {
@@ -1288,5 +1520,30 @@ describe("the browser queue", () => {
       expect.stringContaining("402"),
       expect.anything()
     );
+  }, 30_000);
+
+  it("closes Browser Use errands on a deployment without it, without holding back the VMs'", async () => {
+    cloud.browserUse = false;
+    const waiting = await Promise.all(
+      [0, 1, 2, 3, 4, 5].map((index) => queuedErrand(index))
+    );
+    const onVm = await queuedErrand(6, undefined, `vm:${alice.workspaceId}:p1`);
+    const { attachSession, send } = webChat();
+
+    await tick(attachSession);
+
+    // Each is closed and told, once, rather than failing every minute.
+    const closed = await Promise.all(waiting.map((row) => readRun(row.id)));
+    expect(closed.map((row) => row?.status)).toEqual(
+      waiting.map(() => "failed")
+    );
+    expect(send).toHaveBeenCalledTimes(waiting.length);
+    expect(sentText(send.mock.calls[0]?.[0])).toContain(
+      "the cloud browser service is not available right now"
+    );
+    // Closing them took none of the tick's starts: the VM's errand began.
+    expect(cloud.created).toHaveLength(1);
+    expect(cloud.created[0]?.task).toContain("Полный текст поручения 6");
+    expect((await readRun(onVm.id))?.retriedAsRunId).toBe("cloud-run-1");
   }, 30_000);
 });

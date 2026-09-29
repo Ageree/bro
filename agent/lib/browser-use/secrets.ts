@@ -18,6 +18,21 @@ import {
 const allowedDomainLimit = 10;
 
 /**
+ * Sign-in hosts a site keeps on a registrable domain of its own, keyed by the
+ * site's registrable domain. Wildberries signs people in on id.wb.ru (WB ID),
+ * so a login or a phone bound to wildberries.ru alone could never be typed
+ * where its sign-in form is. Only sign-in bindings get these: never a card,
+ * and never Госуслуги, whose login is bound to gosuslugi.ru alone.
+ */
+const signInDomainAliases = new Map<string, readonly string[]>([
+  ["wildberries.ru", ["wb.ru"]],
+]);
+
+function signInAliases(domain: string | undefined) {
+  return domain === undefined ? [] : (signInDomainAliases.get(domain) ?? []);
+}
+
+/**
  * Card-acceptance forms a Russian merchant may hand its checkout over to.
  * Banks are named by their acquiring subdomain, never the bare bank domain: a
  * card must never be typeable on an online-banking login page.
@@ -125,14 +140,16 @@ function secretHost(raw: string) {
 /**
  * Where the person's phone may be typed to sign in: the errand's site and
  * every host of its registrable domain — Yandex signs people in on
- * passport.yandex.ru for an errand on market.yandex.ru — and nowhere else.
- * Nothing for a host whose registrable domain is a public suffix.
+ * passport.yandex.ru for an errand on market.yandex.ru — plus the site's own
+ * sign-in domain when it keeps one apart (`signInDomainAliases`), and nowhere
+ * else. The registrable domain always comes first. Nothing for a host whose
+ * registrable domain is a public suffix.
  */
 export function phoneSignInDomains(site: string) {
   const host = secretHost(site);
   const domain = host === undefined ? undefined : registrableDomain(host);
   if (domain === undefined || isPublicSuffix(domain)) return [];
-  return [domain];
+  return withoutRedundantHosts([domain, ...signInAliases(domain)]);
 }
 
 /**
@@ -193,16 +210,19 @@ function withoutRedundantHosts(candidates: readonly string[]) {
  * The hosts a stored login may be typed on: the errand's site widened to its
  * registrable domain, plus the host the login was actually saved for when that
  * one is not already covered — a password saved for a sign-in host has to be
- * typeable there.
+ * typeable there — and the site's own sign-in domain when it keeps one apart
+ * (`signInDomainAliases`).
  */
 export function loginAllowedDomains(site: string, loginOrigin?: string) {
   const host = secretHost(site);
   if (!host) return [];
+  const domain = registrableDomain(host);
   const stored = loginOrigin ? secretHost(loginOrigin) : undefined;
   return withoutRedundantHosts([
-    registrableDomain(host) ?? host,
+    domain ?? host,
     host,
     ...(stored ? [stored] : []),
+    ...signInAliases(domain),
   ]);
 }
 

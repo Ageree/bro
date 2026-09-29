@@ -2,6 +2,7 @@ export * from "./auth";
 export * from "./billing";
 export * from "./browser";
 export * from "./browser-runs";
+export * from "./browser-vms";
 export * from "./channel-identities";
 export * from "./chats";
 export * from "./drive-files";

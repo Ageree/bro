@@ -7,9 +7,11 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   lt,
   lte,
   ne,
+  not,
   or,
   sql,
 } from "drizzle-orm";
@@ -50,13 +52,28 @@ export function browserRunReportOwed(
   );
 }
 
-export async function readBrowserProfileId(scope: AccessScope) {
+/**
+ * The workspace's browser profile, and since when its sign-ins are kept
+ * (`createdAt`): since its first errand, or its first errand after
+ * «забудь мои входы» deleted every profile it had. A move between Browser
+ * Use and its own VM keeps that time, since the other backend's profile was
+ * left as it was; so an errand from before it whose profile is not the
+ * current one had that profile deleted when the sign-ins were forgotten.
+ */
+export async function readBrowserProfile(scope: AccessScope) {
   const rows = await db
-    .select({ profileId: browserProfiles.profileId })
+    .select({
+      createdAt: browserProfiles.createdAt,
+      profileId: browserProfiles.profileId,
+    })
     .from(browserProfiles)
     .where(eq(browserProfiles.workspaceId, scope.workspaceId))
     .limit(1);
-  return rows[0]?.profileId;
+  return rows[0];
+}
+
+export async function readBrowserProfileId(scope: AccessScope) {
+  return (await readBrowserProfile(scope))?.profileId;
 }
 
 /**
@@ -74,6 +91,28 @@ export async function saveBrowserProfileId(
     .values({ profileId, workspaceId: scope.workspaceId })
     .onConflictDoNothing({ target: browserProfiles.workspaceId });
   return (await readBrowserProfileId(scope)) ?? profileId;
+}
+
+/**
+ * Point the workspace at another browser profile, whatever it had: a
+ * workspace moved to its own browser VM, or whose VM profile was forgotten,
+ * starts its next errand on the new id. Errands already started keep the
+ * profile id on their own rows, so they are not moved with it. A profile
+ * that replaces another keeps its time (`readBrowserProfile`): nothing was
+ * deleted.
+ */
+export async function replaceBrowserProfileId(
+  workspaceId: string,
+  profileId: string
+) {
+  await db
+    .insert(browserProfiles)
+    .values({ profileId, workspaceId })
+    .onConflictDoUpdate({
+      set: { profileId },
+      target: browserProfiles.workspaceId,
+    });
+  return profileId;
 }
 
 export async function createBrowserRun(
@@ -214,10 +253,20 @@ export async function claimBrowserRunCompletion(
  * Park a settled run that lost to an anti-bot wall until its background
  * retry is due. The run keeps its completion claim, so neither the webhook nor
  * the poller settles it again; only the retry queue picks it back up.
+ *
+ * `unreadMessages`, when given, replaces what the row carries: the caller
+ * merges its own prior value in first, so a message queued into an earlier
+ * attempt is never dropped by a later attempt's park. Omitted on a park that
+ * has nothing new to add (a retry that could not even start), which leaves
+ * whatever the row already carries.
  */
 export async function parkBrowserRunForRetry(
   runId: string,
-  input: { readonly captchaAttempt: number; readonly retryAt: Date }
+  input: {
+    readonly captchaAttempt: number;
+    readonly retryAt: Date;
+    readonly unreadMessages?: readonly string[];
+  }
 ) {
   // A stopped run was cancelled or taken over by the person: parking it again
   // would start an errand they already ended.
@@ -227,6 +276,10 @@ export async function parkBrowserRunForRetry(
       captchaAttempt: input.captchaAttempt,
       retryAt: input.retryAt,
       status: "waiting",
+      unreadMessages:
+        input.unreadMessages === undefined
+          ? undefined
+          : [...input.unreadMessages],
       updatedAt: new Date(),
     })
     .where(
@@ -462,11 +515,18 @@ function queuedAndDue(now: Date) {
 }
 
 /**
- * How many errands wait for a browser, across every workspace. One that waits
- * for its own workspace's sign-in elsewhere (`waits_for_account`) is not
- * waiting for Browser Use and holds nobody else's start back.
+ * How many errands wait for a browser. One that waits for its own
+ * workspace's sign-in elsewhere (`waits_for_account`) is not waiting for a
+ * browser and holds nobody else's start back. Nor does an errand on a
+ * workspace's own browser VM (a `vm:` profile): it waits for that VM alone.
+ * So by default this counts the errands waiting for Browser Use's shared cap,
+ * across every workspace; with `vmWorkspaceId`, the ones waiting for that
+ * workspace's VM.
  */
-export async function countQueuedBrowserRuns() {
+export async function countQueuedBrowserRuns(
+  options: { readonly vmWorkspaceId?: string } = {}
+) {
+  const onVm = like(browserRuns.profileId, "vm:%");
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(browserRuns)
@@ -474,7 +534,10 @@ export async function countQueuedBrowserRuns() {
       and(
         eq(browserRuns.status, "queued"),
         isNull(browserRuns.retriedAsRunId),
-        isNull(browserRuns.waitsForAccount)
+        isNull(browserRuns.waitsForAccount),
+        options.vmWorkspaceId === undefined
+          ? or(isNull(browserRuns.profileId), not(onVm))
+          : and(eq(browserRuns.workspaceId, options.vmWorkspaceId), onVm)
       )
     );
   return row?.count ?? 0;
@@ -485,12 +548,23 @@ export async function countQueuedBrowserRuns() {
  * is due. The claim is the same lease as a walled run's retry: `retry_at`
  * moves out, so a second poller skips it, and a poller that dies leaves it to
  * be taken again once the lease runs out. First come, first started.
+ *
+ * `vmOnly` takes only errands on a workspace's own browser VM (a `vm:`
+ * profile): once Browser Use said it is full, its errands wait for the next
+ * minute, while each VM answers for its own workspace alone.
  */
-export async function claimNextQueuedBrowserRun(now: Date) {
+export async function claimNextQueuedBrowserRun(
+  now: Date,
+  options: { readonly vmOnly?: boolean } = {}
+) {
+  const due = and(
+    queuedAndDue(now),
+    options.vmOnly === true ? like(browserRuns.profileId, "vm:%") : undefined
+  );
   const next = db
     .select({ id: browserRuns.id })
     .from(browserRuns)
-    .where(queuedAndDue(now))
+    .where(due)
     .orderBy(asc(browserRuns.createdAt))
     .limit(1);
   const [row] = await db
@@ -499,7 +573,7 @@ export async function claimNextQueuedBrowserRun(now: Date) {
       retryAt: new Date(now.getTime() + retryClaimLeaseMs),
       updatedAt: now,
     })
-    .where(and(inArray(browserRuns.id, next), queuedAndDue(now)))
+    .where(and(inArray(browserRuns.id, next), due))
     .returning();
   return row;
 }
@@ -1045,6 +1119,25 @@ export async function workspaceUsesBrowserProfile(
     )
     .limit(1);
   return waiting.length > 0;
+}
+
+/**
+ * Every browser profile the workspace's errands ran on. Besides the one it
+ * holds now, a workspace moved between Browser Use and its own browser VM
+ * leaves the other backend's profile on its older runs, with the sign-ins
+ * that profile keeps.
+ */
+export async function listBrowserRunProfileIds(workspaceId: string) {
+  const rows = await db
+    .selectDistinct({ profileId: browserRuns.profileId })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        isNotNull(browserRuns.profileId)
+      )
+    );
+  return rows.flatMap((row) => (row.profileId === null ? [] : [row.profileId]));
 }
 
 /**

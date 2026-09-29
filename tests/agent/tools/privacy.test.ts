@@ -6,6 +6,7 @@ import type {
 } from "@db/services/settings";
 import { googleWorkspaceRetainedData } from "@shared/google-workspace/connection";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import { browserVmTestEnvironment } from "@tests/helpers/browser-vm";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
 const settings = vi.hoisted(() => ({
@@ -47,6 +48,12 @@ const optionalServices = [
   "BROWSER_USE_PROXY_HOST",
   "BROWSER_USE_PROXY_PORT",
   "BROWSER_USE_SIGN_IN_REFRESH_DAYS",
+  "BROWSER_VM_LLM_API_KEY",
+  "BROWSER_VM_PROXY",
+  "BROWSER_VM_SIGNING_KEY",
+  "CLOUDRU_BROWSER_IMAGE",
+  "CLOUDRU_KEY_ID",
+  "CLOUDRU_KEY_SECRET",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
   "OPENROUTER_API_KEY",
@@ -196,6 +203,48 @@ describe("privacy", () => {
     expect(processors).toContain("Telegram и iMessage (через сервис Photon)");
     expect(processors).toContain("Код для входа по номеру телефона");
     expect(facts.keptData().join("\n")).toContain("история оплат подписки");
+  });
+
+  it("names the browser VMs' cloud and zone, their model service and their proxy", async () => {
+    const { facts } = await withServices({
+      ...browserVmTestEnvironment,
+      BROWSER_VM_PROXY:
+        "premium-residential.geonode.com:9000:geonode_bro-session-{session}:secret",
+    });
+    const processors = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash")
+      .join("\n");
+
+    expect(processors).toContain("Cloud.ru (зона ru.AZ-3, Россия)");
+    expect(processors).toContain("профиль браузера с куки сайтов");
+    expect(processors).toContain(
+      "языковая модель deepseek/deepseek-v4.1-flash через RouterAI"
+    );
+    expect(processors).toContain("резидентный прокси Geonode");
+    // Only the backend this deployment has is named.
+    expect(processors).not.toContain("Browser Use");
+    expect(processors).not.toContain("прокси-сервер деплоя");
+    expect(processors).toContain("раз в 3 дн. облачный браузер сам");
+    expect(facts.keptData().join("\n")).toContain("держит вход");
+    // The zone is a setting, so the VMs' country is known; the rest is not.
+    expect(facts.serverLocation()).toContain("Cloud.ru (зона ru.AZ-3, Россия)");
+    expect(facts.serverLocation()).toContain(
+      "остальных сервисов, Бро не знает"
+    );
+  });
+
+  it("says nothing of browser VMs a deployment without them does not have", async () => {
+    const { facts } = await withServices({
+      BROWSER_USE_API_KEY: "browser-use-test-key",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).not.toContain("Cloud.ru");
+    expect(facts.serverLocation()).not.toContain("Cloud.ru");
+    expect(facts.serverLocation()).toContain(
+      "регион нигде в его настройках не записан"
+    );
   });
 });
 

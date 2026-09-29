@@ -8,6 +8,7 @@ import {
   startFakeCdpBrowser,
   type CdpBrowserFixture,
   type FakeCdpBrowser,
+  type FakeElementSpec,
 } from "@tests/helpers/cdp-browser";
 
 const code = "482913";
@@ -209,6 +210,218 @@ describe("typing a one-time code over CDP", () => {
 
     expect(entry.typed).toBe(false);
     expect(fixture.calls).toEqual([]);
+  });
+});
+
+/** `count` one-character boxes, named box1… in order. */
+function codeBoxes(count: number): FakeElementSpec[] {
+  return Array.from({ length: count }, (_, index) => ({
+    attributes: { maxlength: "1", name: `box${String(index + 1)}` },
+    tag: "input",
+  }));
+}
+
+/** WB ID's code component: a whole-code field and five boxes that move the
+ *  focus themselves, inside an open shadow root, its button beside them. */
+const wbIdCodeField: FakeElementSpec = {
+  shadow: [
+    {
+      attributes: {
+        autocomplete: "one-time-code",
+        maxlength: "6",
+        name: "code",
+      },
+      tag: "input",
+    },
+    ...codeBoxes(5),
+    { tag: "button", text: "Войти" },
+  ],
+  tag: "ui-field-code",
+};
+
+const onePage: CdpBrowserFixture["sessions"] = {
+  "": { frames: [{ depth: 0, id: "top" }] },
+};
+
+describe("the code entry program on a page", () => {
+  it("inserts the whole code into a one-time-code field inside a shadow root", async () => {
+    const fixture = await fake({
+      documents: {
+        1: [{ tag: "button", text: "Оплатить" }, wbIdCodeField],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toEqual({
+      inFrame: false,
+      insertedText: true,
+      partial: false,
+      searched: 1,
+      submitted: true,
+      typed: true,
+    });
+    // One trusted insertion into the whole-code field, never the boxes one by
+    // one: typed key by key they moved their own focus and scrambled the code.
+    const [field, ...boxes] = fixture.page(1).fields;
+    expect(field).toEqual({
+      name: "code",
+      value: code,
+      writes: ["insertText"],
+    });
+    expect(boxes).toHaveLength(5);
+    for (const box of boxes) expect(box.writes).toEqual([]);
+    const inserted = fixture.calls.filter(
+      (call) => call.method === "Input.insertText"
+    );
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]?.params.text).toBe(code);
+    // The confirm button is found in the shadow root too; a pay button never.
+    expect(fixture.page(1).clicked).toEqual(["Войти"]);
+    expect(fixture.applied).toEqual([1]);
+  });
+
+  it("sends the insertion on the session of the frame that won", async () => {
+    const fixture = await fake({
+      documents: { 3: [wbIdCodeField] },
+      injections: { 1: { ok: false }, 2: { ok: false } },
+      sessions: bankInsideAds,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({
+      inFrame: true,
+      insertedText: true,
+      typed: true,
+    });
+    const inserted = fixture.calls.find(
+      (call) => call.method === "Input.insertText"
+    );
+    expect(inserted?.sessionId).toBe("bank-session");
+    expect(fixture.page(3).fields[0]?.value).toBe(code);
+  });
+
+  it("still fills four to eight boxes one by one when no field takes the whole code", async () => {
+    const fixture = await fake({
+      documents: {
+        1: [...codeBoxes(6), { tag: "button", text: "Подтвердить" }],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({
+      insertedText: false,
+      partial: false,
+      submitted: true,
+      typed: true,
+    });
+    expect(
+      fixture
+        .page(1)
+        .fields.map((box) => box.value)
+        .join("")
+    ).toBe(code);
+    for (const box of fixture.page(1).fields) {
+      expect(box.writes).toEqual(["setter"]);
+    }
+    expect(
+      fixture.calls.some((call) => call.method === "Input.insertText")
+    ).toBe(false);
+  });
+
+  it("still sets the value of a field too short to take the code", async () => {
+    const fixture = await fake({
+      documents: {
+        1: [{ attributes: { maxlength: "4", name: "otp" }, tag: "input" }],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({ insertedText: false, typed: true });
+    expect(fixture.page(1).fields).toEqual([
+      { name: "otp", value: code, writes: ["setter"] },
+    ]);
+  });
+
+  it("sets the value instead of inserting where the focus did not land", async () => {
+    // An insertion goes wherever the focus is, not where it was asked to go.
+    const fixture = await fake({
+      documents: {
+        1: [
+          { attributes: { name: "search" }, focused: true, tag: "input" },
+          { attributes: { name: "code" }, tag: "input", unfocusable: true },
+        ],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({ insertedText: false, typed: true });
+    expect(fixture.page(1).fields).toEqual([
+      { name: "search", value: "", writes: [] },
+      { name: "code", value: code, writes: ["setter"] },
+    ]);
+    expect(
+      fixture.calls.some((call) => call.method === "Input.insertText")
+    ).toBe(false);
+  });
+
+  it("puts only the first digit into a lone one-character box and says so", async () => {
+    const fixture = await fake({
+      documents: {
+        1: [{ attributes: { maxlength: "1", name: "code" }, tag: "input" }],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({ partial: true, typed: true });
+    expect(fixture.page(1).fields).toEqual([
+      { name: "code", value: "4", writes: ["setter"] },
+    ]);
+  });
+
+  it("never fills a password field, in a shadow root or out of one", async () => {
+    const password: FakeElementSpec = {
+      attributes: {
+        autocomplete: "one-time-code",
+        name: "otp",
+        type: "password",
+      },
+      focused: true,
+      tag: "input",
+    };
+    const fixture = await fake({
+      documents: {
+        1: [password, { shadow: [password], tag: "ui-field-code" }],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry.typed).toBe(false);
+    for (const field of fixture.page(1).fields) {
+      expect(field).toMatchObject({ value: "", writes: [] });
+    }
+    expect(fixture.applied).toEqual([]);
+    expect(
+      fixture.calls.some((call) => call.method === "Input.insertText")
+    ).toBe(false);
   });
 });
 

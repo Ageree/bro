@@ -110,6 +110,12 @@ const readBrowserProfileId = vi.hoisted(() =>
     Promise.resolve("profile-1")
   )
 );
+// Every profile the workspace's errands ran on, the current one among them.
+const listBrowserRunProfileIds = vi.hoisted(() =>
+  vi.fn<(workspaceId: string) => Promise<string[]>>(() =>
+    Promise.resolve(["profile-1"])
+  )
+);
 const workspaceUsesBrowserProfile = vi.hoisted(() =>
   vi.fn<(workspaceId: string) => Promise<boolean>>(() => Promise.resolve(false))
 );
@@ -124,7 +130,17 @@ const recordBrowserSignIn = vi.hoisted(() =>
     ) => Promise<void>
   >(() => Promise.resolve())
 );
+const alertOwner = vi.hoisted(() =>
+  vi.fn<
+    (
+      key: string,
+      text: string,
+      options: { readonly repeatAfterMs: number }
+    ) => Promise<boolean>
+  >(() => Promise.resolve(true))
+);
 
+vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
 vi.mock("@db/services/browser-sign-ins", () => ({
   claimBrowserSignInRefresh,
   forgetBrowserSignIns,
@@ -139,6 +155,7 @@ vi.mock("@db/services/browser-sign-ins", () => ({
 vi.mock("@db/services/browser-runs", () => ({
   forgetBrowserProfile,
   listBrowserHoldingRuns,
+  listBrowserRunProfileIds,
   listWorkspacesHoldingBrowsers,
   readBrowserProfileId,
   workspaceUsesBrowserProfile,
@@ -161,6 +178,7 @@ beforeEach(() => {
   listDueBrowserSignInRefreshes.mockResolvedValue([]);
   listWorkspacesHoldingBrowsers.mockResolvedValue([]);
   visitPageOverCdp.mockReset();
+  deleteBrowserUseProfile.mockReset();
   createBrowserUseBrowser.mockReset();
   createBrowserUseBrowser.mockImplementation(() =>
     Promise.resolve({ cdpUrl: "wss://cdp.example/browser-1", id: "browser-1" })
@@ -371,6 +389,49 @@ describe("keeping sign-ins alive", () => {
     warn.mockRestore();
   });
 
+  it("skips only the visit of a workspace whose browser VM is off", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    const vmProfileId = "vm:workspace:vm-user:p1";
+    listDueBrowserSignInRefreshes.mockResolvedValue([
+      {
+        ...due("ozon.ru", "https://www.ozon.ru/my/main", "workspace:vm-user"),
+        profileId: vmProfileId,
+      },
+      due("yandex.ru", "https://id.yandex.ru/"),
+    ]);
+    visitPageOverCdp.mockResolvedValue({
+      leftPage: false,
+      passwordField: false,
+      url: "https://id.yandex.ru/",
+    });
+    // A keep-alive never powers a VM on: one that is off answers 429.
+    createBrowserUseBrowser
+      .mockRejectedValueOnce(
+        new BrowserUseError(429, "browser-vm", "The browser VM is off.")
+      )
+      .mockResolvedValueOnce({
+        cdpUrl: "wss://cdp.example/2",
+        id: "browser-2",
+      });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { refreshDueSignIns } =
+      await import("@agent/lib/browser-use/sign-ins");
+
+    await refreshDueSignIns(new Date("2026-09-30T10:00:00.000Z"));
+
+    expect(createBrowserUseBrowser.mock.calls[0]?.[0].profileId).toBe(
+      vmProfileId
+    );
+    // The other workspace's visit still happens on this tick.
+    expect(createBrowserUseBrowser).toHaveBeenCalledTimes(2);
+    expect(recordBrowserSignInCheck).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      "yandex.ru",
+      expect.objectContaining({ signedIn: true })
+    );
+    warn.mockRestore();
+  });
+
   it("does nothing when the owner turned the visits off", async () => {
     vi.stubEnv("BROWSER_USE_SIGN_IN_REFRESH_DAYS", "0");
     vi.resetModules();
@@ -468,6 +529,154 @@ describe("forgetting sign-ins", () => {
     });
     expect(forgetBrowserProfile).toHaveBeenCalledOnce();
     warn.mockRestore();
+  });
+
+  it("deletes every profile the workspace ever ran on, on either backend", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    const vmProfile = `vm:${workspaceId}:p2`;
+    // The workspace moved to its VM: its older errands ran on Browser Use,
+    // on a profile since forgotten and on the one it had before the move.
+    readBrowserProfileId.mockResolvedValueOnce(vmProfile);
+    listBrowserRunProfileIds.mockResolvedValueOnce([
+      "profile-0",
+      "profile-1",
+      vmProfile,
+    ]);
+    deleteBrowserUseProfile.mockImplementation((profileId) =>
+      profileId === "profile-0"
+        ? Promise.reject(
+            new BrowserUseError(404, "/profiles/profile-0", "not found")
+          )
+        : Promise.resolve()
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toMatchObject({
+      kind: "all",
+    });
+    // The older ones go first; the current one only once they are gone.
+    expect(
+      deleteBrowserUseProfile.mock.calls.map(([profileId]) => profileId)
+    ).toEqual(["profile-0", "profile-1", vmProfile]);
+    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      vmProfile
+    );
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+  });
+
+  it("forgets nothing for a real failure of an older profile", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vmProfile = `vm:${workspaceId}:p2`;
+    readBrowserProfileId.mockResolvedValueOnce(vmProfile);
+    listBrowserRunProfileIds.mockResolvedValueOnce(["profile-1", vmProfile]);
+    deleteBrowserUseProfile.mockImplementation((profileId) =>
+      profileId === "profile-1"
+        ? Promise.reject(new Error("connection terminated"))
+        : Promise.resolve()
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toEqual({ kind: "failed" });
+    // The current profile stays as it was, and so does every record: the
+    // person hears nothing was forgotten, and can ask again.
+    expect(deleteBrowserUseProfile).toHaveBeenCalledExactlyOnceWith(
+      "profile-1"
+    );
+    expect(forgetBrowserProfile).not.toHaveBeenCalled();
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("does not block on an older Browser Use profile once this deployment has no key for it", async () => {
+    const vmProfile = `vm:${workspaceId}:p2`;
+    readBrowserProfileId.mockResolvedValueOnce(vmProfile);
+    listBrowserRunProfileIds.mockResolvedValueOnce(["profile-1", vmProfile]);
+    forgetBrowserSignIns.mockResolvedValue(["ozon.ru"]);
+    // A deployment on VMs alone (the migration's end state) cannot reach
+    // the Browser Use profile the workspace's older errands ran on, which
+    // is still signed in there.
+    deleteBrowserUseProfile.mockImplementation((profileId) =>
+      profileId === "profile-1"
+        ? Promise.reject(new Error("BROWSER_USE_API_KEY is not configured."))
+        : Promise.resolve()
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toEqual({
+      domains: ["ozon.ru"],
+      kind: "all",
+    });
+    // The current VM profile and the records are wiped all the same; the
+    // unreachable older one is left for the owner to hear about.
+    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      vmProfile
+    );
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      expect.any(String),
+      expect.stringContaining("1"),
+      expect.anything()
+    );
+  });
+
+  it("still fails when the current profile has a real (retryable) failure", async () => {
+    readBrowserProfileId.mockResolvedValueOnce("profile-1");
+    listBrowserRunProfileIds.mockResolvedValueOnce(["profile-1"]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    deleteBrowserUseProfile.mockRejectedValueOnce(
+      new Error("connection terminated")
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toEqual({ kind: "failed" });
+    expect(forgetBrowserProfile).not.toHaveBeenCalled();
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("does not block on the current profile either, once this deployment has no key for it", async () => {
+    // A workspace that has not run its first post-cutover errand yet still
+    // points its *current* profile at an old Browser Use one — there is no
+    // older profile here, so nothing falls back to the "others" tolerance.
+    readBrowserProfileId.mockResolvedValueOnce("profile-1");
+    listBrowserRunProfileIds.mockResolvedValueOnce(["profile-1"]);
+    forgetBrowserSignIns.mockResolvedValue(["ozon.ru"]);
+    deleteBrowserUseProfile.mockRejectedValueOnce(
+      new Error("BROWSER_USE_API_KEY is not configured.")
+    );
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toEqual({
+      domains: ["ozon.ru"],
+      kind: "all",
+    });
+    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      "profile-1"
+    );
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      expect.any(String),
+      expect.stringContaining("1"),
+      expect.anything()
+    );
+  });
+
+  it("deletes the older profiles of a workspace that holds none now", async () => {
+    readBrowserProfileId.mockResolvedValueOnce(undefined);
+    listBrowserRunProfileIds.mockResolvedValueOnce([`vm:${workspaceId}:p1`]);
+    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
+
+    expect(await forgetSignIns(scope, undefined)).toMatchObject({
+      kind: "all",
+    });
+    expect(deleteBrowserUseProfile).toHaveBeenCalledExactlyOnceWith(
+      `vm:${workspaceId}:p1`
+    );
+    expect(forgetBrowserProfile).not.toHaveBeenCalled();
   });
 
   it("waits while an errand still uses the profile", async () => {
