@@ -24,6 +24,8 @@
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
+- Куда уходят деньги и что снижать — `docs/agent-costs.md`; браузер в microVM
+  со снимками на Cloud.ru — `docs/browser-microvm.md`.
 
 ## Процесс
 
@@ -253,6 +255,13 @@
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
   `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
+- Внутри VM Evolution есть KVM (`nested=Y`, Ice Lake, хотя флейвор подписан
+  Broadwell), Firecracker работает; Cloud.ru это не документирует. VM без
+  публичного IP в интернет не выходит, а sNAT подключается ко всей зоне сразу:
+  в зоне с продовыми VM не создавать. S3 без `tenant_id` из консоли отвечает
+  `NoSuchTenant`. Стенд — `scripts/cloudru-microvm-probe/`.
+- `set-password` Compute API без гостевого агента (стоковый образ) — 422;
+  в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
   вставляет весь код одним `Input.insertText`; ошибка CDP-команды теперь
   отвергает вызов, а не даёт пустой ответ.
