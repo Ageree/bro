@@ -424,6 +424,40 @@ describe("the anti-bot retry policy", () => {
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
   });
 
+  it("goes on in a VM attempt's own session, whose agent kept what it found", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      sessionId: "vm:workspace:alice:s:1",
+      task: "Найди айфон\n\nSite: …",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry({
+      ...parkedRow(1),
+      profileId: "vm:workspace:alice:p1",
+    });
+
+    const input = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(input?.sessionId).toBe("vm:workspace:alice:s:1");
+    expect(input?.freshExit).toBe(true);
+    expect(input?.task).toContain(
+      "carry on from where the previous attempt stopped"
+    );
+  });
+
+  it("starts a hosted retry in a new session", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      sessionId: "hosted-session",
+      task: "Купи корм\n\nSite: …",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry(parkedRow(1));
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
+  });
+
   it("does not promise a VM's retry another address", async () => {
     createBrowserUseRun.mockResolvedValue({
       id: retryRunId,
