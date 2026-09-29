@@ -690,9 +690,9 @@ class Worker:
             return ActionResult(extracted_content=f"Entered the code into {where}.",
                                 long_term_memory="Entered the one-time code.")
 
-        @tools.action("Solve a slider puzzle check (drag a piece into its gap, GeeTest) that is open on the page. "
-                      "Press the page's own button that opens the check first (such as «Продолжить»), then call "
-                      "this once: it moves the slider itself and says whether the page accepted it.")
+        @tools.action("Get past a site's anti-bot check with a slider puzzle (GeeTest), such as Avito's «Доступ "
+                      "ограничен» page. Call it once on the check page: it presses the check's button itself, "
+                      "waits for the puzzle, moves the slider and says whether the page let it through.")
         async def solve_captcha(browser_session):
             cdp = await browser_session.get_or_create_cdp_session()
 
@@ -1077,8 +1077,24 @@ GEETEST_STATE = r"""(() => {
   const bg = first(/^geetest_bg_[0-9a-f]+$/), slice = first(/^geetest_slice_bg_[0-9a-f]+$/),
     btn = first(/^geetest_btn_[0-9a-f]+$/);
   const loader = [...document.scripts].map(s => s.src).find(s => /geetest\.com\/load\?.*captcha_id=/.test(s));
+  const text = document.body ? document.body.innerText : '';
   return {bg: box(bg), bgUrl: url(bg), sliceUrl: url(slice), btn: box(btn),
-          captchaId: loader ? new URL(loader).searchParams.get('captcha_id') : null, url: location.href};
+          captchaId: loader ? new URL(loader).searchParams.get('captcha_id') : null, url: location.href,
+          passed: /Проверка пройдена|Verification Success/i.test(text)};
+})()"""
+
+# The button a check page puts in front of its puzzle («Продолжить» on Avito's IP wall): its centre, to be
+# pressed with a real click, since the puzzle's script ignores synthetic ones.
+CHECK_BUTTON = r"""(() => {
+  const button = [...document.querySelectorAll('button, a, [role=button], div')].find(e => {
+    const label = (e.innerText || '').trim();
+    const b = e.getBoundingClientRect();
+    return /^(Продолжить|Continue|Click to verify|Нажмите, чтобы пройти проверку)$/i.test(label) && b.width > 0 && b.height > 0
+      && ![...e.children].some(c => (c.innerText || '').trim() === label);
+  });
+  if (!button) return null;
+  const b = button.getBoundingClientRect();
+  return {x: b.x + b.width / 2, y: b.y + b.height / 2};
 })()"""
 
 # Where a page takes a GeeTest v4 answer: its hidden response field, the form of which is then submitted.
@@ -1163,14 +1179,43 @@ async def two_captcha_geetest(http, key, page_url, captcha_id, timeout=120):
     raise RuntimeError("2Captcha did not answer in time")
 
 
-async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
-    """Solve an open GeeTest v4 slider puzzle and say how it went. The piece is found in the puzzle's own
-    pictures and dragged into place (free, a few seconds); a puzzle that is still there after `attempts`
-    drags goes to 2Captcha when Bro gave a key, whose answer is put where the page's own success handler
-    puts it. `evaluate` runs page JavaScript and returns its value; `mouse` sends one mouse event."""
+def puzzle_open(state):
+    return bool(state and state.get("bg") and state.get("btn") and state.get("bgUrl"))
+
+
+async def open_puzzle(evaluate, mouse, wait=15):
+    """The open slider puzzle's state, after pressing the page's check button when none is open yet;
+    "passed" when the page let the check through without one; None when no puzzle came."""
     state = await evaluate(GEETEST_STATE)
-    if not state or not state.get("bg") or not state.get("btn") or not state.get("bgUrl"):
-        return False, "No slider puzzle is open on this page. Press the page's own button that opens the check first."
+    if puzzle_open(state):
+        return state
+    button = await evaluate(CHECK_BUTTON)
+    if button:
+        for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
+            await mouse({"type": kind, "x": button["x"], "y": button["y"], "button": "left", "clickCount": 1})
+            await asyncio.sleep(0.1)
+    for _ in range(wait):
+        await asyncio.sleep(1)
+        state = await evaluate(GEETEST_STATE)
+        if puzzle_open(state):
+            return state
+        if state and state.get("passed"):
+            return "passed"
+    return None
+
+
+async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
+    """Get a page past its GeeTest v4 slider check and say how it went. The check button is pressed when
+    the puzzle is not open yet. The piece is found in the puzzle's own pictures and dragged into place
+    (free, a few seconds); a puzzle that is still there after `attempts` drags goes to 2Captcha when Bro
+    gave a key, whose answer is put where the page's own success handler puts it. `evaluate` runs page
+    JavaScript and returns its value; `mouse` sends one mouse event."""
+    state = await open_puzzle(evaluate, mouse)
+    if state == "passed":
+        await asyncio.sleep(6)
+        return True, "The check passed without a puzzle; the page is moving on."
+    if state is None:
+        return False, "No slider puzzle opened on this page: its check is of another kind."
     for _ in range(attempts):
         try:
             async with http.get(state["bgUrl"]) as response:
@@ -1186,8 +1231,9 @@ async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
             await drag_slider(mouse, state["btn"], distance)
             await asyncio.sleep(4)
         after = await evaluate(GEETEST_STATE)
-        if not after or not after.get("bg"):
-            return True, "The puzzle was accepted."
+        if not puzzle_open(after):
+            await asyncio.sleep(6)  # the page's own handler sends the answer and moves on
+            return True, "The puzzle was accepted; the page is moving on."
         state = after  # a missed drag brings a new picture
     if two_captcha_key and state.get("captchaId"):
         try:
@@ -1207,9 +1253,9 @@ visible page, e.g. report/final.png) or save_element_picture (one item photo, by
 use web archives, caches or mirrors (web.archive.org and the like) instead of the live site: if the live
 site does not open, say so. Credentials and codes come as <secret>alias</secret> placeholders: type the
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
-one-time code you are given goes in with the enter_code action, never digit by digit. A slider puzzle
-check (drag a piece into its gap) goes to the solve_captcha action once the page's own button opened it;
-never drag it yourself. To read a long list
+one-time code you are given goes in with the enter_code action, never digit by digit. An anti-bot check
+page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
+button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
 (async () => { ... })()) over scrolling and reading it screen by screen.
 """.strip()

@@ -99,13 +99,14 @@ export function browserVmReconcileConfigured() {
 /**
  * A site that blocked the exit (Avito's «Доступ ограничен: проблема с IP»)
  * opens a GeeTest slider behind its continue button. The agent cannot drag
- * one well by itself and only burned minutes on it, so the worker's
- * `solve_captcha` places it (and hands it to 2Captcha when it cannot); any
- * other check, or a wall that stays, hands over to the anti-bot retry from
- * another address at once.
+ * one well, and left to press the button itself it gave up before the
+ * puzzle drew, so the worker's `solve_captcha` does all of it: presses the
+ * button, waits, places the piece (or hands it to 2Captcha). Any other
+ * check, or a wall that stays, hands over to the anti-bot retry from another
+ * address at once.
  */
 const addressWallLine =
-  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP»), press its continue button once; a slider puzzle that opens goes to the solve_captcha action, once. If the wall is still there after that, or it is another kind of check, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
+  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. If the wall is still there after it, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
 
 /**
  * Start a run on the workspace's VM, powering the VM on or creating it

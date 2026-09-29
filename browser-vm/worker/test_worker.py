@@ -1088,6 +1088,26 @@ def synthetic_puzzle(gap_x):
     return cv2.imencode(".png", background)[1].tobytes(), cv2.imencode(".png", piece)[1].tobytes()
 
 
+CLOSED = {"bg": None, "btn": None, "bgUrl": None, "passed": False}
+
+
+def check_page(states, button=None, answer=True):
+    """`evaluate` for a check page: its puzzle state in turn (the last one stays), its check button, and
+    whether it took an answer."""
+    states, calls = list(states), []
+
+    async def evaluate(expression):
+        calls.append(expression)
+        if expression == worker.GEETEST_STATE:
+            return states.pop(0) if len(states) > 1 else states[0]
+        if expression == worker.CHECK_BUTTON:
+            return button
+        return answer
+
+    evaluate.calls = calls
+    return evaluate
+
+
 class SliderTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.enterContext(mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()))
@@ -1096,20 +1116,26 @@ class SliderTest(unittest.IsolatedAsyncioTestCase):
     async def mouse(self, params):
         self.moves.append(params)
 
-    async def test_no_puzzle_on_the_page_asks_for_the_pages_own_button(self):
-        solved, message = await worker.solve_slider(mock.AsyncMock(return_value={"bg": None}), self.mouse, FakeHttp())
-        self.assertFalse(solved)
-        self.assertIn("button that opens the check", message)
+    async def test_a_page_whose_check_brings_no_puzzle_is_reported_as_another_kind(self):
+        solved, message = await worker.solve_slider(check_page([CLOSED]), self.mouse, FakeHttp())
+        self.assertEqual((solved, message), (False, "No slider puzzle opened on this page: its check is of another kind."))
         self.assertEqual(self.moves, [])
 
+    async def test_a_check_that_lets_the_page_through_without_a_puzzle_is_passed(self):
+        page = check_page([CLOSED, {**CLOSED, "passed": True}], button={"x": 500, "y": 190})
+        solved, message = await worker.solve_slider(page, self.mouse, FakeHttp())
+        self.assertEqual((solved, message), (True, "The check passed without a puzzle; the page is moving on."))
+        self.assertEqual([m["type"] for m in self.moves], ["mouseMoved", "mousePressed", "mouseReleased"])
+
     @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV is installed on the VM image")
-    async def test_drags_the_piece_into_the_gap_it_finds_in_the_pictures(self):
+    async def test_presses_the_check_button_and_drags_the_piece_into_the_gap_it_finds(self):
         background, piece = synthetic_puzzle(170)
         http = FakeHttp({PUZZLE["bgUrl"]: background, PUZZLE["sliceUrl"]: piece})
-        solved, message = await worker.solve_slider(mock.AsyncMock(side_effect=[PUZZLE, {"bg": None}]),
-                                                    self.mouse, http)
-        self.assertEqual((solved, message), (True, "The puzzle was accepted."))
-        released = [m for m in self.moves if m["type"] == "mouseReleased"][0]
+        page = check_page([CLOSED, CLOSED, PUZZLE, CLOSED], button={"x": 500, "y": 190})
+        solved, message = await worker.solve_slider(page, self.mouse, http)
+        self.assertEqual((solved, message), (True, "The puzzle was accepted; the page is moving on."))
+        self.assertEqual((self.moves[1]["type"], self.moves[1]["x"]), ("mousePressed", 500))
+        released = [m for m in self.moves if m["type"] == "mouseReleased"][-1]
         start = PUZZLE["btn"]["x"] + PUZZLE["btn"]["w"] / 2
         # The piece's left edge sits 10 px into its picture; the gap's is at 170.
         self.assertAlmostEqual(released["x"] - start, 160, delta=3)
@@ -1118,19 +1144,19 @@ class SliderTest(unittest.IsolatedAsyncioTestCase):
         answered = {"lot_number": "l1", "pass_token": "p1", "gen_time": "1", "captcha_output": "o1"}
         http = FakeHttp(answers=[{"errorId": 0, "taskId": 5}, {"errorId": 0, "status": "processing"},
                                  {"errorId": 0, "status": "ready", "solution": answered}])
-        evaluate = mock.AsyncMock(side_effect=[PUZZLE, True])
+        page = check_page([PUZZLE])
         with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
-            solved, message = await worker.solve_slider(evaluate, self.mouse, http, "key-1")
+            solved, message = await worker.solve_slider(page, self.mouse, http, "key-1")
         self.assertTrue(solved)
         task = http.posted[0][1]["task"]
         self.assertEqual((task["websiteURL"], task["gt"], task["version"]), (PUZZLE["url"], "c1d2", 4))
-        submitted = evaluate.await_args_list[-1].args[0]
+        submitted = page.calls[-1]
         self.assertIn('\\"captcha_id\\": \\"c1d2\\"', submitted)
         self.assertIn('\\"pass_token\\": \\"p1\\"', submitted)
 
     async def test_without_a_key_a_puzzle_it_cannot_place_is_reported_not_accepted(self):
         with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
-            solved, message = await worker.solve_slider(mock.AsyncMock(return_value=PUZZLE), self.mouse, FakeHttp())
+            solved, message = await worker.solve_slider(check_page([PUZZLE]), self.mouse, FakeHttp())
         self.assertEqual((solved, message), (False, "The puzzle was not accepted."))
 
 
