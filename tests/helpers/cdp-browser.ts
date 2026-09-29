@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Duplex } from "node:stream";
+import { createContext, runInContext, type Context } from "node:vm";
 import { z } from "zod";
 
 /**
@@ -13,6 +14,11 @@ import { z } from "zod";
  * rule that every context is scored before any of them is typed into. Those are
  * protocol decisions, so they can be checked against a scripted protocol
  * without a browser, which is what lets them run in CI.
+ *
+ * A context given a `documents` page runs the real injected program against
+ * a small stand-in DOM instead of a scripted answer: just the fields, buttons,
+ * open shadow roots and focus the program reads, so its rules — shadow roots,
+ * never a password field, boxes against a whole-code field — run in CI too.
  *
  * The WebSocket server is written out here because the repository has no server
  * implementation to depend on and a test is a poor reason to add one. It speaks
@@ -32,6 +38,7 @@ const commandSchema = z.object({
       format: z.string().optional(),
       frameId: z.string().optional(),
       requestId: z.string().optional(),
+      text: z.string().optional(),
       url: z.string().optional(),
       urls: z.array(z.string()).optional(),
     })
@@ -56,7 +63,37 @@ interface Injection {
   readonly score?: number;
 }
 
+/** One element of a stand-in page, in document order. */
+export interface FakeElementSpec {
+  /** `name`, `type`, `autocomplete`, `maxlength`, `role`, `aria-label`… */
+  readonly attributes?: Readonly<Record<string, string>>;
+  readonly focused?: boolean;
+  readonly hidden?: boolean;
+  /** What sits inside the element's open shadow root: a web component. */
+  readonly shadow?: readonly FakeElementSpec[];
+  readonly tag: string;
+  /** A button's label. */
+  readonly text?: string;
+  /** Takes no focus, like a field whose page keeps the focus elsewhere. */
+  readonly unfocusable?: boolean;
+  readonly value?: string;
+}
+
+/** Where a stand-in field's value came from. */
+type FieldWrite = "insertText" | "setter";
+
+interface FakeFieldState {
+  readonly name: string;
+  readonly value: string;
+  readonly writes: readonly FieldWrite[];
+}
+
 export interface CdpBrowserFixture {
+  /**
+   * Stand-in pages the real injected program runs against, per execution
+   * context id. A context listed here ignores `injections`.
+   */
+  readonly documents?: Readonly<Record<number, readonly FakeElementSpec[]>>;
   /** What the injected program answers, per execution context id. */
   readonly injections: Readonly<Record<number, Injection>>;
   /** Where a page opened with `Page.navigate` ends up, and what it shows. */
@@ -84,6 +121,11 @@ export interface FakeCdpBrowser {
   readonly applied: readonly number[];
   readonly calls: readonly CdpCall[];
   readonly close: () => Promise<void>;
+  /** A stand-in page's buttons pressed and fields, shadow roots included. */
+  readonly page: (contextId: number) => {
+    readonly clicked: readonly string[];
+    readonly fields: readonly FakeFieldState[];
+  };
   readonly url: string;
 }
 
@@ -113,7 +155,19 @@ export async function startFakeCdpBrowser(
   // One context id per frame, handed out as frames are first seen, so a test
   // can address the third frame's field as context three.
   const contextIds = new Map<string, number>();
+  /** The session each context was made on, the page's own being "". */
+  const contextSessions = new Map<number, string>();
   let fetchEnabled = false;
+  let focusClock = 0;
+  const pages = new Map(
+    Object.entries(fixture.documents ?? {}).map(([contextId, specs]) => {
+      const page = new FakePage(specs, () => {
+        focusClock += 1;
+        return focusClock;
+      });
+      return [Number(contextId), { page, realm: pageRealm(page) }] as const;
+    })
+  );
 
   const server = createServer((request, response) => {
     if (!request.url?.startsWith("/json")) {
@@ -192,7 +246,10 @@ export async function startFakeCdpBrowser(
     }
     if (method === "Fetch.enable") fetchEnabled = true;
     events.push(
-      JSON.stringify({ id, result: result(method, params, session) })
+      JSON.stringify({
+        id,
+        result: result(method, params, session, sessionId ?? ""),
+      })
     );
     if (method === "Page.navigate" && fetchEnabled) {
       const main = fixture.sessions[""]?.frames[0]?.id ?? "";
@@ -219,7 +276,8 @@ export async function startFakeCdpBrowser(
   function result(
     method: string,
     params: CdpCall["params"],
-    session: FrameFixture | undefined
+    session: FrameFixture | undefined,
+    sessionId: string
   ) {
     if (method === "Page.getFrameTree") {
       return { frameTree: frameTree(session?.frames ?? []) };
@@ -230,6 +288,7 @@ export async function startFakeCdpBrowser(
       if (existing !== undefined) return { executionContextId: existing };
       const next = contextIds.size + 1;
       contextIds.set(frameId, next);
+      contextSessions.set(next, sessionId);
       return { executionContextId: next };
     }
     if (method === "Page.captureScreenshot") {
@@ -248,6 +307,41 @@ export async function startFakeCdpBrowser(
           },
         },
       };
+    }
+    if (method === "Input.insertText") {
+      // Typed text goes to the field focused last on the session it was sent
+      // on, as a page's focused frame receives it.
+      const focusedPages = [...pages]
+        .filter(
+          ([contextId, { page }]) =>
+            contextSessions.get(contextId) === sessionId &&
+            page.focused !== null
+        )
+        .map(([, { page }]) => page)
+        .toSorted((a, b) => b.focusedAt - a.focusedAt);
+      const field = focusedPages[0]?.focused;
+      if (field instanceof FakeField) field.insert(params.text ?? "");
+      return {};
+    }
+    const standIn = pages.get(params.contextId ?? 0);
+    if (method === "Runtime.evaluate" && standIn !== undefined) {
+      if (params.expression?.endsWith(", true)") === true) {
+        applied.push(params.contextId ?? 0);
+      }
+      try {
+        return {
+          result: {
+            value: z
+              .json()
+              .parse(runInContext(params.expression ?? "", standIn.realm)),
+          },
+        };
+      } catch (error) {
+        return {
+          exceptionDetails: { text: String(error) },
+          result: { type: "undefined" },
+        };
+      }
     }
     if (method === "Runtime.evaluate") {
       const contextId = params.contextId ?? 0;
@@ -281,8 +375,249 @@ export async function startFakeCdpBrowser(
     applied,
     calls,
     close: () => closeServer(server),
+    page: (contextId) => {
+      const page = pages.get(contextId)?.page;
+      return {
+        clicked: [...(page?.clicked ?? [])],
+        fields: page === undefined ? [] : fieldStates(page.document),
+      };
+    },
     url: `http://127.0.0.1:${String(port)}`,
   };
+}
+
+/** The one selector shape the injected program uses: a tag, an attribute
+ *  test, or both, as in `input[type=submit]` and `[role='button']`. */
+const selectorPattern =
+  /^(?<tag>[a-z-]*)(?:\[(?<attribute>[a-z-]+)=['"]?(?<expected>[\w-]+)['"]?\])?$/u;
+
+/** A page the injected program runs against: its focus, and what was pressed. */
+class FakePage {
+  readonly clicked: string[] = [];
+  readonly document: FakeRoot;
+  focused: FakeElement | null = null;
+  focusedAt = 0;
+  readonly #tick: () => number;
+
+  constructor(specs: readonly FakeElementSpec[], tick: () => number) {
+    this.#tick = tick;
+    this.document = new FakeRoot(this, null, specs);
+  }
+
+  focus(element: FakeElement) {
+    this.focused = element;
+    this.focusedAt = this.#tick();
+  }
+}
+
+/** The document, or an element's open shadow root. */
+class FakeRoot {
+  readonly elements: readonly FakeElement[];
+  readonly host: FakeElement | null;
+  readonly page: FakePage;
+
+  constructor(
+    page: FakePage,
+    host: FakeElement | null,
+    specs: readonly FakeElementSpec[]
+  ) {
+    this.page = page;
+    this.host = host;
+    this.elements = specs.map((spec) =>
+      spec.tag === "input"
+        ? new FakeInput(spec, this)
+        : spec.tag === "textarea"
+          ? new FakeTextArea(spec, this)
+          : new FakeElement(spec, this)
+    );
+  }
+
+  /** As a browser has it: the focused element itself, or the shadow host in
+   *  this root that contains it. */
+  get activeElement() {
+    let element = this.page.focused;
+    while (element !== null && element.root !== this) {
+      element = element.root.host;
+    }
+    return element;
+  }
+
+  querySelectorAll(selector: string) {
+    const parts = selector.split(",").map((part) => part.trim());
+    return this.elements.filter((element) =>
+      parts.some((part) => element.matches(part))
+    );
+  }
+}
+
+class FakeElement {
+  readonly isConnected = true;
+  readonly root: FakeRoot;
+  readonly shadowRoot: FakeRoot | null;
+  readonly spec: FakeElementSpec;
+
+  constructor(spec: FakeElementSpec, root: FakeRoot) {
+    this.spec = spec;
+    this.root = root;
+    this.shadowRoot =
+      spec.shadow === undefined
+        ? null
+        : new FakeRoot(root.page, this, spec.shadow);
+    if (spec.focused === true) root.page.focus(this);
+  }
+
+  get disabled() {
+    return this.getAttribute("disabled") !== null;
+  }
+
+  get id() {
+    return this.getAttribute("id") ?? "";
+  }
+
+  get innerText() {
+    return this.spec.text ?? "";
+  }
+
+  get name() {
+    return this.getAttribute("name") ?? "";
+  }
+
+  get placeholder() {
+    return this.getAttribute("placeholder") ?? "";
+  }
+
+  get readOnly() {
+    return this.getAttribute("readonly") !== null;
+  }
+
+  get type() {
+    return (
+      this.getAttribute("type") ??
+      (this.spec.tag === "input" ? "text" : this.spec.tag)
+    );
+  }
+
+  click() {
+    this.root.page.clicked.push(this.innerText);
+  }
+
+  dispatchEvent() {
+    return true;
+  }
+
+  focus() {
+    if (this.spec.unfocusable !== true) this.root.page.focus(this);
+  }
+
+  getAttribute(name: string) {
+    return this.spec.attributes?.[name] ?? null;
+  }
+
+  getClientRects() {
+    return this.spec.hidden === true ? [] : [{ height: 32, width: 240 }];
+  }
+
+  matches(part: string) {
+    if (part === "*") return true;
+    const groups = selectorPattern.exec(part)?.groups;
+    if (groups === undefined) {
+      throw new Error(`The stand-in DOM does not read the selector ${part}.`);
+    }
+    const { attribute, expected, tag } = groups;
+    return (
+      (!tag || tag === this.spec.tag) &&
+      (!attribute || this.getAttribute(attribute) === expected)
+    );
+  }
+}
+
+class FakeField extends FakeElement {
+  selected = false;
+  readonly writes: FieldWrite[] = [];
+  #value: string;
+
+  constructor(spec: FakeElementSpec, root: FakeRoot) {
+    super(spec, root);
+    this.#value = spec.value ?? "";
+  }
+
+  get autocomplete() {
+    return this.getAttribute("autocomplete") ?? "";
+  }
+
+  get maxLength() {
+    const limit = this.getAttribute("maxlength");
+    return limit === null ? -1 : Number(limit);
+  }
+
+  get value() {
+    return this.#value;
+  }
+
+  set value(next: string) {
+    this.#value = next;
+    this.selected = false;
+    this.writes.push("setter");
+  }
+
+  /** Text typed into the focused field, as `Input.insertText` delivers it:
+   *  over the selection, and no longer than the field allows. */
+  insert(text: string) {
+    const next = this.selected ? text : `${this.#value}${text}`;
+    this.#value = this.maxLength < 0 ? next : next.slice(0, this.maxLength);
+    this.selected = false;
+    this.writes.push("insertText");
+  }
+
+  select() {
+    this.selected = true;
+  }
+}
+
+class FakeInput extends FakeField {}
+
+class FakeTextArea extends FakeField {}
+
+class FakeEvent {
+  readonly type: string;
+
+  constructor(type: string) {
+    this.type = type;
+  }
+}
+
+/** The globals the injected program reads, and nothing else. Its own
+ *  globals persist between evaluations, as an isolated world's do. */
+function pageRealm(page: FakePage): Context {
+  return createContext({
+    Event: FakeEvent,
+    HTMLElement: FakeElement,
+    HTMLInputElement: FakeInput,
+    HTMLTextAreaElement: FakeTextArea,
+    InputEvent: FakeEvent,
+    document: page.document,
+    getComputedStyle: (element: FakeElement) => ({
+      display: element.spec.hidden === true ? "none" : "block",
+      visibility: "visible",
+    }),
+    window: { innerHeight: 800, innerWidth: 1280 },
+  });
+}
+
+/** Every field of a stand-in page, shadow roots included, in document order. */
+function fieldStates(root: FakeRoot): FakeFieldState[] {
+  return root.elements.flatMap((element) => [
+    ...(element instanceof FakeField
+      ? [
+          {
+            name: element.name || element.autocomplete || element.spec.tag,
+            value: element.value,
+            writes: [...element.writes],
+          },
+        ]
+      : []),
+    ...(element.shadowRoot === null ? [] : fieldStates(element.shadowRoot)),
+  ]);
 }
 
 /** Parents before children, so a fixture reads like the page's own nesting. */

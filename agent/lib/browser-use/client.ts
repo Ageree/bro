@@ -1,5 +1,32 @@
 import { z } from "zod";
+import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
+import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import {
+  cancelBrowserVmRun,
+  createBrowserVmBrowser,
+  createBrowserVmRun,
+  deleteBrowserVmProfile,
+  findBrowserVmRunByTaskLine,
+  findBrowserVmSessionCdpUrl,
+  listBrowserVmRunEvents,
+  listBrowserVmWorkspaceFiles,
+  queueBrowserVmSessionMessage,
+  readBrowserVmRun,
+  readBrowserVmRunStatus,
+  stopBrowserVmBrowser,
+  stopBrowserVmSession,
+  stopBrowserVmSessionBrowsers,
+} from "@agent/lib/browser-vm/runs";
 import { env } from "@shared/environment";
+import { BrowserUseError } from "./errors";
+
+/**
+ * Browser Use Cloud, and the workspace browser VMs behind the same calls:
+ * every id that starts with `vm:` — a profile, a session, a run, a browser —
+ * is sent to the VM backend (`agent/lib/browser-vm/runs.ts`), and what it
+ * answers is parsed with the schemas below, so every caller works on either
+ * backend unchanged.
+ */
 
 const runStatusSchema = z.enum([
   "queued",
@@ -25,6 +52,15 @@ const runSummarySchema = z.object({
   sessionId: z.string().min(1),
   status: runStatusSchema,
   task: z.string(),
+  /**
+   * Messages queued into a VM run that it ended without reading. The worker
+   * never starts a follow-up on its own, and neither does Bro: its settle
+   * path surfaces them in the run's report instead
+   * (`agent/lib/browser-use/completion.ts`), for the coordinator to act on
+   * in the open. Browser Use has no such thing, and a VM run that settled
+   * with none has `[]`.
+   */
+  unreadMessages: z.array(z.string()).optional(),
   // The files the run saved live here, and every run in a session shares it.
   workspaceId: z.string().nullable().optional(),
 });
@@ -159,6 +195,12 @@ const customProxySchema = z.object({
 
 const createRunInputSchema = z.object({
   customProxy: customProxySchema.optional(),
+  /**
+   * A VM profile only: ask for an exit address the workspace has not used
+   * before, when one is available, rather than whatever the last check left
+   * — an anti-bot wall has already judged the current one. Cloud ignores it.
+   */
+  freshExit: z.boolean().optional(),
   maxCostUsd: z.number().positive().optional(),
   model: z.string().min(1).optional(),
   profileId: z.string().min(1).optional(),
@@ -172,24 +214,7 @@ export type BrowserUseRunStatus = z.infer<typeof runStatusSchema>;
 export type BrowserUseSecretBinding = z.infer<typeof secretBindingSchema>;
 export type BrowserUseCreateRunInput = z.infer<typeof createRunInputSchema>;
 
-/** A Browser Use Cloud reply that was not a 2xx, with enough of the body to act on. */
-export class BrowserUseError extends Error {
-  readonly status: number;
-  /** How long Browser Use asked the caller to wait, when it said. */
-  readonly retryAfterMs: number | undefined;
-
-  constructor(
-    status: number,
-    path: string,
-    body: string,
-    retryAfterMs?: number
-  ) {
-    super(`Browser Use ${String(status)} on ${path}: ${body.slice(0, 300)}`);
-    this.name = "BrowserUseError";
-    this.status = status;
-    this.retryAfterMs = retryAfterMs;
-  }
-}
+export { BrowserUseError };
 
 /**
  * Browser Use has no browser free for another run: the project is at its
@@ -212,7 +237,17 @@ export function browserUseOutOfCredits(
   return error instanceof BrowserUseError && error.status === 402;
 }
 
+/** Whether browser errands can run at all, on Browser Use or on a VM. */
 export function browserUseConfigured() {
+  return browserUseCloudConfigured() || browserVmConfigured();
+}
+
+/**
+ * Whether Browser Use Cloud itself is set up. A deployment may run its
+ * errands on VMs alone, and then a workspace that is not on one has no
+ * browser to run them in.
+ */
+export function browserUseCloudConfigured() {
   return env.BROWSER_USE_API_KEY !== undefined;
 }
 
@@ -227,10 +262,20 @@ export async function createBrowserUseProfile(name: string, userId: string) {
  * sign-ins and the local storage of every site it visited.
  */
 export async function deleteBrowserUseProfile(profileId: string) {
+  if (isBrowserVmId(profileId)) {
+    await deleteBrowserVmProfile(profileId);
+    return;
+  }
   await request("DELETE", `/profiles/${encodeURIComponent(profileId)}`);
 }
 
 export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
+  if (input.profileId !== undefined && isBrowserVmId(input.profileId)) {
+    const vmInput = createRunInputSchema.parse(input);
+    return runCreateResponseSchema.parse(
+      await createBrowserVmRun({ ...vmInput, profileId: input.profileId })
+    );
+  }
   const {
     customProxy,
     maxCostUsd,
@@ -263,13 +308,18 @@ export async function createBrowserUseRun(input: BrowserUseCreateRunInput) {
  * key, so a line written into the task is how a run started just before a
  * crash is found again rather than started twice. A cancelled run was given
  * up on purpose — its errand was stopped or changed meanwhile — and is never
- * adopted.
+ * adopted. A VM profile's runs are looked up in Bro's own record of them.
  */
 export async function findRecentBrowserUseRunByTaskLine(
   line: string,
   pages = 3,
-  cursor?: string
+  cursor?: string,
+  profileId?: string
 ): Promise<z.infer<typeof runSummarySchema> | undefined> {
+  if (profileId !== undefined && isBrowserVmId(profileId)) {
+    const found = await findBrowserVmRunByTaskLine(profileId, line);
+    return found === undefined ? undefined : runSummarySchema.parse(found);
+  }
   const query = new URLSearchParams({ limit: "50" });
   if (cursor !== undefined) query.set("cursor", cursor);
   const page = runListSchema.parse(
@@ -284,6 +334,9 @@ export async function findRecentBrowserUseRunByTaskLine(
 }
 
 export async function readBrowserUseRun(runId: string) {
+  if (isBrowserVmId(runId)) {
+    return runSummarySchema.parse(await readBrowserVmRun(runId));
+  }
   return runSummarySchema.parse(
     await request("GET", `/runs/${encodeURIComponent(runId)}`)
   );
@@ -299,6 +352,11 @@ export async function listBrowserUseWorkspaceFiles(
   workspaceId: string,
   prefix: string
 ) {
+  if (isBrowserVmId(workspaceId)) {
+    return workspaceFileListSchema.parse(
+      await listBrowserVmWorkspaceFiles(workspaceId, prefix)
+    );
+  }
   const query = new URLSearchParams({
     includeUrls: "true",
     limit: "100",
@@ -313,6 +371,9 @@ export async function listBrowserUseWorkspaceFiles(
 }
 
 export async function readBrowserUseRunStatus(runId: string) {
+  if (isBrowserVmId(runId)) {
+    return runStatusSchema.parse(await readBrowserVmRunStatus(runId));
+  }
   const { status } = runStatusResponseSchema.parse(
     await request("GET", `/runs/${encodeURIComponent(runId)}/status`)
   );
@@ -320,6 +381,9 @@ export async function readBrowserUseRunStatus(runId: string) {
 }
 
 export async function listBrowserUseRunEvents(runId: string, limit = 100) {
+  if (isBrowserVmId(runId)) {
+    return runEventsResponseSchema.parse(listBrowserVmRunEvents());
+  }
   return runEventsResponseSchema.parse(
     await request(
       "GET",
@@ -332,6 +396,11 @@ export async function queueBrowserUseSessionMessage(
   sessionId: string,
   text: string
 ) {
+  if (isBrowserVmId(sessionId)) {
+    return queuedMessageSchema.parse(
+      await queueBrowserVmSessionMessage(sessionId, text)
+    );
+  }
   return queuedMessageSchema.parse(
     await request(
       "POST",
@@ -348,6 +417,7 @@ export async function queueBrowserUseSessionMessage(
  * into the page the person is looking at.
  */
 export async function findBrowserUseSessionCdpUrl(sessionId: string) {
+  if (isBrowserVmId(sessionId)) return findBrowserVmSessionCdpUrl(sessionId);
   const { live } = await listSessionBrowsers(sessionId);
   return live.find((item) => item.cdpUrl)?.cdpUrl ?? undefined;
 }
@@ -377,6 +447,9 @@ export async function stopBrowserUseSessionBrowsers(
   sessionId: string,
   settledRunId: string
 ): Promise<"moved_on" | "running" | "stopped"> {
+  if (isBrowserVmId(sessionId)) {
+    return stopBrowserVmSessionBrowsers(sessionId, settledRunId);
+  }
   const session = sessionInfoSchema.parse(
     await request("GET", `/sessions/${encodeURIComponent(sessionId)}`)
   );
@@ -392,6 +465,10 @@ export async function stopBrowserUseSessionBrowsers(
 
 /** Stop one cloud browser: a clean stop writes its cookies to its profile. */
 export async function stopBrowserUseBrowser(browserId: string) {
+  if (isBrowserVmId(browserId)) {
+    await stopBrowserVmBrowser(browserId);
+    return;
+  }
   await request(
     "PATCH",
     `/browsers/${encodeURIComponent(browserId)}`,
@@ -416,6 +493,9 @@ export async function createBrowserUseBrowser(input: {
   readonly proxyCountryCode: string;
   readonly timeoutMinutes: number;
 }) {
+  if (isBrowserVmId(input.profileId)) {
+    return standaloneBrowserSchema.parse(await createBrowserVmBrowser(input));
+  }
   return standaloneBrowserSchema.parse(
     await request(
       "POST",
@@ -431,12 +511,19 @@ export async function createBrowserUseBrowser(input: {
 }
 
 export async function cancelBrowserUseRun(runId: string) {
+  if (isBrowserVmId(runId)) {
+    return runSummarySchema.parse(await cancelBrowserVmRun(runId));
+  }
   return runSummarySchema.parse(
     await request("POST", `/runs/${encodeURIComponent(runId)}/cancel`, "{}")
   );
 }
 
 export async function stopBrowserUseSession(sessionId: string) {
+  if (isBrowserVmId(sessionId)) {
+    await stopBrowserVmSession(sessionId);
+    return;
+  }
   await request("DELETE", `/sessions/${encodeURIComponent(sessionId)}`);
 }
 
@@ -459,13 +546,28 @@ export function liveViewUrlFromEvents(
 /** A status or summary read takes well under a second. */
 const browserUseRequestTimeoutMs = 30_000;
 
+const browserUseUnconfiguredMessage = "BROWSER_USE_API_KEY is not configured.";
+
+/**
+ * Whether a call failed only because this deployment has no Browser Use key
+ * at all — the cloud path taking a `vm:` id never asks, so this is a plain
+ * Browser Use profile or run once the deployment has moved off Browser Use
+ * entirely (the migration's end state). Never a failure worth retrying:
+ * asking again never succeeds either.
+ */
+export function browserUseCloudUnreachable(error: unknown): error is Error {
+  return (
+    error instanceof Error && error.message === browserUseUnconfiguredMessage
+  );
+}
+
 async function request(
   method: "DELETE" | "GET" | "PATCH" | "POST",
   path: string,
   body?: string
 ) {
   const apiKey = env.BROWSER_USE_API_KEY;
-  if (!apiKey) throw new Error("BROWSER_USE_API_KEY is not configured.");
+  if (!apiKey) throw new Error(browserUseUnconfiguredMessage);
   const url = new URL(
     `${env.BROWSER_USE_BASE_URL.replace(/\/+$/u, "")}${path}`
   );

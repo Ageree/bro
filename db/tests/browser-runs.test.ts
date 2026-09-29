@@ -62,6 +62,41 @@ describe("browser run persistence", () => {
     expect(await browserRuns.readBrowserProfileId(bob)).toBeUndefined();
   }, 20_000);
 
+  it("replaces the workspace's browser profile when it moves to its VM", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.saveBrowserProfileId(alice, "profile-browser-use");
+    const kept = await browserRuns.readBrowserProfile(alice);
+    // Later than the first profile, so a time taken anew would show.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(
+      await browserRuns.replaceBrowserProfileId(
+        alice.workspaceId,
+        "profile-vm-alice"
+      )
+    ).toBe("profile-vm-alice");
+    expect(await browserRuns.readBrowserProfileId(alice)).toBe(
+      "profile-vm-alice"
+    );
+    // Nothing was deleted by the move: the sign-ins are kept since the same
+    // time, which tells an errand from before a forgetting from one before
+    // the move.
+    expect(await browserRuns.readBrowserProfile(alice)).toEqual({
+      createdAt: kept?.createdAt,
+      profileId: "profile-vm-alice",
+    });
+    // A workspace with no profile yet gets the one it is given.
+    await browserRuns.replaceBrowserProfileId(
+      bob.workspaceId,
+      "profile-vm-bob"
+    );
+    expect(await browserRuns.readBrowserProfileId(bob)).toBe("profile-vm-bob");
+    // The claim for a new Browser Use profile still leaves it alone.
+    expect(await browserRuns.saveBrowserProfileId(bob, "profile-2")).toBe(
+      "profile-vm-bob"
+    );
+  }, 20_000);
+
   it("scopes a run to the workspace that started it", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
@@ -128,6 +163,50 @@ describe("browser run persistence", () => {
       })
     ).toBe(false);
     expect(await browserRuns.claimDueBrowserRunRetries(lease, 10)).toEqual([]);
+  }, 20_000);
+
+  it("carries unread messages parked on a walled run across its hand-off to the retry", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryId = "55555555-5555-4555-8555-555555555555";
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Needs: captcha",
+      status: "done",
+    });
+
+    // The settle merges this attempt's own unread messages onto the row.
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(),
+      unreadMessages: ["Actually make it two of those."],
+    });
+    expect((await browserRuns.readBrowserRun(runId))?.unreadMessages).toEqual([
+      "Actually make it two of those.",
+    ]);
+
+    // A re-park after a retry that could not even start has nothing new to
+    // add, and leaves what the row already carries alone.
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(),
+    });
+    expect((await browserRuns.readBrowserRun(runId))?.unreadMessages).toEqual([
+      "Actually make it two of those.",
+    ]);
+
+    // The hand-off to the next attempt's row carries the row's accumulated
+    // messages forward, so the retry's own row does not start empty-handed.
+    await browserRuns.handOffBrowserRunRetry(runId, {
+      ...conversation(),
+      captchaAttempt: 2,
+      id: retryId,
+      sessionId: "browser-session-2",
+      unreadMessages: (await browserRuns.readBrowserRun(runId))?.unreadMessages,
+    });
+
+    expect((await browserRuns.readBrowserRun(retryId))?.unreadMessages).toEqual(
+      ["Actually make it two of those."]
+    );
   }, 20_000);
 
   it("lets no retry start for an errand the person stopped", async () => {
@@ -744,6 +823,125 @@ describe("browsers kept for a sign-in", () => {
     expect((await browserRuns.readBrowserRun(waiting.id))?.retryAt).toEqual(
       retryAt
     );
+  }, 20_000);
+
+  it("counts an errand waiting for a browser VM only in its own workspace's line", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryAt = new Date(Date.now() + 60_000);
+    await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Закажи корм",
+      profileId: `vm:${alice.workspaceId}:p1`,
+      retryAt,
+      sessionId: null,
+    });
+
+    // Nobody else waits for Alice's VM, and it holds no Browser Use start back.
+    expect(await browserRuns.countQueuedBrowserRuns()).toBe(0);
+    expect(
+      await browserRuns.countQueuedBrowserRuns({
+        vmWorkspaceId: alice.workspaceId,
+      })
+    ).toBe(1);
+    expect(
+      await browserRuns.countQueuedBrowserRuns({
+        vmWorkspaceId: bob.workspaceId,
+      })
+    ).toBe(0);
+
+    // A Browser Use errand, or one queued before profiles were kept, waits
+    // for the shared cap and never for a VM.
+    await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      pendingTask: "Найди отель",
+      profileId: "profile-bob",
+      retryAt,
+      sessionId: null,
+    });
+    await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      pendingTask: "Найди билеты",
+      retryAt,
+      sessionId: null,
+    });
+    expect(await browserRuns.countQueuedBrowserRuns()).toBe(2);
+    expect(
+      await browserRuns.countQueuedBrowserRuns({
+        vmWorkspaceId: bob.workspaceId,
+      })
+    ).toBe(0);
+  }, 20_000);
+
+  it("claims only errands on a browser VM once Browser Use is full", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const now = new Date();
+    const due = new Date(now.getTime() - 60_000);
+    const onBrowserUse = await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      createdAt: new Date(now.getTime() - 3 * 60_000),
+      pendingTask: "Найди отель",
+      profileId: "profile-bob",
+      retryAt: due,
+      sessionId: null,
+    });
+    await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      createdAt: new Date(now.getTime() - 2 * 60_000),
+      pendingTask: "Найди билеты",
+      retryAt: due,
+      sessionId: null,
+    });
+    const onVm = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      createdAt: new Date(now.getTime() - 60_000),
+      pendingTask: "Закажи корм",
+      profileId: `vm:${alice.workspaceId}:p1`,
+      retryAt: due,
+      sessionId: null,
+    });
+
+    // The Browser Use errands waited longer, and are passed over.
+    expect(
+      (await browserRuns.claimNextQueuedBrowserRun(now, { vmOnly: true }))?.id
+    ).toBe(onVm.id);
+    expect(
+      await browserRuns.claimNextQueuedBrowserRun(now, { vmOnly: true })
+    ).toBeUndefined();
+    expect((await browserRuns.claimNextQueuedBrowserRun(now))?.id).toBe(
+      onBrowserUse.id
+    );
+  }, 20_000);
+
+  it("lists every browser profile the workspace's errands ran on", async () => {
+    const browserRuns = await browserRunsDatabase();
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      profileId: "profile-browser-use",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "22222222-2222-4222-8222-222222222222",
+      profileId: `vm:${alice.workspaceId}:p1`,
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "33333333-3333-4333-8333-333333333333",
+      profileId: `vm:${alice.workspaceId}:p1`,
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: "44444444-4444-4444-8444-444444444444",
+    });
+    await browserRuns.createBrowserRun(bob, {
+      ...conversation(),
+      id: "55555555-5555-4555-8555-555555555555",
+      profileId: "profile-bob",
+    });
+
+    expect(
+      (await browserRuns.listBrowserRunProfileIds(alice.workspaceId)).toSorted()
+    ).toEqual(["profile-browser-use", `vm:${alice.workspaceId}:p1`]);
   }, 20_000);
 });
 

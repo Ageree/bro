@@ -18,9 +18,19 @@ const testEnvironment = {
 // Optional provider configuration must not leak in from the host shell: tests
 // opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
 // A Browser Use key in the shell would let a test that forgot a mock stop or
-// delete a real browser or profile, so tests stub their own.
+// delete a real browser or profile, so tests stub their own. The same goes
+// for a Cloud.ru key and a real VM, and agent sessions do carry one.
 const unsetEnvironment = [
+  "BROWSER_BACKEND",
   "BROWSER_USE_API_KEY",
+  "BROWSER_VM_LLM_API_KEY",
+  "BROWSER_VM_PROXY",
+  "BROWSER_VM_SIGNING_KEY",
+  "BROWSER_VM_WORKSPACES",
+  "CLOUDRU_BROWSER_IMAGE",
+  "CLOUDRU_KEY_ID",
+  "CLOUDRU_KEY_SECRET",
+  "CLOUDRU_PROJECT_ID",
   "OPENROUTER_API_KEY",
   "OPENROUTER_CREDITS_ALERT_USD",
   "OPENROUTER_IMAGE_MODEL",

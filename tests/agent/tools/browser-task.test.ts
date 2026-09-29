@@ -17,8 +17,11 @@ import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseMailCode from "@agent/lib/browser-use/mail-code";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
+import type * as browserVmBackend from "@agent/lib/browser-vm/backend";
 import type * as browserRunsService from "@db/services/browser-runs";
+import type * as browserVmsService from "@db/services/browser-vms";
 import type { listCurrentRules } from "@db/services/memory/records";
+import type * as scopeService from "@db/services/scope";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -154,8 +157,12 @@ const createBrowserUseRun = vi.hoisted(() =>
     }>
   >()
 );
+// What the cancel answers of the run: a VM's worker answers once the stop
+// landed, or after its wait with the run still on its step.
 const cancelBrowserUseRun = vi.hoisted(() =>
-  vi.fn<() => Promise<void>>(() => Promise.resolve())
+  vi.fn<(runId: string) => Promise<{ status: string }>>(() =>
+    Promise.resolve({ status: "cancelled" })
+  )
 );
 const queueBrowserUseSessionMessage = vi.hoisted(() =>
   vi.fn<
@@ -190,6 +197,11 @@ const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
 // The workspace's current browser profile; «забудь мои входы» replaces it.
 const readBrowserProfileId = vi.hoisted(() =>
   vi.fn<() => Promise<string | undefined>>(() => Promise.resolve("profile-1"))
+);
+// Since when that profile's sign-ins are kept: its first errand, or the
+// first after «забудь мои входы». Every errand here is newer by default.
+const readBrowserProfileSince = vi.hoisted(() =>
+  vi.fn<() => Date>(() => new Date(0))
 );
 const resolveBrowserSecretBindings = vi.hoisted(() =>
   vi.fn<
@@ -285,7 +297,55 @@ const reserveConsentPayment = vi.hoisted(() =>
 );
 
 const countQueuedBrowserRuns = vi.hoisted(() =>
-  vi.fn<() => Promise<number>>(() => Promise.resolve(0))
+  vi.fn<(options?: { readonly vmWorkspaceId?: string }) => Promise<number>>(
+    () => Promise.resolve(0)
+  )
+);
+// Whether the workspace runs its errands on its own browser VM, and the VM's
+// record: its profile generation moves on when its sign-ins are forgotten.
+const usesBrowserVm = vi.hoisted(() =>
+  vi.fn<(scope: { readonly workspaceId: string }) => Promise<boolean>>(() =>
+    Promise.resolve(false)
+  )
+);
+const ensureBrowserVmRecord = vi.hoisted(() =>
+  vi.fn<(workspaceId: string) => Promise<{ profileGeneration: number }>>(() =>
+    Promise.resolve({ profileGeneration: 1 })
+  )
+);
+const ensureScope = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope) => Promise<void>>(() => Promise.resolve())
+);
+const replaceBrowserProfileId = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, profileId: string) => Promise<string>>(
+    (_workspaceId, profileId) => Promise.resolve(profileId)
+  )
+);
+const saveBrowserProfileId = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope, profileId: string) => Promise<string>>(
+    (_scope, profileId) => Promise.resolve(profileId)
+  )
+);
+const createBrowserUseProfile = vi.hoisted(() =>
+  vi.fn<() => Promise<{ id: string }>>(() =>
+    Promise.resolve({ id: "profile-new" })
+  )
+);
+// Whether Browser Use itself is set up: a deployment may run on VMs alone.
+const browserUseCloudConfigured = vi.hoisted(() =>
+  vi.fn<() => boolean>(() => true)
+);
+// The workspace's VM as the queue sees it while an errand waits for it.
+const readBrowserVm = vi.hoisted(() =>
+  vi.fn<
+    (
+      workspaceId: string
+    ) => Promise<{ state: string; vmId: string | null } | undefined>
+  >(() => Promise.resolve(undefined))
+);
+// The sign-ins on record, forgotten when the workspace changes backend.
+const forgetBrowserSignIns = vi.hoisted(() =>
+  vi.fn<(workspaceId: string) => Promise<string[]>>(() => Promise.resolve([]))
 );
 const createQueuedBrowserRun = vi.hoisted(() =>
   vi.fn<
@@ -393,7 +453,10 @@ const mailCodeFromSite = vi.hoisted(() =>
 
 type Unused = () => never;
 
-vi.mock("@db/services/browser-sign-ins", () => ({ readBrowserSignIns }));
+vi.mock("@db/services/browser-sign-ins", () => ({
+  forgetBrowserSignIns,
+  readBrowserSignIns,
+}));
 vi.mock("@db/services/memory/records", () => ({
   listCurrentRules: vi.fn<typeof listCurrentRules>(async () => []),
 }));
@@ -410,13 +473,20 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   unclaimBrowserRunBrowser,
   createQueuedBrowserRun,
   finishBrowserRunReport,
+  readBrowserProfile: async () => {
+    const profileId = await readBrowserProfileId();
+    return profileId === undefined
+      ? undefined
+      : { createdAt: readBrowserProfileSince(), profileId };
+  },
   readBrowserProfileId,
   readBrowserRunForScope,
   // No retry chains here: the latest run is the one asked for.
   readLatestBrowserRunForScope: (scope: AccessScope, id: string) =>
     readBrowserRunForScope(scope, id),
   recordBrowserRunSubmission,
-  saveBrowserProfileId: vi.fn<Unused>(),
+  replaceBrowserProfileId,
+  saveBrowserProfileId,
   stopBrowserRunErrand,
   updateBrowserRunProgress: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   updateQueuedBrowserRun,
@@ -437,6 +507,19 @@ vi.mock("@agent/lib/browser-use/credits", async (importOriginal) => ({
     Promise.resolve()
   ),
   reportBrowserUseOutOfCredits,
+}));
+vi.mock("@agent/lib/browser-vm/backend", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserVmBackend>()),
+  usesBrowserVm,
+}));
+vi.mock("@db/services/browser-vms", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserVmsService>()),
+  ensureBrowserVmRecord,
+  readBrowserVm,
+}));
+vi.mock("@db/services/scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof scopeService>()),
+  ensureScope,
 }));
 vi.mock("@db/services/spending", () => ({
   listSpendEntries,
@@ -471,9 +554,10 @@ vi.mock("@agent/lib/browser-use/mail-code", async (importOriginal) => ({
 // with a 409 or a 404 by testing against it.
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseClient>()),
+  browserUseCloudConfigured,
   browserUseConfigured: vi.fn<() => boolean>(() => true),
   cancelBrowserUseRun,
-  createBrowserUseProfile: vi.fn<Unused>(),
+  createBrowserUseProfile,
   createBrowserUseRun,
   findBrowserUseSessionCdpUrl,
   // The live-view lookup gives up on the first failure, which keeps the start
@@ -506,6 +590,12 @@ beforeEach(() => {
   listSpendEntries.mockResolvedValue([]);
   reserveConsentPayment.mockResolvedValue({ allowed: true });
   countQueuedBrowserRuns.mockResolvedValue(0);
+  readBrowserProfileId.mockResolvedValue("profile-1");
+  readBrowserProfileSince.mockReturnValue(new Date(0));
+  usesBrowserVm.mockResolvedValue(false);
+  ensureBrowserVmRecord.mockResolvedValue({ profileGeneration: 1 });
+  browserUseCloudConfigured.mockReturnValue(true);
+  readBrowserVm.mockResolvedValue(undefined);
   browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
   readBrowserRunForScope.mockResolvedValue(undefined);
   readUserProfile.mockResolvedValue(emptyUserProfile);
@@ -1019,6 +1109,34 @@ describe("browser_task continuation", () => {
     ).toBe(true);
     expect(createBrowserRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ runId });
+  });
+
+  it("follows the message a busy session took to the run it started once idle", async () => {
+    readBrowserUseRunStatus.mockResolvedValue("failed");
+    createBrowserUseRun.mockRejectedValue(
+      new BrowserUseError(409, "/runs", "The session already has an active run")
+    );
+    // The session's run ended in between: the message became a run of its
+    // own, which reports only once Bro tracks it.
+    queueBrowserUseSessionMessage.mockResolvedValueOnce({
+      id: 1,
+      runId: followUpRunId,
+      sessionId,
+      status: "started",
+    });
+
+    const result = await continueErrand({});
+
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ id: followUpRunId, sessionId }),
+      runId
+    );
+    expect(result).toMatchObject({
+      previousRunId: runId,
+      runId: followUpRunId,
+      status: "running",
+    });
   });
 
   it("opens a fresh session on the same profile when the old one is gone", async () => {
@@ -3077,6 +3195,16 @@ function busy() {
   );
 }
 
+/** The workspace's own VM answers a start with a wait while it powers on. */
+function vmStarting() {
+  return new BrowserUseError(
+    429,
+    "browser-vm",
+    "The browser is starting.",
+    60_000
+  );
+}
+
 /** One `browser_task` start of the current turn and its result. */
 function startedIn(index: number, output: { readonly status: string }) {
   const toolCallId = `start-${String(index)}`;
@@ -3164,6 +3292,8 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: "queued" });
     expect(continuationNote(result)).toContain("2 other errands are waiting");
+    // The line is Browser Use's shared one, which no workspace's VM joins.
+    expect(countQueuedBrowserRuns).toHaveBeenCalledWith({});
   });
 
   it("tells the person plainly and alerts the owner on a 402", async () => {
@@ -3264,6 +3394,509 @@ describe("browser_task when Browser Use is at its cap or out of credits", () => 
     );
     expect(continuationNote(status)).not.toContain("no free browser");
   });
+});
+
+describe("browser_task on a workspace's own browser VM", () => {
+  const { workspaceId } = accessScopeForUser("better-auth:alice");
+  const vmProfile = (generation: number) =>
+    `vm:${workspaceId}:p${String(generation)}`;
+
+  it("moves the workspace from its Browser Use profile to its VM's and starts there", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+
+    await startErrand("");
+
+    expect(replaceBrowserProfileId).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      vmProfile(1)
+    );
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe(vmProfile(1));
+    // Errands already started keep their own profile; this one records the VM's.
+    expect(createBrowserRun).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:alice"),
+      expect.objectContaining({ profileId: vmProfile(1) })
+    );
+    // It waits behind its own VM's errands, never behind Browser Use's line
+    // or another workspace's VM.
+    expect(countQueuedBrowserRuns).toHaveBeenCalledExactlyOnceWith({
+      vmWorkspaceId: workspaceId,
+    });
+    expect(createBrowserUseProfile).not.toHaveBeenCalled();
+    // The sign-ins on record were earned in Browser Use's browser, which the
+    // VM's knows nothing of; a site the person opted out of stays so there.
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+  });
+
+  it("keeps the VM's current profile without writing it again", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+
+    await startErrand("");
+
+    expect(replaceBrowserProfileId).not.toHaveBeenCalled();
+    expect(ensureScope).not.toHaveBeenCalled();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe(vmProfile(1));
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+  });
+
+  it("starts on the next profile generation once the VM's sign-ins were forgotten", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    // Forgetting deleted the workspace's profile row and moved the VM's
+    // generation on.
+    readBrowserProfileId.mockResolvedValue(undefined);
+    ensureBrowserVmRecord.mockResolvedValue({ profileGeneration: 2 });
+
+    await startErrand("");
+
+    // The VM record hangs off the workspace row, which is made sure of first.
+    expect(ensureScope).toHaveBeenCalledExactlyOnceWith(
+      accessScopeForUser("better-auth:alice")
+    );
+    expect(ensureBrowserVmRecord).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe(vmProfile(2));
+    // Forgetting them forgot the sign-ins on record already.
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+  });
+
+  it("moves a follow-up of a forgotten VM profile to the next generation", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(undefined);
+    ensureBrowserVmRecord.mockResolvedValue({ profileGeneration: 2 });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: none"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+      profileId: vmProfile(1),
+    });
+    const tool = await resolvedBrowserTask([], "а закажи ещё такое же");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "а закажи ещё такое же",
+        runId,
+        task: "а закажи ещё такое же",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.profileId).toBe(vmProfile(2));
+    expect(followUp?.sessionId).toBeUndefined();
+  });
+
+  it("asks for a fresh exit and tells the person it is the same browser after a captcha wall", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: captcha"),
+      profileId: vmProfile(1),
+      sessionId: `vm:${workspaceId}:s:${sessionId}`,
+    });
+    createBrowserUseRun.mockResolvedValue({
+      id: `vm:${workspaceId}:r:${followUpRunId}`,
+      model: "deepseek/deepseek-v4.1-flash",
+      sessionId: `vm:${workspaceId}:s:${freshSessionId}`,
+      status: "running",
+    });
+    const tool = await resolvedBrowserTask([], "попробуй ещё раз");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "попробуй ещё раз",
+        runId,
+        task: "попробуй ещё раз",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    // A VM profile the anti-bot wall already judged: a new session, and an
+    // exit address the workspace has not used before, when one was free.
+    expect(followUp?.sessionId).toBeUndefined();
+    expect(followUp?.freshExit).toBe(true);
+    // Truthful for a VM: the same Chrome, not literally a new browser.
+    expect(continuationNote(result)).toContain(
+      "continues in the same browser, on a new tab"
+    );
+    expect(continuationNote(result)).not.toContain(
+      "opened a fresh browser on the same profile"
+    );
+  });
+
+  it("does not hold the turn for a live view a VM run never has", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    vi.resetModules();
+    const vmRunId = `vm:${workspaceId}:r:${runId}`;
+    createBrowserUseRun.mockResolvedValue({
+      id: vmRunId,
+      model: "deepseek/deepseek-v4.1-flash",
+      sessionId: `vm:${workspaceId}:s:${sessionId}`,
+      status: "queued",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const { listBrowserUseRunEvents } =
+      await import("@agent/lib/browser-use/client");
+
+    const result = await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://example.com",
+        task: "Order the usual",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ runId: vmRunId, status: "running" });
+    expect(listBrowserUseRunEvents).not.toHaveBeenCalled();
+  });
+
+  it("gives a workspace moved back to Browser Use a Browser Use profile again", async () => {
+    readBrowserProfileId.mockResolvedValue(vmProfile(3));
+    createBrowserUseProfile.mockResolvedValueOnce({ id: "profile-2" });
+
+    await startErrand("");
+
+    expect(replaceBrowserProfileId).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      "profile-2"
+    );
+    expect(saveBrowserProfileId).not.toHaveBeenCalled();
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe("profile-2");
+    expect(countQueuedBrowserRuns).toHaveBeenCalledExactlyOnceWith({});
+    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+  });
+
+  it("keeps a Browser Use errand's follow-up on Browser Use after the workspace moved to its VM", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: none"),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+    });
+    const tool = await resolvedBrowserTask([], "а закажи ещё такое же");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "а закажи ещё такое же",
+        runId,
+        task: "а закажи ещё такое же",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    // Its profile was not forgotten: the errand goes on where its sign-ins
+    // are, and the workspace keeps the VM's profile for new errands.
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe("profile-1");
+    expect(replaceBrowserProfileId).not.toHaveBeenCalled();
+    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
+  });
+
+  it("starts a follow-up of its own when the live run's VM takes no message", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    const vmSession = `vm:${workspaceId}:s:${sessionId}`;
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      profileId: vmProfile(1),
+      sessionId: vmSession,
+    });
+    // The VM is not up: the run it had is not going on anywhere.
+    queueBrowserUseSessionMessage.mockRejectedValueOnce(
+      new BrowserUseError(409, "browser-vm", "The browser VM is not running.")
+    );
+    const tool = await resolvedBrowserTask([], "и добавь молоко");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "и добавь молоко",
+        runId,
+        task: "и добавь молоко",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    // The follow-up replaces the run, in its session, on its profile: a VM
+    // that is off answers it with a wait in the queue.
+    expect(cancelBrowserUseRun).toHaveBeenCalledOnce();
+    expect(claimBrowserRunCompletion).toHaveBeenCalledWith(runId, {
+      outcome: "Заменён продолжением",
+      status: "stopped",
+    });
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.profileId).toBe(vmProfile(1));
+    expect(followUp?.sessionId).toBe(vmSession);
+    expect(result).toMatchObject({ runId: followUpRunId });
+  });
+
+  it("leaves a VM run whose stop resolved but had not finished to settle, and queues the follow-up", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    const vmRunId = `vm:${workspaceId}:r:${runId}`;
+    const vmSession = `vm:${workspaceId}:s:${sessionId}`;
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      id: vmRunId,
+      profileId: vmProfile(1),
+      sessionId: vmSession,
+    });
+    // The worker takes no message from a run it is stopping, its cancel
+    // answered after its wait with the agent still on its step, and the
+    // session is busy with that very run.
+    queueBrowserUseSessionMessage.mockRejectedValueOnce(
+      new BrowserUseError(409, "browser-vm", '{"error":"busy"}')
+    );
+    cancelBrowserUseRun.mockResolvedValueOnce({ status: "running" });
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        409,
+        "browser-vm",
+        "The session is busy with its own run."
+      )
+    );
+    const tool = await resolvedBrowserTask([], "и добавь молоко");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "и добавь молоко",
+        runId: vmRunId,
+        task: "и добавь молоко",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    // The worker's cancel resolved, but its returned status still says the
+    // run is running: it may still be acting, so it is not closed here, and
+    // it settles as it ends instead.
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    // No second message into the stopping run: the follow-up waits for the
+    // session with everything it carries, and starts there once it is free.
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(createQueuedBrowserRun).toHaveBeenCalledOnce();
+    const queued = createQueuedBrowserRun.mock.calls[0]?.[1];
+    expect(queued).toMatchObject({
+      profileId: vmProfile(1),
+      sessionId: vmSession,
+    });
+    expect(queued?.pendingTask).toContain("и добавь молоко");
+    expect(result).toMatchObject({
+      previousRunId: vmRunId,
+      runId: "queued:errand-1",
+      status: "queued",
+    });
+  });
+
+  it("leaves a VM run whose stop did not get through to settle, and queues the follow-up", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vmRunId = `vm:${workspaceId}:r:${runId}`;
+    const vmSession = `vm:${workspaceId}:s:${sessionId}`;
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      id: vmRunId,
+      profileId: vmProfile(1),
+      sessionId: vmSession,
+    });
+    queueBrowserUseSessionMessage.mockRejectedValueOnce(
+      new BrowserUseError(409, "browser-vm", "The browser VM is not running.")
+    );
+    cancelBrowserUseRun.mockRejectedValueOnce(new TypeError("fetch failed"));
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        409,
+        "browser-vm",
+        "The session is busy with its own run."
+      )
+    );
+    const tool = await resolvedBrowserTask([], "и добавь молоко");
+
+    const result = await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "и добавь молоко",
+        runId: vmRunId,
+        task: "и добавь молоко",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    // It may still be acting: not closed as stopped, so it settles as it
+    // ends, and the follow-up waits for the session.
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(createQueuedBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      sessionId: vmSession,
+    });
+    expect(result).toMatchObject({ status: "queued" });
+    warn.mockRestore();
+  });
+
+  it("says the browser is unavailable for a Browser Use errand's follow-up on a deployment without it", async () => {
+    browserUseCloudConfigured.mockReturnValue(false);
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+
+    const result = await continueErrand({
+      completedAt: new Date(),
+      task: "а закажи ещё такое же",
+    });
+
+    expect(result).toMatchObject({ runId, status: "unavailable" });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+  });
+
+  it("moves a Browser Use errand's follow-up to the VM once the sign-ins were forgotten since it started", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    // «забудь мои входы» deleted every profile, then an errand on the VM
+    // made its next one: the Browser Use profile of this errand is gone.
+    readBrowserProfileId.mockResolvedValue(vmProfile(2));
+    readBrowserProfileSince.mockReturnValue(new Date());
+    ensureBrowserVmRecord.mockResolvedValue({ profileGeneration: 2 });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: none"),
+      browserReleasedAt: new Date(),
+      createdAt: new Date(Date.now() - 3_600_000),
+      liveViewUrl: null,
+    });
+    const tool = await resolvedBrowserTask([], "а закажи ещё такое же");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        personSaid: "а закажи ещё такое же",
+        runId,
+        task: "а закажи ещё такое же",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.profileId).toBe(vmProfile(2));
+    expect(followUp?.sessionId).toBeUndefined();
+  });
+
+  it("still fails a Browser Use session's refusal of the message", async () => {
+    queueBrowserUseSessionMessage.mockRejectedValueOnce(
+      new BrowserUseError(409, `/sessions/${sessionId}/queue`, "conflict")
+    );
+
+    await expect(continueErrand({ task: "и добавь молоко" })).rejects.toThrow(
+      "conflict"
+    );
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("tells Bro the person's own browser is starting while the errand waits for its VM", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+
+    readBrowserVm.mockResolvedValue({ state: "stopped", vmId: "vm-1" });
+    createBrowserUseRun.mockRejectedValueOnce(vmStarting());
+    const poweringOn = await startVmErrand();
+    readBrowserVm.mockResolvedValue(undefined);
+    createBrowserUseRun.mockRejectedValueOnce(vmStarting());
+    const firstStart = await startVmErrand();
+    readBrowserVm.mockResolvedValue({ state: "ready", vmId: "vm-1" });
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        429,
+        "browser-vm",
+        "The browser is busy with another errand.",
+        60_000
+      )
+    );
+    const busyVm = await startVmErrand();
+
+    expect(poweringOn).toMatchObject({ startsInMinutes: 1, status: "queued" });
+    expect(continuationNote(poweringOn)).toContain(
+      "Bro's own browser for the user is switched off between errands and is starting now, which takes about a minute"
+    );
+    expect(firstStart).toMatchObject({ startsInMinutes: 6, status: "queued" });
+    expect(continuationNote(firstStart)).toContain(
+      "is being set up for its very first start, which takes up to about six minutes"
+    );
+    // How long another errand takes is not known: no time is promised.
+    expect(busyVm).toMatchObject({
+      startsInMinutes: undefined,
+      status: "queued",
+    });
+    expect(continuationNote(busyVm)).toContain(
+      "runs one errand at a time and another errand of theirs is using it"
+    );
+    for (const result of [poweringOn, firstStart, busyVm]) {
+      expect(continuationNote(result)).not.toContain("cloud browser service");
+      expect(continuationNote(result)).toContain(
+        "Do not call browser_task start again for this errand"
+      );
+    }
+  });
+
+  it("says the browser is unavailable when the workspace is not on a VM and Browser Use is not set up", async () => {
+    browserUseCloudConfigured.mockReturnValue(false);
+
+    const result = await startErrand("");
+
+    expect(result).toMatchObject({ status: "unavailable" });
+    expect(continuationNote(result)).toContain(
+      "the browser service is temporarily unavailable"
+    );
+    // Nothing is counted for the month, and no profile is asked for.
+    expect(browserRunQuotaGate).not.toHaveBeenCalled();
+    expect(createBrowserUseProfile).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+
+    // A workspace on its VM needs no Browser Use.
+    usesBrowserVm.mockResolvedValue(true);
+    await startErrand("");
+    expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe(vmProfile(1));
+  });
+
+  it("says the browser is unavailable for a forgotten errand's follow-up with no Browser Use to move to", async () => {
+    browserUseCloudConfigured.mockReturnValue(false);
+    readBrowserProfileId.mockResolvedValue(undefined);
+
+    const result = await continueErrand({
+      completedAt: new Date(),
+      task: "а закажи ещё такое же",
+    });
+
+    expect(result).toMatchObject({ runId, status: "unavailable" });
+    expect(createBrowserUseProfile).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  async function startVmErrand() {
+    vi.resetModules();
+    const { browserTask } = await import("@agent/tools/browser_task");
+    return browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://example.com",
+        task: "Order the usual",
+      },
+      toolContext("better-auth:alice")
+    );
+  }
 });
 
 describe("browser_task starts per turn", () => {
@@ -7630,6 +8263,56 @@ describe("browser_task keeps sign-ins", () => {
     expect(result).toMatchObject({ runId, status: "stopped" });
     expect(claimBrowserRunBrowser).toHaveBeenCalledOnce();
     expect(releaseBrowserRunBrowser).toHaveBeenCalledWith(runId);
+  });
+
+  it("leaves a running errand open when its cancel resolves but has not finished", async () => {
+    // A worker answers a cancel once its wait is up even with the agent
+    // still on its step: the resolved call is not itself a stopped run, and
+    // treating it as one would hide whatever that step goes on to do.
+    readBrowserRunForScope.mockResolvedValue(browserRunRow());
+    cancelBrowserUseRun.mockResolvedValueOnce({ status: "running" });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "cancel", personWants: "look", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(runId);
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(stopBrowserRunErrand).not.toHaveBeenCalled();
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    expect(releaseBrowserRunBrowser).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ runId, status: "running" });
+  });
+
+  it("leaves open, rather than closing, a run started while cancelling a queued errand whose stop has not finished", async () => {
+    const startedId = "started-1";
+    readBrowserRunForScope
+      .mockResolvedValueOnce({
+        ...browserRunRow(),
+        sessionId: null,
+        status: "queued",
+      })
+      .mockResolvedValueOnce({
+        ...browserRunRow(),
+        id: startedId,
+        sessionId: "session-2",
+      });
+    closeQueuedBrowserRun.mockResolvedValueOnce(undefined);
+    cancelBrowserUseRun.mockResolvedValueOnce({ status: "running" });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "cancel", personWants: "look", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(startedId);
+    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
+    expect(settleSpendReservation).not.toHaveBeenCalled();
+    expect(releaseBrowserRunBrowser).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ runId: startedId, status: "running" });
   });
 
   it("stays in the same tab while the last run's page was kept", async () => {

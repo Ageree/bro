@@ -47,8 +47,10 @@ const attachedTargetSchema = z.object({
   targetInfo: z.object({ type: z.string() }),
 });
 
-/** What the injected program reports, in either of its two modes. */
+/** What the injected program reports, in any of its three modes. */
 const injectionSchema = z.object({
+  /** The field is focused and waits for the protocol's text insertion. */
+  insert: z.boolean().optional(),
   ok: z.boolean(),
   partial: z.boolean().optional(),
   score: z.number().optional(),
@@ -60,6 +62,7 @@ const resultSchema = z.json();
 
 /** A protocol frame: a reply carries an id, an event carries a method. */
 const messageSchema = z.object({
+  error: z.object({ message: z.string().optional() }).optional(),
   id: z.number().int().optional(),
   method: z.string().optional(),
   params: z.json().optional(),
@@ -74,6 +77,9 @@ export interface OneTimeCodeEntry {
   /** The value landed in an embedded frame rather than the page itself — the
    *  3-D Secure case. */
   readonly inFrame: boolean;
+  /** The whole code went in as one trusted text insertion into the focused
+   *  field, rather than through its value setter. Absent means it did not. */
+  readonly insertedText?: boolean;
   /** A single one-character box took only the first digit of a longer value,
    *  so the entry is not complete and the cloud agent must still type it. */
   readonly partial: boolean;
@@ -86,6 +92,7 @@ export interface OneTimeCodeEntry {
 
 const nothingTyped: OneTimeCodeEntry = {
   inFrame: false,
+  insertedText: false,
   partial: false,
   searched: 0,
   submitted: false,
@@ -133,17 +140,23 @@ const minFrameWidth = 100;
 const minFrameHeight = 40;
 
 /**
- * One program, two modes. `apply: false` only reports how good this frame's
- * best candidate is, so every frame can be ranked before anything is typed
- * anywhere; `apply: true` performs the entry in the frame that won. Keeping it
- * one body keeps the weights, the visibility rules and the never-click list in
- * a single place — two copies would drift the first time one is fixed.
+ * One program, three modes. `false` only reports how good this frame's best
+ * candidate is, so every frame can be ranked before anything is typed
+ * anywhere; `true` performs the entry in the frame that won; `"submit"`
+ * presses the confirm button after the protocol inserted the code into the
+ * field `true` focused. Keeping it one body keeps the weights, the visibility
+ * rules and the never-click list in a single place — two copies would drift
+ * the first time one is fixed.
+ *
+ * Fields and buttons are looked for inside open shadow roots too: WB ID keeps
+ * its phone and code fields in web components, which a document's own
+ * `querySelectorAll` never enters.
  *
  * It runs as a string inside the page, so it cannot import anything: the
  * scoring below is the only copy, and `scripts/cdp-probe.ts` is what proves it
  * against a real browser.
  */
-const injectionProgram = `function (raw, apply) {
+const injectionProgram = `function (raw, mode) {
   const value = String(raw ?? "");
   const miss = { ok: false, score: 0, typed: false, submitted: false };
   if (!value) return miss;
@@ -162,53 +175,99 @@ const injectionProgram = `function (raw, apply) {
     el.dispatchEvent(new InputEvent("input", { bubbles: true, data: next, inputType: "insertText" }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
-  const inputs = Array.from(document.querySelectorAll("input, textarea")).filter((el) => {
+  const deepAll = (selector) => {
+    const found = [];
+    const walk = (root) => {
+      for (const el of root.querySelectorAll(selector)) found.push(el);
+      for (const el of root.querySelectorAll("*")) if (el.shadowRoot) walk(el.shadowRoot);
+    };
+    walk(document);
+    return found;
+  };
+  // The field that has the focus, not the web component around it.
+  const focusedField = () => {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  };
+  const press = () => {
+    const forbid = /заказать|поехали|оплатить|купить|pay|order/i;
+    const allow = /^(войти|подтвердить|продолжить|далее|отправить|verify|continue|submit|confirm|next|sign in|log in)$/i;
+    for (const button of deepAll("button, [role='button'], input[type=submit]")) {
+      if (!visible(button)) continue;
+      const label = (button.innerText || button.value || button.getAttribute("aria-label") || "").trim();
+      if (!label || forbid.test(label) || !allow.test(label)) continue;
+      button.click();
+      return true;
+    }
+    return false;
+  };
+  // This runs in an isolated world, so the page never sees what is kept here.
+  const kept = "__browserUseCodeField";
+  if (mode === "submit") {
+    const field = globalThis[kept];
+    delete globalThis[kept];
+    // A form that went away with the code, as one that submits itself does,
+    // leaves nothing to confirm.
+    const present = field instanceof HTMLElement && field.isConnected;
+    return { ok: present, typed: present, submitted: present && press(), partial: false };
+  }
+  const inputs = deepAll("input, textarea").filter((el) => {
     if (!visible(el)) return false;
     if (el instanceof HTMLInputElement) {
       if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio", "password"].includes(el.type)) return false;
     }
     return true;
   });
+  const active = focusedField();
+  const oneTimeCode = (el) => (el.autocomplete || "").toLowerCase().includes("one-time-code");
   const score = (el) => {
-    const auto = (el.autocomplete || "").toLowerCase();
     const bits = [el.name, el.id, el.placeholder, el.getAttribute("aria-label"), el.type].filter(Boolean).join(" ").toLowerCase();
     let n = 0;
-    if (auto.includes("one-time-code")) n += 80;
+    if (oneTimeCode(el)) n += 80;
     if (/otp|sms|code|pin|код|подтвержд/.test(bits)) n += 50;
-    if (document.activeElement === el) n += 20;
+    if (active === el) n += 20;
     if (el.maxLength === 1 || el.maxLength === value.length) n += 10;
     return n;
   };
+  const takesWhole = (el) => el.maxLength < 0 || el.maxLength >= value.length;
+  // A field the page marks for the whole code outranks the boxes beside it:
+  // WB ID's code component is one such field and five one-character boxes
+  // that move the focus themselves, and filling the boxes one by one
+  // scrambled a correct code.
+  const wholeField = inputs.some((el) => oneTimeCode(el) && takesWhole(el));
   const boxes = inputs.filter((el) => el instanceof HTMLInputElement && el.maxLength === 1);
-  const useBoxes = boxes.length >= 4 && boxes.length <= 8 && /^\\d+$/.test(value);
-  const ranked = [...inputs].sort((a, b) => score(b) - score(a));
+  const useBoxes = !wholeField && boxes.length >= 4 && boxes.length <= 8 && /^\\d+$/.test(value);
+  const ranked = inputs.filter((el) => !wholeField || takesWhole(el)).sort((a, b) => score(b) - score(a));
   const target = useBoxes ? null : ranked[0];
   // No bare "the only input on the page" escape hatch: a score of zero with no
   // focus signal is not evidence this is the right field.
-  const targetOk = Boolean(target && (score(target) > 0 || document.activeElement === target));
+  const targetOk = Boolean(target && (score(target) > 0 || active === target));
   if (!useBoxes && !targetOk) return miss;
   const partial = Boolean(!useBoxes && target instanceof HTMLInputElement && target.maxLength === 1 && value.length > 1);
-  if (!apply) return { ok: true, score: useBoxes ? ${String(boxesScore)} : score(target), partial: partial, typed: false, submitted: false };
+  if (!mode) return { ok: true, score: useBoxes ? ${String(boxesScore)} : score(target), partial: partial, typed: false, submitted: false };
   if (useBoxes) {
     const chars = value.slice(0, boxes.length).split("");
     boxes.forEach((el, index) => setValue(el, chars[index] ?? ""));
-  } else if (partial) {
+    return { ok: true, typed: true, submitted: press(), partial: false };
+  }
+  if (partial) {
     setValue(target, value.slice(0, 1));
     return { ok: true, typed: true, submitted: false, partial: true };
-  } else {
-    setValue(target, value);
   }
-  const forbid = /заказать|поехали|оплатить|купить|pay|order/i;
-  const allow = /^(войти|подтвердить|продолжить|далее|отправить|verify|continue|submit|confirm|next|sign in|log in)$/i;
-  const buttons = Array.from(document.querySelectorAll("button, [role='button'], input[type=submit]"));
-  for (const button of buttons) {
-    if (!visible(button)) continue;
-    const label = (button.innerText || button.value || button.getAttribute("aria-label") || "").trim();
-    if (!label || forbid.test(label) || !allow.test(label)) continue;
-    button.click();
-    return { ok: true, typed: true, submitted: true, partial: false };
+  if (takesWhole(target)) {
+    // Focused, with anything already in it selected, the field takes the
+    // protocol's insertion as typed text. Only where the focus really landed:
+    // anywhere else the insertion would go wherever the focus is.
+    target.focus();
+    if (focusedField() === target) {
+      if (target.value) target.select();
+      globalThis[kept] = target;
+      return { ok: true, insert: true, typed: false, submitted: false, partial: false };
+    }
   }
-  return { ok: true, typed: true, submitted: false, partial: false };
+  setValue(target, value);
+  return { ok: true, typed: true, submitted: press(), partial: false };
 }`;
 
 /** One searchable JavaScript context: a frame, and the session that owns it. */
@@ -237,6 +296,7 @@ interface CdpCommand {
     readonly resourceType: string;
   }[];
   readonly requestId?: string;
+  readonly text?: string;
   readonly url?: string;
   readonly urls?: readonly string[];
   readonly waitForDebuggerOnStart?: boolean;
@@ -329,10 +389,20 @@ export async function typeOneTimeCodeOverCdp(
     }
     if (!best) return { ...nothingTyped, searched: contexts.length };
     const applied = await evaluate(connection, best.context, value, true);
-    return {
+    const where = {
       inFrame: best.context.depth > 0,
-      partial: applied?.partial === true,
       searched: contexts.length,
+    };
+    if (applied?.insert === true) {
+      return {
+        ...where,
+        ...(await insertCode(connection, best.context, value)),
+      };
+    }
+    return {
+      ...where,
+      insertedText: false,
+      partial: applied?.partial === true,
       submitted: applied?.submitted === true,
       typed: applied?.typed === true,
     };
@@ -484,11 +554,48 @@ export async function visitPageOverCdp(
   }
 }
 
+/**
+ * The whole code as one trusted text insertion into the field the program
+ * focused, then the confirm button. A value set from outside fires events a
+ * web component may never hear, and WB ID's code boxes, typed key by key,
+ * moved their own focus and scrambled a correct code (365578 went in as
+ * 336655); one insertion of the whole code did not.
+ */
+async function insertCode(
+  connection: CdpConnection,
+  context: FrameContext,
+  value: string
+) {
+  try {
+    await connection.call(
+      "Input.insertText",
+      { text: value },
+      context.sessionId
+    );
+  } catch {
+    // The field is focused and still empty: the cloud agent types the code.
+    return {
+      insertedText: false,
+      partial: false,
+      submitted: false,
+      typed: false,
+    };
+  }
+  const confirmed = await evaluate(connection, context, value, "submit");
+  return {
+    insertedText: true,
+    partial: false,
+    submitted: confirmed?.submitted === true,
+    typed: true,
+  };
+}
+
 async function evaluate(
   connection: CdpConnection,
   context: FrameContext,
   value: string,
-  apply: boolean
+  /** Score, apply, or confirm after an insertion: see `injectionProgram`. */
+  mode: boolean | "submit"
 ) {
   const reply = await connection
     .call(
@@ -496,7 +603,7 @@ async function evaluate(
       {
         awaitPromise: false,
         contextId: context.contextId,
-        expression: `(${injectionProgram})(${JSON.stringify(value)}, ${String(apply)})`,
+        expression: `(${injectionProgram})(${JSON.stringify(value)}, ${JSON.stringify(mode)})`,
         returnByValue: true,
       },
       context.sessionId
@@ -669,7 +776,10 @@ async function pageSocketUrl(cdpUrl: string) {
 
 async function connect(cdpUrl: string): Promise<CdpConnection> {
   const socket = new WebSocket(await pageSocketUrl(cdpUrl));
-  const pending = new Map<number, (reply: CdpResult) => void>();
+  const pending = new Map<
+    number,
+    (reply: z.infer<typeof messageSchema>) => void
+  >();
   const attachedListeners: ((sessionId: string) => void)[] = [];
   const pausedListeners: ((
     request: z.infer<typeof pausedRequestSchema>
@@ -697,7 +807,7 @@ async function connect(cdpUrl: string): Promise<CdpConnection> {
       const waiting = pending.get(message.data.id);
       if (!waiting) return;
       pending.delete(message.data.id);
-      waiting(message.data.result ?? {});
+      waiting(message.data);
       return;
     }
     if (message.data.method === "Fetch.requestPaused") {
@@ -729,7 +839,17 @@ async function connect(cdpUrl: string): Promise<CdpConnection> {
         }, commandTimeoutMs);
         pending.set(id, (reply) => {
           clearTimeout(timer);
-          resolve(reply);
+          // A refused command is not an empty answer: whoever sent it has to
+          // know that nothing happened.
+          if (reply.error) {
+            reject(
+              new Error(
+                `The browser refused ${method}: ${reply.error.message ?? "no reason given"}.`
+              )
+            );
+            return;
+          }
+          resolve(reply.result ?? {});
         });
         const frame: CdpRequest = { id, method, params: parameters };
         if (sessionId !== undefined) frame.sessionId = sessionId;

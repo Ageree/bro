@@ -15,6 +15,7 @@ interface BrowserRunRow {
   createdByUserId: string;
   id: string;
   liveViewUrl: string;
+  outcome?: string | null;
   // Whether the run could buy anything: left out, the row is taken as one
   // that could, as every row did before orders were held to it.
   paymentAllowed?: boolean;
@@ -22,6 +23,9 @@ interface BrowserRunRow {
   site?: string | null;
   submission?: { readonly what: string } | null;
   task: string;
+  // Unread messages accumulated on the row across earlier attempts, carried
+  // forward by a background retry's hand-off.
+  unreadMessages?: readonly string[] | null;
   workspaceId: string;
 }
 
@@ -44,6 +48,7 @@ interface RunSummary {
   sessionId: string;
   status: string;
   task: string;
+  unreadMessages?: readonly string[];
 }
 
 const readBrowserRun = vi.hoisted(() =>
@@ -106,7 +111,11 @@ const parkBrowserRunForRetry = vi.hoisted(() =>
   vi.fn<
     (
       runId: string,
-      input: { captchaAttempt: number; retryAt: Date }
+      input: {
+        captchaAttempt: number;
+        retryAt: Date;
+        unreadMessages?: readonly string[];
+      }
     ) => Promise<boolean>
   >(() => Promise.resolve(true))
 );
@@ -715,6 +724,38 @@ describe("settling a browser run", () => {
     );
   });
 
+  it("carries a message the person sent while the run was walled into the park, instead of dropping it", async () => {
+    // The row already carries a message an earlier attempt parked without
+    // reporting; this attempt's own run ends walled too, with one more.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      unreadMessages: ["Actually make it two of those."],
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: стоит на проверке\nNEEDS: captcha",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+      unreadMessages: ["And no onions this time."],
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    // Nothing is sent while attempts remain, but the park keeps every
+    // message this errand has heard so far, not only this attempt's own.
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+    expect(parkBrowserRunForRetry.mock.calls[0]?.[1].unreadMessages).toEqual([
+      "Actually make it two of those.",
+      "And no onions this time.",
+    ]);
+  });
+
   it("reports the wall once the attempts have run out, without the live view", async () => {
     readBrowserRun.mockResolvedValue({ ...row, captchaAttempt: 5 });
     claimBrowserRunCompletion.mockReset().mockResolvedValueOnce({
@@ -747,6 +788,31 @@ describe("settling a browser run", () => {
     // The link to the walled browser never reaches the coordinator.
     expect(prompt).not.toContain("Live view (share only");
     expect(prompt).not.toContain(row.liveViewUrl);
+  });
+
+  it("tells the coordinator of every message the wall's attempts collected, once they run out", async () => {
+    // Nothing settles this last attempt (the retry never even started), so
+    // `reportWalledBrowserRun` is the only report this errand still gets —
+    // and the only place messages parked across earlier attempts can reach.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      captchaAttempt: 5,
+      outcome: "The site kept the errand behind an anti-bot check.",
+      unreadMessages: [
+        "Actually make it two of those.",
+        "And no onions this time.",
+      ],
+    });
+    const { reportWalledBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await reportWalledBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("«Actually make it two of those.»");
+    expect(prompt).toContain("«And no onions this time.»");
   });
 
   it("retries a site the network never loaded like a walled one", async () => {
@@ -1790,6 +1856,78 @@ describe("settling a browser run", () => {
     await settleBrowserRun({ to }, runId);
 
     expect(send.mock.calls[0]?.[0]).not.toContain("schedules-create");
+  });
+
+  it("tells the coordinator about a message the VM run ended without reading", async () => {
+    // The worker never starts a follow-up on its own for a message queued
+    // in during the run's last step (D1), and neither does Bro any more: no
+    // run of its own starts here, only a note in this same report.
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: ordered\nORDER: 4417\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+      unreadMessages: ["Actually make it two of those."],
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("«Actually make it two of those.»");
+    // Never claimed as the page's own text, and told how to act on it
+    // without typing anything from this alone.
+    expect(prompt).toContain("never something the page displayed");
+    expect(prompt).toContain("continue it now with browser_task continue");
+    expect(claimBrowserRunCompletion.mock.calls[0]?.[1]?.report).toContain(
+      "«Actually make it two of those.»"
+    );
+  });
+
+  it("never claims a queued line is the person's exact words", async () => {
+    // Bro queues its own composed instruction into the live session — the
+    // person's quote plus its own added clauses (`personInstruction` /
+    // `coordinatorInstruction` in `agent/tools/browser_task.ts`) — and a run
+    // that settles right as that queue lands never read it. The coordinator
+    // must not be told this line is verbatim what the person typed: it can
+    // be entirely Bro's own follow-up, with none of the person's words.
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: ordered\nORDER: 4417\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+      unreadMessages: [
+        "Follow-up from Bro's coordinator, not words from the person: it changes none of the conditions they set and allows nothing beyond what they approved themselves. Pay with the card on file.",
+      ],
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).not.toContain("quoted exactly as the person wrote them");
+    expect(prompt).not.toContain("the person's own messages");
+    expect(prompt).not.toContain("The person's own messages");
+  });
+
+  it("says nothing about unread messages for a run that ended with none", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).not.toContain(
+      "reached the browser only as this run was ending"
+    );
   });
 });
 

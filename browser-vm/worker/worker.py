@@ -16,15 +16,18 @@ site secrets with each run, and all stay in memory. Chrome always talks to the f
 127.0.0.1:3128, which refuses to connect anywhere until Bro has set the residential proxy: the
 profile never sees the VM's own datacenter address.
 
-Routes (all but /v1/health need a token):
-  GET  /v1/health                         liveness, Chrome, busy flag (no secrets)
-  POST /v1/session                        {proxy: {host, port, username, password}} → exit address
+Routes (all but a plain /v1/health need a token):
+  GET  /v1/health[?machine=1]             liveness, Chrome, busy flag (no secrets); `machine` (with a token):
+                                          memory, load, disk, profile size
+  POST /v1/session                        {proxy: {host, port, username, password}} → exit address and speed
+                                          (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
   POST /v1/runs                           start an agent run; idempotent on its id; 409 when busy
-  GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage
-  POST /v1/runs/<id>/cancel               stop the agent, keep the page
+  GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage, unreadMessages
+  POST /v1/runs/<id>/cancel               stop the agent (waits up to 20 s for it to end), keep the page
   GET  /v1/sessions/<id>                  latest run and its status
-  POST /v1/sessions/<id>/messages         {text}: join the live run, or start a follow-up in the tab
+  POST /v1/sessions/<id>/messages         {text}: join the live run (unread when it ends: unreadMessages),
+                                          or start a follow-up in the tab; 409 while the live run cancels
   POST /v1/sessions/<id>/release          close the session's tab (the page is no longer kept)
   POST /v1/sessions/<id>/open {url}       direct mode, no agent: open a page in the session's tab
   GET  /v1/sessions/<id>/state            address, title, indexed interactive elements
@@ -37,7 +40,7 @@ Routes (all but /v1/health need a token):
   POST /v1/tabs, DELETE /v1/tabs/<id>     a blank tab for a keep-alive visit, and closing it
   POST /v1/browser/stop | /v1/browser/start | /v1/browser/restart
   POST /v1/profile/reset                  wipe the Chrome profile (forget every sign-in)
-  POST /v1/admin/worker                   replace this worker's code (checksummed, only when idle)
+  POST /v1/admin/worker                   replace this worker's code (checksummed, must load, only when idle)
   GET  /v1/cdp/<token>/json[/version]     CDP discovery, socket URLs rewritten to this endpoint
   WS   /v1/cdp/<token>/devtools/...       CDP socket to one target of this VM's Chrome
 """
@@ -63,7 +66,13 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-28.5"
+VERSION = "2026-09-28.7"
+CODE = Path(__file__).resolve()
+# The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
+# bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
+PREVIOUS_CODE = CODE.with_name(CODE.name + ".prev")
+# Loads a new worker.py as a module in a separate Python: its imports and top-level code run, `main` does not.
+LOAD_CHECK = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='candidate')"
 ROOT = Path(os.environ.get("BRO_STATE_DIR", "/var/lib/bro"))
 CONFIG_FILE = Path(os.environ.get("BRO_WORKER_CONFIG", "/etc/bro/worker.json"))
 IMAGE_FILE = Path("/etc/bro/image")
@@ -72,10 +81,13 @@ RUNS = ROOT / "runs"
 SESSIONS = ROOT / "sessions"
 UPLOADS = ROOT / "uploads"
 GENERATION_FILE = ROOT / "generation"
+TABS_FILE = ROOT / "tabs.json"
 CDP_HTTP = "http://127.0.0.1:9222"
 LISTEN_PORT = int(os.environ.get("BRO_WORKER_PORT", "8080"))
 FORWARD_PORT = 3128
 MAX_TOKEN_LIFETIME_S = 900
+# The profile's size is a walk over tens of thousands of cache files: done at most once a minute.
+PROFILE_WALK_S = 60
 # The agent must not "find" the site in an archive or a cache: in the pilot it answered from a 2024
 # snapshot of ozon.ru on web.archive.org and called that success.
 PROHIBITED_DOMAINS = [
@@ -83,6 +95,11 @@ PROHIBITED_DOMAINS = [
     "webcache.googleusercontent.com", "*.translate.goog", "yandexwebcache.net", "*.yandexwebcache.net",
 ]
 TERMINAL = {"completed", "failed", "cancelled"}
+# Bro starts its follow-up in the same session right after a cancel: the cancel answers once the agent's
+# step has ended, so that start is not refused as busy, but a step that hangs does not hold the answer.
+CANCEL_WAIT_S = 20
+# Where restored memory ends: the steps before it served an earlier request of the session.
+NEW_REQUEST = "<sys>A new request starts here: the steps above served an earlier one in this session.</sys>"
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 log = logging.getLogger("bro-worker")
 
@@ -273,6 +290,10 @@ async def page_targets():
     return [t for t in await chrome_json("/json/list") if t.get("type") == "page"]
 
 
+async def page_ids():
+    return {t["id"] for t in await page_targets()}
+
+
 async def new_tab():
     result = await cdp_command(await browser_socket(), "Target.createTarget", {"url": "about:blank"})
     return result["targetId"]
@@ -317,14 +338,14 @@ class Session:
 
     def __init__(self, session_id):
         self.id = session_id
-        self.tab = None
+        self.tab = None  # the tab the agent works in (it follows the agent into a tab it opened)
+        self.tabs = set()  # every tab the session opened, closed together on release
         self.latest_run_id = None
         self.agent_state = None  # browser_use AgentState JSON of the last finished run
         self.llm = None
         self.sensitive_data = None
         self.options = {}
         self.released = False
-        self.root_task = None  # the errand as first given: a follow-up joins it as a follow-up request
         self.direct = None  # a BrowserSession for direct operations (open/state/action) between runs
 
     @property
@@ -355,6 +376,15 @@ class Run:
         self.messages = []
         self.cancel_requested = False
         self.agent = None
+        self.unread_messages = []  # messages queued into this run the agent never read (set once terminal)
+        self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
+        self.stored = None  # the status its record on disk has
+        # Creation order, restart-independent and gapless: now_iso() only has 1-second resolution, so
+        # two runs dispatched within the same second (a follow-up right after settle, a retried start
+        # after a lost create-answer) tie on created_at/started_at, and the run id is a random UUID
+        # with no chronological meaning. Assigned from Worker.run_seq under its lock at creation, and
+        # persisted, so load_runs() can still tell them apart correctly after a restart.
+        self.seq = 0
 
     def public(self):
         return {
@@ -363,17 +393,21 @@ class Run:
             "createdAt": self.created_at, "startedAt": self.started_at, "finishedAt": self.finished_at,
             "steps": self.steps[-50:], "stepCount": len(self.steps), "finalUrl": self.final_url,
             "finalTitle": self.final_title, "usage": self.usage, "engine": self.engine, "jev": self.jev,
+            "unreadMessages": self.unread_messages,
         }
 
     def save(self, agent_state=None):
         RUNS.mkdir(parents=True, exist_ok=True)
-        record = self.public() | {"steps": self.steps}
+        record = self.public() | {"steps": self.steps, "seq": self.seq}
         if agent_state is not None:
             record["agentState"] = agent_state
         path = RUNS / f"{disk_name(self.id)}.json"
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(record, ensure_ascii=False))
+        # ASCII escapes: text an agent's `evaluate` cut mid-emoji holds a lone surrogate, which UTF-8
+        # cannot encode, and every save of the run would fail on it.
+        temporary.write_text(json.dumps(record))
         temporary.replace(path)
+        self.stored = self.status
 
     @classmethod
     def load(cls, record):
@@ -382,9 +416,11 @@ class Run:
                                ("success", "success"), ("createdAt", "created_at"),
                                ("startedAt", "started_at"), ("finishedAt", "finished_at"),
                                ("steps", "steps"), ("finalUrl", "final_url"), ("finalTitle", "final_title"),
-                               ("usage", "usage"), ("engine", "engine"), ("jev", "jev")]:
+                               ("usage", "usage"), ("engine", "engine"), ("jev", "jev"),
+                               ("unreadMessages", "unread_messages"), ("seq", "seq")]:
             if key in record:
                 setattr(run, attribute, record[key])
+        run.stored = run.status
         return run
 
 
@@ -424,34 +460,80 @@ class Worker:
         self.lock = asyncio.Lock()
         self.started = time.time()
         self.vm_address = None
+        self.visit_tabs = set()  # blank tabs Bro opened for a keep-alive visit (POST /v1/tabs)
+        self.restarting = False  # new code is in place and the worker exits: no run starts
+        self.profile_walk = (float("-inf"), None)  # (monotonic time, MB) of the last walk of the profile
+        self.run_seq = 0  # next Run.seq to hand out; resumed past every seq load_runs() found on disk
         self.load_runs()
+        self.load_tabs()
 
     # Persistence: a run's record survives a worker or VM restart; one that was running then is
     # reported as failed with its last checkpoint, never resumed behind Bro's back.
     def load_runs(self):
         if not RUNS.exists():
             return
+        loaded = []
         for path in RUNS.glob("*.json"):
             try:
                 record = json.loads(path.read_text())
-                run = Run.load(record)
+                loaded.append((Run.load(record), record))
             except (OSError, ValueError, KeyError):
                 continue
+        # Oldest first, since the glob's order is arbitrary: the newest run is the session's latest, and
+        # its memory is the newest checkpoint a run left (a run killed before its first step left none).
+        # created_at/started_at only have 1-second resolution, so two runs of one session dispatched
+        # within the same second tie on both; `seq` (assigned in creation order, restart-independent)
+        # breaks that tie correctly where the run id — a random UUID — could not.
+        loaded.sort(key=lambda item: (item[0].created_at or "", item[0].started_at or "", item[0].seq))
+        self.run_seq = max((run.seq for run, _record in loaded), default=-1) + 1
+        for run, record in loaded:
             if run.status not in TERMINAL:
                 run.status = "failed"
                 run.error = ("The browser worker restarted while the run was working (VM or Chrome restart); "
                              f"the last checkpoint was step {len(run.steps)} on {run.final_url or run.steps[-1]['url'] if run.steps else 'no page'}.")
                 run.finished_at = now_iso()
-                run.save(record.get("agentState"))
+                # A disk that refuses the write (full) must not keep the worker from starting: the
+                # record is written again before the next exit (`persist_ended`).
+                with contextlib.suppress(OSError):
+                    run.save(record.get("agentState"))
             self.runs[run.id] = run
             session = self.sessions.setdefault(run.session_id, Session(run.session_id))
-            first = self.runs.get(session.latest_run_id) if session.latest_run_id else None
-            if session.root_task is None or (first and run.created_at < first.created_at):
-                session.root_task = run.task
-            if session.latest_run_id is None or (self.runs.get(session.latest_run_id) and
-                                                 self.runs[session.latest_run_id].created_at <= run.created_at):
-                session.latest_run_id = run.id
-                session.agent_state = record.get("agentState")
+            session.latest_run_id = run.id
+            if record.get("agentState") is not None:
+                session.agent_state = record["agentState"]
+
+    # Chrome outlives a worker restart (a code update, a crash): the sessions' tabs are kept on disk, so a
+    # page waiting for a code is still the errand's afterwards, not an orphan the next run replaces.
+    def load_tabs(self):
+        try:
+            kept = {session_id: (tabs.get("tab"), set(tabs.get("tabs") or []))
+                    for session_id, tabs in json.loads(TABS_FILE.read_text()).items()}
+        except (OSError, ValueError, AttributeError, TypeError):  # none kept, or a file the worker cannot read
+            return
+        for session_id, (tab, tabs) in kept.items():
+            session = self.sessions.setdefault(session_id, Session(session_id))
+            session.tab, session.tabs = tab, tabs
+
+    def save_tabs(self):
+        kept = {session.id: {"tab": session.tab, "tabs": sorted(session.tabs)}
+                for session in self.sessions.values() if session.tabs and not session.released}
+        with contextlib.suppress(OSError):
+            temporary = TABS_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(kept))
+            temporary.replace(TABS_FILE)
+
+    async def adopt_tabs(self):
+        """At start: a tab Chrome still has is the session's again; one it lost (Chrome or the VM
+        restarted too, or Chrome does not answer) is forgotten."""
+        try:
+            live = await page_ids()
+        except Exception:
+            live = set()
+        for session in self.sessions.values():
+            session.tabs &= live
+            if session.tab not in session.tabs:
+                session.tab = None
+        self.save_tabs()
 
     def accept_generation(self, generation):
         if generation > self.generation:
@@ -461,11 +543,71 @@ class Worker:
     def busy(self):
         return self.current is not None and self.current.status not in TERMINAL
 
+    def persist_ended(self):
+        """Write again the ends of runs the disk refused (a full or failing disk): after an exit the worker
+        would read them as interrupted, and a completed run as failed. True once every end is on disk."""
+        for run in self.runs.values():
+            if run.status in TERMINAL and run.stored != run.status:
+                session = self.sessions.get(run.session_id)
+                memory = session.agent_state if session and session.latest_run_id == run.id else None
+                with contextlib.suppress(Exception):
+                    run.save(memory)
+        return all(run.stored == run.status for run in self.runs.values() if run.status in TERMINAL)
+
+    def stop_runs(self):
+        """Stopping (power-off, restart): a working run is recorded right away as interrupted, with its
+        checkpoint, or as what it came to when it was only letting go of the browser; the agent is not
+        waited for, since systemd would kill it mid-step anyway."""
+        for run in list(self.runs.values()):
+            if run.status in TERMINAL:
+                continue
+            run.cancel_requested = True
+            run.status, run.result, run.error = run.outcome or (
+                "failed", run.result, f"The browser worker stopped while the run was working (step {len(run.steps)}).")
+            run.finished_at = now_iso()
+            run.unread_messages = list(run.messages)
+            run.messages = []
+            session = self.sessions.get(run.session_id)
+            with contextlib.suppress(Exception):
+                agent_state = run.agent.state.model_dump(mode="json") if run.agent else None
+                run.save(agent_state or (session.agent_state if session else None))
+        self.persist_ended()
+
+    async def profile_size(self):
+        """The profile's size for /v1/health?machine: walked in a thread, since this loop also runs the
+        forwarder and the agent, and at most once a minute."""
+        walked_at, size = self.profile_walk
+        if time.monotonic() - walked_at > PROFILE_WALK_S:
+            size = await asyncio.to_thread(profile_mb)
+            self.profile_walk = (time.monotonic(), size)
+        return size
+
     async def ensure_tab(self, session):
-        tabs = {t["id"] for t in await page_targets()}
-        if session.tab not in tabs:
+        if session.tab not in await page_ids():
             session.tab = await new_tab()
+            session.tabs.add(session.tab)
+            self.save_tabs()
         return session.tab
+
+    async def follow_focus(self, session, browser, before):
+        """Clicking a link that opens a new tab moves the agent there (browser-use switches its focus): the
+        session follows it, so the result's screenshot, a code typed over CDP and the next run all use the
+        page the agent ended on. Every tab that appeared since `before` (the tabs open when the agent
+        took the browser) is the session's too, so releasing it closes them all."""
+        try:
+            after = await page_ids()
+        except Exception:
+            return
+        others = set(self.visit_tabs)
+        for other in self.sessions.values():
+            if other is not session:
+                others |= other.tabs
+        session.tabs = (session.tabs | (after - before - others)) & after
+        focus = getattr(browser, "agent_focus_target_id", None)
+        if focus in after and focus not in others:
+            session.tab = focus
+            session.tabs.add(focus)
+        self.save_tabs()
 
     async def browser_session(self, session, options):
         from browser_use import BrowserSession
@@ -559,6 +701,7 @@ class Worker:
 
     async def run_agent(self, run, session, text):
         from browser_use import Agent, ChatOpenRouter
+        from browser_use.agent.message_manager.views import HistoryItem
         from browser_use.agent.views import AgentState
 
         await self.release_direct(session)
@@ -566,6 +709,7 @@ class Worker:
         llm_config = session.llm
         llm = ChatOpenRouter(model=llm_config["model"], base_url=llm_config["baseUrl"], api_key=llm_config["apiKey"])
         browser = await self.browser_session(session, session.options)
+        before = await page_ids()
         uploads = sorted(str(p) for p in UPLOADS.glob("*")) if UPLOADS.exists() else []
         injected = None
         if session.agent_state and session.options.get("continueMemory") is not False:
@@ -575,6 +719,23 @@ class Worker:
                 injected.stopped = False
                 injected.paused = False
                 injected.consecutive_failures = 0
+                # A follow-up's own text is its whole request: an earlier run's task (its consent, cap and
+                # the person's details) is not carried over as the "initial request", and the page it
+                # continues on is not left for a URL found in the text.
+                injected.follow_up_task = True
+                injected.message_manager_state.agent_history_items.append(HistoryItem(system_message=NEW_REQUEST))
+                # Reset the counters instead of offsetting them: browser-use's 75% budget warning divides
+                # the session's *total* n_steps by max_steps, so a long chain of follow-ups carried a high
+                # n_steps into a max_steps offset to match, and warned the model to wrap up before its
+                # first step. A fresh count keeps the warning tied to this run's own budget; the history
+                # and memory above are untouched, so the model still sees everything the session learned.
+                injected.n_steps = 1
+                if hasattr(injected.message_manager_state, "last_compaction_step"):
+                    injected.message_manager_state.last_compaction_step = None
+                if hasattr(injected, "plan_generation_step"):
+                    injected.plan_generation_step = None
+        # Each run gets its own step budget, counted from its own first step, injected or not.
+        max_steps = int(session.options.get("maxSteps") or 60)
         deadline = time.monotonic() + int(session.options.get("timeoutSeconds") or 1500)
 
         async def on_step(state, output, number):
@@ -582,14 +743,24 @@ class Worker:
             run.final_url = getattr(state, "url", None) or run.final_url
             with contextlib.suppress(Exception):
                 run.save(agent.state.model_dump(mode="json"))
-            while run.messages:
-                agent.add_new_task(run.messages.pop(0))
 
         async def should_stop():
             return run.cancel_requested or time.monotonic() > deadline
 
+        pending_messages = []  # this step's batch: folded back if the step is cut off before it finishes
+
+        async def read_messages(_):
+            # Read right before the model's next call, so that call can act on them. The last step (only
+            # `done` is left) and one about to be stopped leave them for the follow-up run instead.
+            pending_messages.clear()
+            if run.messages and agent.state.n_steps < max_steps and not await should_stop():
+                pending_messages.extend(run.messages)
+                run.messages = []
+                for message in pending_messages:
+                    agent.add_new_task(message)
+
         agent = Agent(
-            task=(session.root_task or text) if injected is not None else text, llm=llm, browser_session=browser, tools=self.tools(session, run),
+            task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
             sensitive_data=session.sensitive_data or None, use_vision=bool(session.options.get("vision", False)),
             calculate_cost=True, use_judge=False, available_file_paths=uploads,
             injected_agent_state=injected, register_new_step_callback=on_step,
@@ -599,13 +770,18 @@ class Worker:
             max_failures=4,
             enable_signal_handler=False,
         )
-        if injected is not None:
-            agent.add_new_task(text)
         run.agent = agent
         try:
-            history = await agent.run(max_steps=int(session.options.get("maxSteps") or 60))
+            history = await agent.run(max_steps=max_steps, on_step_start=read_messages)
         finally:
+            # browser-use swallows an InterruptedError raised by `should_stop` mid-step (a cancel or the
+            # deadline landing while the LLM call or an action was in flight) and returns normally, with
+            # `agent.state.stopped` the only sign that the step which just read `pending_messages` never
+            # ran to completion: put them back so they are not silently dropped from `unreadMessages`.
+            if pending_messages and getattr(agent.state, "stopped", False):
+                run.messages = pending_messages + run.messages
             run.agent = None
+            await self.follow_focus(session, browser, before)
         with contextlib.suppress(Exception):
             session.agent_state = agent.state.model_dump(mode="json")
         final = history.final_result()
@@ -654,14 +830,20 @@ class Worker:
             # The agent continues on jev's page; the blank tab the session had is closed.
             if session.tab and session.tab != result["target"]:
                 await close_tab(session.tab)
+                session.tabs.discard(session.tab)
             session.tab = result["target"]
+            session.tabs.add(session.tab)
+            self.save_tabs()
         return result
 
     async def execute(self, run, session, text):
         run.status = "running"
         run.started_at = now_iso()
-        run.save()
+        # The outcome is set only once the run has let go of the browser: until then a message still
+        # joins it (and, if the agent never reads it, is recorded below as unread).
+        status, result, error = "failed", None, "The run was interrupted."
         try:
+            run.save()  # a disk that refuses the record fails the run with the reason, never holds the browser
             if not await chrome_ready():
                 await systemctl("start")
                 if not await wait_chrome(30):
@@ -672,24 +854,54 @@ class Worker:
                 run.jev = await self.run_jev(run, session, text)
                 run.save()
                 if run.jev.get("status") == "DONE" and session.options.get("jevCanFinish"):
-                    run.status, run.result = "completed", run.jev.get("visible_text", "")[:3000]
+                    status, result, error = "completed", run.jev.get("visible_text", "")[:3000], None
                     run.final_url = run.jev.get("final_url")
                     return
-            status, result, error = await self.run_agent(run, session, text)
-            run.status, run.result, run.error = status, result, error
-        except Exception as error:  # a crash is a failed run with its reason, never a silent loss
+            if run.cancel_requested:  # stopped during the jev segment: the agent does not start
+                status, result, error = "cancelled", None, "Stopped by Bro."
+            else:
+                status, result, error = await self.run_agent(run, session, text)
+        except Exception as crash:  # a crash is a failed run with its reason, never a silent loss
             log.exception("run %s failed", run.id)
-            run.status, run.error = "failed", f"{type(error).__name__}: {error}"[:2000]
+            status, error = "failed", f"{type(crash).__name__}: {crash}"[:2000]
         finally:
+            run.outcome = status, result, error  # what a worker stopped during the screenshot records
             with contextlib.suppress(Exception):
                 report = session.workspace / "report"
                 if not (report / "final.png").exists() and not (report / "final.jpg").exists() and session.tab:
                     report.mkdir(parents=True, exist_ok=True)
                     (report / "final.jpg").write_bytes(await screenshot(session.tab))
-            run.finished_at = now_iso()
-            run.save(session.agent_state)
+            # From here to `run.messages = []` nothing waits, so no message slips in as read and then
+            # dropped: one that arrives after this point finds the run already terminal, and
+            # `session_message` starts a follow-up itself (the idle-session rule) instead of queuing here.
+            # `stop_runs()` can itself finalize the run first, while this coroutine only sat awaiting the
+            # screenshot above: if it did, `run.messages` is already the empty list `stop_runs` drained
+            # into `run.unread_messages`, so re-deriving from it here would silently replace the correctly
+            # captured messages with `[]`.
+            already_finalized = run.status in TERMINAL
+            if not already_finalized:
+                run.status, run.result, run.error = status, result, error
+                run.finished_at = now_iso()
+                # Messages the agent never read (the run was finishing when they came) are not dropped:
+                # they go on the terminal record as `unreadMessages`, for Bro to act on. The worker itself
+                # never starts a follow-up run.
+                run.unread_messages = list(run.messages)
+                run.messages = []
+            try:
+                run.save(session.agent_state)
+            except Exception:  # Bro reads the end from memory; an update or a stop writes it again first
+                log.exception("run %s: its end was not written", run.id)
             if self.current is run:
                 self.current = None
+
+    def begin(self, run, session):
+        """Hand the browser to a run. Nothing here waits, so no other start slips in between the caller's
+        busy check and this. The run's record is written as it starts (`execute`), where a write the disk
+        refuses fails the run and lets go of the browser."""
+        self.runs[run.id] = run
+        session.latest_run_id = run.id
+        self.current = run
+        asyncio.get_running_loop().create_task(self.execute(run, session, run.task))
 
     async def start_run(self, body):
         run_id = safe_id(body.get("id"))
@@ -706,6 +918,8 @@ class Worker:
             if self.busy():
                 raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
                                        content_type="application/json")
+            if self.restarting:
+                raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
             session_id = safe_id(body.get("sessionId") or f"s-{uuid.uuid4()}")
             session = self.sessions.get(session_id)
             if session is None:
@@ -713,19 +927,20 @@ class Worker:
             elif body.get("freshMemory"):
                 session.agent_state = None
             session.released = False
-            if session.root_task is None or session.agent_state is None:
-                session.root_task = task
             session.llm = llm
-            session.sensitive_data = secrets_to_sensitive_data(body.get("secrets") or [])
+            # An omitted `secrets` means "keep what the session already has", not "clear it": a
+            # follow-up into the same session — a live-run queue joins without ever calling this, but an
+            # idle-session message or a retried `POST /v1/runs` reaches here — must not silently wipe a
+            # binding the person is still mid-flow with (a login finished after an SMS code, a saved
+            # password, a payment field) just because its caller did not resend `secrets`.
+            if "secrets" in body:
+                session.sensitive_data = secrets_to_sensitive_data(body.get("secrets") or [])
             session.options = {k: body.get(k) for k in ("maxSteps", "timeoutSeconds", "allowedDomains", "vision",
                                                          "jev", "jevCanFinish", "continueMemory")}
             run = Run(run_id, session_id, task)
+            run.seq, self.run_seq = self.run_seq, self.run_seq + 1
             run.engine = body.get("engine") if body.get("engine") in ("agent", "jev-then-agent") else "agent"
-            self.runs[run_id] = run
-            session.latest_run_id = run_id
-            self.current = run
-            run.save()
-            asyncio.get_running_loop().create_task(self.execute(run, session, task))
+            self.begin(run, session)
             return run, True
 
 
@@ -814,19 +1029,29 @@ def machine():
     with contextlib.suppress(Exception):
         usage = shutil.disk_usage("/")
         info["diskGb"] = {"total": round(usage.total / 2**30, 1), "used": round(usage.used / 2**30, 1)}
-    with contextlib.suppress(Exception):
-        info["profileMb"] = round(sum(f.stat().st_size for f in PROFILE.rglob("*") if f.is_file()) / 2**20, 1)
     return info
 
 
+def profile_mb():
+    """Size of the Chrome profile: its caches hold tens of thousands of files, a fraction of a second's walk."""
+    try:
+        return round(sum(f.stat().st_size for f in PROFILE.rglob("*") if f.is_file()) / 2**20, 1)
+    except OSError:  # a file Chrome removed during the walk
+        return None
+
+
 async def health(request):
+    details = {}
+    if request.query.get("machine"):
+        authorize(request)  # the details cost a walk of the profile: not for anyone who has the address
+        details = {**machine(), "profileMb": await worker.profile_size()}
     stage_file = ROOT / "stage"
     return web.json_response({
         "worker": VERSION, "image": IMAGE_FILE.read_text().strip() if IMAGE_FILE.exists() else None,
         "configured": worker.config is not None, "uptimeSeconds": float(Path("/proc/uptime").read_text().split()[0]),
         "chrome": await chrome_ready(), "busy": worker.busy(), "proxy": worker.forwarder.upstream is not None,
         "stage": stage_file.read_text().strip() if stage_file.exists() else None, "generation": worker.generation,
-        **(machine() if request.query.get("machine") else {}),
+        **details,
     })
 
 
@@ -837,24 +1062,28 @@ async def configure_session(request):
     if not isinstance(proxy, dict) or not proxy.get("host") or not proxy.get("port"):
         raise web.HTTPBadRequest(text="proxy {host, port, username?, password?} is required")
     worker.forwarder.configure(proxy)
-    exit_address = None
     proxy_url = f"http://127.0.0.1:{FORWARD_PORT}"
-    try:
-        async with aiohttp.ClientSession() as http:
+    async with aiohttp.ClientSession() as http:
+        try:
             started = time.monotonic()
             async with http.get("https://ipinfo.io/json", proxy=proxy_url, timeout=aiohttp.ClientTimeout(total=20)) as response:
                 data = await response.json(content_type=None)
             exit_address = {k: data.get(k) for k in ("ip", "city", "region", "country", "org")}
             exit_address["latencyMs"] = round((time.monotonic() - started) * 1000)
+        except Exception as error:  # `error` means no address
+            exit_address = {"error": f"{type(error).__name__}: {error}"[:300]}
+        else:
             # Residential exits differ tenfold in speed (the same Wildberries page took 3 s through one and
-            # 70 s through another): measure a megabyte so Bro can move a slow exit before the errand.
-            started = time.monotonic()
-            async with http.get("https://speed.cloudflare.com/__down?bytes=1000000", proxy=proxy_url,
-                                timeout=aiohttp.ClientTimeout(total=25)) as response:
-                size = len(await response.read())
-            exit_address["mbps"] = round(size * 8 / 1e6 / max(time.monotonic() - started, 0.001), 2)
-    except Exception as error:
-        exit_address = {**(exit_address or {}), "error": f"{type(error).__name__}: {error}"[:300]}
+            # 70 s through another): measure a megabyte so Bro can move a slow exit before the errand. A
+            # megabyte that did not come through leaves the address standing, with its speed unknown.
+            try:
+                started = time.monotonic()
+                async with http.get("https://speed.cloudflare.com/__down?bytes=1000000", proxy=proxy_url,
+                                    timeout=aiohttp.ClientTimeout(total=25)) as response:
+                    size = len(await response.read())
+                exit_address["mbps"] = round(size * 8 / 1e6 / max(time.monotonic() - started, 0.001), 2)
+            except Exception as error:
+                exit_address["speedError"] = f"{type(error).__name__}: {error}"[:300]
     if not await chrome_ready():
         await systemctl("start")
         await wait_chrome(30)
@@ -898,6 +1127,11 @@ async def cancel_run(request):
         if run.agent is not None:
             with contextlib.suppress(Exception):
                 run.agent.stop()
+        # The agent stops once its step ends: the answer waits for that (bounded), so it reads cancelled
+        # and a start in the same session right after it is not refused as busy.
+        deadline = time.monotonic() + CANCEL_WAIT_S
+        while run.status not in TERMINAL and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
     return web.json_response(run.public())
 
 
@@ -918,9 +1152,12 @@ async def read_session(request):
 
 
 async def session_message(request):
-    """A message into a session: joins its live run (read before the agent's next step), or, when the
-    session is idle, becomes a follow-up run in the same tab with the same memory (Browser Use's
-    "idle session drains the message into a new run")."""
+    """A message into a session: joins its live run (read before the agent's next step; one the run ends
+    without reading is recorded on its terminal record as `unreadMessages`, for Bro to act on — the
+    worker itself never starts a follow-up), or, when the session is idle — including right after its
+    latest run went terminal — becomes a follow-up run in the same tab with the same memory (Browser
+    Use's "idle session drains the message into a new run"), 409 if another run holds the browser. A run
+    being cancelled reads nothing more: the message is refused as busy."""
     authorize(request)
     session = find_session(request)
     body = await request.json()
@@ -929,6 +1166,9 @@ async def session_message(request):
         raise web.HTTPBadRequest(text="text is required")
     latest = worker.runs.get(session.latest_run_id)
     if latest is not None and latest.status not in TERMINAL:
+        if latest.cancel_requested:
+            raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": latest.id}),
+                                   content_type="application/json")
         latest.messages.append(text)
         return web.json_response({"sessionId": session.id, "status": "queued", "runId": latest.id})
     llm = body.get("llm") or session.llm
@@ -960,7 +1200,9 @@ async def open_page(request):
         raise web.HTTPBadRequest(text="url must be http(s)")
     started = time.monotonic()
     browser = await worker.direct_browser(session)
+    before = await page_ids()
     await browser.navigate_to(url)
+    await worker.follow_focus(session, browser, before)
     return web.json_response({"url": await browser.get_current_page_url(), "title": await browser.get_current_page_title(),
                               "ms": round((time.monotonic() - started) * 1000)})
 
@@ -990,8 +1232,10 @@ async def page_action(request):
         raise web.HTTPBadRequest(text=f"action must be one of {sorted(DIRECT_ACTIONS)}")
     browser = await worker.direct_browser(session)
     started = time.monotonic()
+    before = await page_ids()
     result = await worker.tools(session, None).registry.execute_action(
         action, params, browser_session=browser, sensitive_data=session.sensitive_data or None)
+    await worker.follow_focus(session, browser, before)
     return web.json_response({"error": getattr(result, "error", None),
                               "content": (getattr(result, "extracted_content", None) or "")[:5000],
                               "url": await browser.get_current_page_url(),
@@ -1014,9 +1258,10 @@ async def release_session(request):
     if latest is not None and latest.status not in TERMINAL:
         return web.json_response({"status": "running"})
     await worker.release_direct(session)
-    if session.tab:
-        await close_tab(session.tab)
-    session.tab, session.released = None, True
+    for tab in session.tabs | ({session.tab} if session.tab else set()):
+        await close_tab(tab)
+    session.tab, session.tabs, session.released = None, set(), True
+    worker.save_tabs()
     if not await page_targets():
         with contextlib.suppress(Exception):
             await new_tab()  # Chrome quits with its last tab
@@ -1065,15 +1310,18 @@ async def download(request):
 
 async def open_tab(request):
     authorize(request)
-    return web.json_response({"targetId": await new_tab()})
+    target = await new_tab()
+    worker.visit_tabs.add(target)  # not a tab an errand's agent opened, even if one is running
+    return web.json_response({"targetId": target})
 
 
 async def delete_tab(request):
     authorize(request)
     target = request.match_info["target"]
-    if any(session.tab == target for session in worker.sessions.values()):
+    if any(target == session.tab or target in session.tabs for session in worker.sessions.values()):
         raise web.HTTPConflict(text=json.dumps({"error": "an errand's tab"}), content_type="application/json")
     await close_tab(target)
+    worker.visit_tabs.discard(target)
     if not await page_targets():
         with contextlib.suppress(Exception):
             await new_tab()
@@ -1102,31 +1350,44 @@ async def browser_action(request):
     ready = await wait_chrome(30) if action != "stop" else False
     if action != "start":
         for session in worker.sessions.values():
-            session.tab = None
+            session.tab, session.tabs = None, set()
+        worker.save_tabs()
     return web.json_response({"rc": code, "chrome": ready, "output": output})
 
 
 async def update_worker(request):
     """Replace this worker's own code (Bro rolls a fix out to VMs that were created from an older image;
     their disks carry the person's profile, so they are not re-created for a code change). The body is
-    the new worker.py; it must match `X-Content-Sha256` and compile, and the worker must be idle. The
-    worker then exits and systemd starts the new code."""
+    the new worker.py; it must match `X-Content-Sha256` and load (`LOAD_CHECK`: an import that fails would
+    crash-loop the VM's only way in), and the worker must be idle. The code it replaces stays as
+    `PREVIOUS_CODE` until the new code is up. The worker then exits and systemd starts the new code."""
     authorize(request)
-    if worker.busy():
+    if worker.busy() or worker.restarting:
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     source = await request.read()
     if hashlib.sha256(source).hexdigest() != request.headers.get("X-Content-Sha256", ""):
         raise web.HTTPBadRequest(text="checksum mismatch")
-    target = Path(__file__).resolve()
-    candidate = target.with_suffix(".new")
+    candidate = CODE.with_suffix(".new")
     candidate.write_bytes(source)
-    check = await asyncio.create_subprocess_exec(sys.executable, "-m", "py_compile", str(candidate),
-                                                 stderr=asyncio.subprocess.PIPE)
+    # From the code's folder, which `python worker.py` puts first on the import path, as `-c` puts the cwd.
+    check = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", LOAD_CHECK, str(candidate),
+                                                 cwd=CODE.parent, stderr=asyncio.subprocess.PIPE)
     _, errors = await check.communicate()
     if check.returncode != 0:
         candidate.unlink(missing_ok=True)
         raise web.HTTPBadRequest(text=errors.decode(errors="replace")[-500:])
-    candidate.replace(target)
+    # The checks waited: a run may have started meanwhile, and the exit must cut off neither it nor the end
+    # of a run that is not on disk yet (a restart would read it as interrupted).
+    if worker.busy() or worker.restarting:
+        candidate.unlink(missing_ok=True)
+        raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
+    if not worker.persist_ended():
+        candidate.unlink(missing_ok=True)
+        raise web.HTTPServiceUnavailable(text=json.dumps({"error": "a finished run could not be written to disk"}),
+                                         content_type="application/json")
+    shutil.copyfile(CODE, PREVIOUS_CODE)
+    candidate.replace(CODE)
+    worker.restarting = True  # nothing starts in the moment before the exit
     asyncio.get_running_loop().call_later(0.5, os._exit, 0)
     return web.json_response({"updated": True, "restarting": True})
 
@@ -1142,7 +1403,8 @@ async def reset_profile(request):
         else:
             child.unlink(missing_ok=True)
     for session in worker.sessions.values():
-        session.tab, session.agent_state = None, None
+        session.tab, session.tabs, session.agent_state = None, set(), None
+    worker.save_tabs()
     await systemctl("start")
     return web.json_response({"reset": True, "chrome": await wait_chrome(30)})
 
@@ -1153,24 +1415,43 @@ def cdp_base(request, token):
     return f"wss://{request.host}/v1/cdp/{token}"
 
 
+def scoped_tab(scope):
+    """The one tab a `ses`-scoped token (one session, or one keep-alive tab, `b:<targetId>`) may reach,
+    or None if that tab is not open. `scope` absent (an unscoped, VM-wide token) is not handled here:
+    such a token is never handed to code that should reach only one page (`signBrowserVmToken`'s own
+    doc comment), so callers gate on `isinstance(scope, str)` before trusting an unscoped token."""
+    if not isinstance(scope, str):
+        return None
+    if scope.startswith("b:"):
+        return scope[2:]
+    session = worker.sessions.get(scope)
+    return session.tab if session else None
+
+
 async def cdp_json(request):
     token = request.match_info["token"]
     scope = authorize(request, token).get("ses")
     suffix = request.match_info.get("tail", "")
     if suffix == "version":
+        # The browser-level socket this hands out reaches every target on the VM (the CDP `Target`
+        # domain): a token scoped to one session or tab must not even discover it.
+        if isinstance(scope, str):
+            raise web.HTTPForbidden()
         data = await chrome_json("/json/version")
         data["webSocketDebuggerUrl"] = cdp_base(request, token) + "/devtools/browser/" + \
             data["webSocketDebuggerUrl"].rsplit("/", 1)[-1]
         return web.json_response(data)
     targets = await chrome_json("/json/list")
-    # The page the errand works in first: Bro's CDP client types into the first page target.
-    focus = worker.current.session_id if worker.current else None
-    focus_tab = worker.sessions[focus].tab if focus in worker.sessions else None
-    if isinstance(scope, str) and scope.startswith("b:"):
-        focus_tab = scope[2:]
-    elif scope in worker.sessions:
-        focus_tab = worker.sessions[scope].tab or focus_tab
-    targets.sort(key=lambda t: (t.get("id") != focus_tab, t.get("type") != "page"))
+    if isinstance(scope, str):
+        # Scoped to one session or keep-alive tab: list that tab alone, never another session's kept-
+        # open page or another keep-alive visit, so this token cannot discover one to open next.
+        allowed = scoped_tab(scope)
+        targets = [t for t in targets if t.get("id") == allowed]
+    else:
+        # The page the errand works in first: Bro's CDP client types into the first page target.
+        focus = worker.current.session_id if worker.current else None
+        focus_tab = worker.sessions[focus].tab if focus in worker.sessions else None
+        targets.sort(key=lambda t: (t.get("id") != focus_tab, t.get("type") != "page"))
     for target in targets:
         if target.get("webSocketDebuggerUrl"):
             target["webSocketDebuggerUrl"] = cdp_base(request, token) + "/devtools/page/" + target["id"]
@@ -1180,10 +1461,14 @@ async def cdp_json(request):
 
 async def cdp_socket(request):
     token = request.match_info["token"]
-    authorize(request, token)
+    scope = authorize(request, token).get("ses")
     kind, target = request.match_info["kind"], request.match_info["target"]
     if kind not in ("page", "browser") or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", target):
         raise web.HTTPNotFound()
+    if isinstance(scope, str) and (kind != "page" or target != scoped_tab(scope)):
+        # A session- or tab-scoped token reaches its own page alone: the browser-level socket, and any
+        # other session's page, are out of its reach even though the signature checks out.
+        raise web.HTTPForbidden()
     client = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024)
     await client.prepare(request)
     async with aiohttp.ClientSession() as http:
@@ -1268,29 +1553,22 @@ async def main():
     for directory in (RUNS, SESSIONS, UPLOADS):
         directory.mkdir(parents=True, exist_ok=True)
     worker = Worker()
+    await worker.adopt_tabs()
     worker.vm_address = await vm_address()
     forward = await asyncio.start_server(worker.forwarder.handle, "127.0.0.1", FORWARD_PORT)
     runner = web.AppRunner(application(), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", LISTEN_PORT).start()
     log.info("worker %s listening; configured=%s", VERSION, worker.config is not None)
+    with contextlib.suppress(OSError):  # up: the update that brought this code in is not rolled back
+        PREVIOUS_CODE.unlink(missing_ok=True)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     async with forward:
         await stop.wait()
-    # Stopping (power-off, restart): a working run is recorded as interrupted with its checkpoint
-    # right away; the agent is not waited for, since systemd would kill it mid-step anyway.
-    for run in list(worker.runs.values()):
-        if run.status not in TERMINAL:
-            run.cancel_requested = True
-            run.status, run.finished_at = "failed", now_iso()
-            run.error = f"The browser worker stopped while the run was working (step {len(run.steps)})."
-            session = worker.sessions.get(run.session_id)
-            with contextlib.suppress(Exception):
-                agent_state = run.agent.state.model_dump(mode="json") if run.agent else None
-                run.save(agent_state or (session.agent_state if session else None))
+    worker.stop_runs()
     with contextlib.suppress(Exception):
         await asyncio.wait_for(runner.cleanup(), 3)
     os._exit(0)

@@ -87,6 +87,51 @@ const openRouterApiKeySchema = browserUseApiKeySchema;
 // A Composio project key goes out as a header as well.
 const composioApiKeySchema = browserUseApiKeySchema;
 
+// The Cloud.ru and RouterAI keys reached the hosted environment not only with
+// line breaks inside but wrapped in typographic quotes from a chat paste, and
+// every call then failed with a 401 that named neither.
+const pastedKeySchema = z
+  .string()
+  .transform((value) =>
+    value.replaceAll(/\s+/gu, "").replaceAll(/^['"‘’“”]+|['"‘’“”]+$/gu, "")
+  )
+  .refine((value) => value.length > 0, "Required");
+
+// `host:port:username:password`, the line a residential proxy provider hands
+// out. The password is last because it is the only part that may hold a
+// colon. `{session}` in the username is where the sticky-session token of one
+// workspace goes (`agent/lib/browser-vm/proxy.ts`): a shared exit would let a
+// site tie every person's errands together.
+const browserVmProxySchema = z
+  .string()
+  .trim()
+  .transform((value) => {
+    const [host = "", port = "", username = "", ...password] = value.split(":");
+    return {
+      host,
+      password: password.join(":"),
+      port: Number(port),
+      username,
+    };
+  })
+  .pipe(
+    z.object({
+      host: z.string().min(1, "BROWSER_VM_PROXY needs a host"),
+      password: z.string().min(1, "BROWSER_VM_PROXY needs a password"),
+      port: z
+        .number()
+        .int("BROWSER_VM_PROXY needs a port number")
+        .positive("BROWSER_VM_PROXY needs a port number")
+        .max(65_535, "BROWSER_VM_PROXY needs a port number"),
+      username: z
+        .string()
+        .refine(
+          (value) => value.includes("{session}"),
+          "BROWSER_VM_PROXY needs {session} in its username"
+        ),
+    })
+  );
+
 export const env = createEnv({
   server: {
     // Required
@@ -111,6 +156,11 @@ export const env = createEnv({
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
+    // Where a browser errand runs when its workspace is not in the pilot list
+    // below: Browser Use Cloud, or the workspace's own Cloud.ru VM
+    // (`agent/lib/browser-vm/backend.ts`). The VM backend also needs every
+    // CLOUDRU_* and BROWSER_VM_* value it lacks a default for.
+    BROWSER_BACKEND: z.enum(["browser-use", "cloudru"]).default("browser-use"),
     BROWSER_USE_API_KEY: browserUseApiKeySchema.optional(),
     BROWSER_USE_BASE_URL: requiredValue
       .refine(
@@ -167,6 +217,69 @@ export const env = createEnv({
       .max(30, "BROWSER_USE_SIGN_IN_REFRESH_DAYS must be at most 30")
       .default(3),
     BROWSER_USE_WEBHOOK_SECRET: requiredValue.optional(),
+    // The agent model on the VM, reached through an OpenAI-compatible
+    // provider that answers Russian addresses: OpenRouter, OpenAI and
+    // Anthropic refuse Cloud.ru's with a 403.
+    BROWSER_VM_LLM_API_KEY: pastedKeySchema.optional(),
+    BROWSER_VM_LLM_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.canParse(value),
+        "BROWSER_VM_LLM_BASE_URL must be an absolute URL"
+      )
+      .default("https://routerai.ru/api/v1"),
+    // A VM nobody used for this long is powered off: a stopped VM bills only
+    // its disk, which keeps the person's sign-ins.
+    BROWSER_VM_IDLE_MINUTES: z.coerce
+      .number()
+      .int("BROWSER_VM_IDLE_MINUTES must be a whole number of minutes")
+      .min(3, "BROWSER_VM_IDLE_MINUTES must be at least 3")
+      .max(240, "BROWSER_VM_IDLE_MINUTES must be at most 240")
+      .default(20),
+    BROWSER_VM_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    BROWSER_VM_PROXY: browserVmProxySchema.optional(),
+    // Each VM's worker key is derived from this one and the workspace id, so
+    // the key a VM holds opens no other VM (`agent/lib/browser-vm/token.ts`).
+    BROWSER_VM_SIGNING_KEY: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^(?:[\da-f]{2}){32,}$/iu.test(value),
+        "BROWSER_VM_SIGNING_KEY must be at least 32 bytes written in hex"
+      )
+      .optional(),
+    // The pilot: workspace ids, or the emails of their owners, that get a VM
+    // whatever BROWSER_BACKEND says.
+    BROWSER_VM_WORKSPACES: z
+      .string()
+      .transform((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      )
+      .optional(),
+    // Cloud.ru Evolution, where the browser VMs live. The image is the one
+    // `browser-vm/image/build.py` sealed; the security group is the one it
+    // created. Without a project id the first project of the key's customer
+    // is used.
+    CLOUDRU_BROWSER_DISK_GB: z.coerce
+      .number()
+      .int("CLOUDRU_BROWSER_DISK_GB must be a whole number of gigabytes")
+      .min(10, "CLOUDRU_BROWSER_DISK_GB must be at least the image's 10")
+      .max(200, "CLOUDRU_BROWSER_DISK_GB must be at most 200")
+      .default(12),
+    CLOUDRU_BROWSER_FLAVOR: trimmedValue.default("gen-2-4"),
+    CLOUDRU_BROWSER_IMAGE: trimmedValue.optional(),
+    CLOUDRU_KEY_ID: pastedKeySchema.optional(),
+    CLOUDRU_KEY_SECRET: pastedKeySchema.optional(),
+    CLOUDRU_PROJECT_ID: z
+      .string()
+      .trim()
+      .pipe(z.guid("CLOUDRU_PROJECT_ID must be a project UUID"))
+      .optional(),
+    CLOUDRU_SECURITY_GROUP: trimmedValue.default("bro-browser"),
+    CLOUDRU_SUBNET: trimmedValue.default("Default_ru.AZ-3"),
+    CLOUDRU_ZONE: trimmedValue.default("ru.AZ-3"),
     // Composio keeps each person's Google, Notion and Slack grants and calls
     // those APIs for Bro; without the key every integration is absent. The
     // auth config ids name the project's OAuth setups per app (see

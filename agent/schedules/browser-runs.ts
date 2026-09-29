@@ -23,6 +23,8 @@ import {
   type BrowserRunDelivery,
 } from "@agent/lib/browser-use/completion";
 import { stopClaimedBrowser } from "@agent/lib/browser-use/release";
+import { reconcileBrowserVms } from "@agent/lib/browser-vm/lifecycle";
+import { browserVmReconcileConfigured } from "@agent/lib/browser-vm/runs";
 import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import {
   claimDueBrowserRunRetries,
@@ -89,11 +91,19 @@ const liveWatchMs = 45_000;
  */
 const runReconcileWaitMs = 30_000;
 const stageWaitMs = 40_000;
+/**
+ * The browser VMs' stage calls Cloud.ru and every VM's worker. It comes
+ * after the reports, and gets less than the other stages, so that what it
+ * waits on costs the live watch as little of the tick as it can.
+ */
+const vmStageWaitMs = 20_000;
 
 export default defineSchedule({
   cron: "* * * * *",
   run({ attachSession, to, waitUntil }) {
-    if (!browserUseConfigured()) return;
+    // VMs already made are looked after even once new errands can no longer
+    // start on them: they bill until they are stopped.
+    if (!browserUseConfigured() && !browserVmReconcileConfigured()) return;
     waitUntil(pollBrowserRuns({ attachSession, to }));
   },
 });
@@ -135,16 +145,32 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   // every poll until it lands or runs out of attempts.
   await pollStage("redeliver", () => redeliverPendingReports(delivery));
   await pollStage("overdue", () => watchOverdueReports(new Date()));
+  // Browser VMs on their way up are followed until their worker answers, and
+  // idle ones are stopped. Only after the reports: every call here goes to
+  // Cloud.ru or to a VM, and a Cloud.ru outage that held each of them to its
+  // timeout would otherwise hold every person's report behind it, Browser
+  // Use's included. An errand whose VM came up starts on the next tick.
+  if (browserVmReconcileConfigured()) {
+    await pollStage(
+      "vms",
+      () => reconcileBrowserVms(new Date()),
+      vmStageWaitMs
+    );
+  }
   await watchLiveBrowserRuns(delivery, watchUntil);
 }
 
-async function pollStage(stage: string, work: () => Promise<void>) {
+async function pollStage(
+  stage: string,
+  work: () => Promise<void>,
+  waitMs = stageWaitMs
+) {
   try {
-    const done = await within(work(), stageWaitMs);
+    const done = await within(work(), waitMs);
     if (done.timedOut) {
       console.warn("[browser-use] poll stage is still going", {
         stage,
-        waitedMs: stageWaitMs,
+        waitedMs: waitMs,
       });
     }
   } catch (error) {
@@ -376,17 +402,20 @@ async function retryWalledBrowserRun(
 
 /**
  * Start what the queue holds, longest-waiting first, until Browser Use says
- * it is busy again: the next errand would only get the same 429. A start that
- * fails otherwise is put back in line for the next minute rather than lost;
- * the queue window closes it eventually.
+ * it is busy again: the next errand of Browser Use would only get the same
+ * 429. Errands on a workspace's own browser VM do not wait on Browser Use,
+ * so the drain goes on with those alone (`vmOnly`). A start that fails
+ * otherwise is put back in line for the next minute rather than lost; the
+ * queue window closes it eventually.
  */
 async function drainBrowserQueue(
   delivery: BrowserRunDelivery,
   now: Date,
-  startsLeft = maximumQueueStartsPerPoll
+  startsLeft = maximumQueueStartsPerPoll,
+  vmOnly = false
 ): Promise<void> {
   if (startsLeft <= 0) return;
-  const row = await claimNextQueuedBrowserRun(now);
+  const row = await claimNextQueuedBrowserRun(now, { vmOnly });
   if (!row) return;
   let result: Awaited<ReturnType<typeof startQueuedBrowserRun>>;
   try {
@@ -406,21 +435,31 @@ async function drainBrowserQueue(
         runId: row.id,
       });
     }
-    return drainBrowserQueue(delivery, now, startsLeft - 1);
+    return drainBrowserQueue(delivery, now, startsLeft - 1, vmOnly);
   }
-  if (result.status === "expired" || result.status === "no_credits") {
+  if (
+    result.status === "expired" ||
+    result.status === "no_credits" ||
+    result.status === "unavailable"
+  ) {
     if (result.closed) {
       await reportClosedBrowserRun(delivery, result.closed, result.outcome);
     }
   }
-  if (result.status === "busy" || result.status === "no_credits") return;
-  // An errand still waiting on its workspace's other browser started
-  // nothing and took no slot; it is parked past this tick, so the next
-  // claim is another errand.
-  if (result.status === "waiting") {
-    return drainBrowserQueue(delivery, now, startsLeft);
+  // Browser Use is full, or out of credits, for every errand of its own;
+  // the VMs' errands still start.
+  if (result.status === "busy" || result.status === "no_credits") {
+    if (vmOnly) return;
+    return drainBrowserQueue(delivery, now, startsLeft, true);
   }
-  return drainBrowserQueue(delivery, now, startsLeft - 1);
+  // An errand still waiting on its workspace's other browser, or on its
+  // workspace's VM, started nothing and took no shared slot; it is parked
+  // past this tick, so the next claim is another errand. Nor did one closed
+  // for want of Browser Use on a deployment without it, which left the line.
+  if (result.status === "waiting" || result.status === "unavailable") {
+    return drainBrowserQueue(delivery, now, startsLeft, vmOnly);
+  }
+  return drainBrowserQueue(delivery, now, startsLeft - 1, vmOnly);
 }
 
 async function redeliverBrowserRunReport(

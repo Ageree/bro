@@ -1,3 +1,4 @@
+import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
@@ -8,10 +9,12 @@ import {
   parkQueuedBrowserRun,
   readBrowserRun,
 } from "@db/services/browser-runs";
+import { readBrowserVm } from "@db/services/browser-vms";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
   browserUseBusy,
+  browserUseCloudConfigured,
   browserUseOutOfCredits,
   cancelBrowserUseRun,
   createBrowserUseRun,
@@ -34,7 +37,9 @@ type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
  * to every start. A turn used to retry the start on the spot — one did 77
  * times — which only kept the cap full. The errand waits here instead: the
  * poller tries the longest-waiting one each minute, and a busy answer ends
- * that minute's tries, since the next errand would get the same answer.
+ * that minute's tries, since the next errand would get the same answer. A
+ * workspace's own browser VM answers busy, or starting, for that workspace
+ * alone, so its errands wait without holding back anyone else's.
  */
 const queueRetryMs = 60_000;
 /** A throttle may ask for a longer pause; five minutes is the most we wait. */
@@ -59,13 +64,33 @@ function expectedStartMinutes(ahead: number) {
   return Math.min(2 + ahead * 3, 30);
 }
 
+/** Whether an errand runs on its workspace's own browser VM. */
+function onBrowserVm(profileId: string | null | undefined) {
+  return (
+    profileId !== null && profileId !== undefined && isBrowserVmId(profileId)
+  );
+}
+
 /**
- * Whether new errands go straight to the back of the line: while anything is
- * queued, the cap was full a minute ago, and a start now would only take the
- * slot the queued errand is about to get — or add one more 429.
+ * The line an errand on `profileId` waits in. Browser Use errands share the
+ * project's cap across every workspace; a workspace on its own browser VM
+ * waits only for that VM, whatever other workspaces' VMs are doing.
  */
-export async function browserQueueOccupied() {
-  return (await countQueuedBrowserRuns()) > 0;
+function lineFor(workspaceId: string, profileId: string | null | undefined) {
+  return onBrowserVm(profileId) ? { vmWorkspaceId: workspaceId } : {};
+}
+
+/**
+ * Whether a new errand goes straight to the back of its line: while anything
+ * is queued there, the browser it waits for was busy or starting a minute
+ * ago, and a start now would only take the slot the queued errand is about
+ * to get — or add one more 429.
+ */
+export async function browserQueueOccupied(
+  workspaceId: string,
+  profileId: string
+) {
+  return (await countQueuedBrowserRuns(lineFor(workspaceId, profileId))) > 0;
 }
 
 /**
@@ -88,7 +113,10 @@ export async function queueBrowserErrand(
 ) {
   const { composedTask, fromRunId, retryAfterMs, ...row } = input;
   const account = row.waitsForAccount ?? undefined;
-  const ahead = account === undefined ? await countQueuedBrowserRuns() : 0;
+  const ahead =
+    account === undefined
+      ? await countQueuedBrowserRuns(lineFor(scope.workspaceId, row.profileId))
+      : 0;
   const queued = await createQueuedBrowserRun(
     scope,
     {
@@ -102,6 +130,12 @@ export async function queueBrowserErrand(
     return {
       minutes: undefined,
       note: signInWaitNote(account),
+      runId: queued.id,
+    };
+  }
+  if (onBrowserVm(row.profileId)) {
+    return {
+      ...(await browserVmWait(scope.workspaceId, ahead)),
       runId: queued.id,
     };
   }
@@ -136,9 +170,49 @@ function queuedErrandNote(ahead: number, minutes: number) {
   ].join(" ");
 }
 
+/**
+ * What Bro is told about an errand that waits for the workspace's own
+ * browser VM, which is off between errands and has one browser: that the
+ * person's browser is starting, or busy with another of their errands —
+ * never that a shared service is full. A VM powers on in about a minute;
+ * the first start creates it, which takes up to about six.
+ */
+async function browserVmWait(workspaceId: string, ahead: number) {
+  const vm = await readBrowserVm(workspaceId);
+  if (vm?.state === "ready" || ahead > 0) {
+    const others =
+      ahead > 0
+        ? `${String(ahead)} other errand${ahead === 1 ? "" : "s"} of theirs ${ahead === 1 ? "is" : "are"} ahead of this one`
+        : "another errand of theirs is using it";
+    return {
+      minutes: undefined,
+      note: [
+        `Bro's own browser for the user runs one errand at a time and ${others}, so this errand is queued and starts by itself right after.`,
+        "Tell the user in one short line that it starts once the errand before it is done; the outcome arrives as a new message like any other.",
+        queuedErrandRules,
+      ].join(" "),
+    };
+  }
+  const firstStart =
+    (vm?.vmId ?? null) === null ||
+    vm?.state === "creating" ||
+    vm?.state === "failed";
+  const wait = firstStart ? "up to about six minutes" : "about a minute";
+  return {
+    minutes: firstStart ? 6 : 1,
+    note: [
+      firstStart
+        ? `Bro's own browser for the user is being set up for its very first start, which takes ${wait}; this errand is queued and starts by itself as soon as the browser is up.`
+        : `Bro's own browser for the user is switched off between errands and is starting now, which takes ${wait}; this errand is queued and starts by itself as soon as the browser is up.`,
+      `Tell the user in one short line that their browser is starting and the errand begins in ${wait}; the outcome arrives as a new message like any other.`,
+      queuedErrandRules,
+    ].join(" "),
+  };
+}
+
 /** The model-facing note for `status` on an errand still in the queue. */
 export function queuedStatusNote(
-  row: Pick<BrowserRunRow, "retryAt" | "waitsForAccount">
+  row: Pick<BrowserRunRow, "profileId" | "retryAt" | "waitsForAccount">
 ) {
   const account = row.waitsForAccount ?? undefined;
   if (account !== undefined) {
@@ -147,6 +221,9 @@ export function queuedStatusNote(
   const next = row.retryAt
     ? ` The next try is at ${row.retryAt.toISOString()}.`
     : "";
+  if (onBrowserVm(row.profileId)) {
+    return `The errand is still queued: Bro's own browser for the user is still starting (about a minute, up to about six on its very first start) or busy with another errand of theirs, and it starts by itself as soon as the browser is free.${next} Say so in one short line; do not start it again.`;
+  }
   return `The errand is still queued: the cloud browser service had no free browser for it yet, and it starts by itself as soon as one frees up.${next} Say so in one short line; do not start it again.`;
 }
 
@@ -260,12 +337,25 @@ export async function startQueuedBrowserRun(
   | {
       readonly closed: BrowserRunRow | undefined;
       readonly outcome: string;
-      readonly status: "expired" | "no_credits";
+      readonly status: "expired" | "no_credits" | "unavailable";
     }
 > {
   const current = await readBrowserRun(row.id);
   if (current?.status !== "queued" || current.retriedAsRunId) {
     return { status: "stopped" };
+  }
+  // A deployment may run its errands on VMs alone: one queued for Browser
+  // Use before its key was taken away has no browser to start in, nor a run
+  // there to adopt. It is closed before anything asks Browser Use, rather
+  // than failing every minute ahead of the errands that can start.
+  if (!onBrowserVm(current.profileId) && !browserUseCloudConfigured()) {
+    const outcome =
+      "The errand never started: the cloud browser service is not available right now. Nothing was done on the site. Tell the user so plainly and offer what you can do without a browser, or to try again later.";
+    return {
+      closed: await giveUpQueuedErrand(current, outcome),
+      outcome,
+      status: "unavailable",
+    };
   }
   const expired = now.getTime() - current.createdAt.getTime() > queueWindowMs;
   const reference = queueReference(current);
@@ -276,7 +366,12 @@ export async function startQueuedBrowserRun(
     // it is cleared before a start, so there is no run of it to adopt.
     run =
       waitedFor === undefined
-        ? await findRecentBrowserUseRunByTaskLine(reference)
+        ? await findRecentBrowserUseRunByTaskLine(
+            reference,
+            undefined,
+            undefined,
+            current.profileId ?? undefined
+          )
         : undefined;
     if (!run && !expired) {
       // A new errand waits while another errand of its workspace holds a
@@ -310,7 +405,10 @@ export async function startQueuedBrowserRun(
         current.id,
         queueRetryAt(now, error.retryAfterMs)
       );
-      return { status: "busy" };
+      // A workspace's VM that is starting, or busy with another of its
+      // errands, holds back that workspace alone: like an errand waiting on
+      // its account, this one took no shared slot, and the drain goes on.
+      return { status: onBrowserVm(current.profileId) ? "waiting" : "busy" };
     }
     if (browserUseOutOfCredits(error)) {
       await reportBrowserUseOutOfCredits(error);

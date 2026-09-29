@@ -14,10 +14,12 @@ import { registerApplicationModuleResolution } from "./lib/module-resolution.ts"
  *
  * Which field on a page wins a code is decided by a program that runs inside
  * the browser, so `tests/agent/browser-use/cdp.test.ts` — which fakes the
- * protocol — cannot judge it. This can: it serves a page shaped like a real
- * checkout, with the code field inside a cross-site frame the way a bank's
- * 3-D Secure challenge always is, surrounded by the things that must not
- * receive a code, and checks where the digits actually landed.
+ * protocol, and the DOM with a small stand-in — cannot judge how a real one
+ * treats it: focus, frames, shadow roots, typed text. This can: it serves a
+ * page shaped like a real checkout, with the code field inside a cross-site
+ * frame the way a bank's 3-D Secure challenge always is, surrounded by the
+ * things that must not receive a code, and checks where the digits actually
+ * landed.
  *
  * The page is served on `localhost` and its frames on `127.0.0.1` because
  * Chrome counts those as different sites: with `--site-per-process` the frame
@@ -67,11 +69,29 @@ const page = (body: string) =>
   `<!doctype html><meta charset="utf-8"><body style="margin:0">${body}</body>`;
 
 // Every field reports what it received, so the assertions never read state back
-// through the same protocol they are testing.
+// through the same protocol they are testing. The first element of the event's
+// path is the field itself even inside a shadow root, where `target` is the
+// component around it.
 const reporting = `
   const send = (kind, el) => fetch("http://127.0.0.1:${String(port)}/collect?who=" + WHO + "&kind=" + kind + "&value=" + encodeURIComponent(el ? (el.value || "") : ""), { mode: "no-cors" });
-  document.addEventListener("input", (event) => send("input", event.target), true);
-  document.addEventListener("click", (event) => { if (event.target.closest("button")) send("click", null); }, true);
+  document.addEventListener("input", (event) => send("input", event.composedPath()[0]), true);
+  document.addEventListener("click", (event) => { if (event.composedPath()[0].closest("button")) send("click", null); }, true);
+`;
+
+// WB ID's code component, as its sign-in page on id.wb.ru has it: in an open
+// shadow root, a field for the whole code and five one-character boxes that
+// move the focus themselves.
+const wbIdCodeField = `
+  customElements.define("ui-field-code", class extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: "open" });
+      root.innerHTML = '<input autocomplete="one-time-code" maxlength="6" inputmode="numeric">' + '<input maxlength="1" inputmode="numeric">'.repeat(5) + '<button type="button">Войти</button>';
+      const boxes = Array.from(root.querySelectorAll("input"));
+      boxes.forEach((box, index) => box.addEventListener("input", () => {
+        if (box.maxLength === 1 && box.value) boxes[index + 1]?.focus();
+      }));
+    }
+  });
 `;
 
 const frames = new Map<string, string>(
@@ -156,6 +176,10 @@ const cases = new Map<string, string>(
     ),
     empty: page(
       `<h1>Ничего</h1><p>Тут нет полей.</p><script>const WHO="top";${reporting}</script>`
+    ),
+    "wb-id": page(
+      `<h1>Вход</h1><ui-field-code></ui-field-code>
+     <script>const WHO="top";${reporting}${wbIdCodeField}</script>`
     ),
   })
 );
@@ -356,6 +380,22 @@ try {
     check(
       entry.typed && entry.inFrame,
       `named frame: a real challenge still gets it (${JSON.stringify(entry)})`
+    );
+  }
+  {
+    const { entry, reports } = await open("wb-id");
+    const typed = reports.filter((report) => report.kind === "input");
+    check(
+      entry.typed && entry.insertedText === true && entry.submitted,
+      `wb-id: inserted into the shadow root and confirmed (${JSON.stringify(entry)})`
+    );
+    check(
+      typed.length === 1 && typed[0]?.value === code,
+      `wb-id: the whole code went into its one field (${JSON.stringify(typed)})`
+    );
+    check(
+      reports.some((report) => report.kind === "click"),
+      "wb-id: Войти was pressed"
     );
   }
   {

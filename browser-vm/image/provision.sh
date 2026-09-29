@@ -28,22 +28,33 @@ chown -R bro:bro /var/lib/bro /opt/bro/worker
 retry apt-get update -q
 retry apt-get install -yq debian-keyring debian-archive-keyring apt-transport-https curl gnupg ca-certificates \
   iptables jq
-curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+retry curl -1sLf -o /tmp/caddy.gpg.key https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy.gpg.key
+rm -f /tmp/caddy.gpg.key
+retry curl -1sLf -o /etc/apt/sources.list.d/caddy-stable.list https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt
 retry apt-get update -q
 retry apt-get install -yq caddy
 cat > /usr/local/sbin/bro-boot <<'SCRIPT'
 #!/bin/bash
 # Every boot: the VM's public address → the Caddyfile for <ip>.sslip.io (Let's Encrypt, http-01).
+# No address (both echo services down) keeps the last Caddyfile: a floating IP outlives a power-off, so
+# it is usually still right, where a Caddyfile without a host takes the worker off the air.
 set -u
 IP=""
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  IP=$(curl -fsS -m 5 https://api.ipify.org || true)
-  [[ "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
+  [ $((i % 2)) = 1 ] && URL=https://api.ipify.org || URL=https://ipv4.icanhazip.com
+  IP=$(curl -fsS -m 5 "$URL" || true)
+  [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
   sleep 2
 done
-[ -n "$IP" ] && echo "$IP" > /var/lib/bro/public_ip
-printf '%s.sslip.io {\n\treverse_proxy 127.0.0.1:8080\n}\n' "${IP//./-}" > /etc/caddy/Caddyfile
+if ! [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+  echo "no public address: the Caddyfile stays as it was" >&2
+  exit 0
+fi
+echo "$IP" > /var/lib/bro/public_ip
+# No admin API: on localhost:2019 it lets any local process, a page in Chrome included, load a config
+# that serves CDP or the metadata service to the internet. The image only ever restarts Caddy.
+printf '{\n\tadmin off\n}\n%s.sslip.io {\n\treverse_proxy 127.0.0.1:8080\n}\n' "${IP//./-}" > /etc/caddy/Caddyfile
 SCRIPT
 chmod 755 /usr/local/sbin/bro-boot
 # While the image builds, a read-only page of the stage stands where the worker will: build.py follows it.
@@ -93,7 +104,9 @@ WantedBy=multi-user.target
 UNIT
 
 # Headful Chrome on Xvfb (the pilot found headless worse on Avito) with a persistent profile; CDP only on
-# loopback; every request through the worker's forwarder from the profile's very first launch.
+# loopback; every request through the worker's forwarder from the profile's very first launch, loopback
+# included: Chrome sends localhost past its proxy by default, and a page could then reach CDP, the worker
+# and Caddy on this VM. `<-loopback>` removes that exception, so localhost goes to the residential proxy.
 retry curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 retry apt-get install -yq /tmp/chrome.deb xvfb fonts-noto-color-emoji fonts-liberation fonts-dejavu locales
 locale-gen ru_RU.UTF-8 >/dev/null
@@ -134,7 +147,7 @@ Environment=DISPLAY=:99 TZ=Europe/Moscow LANG=ru_RU.UTF-8 LANGUAGE=ru_RU:ru
 # A profile restored from a backup or moved to a re-created VM still carries the old host's lock, and
 # Chrome refuses it as "in use by another computer": only this unit ever runs Chrome on this profile.
 ExecStartPre=/bin/sh -c 'rm -f /var/lib/bro/profile/SingletonLock /var/lib/bro/profile/SingletonSocket /var/lib/bro/profile/SingletonCookie'
-ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en about:blank
+ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --proxy-bypass-list=<-loopback> --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en about:blank
 # SIGTERM lets Chrome write cookies and local storage to the profile before the VM powers off.
 KillMode=mixed
 TimeoutStopSec=30
@@ -162,11 +175,40 @@ git -C /opt/bro/jev-ultrafast checkout -q 1231850
 rm -rf /opt/bro/uv-cache
 stage python
 
+# The worker is the VM's only way in (no SSH, cloud-init does not run again): an update that loads but does
+# not start would take the VM off the air for good. Five failed starts in five minutes put the unit in
+# `failed`, and bro-worker-rollback brings back the code the update replaced (the worker keeps it as
+# worker.py.prev until the new code is up) and starts the worker again: after a pause when there is nothing
+# to go back to, so a passing cause (a full disk) does not leave it down either.
+cat > /usr/local/sbin/bro-worker-rollback <<'SCRIPT'
+#!/bin/bash
+set -u
+WORKER=/opt/bro/worker
+if [ -f "$WORKER/worker.py.prev" ]; then
+  mv -f "$WORKER/worker.py.prev" "$WORKER/worker.py"
+  echo "bro-worker did not start: its last update is rolled back" >&2
+else
+  sleep 60
+fi
+systemctl reset-failed bro-worker
+systemctl start --no-block bro-worker
+SCRIPT
+chmod 755 /usr/local/sbin/bro-worker-rollback
+cat > /etc/systemd/system/bro-worker-rollback.service <<'UNIT'
+[Unit]
+Description=Bro: roll back a worker update that does not start, and start the worker again
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bro-worker-rollback
+UNIT
 cat > /etc/systemd/system/bro-worker.service <<'UNIT'
 [Unit]
 Description=Bro browser worker (127.0.0.1:8080 behind Caddy; forwarder 127.0.0.1:3128)
 After=network-online.target bro-firewall.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=bro-worker-rollback.service
 [Service]
 User=bro
 Environment=ANONYMIZED_TELEMETRY=false BROWSER_USE_CLOUD_SYNC=false BH_UPDATE_CHECK=0
@@ -191,7 +233,7 @@ if [ "${BRO_IMAGE_SEAL:-1}" = "1" ]; then
   systemctl stop bro-worker bro-chrome bro-xvfb caddy || true
   rm -rf /var/lib/bro/profile/* /var/lib/bro/runs/* /var/lib/bro/sessions/* /var/lib/bro/uploads/* \
     /var/lib/bro/generation /var/lib/bro/public_ip /var/lib/bro/status /var/lib/caddy/.local/share/caddy \
-    /etc/bro/worker.json /var/log/bro-provision.log
+    /etc/bro/worker.json /var/log/bro-provision.log /var/lib/bro/timeline
   cloud-init clean --logs --seed || true
   truncate -s 0 /etc/machine-id
   rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_*

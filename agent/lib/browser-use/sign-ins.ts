@@ -1,3 +1,5 @@
+import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
 import { isPublicSuffix } from "@shared/browser/public-suffixes";
 import {
@@ -14,6 +16,7 @@ import {
 import {
   forgetBrowserProfile,
   listBrowserHoldingRuns,
+  listBrowserRunProfileIds,
   listWorkspacesHoldingBrowsers,
   readBrowserProfileId,
   workspaceUsesBrowserProfile,
@@ -22,6 +25,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   BrowserUseError,
   browserUseBusy,
+  browserUseCloudUnreachable,
   browserUseOutOfCredits,
   createBrowserUseBrowser,
   deleteBrowserUseProfile,
@@ -288,13 +292,29 @@ export async function listKeptSignIns(workspaceId: string) {
  * record, and a later errand that signs in there does not undo it. The
  * browser may stay signed in there: its cookies are in the profile.
  *
- * Every site: the Browser Use profile is deleted with all its cookies, and
+ * Every site: the browser profile is deleted with all its cookies, and
  * only then forgotten here, so a delete the cloud refused leaves everything
- * as it was and can be asked for again. The next errand starts a new, empty
- * profile, and a follow-up of an earlier errand moves to it too
- * (`browser_task`). That waits while an errand still uses the profile: a run
- * or a queued start would be left on a profile that is gone. Sites the
- * person told Bro not to open stay so.
+ * as it was and can be asked for again. So is every other profile the
+ * workspace's errands ran on — a workspace moved between Browser Use and
+ * its own VM left the other one's behind, still signed in — and those go
+ * first: while one of them is left, the current one stays too and nothing
+ * is said to be forgotten, since a follow-up of an earlier errand would
+ * still run signed in there. The next errand starts a new, empty profile,
+ * and a follow-up of an earlier errand moves to it too (`browser_task`).
+ * That waits while an errand still uses the profile: a run or a queued
+ * start would be left on a profile that is gone. Sites the person told Bro
+ * not to open stay so.
+ *
+ * A profile that is a Browser Use one, once this deployment has moved off
+ * Browser Use entirely (`BROWSER_USE_API_KEY` gone, the migration's end
+ * state), can never be reached to delete it — not a failure worth blocking
+ * on, since asking again never succeeds either. That holds for an older
+ * profile and for the current one alike: a workspace that has not yet run
+ * its first post-cutover errand still points at an old Browser Use profile,
+ * and waiting for an unrelated errand to move it first would leave «забудь
+ * мои входы» permanently failing. The profile is forgotten and the records
+ * are wiped all the same, and the owner is told what is left over instead
+ * of the person being told nothing happened.
  */
 export async function forgetSignIns(
   scope: AccessScope,
@@ -312,23 +332,67 @@ export async function forgetSignIns(
   if (await workspaceUsesBrowserProfile(workspaceId, now)) {
     return { kind: "busy" as const };
   }
-  const profileId = await readBrowserProfileId(scope);
+  const [profileId, used] = await Promise.all([
+    readBrowserProfileId(scope),
+    listBrowserRunProfileIds(workspaceId),
+  ]);
+  const others = await Promise.all(
+    used
+      .filter((id) => id !== profileId)
+      .map(async (id) => [id, await deleteProfile(id)] as const)
+  );
+  if (others.some(([, outcome]) => outcome === "failed")) {
+    return { kind: "failed" as const };
+  }
+  // A genuine (retryable) failure of the current profile still blocks: it
+  // is the one profile with no fallback that leaves the workspace clean.
+  // "unreachable" is different — a deterministic, permanent condition once
+  // Browser Use is gone from this deployment — so it is tolerated here just
+  // as it is for an older profile, and the current one is forgotten anyway.
+  const currentOutcome =
+    profileId === undefined ? undefined : await deleteProfile(profileId);
+  if (currentOutcome === "failed") {
+    return { kind: "failed" as const };
+  }
   if (profileId !== undefined) {
-    try {
-      await deleteBrowserUseProfile(profileId);
-    } catch (error) {
-      // A profile the cloud no longer has is as good as deleted.
-      if (!(error instanceof BrowserUseError && error.status === 404)) {
-        console.warn("[browser-use] the profile could not be deleted", {
-          cause: error,
-        });
-        return { kind: "failed" as const };
-      }
-    }
     await forgetBrowserProfile(workspaceId, profileId);
   }
   const domains = await forgetBrowserSignIns(workspaceId);
+  const unreachableCount =
+    others.filter(([, outcome]) => outcome === "unreachable").length +
+    (currentOutcome === "unreachable" ? 1 : 0);
+  if (unreachableCount > 0) {
+    await alertOwner(
+      "browser-use-unreachable-profile-forget",
+      `«Забудь мои входы» не достала ${String(unreachableCount)} профиль(-я) Browser Use — сервис не настроен (BROWSER_USE_API_KEY), значит и не достанет позже. Текущий профиль и записи о входах при этом стёрты.`,
+      { now, repeatAfterMs: 24 * 60 * 60_000 }
+    );
+  }
   return { domains, kind: "all" as const };
+}
+
+/**
+ * Delete one browser profile, on Browser Use or on the workspace's VM (the
+ * client sends a `vm:` id there). `deleted`: gone, or the cloud no longer
+ * had it. `unreachable`: a Browser Use profile this deployment has no key
+ * for any more — never a failure to retry, since it never will be one.
+ * `failed`: a real failure, worth blocking on and asking again for.
+ */
+async function deleteProfile(profileId: string) {
+  try {
+    await deleteBrowserUseProfile(profileId);
+    return "deleted" as const;
+  } catch (error) {
+    if (error instanceof BrowserUseError && error.status === 404) {
+      return "deleted" as const;
+    }
+    if (browserUseCloudUnreachable(error)) return "unreachable" as const;
+    console.warn("[browser-use] the profile could not be deleted", {
+      cause: error,
+      profileId,
+    });
+    return "failed" as const;
+  }
 }
 
 /**
@@ -350,8 +414,10 @@ const refreshesPerTick = 3;
  * is typed and nobody is asked: a page that turned into a sign-in is only
  * recorded, and the next errand there asks the person as usual. A workspace
  * with a browser up is skipped: whichever browser stops last is what the
- * profile keeps, and this visit's profile is older than that browser's.
- * `BROWSER_USE_SIGN_IN_REFRESH_DAYS=0` turns the visits off.
+ * profile keeps, and this visit's profile is older than that browser's. A
+ * workspace on its own browser VM is visited only while the VM is up, since
+ * a visit is not worth powering it on; one that is off loses that visit to
+ * the next period. `BROWSER_USE_SIGN_IN_REFRESH_DAYS=0` turns the visits off.
  */
 export async function refreshDueSignIns(now = new Date()) {
   const days = env.BROWSER_USE_SIGN_IN_REFRESH_DAYS;
@@ -413,6 +479,10 @@ async function refreshSignIn(
       cause: error,
       domain,
     });
+    // A workspace's own VM that is off (a keep-alive never powers it on) or
+    // busy says nothing about the other workspaces: only this visit waits
+    // for its next period.
+    if (isBrowserVmId(profileId)) return "failed" as const;
     return browserUseBusy(error) || browserUseOutOfCredits(error)
       ? ("stop" as const)
       : ("failed" as const);

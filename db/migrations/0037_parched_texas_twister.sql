@@ -1,0 +1,1 @@
+ALTER TABLE "browser_runs" ADD COLUMN "unread_messages" jsonb;

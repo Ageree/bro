@@ -22,7 +22,12 @@ const readBrowserUseRun = vi.hoisted(() =>
 );
 const findRecentBrowserUseRunByTaskLine = vi.hoisted(() =>
   vi.fn<
-    (line: string) => Promise<{ id: string; sessionId: string } | undefined>
+    (
+      line: string,
+      pages?: number,
+      cursor?: string,
+      profileId?: string
+    ) => Promise<{ id: string; sessionId: string } | undefined>
   >(() => Promise.resolve(undefined))
 );
 const cancelBrowserUseRun = vi.hoisted(() =>
@@ -63,6 +68,8 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   BrowserUseError: (await importOriginal<typeof browserUseClient>())
     .BrowserUseError,
+  browserUseBusy: (await importOriginal<typeof browserUseClient>())
+    .browserUseBusy,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -114,6 +121,9 @@ function parkedRow(captchaAttempt: number) {
       forWhom: "Алиса",
     },
     task: "Купи корм",
+    // A message this errand heard while an earlier attempt was walled,
+    // never reported: the row carries it until an attempt reports it.
+    unreadMessages: ["Actually make it two of those."],
     updatedAt: new Date(),
     waitsForAccount: null,
     workspaceId: "workspace:alice",
@@ -221,6 +231,9 @@ describe("the anti-bot retry policy", () => {
     expect(input?.profileId).toBe("profile-1");
     expect(input?.task).toContain("attempt 2 of 5");
     expect(input?.proxyCountryCode).toBe("ru");
+    // A VM profile only (cloud ignores it): the wall already judged the
+    // address the last attempt came from.
+    expect(input?.freshExit).toBe(true);
     // The card was bound before, so the retry binds it again.
     expect(resolveBrowserSecretBindings).toHaveBeenCalledWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
@@ -239,6 +252,9 @@ describe("the anti-bot retry policy", () => {
       // The retry is the same errand, so the person's confirmation stays.
       submission: parkedRow(1).submission,
       task: "Купи корм",
+      // A message an earlier attempt never got to report is not lost when
+      // the errand moves to the retry's row.
+      unreadMessages: ["Actually make it two of those."],
     });
     expect(cancelBrowserUseRun).not.toHaveBeenCalled();
   });
@@ -254,10 +270,14 @@ describe("the anti-bot retry policy", () => {
     const result = await startCaptchaRetry(parkedRow(1));
 
     expect(result).toEqual({ runId: "orphan-run", status: "started" });
-    // It looked for this very attempt of this very errand…
+    // It looked for this very attempt of this very errand, among the runs of
+    // its profile's backend (a VM errand's are in Bro's own record)…
     const line = findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[0] ?? "";
     expect(line).toContain(runId);
     expect(line).toContain("retry 2");
+    expect(findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[3]).toBe(
+      "profile-1"
+    );
     // …and handed the errand to it instead of starting a second browser.
     expect(createBrowserUseRun).not.toHaveBeenCalled();
     expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
@@ -345,6 +365,84 @@ describe("the anti-bot retry policy", () => {
       retryAt: new Date("2026-09-23T12:09:00.000Z"),
     });
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
+  });
+
+  it("costs no attempt while the workspace's VM is starting or busy, and waits as long as it asked", async () => {
+    const { BrowserUseError } = await import("@agent/lib/browser-use/client");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    const row = {
+      ...parkedRow(2),
+      completedAt: new Date("2026-09-23T11:58:00.000Z"),
+      profileId: "vm:workspace:alice:p1",
+    };
+
+    // Powering on: no attempt ran, so none is counted.
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        429,
+        "browser-vm",
+        "The browser is starting.",
+        180_000
+      )
+    );
+    expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
+    expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
+      captchaAttempt: 2,
+      retryAt: new Date("2026-09-23T12:03:00.000Z"),
+    });
+
+    // Busy with another errand of the workspace: the same.
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        429,
+        "browser-vm",
+        "The browser is busy with another errand.",
+        60_000
+      )
+    );
+    expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
+    expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
+      captchaAttempt: 2,
+      retryAt: new Date("2026-09-23T12:01:00.000Z"),
+    });
+
+    // Past half an hour after the wall it counts, so it cannot wait forever.
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(429, "browser-vm", "The browser is starting.", 60_000)
+    );
+    expect(
+      await startCaptchaRetry(row, new Date("2026-09-23T12:40:00.000Z"))
+    ).toEqual({ status: "parked" });
+    expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
+      captchaAttempt: 3,
+      retryAt: new Date("2026-09-23T12:49:00.000Z"),
+    });
+    expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
+  });
+
+  it("does not promise a VM's retry another address", async () => {
+    createBrowserUseRun.mockResolvedValue({
+      id: retryRunId,
+      model: "deepseek/deepseek-v4.1-flash",
+      sessionId: "vm-session",
+      status: "queued",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry({
+      ...parkedRow(1),
+      profileId: "vm:workspace:alice:p1",
+    });
+
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain(
+      "a new tab of the same browser, with the same saved profile, cookies and sign-ins"
+    );
+    expect(task).not.toContain("different network address");
   });
 
   it.each([
