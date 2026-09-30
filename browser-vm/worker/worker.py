@@ -40,6 +40,8 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/tabs, DELETE /v1/tabs/<id>     a blank tab for a keep-alive visit, and closing it
   POST /v1/browser/stop | /v1/browser/start | /v1/browser/restart
   POST /v1/profile/reset                  wipe the Chrome profile (forget every sign-in)
+  POST /v1/park                           before a pool host freezes this sandbox: forget the model key, the
+                                          proxy login and site secrets (409 while a run works or cancels)
   POST /v1/admin/worker                   replace this worker's code (checksummed, must load, only when idle)
   GET  /v1/cdp/<token>/json[/version]     CDP discovery, socket URLs rewritten to this endpoint
   WS   /v1/cdp/<token>/devtools/...       CDP socket to one target of this VM's Chrome
@@ -1677,6 +1679,22 @@ async def reset_profile(request):
     return web.json_response({"reset": True, "chrome": await wait_chrome(30)})
 
 
+async def park(request):
+    """Before a pool host freezes this sandbox (`runsc checkpoint`, browser-vm/host): the snapshot keeps
+    everything in memory, so the secrets go first. The proxy login goes with the forwarder's upstream
+    (Chrome gets 502 until the next POST /v1/session), the model key, 2Captcha key and site secrets with
+    each session; after the restore Bro sends them again as after a worker restart. Never mid-run: a
+    snapshot in the middle of a form is neither a success nor a failure."""
+    authorize(request)
+    if worker.busy() or any(run.status not in TERMINAL for run in worker.runs.values()):
+        raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
+    worker.forwarder.upstream = None
+    for session in worker.sessions.values():
+        session.llm = session.captcha = session.sensitive_data = None
+        session.options = {k: v for k, v in session.options.items() if k != "jev"}  # jev's own API key
+    return web.json_response({"parked": True})
+
+
 # CDP over the endpoint: Bro's existing CDP client (code typing, viewport capture, keep-alive visits)
 # works against this VM unchanged. The token sits in the path because a WebSocket URL has no headers.
 def cdp_base(request, token):
@@ -1794,6 +1812,7 @@ def application():
         web.delete("/v1/tabs/{target}", delete_tab),
         web.post("/v1/browser/{action:start|stop|restart}", browser_action),
         web.post("/v1/profile/reset", reset_profile),
+        web.post("/v1/park", park),
         web.post("/v1/admin/worker", update_worker),
         web.get("/v1/cdp/{token}/json", cdp_json),
         web.get("/v1/cdp/{token}/json/{tail:list|version}", cdp_json),

@@ -14,6 +14,7 @@ HTTPS. План и итоги замеров — `docs/browser-cloud-migration.m
 | `image/provision.sh`    | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
 | `image/build.py`        | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
 | `image/test_image.py`   | Тесты образа (`python -m unittest`, только stdlib): `build.py` на поддельном Compute API, загрузка `provision.sh` |
+| `host/`                 | Хост пула браузеров: `hostd` (песочницы gVisor, парковка в S3), сеть, Caddy, загрузка хоста — `host/README.md`    |
 
 ## Как устроено
 
@@ -81,6 +82,7 @@ HTTPS. План и итоги замеров — `docs/browser-cloud-migration.m
 | `POST /v1/tabs`, `DELETE /v1/tabs/<id>`                           | пустая вкладка для визита продления входа                                                            |
 | `POST /v1/browser/{start,stop,restart}`, `POST /v1/profile/reset` | Chrome; стоп пишет cookie на диск перед выключением VM                                               |
 | `POST /v1/admin/worker`                                           | новая версия worker: sha256 в заголовке, код должен загрузиться, только без поручения                |
+| `POST /v1/park`                                                   | перед заморозкой песочницы пула: забыть ключ модели, логин прокси и секреты сайтов (409 при запуске) |
 | `GET /v1/cdp/<token>/json`, `WS /v1/cdp/<token>/devtools/…`       | CDP через worker: `agent/lib/browser-use/cdp.ts` работает без правок                                 |
 
 ## Образ

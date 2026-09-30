@@ -531,6 +531,43 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(FakeAgent.built[-1].options["sensitive_data"], {"https://*.shop.test": {
             "site_password": "hunter2"}})
 
+    async def test_park_forgets_every_secret_in_memory(self):
+        binding = [{"alias": "site_password", "allowedDomains": ["shop.test"], "value": "hunter2"}]
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "secrets": binding, "captcha": {"twoCaptchaKey": "2c"},
+                                     "jev": {"apiKey": "jev-key"}, "maxSteps": 5})
+        await self.settled("r1")
+        self.assertEqual(await self.call("POST", "/v1/park"), (200, {"parked": True}))
+        session = self.worker.sessions["s1"]
+        self.assertIsNone(self.worker.forwarder.upstream)  # Chrome gets 502 until the next POST /v1/session
+        self.assertEqual((session.llm, session.captcha, session.sensitive_data), (None, None, None))
+        self.assertEqual(session.options["maxSteps"], 5)
+        self.assertNotIn("jev", session.options)
+        # After the restore Bro sends the model again: until then a follow-up is refused, not run keyless.
+        status, answer = await self.call("POST", "/v1/sessions/s1/messages", {"text": "Go on."})
+        self.assertEqual((status, answer["error"]), (409, "session has no model; start a run"))
+
+    async def test_park_is_refused_while_a_run_works(self):
+        in_step, go_on = asyncio.Event(), asyncio.Event()
+
+        async def held(agent, on_step_start):
+            await on_step_start(agent)
+            in_step.set()
+            await go_on.wait()
+            agent.state.n_steps += 1
+            return FakeHistory(True)
+
+        FakeAgent.script = held
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        await self.reached(in_step)
+        self.assertEqual(await self.call("POST", "/v1/park"), (409, {"error": "busy"}))
+        self.assertIsNotNone(self.worker.forwarder.upstream)
+        self.worker.runs["r1"].cancel_requested = True  # cancelling is still working
+        self.assertEqual((await self.call("POST", "/v1/park"))[0], 409)
+        go_on.set()
+        await self.settled("r1")
+        self.assertEqual((await self.call("POST", "/v1/park"))[0], 200)
+
     async def test_a_second_post_runs_in_the_same_session_without_secrets_keeps_the_first_ones(self):
         # A retried `POST /v1/runs` in the same session whose caller happens not to resend `secrets`
         # must not clear the session's binding either — only a request that actually supplies `secrets`
