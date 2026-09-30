@@ -14,8 +14,8 @@ HTTPS. План и итоги замеров — `docs/browser-cloud-migration.m
 | `image/provision.sh`    | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
 | `image/build.py`        | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
 | `image/test_image.py`   | Тесты образа (`python -m unittest`, только stdlib): `build.py` на поддельном Compute API, загрузка `provision.sh` |
-| `image/sandbox/`        | Корень песочницы для пула браузеров: `build_rootfs.sh`, init, заглушка `systemctl` |
-| `image/test_sandbox.py` | Тесты init песочницы: юниты из `provision.sh`, старт, перезапуск, `systemctl` через сокет |
+| `image/sandbox/`        | Корень песочницы для пула браузеров: `build_rootfs.sh`, init, заглушка `systemctl`                                |
+| `image/test_sandbox.py` | Тесты init песочницы: юниты из `provision.sh`, старт, перезапуск, `systemctl` через сокет                         |
 | `host/`                 | Хост пула браузеров: `hostd` (песочницы gVisor, парковка в S3), сеть, Caddy, загрузка хоста — `host/README.md`    |
 
 ## Как устроено
