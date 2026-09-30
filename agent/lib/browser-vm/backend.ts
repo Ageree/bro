@@ -23,15 +23,19 @@ export function browserVmConfigured() {
  * Whether this deployment can run browsers as sandboxes of the pool
  * (docs/browser-pool.md): the Cloud.ru key for the hosts and, with the
  * tenant, for Object Storage; the bucket and the key the sets are sealed
- * with; the host code, its gVisor release and the sandbox root; and the VM
- * backend's own signing key, proxy and model key, since a sandbox runs the
- * same worker. The VM image is not needed: hosts boot stock Ubuntu.
+ * with; the host code and the sandbox root; the runtime, BROWSER_HOST_RUNTIME
+ * `runc` named outright or the pinned gVisor release (`runsc`, which an unset
+ * runtime means, as before that setting, so a deployment gains no pool and
+ * no new runtime from it); and the VM backend's own signing key, proxy
+ * and model key, since a sandbox runs the same worker. The VM image is not
+ * needed: hosts boot stock Ubuntu.
  */
 export function browserPoolConfigured() {
   return (
     browserStateConfigured() &&
     env.BROWSER_HOST_BUNDLE !== undefined &&
-    env.BROWSER_HOST_RUNSC_RELEASE !== undefined &&
+    (env.BROWSER_HOST_RUNTIME === "runc" ||
+      env.BROWSER_HOST_RUNSC_RELEASE !== undefined) &&
     env.BROWSER_SANDBOX_ROOTFS !== undefined &&
     env.BROWSER_VM_SIGNING_KEY !== undefined &&
     env.BROWSER_VM_PROXY !== undefined &&

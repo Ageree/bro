@@ -7,6 +7,7 @@ import {
   deleteCloudRuVm,
   findCloudRuVmByName,
   readCloudRuVm,
+  setCloudRuVmPower,
 } from "@agent/lib/browser-vm/cloudru";
 import type { browserHosts } from "@db/schema/browser-hosts";
 import {
@@ -60,6 +61,17 @@ const unsentRetryMs = 60_000;
 const lostCreateMs = 15 * 60_000;
 /** A VM without an address this long after its create is given up on. */
 const createFailAfterMs = 15 * 60_000;
+/**
+ * A new VM's `hostd` answers about a minute after it runs (30.09: 33–82 s),
+ * but one first boot in three or four hangs in `(initramfs)` and never
+ * does; a reboot cures it (134 s to `ready` after it). A booting host that
+ * has not answered at all this long after its VM ran is rebooted, once. Not
+ * sooner: `hostd` and Caddy start only after apt and the venv, so a slow
+ * mirror is silent too, and a reboot mid-provision is final, as cloud-init
+ * runs `bro-host-boot` once per instance. `provision.sh`'s whole budget is
+ * 6 minutes at worst (boot.py), and `hostd` answers before its end.
+ */
+const silentBootRebootMs = 6 * 60_000;
 /** `provision.sh`'s budget is 6 minutes; a host not ready by this is failed. */
 const bootFailAfterMs = 15 * 60_000;
 /** A ready host whose `hostd` did not answer for this long is failed. */
@@ -86,6 +98,12 @@ const createCooldownMs = 30 * 60_000;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
 
 /**
+ * The apt mirror a host installs from (`APT_MIRROR` of boot.py): from
+ * Cloud.ru archive.ubuntu.com does not answer.
+ */
+const hostAptMirror = "http://mirror.yandex.ru/ubuntu";
+
+/**
  * Written by cloud-init: fetches the bundle named in boot.json, checks it
  * and hands over to provision.sh. Byte for byte `BOOT_SCRIPT` of
  * `browser-vm/host/boot.py` (a test compares them).
@@ -100,7 +118,7 @@ print(value)' "$1"; }
 URL=$(field bundle.url)
 SHA=$(field bundle.sha256)
 for i in 1 2 3 4 5; do
-  curl -fsS -m 120 -o /root/bro-host.tgz "$URL" && break
+  curl -fsS -m 300 -o /root/bro-host.tgz "$URL" && break
   [ "$i" = 5 ] && exit 1
   sleep $((i * 5))
 done
@@ -114,23 +132,30 @@ exec bash /opt/bro/host/provision.sh
 /**
  * The user data one host boots with, as `cloud_init` in
  * `browser-vm/host/boot.py` writes it: the host's id and token key in
- * /etc/bro/host.json, the gVisor release and presigned URLs (with SHA-256)
- * of the host code bundle and the sandbox root in /etc/bro/boot.json, and
- * the boot script that runs `provision.sh`. No Cloud.ru key goes in: the
- * URLs open those two objects only. The domain is left to the host: its
- * address's sslip.io name.
+ * /etc/bro/host.json; the runtime (and, for runsc only, the pinned gVisor
+ * release), the apt mirror and presigned URLs (with SHA-256) of the host
+ * code bundle and the sandbox root in /etc/bro/boot.json; and the boot
+ * script that runs `provision.sh`. No Cloud.ru key goes in: the URLs open
+ * those two objects only. The domain is left to the host: its address's
+ * sslip.io name.
  */
 export function browserHostCloudInit(hostId: string, now = new Date()) {
   const bundle = env.BROWSER_HOST_BUNDLE;
   const rootfs = env.BROWSER_SANDBOX_ROOTFS;
-  const runscRelease = env.BROWSER_HOST_RUNSC_RELEASE;
-  if (
-    bundle === undefined ||
-    rootfs === undefined ||
-    runscRelease === undefined
-  ) {
+  // Unset, as before the setting: runsc with a pinned release.
+  const runtime =
+    env.BROWSER_HOST_RUNTIME ??
+    (env.BROWSER_HOST_RUNSC_RELEASE === undefined ? "runc" : "runsc");
+  const runscRelease =
+    runtime === "runsc" ? env.BROWSER_HOST_RUNSC_RELEASE : "";
+  if (bundle === undefined || rootfs === undefined) {
     throw new Error(
-      "BROWSER_HOST_BUNDLE, BROWSER_SANDBOX_ROOTFS and BROWSER_HOST_RUNSC_RELEASE are not configured."
+      "BROWSER_HOST_BUNDLE and BROWSER_SANDBOX_ROOTFS are not configured."
+    );
+  }
+  if (runscRelease === undefined) {
+    throw new Error(
+      "BROWSER_HOST_RUNTIME is runsc, and BROWSER_HOST_RUNSC_RELEASE is not configured."
     );
   }
   if (!/^[a-z\d-]{1,63}$/u.test(hostId)) {
@@ -150,7 +175,9 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
   const boot = pythonObject([
     ["hostId", JSON.stringify(hostId)],
     ["domain", JSON.stringify("")],
+    ["runtime", JSON.stringify(runtime)],
     ["runscRelease", JSON.stringify(runscRelease)],
+    ["aptMirror", JSON.stringify(hostAptMirror)],
     [
       "bundle",
       pythonObject([
@@ -326,7 +353,9 @@ async function createBrowserHost(
   if (cooling.length > 0) {
     return Math.min(Math.max(...cooling) - now.getTime(), poolFullRetryMs);
   }
-  const slot = await claimBrowserHostSlot(env.BROWSER_HOST_MAX, now, leaseMs);
+  const slot = await claimBrowserHostSlot(env.BROWSER_HOST_MAX, now, leaseMs, {
+    prefix: env.BROWSER_HOST_NAME_PREFIX,
+  });
   if (slot === undefined) return noFreeSlot(hosts, read);
   let cloudInit: string;
   try {
@@ -492,10 +521,32 @@ async function settleCreate(host: BrowserHost, now: Date) {
   }
 }
 
-/** A host setting itself up: ready once `provision.sh` says so. */
+/**
+ * A host setting itself up: ready once `provision.sh` says so. One that has
+ * never answered since its VM ran is rebooted once (`silentBootRebootMs`).
+ */
 async function tendBooting(host: BrowserHost, now: Date) {
   const health = await readBrowserHostHealth(host).catch(() => undefined);
   const stage = health?.stage ?? null;
+  if (
+    health === undefined &&
+    host.lastSeenAt === null &&
+    host.rebootedAt === null &&
+    host.vmId !== null &&
+    overdue(host, now, silentBootRebootMs) &&
+    !overdue(host, now, bootFailAfterMs)
+  ) {
+    await setCloudRuVmPower(host.vmId, "reboot");
+    await writeHeld(
+      host,
+      {
+        lastError: `hostd did not answer ${String(silentBootRebootMs / 60_000)} minutes after the VM ran: rebooted once.`,
+        rebootedAt: now,
+      },
+      now
+    );
+    return;
+  }
   if (stage === "ready") {
     const capacity = await readBrowserHostCapacity(host);
     await writeHeld(
@@ -738,6 +789,7 @@ function summary(
     ),
     rootfsVersions: capacity.rootfsVersions,
     runsc: capacity.runsc,
+    runtime: capacity.runtime ?? null,
     sandboxes: capacity.sandboxes.filter(
       (sandbox) => sandbox.state !== "parked" && sandbox.state !== "failed"
     ).length,

@@ -10,6 +10,21 @@ const workspaceId = "personal:0123456789abcdef0123456789abcdef";
 const sandboxId = "ws-1e09f74980c731c7119e14ac3afe57dbe608baba";
 const host = { address: "45.132.176.117", id: "bro-host-1" };
 const origin = "https://45-132-176-117.sslip.io";
+
+/** The host as its row reads once `GET /v1/capacity` reported `runtime`. */
+function onHost(runtime: string) {
+  return {
+    ...host,
+    capacity: {
+      committedMb: 0,
+      limitMb: 6_144,
+      rootfsVersions: [],
+      runsc: null,
+      runtime,
+      sandboxes: 0,
+    },
+  };
+}
 const nowSeconds = 1_790_769_600;
 
 afterEach(() => {
@@ -132,6 +147,8 @@ describe("browser host client", () => {
         configured: true,
         hostd: "2026-09-30.1",
         runsc: null,
+        runtime: "runc",
+        runtimeVersion: "runc version 1.1.12",
         stage: "rootfs",
       }),
       Response.json({
@@ -158,7 +175,11 @@ describe("browser host client", () => {
       })
     );
 
-    expect((await client.readBrowserHostHealth(host)).stage).toBe("rootfs");
+    expect(await client.readBrowserHostHealth(host)).toMatchObject({
+      runtime: "runc",
+      runtimeVersion: "runc version 1.1.12",
+      stage: "rootfs",
+    });
     expect(
       (await client.readBrowserHostCapacity(host)).memoryMb?.committed
     ).toBe(3072);
@@ -231,8 +252,44 @@ describe("browser host client", () => {
     ).toBe("1800");
   });
 
-  it("parks into a new set with PUT URLs enough for the whole sandbox", async () => {
-    const client = await loadHost();
+  it("parks a runc sandbox's profile alone, with no snapshot format", async () => {
+    const client = await loadHost({
+      BROWSER_HOST_RUNSC_RELEASE: "20260914",
+      BROWSER_HOST_RUNTIME: "runsc",
+    });
+    const calls = stubHost(
+      Response.json({
+        chunks: 4,
+        format: null,
+        generation: 6,
+        id: sandboxId,
+        parts: {
+          profile: { bytes: 50_000_000, chunks: 4, plainBytes: 90_000_000 },
+        },
+        runtime: "runc",
+        state: "parked",
+        timings: { chromeStop: "clean", stopMs: 1200, totalMs: 1900 },
+      })
+    );
+
+    // A runc host of a deployment set to runsc: its own runtime counts.
+    const parked = await client.parkBrowserSandbox(onHost("runc"), {
+      generation: 6,
+      workspaceId,
+    });
+    expect(parked).toMatchObject({
+      chunks: 4,
+      format: null,
+      key: `sets/${sandboxId}/6/`,
+    });
+    const body = parkBodySchema.parse(JSON.parse(calls[0]?.body ?? ""));
+    // 2048 MB of profile with 2% to spare, in 16 MB chunks, and two more.
+    expect(body.upload.chunkUrls).toHaveLength(133);
+  });
+
+  it("parks a runsc sandbox with PUT URLs enough for its memory too", async () => {
+    // A runsc host left from before the deployment turned to runc.
+    const client = await loadHost({ BROWSER_HOST_RUNTIME: "runc" });
     const calls = stubHost(
       Response.json({
         chunks: 42,
@@ -253,7 +310,7 @@ describe("browser host client", () => {
       })
     );
 
-    const parked = await client.parkBrowserSandbox(host, {
+    const parked = await client.parkBrowserSandbox(onHost("runsc"), {
       generation: 6,
       workspaceId,
     });
@@ -269,6 +326,33 @@ describe("browser host client", () => {
     expect(
       new URL(body.upload.chunkUrls[0] ?? "").searchParams.get("X-Amz-Expires")
     ).toBe("3600");
+  });
+
+  it("gives a host of unknown runtime room for a snapshot, or every URL", async () => {
+    const client = await loadHost({ BROWSER_HOST_RUNTIME: "runc" });
+    const answer = {
+      chunks: 4,
+      format: null,
+      generation: 6,
+      id: sandboxId,
+      parts: {},
+      state: "parked",
+      timings: {},
+    };
+    const calls = stubHost(Response.json(answer), Response.json(answer));
+
+    // No capacity read yet, or a runsc-only hostd: the runsc budget.
+    await client.parkBrowserSandbox(host, { generation: 6, workspaceId });
+    await client.parkBrowserSandbox(onHost("kata"), {
+      generation: 6,
+      workspaceId,
+    });
+    expect(
+      calls.map(
+        (call) =>
+          parkBodySchema.parse(JSON.parse(call.body)).upload.chunkUrls.length
+      )
+    ).toEqual([329, 4096]);
   });
 
   it("reads and deletes a sandbox, and tells a missing one apart", async () => {

@@ -283,12 +283,26 @@ async function seedHost(
 }
 
 /** Alice's record as a pool record in `patch`'s state. */
+/**
+ * Alice's record. A set in it carries a runsc snapshot format unless the
+ * patch says otherwise (null: a runc set, the profile alone).
+ */
 async function seedAlice(
   pool: Pool,
   patch: Parameters<Pool["vms"]["updateBrowserVm"]>[1]
 ) {
   await pool.vms.ensureBrowserVmRecord(alice.workspaceId);
-  return pool.vms.updateBrowserVm(alice.workspaceId, patch, minutes(-60));
+  const format =
+    patch.snapshotKey !== undefined &&
+    patch.snapshotKey !== null &&
+    !("snapshotFormat" in patch)
+      ? { snapshotFormat: JSON.stringify(parked(0).format) }
+      : {};
+  return pool.vms.updateBrowserVm(
+    alice.workspaceId,
+    { ...format, ...patch },
+    minutes(-60)
+  );
 }
 
 /** A running sandbox of Alice's on host one, used `idleMinutes` ago. */
@@ -719,7 +733,11 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
 
     await pool.lifecycle.reconcileBrowserVms(now);
 
-    expect(worker.parkBrowserVmWorker).toHaveBeenCalledOnce();
+    // A host of a runsc-only hostd (no runtime reported) freezes Chrome as is.
+    expect(worker.parkBrowserVmWorker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: alice.workspaceId }),
+      { closeChrome: false }
+    );
     expect(hostClient.parkBrowserSandbox).toHaveBeenCalledWith(
       expect.objectContaining({ id: "bro-host-1" }),
       { ample: false, generation: 3, workspaceId: alice.workspaceId }
@@ -745,6 +763,59 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
       source: "browser-vm",
       units: { flavor: "gen-4-16", seconds: 2100 },
     });
+  });
+
+  it("records a runc park without a snapshot, and starts it again from its profile", async () => {
+    const pool = await loadPool();
+    await seedRunning(pool, 30);
+    await pool.hosts.updateBrowserHost(
+      "bro-host-1",
+      {
+        capacity: {
+          committedMb: 3072,
+          limitMb: 14_976,
+          rootfsVersions: ["2026-09-30.1"],
+          runsc: null,
+          runtime: "runc",
+          sandboxes: 1,
+        },
+      },
+      minutes(-2)
+    );
+    hostClient.parkBrowserSandbox.mockResolvedValue({
+      ...parked(3),
+      format: null,
+      parts: { profile: { bytes: 10, chunks: 4, plainBytes: 20 } },
+    });
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+    // runc stops Chrome with SIGTERM, which writes no cookies: the worker
+    // closes Chrome first.
+    expect(worker.parkBrowserVmWorker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: alice.workspaceId }),
+      { closeChrome: true }
+    );
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      sandboxState: "parked",
+      snapshotFormat: null,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+
+    hostClient.startBrowserSandbox.mockImplementation(async (_host, input) =>
+      sandbox({ generation: input.generation, path: "cold" })
+    );
+    expect(
+      await pool.lifecycle.ensureBrowserVm(alice.workspaceId, minutes(1))
+    ).toMatchObject({ kind: "ready", vm: { lastError: null } });
+    // As `profile`, which runc takes as is, not as a `restore` it falls back from.
+    expect(hostClient.startBrowserSandbox).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        from: { chunks: 4, key: `sets/${aliceSandbox}/3/`, snapshot: false },
+        generation: 4,
+        workspaceId: alice.workspaceId,
+      }
+    );
   });
 
   it("does not park a sandbox used within its idle window", async () => {

@@ -65,6 +65,19 @@ class TokenTest(unittest.TestCase):
             worker.verify_token(TOKEN, CONFIG, 0, 1790000300 - worker.MAX_TOKEN_LIFETIME_S - 5)
 
 
+class BrowserUseSettingsTest(unittest.TestCase):
+    def test_nothing_of_browser_use_goes_out_but_the_run(self):
+        # From Cloud.ru PyPI and GitHub accept and never answer: pricing held runs for minutes, the version
+        # check (PyPI) delays every start. A `true` from the unit's environment is overridden.
+        environ = {"BROWSER_USE_CALCULATE_COST": "true", "BROWSER_USE_VERSION_CHECK": "true",
+                   "ANONYMIZED_TELEMETRY": "true"}
+        worker.quiet_browser_use(environ)
+        self.assertEqual(environ, {"BROWSER_USE_CALCULATE_COST": "false", "BROWSER_USE_VERSION_CHECK": "false",
+                                   "ANONYMIZED_TELEMETRY": "true", "BROWSER_USE_CLOUD_SYNC": "false",
+                                   "BROWSER_USE_SETUP_LOGGING": "false"})
+        self.assertIn("    quiet_browser_use(os.environ)\n", Path(worker.__file__).read_text())
+
+
 class ListenTest(unittest.TestCase):
     def listen_host(self, **env):
         # A fresh copy of the module, since the address is read once at import.
@@ -429,6 +442,28 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.on_disk("r1")["traffic"], {"up": 1_000, "down": 250_000})
         self.assertEqual(worker.Run.load(self.on_disk("r1")).traffic, {"up": 1_000, "down": 250_000})
 
+    async def test_a_run_reports_its_tokens_without_waiting_for_a_price_list(self):
+        # browser-use prices usage only with calculate_cost, fetching LiteLLM's list from GitHub and then
+        # openrouter.ai: both silent from Cloud.ru, which held finished runs for minutes. Tokens it counts
+        # regardless, and Bro prices them itself.
+        class Usage:
+            def model_dump(self):
+                return {"total_prompt_tokens": 12_000, "total_completion_tokens": 800, "total_tokens": 12_800,
+                        "total_prompt_cached_tokens": 9_000, "total_cost": 0.0, "entry_count": 4}
+
+        async def counted(agent, on_step_start):
+            await on_step_start(agent)
+            history = FakeHistory(True)
+            history.usage = Usage()
+            return history
+
+        FakeAgent.script = counted
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertIs(FakeAgent.built[0].options["calculate_cost"], False)
+        self.assertEqual(run.public()["usage"], {"total_prompt_tokens": 12_000, "total_completion_tokens": 800,
+                                                 "total_tokens": 12_800, "total_prompt_cached_tokens": 9_000})
+
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)
         records = [("r1", "2026-09-28T10:00:00Z", {"n_steps": 5, "history": []}),
@@ -614,6 +649,27 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         # After the restore Bro sends the model again: until then a follow-up is refused, not run keyless.
         status, answer = await self.call("POST", "/v1/sessions/s1/messages", {"text": "Go on."})
         self.assertEqual((status, answer["error"]), (409, "session has no model; start a run"))
+
+    async def test_park_under_runc_closes_chrome_and_waits_for_the_next_one(self):
+        # SIGTERM makes Chrome end the session without writing its cookie store; Browser.close writes it.
+        answers = iter([True, True, False, False, True])
+        ready = mock.AsyncMock(side_effect=lambda *args: next(answers))
+        closed = mock.AsyncMock(return_value={})
+        with mock.patch.object(worker, "chrome_ready", ready), \
+                mock.patch.object(worker, "cdp_command", closed), \
+                mock.patch.object(worker, "browser_socket", mock.AsyncMock(return_value="ws://chrome")):
+            self.assertEqual(await self.call("POST", "/v1/park", {"closeChrome": True}),
+                             (200, {"parked": True, "chrome": "closed"}))
+        closed.assert_awaited_once_with("ws://chrome", "Browser.close", timeout=10)
+        self.assertEqual(ready.await_count, 5)  # old one gone, new one up
+        self.assertIsNone(self.worker.forwarder.upstream)
+
+    async def test_park_without_close_leaves_chrome_alone(self):
+        closed = mock.AsyncMock()
+        with mock.patch.object(worker, "cdp_command", closed):
+            self.assertEqual(await self.call("POST", "/v1/park", {}), (200, {"parked": True}))
+            self.assertEqual(await self.call("POST", "/v1/park", [1]), (400, {"error": "body must be an object"}))
+        closed.assert_not_awaited()
 
     async def test_park_is_refused_while_a_run_works(self):
         in_step, go_on = asyncio.Event(), asyncio.Event()
@@ -1139,20 +1195,27 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         self.assertIn("/devtools/browser/BROWSER-ID", data["webSocketDebuggerUrl"])
 
-    async def test_sockets_keep_the_prefix_a_pool_host_strips(self):
+    async def test_socket_urls_keep_the_pool_hosts_sandbox_prefix(self):
+        # Behind a pool host's Caddy the worker lives under /g/<sandbox>/, which Caddy strips.
         self.open_tab("T1", "s1")
         token = cdp_token()
-        response = await self.client.get(f"/v1/cdp/{token}/json",
-                                          headers={"X-Forwarded-Prefix": "/g/ws-0123abcd"})
+
+        response = await self.client.get(f"/v1/cdp/{token}/json", headers={"X-Forwarded-Prefix": "/g/ws-abc"})
         targets = await response.json()
-        self.assertTrue(targets[0]["webSocketDebuggerUrl"].endswith(
-            f"/g/ws-0123abcd/v1/cdp/{token}/devtools/page/T1"))
-        # Anything but a sandbox route is ignored rather than put into the URL.
-        response = await self.client.get(f"/v1/cdp/{token}/json",
-                                          headers={"X-Forwarded-Prefix": "/evil.example/x"})
+        version = await (await self.client.get(f"/v1/cdp/{token}/json/version",
+                                                headers={"X-Forwarded-Prefix": "/g/ws-abc"})).json()
+
+        self.assertTrue(targets[0]["webSocketDebuggerUrl"].endswith(f"/g/ws-abc/v1/cdp/{token}/devtools/page/T1"))
+        self.assertIn(f"/g/ws-abc/v1/cdp/{token}/devtools/browser/", version["webSocketDebuggerUrl"])
+
+    async def test_socket_urls_ignore_a_prefix_that_is_not_a_sandbox_path(self):
+        self.open_tab("T1", "s1")
+        token = cdp_token()
+
+        response = await self.client.get(f"/v1/cdp/{token}/json", headers={"X-Forwarded-Prefix": "//evil.example"})
         targets = await response.json()
-        self.assertNotIn("evil", targets[0]["webSocketDebuggerUrl"])
-        self.assertIn(f"/v1/cdp/{token}/devtools/page/T1", targets[0]["webSocketDebuggerUrl"])
+
+        self.assertRegex(targets[0]["webSocketDebuggerUrl"], rf"^wss://[^/]+/v1/cdp/{token}/devtools/page/T1$")
 
     async def test_devtools_socket_refuses_another_sessions_tab(self):
         self.open_tab("T1", "s1")

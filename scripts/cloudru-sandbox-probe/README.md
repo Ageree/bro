@@ -10,26 +10,30 @@ Evolution (29.09): технически он там запускается, но
 данных и без продовых ключей. Этап 1 (30.09) гоняет уже наш образ — корень
 песочницы из `browser-vm/image/sandbox` с worker и browser-use.
 
-| Файл                      | Что делает                                                                                            |
-| ------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `cloudru.py`              | Compute API: квоты, список, цены флейворов, создание и удаление пробной VM (вместе с её IP)           |
-| `console.py`              | Команды на VM через serial-консоль Cloud.ru (вход root по паролю из cloud-init) и заливка скриптов    |
-| `vm/check_kvm.sh`         | Флаги `vmx`/`svm`, `/dev/kvm`, `nested`                                                               |
-| `vm/chrome_bench.sh`      | Ставит Chrome и gVisor; Chrome без изоляции против `runsc do`, лёгкая и тяжёлая страница; `fio`       |
-| `vm/gvisor_checkpoint.sh` | Chrome в песочнице gVisor со своим netns: `runsc checkpoint`, zstd, `runsc restore`, те же вкладки    |
-| `vm/firecracker_setup.sh` | Firecracker 1.10.1, ядро 6.1 из CI Firecracker, rootfs гостя — копия этой VM с Chrome, tap0 и NAT     |
-| `vm/guest_init.sh`        | PID 1 гостя: сеть, замеры Chrome, живой Chrome с CDP и цикл `ALIVE` для проверки снимка               |
-| `vm/snapshot_bench.sh`    | Загрузка гостя, пауза, полный снимок, zstd, восстановление в новом процессе Firecracker               |
-| `s3.py`                   | Object Storage из сессии: подписанные ссылки (SigV4), список, удаление по префиксу                    |
-| `deliver.py`              | Стенд, ключ RouterAI и мастер-ключ наборов на VM через S3; ссылки на части наборов для `state.py`     |
-| `verify_wheels.py`        | Сверка sha256 колёс, взятых VM с зеркала PyPI, с самим PyPI                                           |
-| `vm/host_setup.sh`        | Хост этапа 1: `runsc`, zstd, NAT для 10.200.0.0/16, выход песочниц, прокси-заглушка на :3130          |
-| `vm/wheels.sh`            | python3.11 Ubuntu и колёса с зеркала для корня песочницы, когда GitHub и PyPI не отвечают             |
-| `vm/sandbox.sh`           | Песочница из корня `browser-vm/image/sandbox`: gVisor, без gVisor, восстановление, стоп               |
-| `vm/proxy.py`             | HTTP-прокси на хосте вместо резидентского (выход — адрес Cloud.ru)                                    |
-| `vm/bench.py`             | Драйвер worker (токены как у Бро): RU-набор, WB и Avito, форма, проверка после восстановления, память |
-| `vm/state.py`             | Парковка и восстановление: checkpoint, tar, zstd, AES-256-GCM, части в S3, манифест последним         |
-| `vm/full.sh`              | Сравнение: без gVisor, затем gVisor, каждый с пустым профилем                                         |
+| Файл                      | Что делает                                                                                               |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `cloudru.py`              | Compute API: квоты, список, цены флейворов, создание и удаление пробной VM (вместе с её IP)              |
+| `console.py`              | Команды на VM через serial-консоль Cloud.ru (вход root по паролю из cloud-init) и заливка скриптов       |
+| `vm/check_kvm.sh`         | Флаги `vmx`/`svm`, `/dev/kvm`, `nested`                                                                  |
+| `vm/chrome_bench.sh`      | Ставит Chrome и gVisor; Chrome без изоляции против `runsc do`, лёгкая и тяжёлая страница; `fio`          |
+| `vm/gvisor_checkpoint.sh` | Chrome в песочнице gVisor со своим netns: `runsc checkpoint`, zstd, `runsc restore`, те же вкладки       |
+| `vm/firecracker_setup.sh` | Firecracker 1.10.1, ядро 6.1 из CI Firecracker, rootfs гостя — копия этой VM с Chrome, tap0 и NAT        |
+| `vm/guest_init.sh`        | PID 1 гостя: сеть, замеры Chrome, живой Chrome с CDP и цикл `ALIVE` для проверки снимка                  |
+| `vm/snapshot_bench.sh`    | Загрузка гостя, пауза, полный снимок, zstd, восстановление в новом процессе Firecracker                  |
+| `s3.py`                   | Object Storage из сессии: подписанные ссылки (SigV4), список, удаление по префиксу                       |
+| `deliver.py`              | Стенд, ключ RouterAI и мастер-ключ наборов на VM через S3; ссылки на части наборов для `state.py`        |
+| `verify_wheels.py`        | Сверка sha256 колёс с зеркала PyPI с самим PyPI и пины `--require-hashes`, без которых корень не собрать |
+| `vm/host_setup.sh`        | Хост этапа 1: `runsc`, zstd, NAT для 10.200.0.0/16, выход песочниц, прокси-заглушка на :3130             |
+| `vm/wheels.sh`            | python3.11 Ubuntu и колёса с зеркала для корня песочницы, когда GitHub и PyPI не отвечают                |
+| `vm/sandbox.sh`           | Песочница из корня `browser-vm/image/sandbox`: gVisor, без gVisor, восстановление, стоп                  |
+| `vm/proxy.py`             | HTTP-прокси на хосте вместо резидентского (выход — адрес Cloud.ru)                                       |
+| `vm/bench.py`             | Драйвер worker (токены как у Бро): RU-набор, WB и Avito, форма, проверка после восстановления, память    |
+| `vm/state.py`             | Парковка и восстановление: checkpoint, tar, zstd, AES-256-GCM, части в S3, манифест последним            |
+| `vm/full.sh`              | Сравнение: без gVisor, затем gVisor, каждый с пустым профилем                                            |
+| `vm/rootfs_build.sh`      | Этап 2: колёса с зеркала и корень песочницы в архив для S3 (`build_rootfs.sh` в режиме ARCHIVE)          |
+| `pool.py`                 | Этап 2: хост пула как у Бро (cloud-init `boot.py`), API `hostd` и worker по HTTPS, парковка, наборы      |
+| `vm/pool_inspect.sh`      | Этап 2, на хосте: `runc state`, cgroup, монтирования, namespace и seccomp процессов Chrome, лог          |
+| `vm/leak.py`              | Этап 2, изнутри песочницы: TCP до соседки, хоста, VPC, metadata — отказ сразу или таймаут                |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET` и `pip install websocket-client`;
 для этапа 1 ещё `CLOUDRU_S3_TENANT_ID` и `ROUTERAI_API_KEY`.
@@ -66,7 +70,8 @@ python cloudru.py usage && python cloudru.py create probe-s1 --flavor gen-2-8 --
 python deliver.py probe-s1                          # /root/stand, /root/.routerai, /root/.state-key
 python console.py run probe-s1 'bash /root/stand/vm/host_setup.sh > /root/host.log 2>&1'
 python console.py run probe-s1 'bash /root/stand/vm/wheels.sh download'          # если PyPI молчит
-python console.py run probe-s1 'cat /srv/bro/wheels.sha256' > w.sha256 && python verify_wheels.py w.sha256
+python console.py run probe-s1 'cat /srv/bro/wheels.sha256' > w.sha256 && python verify_wheels.py w.sha256 req.txt
+python console.py push probe-s1 req.txt /srv/bro/wheels/requirements.txt    # пины PyPI: без них сборка не идёт
 python console.py run probe-s1 'BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
   nohup bash /root/stand/browser-vm/image/sandbox/build_rootfs.sh > /root/build.log 2>&1 &'   # ≈ 3 минуты
 python console.py run probe-s1 'nohup bash /root/stand/vm/full.sh > /root/full.log 2>&1 &'  # ≈ 30 минут
@@ -94,6 +99,46 @@ RU-набора по ≈ 22 ₽ и отладка).
 | Парковка: стоп или checkpoint / tar / zstd / шифрование / S3        | 0,5 / 0,03 / 0,1 / 0,06 / 1,5 с, 37 МБ | 0,88 / 0,05 / 0,69 / 0,13 / 1,34 с, 83 МБ |
 | Подъём на другой VM: S3 / расшифровка / распаковка / старт / worker | 1,0 / 0,04 / 0,14 / 0,4 с              | 1,0 / 0,09 / 0,62 / 0,73 / 0,19 с         |
 | Пережило подъём                                                     | cookie, localStorage                   | + вкладка и значение в поле, часы ±0,03 с |
+
+## Этап 2: хост пула на настоящих VM
+
+Хост поднимается так, как его поднимет Бро: стоковая `ubuntu-22.04` и
+cloud-init из `browser-vm/host/boot.py` с presigned GET бандла и корня. Стенд
+только дописывает в cloud-init пароль root для `console.py` (у хостов Бро входа
+нет). Ключ подписи — случайный (`$PROBE_STATE_DIR/pool-signing-key`), ключи
+worker и данных песочниц — там же (`pool-<id>.json`); удалите их после прогона.
+
+```sh
+# корень — один раз (≈ 15 минут вместе с VM, ≈ 1 ₽)
+python cloudru.py usage && python cloudru.py create probe-rootfs --disk 25
+python deliver.py probe-rootfs --code && python console.py push probe-rootfs vm/rootfs_build.sh /root/stand/vm/rootfs_build.sh
+python console.py run probe-rootfs 'bash /root/stand/vm/rootfs_build.sh wheels > /root/wheels.log 2>&1' --timeout 600
+python console.py run probe-rootfs 'cat /srv/bro/wheels.sha256' > w.sha256 && python verify_wheels.py w.sha256 req.txt
+python console.py push probe-rootfs req.txt /srv/bro/wheels/requirements.txt
+python console.py run probe-rootfs 'nohup bash /root/stand/vm/rootfs_build.sh build <версия> > /root/build.log 2>&1 &'
+python console.py run probe-rootfs "curl -fsS -T /srv/bro/<версия>.tar.zst '$(python s3.py presign put pool/rootfs/<версия>.tar.zst)'"
+python cloudru.py delete probe-rootfs
+# бандл — в сессии: README хоста, «Сборка бандла и корня»
+# pool.py берёт текущие корень и бандл (раздел 2 docs/browser-pool.md); другие — POOL_BUNDLE_KEY и т. п.
+python pool.py boot probe-host1                     # время до ready по HTTPS; нет ответа ≈ 3 минуты — set-power reboot
+python pool.py create probe-host1 sbx-a             # песочница; время до ответа worker с Chrome
+python console.py push probe-host1 vm/proxy.py /root/proxy.py   # прокси-заглушка и stand_host_ports [3130] в
+python console.py run probe-host1 'nohup python3 /root/proxy.py 3130 > /var/log/probe-proxy.log 2>&1 &'  # hostd.json
+python pool.py session probe-host1 sbx-a 172.31.0.1 # шлюз песочницы в слоте 0 (слот n — 172.31.0.<4n+1>)
+python pool.py markers probe-host1 sbx-a set        # cookie и localStorage на ya.ru через CDP за Caddy
+python pool.py errand probe-host1 sbx-a             # одно короткое поручение, ≈ 1 ₽ RouterAI
+python pool.py park probe-host1 sbx-a 2 && python cloudru.py delete probe-host1
+python pool.py boot probe-host2 && python pool.py create probe-host2 sbx-a --gen 3 --restore 2
+python pool.py session probe-host2 sbx-a 172.31.0.1 && python pool.py markers probe-host2 sbx-a check
+python pool.py create probe-host2 sbx-b             # соседка; затем на хосте:
+#   runc --root /run/runc-bro exec bro-sbx-a python3 -c "$(cat /root/leak.py)" <адрес хоста в VPC> <публичный IP>
+python pool.py delete probe-host2 sbx-a 3 && python pool.py forget <воркспейс sbx-a>
+python cloudru.py delete probe-host2 && python s3.py delete-prefix probe/stage2/ && python cloudru.py usage
+```
+
+Итоги — таблицы этапа 2 в разделе 2 `docs/browser-pool.md`. Прогон 30.09:
+четыре VM (`gen-2-4` для корня, три `gen-2-8`) ≈ 53 минуты — ≈ 5 ₽; RouterAI —
+0,88 ₽.
 
 ## Грабли
 
@@ -142,6 +187,11 @@ proc` внутри.
 - Память gVisor по RSS и PSS процессов хоста завышена (общий memory file
   отображён многократно): смотреть MemTotal − MemAvailable хоста, cgroup и
   `runsc events --stats`.
+- Хост пула: первая загрузка стоковой VM иногда встаёт в `(initramfs)` (одна
+  из четырёх 30.09): `pool.py boot` ждёт 15 минут впустую — смотрите консоль и
+  делайте `set-power reboot`, cloud-init после него отрабатывает как надо.
+- Изнутри песочницы публичный IP своего же хоста не отвечает (таймаут, не
+  отказ): Cloud.ru не разворачивает трафик на плавающий IP той же VM.
 - Avito закрывает адрес «Доступ ограничен: проблема с IP» после серии
   запросов с него: в прогоне стена досталась проверке под gVisor сразу после
   набора без gVisor, а поручение под gVisor через 10 минут прошло без неё.

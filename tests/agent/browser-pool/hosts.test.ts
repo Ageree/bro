@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +27,7 @@ const cloud = vi.hoisted(() => ({
   deleteCloudRuVm: vi.fn<typeof cloudRuModule.deleteCloudRuVm>(),
   findCloudRuVmByName: vi.fn<typeof cloudRuModule.findCloudRuVmByName>(),
   readCloudRuVm: vi.fn<typeof cloudRuModule.readCloudRuVm>(),
+  setCloudRuVmPower: vi.fn<typeof cloudRuModule.setCloudRuVmPower>(),
 }));
 const hostClient = vi.hoisted(() => ({
   readBrowserHostCapacity: vi.fn<typeof hostModule.readBrowserHostCapacity>(),
@@ -56,6 +59,7 @@ beforeEach(() => {
   cloud.deleteCloudRuFloatingIp.mockResolvedValue(undefined);
   cloud.findCloudRuVmByName.mockResolvedValue(undefined);
   cloud.readCloudRuVm.mockResolvedValue(cloudVm());
+  cloud.setCloudRuVmPower.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -161,8 +165,53 @@ const bootSchema = z.object({
     url: z.string(),
     version: z.string(),
   }),
+  aptMirror: z.string(),
   runscRelease: z.string(),
+  runtime: z.string(),
 });
+
+/**
+ * What `python3 boot.py cloud-init` writes for the same host, URLs and
+ * settings: the source of truth the TypeScript copy must match byte for
+ * byte.
+ */
+function bootPyCloudInit(
+  boot: z.infer<typeof bootSchema>,
+  runtime: readonly string[] = []
+) {
+  const script = fileURLToPath(
+    new URL("../../../browser-vm/host/boot.py", import.meta.url)
+  );
+  return execFileSync(
+    "python3",
+    [
+      script,
+      "cloud-init",
+      "--host-id",
+      boot.hostId,
+      "--bundle-url",
+      boot.bundle.url,
+      "--bundle-sha256",
+      boot.bundle.sha256,
+      "--rootfs-version",
+      boot.rootfs.version,
+      "--rootfs-url",
+      boot.rootfs.url,
+      "--rootfs-sha256",
+      boot.rootfs.sha256,
+      ...runtime,
+    ],
+    // The signing key comes from the environment the test stubbed
+    // (`importWithSettings`), as boot.py reads BROWSER_VM_SIGNING_KEY.
+    { encoding: "utf8" }
+  );
+}
+
+function bootJson(document: string) {
+  const line = document.split("\n")[7] ?? "";
+  const json = /^ {4}content: '(?<json>.*)'$/u.exec(line)?.groups?.json;
+  return bootSchema.parse(JSON.parse(json ?? ""));
+}
 
 describe("browser host cloud-init", () => {
   it("writes the files boot.py writes, with the script it runs", async () => {
@@ -190,13 +239,23 @@ describe("browser host cloud-init", () => {
           .record(z.string(), z.json())
           .parse(JSON.parse(bootLine?.groups?.json ?? "{}"))
       )
-    ).toEqual(["hostId", "domain", "runscRelease", "bundle", "rootfs"]);
+    ).toEqual([
+      "hostId",
+      "domain",
+      "runtime",
+      "runscRelease",
+      "aptMirror",
+      "bundle",
+      "rootfs",
+    ]);
     expect(boot).toMatchObject({
+      aptMirror: "http://mirror.yandex.ru/ubuntu",
       bundle: { sha256: "ab".repeat(32) },
       domain: "",
       hostId: "bro-host-1",
       rootfs: { sha256: "cd".repeat(32), version: "2026-09-30.1" },
-      runscRelease: "20260914",
+      runscRelease: "",
+      runtime: "runc",
     });
     const bundleUrl = new URL(boot.bundle.url);
     expect(bundleUrl.origin + bundleUrl.pathname).toBe(
@@ -234,6 +293,61 @@ describe("browser host cloud-init", () => {
     ]);
   });
 
+  it("is byte for byte what boot.py writes, under runc and under runsc", async () => {
+    const hosts = await loadHosts();
+    const document = hosts.browserHostCloudInit("bro-host-1", now);
+    expect(bootPyCloudInit(bootJson(document))).toBe(document);
+
+    const runsc = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        BROWSER_HOST_RUNSC_RELEASE: "20260914",
+        BROWSER_HOST_RUNTIME: "runsc",
+      },
+      async () => import("@agent/lib/browser-pool/hosts")
+    );
+    const gvisor = runsc.browserHostCloudInit("probe-host-2", now);
+    expect(bootJson(gvisor)).toMatchObject({
+      runscRelease: "20260914",
+      runtime: "runsc",
+    });
+    expect(
+      bootPyCloudInit(bootJson(gvisor), [
+        "--runtime",
+        "runsc",
+        "--runsc-release",
+        "20260914",
+      ])
+    ).toBe(gvisor);
+  });
+
+  it("runs runsc when the runtime is unset and the release is pinned", async () => {
+    // A deployment set up before BROWSER_HOST_RUNTIME stays on gVisor.
+    const hosts = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        BROWSER_HOST_RUNSC_RELEASE: "20260914",
+        BROWSER_HOST_RUNTIME: "",
+      },
+      async () => import("@agent/lib/browser-pool/hosts")
+    );
+
+    expect(
+      bootJson(hosts.browserHostCloudInit("bro-host-1", now))
+    ).toMatchObject({ runscRelease: "20260914", runtime: "runsc" });
+  });
+
+  it("needs the gVisor release only under runsc", async () => {
+    const hosts = await importWithSettings(
+      { ...browserPoolTestEnvironment, BROWSER_HOST_RUNTIME: "runsc" },
+      async () => import("@agent/lib/browser-pool/hosts")
+    );
+
+    expect(() => hosts.browserHostCloudInit("bro-host-1", now)).toThrow(
+      "BROWSER_HOST_RUNSC_RELEASE is not configured"
+    );
+  });
+
   it("refuses a host id hostd would not take", async () => {
     const hosts = await loadHosts();
 
@@ -269,6 +383,22 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
       retryAfterMs: 60_000,
     });
     expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+  });
+
+  it("names hosts with the configured prefix", async () => {
+    const { hosts, records } = await loadPool({
+      BROWSER_HOST_NAME_PREFIX: "probe-host-",
+    });
+
+    await hosts.placeBrowserSandbox(now);
+    const [created] = cloud.createCloudRuHostVm.mock.calls[0] ?? [];
+    expect(created?.name).toBe("probe-host-1");
+    expect(created?.cloudInit).toContain('{"host": "probe-host-1", "key": ');
+    expect(await records.readBrowserHost("probe-host-1")).toMatchObject({
+      state: "creating",
+      vmName: "probe-host-1",
+    });
+    expect(await records.readBrowserHost("bro-host-1")).toBeUndefined();
   });
 
   it("frees the slot when Cloud.ru refuses the host", async () => {
@@ -475,6 +605,45 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
       leaseUntil: null,
       state: "ready",
     });
+  });
+
+  it("reboots once a new host that never answered, as a first boot may hang", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { state: "creating" });
+    await records.updateBrowserHost("bro-host-1", { state: "booting" }, now);
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+
+    // Five minutes after the VM ran: maybe a slow mirror, still inside
+    // provision.sh's budget. A reboot would cut it off for good (cloud-init
+    // runs it once per instance), so it is left alone.
+    await hosts.reconcileBrowserHosts(minutes(5));
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+
+    await hosts.reconcileBrowserHosts(minutes(6));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "reboot"
+    );
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      rebootedAt: minutes(6),
+      state: "booting",
+    });
+
+    // Still silent after the reboot: never a second one, and failed in time.
+    await hosts.reconcileBrowserHosts(minutes(10));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledOnce();
+    await hosts.reconcileBrowserHosts(minutes(15));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("failed");
+  });
+
+  it("does not reboot a booting host that has answered", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { lastSeenAt: now, state: "creating" });
+    await records.updateBrowserHost("bro-host-1", { state: "booting" }, now);
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+
+    await hosts.reconcileBrowserHosts(minutes(7));
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
   });
 
   it("fails a host whose boot failed, then deletes it with its address", async () => {

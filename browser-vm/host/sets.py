@@ -1,10 +1,10 @@
 """State sets: a parked sandbox as encrypted chunks in Object Storage, written and read over presigned URLs.
 
-A set has parts — `profile` (a tar of the sandbox's profile directory) and, unless it is a cold set,
-`image` (a tar of the `runsc checkpoint` image) — each compressed with zstd by the caller and cut here
-into chunks of `chunk_bytes`. Chunks are numbered across the whole set (the profile first), and chunk i
-goes to `chunk_urls[i]`. The manifest is written last, only after every chunk is in: a set without a
-manifest does not exist.
+A set has parts — `profile` (a tar of the sandbox's profile directory) and, unless it is a cold set (every
+set of a runc host is), `image` (a tar of the `runsc checkpoint` image) — each compressed with zstd by the
+caller and cut here into chunks of `chunk_bytes`. Chunks are numbered across the whole set (the profile
+first), and chunk i goes to `chunk_urls[i]`. The manifest is written last, only after every chunk is in:
+a set without a manifest does not exist.
 
 The host holds no storage credentials: Bro presigns every PUT and GET and passes the URLs in the request
 (the Cloud.ru key never goes to a VM). The data key comes from Bro with each request (HKDF from

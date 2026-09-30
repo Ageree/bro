@@ -1,0 +1,1 @@
+ALTER TABLE "browser_hosts" ADD COLUMN "rebooted_at" timestamp (3) with time zone;

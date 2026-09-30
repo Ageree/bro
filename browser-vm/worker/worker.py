@@ -41,7 +41,9 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/browser/stop | /v1/browser/start | /v1/browser/restart
   POST /v1/profile/reset                  wipe the Chrome profile (forget every sign-in)
   POST /v1/park                           before a pool host freezes this sandbox: forget the model key, the
-                                          proxy login and site secrets (409 while a run works or cancels)
+                                          proxy login and site secrets (409 while a run works or cancels);
+                                          {"closeChrome": true} (runc) also closes Chrome through CDP so
+                                          its cookies are written before the host's SIGTERM
   POST /v1/admin/worker                   replace this worker's code (checksummed, must load, only when idle)
   GET  /v1/cdp/<token>/json[/version]     CDP discovery, socket URLs rewritten to this endpoint
   WS   /v1/cdp/<token>/devtools/...       CDP socket to one target of this VM's Chrome
@@ -68,7 +70,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-29.1"
+VERSION = "2026-09-30.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -484,12 +486,15 @@ def step_summary(state, output, number):
 
 
 def usage_summary(history, agent):
+    """The run's tokens, which Bro prices itself (shared/costs/prices.ts). browser-use counts them whether
+    or not it prices them; its `total_cost` is left out: runs never let it price (`calculate_cost=False`,
+    see `run_agent`), so it is 0, and a 0 would read as a free run."""
     usage = getattr(history, "usage", None)
     if usage is None:
         return None
     data = usage.model_dump() if hasattr(usage, "model_dump") else {}
     return {k: data.get(k) for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
-                                        "total_cost", "total_prompt_cached_tokens") if k in data}
+                                        "total_prompt_cached_tokens") if k in data}
 
 
 class Worker:
@@ -826,7 +831,10 @@ class Worker:
         agent = Agent(
             task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
             sensitive_data=session.sensitive_data or None, use_vision=bool(session.options.get("vision", False)),
-            calculate_cost=True, use_judge=False, available_file_paths=uploads,
+            # No pricing: browser-use would fetch LiteLLM's price list from raw.githubusercontent.com and
+            # then openrouter.ai for every model call of the run, 30 s each, after `done` — both silent from
+            # Cloud.ru (30.09), which held a finished run for minutes. Tokens are counted anyway.
+            calculate_cost=False, use_judge=False, available_file_paths=uploads,
             injected_agent_state=injected, register_new_step_callback=on_step,
             register_should_stop_callback=should_stop, extend_system_message=EXTEND_SYSTEM,
             # A restored state carries its own file system; browser-use refuses both at once.
@@ -1718,21 +1726,55 @@ async def reset_profile(request):
 
 
 async def park(request):
-    """Before a pool host freezes this sandbox (`runsc checkpoint`, browser-vm/host): the snapshot keeps
-    everything in memory, so the worker drops what it holds of the secrets first. The proxy login goes with
+    """Before a pool host parks this sandbox (browser-vm/host). Under runc (the pool's default) the host
+    then stops the sandbox gracefully and keeps the Chrome profile alone: runs, sessions with their agent
+    memory and saved tabs are gone after the restore, which starts this worker empty. Under gVisor the host
+    freezes it (`runsc checkpoint`): the snapshot keeps everything in memory, so the worker drops what it
+    holds of the secrets first. The proxy login goes with
     the forwarder's upstream and its open tunnels (Chrome gets 502 until the next POST /v1/session), the
     model key, 2Captcha key and site secrets with each session; after the restore Bro sends them again as
     after a worker restart. Best effort: Python does not zero freed strings, so copies may remain in the
     snapshot, which stays encrypted under the workspace's key. Never mid-run: a snapshot in the middle of a
     form is neither a success nor a failure."""
     authorize(request)
+    body = await request.json() if request.can_read_body else {}
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text=json.dumps({"error": "body must be an object"}),
+                                 content_type="application/json")
     if worker.busy() or any(run.status not in TERMINAL for run in worker.runs.values()):
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     worker.forwarder.drop()
     for session in worker.sessions.values():
         session.llm = session.captcha = session.sensitive_data = None
         session.options = {k: v for k, v in session.options.items() if k != "jev"}  # jev's own API key
-    return web.json_response({"parked": True})
+    answer = {"parked": True}
+    if body.get("closeChrome") is True:
+        answer["chrome"] = await close_chrome_for_park()
+    return web.json_response(answer)
+
+
+async def close_chrome_for_park(timeout=20):
+    """Under runc the host stops the sandbox with SIGTERM, which Chrome takes for the end of the session
+    (`exit_type: SessionEnded`) and exits without writing its cookie store: cookies of the last 30 s (its
+    commit interval) were lost with the park (e2e on Cloud.ru, 30.09). `Browser.close` is Chrome's own
+    shutdown, which writes them. The init starts Chrome again once the old one has exited (RestartSec), so
+    this waits for the old Chrome to go and the new one to answer: the SIGTERM then finds nothing unwritten,
+    and a park that does not go through leaves a Chrome up. "closed", or "timeout" when Chrome did not
+    come back in time (the park goes on: the profile was written by then or never will be)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        await cdp_command(await browser_socket(), "Browser.close", timeout=10)
+    except Exception as error:  # the socket may close before the answer
+        log.info("Browser.close: %s", error)
+    while await chrome_ready():
+        if asyncio.get_running_loop().time() >= deadline:
+            return "timeout"
+        await asyncio.sleep(0.1)
+    while not await chrome_ready():
+        if asyncio.get_running_loop().time() >= deadline:
+            return "timeout"
+        await asyncio.sleep(0.2)
+    return "closed"
 
 
 # CDP over the endpoint: Bro's existing CDP client (code typing, viewport capture, keep-alive visits)
@@ -1870,6 +1912,20 @@ def application():
     return app
 
 
+def quiet_browser_use(environ):
+    """browser-use's settings (read from the environment at use): nothing of it goes out but the run's
+    own traffic. From Cloud.ru GitHub, PyPI and openrouter.ai accept connections and answer nothing
+    (30.09.2026): pricing (LiteLLM's list from GitHub, then openrouter.ai) held finished runs for minutes,
+    and the version check at every run start (PyPI, a 3 s timeout) delays each one. Tokens are counted
+    either way; Bro prices them (shared/costs/prices.ts)."""
+    environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+    environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
+    environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
+    # Not defaults: `true` in the unit's environment would turn the fetches back on.
+    environ["BROWSER_USE_CALCULATE_COST"] = "false"
+    environ["BROWSER_USE_VERSION_CHECK"] = "false"
+
+
 async def vm_address():
     with contextlib.suppress(Exception):
         async with aiohttp.ClientSession() as http:
@@ -1883,9 +1939,7 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     for noisy in ("browser_use", "cdp_use", "bubus", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
-    os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
-    os.environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
+    quiet_browser_use(os.environ)
     for directory in (RUNS, SESSIONS, UPLOADS):
         directory.mkdir(parents=True, exist_ok=True)
     worker = Worker()

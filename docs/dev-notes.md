@@ -25,7 +25,8 @@
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
 - Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров в
-  песочницах gVisor со снимками на Cloud.ru — `docs/browser-pool.md`.
+  песочницах на общих хостах Cloud.ru (`runc`, gVisor — запасной) —
+  `docs/browser-pool.md`.
 
 ## Процесс
 
@@ -282,10 +283,12 @@
   спасает), закрепляется пакет `runsc` целиком (`/usr/bin/gvisor-bin`).
   Итоги этапа 1 и решение «обычные контейнеры» — `docs/browser-pool.md`.
 - С VM Cloud.ru 30.09 GitHub, PyPI, openrouter.ai и Википедия принимали TCP и
-  молчали, `archive.ubuntu.com` не отвечал: `build.py` (uv и jev с GitHub) так
-  не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
-  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`). Молчащий адрес вешает
-  browser-use после `done` (цены моделей): выход песочницы — `REJECT`, не `DROP`.
+  молчали (днём GitHub уже отвечал: выход непостоянен), `archive.ubuntu.com`
+  не отвечал: `build.py` (uv и jev с GitHub) так не соберёт образ. Обход —
+  `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей (`scripts/cloudru-sandbox-probe/vm/wheels.sh`, ставит только по пинам
+  `verify_wheels.py`). Молчащий адрес вешает browser-use после `done` (цены
+  моделей) и на старте (проверка версии на PyPI — `BROWSER_USE_VERSION_CHECK`):
+  выход песочницы — `REJECT`, не `DROP`.
 - Код worker на живых VM Бро меняет сам: `BROWSER_VM_WORKER` (публикует
   `browser-vm/worker/publish.py`), выкат перед поручением — `rollout.ts`,
   только вперёд по `VERSION`. `/v1/admin/worker` берёт только `worker.py`, а
@@ -305,11 +308,39 @@
   Ubuntu делает `flush ruleset`: на хосте он выключен, таблицу ставит `hostd`.
   aiohttp перекодирует presigned URL (`%2F` → `/`, `%3A` → `:`), и подпись S3
   не сходится: только `yarl.URL(url, encoded=True)` (`sets.transfer`).
+- Хост пула не ходит на GitHub и PyPI: Caddy и колёса `hostd` едут в бандле
+  (`boot.py vendor`), пины — `vendor.json` и `requirements.txt` (колёса под
+  Python 3.10 Ubuntu 22.04; `pip download --python-version` не видит маркеров
+  3.10 — `async-timeout` вписан руками). Новая зависимость — перепин с sha256.
+- Worker на хосте пула живёт за Caddy под `/g/<id>/`: адреса CDP-сокетов он
+  строит с префиксом из `X-Forwarded-Prefix` (`browser-vm/host/caddy.py`),
+  без него они вели в 404. `oomScoreAdj` `runc` — пол для всех процессов
+  песочницы: при 500 Chrome не мог дать рендерерам свои 300+ (EACCES), теперь 200. Публичный IP своего хоста из песочницы — таймаут, не отказ: Cloud.ru не
+  разворачивает трафик на свой плавающий IP, поэтому `provision.sh` кладёт его
+  в `egress_blocked`. Итоги этапа 2 — `docs/browser-pool.md`.
+- `hostd` не делает `runc exec` в песочницу (вход побегов `runc`): парковка —
+  SIGTERM init, «Chrome убит по таймауту» init пишет в `runtime.log`. Профиль
+  Docker для seccomp не годится (режет user namespace песочницы Chrome) — свой
+  `browser-vm/host/seccomp.json`. `kernel.unprivileged_userns_clone` у ядра
+  Ubuntu нет, `sysctl -e` молча его пропускает. Запуски и память агента
+  worker парковку `runc` не переживают: в наборе только профиль.
+- SIGTERM Chrome считает концом сеанса (`exit_type: SessionEnded`): cookie
+  последних 30 с не пишет и оставляет `BrowserMetrics/*.pma` по 4 МиБ.
+  Поэтому перед парковкой `runc` worker закрывает Chrome через CDP
+  (`closeChrome`), а `hostd` не пакует `BrowserMetrics` (`LEFT_OUT_OF_SETS`).
+- Код пула на настоящих хостах — `pnpm test:e2e:browser-pool`
+  (`tests/e2e/`, `vitest.e2e.config.ts`, вне `pnpm check`; команда —
+  `docs/browser-pool.md`, раздел 10). vitest без TTY печатает вывод теста
+  только при падении: ход прогона — в файле итогов.
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
-  (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`:
-  первичный ключ `browser_hosts` не даёт создать лишний. Cloud-init хоста в TS
-  байт в байт как `boot.py cloud-init`; тест сверяет скрипт с `boot.py`.
+  (`browserPoolConfigured`); `runc` — только явным `BROWSER_HOST_RUNTIME`, без
+  него пул как до настройки (`runsc` с выпуском). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`
+  (префикс — `BROWSER_HOST_NAME_PREFIX`): первичный ключ `browser_hosts` не
+  даёт создать лишний. Cloud-init хоста в TS байт в байт как
+  `boot.py cloud-init`: тест `hosts.test.ts` запускает `python3 boot.py` и
+  сравнивает весь документ — правка `boot.py` без правки TS валит `pnpm check`.
+  Под `runc` набор без снимка (`format: null`) поднимается как `profile`.
   Сторож пула не ждёт `browserPoolConfigured`: хосты стоят денег, пока не
   удалены, и убираются, пока есть хоть один. Набор отбрасывается только при
   вине самого набора (`setFaultPattern` в `sandbox.ts`): 502 Caddy или runsc
@@ -394,9 +425,11 @@
 
 ## Учёт расходов
 
-- `usage.total_cost` worker — цена browser-use по его долларовому прайсу
-  (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
-  `shared/costs/prices.ts`. Трафик прокси по запуску (`traffic`) отдаёт только
+- `usage.total_cost` старого worker — цена browser-use по его долларовому
+  прайсу (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
+  `shared/costs/prices.ts`. Worker с 30.09 цену не просит (`calculate_cost`
+  тянул прайсы с GitHub и openrouter.ai и вешал запуск с Cloud.ru) и
+  `total_cost` не отдаёт. Трафик прокси по запуску (`traffic`) отдаёт только
   обновлённый worker; хуки родителя шаги субагентов не видят.
 
 ## Google

@@ -104,8 +104,10 @@ class Console:
     def run(self, command, seconds):
         tag = secrets.token_hex(3)
         self.buf = ""
-        self.send(f"stty -echo cols 250; export TERM=dumb PAGER=cat; echo S{tag}S; ( {command} ) 2>&1; "
-                  f"echo E{tag}E $?\r")
+        # The markers are split by '' in the command: right after a login the terminal still echoes the line
+        # (stty -echo is part of it), and the echo must not read as the command's own output.
+        self.send(f"stty -echo cols 250; export TERM=dumb PAGER=cat; echo S{tag}''S; ( {command} ) 2>&1; "
+                  f"echo E{tag}''E $?\r")
         match = self.wait([rf"E{tag}E \d+"], seconds)
         start = self.buf.find(f"S{tag}S")
         body = self.buf[start + len(tag) + 2:] if start >= 0 else self.buf

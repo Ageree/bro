@@ -13,11 +13,6 @@ import { browserHosts, browserVms, db, liveBrowserSandboxStates } from "@db";
 
 type BrowserHostInsert = typeof browserHosts.$inferInsert;
 
-/** The id, and VM name, of the host in slot `n`. */
-function hostIdOfSlot(slot: number) {
-  return `bro-host-${String(slot)}`;
-}
-
 function leaseFree(now: Date) {
   return or(isNull(browserHosts.leaseUntil), lte(browserHosts.leaseUntil, now));
 }
@@ -40,22 +35,27 @@ export async function listBrowserHosts() {
 }
 
 /**
- * Take a free host slot (`bro-host-1` … `bro-host-<slots>`) as a `creating`
- * record whose lease the caller holds for `leaseMs`, before the VM is asked
- * for: a create whose answer is lost is found again by the record's name,
- * and the primary key keeps two callers from taking one slot, so no more
- * hosts than `slots` are ever made. Undefined when every slot is taken.
+ * Take a free host slot (`<prefix>1` … `<prefix><slots>`, `bro-host-1` by
+ * default) as a `creating` record whose lease the caller holds for
+ * `leaseMs`, before the VM is asked for: a create whose answer is lost is
+ * found again by the record's name, and the primary key keeps two callers
+ * from taking one slot, so no more hosts than `slots` are ever made.
+ * Undefined when every slot is taken.
  */
 export async function claimBrowserHostSlot(
   slots: number,
   now: Date,
-  leaseMs: number
+  leaseMs: number,
+  options: { readonly prefix?: string } = {}
 ) {
+  const prefix = options.prefix ?? "bro-host-";
   const taken = new Set((await listBrowserHosts()).map((host) => host.id));
-  // A slot past a lowered limit still counts: no more hosts than `slots`.
+  // A slot past a lowered limit, or of another prefix, still counts: no
+  // more hosts than `slots`.
   if (taken.size >= slots) return undefined;
   for (let slot = 1; slot <= slots; slot += 1) {
-    const id = hostIdOfSlot(slot);
+    // The id is also the VM's name.
+    const id = `${prefix}${String(slot)}`;
     if (taken.has(id)) continue;
     // oxlint-disable-next-line eslint/no-await-in-loop -- The next slot is tried only when a concurrent caller took this one.
     const [row] = await db

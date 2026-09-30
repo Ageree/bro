@@ -81,6 +81,13 @@ rm -rf "$ROOT"/var/lib/apt/lists/* "$ROOT"/tmp/* "$ROOT"/var/tmp/* "$ROOT/usr/sb
 mkdir -p "$ROOT/etc/bro" "$ROOT/var/lib/bro/profile"
 : > "$ROOT/etc/bro/worker.json"
 chroot "$ROOT" chown bro:bro /var/lib/bro/profile
+# The build's /proc, /sys and /dev mounts go before the archive: tar would otherwise walk the host's live
+# /proc (kcore, sysctls) into it.
+cleanup
+if grep -q " $ROOT/" /proc/mounts; then
+  echo "still mounted under $ROOT" >&2
+  exit 1
+fi
 echo "rootfs $ROOT: $(du -sh --exclude=proc --exclude=sys --exclude=dev "$ROOT" | cut -f1), bro uid $(chroot "$ROOT" id -u bro)"
 if [ -n "${3:-}" ]; then
   tar -C "$ROOT" --numeric-owner -I "zstd -3 -T0" -cpf "$3" .

@@ -151,6 +151,28 @@ describe("browser VM backend choice", () => {
     expect(configuredWithout).toEqual(names.map((name) => [name, false]));
   });
 
+  it("needs the gVisor release only for hosts that run runsc", async () => {
+    const runsc = {
+      ...browserPoolTestEnvironment,
+      BROWSER_HOST_RUNTIME: "runsc",
+    };
+    expect((await loadBackend(runsc)).browserPoolConfigured()).toBe(false);
+    expect(
+      (
+        await loadBackend({ ...runsc, BROWSER_HOST_RUNSC_RELEASE: "20260914" })
+      ).browserPoolConfigured()
+    ).toBe(true);
+  });
+
+  it("takes runc only when named, and an unset runtime as runsc", async () => {
+    // As before BROWSER_HOST_RUNTIME: the pool's other settings without the
+    // gVisor release leave it off, and with the release it runs runsc.
+    const unset = { ...browserPoolTestEnvironment, BROWSER_HOST_RUNTIME: "" };
+    expect((await loadBackend(unset)).browserPoolConfigured()).toBe(false);
+    const legacy = { ...unset, BROWSER_HOST_RUNSC_RELEASE: "20260914" };
+    expect((await loadBackend(legacy)).browserPoolConfigured()).toBe(true);
+  });
+
   it("leaves everyone off the pool while it is not configured", async () => {
     const backend = await loadBackend({
       BROWSER_BACKEND: "pool",
@@ -227,6 +249,8 @@ describe("browser VM backend choice", () => {
       BROWSER_HOST_FLAVOR: "gen-4-16",
       BROWSER_HOST_IDLE_MINUTES: 60,
       BROWSER_HOST_MAX: 1,
+      BROWSER_HOST_NAME_PREFIX: "bro-host-",
+      BROWSER_HOST_RUNTIME: "runc",
       BROWSER_SANDBOX_MEMORY_MB: 3072,
       CLOUDRU_S3_TENANT_ID: "test-tenant",
     });
@@ -235,6 +259,8 @@ describe("browser VM backend choice", () => {
       { BROWSER_SANDBOX_ROOTFS: `rootfs/v7.tar.zst:${"01".repeat(32)}` },
       { BROWSER_HOST_BUNDLE: "hosts/b-2.tgz:abc" },
       { BROWSER_HOST_RUNSC_RELEASE: "latest" },
+      { BROWSER_HOST_RUNTIME: "docker" },
+      { BROWSER_HOST_NAME_PREFIX: "Bro_host" },
       { BROWSER_STATE_KEY: "22".repeat(16) },
       { BROWSER_BACKEND: "firecracker" },
     ]) {

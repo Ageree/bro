@@ -513,6 +513,27 @@ describe("browser VM worker client", () => {
     expect(headers.get("authorization")).toMatch(/^Bearer v1\./u);
   });
 
+  it("asks the worker to close Chrome on a park only when told, with longer to answer", async () => {
+    const { worker } = await loadWorker();
+    const calls = stubWorker(
+      Response.json({ parked: true }),
+      Response.json({ chrome: "closed", parked: true })
+    );
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+
+    await worker.parkBrowserVmWorker(vm);
+    await worker.parkBrowserVmWorker(vm, { closeChrome: true });
+
+    // worker.py closes Chrome only for `"closeChrome": true`, exactly.
+    expect(calls.map((call) => [call.url, call.body])).toEqual([
+      [`${origin}/v1/park`, '{"closeChrome":false}'],
+      [`${origin}/v1/park`, '{"closeChrome":true}'],
+    ]);
+    // Closing Chrome waits up to 20 s for the init to start it again.
+    expect(timeout.mock.calls).toEqual([[30_000], [60_000]]);
+    timeout.mockRestore();
+  });
+
   it("reaches a sandbox of the pool under its route on the host, with the same tokens", async () => {
     const { token, worker } = await loadWorker();
     const sandbox = {
