@@ -37,6 +37,9 @@
   и `restore` только в файл: восстановленная песочница держит их, и чтение пайпа
   ждёт вечно.
 - Имя хоста в песочнице всегда `bro-sandbox`: `SingletonLock` Chrome помнит имя.
+- Caddy снимает `/g/<id>` и передаёт worker `X-Forwarded-Prefix: /g/<id>`:
+  адреса сокетов CDP в `/v1/cdp/<токен>/json` worker строит с ним (другой вид
+  заголовка worker не берёт).
 - Своя cgroup (`/bro-sandboxes/<id>`, лимит памяти из `memoryMb`, до 4096
   процессов) и `KillMode=process` у `bro-hostd`: перезапуск `hostd` песочниц не
   гасит. После перезапуска записи из `sandbox.json` сверяются с `runsc state`;

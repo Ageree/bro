@@ -99,6 +99,10 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
   ...worker,
 }));
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+// The reconcile also asks the pool, which has no host here.
+vi.mock("@db/services/browser-hosts", () => ({
+  listBrowserHosts: vi.fn<() => Promise<unknown[]>>(async () => []),
+}));
 const recordUsageCost = vi.hoisted(() =>
   vi.fn<typeof usageCostRecords.recordUsageCost>()
 );
@@ -118,10 +122,13 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     givenUpAt: null,
     healthFailures: 0,
     host,
+    hostId: null,
     image: "bro-browser-test-1",
     lastError: null,
     lastUsedAt: minutesAgo(1),
     leaseUntil: null,
+    parkFailures: 0,
+    parkRetryAt: null,
     poweredOnAt: null,
     profileGeneration: 1,
     profileResetPending: false,
@@ -134,6 +141,11 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     },
     proxySession: null,
     recoveries: 0,
+    sandboxState: null,
+    snapshotChunks: null,
+    snapshotFormat: null,
+    snapshotGeneration: null,
+    snapshotKey: null,
     state: "ready",
     stateChangedAt: minutesAgo(60),
     stopNotBefore: null,

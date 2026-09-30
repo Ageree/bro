@@ -1114,6 +1114,21 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         self.assertIn("/devtools/browser/BROWSER-ID", data["webSocketDebuggerUrl"])
 
+    async def test_sockets_keep_the_prefix_a_pool_host_strips(self):
+        self.open_tab("T1", "s1")
+        token = cdp_token()
+        response = await self.client.get(f"/v1/cdp/{token}/json",
+                                          headers={"X-Forwarded-Prefix": "/g/ws-0123abcd"})
+        targets = await response.json()
+        self.assertTrue(targets[0]["webSocketDebuggerUrl"].endswith(
+            f"/g/ws-0123abcd/v1/cdp/{token}/devtools/page/T1"))
+        # Anything but a sandbox route is ignored rather than put into the URL.
+        response = await self.client.get(f"/v1/cdp/{token}/json",
+                                          headers={"X-Forwarded-Prefix": "/evil.example/x"})
+        targets = await response.json()
+        self.assertNotIn("evil", targets[0]["webSocketDebuggerUrl"])
+        self.assertIn(f"/v1/cdp/{token}/devtools/page/T1", targets[0]["webSocketDebuggerUrl"])
+
     async def test_devtools_socket_refuses_another_sessions_tab(self):
         self.open_tab("T1", "s1")
         self.open_tab("T2", "s2")

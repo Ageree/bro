@@ -490,6 +490,53 @@ describe("browser VM worker client", () => {
     ]);
   });
 
+  it("reaches a sandbox of the pool under its route on the host, with the same tokens", async () => {
+    const { token, worker } = await loadWorker();
+    const sandbox = {
+      ...vm,
+      hostId: "bro-host-1",
+      sandboxState: "running" as const,
+    };
+    // `ws-` and 40 hex of the workspace id's SHA-256 (`browserSandboxId`).
+    const route = `${origin}/g/ws-1e09f74980c731c7119e14ac3afe57dbe608baba`;
+    const calls = stubWorker(
+      Response.json({ parked: true }),
+      Response.json({ chrome: true, reset: true })
+    );
+
+    await worker.parkBrowserVmWorker(sandbox);
+    await worker.resetBrowserVmWorkerProfile(sandbox);
+
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ["POST", `${route}/v1/park`],
+      ["POST", `${route}/v1/profile/reset`],
+    ]);
+    const bearer = calls[0]?.headers.get("authorization") ?? "";
+    expect(
+      verifiedClaims(
+        token.browserVmKey(workspaceId),
+        bearer.slice("Bearer ".length)
+      )
+    ).toMatchObject({ env: workspaceId, gen: 4 });
+    expect(worker.browserVmCdpUrl(sandbox, { sessionId })).toMatch(
+      /^wss:\/\/45-132-176-116\.sslip\.io\/g\/ws-[\da-f]{40}\/v1\/cdp\//u
+    );
+  });
+
+  it("calls nothing for a sandbox that is on no host", async () => {
+    const { worker } = await loadWorker();
+    const calls = stubWorker();
+
+    await expect(
+      worker.readBrowserVmWorkerHealth({
+        ...vm,
+        hostId: null,
+        sandboxState: "running",
+      })
+    ).rejects.toThrow("on no host");
+    expect(calls).toEqual([]);
+  });
+
   it("calls nothing for a VM whose address is not known yet", async () => {
     const { worker } = await loadWorker();
     const calls = stubWorker();

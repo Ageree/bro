@@ -1,4 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  ensureBrowserSandbox,
+  inBrowserPool,
+  reconcileBrowserPool,
+  reconcileBrowserSandbox,
+  removeBrowserSandbox,
+} from "@agent/lib/browser-pool/sandbox";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
@@ -295,6 +302,9 @@ async function closeRemovedUptime(vm: BrowserVm, now: Date) {
  */
 export async function ensureBrowserVm(workspaceId: string, now = new Date()) {
   const record = await ensureBrowserVmRecord(workspaceId);
+  // A pool workspace's browser is a sandbox on a shared host instead: the
+  // same record, lease and worker, placed elsewhere (docs/browser-pool.md).
+  if (await inBrowserPool(record)) return ensureBrowserSandbox(record, now);
   if (record.state === "ready") return readyForErrand(record, now, false);
   const claimed = await claimBrowserVmLease(workspaceId, now, leaseMs);
   if (!claimed) return starting(leaseHeldRetryMs);
@@ -379,10 +389,12 @@ export async function reconcileBrowserVms(now = new Date()) {
     browserVmUnusedBefore(now),
     reconcileLimit
   );
-  await Promise.all(
-    rows.map(async (row) => {
+  await Promise.all([
+    ...rows.map(async (row) => {
       try {
-        await reconcileBrowserVm(row.workspaceId, now);
+        await (row.sandboxState === null
+          ? reconcileBrowserVm(row.workspaceId, now)
+          : reconcileBrowserSandbox(row.workspaceId, now));
       } catch (error) {
         console.warn("[browser-vm] the VM could not be reconciled", {
           cause: error,
@@ -390,8 +402,12 @@ export async function reconcileBrowserVms(now = new Date()) {
           workspaceId: row.workspaceId,
         });
       }
-    })
-  );
+    }),
+    // The pool's hosts and the sandboxes a failed host left behind, while
+    // the pool is configured or still has hosts: a host bills until it is
+    // deleted, whichever of the pool's settings was taken away.
+    reconcileBrowserPool(now),
+  ]);
 }
 
 /**
@@ -408,6 +424,11 @@ export async function deleteBrowserVm(workspaceId: string, now = new Date()) {
   const claimed = await claimForDeletion(workspaceId, now, 0);
   if (claimed === undefined) return true;
   try {
+    // A pool workspace's sandbox goes from its host, its sets from Object
+    // Storage, then the record.
+    if (claimed.sandboxState !== null) {
+      return await removeBrowserSandbox(claimed, now);
+    }
     // Marked first, so an errand arriving meanwhile waits instead of
     // powering the VM on again.
     const deleting = await writeHeld(claimed, { state: "deleting" }, now);

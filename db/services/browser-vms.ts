@@ -15,10 +15,12 @@ import {
   sql,
 } from "drizzle-orm";
 import {
+  browserHosts,
   browserRuns,
   browserVmRuns,
   browserVms,
   db,
+  liveBrowserSandboxStates,
   settledBrowserVmRunStatuses,
 } from "@db";
 
@@ -40,6 +42,20 @@ const movingStates = [
   "stopping",
   "deleting",
 ] as const satisfies readonly BrowserVmInsert["state"][];
+
+/** The sandbox states of a pool workspace whose browser is on no host. */
+const restingSandboxStates = [
+  "absent",
+  "parked",
+  "cold",
+  "failed",
+] as const satisfies readonly NonNullable<BrowserVmInsert["sandboxState"]>[];
+
+/** The host states in which a host still holds its sandboxes. */
+const holdingHostStates = [
+  "ready",
+  "draining",
+] as const satisfies readonly (typeof browserHosts.$inferSelect)["state"][];
 
 /**
  * A task line names one errand for a day at most: a run found by it after
@@ -305,6 +321,12 @@ export async function listBrowserVmsToReconcile(
               isNotNull(browserVms.vmId),
               eq(browserVms.profileResetPending, true),
               isNull(browserVms.givenUpAt)
+            ),
+            // A pool workspace's sets the person asked to forget while its
+            // sandbox was off a host (docs/browser-pool.md).
+            and(
+              inArray(browserVms.sandboxState, [...restingSandboxStates]),
+              eq(browserVms.profileResetPending, true)
             )
           )
         )
@@ -313,6 +335,56 @@ export async function listBrowserVmsToReconcile(
       .limit(limit),
   ]);
   return [...moving, ...settled];
+}
+
+/**
+ * Pool workspaces whose sandbox Bro places on a host that no longer holds
+ * it: the host's record is gone (the key was set null with it), or the host
+ * is failed or being deleted. The reconcile takes each back to its last set,
+ * so the next errand restores it on another host. Skips records whose lease
+ * another step holds.
+ */
+export async function listStrandedBrowserSandboxes(now: Date, limit: number) {
+  const holdingHost = db
+    .select({ id: browserHosts.id })
+    .from(browserHosts)
+    .where(
+      and(
+        eq(browserHosts.id, browserVms.hostId),
+        inArray(browserHosts.state, [...holdingHostStates])
+      )
+    );
+  return db
+    .select()
+    .from(browserVms)
+    .where(
+      and(
+        leaseFree(now),
+        inArray(browserVms.sandboxState, [...liveBrowserSandboxStates]),
+        or(isNull(browserVms.hostId), notExists(holdingHost))
+      )
+    )
+    .orderBy(sql`${browserVms.claimedAt} ASC NULLS FIRST`)
+    .limit(limit);
+}
+
+/**
+ * The workspaces Bro places a live sandbox of on the host: what the host may
+ * hold. Anything else it holds is left over (`sweepBrowserHost`).
+ */
+export async function listBrowserSandboxesOnHost(hostId: string) {
+  return db
+    .select({
+      generation: browserVms.generation,
+      workspaceId: browserVms.workspaceId,
+    })
+    .from(browserVms)
+    .where(
+      and(
+        eq(browserVms.hostId, hostId),
+        inArray(browserVms.sandboxState, [...liveBrowserSandboxStates])
+      )
+    );
 }
 
 /**

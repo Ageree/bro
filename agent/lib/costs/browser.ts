@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { browserHostReserveMb } from "@agent/lib/browser-pool/host";
 import type { readBrowserVmWorkerRun } from "@agent/lib/browser-vm/worker";
 import {
   proxyTrafficRub,
@@ -125,19 +126,70 @@ export async function recordBrowserVmUptime(
   poweredOnAt: Date,
   until: Date
 ) {
+  return recordUptime(workspaceId, poweredOnAt, until, {
+    flavor: env.CLOUDRU_BROWSER_FLAVOR,
+    key: "browser-vm",
+  });
+}
+
+/**
+ * One stretch a workspace's sandbox of the browser pool lived on a host,
+ * from `startedAt` to `until`, recorded when it leaves the host (parked,
+ * lost with the host, deleted). The host bills by the hour whoever it
+ * holds, so the stretch is charged at the host's hourly price times the
+ * sandbox's share of it: its memory limit over the memory the host gives
+ * its sandboxes (the flavor's less `hostd`'s 1 GB reserve), which is what
+ * placement fills hosts by. The time a host stands empty before it is
+ * deleted is nobody's errand and is not charged to a workspace. Shared
+ * between the errands of the stretch like a VM's time, under a key of its
+ * own. True when it is on record.
+ */
+export async function recordBrowserSandboxUptime(
+  workspaceId: string,
+  startedAt: Date,
+  until: Date
+) {
+  const flavor = env.BROWSER_HOST_FLAVOR;
+  const flavorMb = Number(/-(?<gb>\d+)$/u.exec(flavor)?.groups?.gb) * 1024;
+  const sandboxesMb = flavorMb - browserHostReserveMb;
+  const share =
+    Number.isFinite(sandboxesMb) && sandboxesMb > 0
+      ? Math.min(env.BROWSER_SANDBOX_MEMORY_MB / sandboxesMb, 1)
+      : 1;
+  return recordUptime(workspaceId, startedAt, until, {
+    flavor,
+    key: "browser-sandbox",
+    share,
+  });
+}
+
+async function recordUptime(
+  workspaceId: string,
+  poweredOnAt: Date,
+  until: Date,
+  rate: {
+    readonly flavor: string;
+    readonly key: string;
+    readonly share?: number;
+  }
+) {
   const seconds = Math.max(
     0,
     Math.round((until.getTime() - poweredOnAt.getTime()) / 1000)
   );
   // A create refused outright never had a VM on.
   if (seconds === 0) return true;
-  const flavor = env.CLOUDRU_BROWSER_FLAVOR;
-  const costRub = vmUptimeRub(flavor, seconds);
-  if (costRub === undefined) {
+  const { flavor } = rate;
+  const hourly = vmUptimeRub(flavor, seconds);
+  if (hourly === undefined) {
     console.warn("[usage-costs] no hourly price for the VM flavor", {
       flavor,
     });
   }
+  const costRub =
+    hourly === undefined || rate.share === undefined
+      ? hourly
+      : hourly * rate.share;
   let runIds: string[];
   try {
     runIds = await listBrowserVmRunIdsBetween(workspaceId, poweredOnAt, until);
@@ -148,7 +200,7 @@ export async function recordBrowserVmUptime(
     });
     return false;
   }
-  const key = `browser-vm:${workspaceId}:${poweredOnAt.toISOString()}`;
+  const key = `${rate.key}:${workspaceId}:${poweredOnAt.toISOString()}`;
   const shares = runIds.length === 0 ? [null] : runIds;
   const recorded = await Promise.all(
     shares.map(async (runId) =>
@@ -164,6 +216,8 @@ export async function recordBrowserVmUptime(
           flavor,
           seconds: seconds / shares.length,
           sharedBy: shares.length,
+          // Absent from a VM's own stretch (undefined is not written).
+          hostShare: rate.share,
         },
         workspaceId,
       })

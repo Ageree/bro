@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
 import { signBrowserVmToken } from "./token";
 
@@ -12,10 +13,14 @@ import { signBrowserVmToken } from "./token";
 /**
  * The columns of a `browser_vms` row a call needs: where the worker answers,
  * and what its tokens are signed for. A VM whose address is not known yet has
- * no worker to call.
+ * no worker to call. A sandbox of the pool (docs/browser-pool.md) runs the
+ * same worker behind its host's address, under `/g/<sandbox id>`:
+ * `sandboxState` says it is one, and `hostId` which host holds it (both
+ * absent or null on a workspace's own VM).
  */
 type BrowserVmTarget = Readonly<
-  Pick<typeof browserVms.$inferSelect, "generation" | "host" | "workspaceId">
+  Pick<typeof browserVms.$inferSelect, "generation" | "host" | "workspaceId"> &
+    Partial<Pick<typeof browserVms.$inferSelect, "hostId" | "sandboxState">>
 >;
 
 /** The health check is a liveness probe: an answer slower than this is none. */
@@ -217,6 +222,8 @@ const profileResetSchema = z.object({
 const tabSchema = z.object({ targetId: z.string().min(1) });
 
 const closedTabSchema = z.object({ closed: z.string() });
+
+const parkedSchema = z.object({ parked: z.literal(true) });
 
 /** A worker reply that was not a 2xx, with enough of the body to act on. */
 export class BrowserVmWorkerError extends Error {
@@ -454,6 +461,18 @@ export async function resetBrowserVmWorkerProfile(vm: BrowserVmTarget) {
   );
 }
 
+/**
+ * Before a sandbox of the pool is frozen: the worker drops the model key, the
+ * proxy login and the sites' secrets it holds, which the snapshot would keep.
+ * It refuses (409) while a run is open, so a park never catches a run. After
+ * the restore Bro sends them again, as after a worker restart.
+ */
+export async function parkBrowserVmWorker(vm: BrowserVmTarget) {
+  parkedSchema.parse(
+    await request(vm, "POST", "/v1/park", { timeoutMs: writeTimeoutMs })
+  );
+}
+
 /** A blank tab of its own for a keep-alive visit; its target id comes back. */
 export async function openBrowserVmWorkerTab(vm: BrowserVmTarget) {
   return tabSchema.parse(
@@ -496,12 +515,24 @@ export function browserVmCdpUrl(
 /**
  * The worker's HTTPS origin. Caddy on the VM holds a certificate for the
  * address's sslip.io name, which resolves to the address itself, so no DNS
- * record is kept per VM.
+ * record is kept per VM. A sandbox's worker answers on its host's name under
+ * `/g/<sandbox id>`, which the host's Caddy strips before the worker.
  */
 function origin(vm: BrowserVmTarget) {
   const { host } = vm;
   if (host === null || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(host)) {
     throw new Error("The browser VM has no public IPv4 address yet.");
+  }
+  if (vm.hostId !== undefined && vm.hostId !== null) {
+    return browserSandboxWorkerOrigin(
+      { address: host, id: vm.hostId },
+      vm.workspaceId
+    );
+  }
+  // A sandbox whose host record went keeps the host's old address, which
+  // Cloud.ru may have given to another VM: nothing goes there.
+  if (vm.sandboxState !== undefined && vm.sandboxState !== null) {
+    throw new Error("The browser sandbox is on no host.");
   }
   return `https://${host.replaceAll(".", "-")}.sslip.io`;
 }

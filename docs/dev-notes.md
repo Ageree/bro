@@ -299,6 +299,26 @@
   Ubuntu делает `flush ruleset`: на хосте он выключен, таблицу ставит `hostd`.
   aiohttp перекодирует presigned URL (`%2F` → `/`, `%3A` → `:`), и подпись S3
   не сходится: только `yarl.URL(url, encoded=True)` (`sets.transfer`).
+- Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
+  хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
+  (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`:
+  первичный ключ `browser_hosts` не даёт создать лишний. Cloud-init хоста в TS
+  байт в байт как `boot.py cloud-init`; тест сверяет скрипт с `boot.py`.
+  Сторож пула не ждёт `browserPoolConfigured`: хосты стоят денег, пока не
+  удалены, и убираются, пока есть хоть один. Набор отбрасывается только при
+  вине самого набора (`setFaultPattern` в `sandbox.ts`): 502 Caddy или runsc
+  раньше стирали входы человека.
+- Песочница пула — та же запись `browser_vms`: `state` зеркалит
+  `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
+  `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней
+  (`inBrowserPool`). Запись с `sandbox_state`, но без `host_id` worker не зовёт:
+  адрес удалённого хоста уже чужой (`origin` в `worker.ts`).
+- Presigned S3 Cloud.ru (PUT, GET, листинг, DELETE) работают из облачной
+  сессии; `pnpm build:eve` без заглушек `DATABASE_URL`/`BETTER_AUTH_*` падает
+  на «Invalid environment variables», как `pnpm build`.
+- knip не видит использование модуля в тесте, если его динамический `import()`
+  разобран из `Promise.all([...])`: экспорт, нужный только тестам, импортируйте
+  отдельным `await import(...)`.
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и

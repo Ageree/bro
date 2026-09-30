@@ -243,9 +243,10 @@ export async function readBrowserVmRun(runId: string) {
     throw new BrowserUseError(404, "browser-vm", "No such run.");
   }
   if (settledStatuses.has(record.status)) return fromRecord(record);
-  // Nothing runs on a VM that is off, or that there never was.
+  // Nothing runs on a VM that is off, or that there never was (nor on a
+  // sandbox of the pool that is on no host).
   const vmOff =
-    (vm?.vmId ?? null) === null ||
+    ((vm?.vmId ?? null) === null && (vm?.hostId ?? null) === null) ||
     vm?.state === "stopped" ||
     vm?.state === "failed";
   const lost =
@@ -473,8 +474,9 @@ export async function stopBrowserVmBrowser(browserId: string) {
  * Forget every sign-in on the VM: its Chrome profile is wiped, and the
  * profile generation moves on, so the next errand gets a new profile id and
  * everything recorded against the old one reads as forgotten. A VM that is
- * off is wiped as soon as it is up again, before any errand runs on it. An
- * older profile id is forgotten already.
+ * off is wiped as soon as it is up again, before any errand runs on it; a
+ * sandbox of the pool also loses its sets. An older profile id is forgotten
+ * already.
  */
 export async function deleteBrowserVmProfile(profileId: string) {
   const workspaceId = browserVmWorkspace(profileId);
@@ -491,7 +493,10 @@ export async function deleteBrowserVmProfile(profileId: string) {
   }
   await updateBrowserVm(workspaceId, {
     profileGeneration: record.profileGeneration + 1,
-    profileResetPending: vm === undefined,
+    // A sandbox of the pool also keeps the profile in its sets in Object
+    // Storage: the flag has the reconcile delete them, even once the live
+    // profile is wiped (`agent/lib/browser-pool/sandbox.ts`).
+    profileResetPending: vm === undefined || record.sandboxState !== null,
   });
 }
 
@@ -790,7 +795,7 @@ function up(vm: BrowserVm) {
  */
 function mayBeRunning(vm: BrowserVm) {
   return vm.host !== null &&
-    vm.vmId !== null &&
+    (vm.vmId !== null || vm.hostId !== null) &&
     vm.state !== "stopped" &&
     vm.state !== "deleting"
     ? vm

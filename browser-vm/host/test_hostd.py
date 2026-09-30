@@ -247,6 +247,14 @@ class TokenTest(unittest.TestCase):
     def test_host_key_derivation_is_pinned_for_bro(self):
         self.assertEqual(KEY.hex(), "fc0873b32715053d3ff2f84210fe16de8ecebea4b2ea502271c9d927192c9620")
 
+    def test_accepts_the_token_bro_signs(self):
+        # The vector of tests/agent/browser-pool/host.test.ts (`signBrowserHostToken` at 2026-09-30T12:00Z):
+        # change the token format in both.
+        signed = ("v1.eyJlbnYiOiJob3N0LXRlc3QtMSIsImV4cCI6MTc5MDc2OTkwMH0."
+                  "-933HCb8scg6e_0zBfRArnwAYAZoM8moZnOj8v0zwbA")
+        self.assertEqual(hostd.verify_token(signed, IDENTITY, 1790769600),
+                         {"env": HOST_ID, "exp": 1790769900})
+
     def test_accepts_a_host_token_and_refuses_the_rest(self):
         now = time.time()
         self.assertEqual(hostd.verify_token(token(), IDENTITY, now)["env"], HOST_ID)
@@ -398,6 +406,9 @@ class SandboxTest(HostTest):
         self.assertIn("203-0-113-7.sslip.io {", caddyfile)
         self.assertIn(f"handle_path /g/ws-abc/* {{\n\t\treverse_proxy 127.0.0.2:{self.worker_port}", caddyfile)
         self.assertIn(f"handle_path /g/ws-def/* {{\n\t\treverse_proxy 127.0.0.6:{self.worker_port}", caddyfile)
+        # The worker hands out CDP sockets under the prefix Caddy strips.
+        self.assertIn(f"127.0.0.2:{self.worker_port} {{\n\t\t\theader_up X-Forwarded-Prefix /g/ws-abc\n\t\t}}",
+                      caddyfile)
         self.assertIn("handle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090", caddyfile)
 
     async def test_generation_rules(self):

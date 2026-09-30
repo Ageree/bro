@@ -346,7 +346,9 @@ const readBrowserVm = vi.hoisted(() =>
   vi.fn<
     (
       workspaceId: string
-    ) => Promise<{ state: string; vmId: string | null } | undefined>
+    ) => Promise<
+      { sandboxState?: string; state: string; vmId: string | null } | undefined
+    >
   >(() => Promise.resolve(undefined))
 );
 // The sign-ins on record, forgotten when the workspace changes backend.
@@ -3921,6 +3923,15 @@ describe("browser_task on a workspace's own browser VM", () => {
     readBrowserVm.mockResolvedValue(undefined);
     createBrowserUseRun.mockRejectedValueOnce(vmStarting());
     const firstStart = await startVmErrand();
+    // A parked sandbox of the pool has no VM of its own, and is back in
+    // about a minute.
+    readBrowserVm.mockResolvedValue({
+      sandboxState: "parked",
+      state: "stopped",
+      vmId: null,
+    });
+    createBrowserUseRun.mockRejectedValueOnce(vmStarting());
+    const parkedSandbox = await startVmErrand();
     readBrowserVm.mockResolvedValue({ state: "ready", vmId: "vm-1" });
     createBrowserUseRun.mockRejectedValueOnce(
       new BrowserUseError(
@@ -3937,6 +3948,10 @@ describe("browser_task on a workspace's own browser VM", () => {
       "Bro's own browser for the user is switched off between errands and is starting now, which takes about a minute"
     );
     expect(firstStart).toMatchObject({ startsInMinutes: 6, status: "queued" });
+    expect(parkedSandbox).toMatchObject({
+      startsInMinutes: 1,
+      status: "queued",
+    });
     expect(continuationNote(firstStart)).toContain(
       "is being set up for its very first start, which takes up to about six minutes"
     );
