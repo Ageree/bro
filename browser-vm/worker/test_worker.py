@@ -14,6 +14,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -1020,6 +1021,30 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.update(b"NEWER = 1\n"))[0], 409)
         await asyncio.sleep(0.6)
         self.exits.assert_called_once_with(0)
+
+    async def test_an_update_whose_lazy_imports_the_image_lacks_is_refused(self):
+        # The load check runs top-level code only, and browser-use, OpenCV and numpy are imported inside
+        # functions: the worker itself, as a candidate, imports them there, so a file the image cannot run
+        # (here, where browser-use is not installed) is refused instead of started to fail every errand.
+        worker.CODE.write_text("OLD = 1\n")
+        status, errors = await self.update(Path(worker.__file__).read_bytes())
+        self.assertEqual(status, 400)
+        self.assertIn("No module named 'browser_use'", errors)
+        self.assertEqual(worker.CODE.read_text(), "OLD = 1\n")
+
+    def test_the_candidate_check_imports_every_lazy_import_and_its_names(self):
+        modules = {name: types.SimpleNamespace(**{attr: object() for attr in attrs})
+                   for name, attrs in worker.CANDIDATE_IMPORTS}
+        with mock.patch.dict(sys.modules, modules):
+            worker.check_candidate_imports()
+            del modules["browser_use.agent.views"].AgentState
+            with self.assertRaises(AttributeError):
+                worker.check_candidate_imports()
+        source = Path(worker.__file__).read_text()
+        lazy = set(re.findall(r"^\s+(?:from ([\w.]+) import|import ([\w.]+))", source, re.MULTILINE))
+        top = set(re.findall(r"^(?:from|import) ([\w.]+)", source, re.MULTILINE))
+        lazy = {module or plain for module, plain in lazy} - top - {"random", "importlib"}
+        self.assertEqual(lazy, {name for name, _ in worker.CANDIDATE_IMPORTS})
 
 
 class CdpTest(unittest.IsolatedAsyncioTestCase):

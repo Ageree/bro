@@ -38,6 +38,12 @@ import {
 } from "./cloudru";
 import { browserVmIdleStopDue, browserVmUnusedBefore } from "./idle";
 import { browserVmProxy, browserVmProxySession } from "./proxy";
+import {
+  browserVmIdleForWorker,
+  browserVmWorkerDue,
+  browserVmWorkerRollingOut,
+  rollOutBrowserVmWorker,
+} from "./rollout";
 import { browserVmCloudInit } from "./token";
 import {
   controlBrowserVmWorkerChrome,
@@ -455,9 +461,8 @@ function overdue(vm: BrowserVm, now: Date, afterMs: number) {
  * reads has the VM, and the errand waits for it instead.
  */
 async function readyForErrand(vm: BrowserVm, now: Date, held: boolean) {
-  if (vm.profileResetPending || (await aliveWorker(vm)) === undefined) {
-    return starting(transitionRetryMs);
-  }
+  const health = vm.profileResetPending ? undefined : await aliveWorker(vm);
+  if (health === undefined) return starting(transitionRetryMs);
   // The address is Cloud.ru's to hand on. A VM deleted outside Bro leaves
   // the record pointing at an address that may be another machine's by now,
   // whose worker answers the unsigned health check like ours does: the
@@ -481,10 +486,65 @@ async function readyForErrand(vm: BrowserVm, now: Date, held: boolean) {
     await relocate(vm, now, held);
     return starting(transitionRetryMs);
   }
+  // Only now, with the address confirmed ours, does a signed call go to it.
+  // Another step rolling a worker out may be restarting it: wait for that.
+  if (!held && browserVmWorkerRollingOut(vm, new Date())) {
+    return starting(leaseHeldRetryMs);
+  }
+  if (
+    browserVmWorkerDue(vm, health, now) !== undefined &&
+    !(await updateWorkerForErrand(vm, now, held))
+  ) {
+    return starting(transitionRetryMs);
+  }
   const touched = await touchBrowserVm(vm.workspaceId, now);
   return touched.state === "ready"
     ? { kind: "ready" as const, vm: touched }
     : starting(transitionRetryMs);
+}
+
+/**
+ * Give the VM the published worker before the errand, under the lease: one
+ * rollout at a time per VM. Whether the errand may go ahead now. It goes on
+ * the old worker whenever the rollout does not go through (`rollout.ts`
+ * never throws) or another step holds the VM for something else; it waits
+ * only while another step is rolling a worker out, while the address or
+ * the worker changed under the lease, or while a worker that was asked to
+ * update does not answer alive yet (systemd brings the old code back).
+ */
+async function updateWorkerForErrand(vm: BrowserVm, now: Date, held: boolean) {
+  // Checked before the lease: a VM that is in use needs none.
+  if (!(await browserVmIdleForWorker(vm, now))) return true;
+  const claimed = held
+    ? vm
+    : await claimBrowserVmLease(vm.workspaceId, new Date(), leaseMs);
+  if (!claimed) {
+    const current = await readBrowserVm(vm.workspaceId).catch(() => undefined);
+    return (
+      current === undefined || !browserVmWorkerRollingOut(current, new Date())
+    );
+  }
+  try {
+    // Taken out of service meanwhile: the touch sees that and waits.
+    if (claimed.state !== "ready") return true;
+    // Another address than the one Cloud.ru confirmed: the next ask checks it.
+    if (claimed.host !== vm.host) return false;
+    // Read again under the lease: another errand may have updated it, or
+    // started a run on it, since.
+    const health = await aliveWorker(claimed);
+    if (health === undefined) return false;
+    if (!(await rollOutBrowserVmWorker(claimed, health, new Date()))) {
+      return true;
+    }
+    return (await aliveWorker(claimed)) !== undefined;
+  } finally {
+    if (!held) {
+      await releaseBrowserVmLease(
+        vm.workspaceId,
+        claimed.leaseUntil ?? undefined
+      );
+    }
+  }
 }
 
 /**
@@ -569,6 +629,10 @@ async function createVm(vm: BrowserVm, now: Date) {
       state: "creating",
       vmId: null,
       vmName: name,
+      // A new disk has the image's worker: a version that failed on the old
+      // one is tried afresh.
+      workerFailedVersion: null,
+      workerRolloutAt: null,
     },
     now
   );

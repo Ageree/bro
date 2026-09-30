@@ -75,6 +75,18 @@ CODE = Path(__file__).resolve()
 PREVIOUS_CODE = CODE.with_name(CODE.name + ".prev")
 # Loads a new worker.py as a module in a separate Python: its imports and top-level code run, `main` does not.
 LOAD_CHECK = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='candidate')"
+# What worker.py imports only inside functions: browser-use when a run starts, OpenCV and numpy for a captcha.
+# LOAD_CHECK (of the worker a new file replaces, whichever version that is) runs top-level code only, so a
+# candidate imports these there itself (`check_candidate_imports`): a file that needs a package or an API the
+# VM's image lacks is refused, not started to fail every errand. Keep it in step with the lazy imports.
+CANDIDATE_IMPORTS = (
+    ("browser_use", ("ActionResult", "Agent", "BrowserSession", "ChatOpenRouter", "Tools")),
+    ("browser_use.browser.events", ("SwitchTabEvent",)),
+    ("browser_use.agent.message_manager.views", ("HistoryItem",)),
+    ("browser_use.agent.views", ("AgentState",)),
+    ("cv2", ()),
+    ("numpy", ()),
+)
 ROOT = Path(os.environ.get("BRO_STATE_DIR", "/var/lib/bro"))
 CONFIG_FILE = Path(os.environ.get("BRO_WORKER_CONFIG", "/etc/bro/worker.json"))
 IMAGE_FILE = Path("/etc/bro/image")
@@ -1654,7 +1666,8 @@ async def update_worker(request):
     """Replace this worker's own code (Bro rolls a fix out to VMs that were created from an older image;
     their disks carry the person's profile, so they are not re-created for a code change). The body is
     the new worker.py; it must match `X-Content-Sha256` and load (`LOAD_CHECK`: an import that fails would
-    crash-loop the VM's only way in), and the worker must be idle. The code it replaces stays as
+    crash-loop the VM's only way in; it runs top-level code only, and a candidate with `CANDIDATE_IMPORTS`
+    checks its lazy imports there too), and the worker must be idle. The code it replaces stays as
     `PREVIOUS_CODE` until the new code is up. The worker then exits and systemd starts the new code."""
     authorize(request)
     if worker.busy() or worker.restarting:
@@ -1896,6 +1909,18 @@ async def main():
         await asyncio.wait_for(runner.cleanup(), 3)
     os._exit(0)
 
+
+def check_candidate_imports():
+    """Import what the worker imports lazily, as a candidate in LOAD_CHECK: raises when something is missing."""
+    import importlib
+    for module_name, names in CANDIDATE_IMPORTS:
+        module = importlib.import_module(module_name)
+        for name in names:
+            getattr(module, name)
+
+
+if __name__ == "candidate":
+    check_candidate_imports()
 
 if __name__ == "__main__":
     asyncio.run(main())

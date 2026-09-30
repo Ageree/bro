@@ -45,6 +45,38 @@ const trimmedValue = z
   .trim()
   .refine((value) => value.length > 0, "Required");
 
+/**
+ * An object of BROWSER_STATE_BUCKET pinned by version and checksum, as
+ * `<version>:<object key>:<sha256 of the object>`.
+ */
+function versionedObjectSchema(name: string, object: string) {
+  return z
+    .string()
+    .trim()
+    .transform((value, context) => {
+      const groups =
+        /^(?<version>[A-Za-z\d][\w.-]{0,63}):(?<key>\S+):(?<sha256>[\da-f]{64})$/u.exec(
+          value
+        )?.groups;
+      if (
+        groups?.version === undefined ||
+        groups.key === undefined ||
+        groups.sha256 === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `${name} must be <version>:<object key>:<sha256 of ${object}>`,
+        });
+        return z.NEVER;
+      }
+      return {
+        key: groups.key,
+        sha256: groups.sha256,
+        version: groups.version,
+      };
+    });
+}
+
 const betterAuthUrlSchema = requiredValue.refine(
   (value) => URL.canParse(value),
   "BETTER_AUTH_URL must be an absolute URL"
@@ -238,33 +270,10 @@ export const env = createEnv({
     // `<version>:<object key>:<sha256 of the tarball>`: the version names the
     // directory on the host and goes into every snapshot's format; the
     // tarball lies in BROWSER_STATE_BUCKET.
-    BROWSER_SANDBOX_ROOTFS: z
-      .string()
-      .trim()
-      .transform((value, context) => {
-        const groups =
-          /^(?<version>[A-Za-z\d][\w.-]{0,63}):(?<key>\S+):(?<sha256>[\da-f]{64})$/u.exec(
-            value
-          )?.groups;
-        if (
-          groups?.version === undefined ||
-          groups.key === undefined ||
-          groups.sha256 === undefined
-        ) {
-          context.addIssue({
-            code: "custom",
-            message:
-              "BROWSER_SANDBOX_ROOTFS must be <version>:<object key>:<sha256 of the tarball>",
-          });
-          return z.NEVER;
-        }
-        return {
-          key: groups.key,
-          sha256: groups.sha256,
-          version: groups.version,
-        };
-      })
-      .optional(),
+    BROWSER_SANDBOX_ROOTFS: versionedObjectSchema(
+      "BROWSER_SANDBOX_ROOTFS",
+      "the tarball"
+    ).optional(),
     // Object Storage of the pool: parked sandboxes, the host bundle and the
     // sandbox root file system. The data key of a workspace's sets is derived
     // from BROWSER_STATE_KEY and the workspace id and never lies in S3.
@@ -391,6 +400,16 @@ export const env = createEnv({
         "BROWSER_VM_SIGNING_KEY must be at least 32 bytes written in hex"
       )
       .optional(),
+    // The worker code Bro rolls out to workspaces' own VMs (not to sandboxes
+    // of the pool, whose worker comes with the root file system), as
+    // `<version>:<object key>:<sha256 of worker.py>`; the file lies in
+    // BROWSER_STATE_BUCKET (`browser-vm/worker/publish.py` prints the value).
+    // A VM whose worker reports an older version gets it before an errand
+    // (`agent/lib/browser-vm/rollout.ts`). Unset, nothing is rolled out.
+    BROWSER_VM_WORKER: versionedObjectSchema(
+      "BROWSER_VM_WORKER",
+      "worker.py"
+    ).optional(),
     // The pilot: workspace ids, or the emails of their owners, that get a VM
     // whatever BROWSER_BACKEND says.
     BROWSER_VM_WORKSPACES: z
