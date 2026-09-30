@@ -22,6 +22,13 @@ import { registerApplicationModuleResolution } from "../lib/module-resolution.ts
  * writes each kind's system prompt and tool catalog to count with a real
  * tokenizer.
  *
+ * It measures both ways a step is built: as today, and in the pilot of the
+ * cache-friendly step (STEP_CONTEXT_WORKSPACES, `stepContextPilot`), where
+ * the clock leaves the instructions for the step's note after the history,
+ * `send_message` is the last tool, and a browser report's turn keeps only
+ * `reportToolsAfterOutcome` once its message is out. The cache columns are
+ * estimates from where each prefix breaks, not a measurement of a host.
+ *
  * Tokens are estimated from characters with ratios measured on the DeepSeek
  * V3.1 tokenizer (`deepseek-ai/DeepSeek-V3.1`, `tokenizer.json`) on these
  * same texts on 30.09.2026: 3.1 characters per token for the Russian
@@ -187,12 +194,18 @@ function contextOf(kind: Kind) {
  * zone, spend limit, form of address, acquaintance) take their usual shape
  * for a person with no limit and «ты».
  */
-async function instructionParts(mode: Mode) {
-  const [{ localTimeInstructions }, { spendLimitInstructions }] =
-    await Promise.all([
-      import("../../agent/instructions/50-local-time.ts"),
-      import("../../agent/instructions/15-autonomy.ts"),
-    ]);
+async function instructionParts(mode: Mode, pilot = false) {
+  const [
+    { localTimeInstructions },
+    { spendLimitInstructions },
+    { stepNoteInstructions },
+    { saveTimeZoneInstruction },
+  ] = await Promise.all([
+    import("../../agent/instructions/50-local-time.ts"),
+    import("../../agent/instructions/15-autonomy.ts"),
+    import("../../agent/lib/step-context/note.ts"),
+    import("../../agent/lib/local-time.ts"),
+  ]);
   const interactive = mode === "interactive";
   const worker = mode === "scheduled-worker";
   const parts: (readonly [string, string | null])[] = [
@@ -239,11 +252,18 @@ async function instructionParts(mode: Mode) {
     ],
     [
       "50 local-time",
-      localTimeInstructions(
-        new Date("2026-09-30T09:41:00Z"),
-        "Europe/Moscow",
-        interactive || worker
-      ),
+      pilot
+        ? [
+            stepNoteInstructions,
+            interactive || worker ? saveTimeZoneInstruction : null,
+          ]
+            .filter((part) => part !== null)
+            .join("\n")
+        : localTimeInstructions(
+            new Date("2026-09-30T09:41:00Z"),
+            "Europe/Moscow",
+            interactive || worker
+          ),
     ],
     [
       "60 creative",
@@ -411,7 +431,7 @@ const thousands = (value: number) => (value / 1000).toFixed(1);
 const totalLength = (texts: Iterable<string>) =>
   [...texts].reduce((sum, text) => sum + text.length, 0);
 
-const { cardToolsBeforeOutcome } =
+const { cardToolsBeforeOutcome, reportToolsAfterOutcome } =
   await import("../../agent/lib/delivery/browser-report.ts");
 
 const dumpIndex = process.argv.indexOf("--dump");
@@ -421,8 +441,9 @@ if (dumpDirectory) mkdirSync(dumpDirectory, { recursive: true });
 
 const measured = await Promise.all(
   kinds.map(async (kind) => {
-    const [parts, { failures, tools }] = await Promise.all([
+    const [parts, pilotParts, { failures, tools }] = await Promise.all([
       instructionParts(kind.mode),
+      instructionParts(kind.mode, true),
       toolsOf(kind),
     ]);
     if (dumpDirectory) {
@@ -449,7 +470,43 @@ const measured = await Promise.all(
       ),
       charsPerToken.tools
     );
+    const toolTokensOf = (keep: (name: string) => boolean) =>
+      tokens(
+        totalLength(
+          [...tools].flatMap(([name, json]) => (keep(name) ? [json] : []))
+        ),
+        charsPerToken.tools
+      );
+    const instructionText = (of: typeof parts) =>
+      totalLength(of.map(([, text]) => text));
+    const clockIndex = parts.findIndex(([name]) => name === "50 local-time");
     return {
+      cache: {
+        afterMessage: kind.withheld.includes("card tools")
+          ? {
+              now: toolTokensOf((name) => name !== "ask_question"),
+              pilot: toolTokensOf((name) =>
+                reportToolsAfterOutcome.some((kept) => kept === name)
+              ),
+            }
+          : undefined,
+        beforeClock: tokens(
+          instructionText(parts.slice(0, clockIndex)),
+          charsPerToken.instructions
+        ),
+        clock: tokens(
+          parts[clockIndex]?.[1].split("\n")[0]?.length ?? 0,
+          charsPerToken.instructions
+        ),
+        instructions: instructionTokens,
+        kind,
+        pilotInstructions: tokens(
+          instructionText(pilotParts),
+          charsPerToken.instructions
+        ),
+        replyTool: toolTokensOf((name) => name === "send_message"),
+        stepTools: withheld.size > 0 ? firstStepTokens : toolTokens,
+      },
       row: [
         kind.label,
         thousands(instructionTokens),
@@ -477,7 +534,9 @@ const modes = [
   "proactive-worker",
   "scheduled-report",
 ] as const;
-const partsByMode = await Promise.all(modes.map(instructionParts));
+const partsByMode = await Promise.all(
+  modes.map(async (mode) => instructionParts(mode))
+);
 for (const [index, parts] of partsByMode.entries()) {
   const sizes = parts.map(
     ([name, text]) =>
@@ -492,6 +551,75 @@ for (const [index, parts] of partsByMode.entries()) {
   console.log(
     `    до строки времени ${thousands(tokens(beforeClock, charsPerToken.instructions))}`
   );
+}
+
+// Where the cached prefix of a step ends, as today and in the pilot. Today
+// the clock breaks it in the instructions on every step (and the system note
+// DeepSeek moves before the history on every later one), so only the
+// instructions before the clock are read from the cache. In the pilot the
+// instructions, the schemas and the earlier history are one stable prefix;
+// it breaks only where the tool set or `send_message`'s schema changes.
+// Prices: RouterAI, `deepseek/deepseek-v4.1-flash`, roubles per million.
+const inputPrice = 9.66;
+const cachedPrice = 1.21;
+/** The reply directive and the other notes of a step writing to the person. */
+const replyNoteTokens = 250;
+function estimate(input: number, cached: number) {
+  const roubles = ((input - cached) * inputPrice + cached * cachedPrice) / 1e6;
+  return `${thousands(input)} / ${thousands(cached)} / ${roubles.toFixed(2)}`;
+}
+console.log(
+  "\nКэш шага без истории (STEP_CONTEXT_WORKSPACES): вход / из кэша, тыс. токенов / ₽ за шаг. Прежнюю историю пилот читает из кэша, кроме шагов со сменой схем; сейчас — всегда полной ценой."
+);
+console.log("| Вид хода | Шаг | Сейчас | Пилот |");
+console.log("| --- | --- | --- | --- |");
+for (const { cache } of measured) {
+  const writes =
+    cache.kind.mode === "interactive" || cache.kind.mode === "scheduled-report";
+  const note = writes ? replyNoteTokens : 0;
+  const now = (tools: number) =>
+    estimate(cache.instructions + tools + note, cache.beforeClock);
+  const pilot = (tools: number, cached: number) =>
+    estimate(cache.pilotInstructions + tools + note + cache.clock, cached);
+  const steady = cache.pilotInstructions + cache.stepTools;
+  const row = (step: string, today: string, piloted: string) => {
+    console.log(`| ${cache.kind.label} | ${step} | ${today} | ${piloted} |`);
+  };
+  const after = cache.afterMessage;
+  if (cache.kind.mode !== "interactive") {
+    row("каждый", now(cache.stepTools), pilot(cache.stepTools, steady));
+  } else if (after === undefined) {
+    // A forced step requires `text` in `send_message` and the next one does
+    // not: the turn's first step and the one after the reply. With the tool
+    // last, only its schema and the history after it are re-read.
+    row(
+      "1-й и после ответа (схема send_message)",
+      now(cache.stepTools),
+      pilot(cache.stepTools, steady - cache.replyTool)
+    );
+    row("прочие", now(cache.stepTools), pilot(cache.stepTools, steady));
+  } else {
+    // The card tools are held back from the first step: the set differs
+    // from the last turn's, so only the instructions are read from cache.
+    row(
+      "1-й (без карточек)",
+      now(cache.stepTools),
+      pilot(cache.stepTools, cache.pilotInstructions)
+    );
+    row(
+      "до сообщения, следующие",
+      now(cache.stepTools),
+      pilot(cache.stepTools, steady)
+    );
+  }
+  if (after) {
+    console.log(
+      `| ${cache.kind.label} | 1-й после сообщения (смена набора) | ${now(after.now)} | ${pilot(after.pilot, cache.pilotInstructions)} |`
+    );
+    console.log(
+      `| ${cache.kind.label} | следующие после сообщения | ${now(after.now)} | ${pilot(after.pilot, cache.pilotInstructions + after.pilot)} |`
+    );
+  }
 }
 
 if (process.argv.includes("--tools")) {

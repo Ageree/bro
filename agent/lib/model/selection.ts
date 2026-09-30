@@ -16,15 +16,18 @@ import { openRouterSelection, type StepToolChoice } from "./openrouter";
  * the same voice and the person's stored form of address. So does
  * `delivered`, which lets a step that says nothing after the turn's reply end
  * the turn instead of failing it, `silent`, which keeps any text of the
- * step from the person, and `withheldTools`, which a Gateway id keeps
- * offering.
+ * step from the person, and `withheldTools` and `offeredTools`, which a
+ * Gateway id ignores. `stableContext`, the pilot of the cache-friendly step,
+ * is never set for a Gateway id (`stepContextPilot`).
  */
 export function modelSelection(
   modelId: string,
   options: {
     readonly delivered?: boolean;
+    readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
     readonly silent?: boolean;
+    readonly stableContext?: boolean;
     readonly toolChoice?: StepToolChoice;
     readonly withheldTools?: readonly string[];
   } = {}
@@ -32,8 +35,10 @@ export function modelSelection(
   return openRouterActive()
     ? openRouterSelection(modelId, {
         delivered: options.delivered,
+        offeredTools: options.offeredTools,
         replyNote: options.replyNote,
         silent: options.silent,
+        stableContext: options.stableContext,
         toolChoice: options.toolChoice ?? "auto",
         withheldTools: options.withheldTools,
       })

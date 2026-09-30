@@ -6,6 +6,7 @@ import {
 } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import { taggedStepNote } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { watchedModelFetch } from "./stream-watchdog";
@@ -394,6 +395,72 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   };
 }
 
+/**
+ * Keeps only the tools a step is offered. Like `withheldToolsMiddleware`, the
+ * history keeps earlier calls of the rest; a call without tools is left alone.
+ */
+function offeredToolsMiddleware(
+  names: readonly string[]
+): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: params.tools.filter((tool) => names.includes(tool.name)),
+      };
+    },
+  };
+}
+
+/**
+ * `send_message` last among the tools. Its schema is the one that changes
+ * inside a turn — `text` is required in a forced step and not after it
+ * (`forcedReplyTextMiddleware`) — so every schema before it stays in the
+ * cached prefix when it does. Only the order changes.
+ */
+function replyToolLastMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: [
+          ...params.tools.filter((tool) => tool.name !== replyToolName),
+          ...params.tools.filter((tool) => tool.name === replyToolName),
+        ],
+      };
+    },
+  };
+}
+
+/**
+ * The step's notes after the history, as a tagged user-role message
+ * (`taggedStepNote`), for the pilot of the cache-friendly step. DeepSeek's
+ * chat template moves every system message to the start of the prompt, so
+ * the last system message of `replyNoteMiddleware` lands before the history
+ * and breaks the cached prefix at every step. Here the instructions, the
+ * schemas and the whole earlier history stay a prefix of the next step's
+ * prompt, and the note is still the last thing the model reads.
+ */
+function stepNoteMiddleware(note: string): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        prompt: [
+          ...params.prompt,
+          {
+            content: [{ text: taggedStepNote(note), type: "text" }],
+            role: "user",
+          },
+        ],
+      };
+    },
+  };
+}
+
 /** One part of a model's streamed answer, as middleware sees it. */
 type StreamPart =
   Awaited<
@@ -586,9 +653,17 @@ export function openRouterSelection(
      * it instead of failing it.
      */
     readonly delivered?: boolean;
+    /** The only tools this step may call, when not every tool of the turn. */
+    readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
+    /**
+     * The pilot of the cache-friendly step (`stepContextPilot`): the note
+     * follows the history as a tagged user message, and `send_message` is
+     * the last tool.
+     */
+    readonly stableContext?: boolean;
     readonly toolChoice: StepToolChoice;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
@@ -619,8 +694,18 @@ export function openRouterSelection(
     toolSchemaMiddleware(),
     ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
+    ...(options.offeredTools
+      ? [offeredToolsMiddleware(options.offeredTools)]
+      : []),
+    ...(options.stableContext ? [replyToolLastMiddleware()] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
-    ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
+    ...(options.replyNote
+      ? [
+          options.stableContext
+            ? stepNoteMiddleware(options.replyNote)
+            : replyNoteMiddleware(options.replyNote),
+        ]
+      : []),
     ...(options.silent
       ? [silentEndMiddleware()]
       : options.delivered

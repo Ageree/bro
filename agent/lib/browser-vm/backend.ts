@@ -1,5 +1,4 @@
-import { readWorkspaceScope } from "@db/services/scope";
-import { readAccountEmail } from "@db/services/users";
+import { listsWorkspace } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
 
 /**
@@ -72,7 +71,7 @@ export async function usesBrowserPool(scope: {
 }) {
   if (!browserPoolConfigured()) return false;
   if (env.BROWSER_BACKEND === "pool") return true;
-  return listed(env.BROWSER_POOL_WORKSPACES, scope);
+  return listsWorkspace(env.BROWSER_POOL_WORKSPACES, scope);
 }
 
 /**
@@ -94,28 +93,7 @@ export async function usesBrowserVm(scope: {
   if (await usesBrowserPool(scope)) return true;
   if (!browserVmConfigured()) return false;
   if (env.BROWSER_BACKEND === "cloudru") return true;
-  return listed(env.BROWSER_VM_WORKSPACES, scope);
-}
-
-/** Whether a pilot list names the workspace by its id or its owner's email. */
-async function listed(
-  entries: readonly string[] | undefined,
-  scope: { readonly userId?: string; readonly workspaceId: string }
-) {
-  const list = entries ?? [];
-  if (list.includes(scope.workspaceId)) return true;
-  const emails = list
-    .filter((entry) => entry.includes("@"))
-    .map((entry) => entry.toLowerCase());
-  if (emails.length === 0) return false;
-  const userId =
-    scope.userId ?? (await readWorkspaceScope(scope.workspaceId))?.userId;
-  if (userId === undefined) return false;
-  const email = await readAccountEmail({
-    userId,
-    workspaceId: scope.workspaceId,
-  });
-  return email !== undefined && emails.includes(email.toLowerCase());
+  return listsWorkspace(env.BROWSER_VM_WORKSPACES, scope);
 }
 
 /**

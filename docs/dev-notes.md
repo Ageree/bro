@@ -180,6 +180,10 @@
 - Шаблон чата DeepSeek склеивает все системные сообщения в начало промпта:
   «последнее» системное (пометка шага) стоит перед историей и рвёт кэш.
   Состав шага меряет `scripts/costs/step-context.ts` (`docs/agent-costs.md`, 3.2).
+  За флагом `STEP_CONTEXT_WORKSPACES` время и записки идут после истории
+  тегом `<bro-step-note>` (`agent/lib/step-context/`); новые опции
+  `modelSelection` добавляйте только под флагом — тесты `agent.test.ts`
+  сверяют опции целиком.
 - `GET /api/v1/credits` — только management-ключ (`OPENROUTER_MANAGEMENT_KEY`).
   Плагин `web` без `engine` у `openai/*` медленный и без ссылок: берём `exa`.
 - `web_fetch` помнит отказ хоста лишь в разговоре: память инстанса закрывала

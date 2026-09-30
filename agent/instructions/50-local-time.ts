@@ -1,30 +1,24 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
 import { z } from "zod";
+import {
+  clockModes,
+  localClock,
+  saveTimeZoneInstruction,
+} from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { stepNoteInstructions } from "@agent/lib/step-context/note";
+import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
-/**
- * What time it is where the person is. Without it the model dates «сегодня»
- * and «завтра» from whatever it guesses, and every schedule, delivery window
- * and «во сколько» it derives from that guess is wrong by a working day.
- */
 export function localTimeInstructions(
   now: Date,
   timeZone: string,
   canSaveTimeZone = true
 ) {
-  const localTime = new Intl.DateTimeFormat("ru-RU", {
-    dateStyle: "full",
-    timeStyle: "short",
-    timeZone,
-  }).format(now);
-  const clock = `Сейчас у человека ${localTime} (таймзона ${timeZone}). Считай «сегодня», «завтра» и «на выходных» от этого времени, а не от чего-то своего.`;
+  const clock = localClock(now, timeZone);
   if (!canSaveTimeZone) return clock;
-  return [
-    clock,
-    "Если он называет город или таймзону, а в Personal Info её нет или она другая — сохрани поле `timezone` через `personal_info__update` именем зоны IANA, например Europe/Moscow.",
-  ].join("\n");
+  return [clock, saveTimeZoneInstruction].join("\n");
 }
 
 export default defineDynamic({
@@ -32,15 +26,7 @@ export default defineDynamic({
     async "turn.started"(_event, context) {
       const caller =
         context.session.auth.current ?? context.session.auth.initiator;
-      // Bro's own checks read the clock but have no profile to write to, and
-      // neither does a report turn, which still has to say «завтра в 07:05»
-      // and «выйти в 04:30» on the person's clock rather than UTC.
-      const canSaveTimeZone = resolveModeValue(context, {
-        interactive: true,
-        "proactive-worker": false,
-        "scheduled-report": false,
-        "scheduled-worker": true,
-      });
+      const canSaveTimeZone = resolveModeValue(context, clockModes);
       if (
         caller?.principalType !== "user" ||
         !z.string().safeParse(caller.attributes.workspaceId).success ||
@@ -48,10 +34,21 @@ export default defineDynamic({
       ) {
         return null;
       }
+      const scope = scopeFromPrincipal(caller);
+      // The clock changes every turn, so every instruction after it was read
+      // at full price. In the pilot it goes into the step's note after the
+      // history (`agent/agent.ts`), and this line explains that note.
+      if (await stepContextPilot(scope)) {
+        return defineInstructions({
+          content: canSaveTimeZone
+            ? [stepNoteInstructions, saveTimeZoneInstruction].join("\n")
+            : stepNoteInstructions,
+        });
+      }
       return defineInstructions({
         content: localTimeInstructions(
           new Date(),
-          await readWorkspaceTimeZone(scopeFromPrincipal(caller)),
+          await readWorkspaceTimeZone(scope),
           canSaveTimeZone
         ),
       });
