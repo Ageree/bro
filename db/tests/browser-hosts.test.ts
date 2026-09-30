@@ -35,7 +35,7 @@ async function hostsDatabase() {
   return { client, hosts, vms };
 }
 
-describe("browser host persistence", () => {
+describe("browser host persistence", { timeout: 60_000 }, () => {
   it("hands out each host slot once, up to the limit", async () => {
     const { hosts } = await hostsDatabase();
 

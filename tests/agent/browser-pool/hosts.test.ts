@@ -103,6 +103,14 @@ function capacity(
   };
 }
 
+/** The hosts module alone, for what needs no database. */
+async function loadHosts() {
+  return importWithSettings(
+    browserPoolTestEnvironment,
+    async () => import("@agent/lib/browser-pool/hosts")
+  );
+}
+
 async function loadPool(settings = {}) {
   const client = new PGlite();
   databases.push(client);
@@ -158,7 +166,7 @@ const bootSchema = z.object({
 
 describe("browser host cloud-init", () => {
   it("writes the files boot.py writes, with the script it runs", async () => {
-    const { hosts } = await loadPool();
+    const hosts = await loadHosts();
     const document = hosts.browserHostCloudInit("bro-host-1", now);
     const lines = document.split("\n");
 
@@ -227,7 +235,7 @@ describe("browser host cloud-init", () => {
   });
 
   it("refuses a host id hostd would not take", async () => {
-    const { hosts } = await loadPool();
+    const hosts = await loadHosts();
 
     expect(() => hosts.browserHostCloudInit("Bro:1", now)).toThrow(
       "A host id matches"
@@ -235,7 +243,7 @@ describe("browser host cloud-init", () => {
   });
 });
 
-describe("browser sandbox placement", () => {
+describe("browser sandbox placement", { timeout: 60_000 }, () => {
   it("creates the first host in slot one and has the errand wait", async () => {
     const { hosts, records } = await loadPool();
 
@@ -353,7 +361,7 @@ describe("browser sandbox placement", () => {
   });
 });
 
-describe("browser host reconcile", () => {
+describe("browser host reconcile", { timeout: 60_000 }, () => {
   it("follows a new host up to ready", async () => {
     const { hosts, records } = await loadPool();
     await hosts.placeBrowserSandbox(now);

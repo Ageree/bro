@@ -281,6 +281,13 @@
       "when": 1790761589122,
       "tag": "0039_solid_captain_america",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790763476837,
+      "tag": "0040_outstanding_shadowcat",
+      "breakpoints": true
     }
   ]
 }
