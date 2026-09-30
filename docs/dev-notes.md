@@ -339,6 +339,10 @@
 
 ## Бенчмарк
 
+- В `eve dev` OpenRouter не отдаёт цену шага: рубли локального прогона
+  считайте по токенам `usage_costs` и `shared/costs/prices.ts`. Кэш внутри
+  хода отстаёт от промпта на 6–14 тыс. и с флагом `STEP_CONTEXT_WORKSPACES`
+  (`docs/agent-costs.md`, 3.2): сравнивайте по видам шагов.
 - Драйвер `scripts/bench/` держит курсор сам: `eve/client` двигает `streamIndex`
   только по дочитанному ходу, `session.stream()` сдаётся рано.
 - `eve dev` без Docker ставит `just-bash`, и pnpm переписывает `pnpm-lock.yaml`
