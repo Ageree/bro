@@ -316,6 +316,12 @@ const ensureBrowserVmRecord = vi.hoisted(() =>
 const ensureScope = vi.hoisted(() =>
   vi.fn<(scope: AccessScope) => Promise<void>>(() => Promise.resolve())
 );
+// Who waits for a VM errand decides how long its VM stays up after it.
+const keepBrowserVmForErrand = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, byPerson: boolean) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
 const replaceBrowserProfileId = vi.hoisted(() =>
   vi.fn<(workspaceId: string, profileId: string) => Promise<string>>(
     (_workspaceId, profileId) => Promise.resolve(profileId)
@@ -517,6 +523,7 @@ vi.mock("@db/services/browser-vms", async (importOriginal) => ({
   ensureBrowserVmRecord,
   readBrowserVm,
 }));
+vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForErrand }));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof scopeService>()),
   ensureScope,
@@ -3425,6 +3432,48 @@ describe("browser_task on a workspace's own browser VM", () => {
     // The sign-ins on record were earned in Browser Use's browser, which the
     // VM's knows nothing of; a site the person opted out of stays so there.
     expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    // The person's own errand keeps the VM on their idle window, written
+    // before the start wakes the VM.
+    expect(keepBrowserVmForErrand).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      true
+    );
+    expect(keepBrowserVmForErrand.mock.invocationCallOrder[0]).toBeLessThan(
+      createBrowserUseRun.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
+  it("puts a scheduled errand's VM on the short window of an errand nobody waits for", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://www.wildberries.ru",
+        task: "Проверь цену на корм",
+      },
+      toolContext("better-auth:alice", "scheduled-worker")
+    );
+
+    expect(keepBrowserVmForErrand).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      false
+    );
+  });
+
+  it("leaves the VM's idle window alone for a Browser Use errand", async () => {
+    await startErrand("");
+
+    expect(keepBrowserVmForErrand).not.toHaveBeenCalled();
   });
 
   it("keeps the VM's current profile without writing it again", async () => {

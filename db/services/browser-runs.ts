@@ -1012,6 +1012,54 @@ export async function listWorkspacesHoldingBrowsers(
   return rows.map((row) => row.workspaceId);
 }
 
+/** A queued or parked errand older than this is not waited on any more. */
+const pendingErrandWindowMs = 6 * 60 * 60_000;
+/** A report still undelivered this long after its run settled keeps nothing up. */
+const pendingReportWindowMs = 30 * 60_000;
+
+/**
+ * Whether the workspace has an errand still coming to its browser: one
+ * queued for it or parked for an anti-bot retry, or a settled run whose
+ * report has not reached its conversation yet — the report turn may follow
+ * the errand up in the same page. A browser VM on a short idle window is
+ * not stopped meanwhile.
+ */
+export async function workspaceHasPendingBrowserErrand(
+  workspaceId: string,
+  now = new Date()
+) {
+  const [row] = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        or(
+          and(
+            inArray(browserRuns.status, ["queued", "waiting"]),
+            isNotNull(browserRuns.retryAt),
+            isNull(browserRuns.retriedAsRunId),
+            gt(
+              browserRuns.createdAt,
+              new Date(now.getTime() - pendingErrandWindowMs)
+            )
+          ),
+          and(
+            isNotNull(browserRuns.report),
+            isNull(browserRuns.reportDeliveredAt),
+            lt(browserRuns.reportAttempts, maximumReportAttempts),
+            gt(
+              browserRuns.completedAt,
+              new Date(now.getTime() - pendingReportWindowMs)
+            )
+          )
+        )
+      )
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 /**
  * Take the page a settled run left, for whoever comes first: a follow-up
  * that is about to type a code into it or run in it, the poller's idle stop,

@@ -32,6 +32,7 @@ import {
 } from "@agent/lib/browser-use/cdp";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import {
   browserSecretAliases,
   phoneSignInDomains,
@@ -3097,6 +3098,11 @@ async function runBrowserTask(
         }),
         browserRunFacts(scope),
       ]);
+      // Written before the VM is woken or touched: who waits for this
+      // errand decides how long its VM stays up after it.
+      if (isBrowserVmId(profileId)) {
+        await keepBrowserVmForErrand(scope.workspaceId, byPerson);
+      }
       const task = composeBrowserTask({
         aliases: secrets.aliases,
         allowPayment,
@@ -3443,6 +3449,9 @@ async function runBrowserTask(
       if (placeholder) await releaseReservation(placeholder);
       return { note: browserServiceOffNote, runId, status: "unavailable" };
     }
+    // A follow-up is an errand of its own for the VM's idle window: the
+    // person answering keeps it on theirs, a report turn's does not.
+    if (onVm) await keepBrowserVmForErrand(scope.workspaceId, byPerson);
     const page = forgotten
       ? { claimedAt: undefined, closing: false, held: false }
       : await takeKeptPage(row);

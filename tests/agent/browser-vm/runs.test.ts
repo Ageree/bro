@@ -105,6 +105,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     recoveries: 0,
     state: "ready",
     stateChangedAt: now,
+    stopNotBefore: null,
     updatedAt: now,
     vmId: "vm-1",
     vmName: "bro-personal0123456789ab-3",

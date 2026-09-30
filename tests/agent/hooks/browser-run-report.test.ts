@@ -12,11 +12,15 @@ const reopenBrowserRunReport = vi.hoisted(() =>
     Promise.resolve({ retried: true })
   )
 );
+const keepBrowserVmAfterReport = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
 vi.mock("@db/services/browser-runs", () => ({
   finishBrowserRunReport,
   renewBrowserRunReportLease,
   reopenBrowserRunReport,
 }));
+vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmAfterReport }));
 
 import reportHook from "@agent/hooks/browser-run-report";
 
@@ -125,6 +129,19 @@ describe("the browser report hook", () => {
     );
 
     expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
+  });
+
+  it("lets a browser VM on a short window stop soon after the report landed, once", async () => {
+    await emit(
+      "action.result",
+      toolResult("send_message", { kind: "message", text: "Цена та же" })
+    );
+    expect(keepBrowserVmAfterReport).toHaveBeenCalledExactlyOnceWith(runId);
+
+    // The turn's end finds the report delivered already.
+    finishBrowserRunReport.mockResolvedValueOnce(false);
+    await emit("turn.completed", {});
+    expect(keepBrowserVmAfterReport).toHaveBeenCalledOnce();
   });
 
   it("does not count a send the guard dropped", async () => {

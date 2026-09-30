@@ -20,6 +20,7 @@ import {
   type BrowserUseRunStatus,
 } from "./client";
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { keepBrowserVmForPersonStep } from "@agent/lib/browser-vm/idle";
 import {
   captchaRetryAt,
   captchaRetryWindowMinutes,
@@ -246,6 +247,8 @@ export async function settleBrowserRun(
   const released = keepsPage(parsed.needs)
     ? false
     : await persistProfileCookies(claimed.id, run.sessionId);
+  // On a browser VM, the page waits for the person's reply that long.
+  if (keepsPage(parsed.needs)) await keepBrowserVmForPersonStep(claimed.id);
   await recordRunSignIns(claimed, {
     needs: parsed.needs,
     signedIn: parsed.signedIn,

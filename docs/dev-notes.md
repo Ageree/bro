@@ -262,6 +262,9 @@
   (qwen 1 из 6), DeepSeek там картинку не получает вовсе.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
+- Простой VM по тому, кто разбудил: `stop_not_before` null — окно человека по
+  `last_used_at`. Фоновое поручение пишет срок до старта (старт трогает
+  `last_used_at` и продлил бы окно человека); `idle.ts`, `stopIfIdle`.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
   `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
 - В VM Evolution виден `/dev/kvm` (`nested=Y`), но поддержка (30.09):

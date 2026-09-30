@@ -235,6 +235,25 @@ export const env = createEnv({
       .min(3, "BROWSER_VM_IDLE_MINUTES must be at least 3")
       .max(240, "BROWSER_VM_IDLE_MINUTES must be at most 240")
       .default(20),
+    // An errand nobody waits for — a schedule's, a background worker's, a
+    // browser report's follow-up — stops its VM this long after its report
+    // reached the conversation, unless a person's errand keeps it longer.
+    BROWSER_VM_IDLE_BACKGROUND_MINUTES: z.coerce
+      .number()
+      .int(
+        "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be a whole number of minutes"
+      )
+      .min(1, "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be at least 1")
+      .max(240, "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be at most 240")
+      .default(2),
+    // A run that stopped for the person's code or answer keeps its VM this
+    // long after it settled: the page waits there for the reply.
+    BROWSER_VM_IDLE_CODE_MINUTES: z.coerce
+      .number()
+      .int("BROWSER_VM_IDLE_CODE_MINUTES must be a whole number of minutes")
+      .min(3, "BROWSER_VM_IDLE_CODE_MINUTES must be at least 3")
+      .max(240, "BROWSER_VM_IDLE_CODE_MINUTES must be at most 240")
+      .default(15),
     BROWSER_VM_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
     // 2Captcha, for a slider puzzle the VM's worker could not place itself:
     // it gets the puzzle and the page's address, nothing of the person.

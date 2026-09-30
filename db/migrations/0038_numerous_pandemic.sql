@@ -1,0 +1,1 @@
+ALTER TABLE "browser_vms" ADD COLUMN "stop_not_before" timestamp (3) with time zone;

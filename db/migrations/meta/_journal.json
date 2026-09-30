@@ -267,6 +267,13 @@
       "when": 1790646595216,
       "tag": "0037_parched_texas_twister",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790756577876,
+      "tag": "0038_numerous_pandemic",
+      "breakpoints": true
     }
   ]
 }
