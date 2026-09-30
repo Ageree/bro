@@ -1,5 +1,14 @@
-import { execFileSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
@@ -319,6 +328,57 @@ describe("browser host cloud-init", () => {
         "20260914",
       ])
     ).toBe(gvisor);
+  });
+
+  it("waits minutes for the network before it fetches the bundle", async () => {
+    // ru.AZ-1, 30.09: the first boot ran bro-host-boot 3+ minutes before its
+    // public address carried any DNS or egress; five tries gave up in 150 s.
+    const bootPy = await readFile(
+      new URL("../../../browser-vm/host/boot.py", import.meta.url),
+      "utf8"
+    );
+    const script =
+      /BOOT_SCRIPT = r"""(?<script>[\s\S]*?)"""/u.exec(bootPy)?.groups
+        ?.script ?? "";
+    const directory = await mkdtemp(join(tmpdir(), "bro-host-boot-"));
+    try {
+      const bin = join(directory, "bin");
+      await mkdir(bin);
+      const stub = async (name: string, body: string) =>
+        writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+      await stub("python3", "echo https://s3.cloud.ru/bundle");
+      await stub("sleep", `echo "$1" >> "${directory}/sleeps"`);
+      await stub(
+        "curl",
+        `echo x >> "${directory}/curls"
+[ "$(wc -l < "${directory}/curls")" -ge "\${CURL_OK_AT:-0}" ] && [ "\${CURL_OK_AT:-0}" -gt 0 ]`
+      );
+      await writeFile(join(directory, "boot"), script);
+      const run = (curlOkAt: number) =>
+        spawnSync("env", [
+          "-i",
+          `CURL_OK_AT=${String(curlOkAt)}`,
+          `PATH=${bin}:/usr/bin:/bin`,
+          "bash",
+          join(directory, "boot"),
+        ]).status;
+      const lines = async (name: string) =>
+        (await readFile(join(directory, name), "utf8")).trim().split("\n");
+
+      expect(run(0)).toBe(1);
+      expect(await lines("curls")).toHaveLength(40);
+      const sleeps = (await lines("sleeps")).map(Number);
+      // 39 waits of 10 s plus up to 40 connect timeouts of 10 s: 6.5–13 min.
+      expect(sleeps.reduce((sum, value) => sum + value, 0)).toBe(390);
+
+      await rm(join(directory, "curls"));
+      // The bundle came on the 25th try: no more fetches (the stub's empty
+      // file then fails the checksum, before anything is unpacked).
+      expect(run(25)).not.toBe(0);
+      expect(await lines("curls")).toHaveLength(25);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it("runs runsc when the runtime is unset and the release is pinned", async () => {

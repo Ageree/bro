@@ -49,6 +49,9 @@
 - PGlite-тест с `vi.resetModules()` должен в каждом кейсе заново импортировать
   `@db` и подменять `db`, иначе висит на `pg.Pool`
   (`db/tests/proactive.test.ts`). Наружу тесты не пускает `tests/setup-env.ts`.
+  Так же виснет `vi.mock` с `importOriginal` модуля, тянущего `@db`: сбой
+  записи в таком тесте делайте триггером PGlite (`failVmUptimeWrites` в
+  `tests/agent/browser-pool/sandbox.test.ts`).
 - Превью делят базу с продом, поэтому сборка зовёт `db:migrate:deploy` (на
   превью пустой): миграции неслитых PR ложились в прод, и drizzle пропускал
   более ранние `when`. Миграцию PR перед слиянием генерируйте поверх bro-next.

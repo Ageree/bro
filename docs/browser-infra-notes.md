@@ -164,6 +164,38 @@
 
 ## Пул в Бро (`agent/lib/browser-pool/`)
 
+- 30.09 вечером зона `ru.AZ-3` в проекте Cloud.ru выключена (`enabled: false`;
+  в `/v1/availability-zones` остались `ru.AZ-1` и `ru.AZ-2`): создание любой
+  VM с умолчаниями `CLOUDRU_ZONE`, `CLOUDRU_SUBNET` (`Default_ru.AZ-3`) и
+  группой `bro-browser` (тоже в AZ-3) — 422 `wrong_az_by_name`. Образы VM
+  (`bro-browser-2026-09-29-5/-6`) есть только в AZ-3, так что путь «VM на
+  воркспейс» не создаёт VM нигде; хост пула грузится со стоковой
+  `ubuntu-22.04`, она есть в AZ-1 и AZ-2 — пул и есть способ вернуть пилоту
+  браузер.
+- Пул переезжает в `ru.AZ-1`: подсеть `Default_ru.AZ-1` (`10.0.1.0/24`, шлюз
+  `10.0.1.1`, как `Default_ru.AZ-3`: `routed_network`, DNS `8.8.4.4`/`8.8.8.8`,
+  тот же `vpc_id`) и группа `bro-browser-az1` с правилами `bro-browser`
+  (вход tcp 80 и 443 с `0.0.0.0/0`, выход — всё). Env: `CLOUDRU_ZONE=ru.AZ-1`,
+  `CLOUDRU_SUBNET=Default_ru.AZ-1`, `CLOUDRU_SECURITY_GROUP=bro-browser-az1`.
+  Эти три env общие для хостов пула и VM воркспейса (`createVm` в
+  `agent/lib/browser-vm/cloudru.ts`): VM в AZ-1 создастся лишь с образом там.
+  Подсеть и группа заведены владельцем 30.09 (облачной сессии менять сеть
+  проекта не дают; sNAT не нужен) — не трогать. e2e пула в AZ-1 зелёный
+  (`docs/browser-pool.md`, раздел 2).
+- Особенности AZ-1 (30.09): VM `creating` → `running` 2,5–3 минуты (в AZ-3 —
+  23–45 с), а сеть — ещё позже: ОС грузится, пока плавающий IP подключается,
+  и первые ≈ 3 минуты нет DNS и выхода (`Resolving timed out`). Поэтому
+  `bro-host-boot` ждёт сеть до 13 минут (`boot.py`, `hosts.ts`): раньше 5
+  попыток за 150 с сдавались, а cloud-init второй раз его не запускает. С
+  сетью `mirror.yandex.ru` и S3 отвечают, установка — 51 с.
+- `GET /v1/vms/{id}` Cloud.ru через раз отвечает 500 `internal_error`
+  (30.09, AZ-1, по той же VM следующий запрос — 200): тик сторожа
+  переживает, а `console.py` стенда падает — повторите.
+- Схема: `GET /v1/subnets?project_id=…` отдаёт `subnet_address`,
+  `routed_network`, `default_gateway`, `dns_servers`, `vpc_id`, зону;
+  `GET /v1/security-groups?project_id=…` — группы вместе с `rules`;
+  `/v1/vpcs` — 404.
+
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
   (`browserPoolConfigured`); `runc` — только явным `BROWSER_HOST_RUNTIME`, без
@@ -180,7 +212,9 @@
 - Песочница пула — та же запись `browser_vms`: `state` зеркалит
   `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
   `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней
-  (`inBrowserPool`). Запись с `sandbox_state`, но без `host_id` worker не зовёт:
+  (`inBrowserPool`); VM, которой нет в Cloud.ru ни по id, ни по имени,
+  передаётся пулу (`handOverGoneVm`): пилот мог остаться с записью удалённой
+  VM, а прежний путь создал бы ему новую. Запись с `sandbox_state`, но без `host_id` worker не зовёт:
   адрес удалённого хоста уже чужой (`origin` в `worker.ts`).
 - Presigned S3 Cloud.ru (PUT, GET, листинг, DELETE) работают из облачной
   сессии.

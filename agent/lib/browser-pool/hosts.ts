@@ -106,7 +106,10 @@ const hostAptMirror = "http://mirror.yandex.ru/ubuntu";
 /**
  * Written by cloud-init: fetches the bundle named in boot.json, checks it
  * and hands over to provision.sh. Byte for byte `BOOT_SCRIPT` of
- * `browser-vm/host/boot.py` (a test compares them).
+ * `browser-vm/host/boot.py` (a test compares them). The fetch waits 7–13
+ * minutes for the network: in `ru.AZ-1` a new VM runs this while its public
+ * address is still being attached, without DNS or egress for 3+ minutes,
+ * and cloud-init runs it only once per instance.
  */
 const bootScript = String.raw`#!/bin/bash
 set -euo pipefail
@@ -117,10 +120,10 @@ for key in sys.argv[1].split("."):
 print(value)' "$1"; }
 URL=$(field bundle.url)
 SHA=$(field bundle.sha256)
-for i in 1 2 3 4 5; do
-  curl -fsS -m 300 -o /root/bro-host.tgz "$URL" && break
-  [ "$i" = 5 ] && exit 1
-  sleep $((i * 5))
+for i in $(seq 1 40); do
+  curl -fsS --connect-timeout 10 -m 300 -o /root/bro-host.tgz "$URL" && break
+  [ "$i" = 40 ] && exit 1
+  sleep 10
 done
 echo "$SHA  /root/bro-host.tgz" | sha256sum -c --quiet -
 mkdir -p /opt/bro/host
