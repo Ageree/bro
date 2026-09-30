@@ -179,9 +179,18 @@
   `CLOUDRU_SUBNET=Default_ru.AZ-1`, `CLOUDRU_SECURITY_GROUP=bro-browser-az1`.
   Эти три env общие для хостов пула и VM воркспейса (`createVm` в
   `agent/lib/browser-vm/cloudru.ts`): VM в AZ-1 создастся лишь с образом там.
-  Подсеть и группа 30.09 не заведены: облачной сессии не дали менять сеть
-  проекта — их заводит владелец (консоль или `POST /v1/subnets`,
-  `POST /v1/security-groups` + `/rules`), sNAT не нужен.
+  Подсеть и группа заведены владельцем 30.09 (облачной сессии менять сеть
+  проекта не дают; sNAT не нужен) — не трогать. e2e пула в AZ-1 зелёный
+  (`docs/browser-pool.md`, раздел 2).
+- Особенности AZ-1 (30.09): VM `creating` → `running` 2,5–3 минуты (в AZ-3 —
+  23–45 с), а сеть — ещё позже: ОС грузится, пока плавающий IP подключается,
+  и первые ≈ 3 минуты нет DNS и выхода (`Resolving timed out`). Поэтому
+  `bro-host-boot` ждёт сеть до 13 минут (`boot.py`, `hosts.ts`): раньше 5
+  попыток за 150 с сдавались, а cloud-init второй раз его не запускает. С
+  сетью `mirror.yandex.ru` и S3 отвечают, установка — 51 с.
+- `GET /v1/vms/{id}` Cloud.ru через раз отвечает 500 `internal_error`
+  (30.09, AZ-1, по той же VM следующий запрос — 200): тик сторожа
+  переживает, а `console.py` стенда падает — повторите.
 - Схема: `GET /v1/subnets?project_id=…` отдаёт `subnet_address`,
   `routed_network`, `default_gateway`, `dns_servers`, `vpc_id`, зону;
   `GET /v1/security-groups?project_id=…` — группы вместе с `rules`;

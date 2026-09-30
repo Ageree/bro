@@ -52,6 +52,9 @@ RUNTIMES = ("runc", "runsc")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 # Fetches the bundle named in boot.json, checks it and hands over to provision.sh. Written by cloud-init.
+# It waits up to 40 attempts 10 s apart (7-13 minutes) for the network: in ru.AZ-1 (30.09.2026) a new VM
+# boots and runs this while its public address is still being attached, with no DNS or egress for 3+
+# minutes, and cloud-init runs it only once per instance, so a script that gave up left a dead host.
 BOOT_SCRIPT = r"""#!/bin/bash
 set -euo pipefail
 field() { python3 -c 'import json, sys
@@ -61,10 +64,10 @@ for key in sys.argv[1].split("."):
 print(value)' "$1"; }
 URL=$(field bundle.url)
 SHA=$(field bundle.sha256)
-for i in 1 2 3 4 5; do
-  curl -fsS -m 300 -o /root/bro-host.tgz "$URL" && break
-  [ "$i" = 5 ] && exit 1
-  sleep $((i * 5))
+for i in $(seq 1 40); do
+  curl -fsS --connect-timeout 10 -m 300 -o /root/bro-host.tgz "$URL" && break
+  [ "$i" = 40 ] && exit 1
+  sleep 10
 done
 echo "$SHA  /root/bro-host.tgz" | sha256sum -c --quiet -
 mkdir -p /opt/bro/host
