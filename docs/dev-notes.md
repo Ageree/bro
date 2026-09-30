@@ -274,6 +274,12 @@
   `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`, регион `ru-central-1`; без
   верного tenant — `NoSuchTenant`; скачивание частями в 4 потока в 3–4 раза
   быстрее одного.
+- Хост пула — `browser-vm/host/`. Его тестам нужен cryptography, а системный
+  пакет облачной сессии падает паникой pyo3: ставьте свой
+  (`pip install --ignore-installed cryptography cffi`). `nftables.service`
+  Ubuntu делает `flush ruleset`: на хосте он выключен, таблицу ставит `hostd`.
+  aiohttp перекодирует presigned URL (`%2F` → `/`, `%3A` → `:`), и подпись S3
+  не сходится: только `yarl.URL(url, encoded=True)` (`sets.transfer`).
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
