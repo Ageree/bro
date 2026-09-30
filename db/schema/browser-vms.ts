@@ -138,8 +138,8 @@ export const browserVms = pgTable(
       withTimezone: true,
     }),
     // Since when Cloud.ru bills the VM's compute: set when Bro powers it on
-    // (or first finds it on), cleared when it is written down as stopped or
-    // removed, which is when that stretch is recorded in `usage_costs`.
+    // (or first finds it on), cleared once the VM is off or gone and that
+    // stretch is on record in `usage_costs` (`closeUptime` in lifecycle.ts).
     poweredOnAt: timestamp("powered_on_at", {
       mode: "date",
       precision: 3,

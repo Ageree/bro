@@ -40,13 +40,18 @@ export interface UsageCostUnits {
   readonly bytes?: number;
   readonly model?: string;
   readonly flavor?: string;
+  /** A VM stretch shared equally between this many runs (1: one or none). */
+  readonly sharedBy?: number;
+  /** No price was known: zero roubles here is not a free step. */
+  readonly unpriced?: boolean;
 }
 
 /**
  * One cost Bro incurred for a workspace, in roubles at the time it was
  * written. `run_id` ties an errand together: the browser run, the turns that
- * reported it, its proxy traffic. `idempotency_key` is what a retried hook or
- * a second read of a settled run collides on, so nothing is counted twice.
+ * reported it, its proxy traffic and its share of the VM's powered-on time.
+ * `idempotency_key` is what a retried hook or a second read of a settled run
+ * collides on, so nothing is counted twice.
  */
 export const usageCosts = pgTable(
   "usage_costs",

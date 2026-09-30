@@ -107,6 +107,8 @@ describe("usage costs", { timeout: 30_000 }, () => {
   it("sums a Moscow month per workspace by source, with its errands and the VM's fixed line", async () => {
     const { costs, database } = await costsDatabase();
     await database.insert(schema.browserVms).values({
+      // Half of the Moscow September: 15 of its 30 days.
+      createdAt: new Date("2026-09-15T21:00:00.000Z"),
       state: "stopped",
       vmId: "vm-1",
       workspaceId: alice.workspaceId,
@@ -142,6 +144,11 @@ describe("usage costs", { timeout: 30_000 }, () => {
           source: "browser-run",
         }),
         cost({ costRub: 1.2, idempotencyKey: "a7", source: "browser-vm" }),
+        cost({
+          costRub: 0,
+          idempotencyKey: "a8",
+          units: { inputTokens: 900, steps: 1, unpriced: true },
+        }),
         // 00:30 on 1 October in Moscow belongs to October.
         cost({
           costRub: 100,
@@ -162,7 +169,10 @@ describe("usage costs", { timeout: 30_000 }, () => {
       ].map(async (row) => costs.recordUsageCost(row))
     );
 
-    const summary = await costs.summarizeUsageCosts("2026-09");
+    const summary = await costs.summarizeUsageCosts(
+      "2026-09",
+      new Date("2026-10-05T12:00:00.000Z")
+    );
 
     expect(summary.month).toBe("2026-09");
     expect(summary.workspaces.map((row) => row.workspaceId)).toEqual([
@@ -184,10 +194,11 @@ describe("usage costs", { timeout: 30_000 }, () => {
         maxRub: 5.25,
         maxRunId: errand,
       },
-      fixedVmRub: 263,
+      fixedVmRub: 131.5,
       ownerEmail: "alice@example.com",
       recordedRub: 12.2,
-      totalRub: 275.2,
+      totalRub: 143.7,
+      unpricedRows: 1,
       workspaceId: alice.workspaceId,
     });
     expect(summary.workspaces[1]).toMatchObject({
@@ -196,7 +207,20 @@ describe("usage costs", { timeout: 30_000 }, () => {
       ownerEmail: null,
       totalRub: 4,
     });
-    expect(summary.totalRub).toBe(279.2);
+    expect(summary.totalRub).toBe(147.7);
+
+    // The month so far: 5 of September's 30 days.
+    const current = await costs.summarizeUsageCosts(
+      "2026-09",
+      new Date("2026-09-20T21:00:00.000Z")
+    );
+    expect(current.workspaces[0]?.fixedVmRub).toBe(43.83);
+    // A month before the VM: no fixed line, and no workspace without spend.
+    const before = await costs.summarizeUsageCosts(
+      "2026-08",
+      new Date("2026-10-05T12:00:00.000Z")
+    );
+    expect(before.workspaces).toEqual([]);
   });
 
   it("breaks one errand down by source", async () => {

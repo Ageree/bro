@@ -143,6 +143,7 @@ describe("recording a model step", () => {
         inputTokens: 65_000,
         outputTokens: 400,
         steps: 1,
+        unpriced: false,
       },
       workspaceId,
     });
@@ -162,6 +163,7 @@ describe("recording a model step", () => {
         source: "browser-report",
       })
     );
+    expect(recordUsageCost.mock.calls[0]?.[0].units?.unpriced).toBe(true);
   });
 
   it("skips a turn with no workspace and never fails a turn on the accounting", async () => {

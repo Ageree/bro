@@ -669,12 +669,7 @@ async function mirror(
   run: WorkerRun,
   now: Date
 ) {
-  // Keyed by the run id, so every read of the settled run after the first
-  // adds nothing; a cancel may have closed the record before the worker
-  // reported what the run spent.
-  if (settledStatuses.has(run.status)) {
-    await recordBrowserVmRunCosts(browserVmWorkspace(run.id), run, now);
-  }
+  await recordRunCosts(record, run, now);
   if (record === undefined) {
     await recordBrowserVmRun({
       id: run.id,
@@ -712,6 +707,40 @@ async function mirror(
     },
     now
   );
+}
+
+/**
+ * What a run spent, once the worker reports it settled and the record has
+ * not taken that yet. A cancel closes the record before the worker's run
+ * has ended, so a cancelled one is recorded on every read: the key is the
+ * run id, and the reads after the first add nothing. Nothing here fails the
+ * read.
+ */
+async function recordRunCosts(
+  record: BrowserVmRunRecord | undefined,
+  run: WorkerRun,
+  now: Date
+) {
+  if (!settledStatuses.has(run.status)) return;
+  if (
+    record !== undefined &&
+    settledStatuses.has(record.status) &&
+    record.status !== "cancelled"
+  ) {
+    return;
+  }
+  try {
+    await recordBrowserVmRunCosts(
+      record?.workspaceId ?? browserVmWorkspace(run.id),
+      run,
+      now
+    );
+  } catch (error) {
+    console.warn("[usage-costs] a VM run's costs were not recorded", {
+      error: error instanceof Error ? error.message : String(error),
+      runId: run.id,
+    });
+  }
 }
 
 /**

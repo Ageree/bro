@@ -56,12 +56,18 @@ function round(value: number) {
 
 /**
  * What each workspace cost in a month: the recorded costs by source, the
- * fixed monthly part of its VM if it has one (disk and address bill whether
- * the VM runs or not, so they are a line here rather than rows), and its
- * errands — every run id with a cost recorded against it that month —
- * with their average and largest cost. Roubles, two decimals.
+ * fixed monthly part of its VM (disk and address bill whether the VM runs or
+ * not, so they are a line here rather than rows), and its errands — every
+ * run id with a cost recorded against it that month — with their average
+ * and largest cost. Roubles, two decimals. `unpricedRows` counts the rows
+ * written at zero roubles for want of a price.
+ *
+ * The fixed line covers the part of the month, up to `now`, since the
+ * workspace's current VM record was created: a VM deleted since left no
+ * record to read it from, so a past month misses it (docs/agent-costs.md
+ * 3.1).
  */
-export async function summarizeUsageCosts(month: string) {
+export async function summarizeUsageCosts(month: string, now = new Date()) {
   const { from, to } = usageMonthWindow(month);
   const inMonth = and(
     gte(usageCosts.occurredAt, from),
@@ -72,6 +78,7 @@ export async function summarizeUsageCosts(month: string) {
       .select({
         costRub: sql<number>`sum(${usageCosts.costRub})::float8`,
         source: usageCosts.source,
+        unpriced: sql<number>`(count(*) filter (where ${usageCosts.units}->>'unpriced' = 'true'))::int`,
         workspaceId: usageCosts.workspaceId,
       })
       .from(usageCosts)
@@ -87,22 +94,36 @@ export async function summarizeUsageCosts(month: string) {
       .where(and(inMonth, isNotNull(usageCosts.runId)))
       .groupBy(usageCosts.workspaceId, usageCosts.runId),
     db
-      .select({ workspaceId: browserVms.workspaceId })
+      .select({
+        createdAt: browserVms.createdAt,
+        workspaceId: browserVms.workspaceId,
+      })
       .from(browserVms)
       .where(isNotNull(browserVms.vmId)),
   ]);
-  const fixedVmRub = vmFixedMonthlyRub.disk + vmFixedMonthlyRub.publicIp;
-  const withVm = new Set(vms.map((vm) => vm.workspaceId));
+  const monthlyVmRub = vmFixedMonthlyRub.disk + vmFixedMonthlyRub.publicIp;
+  const monthMs = to.getTime() - from.getTime();
+  const end = Math.min(to.getTime(), now.getTime());
+  const fixedVm = new Map(
+    vms.flatMap((vm) => {
+      const heldMs = end - Math.max(from.getTime(), vm.createdAt.getTime());
+      return heldMs > 0
+        ? [[vm.workspaceId, round((monthlyVmRub * heldMs) / monthMs)] as const]
+        : [];
+    })
+  );
   const workspaceIds = [
-    ...new Set([...bySource.map((row) => row.workspaceId), ...withVm.values()]),
+    ...new Set([...bySource.map((row) => row.workspaceId), ...fixedVm.keys()]),
   ].toSorted();
   const emails = await ownerEmails(workspaceIds);
 
   const workspaces = workspaceIds.map((workspaceId) => {
     const sources = emptyBySource();
+    let unpricedRows = 0;
     for (const row of bySource) {
       if (row.workspaceId === workspaceId) {
         sources[row.source] = round(sources[row.source] + row.costRub);
+        unpricedRows += row.unpriced;
       }
     }
     const errands = byRun
@@ -110,7 +131,7 @@ export async function summarizeUsageCosts(month: string) {
       .toSorted((a, b) => b.costRub - a.costRub);
     const errandTotal = errands.reduce((sum, row) => sum + row.costRub, 0);
     const recordedRub = Object.values(sources).reduce((a, b) => a + b, 0);
-    const fixed = withVm.has(workspaceId) ? fixedVmRub : 0;
+    const fixed = fixedVm.get(workspaceId) ?? 0;
     return {
       bySource: sources,
       errands: {
@@ -124,6 +145,7 @@ export async function summarizeUsageCosts(month: string) {
       ownerEmail: emails.get(workspaceId) ?? null,
       recordedRub: round(recordedRub),
       totalRub: round(recordedRub + fixed),
+      unpricedRows,
       workspaceId,
     };
   });
@@ -138,7 +160,7 @@ export async function summarizeUsageCosts(month: string) {
 
 /**
  * Everything recorded against one errand's run: the browser agent, the
- * turns that reported it, its proxy traffic. Undefined for a run nothing was
+ * turns that reported it, its proxy traffic, its share of the VM's time. Undefined for a run nothing was
  * recorded against.
  */
 export async function errandUsageCosts(runId: string) {

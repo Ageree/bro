@@ -10,7 +10,8 @@ import { usdToRub } from "@shared/costs/prices";
  * schedules' workers and the browser reports cost nothing anywhere. The key
  * is the step's own coordinates, which a retried hook computes again, so a
  * step is counted once. OpenRouter prices a step in dollars; a step without
- * a price (a Gateway model) keeps its tokens at zero roubles.
+ * a price (a Gateway model) keeps its tokens at zero roubles, marked
+ * `unpriced` so the summary tells it from a free one.
  */
 export default defineHook({
   events: {
@@ -33,6 +34,7 @@ export default defineHook({
           inputTokens: usage?.inputTokens ?? 0,
           outputTokens: usage?.outputTokens ?? 0,
           steps: 1,
+          unpriced: costUsd === undefined,
         },
         workspaceId,
       });

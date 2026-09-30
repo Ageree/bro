@@ -19,4 +19,5 @@ CREATE TABLE "usage_costs" (
 ALTER TABLE "browser_vms" ADD COLUMN "powered_on_at" timestamp (3) with time zone;--> statement-breakpoint
 ALTER TABLE "usage_costs" ADD CONSTRAINT "usage_costs_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "usage_costs_occurred_idx" ON "usage_costs" USING btree ("occurred_at");--> statement-breakpoint
-CREATE INDEX "usage_costs_run_idx" ON "usage_costs" USING btree ("run_id");
+CREATE INDEX "usage_costs_run_idx" ON "usage_costs" USING btree ("run_id");--> statement-breakpoint
+UPDATE "browser_vms" SET "powered_on_at" = "state_changed_at" WHERE "powered_on_at" IS NULL AND "state" IN ('creating', 'starting', 'ready', 'stopping');

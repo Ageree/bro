@@ -598,6 +598,7 @@ describe("reading a VM run", () => {
         model: "deepseek/deepseek-v4.1-flash",
         outputTokens: 2_000,
         steps: 3,
+        unpriced: false,
       },
       workspaceId,
     });
@@ -633,6 +634,69 @@ describe("reading a VM run", () => {
     );
     const run = await client.readBrowserUseRun(runId);
     expect(run.status).toBe("completed");
+  });
+
+  it("leaves a run the record already settled alone, and still records one a cancel closed", async () => {
+    const client = await loadClient();
+    const settled = workerRun({
+      finishedAt: "2026-09-28T11:58:00Z",
+      result: "RESULT: done",
+      status: "completed",
+      traffic: { down: 10, up: 10 },
+    });
+    records.readBrowserVmRun.mockResolvedValue(
+      runRecord({ result: "RESULT: done", status: "completed" })
+    );
+    worker.readBrowserVmWorkerRun.mockResolvedValue(settled);
+
+    await client.readBrowserUseRun(runId);
+
+    expect(recordUsageCost).not.toHaveBeenCalled();
+
+    records.readBrowserVmRun.mockResolvedValue(
+      runRecord({ status: "cancelled" })
+    );
+    worker.readBrowserVmWorkerRun.mockResolvedValue({
+      ...settled,
+      status: "cancelled",
+    });
+
+    await client.readBrowserUseRun(runId);
+
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: `proxy:${runId}` })
+    );
+  });
+
+  it("marks a run on a model with no price as unpriced", async () => {
+    const client = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_VM_MODEL: "someone/unknown" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        status: "completed",
+        usage: { total_completion_tokens: 10, total_prompt_tokens: 100 },
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+
+    expect(warn).toHaveBeenCalledWith(
+      "[usage-costs] no price for the VM model",
+      {
+        model: "someone/unknown",
+      }
+    );
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        costRub: 0,
+        idempotencyKey: `browser-run:${runId}`,
+      })
+    );
+    expect(recordUsageCost.mock.calls[0]?.[0].units?.unpriced).toBe(true);
   });
 
   it("tells a run its model refused for billing as such, and alerts the owner", async () => {

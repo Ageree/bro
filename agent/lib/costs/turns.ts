@@ -30,7 +30,8 @@ export function turnCostSource(auth: SessionAuth) {
 /**
  * The workspace a turn is for. Every caller Bro admits carries it — the
  * person's sign-in, a schedule's worker, a browser report — and a turn
- * without one (a subagent's, say) is not recorded.
+ * without one is not recorded. Subagents' steps never reach Bro's hooks
+ * (eve `guides/hooks.md`, "Subagent isolation"), so they are not counted.
  */
 export function turnWorkspaceId(auth: SessionAuth) {
   return (

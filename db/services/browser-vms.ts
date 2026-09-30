@@ -349,3 +349,27 @@ export async function listOpenBrowserVmRuns(workspaceId: string) {
     )
     .orderBy(desc(browserVmRuns.createdAt));
 }
+
+/**
+ * The workspace's runs that were going at some point between `from` and
+ * `to`, oldest first: the errands a stretch of the VM's powered-on time
+ * served, which that stretch is shared between.
+ */
+export async function listBrowserVmRunIdsBetween(
+  workspaceId: string,
+  from: Date,
+  to: Date
+) {
+  const rows = await db
+    .select({ id: browserVmRuns.id })
+    .from(browserVmRuns)
+    .where(
+      and(
+        eq(browserVmRuns.workspaceId, workspaceId),
+        lte(browserVmRuns.createdAt, to),
+        or(isNull(browserVmRuns.finishedAt), gt(browserVmRuns.finishedAt, from))
+      )
+    )
+    .orderBy(asc(browserVmRuns.createdAt));
+  return rows.map((row) => row.id);
+}
