@@ -271,6 +271,11 @@ vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
 }));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
+// A browser VM stays up for the reply while a run waits for the person.
+const keepBrowserVmForPersonStep = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
+vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForPersonStep }));
 
 // The first import transforms the channels the report is sent through, which
 // under a full parallel run can outlast one test's five seconds by itself.
@@ -1543,6 +1548,16 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).toContain(row.liveViewUrl);
   });
 
+  it("keeps no browser VM up for a reply to a finished run", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(keepBrowserVmForPersonStep).not.toHaveBeenCalled();
+  });
+
   it("leaves a page a follow-up has already taken", async () => {
     claimBrowserRunBrowser.mockResolvedValueOnce(false);
     const { settleBrowserRun } =
@@ -1592,6 +1607,8 @@ describe("settling a browser run", () => {
       row.workspaceId,
       expect.objectContaining({ domain: "mos.ru" })
     );
+    // A browser VM behind the page stays up for the code.
+    expect(keepBrowserVmForPersonStep).toHaveBeenCalledExactlyOnceWith(runId);
     // The Госуслуги sign-in behind mos.ru asked for a code: whatever was
     // kept there no longer lets the errand in.
     expect(recordBrowserSignOut).toHaveBeenCalledExactlyOnceWith(

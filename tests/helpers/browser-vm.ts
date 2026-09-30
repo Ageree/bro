@@ -17,6 +17,8 @@ export const browserVmTestEnvironment = {
 /** Every setting of the backend a test may stub, cleared between tests. */
 const browserVmSettings = [
   "BROWSER_BACKEND",
+  "BROWSER_VM_IDLE_BACKGROUND_MINUTES",
+  "BROWSER_VM_IDLE_CODE_MINUTES",
   "BROWSER_VM_IDLE_MINUTES",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_LLM_BASE_URL",

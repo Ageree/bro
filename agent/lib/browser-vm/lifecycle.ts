@@ -3,7 +3,10 @@ import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
-import { listWorkspacesHoldingBrowsers } from "@db/services/browser-runs";
+import {
+  listWorkspacesHoldingBrowsers,
+  workspaceHasPendingBrowserErrand,
+} from "@db/services/browser-runs";
 import {
   claimBrowserVmLease,
   clearBrowserVmProfileReset,
@@ -15,7 +18,6 @@ import {
   releaseBrowserVmLease,
   updateBrowserVm,
 } from "@db/services/browser-vms";
-import { env } from "@shared/environment";
 import {
   CloudRuError,
   CloudRuUnsentError,
@@ -27,6 +29,7 @@ import {
   readCloudRuVm,
   setCloudRuVmPower,
 } from "./cloudru";
+import { browserVmIdleStopDue, browserVmUnusedBefore } from "./idle";
 import { browserVmProxy, browserVmProxySession } from "./proxy";
 import { browserVmCloudInit } from "./token";
 import {
@@ -373,7 +376,7 @@ export async function prepareBrowserVmSession(
 export async function reconcileBrowserVms(now = new Date()) {
   const rows = await listBrowserVmsToReconcile(
     now,
-    idleSince(now),
+    browserVmUnusedBefore(now),
     reconcileLimit
   );
   await Promise.all(
@@ -416,11 +419,6 @@ export async function deleteBrowserVm(workspaceId: string, now = new Date()) {
 
 function starting(retryAfterMs: number) {
   return { kind: "starting" as const, retryAfterMs };
-}
-
-/** The moment before which an unused VM counts as idle. */
-function idleSince(now: Date) {
-  return new Date(now.getTime() - env.BROWSER_VM_IDLE_MINUTES * 60_000);
 }
 
 function overdue(vm: BrowserVm, now: Date, afterMs: number) {
@@ -776,7 +774,7 @@ async function wipeProfile(vm: BrowserVm, now: Date) {
 }
 
 /**
- * Check on a ready VM that went unused for the idle window or has a profile
+ * Check on a ready VM whose idle window may be over or that has a profile
  * to wipe, and stop it when idle. A worker that misses a health check keeps
  * its VM; after a few in a row the VM goes back to `starting`, where the
  * watchdog reboots it and then hands it to the owner.
@@ -809,28 +807,26 @@ async function tendReadyVm(vm: BrowserVm, now: Date) {
 }
 
 /**
- * Stop a VM nobody used for the idle window: no errand read or started a run
- * on it, no run of it is open, and no errand's page is kept in its browser.
- * Chrome is stopped first so it writes its cookies to the profile, and the
- * state is written before the power goes off: an errand that touched the VM
- * in between is seen and keeps it up.
+ * Stop a VM whose idle window is over (`idle.ts`: the person's, or the short
+ * one of an errand nobody waits for or a code wait): no run of it is open, no
+ * errand's page is kept in its browser, and no errand is queued for it,
+ * parked for a retry, or owed its report. Chrome is stopped first so it
+ * writes its cookies to the profile, and the state is written before the
+ * power goes off: an errand that touched the VM or moved its window in
+ * between is seen and keeps it up.
  */
 async function stopIfIdle(vm: BrowserVm, now: Date) {
   const { vmId, workspaceId } = vm;
   if (vmId === null) return;
-  if (
-    vm.lastUsedAt !== null &&
-    vm.lastUsedAt.getTime() > idleSince(now).getTime()
-  ) {
-    return;
-  }
+  if (!browserVmIdleStopDue(vm, now)) return;
   if (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs)) {
     return;
   }
   const holding = await listWorkspacesHoldingBrowsers([workspaceId], now);
   if (holding.length > 0) return;
+  if (await workspaceHasPendingBrowserErrand(workspaceId, now)) return;
   const stopping = await writeHeld(vm, { state: "stopping" }, now);
-  if (stopping.lastUsedAt?.getTime() !== vm.lastUsedAt?.getTime()) {
+  if (!browserVmIdleStopDue(stopping, now)) {
     await writeHeld(vm, { state: "ready" }, now);
     return;
   }
