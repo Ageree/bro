@@ -77,6 +77,9 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
   песочницы только в файл: восстановленная gVisor-песочница держит их, и чтение
   пайпа ждёт вечно.
 - Имя хоста в песочнице всегда `bro-sandbox`: `SingletonLock` Chrome помнит имя.
+- Caddy снимает `/g/<id>` и передаёт worker `X-Forwarded-Prefix: /g/<id>`:
+  адреса сокетов CDP в `/v1/cdp/<токен>/json` worker строит с ним (другой вид
+  заголовка worker не берёт).
 - Своя cgroup (`/bro-sandboxes/<id>`, лимит памяти — `memoryMb` запроса или
   `memory_mb` конфига, 3 ГБ; до 4096 процессов) и `KillMode=process` у
   `bro-hostd`: перезапуск `hostd` песочниц не гасит. Страницы tmpfs оверлея
@@ -207,7 +210,9 @@ worker напрямую) — только в `network.py`. netns строятс�
 `ubuntu-22.04` и cloud-init из `boot.py cloud-init`: `/etc/bro/host.json`,
 `/etc/bro/boot.json` (среда, версия `runsc` для gVisor, зеркало apt, URL и
 SHA-256 бандла и корня песочницы) и `bro-host-boot`, который скачивает бандл,
-сверяет SHA-256 и запускает `provision.sh`.
+сверяет SHA-256 и запускает `provision.sh`. Бро пишет тот же документ байт в
+байт (`browserHostCloudInit` в `agent/lib/browser-pool/hosts.ts`; тест Бро
+сверяет его с выводом `boot.py cloud-init`): меняйте оба разом.
 
 С Cloud.ru GitHub, PyPI и репозиторий Caddy молчат, `archive.ubuntu.com` не
 отвечает (30.09), поэтому хост ходит только на зеркало apt (`aptMirror`, по

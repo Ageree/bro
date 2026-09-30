@@ -42,6 +42,11 @@ export interface UsageCostUnits {
   readonly flavor?: string;
   /** A VM stretch shared equally between this many runs (1: one or none). */
   readonly sharedBy?: number;
+  /**
+   * The share of a pool host's hourly price a sandbox's stretch is charged
+   * at: its memory over what the host gives its sandboxes.
+   */
+  readonly hostShare?: number;
   /** No price was known: zero roubles here is not a free step. */
   readonly unpriced?: boolean;
 }

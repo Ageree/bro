@@ -155,6 +155,45 @@ describe("Cloud.ru VMs", () => {
     ]);
   });
 
+  it("creates a pool host from the stock image, without the sealed one", async () => {
+    const cloudRu = await loadCloudRu({
+      BROWSER_HOST_FLAVOR: "gen-8-32",
+      CLOUDRU_BROWSER_IMAGE: "",
+      CLOUDRU_PROJECT_ID: projectId,
+    });
+    const calls = stubCloudRu(() =>
+      Response.json([{ id: vmId, name: "bro-host-1", state: "creating" }], {
+        status: 201,
+      })
+    );
+
+    expect(
+      await cloudRu.createCloudRuHostVm({
+        cloudInit: "#cloud-config\n",
+        name: "bro-host-1",
+      })
+    ).toEqual({ id: vmId, image: "ubuntu-22.04", name: "bro-host-1" });
+    expect(JSON.parse(calls[1]?.body ?? "")).toEqual([
+      {
+        availability_zone_name: "ru.AZ-3",
+        cloud_init: Buffer.from("#cloud-config\n").toString("base64"),
+        disks: [{ disk_type_name: "SSD", name: "bro-host-1-boot", size: 40 }],
+        flavor_name: "gen-8-32",
+        image_name: "ubuntu-22.04",
+        interfaces: [
+          {
+            new_external_ip: true,
+            security_group_names: ["bro-browser"],
+            subnet_name: "Default_ru.AZ-3",
+            type: "regular",
+          },
+        ],
+        name: "bro-host-1",
+        project_id: projectId,
+      },
+    ]);
+  });
+
   it("reuses the IAM token and the project it found", async () => {
     const cloudRu = await loadCloudRu();
     const calls = stubCloudRu(

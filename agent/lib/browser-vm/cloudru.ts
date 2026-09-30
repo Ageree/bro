@@ -11,6 +11,14 @@ const iamTokenUrl = "https://iam.api.cloud.ru/api/v1/auth/token";
 const organizationApi = "https://organization.api.cloud.ru/v1";
 const computeApi = "https://compute.api.cloud.ru/api";
 
+/** Pool hosts boot the stock image: the project keeps at most two of its own. */
+const hostImage = "ubuntu-22.04";
+/**
+ * A pool host's disk: the sandbox root, the staged tar and zstd of two parks
+ * at once, and the profiles of the sandboxes it holds.
+ */
+const hostDiskGb = 40;
+
 /** Every call is bounded: the poller's tick must not wait on one forever. */
 const requestTimeoutMs = 30_000;
 /** How long an IAM token is reused, well inside the hour it lives. */
@@ -142,6 +150,41 @@ export async function createCloudRuVm(input: {
   if (image === undefined) {
     throw new CloudRuUnsentError("CLOUDRU_BROWSER_IMAGE is not configured.");
   }
+  return createVm({
+    ...input,
+    diskGb: env.CLOUDRU_BROWSER_DISK_GB,
+    flavor: env.CLOUDRU_BROWSER_FLAVOR,
+    image,
+  });
+}
+
+/**
+ * Create a host of the browser pool: the stock Ubuntu image, which the
+ * cloud-init sets up (`browser-vm/host/boot.py`), on BROWSER_HOST_FLAVOR,
+ * with a public address and the same security group, subnet and zone as
+ * the browser VMs. Throws `CloudRuUnsentError` when the create never left.
+ */
+export async function createCloudRuHostVm(input: {
+  /** The user data, as YAML: the API wants it base64-encoded. */
+  readonly cloudInit: string;
+  readonly name: string;
+}) {
+  return createVm({
+    ...input,
+    diskGb: hostDiskGb,
+    flavor: env.BROWSER_HOST_FLAVOR,
+    image: hostImage,
+  });
+}
+
+async function createVm(input: {
+  readonly cloudInit: string;
+  readonly diskGb: number;
+  readonly flavor: string;
+  readonly image: string;
+  readonly name: string;
+}) {
+  const { image } = input;
   const projectId = await beforeSending(cloudRuProjectId);
   // The API refuses any field it does not know (422 `extra_forbidden`).
   const body = JSON.stringify([
@@ -152,10 +195,10 @@ export async function createCloudRuVm(input: {
         {
           disk_type_name: "SSD",
           name: `${input.name}-boot`,
-          size: env.CLOUDRU_BROWSER_DISK_GB,
+          size: input.diskGb,
         },
       ],
-      flavor_name: env.CLOUDRU_BROWSER_FLAVOR,
+      flavor_name: input.flavor,
       image_name: image,
       interfaces: [
         {

@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
+import {
+  browserPoolConfigured,
+  browserVmConfigured,
+} from "@agent/lib/browser-vm/backend";
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import {
   cancelBrowserVmRun,
@@ -243,9 +246,16 @@ export function browserUseOutOfCredits(
   return error instanceof BrowserUseError && error.status === 402;
 }
 
-/** Whether browser errands can run at all, on Browser Use or on a VM. */
+/**
+ * Whether browser errands can run at all, on Browser Use, on a VM or in a
+ * sandbox of the pool.
+ */
 export function browserUseConfigured() {
-  return browserUseCloudConfigured() || browserVmConfigured();
+  return (
+    browserUseCloudConfigured() ||
+    browserVmConfigured() ||
+    browserPoolConfigured()
+  );
 }
 
 /**

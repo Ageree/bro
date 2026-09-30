@@ -25,7 +25,8 @@
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
 - Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров в
-  песочницах gVisor со снимками на Cloud.ru — `docs/browser-pool.md`.
+  песочницах на общих хостах Cloud.ru (`runc`, gVisor — запасной) —
+  `docs/browser-pool.md`.
 
 ## Процесс
 
@@ -317,6 +318,29 @@
   `browser-vm/host/seccomp.json`. `kernel.unprivileged_userns_clone` у ядра
   Ubuntu нет, `sysctl -e` молча его пропускает. Запуски и память агента
   worker парковку `runc` не переживают: в наборе только профиль.
+- Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
+  хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
+  (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`
+  (префикс — `BROWSER_HOST_NAME_PREFIX`): первичный ключ `browser_hosts` не
+  даёт создать лишний. Cloud-init хоста в TS байт в байт как
+  `boot.py cloud-init`: тест `hosts.test.ts` запускает `python3 boot.py` и
+  сравнивает весь документ — правка `boot.py` без правки TS валит `pnpm check`.
+  Под `runc` набор без снимка (`format: null`) поднимается как `profile`.
+  Сторож пула не ждёт `browserPoolConfigured`: хосты стоят денег, пока не
+  удалены, и убираются, пока есть хоть один. Набор отбрасывается только при
+  вине самого набора (`setFaultPattern` в `sandbox.ts`): 502 Caddy или runsc
+  раньше стирали входы человека.
+- Песочница пула — та же запись `browser_vms`: `state` зеркалит
+  `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
+  `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней
+  (`inBrowserPool`). Запись с `sandbox_state`, но без `host_id` worker не зовёт:
+  адрес удалённого хоста уже чужой (`origin` в `worker.ts`).
+- Presigned S3 Cloud.ru (PUT, GET, листинг, DELETE) работают из облачной
+  сессии; `pnpm build:eve` без заглушек `DATABASE_URL`/`BETTER_AUTH_*` падает
+  на «Invalid environment variables», как `pnpm build`.
+- knip не видит использование модуля в тесте, если его динамический `import()`
+  разобран из `Promise.all([...])`: экспорт, нужный только тестам, импортируйте
+  отдельным `await import(...)`.
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и

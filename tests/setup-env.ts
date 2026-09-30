@@ -22,6 +22,12 @@ const testEnvironment = {
 // for a Cloud.ru key and a real VM, and agent sessions do carry one.
 const unsetEnvironment = [
   "BROWSER_BACKEND",
+  "BROWSER_HOST_BUNDLE",
+  "BROWSER_HOST_RUNSC_RELEASE",
+  "BROWSER_POOL_WORKSPACES",
+  "BROWSER_SANDBOX_ROOTFS",
+  "BROWSER_STATE_BUCKET",
+  "BROWSER_STATE_KEY",
   "BROWSER_USE_API_KEY",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_PROXY",
@@ -31,6 +37,7 @@ const unsetEnvironment = [
   "CLOUDRU_KEY_ID",
   "CLOUDRU_KEY_SECRET",
   "CLOUDRU_PROJECT_ID",
+  "CLOUDRU_S3_TENANT_ID",
   "OPENROUTER_API_KEY",
   "OPENROUTER_CREDITS_ALERT_USD",
   "OPENROUTER_IMAGE_MODEL",

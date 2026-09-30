@@ -10,6 +10,7 @@ import {
   parkQueuedBrowserRun,
   readBrowserRun,
 } from "@db/services/browser-runs";
+import { listBrowserHosts } from "@db/services/browser-hosts";
 import { readBrowserVm } from "@db/services/browser-vms";
 import {
   BrowserUseError,
@@ -195,9 +196,11 @@ async function browserVmWait(workspaceId: string, ahead: number) {
     };
   }
   const firstStart =
-    (vm?.vmId ?? null) === null ||
-    vm?.state === "creating" ||
-    vm?.state === "failed";
+    vm?.sandboxState === undefined || vm.sandboxState === null
+      ? (vm?.vmId ?? null) === null ||
+        vm?.state === "creating" ||
+        vm?.state === "failed"
+      : await sandboxNeedsHost(vm.sandboxState);
   const wait = firstStart ? "up to about six minutes" : "about a minute";
   return {
     minutes: firstStart ? 6 : 1,
@@ -209,6 +212,17 @@ async function browserVmWait(workspaceId: string, ahead: number) {
       queuedErrandRules,
     ].join(" "),
   };
+}
+
+/**
+ * Whether a pool sandbox's start may wait for a new host (up to about six
+ * minutes): one with no set to come back from while no host is ready. A
+ * parked or cold one, or one already on its way, is up in about a minute.
+ */
+async function sandboxNeedsHost(state: string) {
+  if (state !== "absent" && state !== "failed") return false;
+  const hosts = await listBrowserHosts();
+  return !hosts.some((host) => host.state === "ready");
 }
 
 /** The model-facing note for `status` on an errand still in the queue. */

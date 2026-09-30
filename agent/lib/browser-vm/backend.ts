@@ -20,11 +20,65 @@ export function browserVmConfigured() {
 }
 
 /**
- * Whether a workspace's errands run on its own Cloud.ru VM rather than on
- * Browser Use Cloud: every workspace once BROWSER_BACKEND is `cloudru`, and
- * before that the pilot's, named in BROWSER_VM_WORKSPACES by workspace id or
- * by the owner's email. Read afresh on every call, so a change to the list
- * takes effect with the next errand.
+ * Whether this deployment can run browsers as sandboxes of the pool
+ * (docs/browser-pool.md): the Cloud.ru key for the hosts and, with the
+ * tenant, for Object Storage; the bucket and the key the sets are sealed
+ * with; the host code, its gVisor release and the sandbox root; and the VM
+ * backend's own signing key, proxy and model key, since a sandbox runs the
+ * same worker. The VM image is not needed: hosts boot stock Ubuntu.
+ */
+export function browserPoolConfigured() {
+  return (
+    browserStateConfigured() &&
+    env.BROWSER_HOST_BUNDLE !== undefined &&
+    env.BROWSER_HOST_RUNSC_RELEASE !== undefined &&
+    env.BROWSER_SANDBOX_ROOTFS !== undefined &&
+    env.BROWSER_VM_SIGNING_KEY !== undefined &&
+    env.BROWSER_VM_PROXY !== undefined &&
+    env.BROWSER_VM_LLM_API_KEY !== undefined
+  );
+}
+
+/**
+ * Whether sandboxes can be parked into sets and restored from them: the
+ * Cloud.ru key with its Object Storage tenant, the bucket, and the key the
+ * sets are sealed with. Less than `browserPoolConfigured`, which new
+ * sandboxes need: the pool's hosts are looked after, and their sandboxes
+ * parked, with only this and the host token key (`reconcileBrowserPool`).
+ */
+export function browserStateConfigured() {
+  return (
+    env.CLOUDRU_KEY_ID !== undefined &&
+    env.CLOUDRU_KEY_SECRET !== undefined &&
+    env.CLOUDRU_S3_TENANT_ID !== undefined &&
+    env.BROWSER_STATE_BUCKET !== undefined &&
+    env.BROWSER_STATE_KEY !== undefined
+  );
+}
+
+/**
+ * Whether a workspace's browser is a sandbox of the pool: every workspace
+ * once BROWSER_BACKEND is `pool`, and before that the pilot's, named in
+ * BROWSER_POOL_WORKSPACES as in BROWSER_VM_WORKSPACES. Without the pool's
+ * settings nobody's is, and nothing is looked up.
+ */
+export async function usesBrowserPool(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  if (!browserPoolConfigured()) return false;
+  if (env.BROWSER_BACKEND === "pool") return true;
+  return listed(env.BROWSER_POOL_WORKSPACES, scope);
+}
+
+/**
+ * Whether a workspace's errands run on its own browser rather than on
+ * Browser Use Cloud. A pool workspace's do (its sandbox runs the same worker
+ * with the same ids and tokens); otherwise every workspace's once
+ * BROWSER_BACKEND is `cloudru`, and before that the pilot's, named in
+ * BROWSER_VM_WORKSPACES by workspace id or by the owner's email, on its own
+ * Cloud.ru VM. Read afresh on every call, so a change to a list takes effect
+ * with the next errand.
  *
  * `userId` spares the membership lookup when the caller has the scope; the
  * workspace is personal, so its user is its owner.
@@ -33,11 +87,20 @@ export async function usesBrowserVm(scope: {
   readonly userId?: string;
   readonly workspaceId: string;
 }) {
+  if (await usesBrowserPool(scope)) return true;
   if (!browserVmConfigured()) return false;
   if (env.BROWSER_BACKEND === "cloudru") return true;
-  const listed = env.BROWSER_VM_WORKSPACES ?? [];
-  if (listed.includes(scope.workspaceId)) return true;
-  const emails = listed
+  return listed(env.BROWSER_VM_WORKSPACES, scope);
+}
+
+/** Whether a pilot list names the workspace by its id or its owner's email. */
+async function listed(
+  entries: readonly string[] | undefined,
+  scope: { readonly userId?: string; readonly workspaceId: string }
+) {
+  const list = entries ?? [];
+  if (list.includes(scope.workspaceId)) return true;
+  const emails = list
     .filter((entry) => entry.includes("@"))
     .map((entry) => entry.toLowerCase());
   if (emails.length === 0) return false;

@@ -156,11 +156,127 @@ export const env = createEnv({
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
-    // Where a browser errand runs when its workspace is not in the pilot list
-    // below: Browser Use Cloud, or the workspace's own Cloud.ru VM
-    // (`agent/lib/browser-vm/backend.ts`). The VM backend also needs every
-    // CLOUDRU_* and BROWSER_VM_* value it lacks a default for.
-    BROWSER_BACKEND: z.enum(["browser-use", "cloudru"]).default("browser-use"),
+    // Where a browser errand runs when its workspace is not in a pilot list
+    // below: Browser Use Cloud, the workspace's own Cloud.ru VM, or a gVisor
+    // sandbox on a shared Cloud.ru host (`pool`, docs/browser-pool.md; see
+    // `agent/lib/browser-vm/backend.ts`). The VM backend also needs every
+    // CLOUDRU_* and BROWSER_VM_* value it lacks a default for; the pool needs
+    // those of the VM backend but the image, and the BROWSER_STATE_*,
+    // BROWSER_HOST_* and BROWSER_SANDBOX_ROOTFS values below.
+    BROWSER_BACKEND: z
+      .enum(["browser-use", "cloudru", "pool"])
+      .default("browser-use"),
+    // Hosts of the browser pool: Cloud.ru VMs from the stock Ubuntu image that
+    // cloud-init sets up (`browser-vm/host/boot.py`). A host bills its flavor
+    // by the hour while it lives, so one with no live sandbox for the idle
+    // minutes is deleted (a stopped VM keeps its quota). At most
+    // BROWSER_HOST_MAX live at once: the organization's quota is 8 vCPU and 2
+    // public addresses. The bundle is the host code (`boot.py bundle`) in
+    // BROWSER_STATE_BUCKET, as `<object key>:<sha256 of the bundle>`.
+    BROWSER_HOST_BUNDLE: z
+      .string()
+      .trim()
+      .transform((value, context) => {
+        const groups = /^(?<key>\S+):(?<sha256>[\da-f]{64})$/u.exec(
+          value
+        )?.groups;
+        if (groups?.key === undefined || groups.sha256 === undefined) {
+          context.addIssue({
+            code: "custom",
+            message:
+              "BROWSER_HOST_BUNDLE must be <object key>:<sha256 of the bundle>",
+          });
+          return z.NEVER;
+        }
+        return { key: groups.key, sha256: groups.sha256 };
+      })
+      .optional(),
+    BROWSER_HOST_FLAVOR: trimmedValue.default("gen-4-16"),
+    BROWSER_HOST_IDLE_MINUTES: z.coerce
+      .number()
+      .int("BROWSER_HOST_IDLE_MINUTES must be a whole number of minutes")
+      .min(5, "BROWSER_HOST_IDLE_MINUTES must be at least 5")
+      .max(1_440, "BROWSER_HOST_IDLE_MINUTES must be at most 1440")
+      .default(60),
+    BROWSER_HOST_MAX: z.coerce
+      .number()
+      .int("BROWSER_HOST_MAX must be a whole number")
+      .min(1, "BROWSER_HOST_MAX must be at least 1")
+      .max(16, "BROWSER_HOST_MAX must be at most 16")
+      .default(1),
+    // The dated gVisor release a host installs (`runscRelease` of boot.py): a
+    // snapshot restores only under the runsc that made it, so it is pinned.
+    BROWSER_HOST_RUNSC_RELEASE: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^\d{8}(?:\.\d+)?$/u.test(value),
+        "BROWSER_HOST_RUNSC_RELEASE must be a dated gVisor release such as 20260914"
+      )
+      .optional(),
+    // Workspace ids, or the emails of their owners, whose browser runs in a
+    // sandbox of the pool whatever BROWSER_BACKEND says. They count as VM
+    // workspaces everywhere else in Bro.
+    BROWSER_POOL_WORKSPACES: z
+      .string()
+      .transform((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      )
+      .optional(),
+    // The memory limit of one sandbox. A parked set is about this size, and a
+    // snapshot restores only into a sandbox given at least as much.
+    BROWSER_SANDBOX_MEMORY_MB: z.coerce
+      .number()
+      .int("BROWSER_SANDBOX_MEMORY_MB must be a whole number of megabytes")
+      .min(1_024, "BROWSER_SANDBOX_MEMORY_MB must be at least 1024")
+      .max(16_384, "BROWSER_SANDBOX_MEMORY_MB must be at most 16384")
+      .default(3_072),
+    // The sandbox root file system every host unpacks, as
+    // `<version>:<object key>:<sha256 of the tarball>`: the version names the
+    // directory on the host and goes into every snapshot's format; the
+    // tarball lies in BROWSER_STATE_BUCKET.
+    BROWSER_SANDBOX_ROOTFS: z
+      .string()
+      .trim()
+      .transform((value, context) => {
+        const groups =
+          /^(?<version>[A-Za-z\d][\w.-]{0,63}):(?<key>\S+):(?<sha256>[\da-f]{64})$/u.exec(
+            value
+          )?.groups;
+        if (
+          groups?.version === undefined ||
+          groups.key === undefined ||
+          groups.sha256 === undefined
+        ) {
+          context.addIssue({
+            code: "custom",
+            message:
+              "BROWSER_SANDBOX_ROOTFS must be <version>:<object key>:<sha256 of the tarball>",
+          });
+          return z.NEVER;
+        }
+        return {
+          key: groups.key,
+          sha256: groups.sha256,
+          version: groups.version,
+        };
+      })
+      .optional(),
+    // Object Storage of the pool: parked sandboxes, the host bundle and the
+    // sandbox root file system. The data key of a workspace's sets is derived
+    // from BROWSER_STATE_KEY and the workspace id and never lies in S3.
+    BROWSER_STATE_BUCKET: trimmedValue.optional(),
+    BROWSER_STATE_KEY: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^(?:[\da-f]{2}){32,}$/iu.test(value),
+        "BROWSER_STATE_KEY must be at least 32 bytes written in hex"
+      )
+      .optional(),
     BROWSER_USE_API_KEY: browserUseApiKeySchema.optional(),
     BROWSER_USE_BASE_URL: requiredValue
       .refine(
@@ -300,6 +416,9 @@ export const env = createEnv({
     CLOUDRU_BROWSER_IMAGE: trimmedValue.optional(),
     CLOUDRU_KEY_ID: pastedKeySchema.optional(),
     CLOUDRU_KEY_SECRET: pastedKeySchema.optional(),
+    // The Object Storage tenant of the pool: the S3 access key is
+    // `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`, its secret CLOUDRU_KEY_SECRET.
+    CLOUDRU_S3_TENANT_ID: pastedKeySchema.optional(),
     CLOUDRU_PROJECT_ID: z
       .string()
       .trim()

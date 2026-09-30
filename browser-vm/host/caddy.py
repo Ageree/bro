@@ -8,7 +8,7 @@ def caddyfile(*, domain, admin_socket, hostd_port, routes):
     lines = ["{", f"\tadmin unix/{admin_socket}", "}", f"{domain} {{",
              "\thandle_path /h/* {", f"\t\treverse_proxy 127.0.0.1:{hostd_port}", "\t}"]
     for sandbox_id, address, port in sorted(routes):
-        # The worker writes absolute CDP socket URLs: it learns the stripped prefix from this header.
+        # The worker builds its CDP socket URLs with the prefix it was reached under.
         lines += [f"\thandle_path /g/{sandbox_id}/* {{", f"\t\treverse_proxy {address}:{port} {{",
                   f"\t\t\theader_up X-Forwarded-Prefix /g/{sandbox_id}", "\t\t}", "\t}"]
     lines += ["\thandle {", "\t\trespond 404", "\t}", "}", ""]
