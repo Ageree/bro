@@ -10,10 +10,13 @@
 Среда — `runtime` в `/etc/bro/hostd.json` (из `boot.json`):
 
 - **`runc`** (по умолчанию, решение этапа 1): обычный контейнер. Парковка —
-  мягкий стоп Chrome (cookie и localStorage ложатся в профиль), удаление
-  контейнера и архив одного профиля; восстановление — свежий старт с этим
-  профилем (`path: cold`). Открытая страница парковку не переживает: песочницу,
-  ждущую код, Бро держит живой до срока кода.
+  мягкий стоп песочницы (SIGTERM init: cookie и localStorage ложатся в
+  профиль), удаление контейнера и архив одного профиля; восстановление — свежий
+  старт с этим профилем (`path: cold`). Открытая страница парковку не
+  переживает: песочницу, ждущую код, Бро держит живой до срока кода. Не
+  переживает её и всё, что worker хранит вне профиля: запуски
+  (`/var/lib/bro/runs`), сессии с памятью агента (`agentState`), вкладки —
+  они в оверлее на tmpfs; worker после подъёма пуст, как после перезапуска.
 - **`runsc`** (gVisor, запасной путь): заморозка со страницей
   (`runsc checkpoint`) и восстановление со снимком, откат на профиль, если
   снимок не подходит. Логика снимков и `fits` остаётся рабочей и под тестами.
@@ -28,6 +31,7 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 | `network.py`       | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль          |
 | `sets.py`          | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL              |
 | `caddy.py`         | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
+| `seccomp.json`     | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены           |
 | `provision.sh`     | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
 | `boot.py`          | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                       |
 | `vendor.json`      | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                     |
@@ -49,16 +53,24 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
   (`readonly: false`). Свои pid-, ipc-, uts-, mount-, cgroup- и сетевой
   namespace; `maskedPaths`/`readonlyPaths` как у `runc spec`; устройства — только
   стандартные; `noNewPrivileges: false` и `CAP_SETUID`/`CAP_SETGID` (sudo
-  worker), без `SYS_ADMIN`, `MKNOD`, `NET_RAW`; `oomScoreAdj` 200 (ниже оценок рендереров Chrome). Seccomp — нет,
-  если не задан `seccomp_profile`: своего профиля у `runc` нет, а профиль Docker
-  по умолчанию запрещает `unshare`/`clone` с новым user namespace без
-  `SYS_ADMIN`, на чём стоит собственная песочница Chrome (она работает без
-  `--no-sandbox`; хосту нужен `kernel.unprivileged_userns_clone = 1`).
+  worker), без `SYS_ADMIN`, `MKNOD`, `NET_RAW`; `oomScoreAdj` 200 (ниже оценок
+  рендереров Chrome). Seccomp — `seccomp.json` (`seccomp_profile`; `""` — без
+  него, только для опытов стенда): разрешено всё, кроме путей побега (ключи
+  ядра, `bpf`, `userfaultfd`, `perf_event_open`, `mount` и новый API
+  монтирования, `pivot_root`, `setns`, `io_uring`, модули, `kexec`, сокеты
+  `AF_PACKET` и `NETLINK_NETFILTER`), только x86_64. Профиль Docker не подходит:
+  он запрещает `unshare`/`clone` с новым user namespace, на чём стоит
+  собственная песочница Chrome (она работает без `--no-sandbox`; Ubuntu 22.04
+  разрешает такие namespace и так). Переназначения uid нет: root контейнера —
+  root хоста, `bro` у всех песочниц — один uid хоста (inotify на uid поднят в
+  `provision.sh`). AppArmor нет.
 - `runsc`: `--overlay2=root:memory --platform=systrap`, `root.path` — сам
   каталог корня, `readonly: false` (с `true` gVisor монтирует корень только на
   чтение, init падает на `/run`).
 - Каталог хоста `/srv/bro/sandboxes/<id>/`: `profile/` (rw в
-  `/var/lib/bro/profile`, владелец — `bro` из `/etc/passwd` корня),
+  `/var/lib/bro/profile`, владелец — `bro` из `/etc/passwd` корня; это
+  смонтированный `profile.img` — ext4 на `profile_mb`, 2 ГБ, разреженный,
+  `nodev,nosuid`: песочница не забьёт диск хоста),
   `worker.json` (ro в `/etc/bro/worker.json`, 0600, `{"environment", "key"}` из
   запроса, в логи не пишется), `resolv.conf` (публичные резолверы, не
   `127.0.0.53`), `bundle/config.json` (OCI), `runtime.log` — потоки среды и
@@ -73,8 +85,9 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
   остаётся до `DELETE`; живая, застрявшая в `starting`/`restoring`/`parking`, —
   `running`, если worker отвечает, иначе `failed`.
 - Сумма лимитов памяти песочниц не больше `MemTotal − reserve_mb` (или
-  `memory_limit_mb`): иначе `POST /v1/sandboxes` — 507. Квоты CPU нет, диск под
-  профилями не ограничен — его свободное место видно в `capacity`.
+  `memory_limit_mb`): иначе `POST /v1/sandboxes` — 507. CPU — `cpu.max` на
+  `cpus` (2) vCPU; квоты ввода-вывода нет; свободное место диска видно в
+  `capacity`.
   `runtime.log` раз в минуту урезается до новой половины, если перерос
   `log_max_bytes` (8 МБ).
 - Если среда не удалила контейнер или оверлей не размонтировался, `DELETE` и
@@ -86,7 +99,8 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 - Все пути и программы — в `Config` (`/etc/bro/hostd.json` переопределяет).
   `stand_host_ports` — **только для стенда**, в проде пусто: TCP-порты самого
   хоста, до которых песочницам можно достучаться (прокси-заглушка стенда
-  вместо резидентского); любой другой порт хоста отвергается.
+  вместо резидентского); любой другой порт хоста отвергается, а 22, 80, 443,
+  2019 и порт `hostd` конфиг не примет.
 
 ## API
 
@@ -106,7 +120,7 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 
 Поля запросов прежние: клиент Бро не различает среды. Ответ парковки под `runc`
 — `format: null`, в `parts` только `profile`, `timings`: `stopMs`,
-`chromeStop` (`systemctl` или `sigterm`), `packMs`, `uploadMs`, `totalMs`; под
+`chromeStop` (`sigterm` или `killed`), `packMs`, `uploadMs`, `totalMs`; под
 `runsc` — `format` снимка, части `profile` и `image`, `checkpointMs` вместо
 `stopMs`. `restore` под `runc` — всегда `path: cold` с `fallback` «runc keeps no
 memory snapshots»; набор gVisor на хосте `runc` поднимается с одним профилем
@@ -119,13 +133,17 @@ memory snapshots»; набор gVisor на хосте `runc` поднимает�
 `<префикс>/<своё поколение>/` и не перетирает чанки набора, из которого
 песочница поднялась. Одновременно паркуются не больше `parallel_parks` (2).
 
-**Парковка `runc`**: `runc exec <id> /usr/bin/systemctl stop bro-chrome` (заглушка
-`systemctl` просит init, тот шлёт Chrome SIGTERM и ждёт выхода); не вышло —
-SIGTERM init (`runc kill`), который так же гасит все юниты, и ожидание до
-`chrome_stop_timeout_s` (45 с). Chrome не остановился — 502, песочница работает
-дальше, в S3 ничего. Затем `runc delete`, tar профиля, zstd, шифрование,
-загрузка, манифест последним; не загрузилось — та же песочница стартует здесь
-заново в свежем netns (`restoredLocally`).
+**Парковка `runc`**: SIGTERM init (`runc kill`): тот гасит worker, Chrome
+(SIGTERM и до `TimeoutStopSec` 30 с) и Xvfb и выходит. Внутри песочницы `hostd`
+ничего не запускает: `runc exec` в контейнер, который могла захватить страница,
+— вход известных побегов `runc`. `chromeStop: killed` — профиль мог отстать:
+init убил Chrome по таймауту (строка «bro-chrome killed» в `runtime.log` после
+SIGTERM), песочница не вышла за `chrome_stop_timeout_s` (45 с, тогда SIGKILL) или
+её уже не было. Набор пишется и тогда: после SIGTERM песочница в `running` не
+возвращается. Затем `runc delete`, tar профиля, zstd, шифрование, загрузка,
+манифест последним; не загрузилось — та же песочница стартует здесь заново в
+свежем netns на том же оверлее (`restoredLocally`; замок Xvfb прошлого запуска
+init снимает сам).
 
 ## Набор в Object Storage
 
@@ -150,9 +168,12 @@ SIGTERM init (`runc kill`), который так же гасит все юни�
   (`runsc --version`, отпечаток флагов CPU, версия корня, `memoryMb` не больше
   нового) не совпал, в `/dev/shm` нет места, `runsc restore` отказал или worker
   не ответил — холодный старт с профилем (`path: cold`, `fallback` — причина).
-- Архивы распаковываются фильтром `data` tarfile: без устройств, владельцев и
-  путей наружу; ссылки наружу (`SingletonSocket` Chrome ведёт в `/tmp`)
-  пропускаются, профиль затем целиком отдаётся `bro`.
+- Профиль пишет песочница, а распаковывает root другого хоста: в набор идут
+  только обычные файлы и каталоги (второе имя жёсткой ссылки — копией), при
+  распаковке — то же, через фильтр `data` tarfile (без владельцев, setuid и
+  путей наружу); ссылки (`Singleton*` Chrome делает заново), FIFO и устройства
+  пропускаются, отказ фильтра — тоже, а не сбой набора. Профиль затем целиком
+  отдаётся `bro`.
 
 ## Сеть
 
@@ -164,8 +185,12 @@ SIGTERM init (`runc kill`), который так же гасит все юни�
 транзитному адресу. В корневом netns — одна таблица `inet bro` через `nft -f`
 (атомарно): песочница выходит только в интернет через uplink с masquerade;
 соседи, `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16` (metadata),
-`egress_blocked` конфига, порты самого хоста и IPv6 закрыты; `brt<n>` пропускает
-только адрес своего роутера. Закрытое **отвергается** (TCP reset, ICMP
+`egress_blocked` конфига (`provision.sh` вписывает туда публичный IP хоста:
+иначе — таймаут, Cloud.ru его не разворачивает), порты самого хоста и IPv6
+закрыты; `brt<n>` пропускает только адрес своего роутера. Таблицу `hostd`
+ставит заново и каждые `rules_every_s` (30 с): у Caddy, единственного процесса
+хоста снаружи, `CAP_NET_ADMIN` нет, но пропажу таблицы больше никто бы не
+заметил. Закрытое **отвергается** (TCP reset, ICMP
 admin-prohibited), а не роняется молча: молчащий адрес вешал browser-use на
 минуты. Молча роняются только подделанный адрес источника и IPv6.
 
@@ -250,12 +275,15 @@ BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
    `failed`, новая с тем же id и `DELETE` работают; `DELETE` не оставляет
    монтирований, netns, veth, cgroup и каталогов.
 
-Не проверено: профиль seccomp (`seccomp_profile`) с песочницей Chrome, `runsc`
-на хосте пула, поручения под нагрузкой соседей (этап 3).
+Не проверено на VM: Chrome под `seccomp.json` (в сессии профиль проверен на
+`runc` 1.3.4 без Chrome: запрещённое — `EPERM`, user namespace от `bro`
+создаётся), профиль на образе ext4, парковка через SIGTERM init (этап 1 мерил
+её в 0,5 с), `runsc` на хосте пула, поручения под нагрузкой соседей (этап 3). До
+прогона стенда с новым бандлом пул людям не включать.
 
 ## Тесты
 
 ```sh
 pip install aiohttp cryptography   # если их нет; системный cryptography Ubuntu бывает сломан — ставьте свой
-cd browser-vm/host && python -m unittest
+cd browser-vm/host && python -m unittest   # 3.10 (как на хосте) и новее; в CI — задача browser-vm
 ```

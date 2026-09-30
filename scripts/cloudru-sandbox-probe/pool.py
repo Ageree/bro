@@ -253,7 +253,7 @@ def cmd_worker(args):
 
 
 def cmd_session(args):
-    """The stand's proxy on the host (hostd's test-only `test_proxy_port`) as the residential one."""
+    """The stand's proxy on the host (hostd's stand-only `stand_host_ports`) as the residential one."""
     print(worker(args.name, args.sandbox, "POST", "/v1/session", {"proxy": {
         "host": args.proxy_host, "port": PROXY_PORT, "username": "probe", "password": "none"}}, timeout=90))
 

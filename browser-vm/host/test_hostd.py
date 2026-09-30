@@ -1,7 +1,7 @@
 """hostd tests: cd browser-vm/host && python -m unittest (needs aiohttp and cryptography; no root).
 
-runc, runsc, mount, umount, ip, nft, zstd and caddy are a fake runner (records argv, writes a fake
-checkpoint image, can refuse a restore or a graceful Chrome stop); Object Storage is an aiohttp server behind
+runc, runsc, mount, umount, mkfs.ext4, ip, nft, zstd and caddy are a fake runner (records argv, writes a
+fake checkpoint image, can refuse a restore or ignore SIGTERM, runs a test's hooks at SIGTERM and delete); Object Storage is an aiohttp server behind
 "presigned" URLs; the sandbox's worker is an aiohttp server the transit addresses reach (the transit pool is
 put on 127.0.0.0/16 for the tests). The sandbox and park tests run under both runtimes where the behaviour
 is the same (`RUNTIME`); the snapshot tests are gVisor's, the stopped-Chrome park is runc's.
@@ -14,7 +14,10 @@ import hmac
 import json
 import os
 import random
+import shutil
+import stat
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -55,16 +58,18 @@ RUNC_VERSION = "runc version 1.1.12-0ubuntu2~22.04.1"
 
 
 class FakeRunner:
-    """runc, runsc, mount, umount, ip, nft, zstd and caddy as the host would run them."""
+    """runc, runsc, mount, umount, mkfs.ext4, ip, nft, zstd and caddy as the host would run them."""
 
     def __init__(self):
         self.calls = []
         self.containers = {}
         self.fail_restore = False
         self.fail_checkpoint = False
-        self.fail_exec = False  # `systemctl stop bro-chrome` in the sandbox fails
-        self.ignore_term = False  # the init does not stop on SIGTERM either
-        self.chrome_stopped = []  # containers whose Chrome was stopped gracefully, and how
+        self.ignore_term = False  # the init does not stop on SIGTERM
+        self.fail_kill = False  # `runc kill` fails (the container is already gone)
+        self.signals = []  # (container, signal) of every `kill`
+        self.on_term = None  # a test's hook at SIGTERM: what the sandbox does as it stops (container)
+        self.on_delete = None  # a test's hook at `delete` (container)
         self.stuck = set()  # containers `delete` cannot remove
         self.mounted = set()
         self.host_rules, self.router_rules, self.caddyfiles = [], [], []
@@ -89,6 +94,9 @@ class FakeRunner:
         if tool == "mount":
             assert Path(argv[-1]).is_dir(), f"mount point {argv[-1]} missing"
             self.mounted.add(argv[-1])
+            return 0, ""
+        if tool == "mkfs.ext4":
+            assert Path(argv[-1]).stat().st_size > 0, "mkfs on an empty image"
             return 0, ""
         if tool == "umount":
             if argv[-1] not in self.mounted:
@@ -149,20 +157,23 @@ class FakeRunner:
             self.restored.append(hashlib.sha256((Path(option("image-path")) / "checkpoint.img").read_bytes()).hexdigest())
             self.containers[container] = "running"
         elif command == "exec":
-            assert tool == "runc"
-            if self.fail_exec or self.containers.get(container) != "running":
-                return 1, "exec failed"
-            assert words[2:] == ["/usr/bin/systemctl", "stop", "bro-chrome"], words
-            self.chrome_stopped.append((container, "systemctl"))
+            raise AssertionError("hostd never runs anything inside a sandbox")
         elif command == "kill":
-            if container not in self.containers:
+            self.signals.append((container, words[2]))
+            if container not in self.containers or self.fail_kill:
                 return 1, "container does not exist"
-            if not self.ignore_term:
-                self.chrome_stopped.append((container, words[2]))
+            if words[2] == "SIGTERM":
+                if self.on_term is not None:
+                    self.on_term(container)
+                if not self.ignore_term:
+                    self.containers[container] = "stopped"
+            else:
                 self.containers[container] = "stopped"
         elif command == "delete":
             if container in self.stuck:
                 return 124, f"{tool} timed out after 60 s"
+            if self.on_delete is not None:
+                self.on_delete(container)
             self.containers.pop(container, None)
         elif command == "state":
             if container not in self.containers:
@@ -213,7 +224,8 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
     RUNTIME = "runc"
 
     async def asyncSetUp(self):
-        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.tmp = Path(tempfile.mkdtemp())  # not enterContext: the host's Python is 3.10
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.storage = FakeStorage()
         self.s3 = TestServer(self.storage.app())
         await self.s3.start_server()
@@ -253,6 +265,7 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
         config = hostd.Config(**{
             "root": str(root), "shm": str(root / "shm"), "runtime": self.RUNTIME, "runsc": "/usr/bin/runsc",
             "runc": "/usr/sbin/runc", "mount": "/usr/bin/mount", "umount": "/usr/bin/umount",
+            "mkfs": "/usr/sbin/mkfs.ext4", "profile_mb": 64,
             "caddyfile": str(root / "Caddyfile"), "domain": "203-0-113-7.sslip.io", "transit_pool": "127.0.0.0/16",
             "worker_port": self.worker_port, "chunk_bytes": 64 * 1024, "parallel": 4, "start_timeout_s": 3,
             "restore_timeout_s": 3, **settings})
@@ -348,6 +361,57 @@ class EncryptionTest(unittest.TestCase):
             sets.verified(data, {**manifest, "parts": [{"name": "image"}]})
         with self.assertRaises(sets.SetError):
             sets.verified(bytes.fromhex("33" * 32), manifest)
+
+
+class ArchiveTest(unittest.TestCase):
+    """What root on a host extracts was written by a sandbox: nothing but files and directories under it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def crafted(self, members):
+        archive = self.tmp / "set.tar"
+        with tarfile.open(archive, "w") as tar:
+            for name, kind, value in members:
+                info = tarfile.TarInfo(name)
+                info.type = kind
+                if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                    info.linkname = value
+                    tar.addfile(info)
+                elif kind == tarfile.REGTYPE:
+                    info.size, info.mode = len(value), 0o4755
+                    tar.addfile(info, __import__("io").BytesIO(value))
+                else:
+                    tar.addfile(info)
+        return archive
+
+    def test_links_escapes_and_special_members_are_skipped_the_rest_comes_out(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        archive = self.crafted([
+            ("a", tarfile.SYMTYPE, str(outside)),  # an absolute link, then a file through it
+            ("a/owned", tarfile.REGTYPE, b"x"),
+            ("b", tarfile.SYMTYPE, "."),  # a chain of relative links
+            ("b/b/b/../../../outside/chain", tarfile.REGTYPE, b"x"),
+            ("../outside/dotdot", tarfile.REGTYPE, b"x"),
+            (str(outside / "absolute"), tarfile.REGTYPE, b"x"),
+            ("hard", tarfile.LNKTYPE, str(outside / "target")),
+            ("fifo", tarfile.FIFOTYPE, None),
+            ("dev", tarfile.CHRTYPE, None),
+            ("Default", tarfile.DIRTYPE, None),
+            ("Default/Cookies", tarfile.REGTYPE, MARKER),
+        ])
+        target = self.tmp / "profile"
+        hostd.unpack(archive, target)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual((target / "Default" / "Cookies").read_bytes(), MARKER)
+        self.assertFalse((target / "Default" / "Cookies").stat().st_mode & stat.S_ISUID)
+        # Absolute and `..` names are mapped under the target by the `data` filter; nothing is a link.
+        for path in target.rglob("*"):
+            self.assertFalse(path.is_symlink(), path)
+            self.assertTrue(path.resolve().is_relative_to(target.resolve()), path)
+        self.assertFalse((target / "hard").exists() or (target / "fifo").exists() or (target / "dev").exists())
 
 
 class NetworkTest(unittest.TestCase):
@@ -614,18 +678,22 @@ class ParkTest(HostTest):
         self.assertIn("chunk URLs", answer["error"])
         self.assertEqual(self.storage.objects, {})
 
-    async def test_links_out_of_the_profile_are_left_behind(self):
+    async def test_links_and_special_files_never_travel(self):
         host, _runner, client, _record = await self.started()
         profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
         (profile / "SingletonSocket").symlink_to("/tmp/.org.chromium.Chromium.x/SingletonSocket")
         (profile / "Escape").symlink_to("../../../../etc")
         (profile / "SingletonLock").symlink_to("bro-sandbox-42")
+        (profile / "Default" / "Hard").hardlink_to(profile / "Default" / "Cookies")
+        os.mkfifo(profile / "Default" / "Pipe")  # a sandbox's FIFO once made every later restore fail
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
         other, _runner, client = await self.host("b")
         status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
         self.assertEqual(status, 201, record)
         restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
-        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default", "SingletonLock"])
+        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default"])
+        self.assertEqual(sorted(p.name for p in (restored / "Default").iterdir()), ["Cookies", "Hard"])
+        self.assertFalse((restored / "Default" / "Hard").is_symlink())
         self.assertEqual(self.profile_on(other), MARKER)
 
     async def test_a_cold_set_fetches_the_profile_alone(self):
@@ -787,7 +855,9 @@ class GvisorSandboxTest(SandboxTest):
         (create, _log), = runner.runtime_calls("create")
         self.assertIn("--overlay2=root:memory", create)
         self.assertIn("--platform=systrap", create)
-        self.assertEqual(runner.argv("mount"), [])
+        home = Path(host.config.root) / "sandboxes" / "ws-abc"
+        self.assertEqual(runner.argv("mount"), [["/usr/bin/mount", "-o", "loop,nodev,nosuid",
+                                                 str(home / "profile.img"), str(home / "profile")]])
         self.assertNotIn({"type": "cgroup"}, bundle["linux"]["namespaces"])
 
 
@@ -799,7 +869,7 @@ class RuncSandboxTest(HostTest):
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
         home = Path(host.config.root) / "sandboxes" / "ws-abc"
         rootfs = Path(host.config.root) / "rootfs" / "v1"
-        tmpfs, overlay = runner.argv("mount")
+        _profile, tmpfs, overlay = runner.argv("mount")
         self.assertEqual(tmpfs, ["/usr/bin/mount", "-t", "tmpfs", "-o", "size=1500m,mode=0755", "tmpfs",
                                  str(home / "overlay")])
         self.assertEqual(overlay, ["/usr/bin/mount", "-t", "overlay", "overlay", "-o",
@@ -813,7 +883,9 @@ class RuncSandboxTest(HostTest):
         self.assertIn("/proc/sys", linux["readonlyPaths"])
         self.assertEqual(linux["resources"]["devices"], [{"allow": False, "access": "rwm"}])
         self.assertEqual(linux["cgroupsPath"], "/bro-sandboxes/ws-abc")
-        self.assertNotIn("seccomp", linux)  # Chrome's own sandbox needs its user namespace
+        # seccomp.json: everything but the escape routes; Chrome's own sandbox keeps its user namespace.
+        self.assertEqual(linux["seccomp"], json.loads((Path(hostd.__file__).parent / "seccomp.json").read_text()))
+        self.assertEqual(linux["resources"]["cpu"], {"quota": 200_000, "period": 100_000})
         capabilities = bundle["process"]["capabilities"]["bounding"]
         for missing in ("CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_NET_RAW"):
             self.assertNotIn(missing, capabilities)
@@ -824,11 +896,12 @@ class RuncSandboxTest(HostTest):
     async def test_delete_unmounts_the_root_before_the_host_dir_goes(self):
         host, runner, client, _record = await self.started()
         home = Path(host.config.root) / "sandboxes" / "ws-abc"
-        self.assertEqual(runner.mounted, {str(home / "overlay"), str(home / "root")})
+        self.assertEqual(runner.mounted, {str(home / "profile"), str(home / "overlay"), str(home / "root")})
         self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 200)
         self.assertEqual(runner.mounted, set())
         unmounted = [argv[-1] for argv in runner.argv("umount")]
         self.assertLess(unmounted.index(str(home / "root")), unmounted.index(str(home / "overlay")))
+        self.assertIn(str(home / "profile"), unmounted)
         self.assertFalse(home.exists())
 
     async def test_a_configured_seccomp_profile_goes_into_the_bundle(self):
@@ -839,6 +912,56 @@ class RuncSandboxTest(HostTest):
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
         bundle = json.loads((Path(host.config.root) / "sandboxes" / "ws-abc" / "bundle" / "config.json").read_text())
         self.assertEqual(bundle["linux"]["seccomp"], profile)
+
+    def test_the_shipped_seccomp_profile_refuses_the_escape_routes_and_keeps_user_namespaces(self):
+        profile = json.loads((Path(hostd.__file__).parent / "seccomp.json").read_text())
+        self.assertEqual((profile["defaultAction"], profile["architectures"]), ("SCMP_ACT_ALLOW", ["SCMP_ARCH_X86_64"]))
+        refused = {name for rule in profile["syscalls"] if not rule.get("args") for name in rule["names"]}
+        for name in ("keyctl", "add_key", "request_key", "bpf", "userfaultfd", "mount", "umount2", "fsopen",
+                     "open_tree", "move_mount", "pivot_root", "setns", "io_uring_setup", "init_module", "kexec_load",
+                     "open_by_handle_at", "perf_event_open"):
+            self.assertIn(name, refused)
+        for name in ("clone", "clone3", "unshare", "chroot", "seccomp", "prctl", "ptrace"):
+            self.assertNotIn(name, refused)  # Chrome's sandbox and crash handler
+        sockets = [rule["args"] for rule in profile["syscalls"] if rule["names"] == ["socket"]]
+        self.assertIn([{"index": 0, "value": 17, "op": "SCMP_CMP_EQ"}], sockets)  # AF_PACKET
+        self.assertIn([{"index": 0, "value": 16, "op": "SCMP_CMP_EQ"}, {"index": 2, "value": 12, "op": "SCMP_CMP_EQ"}],
+                      sockets)  # NETLINK_NETFILTER
+
+    async def test_no_seccomp_and_no_cpu_quota_only_when_configured_so(self):
+        host, _runner, client = await self.host(seccomp_profile="", cpus=0)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        bundle = json.loads((Path(host.config.root) / "sandboxes" / "ws-abc" / "bundle" / "config.json").read_text())
+        self.assertNotIn("seccomp", bundle["linux"])
+        self.assertNotIn("cpu", bundle["linux"]["resources"])
+
+    async def test_the_profile_lives_on_an_image_of_its_own_size(self):
+        host, runner, client = await self.host(profile_mb=512)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        home = Path(host.config.root) / "sandboxes" / "ws-abc"
+        self.assertEqual(runner.argv("mkfs.ext4"), [["/usr/sbin/mkfs.ext4", "-q", "-F", "-m", "0", "-E",
+                                                     "lazy_itable_init=1,nodiscard", str(home / "profile.img")]])
+        self.assertEqual((home / "profile.img").stat().st_size, 512 * 2**20)
+        self.assertLess((home / "profile.img").stat().st_blocks * 512, 2**20)  # sparse
+        self.assertEqual(runner.argv("mount")[0], ["/usr/bin/mount", "-o", "loop,nodev,nosuid",
+                                                   str(home / "profile.img"), str(home / "profile")])
+        plain, runner, client = await self.host("b", profile_mb=0)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        self.assertEqual(runner.argv("mkfs.ext4"), [])
+
+    async def test_the_host_table_is_written_again_on_its_own(self):
+        _host, runner, client = await self.host(rules_every_s=0.05)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        written = len(runner.host_rules)
+        await asyncio.sleep(0.3)
+        self.assertGreater(len(runner.host_rules), written)
+        self.assertIn('iifname "brt0" ip saddr != 127.0.0.2 drop', runner.host_rules[-1])  # with the live sandbox
+
+    def test_stand_ports_never_open_hostd_ssh_or_caddy(self):
+        for port in (22, 80, 443, 2019, 8090):
+            with self.subTest(port), self.assertRaises(ValueError):
+                hostd.Config(stand_host_ports=(port,))
+        self.assertEqual(hostd.Config(stand_host_ports=(3130,)).stand_host_ports, (3130,))
 
     async def test_memory_comes_from_the_config_when_the_request_names_none(self):
         host, _runner, client = await self.host(memory_mb=3072)
@@ -860,16 +983,21 @@ class StoppedParkTest(HostTest):
 
     async def test_park_stops_chrome_gracefully_and_uploads_the_profile_alone(self):
         host, runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        puts_at_delete = []
+        # What Chrome writes as it stops must be in the set: the profile is packed after the stop, and
+        # nothing is uploaded before the container is gone.
+        runner.on_term = lambda _c: (profile / "Default" / "Cookies-at-stop").write_bytes(b"flushed at exit")
+        runner.on_delete = lambda _c: puts_at_delete.append(len(self.storage.puts))
         status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
         self.assertEqual(status, 200, parked)
         self.assertEqual((parked["state"], parked["runtime"], parked["format"]), ("parked", "runc", None))
         self.assertEqual(set(parked["parts"]), {"profile"})
         self.assertEqual(set(parked["timings"]), {"stopMs", "chromeStop", "packMs", "uploadMs", "totalMs"})
-        self.assertEqual(parked["timings"]["chromeStop"], "systemctl")
-        self.assertEqual(runner.chrome_stopped, [("bro-ws-abc", "systemctl")])
-        # Chrome writes its cookies before the container goes, and the profile is packed after that.
-        commands = [argv[2] for argv, _ in runner.calls if Path(argv[0]).name == "runc" and len(argv) > 2]
-        self.assertLess(commands.index("exec"), commands.index("delete"))
+        self.assertEqual(parked["timings"]["chromeStop"], "sigterm")
+        self.assertEqual(runner.signals, [("bro-ws-abc", "SIGTERM")])  # to the init; nothing runs inside
+        self.assertEqual(runner.runtime_calls("exec"), [])
+        self.assertEqual(puts_at_delete[0], 0)
         self.assertEqual(runner.runtime_calls("checkpoint"), [])
         self.assertEqual(self.storage.puts[-1], "ws/3/manifest.json")
         manifest = json.loads(self.storage.objects["ws/3/manifest.json"])
@@ -880,24 +1008,52 @@ class StoppedParkTest(HostTest):
         self.assertFalse((Path(host.config.root) / "sandboxes" / "ws-abc").exists())
         self.assertNotIn("/g/ws-abc/", runner.caddyfiles[-1])
         self.assertEqual(await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()), (200, parked))
+        other, _runner, client = await self.host("b")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", self.restore_body()))[0], 201)
+        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile" / "Default" / "Cookies-at-stop"
+        self.assertEqual(restored.read_bytes(), b"flushed at exit")
 
-    async def test_a_chrome_that_ignores_systemctl_gets_sigterm_through_the_init(self):
-        _host, runner, client, _record = await self.started()
-        runner.fail_exec = True
+    async def test_a_chrome_the_init_had_to_kill_is_reported(self):
+        host, runner, client, _record = await self.started()
+        log = Path(host.config.root) / "sandboxes" / "ws-abc" / "runtime.log"
+        with open(log, "ab") as sink:
+            sink.write(b"bro-sandbox-init: bro-chrome killed: an older stop, before this park\n")
+        host.config.log_max_bytes = 10**9
+
+        def hung(_container):
+            with open(log, "ab") as sink:
+                sink.write(b"bro-sandbox-init: bro-worker stopped\n"
+                           b"bro-sandbox-init: bro-chrome killed: still running 30 s after SIGTERM\n")
+
+        runner.on_term = hung
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, parked["timings"]["chromeStop"]), (200, "killed"))
+
+    async def test_an_older_kill_in_the_log_does_not_count(self):
+        host, runner, client, _record = await self.started()
+        log = Path(host.config.root) / "sandboxes" / "ws-abc" / "runtime.log"
+        with open(log, "ab") as sink:
+            sink.write(b"bro-sandbox-init: bro-chrome killed: an older stop, before this park\n")
         status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
         self.assertEqual((status, parked["timings"]["chromeStop"]), (200, "sigterm"))
-        self.assertEqual(runner.chrome_stopped, [("bro-ws-abc", "SIGTERM")])
 
-    async def test_a_chrome_that_does_not_stop_keeps_the_sandbox_running_and_writes_nothing(self):
+    async def test_a_sandbox_that_outlives_sigterm_is_killed_and_parked_never_running_again(self):
         host, runner, client, _record = await self.started()
         host.config.chrome_stop_timeout_s = 0.3
-        runner.fail_exec = runner.ignore_term = True
-        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
-        self.assertEqual(status, 502)
-        self.assertIn("Chrome did not stop", answer["error"])
-        self.assertEqual(self.storage.objects, {})
-        self.assertEqual(runner.runtime_calls("delete"), [])
-        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        runner.ignore_term = True
+        states = []
+        runner.on_delete = lambda _c: states.append(host.sandboxes["ws-abc"]["state"])
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, parked["timings"]["chromeStop"]), (200, "killed"), parked)
+        self.assertEqual(runner.signals, [("bro-ws-abc", "SIGTERM"), ("bro-ws-abc", "SIGKILL")])
+        self.assertEqual(states[0], "parking")
+        self.assertIn("ws/3/manifest.json", self.storage.objects)
+
+    async def test_a_sandbox_already_gone_is_parked_as_killed(self):
+        _host, runner, client, _record = await self.started()
+        runner.fail_kill = True
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, parked["timings"]["chromeStop"]), (200, "killed"))
 
     async def test_a_failed_upload_starts_the_same_sandbox_again_here(self):
         host, runner, client, _record = await self.started()

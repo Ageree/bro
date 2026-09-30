@@ -284,8 +284,10 @@
 - С VM Cloud.ru 30.09 GitHub, PyPI, openrouter.ai и Википедия принимали TCP и
   молчали (днём GitHub уже отвечал: выход непостоянен), `archive.ubuntu.com`
   не отвечал: `build.py` (uv и jev с GitHub) так не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
-  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`). Молчащий адрес вешает
-  browser-use после `done` (цены моделей): выход песочницы — `REJECT`, не `DROP`.
+  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`, ставит только по пинам
+  `verify_wheels.py`). Молчащий адрес вешает browser-use после `done` (цены
+  моделей) и на старте (проверка версии на PyPI — `BROWSER_USE_VERSION_CHECK`):
+  выход песочницы — `REJECT`, не `DROP`.
 - «Доступ ограничен: проблема с IP» Avito — счётчик запросов с адреса, не
   среда: gVisor вердикт WB и Avito не менял.
 - VM без публичного IP в интернет не выходит, а sNAT подключается ко всей зоне
@@ -307,7 +309,14 @@
   строит с префиксом из `X-Forwarded-Prefix` (`browser-vm/host/caddy.py`),
   без него они вели в 404. `oomScoreAdj` `runc` — пол для всех процессов
   песочницы: при 500 Chrome не мог дать рендерерам свои 300+ (EACCES), теперь 200. Публичный IP своего хоста из песочницы — таймаут, не отказ: Cloud.ru не
-  разворачивает трафик на свой плавающий IP. Итоги этапа 2 — `docs/browser-pool.md`.
+  разворачивает трафик на свой плавающий IP, поэтому `provision.sh` кладёт его
+  в `egress_blocked`. Итоги этапа 2 — `docs/browser-pool.md`.
+- `hostd` не делает `runc exec` в песочницу (вход побегов `runc`): парковка —
+  SIGTERM init, «Chrome убит по таймауту» init пишет в `runtime.log`. Профиль
+  Docker для seccomp не годится (режет user namespace песочницы Chrome) — свой
+  `browser-vm/host/seccomp.json`. `kernel.unprivileged_userns_clone` у ядра
+  Ubuntu нет, `sysctl -e` молча его пропускает. Запуски и память агента
+  worker парковку `runc` не переживают: в наборе только профиль.
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и

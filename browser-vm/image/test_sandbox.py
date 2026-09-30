@@ -62,18 +62,38 @@ class UnitParseTest(unittest.TestCase):
         self.assertGreater(enable, PROVISION.rindex('if [ "$SANDBOX" != 1 ]; then', 0, enable))
 
 
+class DisplayLockTest(unittest.TestCase):
+    def test_a_stopped_xvfbs_lock_and_socket_go_before_the_units_start(self):
+        # A sandbox started again on the overlay of a stopped one: the old lock names pid 2, which is the
+        # new Xvfb's own pid in the new pid namespace, and Xvfb would refuse display :99 for ever.
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / ".X11-unix").mkdir()
+        (tmp / ".X99-lock").write_text("         2\n")
+        (tmp / ".X11-unix" / "X99").write_text("")
+        (tmp / ".X98-lock").write_text("         7\n")
+        load_init().clear_display_locks(tmp)
+        self.assertEqual(sorted(p.name for p in tmp.rglob("*")), [".X11-unix", ".X98-lock"])
+        load_init().clear_display_locks(tmp)  # nothing to clear is fine
+        self.assertIn("clear_display_locks()\n    init = Init()", INIT.read_text())
+
+
 class InitTest(unittest.TestCase):
     """The init with fake units (sleep loops writing their start count) in a temp directory."""
+
+    CHROME_IGNORES_TERM = False
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         units = self.tmp / "units"
         units.mkdir()
         for name in ("bro-xvfb", "bro-chrome", "bro-worker"):
+            hung = name == "bro-chrome" and self.CHROME_IGNORES_TERM
             (units / f"{name}.service").write_text(
                 "[Unit]\nDescription=fake\n[Service]\nUser=%s\nEnvironment=UNIT=%s\n"
-                "ExecStart=/bin/sh -c 'echo \"$UNIT $BRO_WORKER_BIND $0\" >> %s/starts; exec sleep 1000' %s\n"
-                "RestartSec=0.2\nTimeoutStopSec=5\n" % (pwd.getpwuid(os.getuid()).pw_name, name, self.tmp, name))
+                "ExecStart=/bin/sh -c '%secho \"$UNIT $BRO_WORKER_BIND $0\" >> %s/starts; exec sleep 1000' %s\n"
+                "RestartSec=0.2\nTimeoutStopSec=%s\n" % (pwd.getpwuid(os.getuid()).pw_name, name,
+                                                         "trap \"\" TERM; " if hung else "", self.tmp, name,
+                                                         0.5 if hung else 5))
         self.env = {**os.environ, "BRO_UNIT_DIR": str(units), "BRO_INIT_SOCKET": str(self.tmp / "init.sock"),
                     "BRO_WORKER_BIND": "0.0.0.0"}
         self.init = subprocess.Popen([sys.executable, str(INIT)], env=self.env, stderr=subprocess.PIPE, text=True)
@@ -117,11 +137,35 @@ class InitTest(unittest.TestCase):
         os.kill(pid, 9)
         self.wait_for(lambda: len(self.starts()) == 4)
 
+    def test_a_chrome_that_exits_on_sigterm_is_logged_stopped(self):
+        self.assertEqual(self.systemctl("stop", "bro-chrome").returncode, 0)
+        self.init.terminate()
+        self.init.wait(10)
+        log = self.init.stderr.read()
+        self.assertIn("bro-sandbox-init: bro-chrome stopped", log)
+        self.assertNotIn("killed", log)
+
     def test_the_shim_takes_only_start_stop_restart_of_known_units(self):
         self.assertNotEqual(self.systemctl("enable", "bro-chrome").returncode, 0)
         refused = self.systemctl("start", "caddy")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("error", refused.stderr)
+
+
+class HungChromeInitTest(InitTest):
+    """A Chrome that ignores SIGTERM past TimeoutStopSec: the init kills it and says so in its log, which a
+    pool host's park reads (browser-vm/host/hostd.py `init_killed_chrome`)."""
+
+    CHROME_IGNORES_TERM = True
+
+    def test_a_chrome_that_exits_on_sigterm_is_logged_stopped(self):
+        pass  # this Chrome does not
+
+    def test_a_killed_chrome_is_logged_killed(self):
+        self.assertEqual(self.systemctl("stop", "bro-chrome").returncode, 0)
+        self.init.terminate()
+        self.init.wait(10)
+        self.assertIn("bro-sandbox-init: bro-chrome killed: still running 0.5 s after SIGTERM", self.init.stderr.read())
 
 
 if __name__ == "__main__":

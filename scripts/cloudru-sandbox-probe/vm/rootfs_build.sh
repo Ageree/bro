@@ -2,7 +2,8 @@
 # Stage 2 (docs/browser-pool.md): the pool's sandbox rootfs archive, built once on a probe VM and shipped to
 # hosts through Object Storage (browser-vm/host/provision.sh unpacks it).
 #   rootfs_build.sh wheels            apt from mirror.yandex.ru, the sandbox's wheels from the PyPI mirror
-#                                     (check /srv/bro/wheels.sha256 with verify_wheels.py in the session)
+#                                     (check /srv/bro/wheels.sha256 with verify_wheels.py in the session and
+#                                     push its requirements.txt to /srv/bro/wheels/requirements.txt)
 #   rootfs_build.sh build VERSION     build_rootfs.sh in ARCHIVE mode → /srv/bro/VERSION.tar.zst and its sha256
 # Then a presigned PUT from the session: curl -fsS -T /srv/bro/VERSION.tar.zst '<url>'.
 set -euo pipefail
@@ -18,6 +19,10 @@ case "${1:-}" in
     ;;
   build)
     VERSION="$2"
+    if [ ! -s /srv/bro/wheels/requirements.txt ]; then
+      echo "push the requirements.txt verify_wheels.py wrote to /srv/bro/wheels/ first" >&2
+      exit 1
+    fi
     BRO_PYTHON_SETUP="$STAND/vm/wheels.sh" BRO_PYTHON_WHEELS=/srv/bro/wheels \
       bash "$STAND/browser-vm/image/sandbox/build_rootfs.sh" "/srv/bro/rootfs/$VERSION" "$VERSION" \
       "/srv/bro/$VERSION.tar.zst"

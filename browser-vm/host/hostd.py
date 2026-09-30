@@ -6,17 +6,21 @@ Xvfb, the worker; its PID 1 is /usr/local/sbin/bro-sandbox-init) in a network na
 (network.py). The runtime is `Config.runtime`:
 
   runc   (default; stage 1 decided it) a plain container: its own pid, ipc, uts, mount, cgroup and network
-         namespaces, a cgroup with the memory and pids limits, the rootfs under an overlayfs hostd mounts
-         itself (lower = the rootfs directory, upper and work on a per-sandbox tmpfs) — runc has no
-         --overlay2. No memory snapshot: a park stops Chrome gracefully (cookies reach the profile) and keeps
-         the profile alone; a restore is a fresh start with it (`path: cold`).
+         namespaces, a cgroup with the memory, CPU and pids limits, the seccomp profile seccomp.json, the
+         rootfs under an overlayfs hostd mounts itself (lower = the rootfs directory, upper and work on a
+         per-sandbox tmpfs) — runc has no --overlay2. No memory snapshot: a park stops the sandbox gracefully
+         (SIGTERM to its init: Chrome writes cookies to the profile) and keeps the profile alone; a restore is
+         a fresh start with it (`path: cold`). What the worker kept outside the profile (its runs, sessions
+         and their agent memory, saved tabs) does not survive a park.
   runsc  gVisor with `--overlay2=root:memory --platform=systrap`: a park freezes the sandbox (`runsc
          checkpoint` into /dev/shm/bro-<id>), and a restore brings it back with its open pages, falling
          back to a cold start with the profile when the snapshot does not fit.
 
 Everything of one sandbox on the host lives under `<root>/sandboxes/<id>/`:
 
-  profile/       bind-mounted read-write at /var/lib/bro/profile (the Chrome profile: sign-ins)
+  profile/       bind-mounted read-write at /var/lib/bro/profile (the Chrome profile: sign-ins); with
+                 `profile_mb` the mount of profile.img, an ext4 image of that size, so a sandbox cannot fill
+                 the host's disk
   worker.json    bind-mounted read-only at /etc/bro/worker.json ({"environment", "key"}, 0600, never logged)
   resolv.conf    bind-mounted read-only at /etc/resolv.conf (public resolvers, not 127.0.0.53)
   overlay/       runc: the tmpfs holding the overlay's upper and work directories (the sandbox's writes)
@@ -69,7 +73,7 @@ import caddy
 import network
 import sets
 
-VERSION = "2026-09-30.3"
+VERSION = "2026-09-30.4"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
@@ -123,7 +127,7 @@ class Config:
     egress_blocked: tuple = ()
     # STAND ONLY, empty in production: TCP ports of the host itself sandboxes may reach (the stage 2 stand's
     # stand-in for the residential proxy, scripts/cloudru-sandbox-probe/pool.py). Every other host port is
-    # refused.
+    # refused, and hostd's own, ssh, http(s) and Caddy's admin ports can never be listed.
     stand_host_ports: tuple = ()
     listen_host: str = "127.0.0.1"
     listen_port: int = 8090
@@ -137,22 +141,39 @@ class Config:
     # runc: the tmpfs under the sandbox's overlay (its writes: /tmp, the worker's runs, logs). Its pages
     # count against the sandbox's memory limit too.
     overlay_mb: int = 2048
-    # runc: an OCI seccomp object (JSON file) for the sandbox, or none. Docker's default profile refuses
-    # unshare/clone of new namespaces without CAP_SYS_ADMIN, which Chrome's own sandbox needs.
-    seccomp_profile: str = ""
+    # runc: an OCI seccomp object (JSON file) for the sandbox; "" = none (a stand's experiment only). The
+    # default, seccomp.json next to this file, allows everything but what container escapes go through
+    # (keyrings, bpf, userfaultfd, mount and its new API, io_uring, modules, kexec, setns, packet and
+    # nf_tables sockets): Docker's default profile would refuse the user namespace Chrome's own sandbox
+    # makes (unshare/clone with CLONE_NEWUSER without CAP_SYS_ADMIN).
+    seccomp_profile: str = str(Path(__file__).with_name("seccomp.json"))
+    # The sandbox's CPU quota in CPUs (cgroup cpu.max); 0 = none.
+    cpus: float = 2.0
+    # The profile's own ext4 image (sparse, mounted over profile/): what one sandbox may write to the host's
+    # disk. 0 = a plain directory (no cap).
+    profile_mb: int = 2048
+    mkfs: str = "mkfs.ext4"
     # What sandbox memory limits may add up to; 0 = MemTotal less `reserve_mb`.
     memory_limit_mb: int = 0
     reserve_mb: int = 1024
     log_max_bytes: int = 8 * 1024 * 1024
     start_timeout_s: float = 90
     restore_timeout_s: float = 30
-    # runc park: how long Chrome gets to write its profile and exit (its unit's TimeoutStopSec is 30 s).
+    # runc park: how long the init gets to stop the worker and Chrome (its unit's TimeoutStopSec is 30 s)
+    # and exit; past that the container is killed and the park goes on with `chromeStop: killed`.
     chrome_stop_timeout_s: float = 45
+    # How often the host's nftables table is written again: it is the only barrier between sandboxes and
+    # the VPC, and nothing else would notice it gone.
+    rules_every_s: float = 30
     identity_file: str = "/etc/bro/host.json"
 
     def __post_init__(self):
         if self.runtime not in RUNTIMES:
             raise ValueError(f"runtime must be one of {RUNTIMES}")
+        # A stand config copied with a wrong port must not open hostd, ssh or Caddy to every sandbox.
+        forbidden = {22, 80, 443, 2019, self.listen_port}
+        if forbidden & {int(port) for port in self.stand_host_ports}:
+            raise ValueError(f"stand_host_ports may not include {sorted(forbidden)}")
 
     @classmethod
     def load(cls, path):
@@ -302,10 +323,23 @@ def bro_owner(rootfs):
 
 
 def pack(source, target):
-    """A tar of the directory's contents (Chrome's lock socket and other special files are skipped)."""
+    """A tar of the directory's regular files and directories only (blocking: run it in a thread). The
+    profile is written by the sandbox and unpacked by root on another host (`unpack`): symlinks (Chrome's
+    Singleton* ones, which it makes again), FIFOs, devices and sockets stay out, and a second name of a
+    hard-linked file goes in as a copy of its own."""
+    source = Path(source)
+
+    def plain(member):
+        if member.islnk():
+            member.type, member.linkname = tarfile.REGTYPE, ""
+            member.size = os.lstat(source / member.name).st_size
+        return member if member.isreg() or member.isdir() else None
+
     with tarfile.open(target, "w") as tar:
-        for child in sorted(Path(source).iterdir()):
-            tar.add(child, arcname=child.name)
+        for child in sorted(source.iterdir()):
+            if child.name == "lost+found" and child.is_dir():
+                continue  # the profile image's own
+            tar.add(child, arcname=child.name, filter=plain)
     return Path(target).stat().st_size
 
 
@@ -319,21 +353,26 @@ def tree_mb(path):
     return total // 2**20
 
 
-def skip_outward_links(member, target):
-    """tarfile's `data` filter (no devices, nothing outside the target, no owners, no setuid bits), except
-    that a link pointing out of the target is skipped instead of failing the set: Chrome keeps
-    SingletonSocket and SingletonCookie as absolute links into /tmp."""
+def only_plain_files(member, target):
+    """The extraction filter: regular files and directories under the target, through tarfile's `data`
+    filter (no absolute or `..` paths, no owners, no setuid bits). Symlinks and hard links are never
+    extracted, so no member can lead a later one out of the target (the `data` filter's own link checks
+    have had bypasses); links, devices, FIFOs and anything the filter refuses are skipped, never fatal: a
+    sandbox that left a FIFO in its profile must not make its sign-ins impossible to restore."""
+    if not (member.isreg() or member.isdir()):
+        return None
     try:
         return tarfile.data_filter(member, target)
-    except (tarfile.AbsoluteLinkError, tarfile.LinkOutsideDestinationError):
+    except tarfile.FilterError:
         return None
 
 
 def unpack(archive, target):
-    """Extract a tar hostd packed (blocking: run it in a thread). Files come out owned by hostd."""
+    """Extract a set's tar (blocking: run it in a thread) into a directory hostd made. Its contents come
+    from a sandbox, and hostd is root: `only_plain_files` decides. Files come out owned by hostd."""
     Path(target).mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive) as tar:
-        tar.extractall(target, filter=skip_outward_links)
+        tar.extractall(target, filter=only_plain_files)
 
 
 def chown_tree(path, owner):
@@ -359,6 +398,18 @@ def remove(path):
             path.unlink()
 
 
+def init_killed_chrome(log_path, offset):
+    """Whether the init's log, after `offset`, says it had to SIGKILL Chrome (bro-sandbox-init `stop`)."""
+    try:
+        with open(log_path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(offset if offset <= size else 0)  # trimmed meanwhile (`trim_logs`): read it all
+            text = file.read(4 * 2**20)
+    except OSError:
+        return False
+    return b"bro-sandbox-init: bro-chrome killed" in text
+
+
 def ms(started):
     return round((time.monotonic() - started) * 1000)
 
@@ -378,6 +429,7 @@ class Paths:
     def __init__(self, config, sandbox_id):
         self.dir = config.sandboxes / sandbox_id
         self.profile = self.dir / "profile"
+        self.profile_image = self.dir / "profile.img"  # with `profile_mb`: the ext4 image mounted at profile/
         self.worker_json = self.dir / "worker.json"
         self.resolv = self.dir / "resolv.conf"
         self.overlay = self.dir / "overlay"  # runc: the tmpfs with the overlay's upper and work
@@ -484,7 +536,7 @@ class Host:
                 path.write_text(json.dumps(record))
                 self.sandboxes[record["id"]] = record
         await self.apply(strict=False)
-        self.housekeeping = asyncio.ensure_future(self.keep_logs())
+        self.housekeeping = asyncio.ensure_future(self.keep_house())
 
     async def close(self):
         if self.housekeeping is not None:
@@ -497,18 +549,26 @@ class Host:
     def lock(self, sandbox_id):
         return self.locks.setdefault(sandbox_id, asyncio.Lock())
 
+    def live(self):
+        return {r["id"]: r for r in self.sandboxes.values() if r.get("slot") is not None and r["state"] != "parked"}
+
+    async def write_rules(self, live):
+        """The host's nftables table, whole and in one transaction (the caller holds `shared`); whether nft
+        took it."""
+        rules = Path(self.config.root) / "nftables.conf"
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text(self.network.host_rules([r["slot"] for r in live.values()], self.uplink or "eth0"))
+        code, output = await self.runner.run([self.config.nft, "-f", str(rules)])
+        if code != 0:
+            log.error("nft refused the host ruleset: %s", output[-300:])
+        return code == 0
+
     async def apply(self, strict=True):
         """The host nftables table and the Caddyfile for the sandboxes there are now."""
         async with self.shared:
-            live = {r["id"]: r for r in self.sandboxes.values() if r.get("slot") is not None and r["state"] != "parked"}
-            rules = Path(self.config.root) / "nftables.conf"
-            rules.parent.mkdir(parents=True, exist_ok=True)
-            rules.write_text(self.network.host_rules([r["slot"] for r in live.values()], self.uplink or "eth0"))
-            code, output = await self.runner.run([self.config.nft, "-f", str(rules)])
-            if code != 0:
-                log.error("nft refused the host ruleset: %s", output[-300:])
-                if strict:
-                    raise Refused(502, "nftables refused the host ruleset")
+            live = self.live()
+            if not await self.write_rules(live) and strict:
+                raise Refused(502, "nftables refused the host ruleset")
             if not self.config.domain:
                 return
             routes = [(i, *self.network.worker_address(r["slot"])) for i, r in live.items()]
@@ -547,7 +607,7 @@ class Host:
     async def unmount(self, paths):
         """Whether the sandbox's overlay and its tmpfs are gone (or never were): a host dir is only wiped
         with nothing mounted in it, or rmtree would walk into the sandbox's root."""
-        for path in (paths.merged, paths.overlay):  # the overlay first: it lives on the tmpfs
+        for path in (paths.merged, paths.overlay, paths.profile):  # the overlay first: it lives on the tmpfs
             if not path.is_dir():
                 continue
             # Until umount says "not mounted" (fine for a directory that never was): a start that died after
@@ -602,6 +662,27 @@ class Host:
             if code != 0:
                 raise RuntimeError(f"network setup failed at {' '.join(argv[:4])}: {output[-200:]}")
 
+    async def mount_profile(self, paths):
+        """The profile on an ext4 image of `profile_mb` (sparse: it takes the disk its files take): a
+        sandbox that writes without end fills its own image, not the host's disk every other park and
+        start needs. nodev and nosuid; not noexec: Chrome loads components (Widevine) from the profile."""
+        size = self.config.profile_mb
+        if not size:
+            return
+        with open(paths.profile_image, "wb") as image:
+            image.truncate(size * 2**20)
+        code, output = await self.runner.run(
+            [self.config.mkfs, "-q", "-F", "-m", "0", "-E", "lazy_itable_init=1,nodiscard", str(paths.profile_image)],
+            timeout=120)
+        if code != 0:
+            raise RuntimeError(f"mkfs for the profile failed: {output[-200:]}")
+        code, output = await self.runner.run(
+            [self.config.mount, "-o", "loop,nodev,nosuid", str(paths.profile_image), str(paths.profile)])
+        if code != 0:
+            raise RuntimeError(f"the profile image did not mount: {output[-200:]}")
+        await asyncio.to_thread(remove, paths.profile / "lost+found")
+        os.chmod(paths.profile, 0o700)
+
     async def mount_root(self, paths, rootfs):
         """runc has no --overlay2: the rootfs directory under an overlayfs whose upper and work live on a
         tmpfs of this sandbox, so the rootfs itself is never written and the sandbox's writes are memory."""
@@ -635,10 +716,21 @@ class Host:
         if committed + memory > limit:
             raise Refused(507, "the host has no room for this sandbox", committedMb=committed, limitMb=limit)
 
-    async def keep_logs(self):
+    async def keep_house(self):
+        """Every `rules_every_s`: the nftables table again (a process with CAP_NET_ADMIN that deleted or
+        flushed it would otherwise leave every sandbox unfiltered until the next start or park); every
+        minute: the logs."""
+        last_trim = time.monotonic()
         while True:
-            await asyncio.sleep(60)
-            await asyncio.to_thread(self.trim_logs)
+            await asyncio.sleep(self.config.rules_every_s)
+            try:
+                async with self.shared:
+                    await self.write_rules(self.live())
+            except Exception:  # the loop must outlive any one failure
+                log.exception("rewriting the host's nftables table failed")
+            if time.monotonic() - last_trim >= 60:
+                last_trim = time.monotonic()
+                await asyncio.to_thread(self.trim_logs)
 
     def trim_logs(self):
         """runtime.log gets the sandbox's stdio for as long as it lives: past `log_max_bytes` only the newer
@@ -732,6 +824,9 @@ class Host:
         namespaces = [{"type": "pid"}, {"type": "ipc"}, {"type": "uts"}, {"type": "mount"},
                       {"type": "network", "path": f"/var/run/netns/{sandbox_netns}"}]
         resources = {"memory": {"limit": record["memoryMb"] * 2**20}, "pids": {"limit": 4096}}
+        if self.config.cpus:
+            # A page that spins every core would starve its neighbours: cpu.max, period 100 ms.
+            resources["cpu"] = {"quota": round(self.config.cpus * 100_000), "period": 100_000}
         spec = {
             "ociVersion": "1.0.2",
             "process": {
@@ -779,8 +874,8 @@ class Host:
             # sandbox may go under, and with 500 Chrome could not rank its renderers above its browser process
             # (EACCES on every renderer, stage 2 host).
             spec["process"]["oomScoreAdj"] = 200
-            # No seccomp unless configured: runc applies none of its own, and Docker's default refuses the
-            # user namespace Chrome's sandbox makes (unshare, clone with CLONE_NEWUSER without SYS_ADMIN).
+            # seccomp.json (Config.seccomp_profile): runc applies none of its own, and Docker's default
+            # refuses the user namespace Chrome's sandbox makes (unshare, clone with CLONE_NEWUSER).
             if self.seccomp is not None:
                 spec["linux"]["seccomp"] = self.seccomp
         return spec
@@ -839,6 +934,7 @@ class Host:
         paths.dir.mkdir(parents=True, mode=0o700)
         paths.staging.mkdir(parents=True, mode=0o700)
         paths.profile.mkdir(mode=0o700)
+        await self.mount_profile(paths)
         paths.worker_json.touch(mode=0o600)
         paths.worker_json.write_text(json.dumps({"environment": record["workspace"], "key": worker_key}))
         paths.resolv.write_text("".join(f"nameserver {address}\n" for address in config.dns))
@@ -1002,9 +1098,11 @@ class Host:
         return result
 
     async def park_stopped(self, record, generation, target):
-        """runc: Chrome stops gracefully (cookies and localStorage reach the profile), the container goes,
-        and the profile alone is the set. An open page does not survive this: Bro keeps a sandbox that
-        waits for a code alive until the code's deadline."""
+        """runc: the sandbox stops gracefully (Chrome writes cookies and localStorage to the profile), the
+        container goes, and the profile alone is the set. An open page does not survive this: Bro keeps a
+        sandbox that waits for a code alive until the code's deadline. Nor does anything the worker kept
+        outside the profile (/var/lib/bro/runs, sessions with their agent memory, saved tabs: the overlay's
+        tmpfs): a restored sandbox's worker starts empty, as after a worker restart."""
         paths = Paths(self.config, record["id"])
         needed = 2 * await asyncio.to_thread(tree_mb, paths.profile) + 256  # its tar and that tar's zstd
         disk_free = free_mb(self.config.root)
@@ -1013,14 +1111,10 @@ class Host:
         record.update(generation=generation, state="parking")
         self.save(record)
         started = time.monotonic()
-        stopped = await self.stop_chrome(paths)
-        if stopped is None:
-            record.update(state="running", error=None)
-            self.save(record)
-            raise Refused(502, "Chrome did not stop: the profile may be behind, the sandbox runs on")
+        stopped = await self.stop_sandbox(paths)
         timings = {"stopMs": ms(started), "chromeStop": stopped}
         if not await self.stop(paths):
-            record.update(state="failed", error="Chrome stopped but runc could not delete the sandbox")
+            record.update(state="failed", error="the sandbox stopped but runc could not delete it")
             self.save(record)
             raise Refused(502, "runc could not delete the sandbox")
         try:
@@ -1034,29 +1128,39 @@ class Host:
         timings.update(stage_timings, totalMs=ms(started))
         return await self.finish_park(record, generation, manifest, None, timings)
 
-    async def stop_chrome(self, paths):
-        """How Chrome was stopped ("systemctl" or "sigterm"), or None if the sandbox still runs with it.
-        First the worker's own way (`systemctl stop bro-chrome`: the shim asks the init, which sends SIGTERM
-        and waits for Chrome to exit); if that fails, SIGTERM to the init, which stops every unit the same
-        way and exits."""
-        timeout = self.config.chrome_stop_timeout_s
-        code, output = await self.runner.run(
-            self.oci("exec", paths.container, "/usr/bin/systemctl", "stop", "bro-chrome"), timeout=timeout + 15)
-        if code == 0:
-            return "systemctl"
-        log.warning("%s: systemctl stop bro-chrome failed (%s): %s", paths.container, code, output[-200:])
-        await self.runner.run(self.oci("kill", paths.container, "SIGTERM"), timeout=30)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+    async def stop_sandbox(self, paths):
+        """How Chrome stopped: "sigterm" (it exited and wrote its profile), or "killed" (the init gave up on
+        it after its TimeoutStopSec, or the whole sandbox outlived `chrome_stop_timeout_s` and runc killed
+        it: the newest cookies may be missing). SIGTERM goes to the init (`runc kill`), which stops the
+        worker, Chrome and Xvfb the way systemd would and exits. Nothing is run inside the sandbox: a
+        `runc exec` into a container a page may have taken over is how runc's escapes start. Once SIGTERM
+        is sent the sandbox is on its way out either way, so it never goes back to `running`."""
+        offset = 0
+        with contextlib.suppress(OSError):
+            offset = paths.log.stat().st_size
+        code, output = await self.runner.run(self.oci("kill", paths.container, "SIGTERM"), timeout=30)
+        if code != 0:
+            # Not running any more (or runc cannot reach it): whatever stopped Chrome, it was not this.
+            log.warning("%s: SIGTERM failed (%s): %s", paths.container, code, output[-200:])
+            await self.runner.run(self.oci("kill", paths.container, "SIGKILL"), timeout=30)
+            return "killed"
+        deadline = time.monotonic() + self.config.chrome_stop_timeout_s
+        while True:
             code, output = await self.runner.run(self.oci("state", paths.container), timeout=30)
             if status_of(code, output) != "running":
-                return "sigterm"
+                break
+            if time.monotonic() >= deadline:
+                log.warning("%s did not exit %s s after SIGTERM: killing it", paths.container,
+                            self.config.chrome_stop_timeout_s)
+                await self.runner.run(self.oci("kill", paths.container, "SIGKILL"), timeout=30)
+                return "killed"
             await asyncio.sleep(0.25)
-        return None
+        return "killed" if await asyncio.to_thread(init_killed_chrome, paths.log, offset) else "sigterm"
 
     async def restart_here(self, record, paths):
         """runc, after a park that could not upload: the same sandbox again from its profile, in fresh
-        namespaces (its overlay is still mounted and keeps the worker's files)."""
+        namespaces. Its overlay is still mounted and keeps the worker's files; the init clears the X
+        server's locks of the stopped sandbox before Xvfb starts (bro-sandbox-init `clear_display_locks`)."""
         ready = False
         try:
             await self.fresh_network(record, paths)

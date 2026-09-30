@@ -2,9 +2,12 @@
 # Python of the sandbox root when GitHub and PyPI do not answer from Cloud.ru (30.09.2026: TCP connects, no data
 # comes back; uv, its CPython builds and jev live on GitHub). Ubuntu's python3.11 (browser-use needs >= 3.11) and
 # wheels from the Huawei Cloud PyPI mirror, each checked against PyPI's own sha256 in the session
-# (verify_wheels.py) before the rootfs build installs them offline. numpy < 2.5: 2.5 needs Python 3.12.
+# (verify_wheels.py), which writes requirements.txt pinning every wheel to PyPI's digest; the rootfs build
+# installs them offline with --require-hashes, and refuses to without that file. numpy < 2.5: 2.5 needs
+# Python 3.12.
 #   wheels.sh download     → /srv/bro/wheels and /srv/bro/wheels.sha256 (on the host)
-#   wheels.sh install      in the chroot, as BRO_PYTHON_SETUP of build_rootfs.sh (wheels in /opt/bro/wheels)
+#   wheels.sh install      in the chroot, as BRO_PYTHON_SETUP of build_rootfs.sh (wheels and the session's
+#                          requirements.txt in /opt/bro/wheels)
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 MIRROR="${BRO_PYPI_MIRROR:-https://repo.huaweicloud.com/repository/pypi/simple}"
@@ -18,7 +21,12 @@ if [ "${1:-install}" = download ]; then
   (cd /srv/bro/wheels && sha256sum ./*) > /srv/bro/wheels.sha256
   wc -l < /srv/bro/wheels.sha256
 else
+  if [ ! -s /opt/bro/wheels/requirements.txt ]; then
+    echo "no requirements.txt from verify_wheels.py next to the wheels: they are not checked against PyPI" >&2
+    exit 1
+  fi
   python3.11 -m venv /opt/bro/bu/.venv
-  /opt/bro/bu/.venv/bin/pip install -q --no-index --find-links /opt/bro/wheels "${PACKAGES[@]}"
+  /opt/bro/bu/.venv/bin/pip install -q --no-index --find-links /opt/bro/wheels --require-hashes \
+    -r /opt/bro/wheels/requirements.txt
   /opt/bro/bu/.venv/bin/python -c "import browser_use, aiohttp, cv2; print('venv ok', browser_use.__file__)"
 fi

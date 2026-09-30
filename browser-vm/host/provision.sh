@@ -76,6 +76,12 @@ if [ "$RUNTIME" = runsc ]; then
   apt-mark hold runsc >/dev/null
 else
   runc --version | head -1
+  # hostd never runs anything inside a sandbox (`runc exec` is where runc's escapes start), but create and
+  # kill still go through runc: not older than the fix of CVE-2024-21626 (the security pocket has newer).
+  if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' runc)" ge 1.1.12; then
+    stage "failed:runc is older than 1.1.12"
+    exit 1
+  fi
 fi
 # Ubuntu's nftables.service starts with `flush ruleset`: it stays off, hostd applies its own table.
 systemctl disable --now nftables >/dev/null 2>&1 || true
@@ -92,24 +98,32 @@ id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home
   --shell /usr/sbin/nologin caddy
 mkdir -p /etc/caddy
 DOMAIN=$(field domain)
-if [ -z "$DOMAIN" ]; then
+# The host's public address: the default domain, and a destination sandboxes are refused. It is Cloud.ru's
+# floating IP, not a local one, so the host's own `input` refusal does not see it: a sandbox connecting to
+# it timed out (stage 2) instead of being refused, and a provider that loops it back would hand the
+# sandbox the host's Caddy.
+IP=""
+for i in 1 2 3 4 5 6 7 8 9; do
+  # Yandex first: from Cloud.ru foreign services may accept and never answer.
+  case $((i % 3)) in
+    1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
+    2) URL=https://api.ipify.org ;;
+    *) URL=https://ipv4.icanhazip.com ;;
+  esac
+  IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
+  [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
   IP=""
-  for i in 1 2 3 4 5 6 7 8 9; do
-    # Yandex first: from Cloud.ru foreign services may accept and never answer.
-    case $((i % 3)) in
-      1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
-      2) URL=https://api.ipify.org ;;
-      *) URL=https://ipv4.icanhazip.com ;;
-    esac
-    IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
-    [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
-    sleep 2
-  done
+  sleep 2
+done
+if [ -z "$DOMAIN" ]; then
   [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]]
   DOMAIN="${IP//./-}.sslip.io"
 fi
-python3 -c 'import json, sys; json.dump({"domain": sys.argv[1], "runtime": sys.argv[2]}, open("/etc/bro/hostd.json", "w"))' \
-  "$DOMAIN" "$RUNTIME"
+python3 -c 'import json, sys
+settings = {"domain": sys.argv[1], "runtime": sys.argv[2]}
+if sys.argv[3]:
+    settings["egress_blocked"] = [sys.argv[3] + "/32"]
+json.dump(settings, open("/etc/bro/hostd.json", "w"))' "$DOMAIN" "$RUNTIME" "$IP"
 # The unit Caddy's own packages ship, for the static binary. The admin API only on a unix socket that root
 # (hostd) reaches: on localhost:2019 any local process could load a config that publishes a worker's CDP.
 # hostd rewrites the Caddyfile and reloads over this socket.
@@ -128,7 +142,11 @@ TimeoutStopSec=5s
 LimitNOFILE=1048576
 PrivateTmp=true
 ProtectSystem=full
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+# Ports 80 and 443 only. Not CAP_NET_ADMIN (upstream's unit gives it for QUIC buffers): with it, code run as
+# caddy could delete hostd's nftables table, the one barrier between sandboxes and the VPC.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 RuntimeDirectory=caddy
 RuntimeDirectoryMode=0750
 
@@ -165,9 +183,12 @@ systemctl enable --now bro-hostd
 
 stage network
 # Sandboxes reach the internet through the host (network.py); nothing else is forwarded (hostd's table).
-# Chrome's own sandbox makes a user namespace in a runc container: unprivileged ones stay allowed.
-printf 'net.ipv4.ip_forward = 1\nkernel.unprivileged_userns_clone = 1\nuser.max_user_namespaces = 15000\n' \
-  > /etc/sysctl.d/90-bro-host.conf
+# Chrome's own sandbox makes a user namespace in a runc container: Ubuntu 22.04 allows unprivileged ones as
+# it is (24.04 would need kernel.apparmor_restrict_unprivileged_userns = 0). Every sandbox's `bro` is the same
+# host uid, and per-uid kernel limits are shared: inotify instances (128 by default) would run out for all
+# of them with a few Chromes.
+printf '%s\n' 'net.ipv4.ip_forward = 1' 'user.max_user_namespaces = 15000' \
+  'fs.inotify.max_user_instances = 8192' 'fs.inotify.max_user_watches = 1048576' > /etc/sysctl.d/90-bro-host.conf
 sysctl -q -e --system
 
 stage rootfs

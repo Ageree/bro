@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -70,7 +71,8 @@ class CloudInitTest(unittest.TestCase):
 
 class BundleTest(unittest.TestCase):
     def vendor(self):
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        directory = Path(tempfile.mkdtemp())  # not enterContext: the host's Python is 3.10
+        self.addCleanup(shutil.rmtree, directory, True)
         (directory / "wheels").mkdir()
         (directory / "caddy").write_bytes(b"caddy binary")
         (directory / "wheels" / "aiohttp-3.12.15-cp310-cp310-manylinux_2_17_x86_64.whl").write_bytes(b"wheel a")
@@ -117,7 +119,8 @@ class BootScriptTest(unittest.TestCase):
     """bro-host-boot with its paths moved into a temp directory and curl answering from a local file."""
 
     def run_boot(self, bundle, sha256):
-        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
         served = tmp / "served.tgz"
         served.write_bytes(bundle)
         (tmp / "etc").mkdir()
@@ -182,7 +185,16 @@ class ProvisionTest(unittest.TestCase):
             self.assertNotIn(unreachable, PROVISION)
         self.assertIn('install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy', PROVISION)
         self.assertIn("(archive|security)\\.ubuntu\\.com", PROVISION)  # apt goes to the mirror
-        self.assertIn("kernel.unprivileged_userns_clone = 1", PROVISION)  # Chrome's own sandbox under runc
+        # Not a knob of Ubuntu's kernel (Debian's): `sysctl -e` would drop it without a word.
+        self.assertNotIn("unprivileged_userns_clone", PROVISION)
+        self.assertIn("fs.inotify.max_user_instances = 8192", PROVISION)  # one `bro` uid for every sandbox
+        # Caddy faces the internet: it binds 80 and 443 and nothing more (no nft over hostd's table).
+        self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
+                      "NoNewPrivileges=true\n", PROVISION)
+        self.assertNotRegex(PROVISION, r"Capabilit\w*=.*CAP_NET_ADMIN")
+        self.assertIn('dpkg --compare-versions "$(dpkg-query -W -f=\'${Version}\' runc)" ge 1.1.12', PROVISION)
+        # The host's own public address is refused to sandboxes like every other blocked destination.
+        self.assertIn('settings["egress_blocked"] = [sys.argv[3] + "/32"]', PROVISION)
         self.assertNotIn("set -x", PROVISION)  # the log must not echo presigned URLs
         self.assertIn("tar --numeric-owner -I zstd -xpf", PROVISION)  # the rootfs keeps its own ids
 
@@ -191,6 +203,21 @@ class ProvisionTest(unittest.TestCase):
         # there would only show as a host that never answers.
         order = [line.split()[1] for line in PROVISION.splitlines() if re.match(r"stage [a-z]+$", line)]
         self.assertEqual(order, ["start", "packages", "venv", "caddy", "hostd", "network", "rootfs", "ready"])
+
+    def test_the_hostd_settings_provision_writes_load(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        script = PROVISION[PROVISION.index("python3 -c 'import json, sys\nsettings"):]
+        script = script[:script.index('"$DOMAIN" "$RUNTIME" "$IP"')]
+        code = script[len("python3 -c '"):script.rindex("'")]
+        for ip, blocked in (("203.0.113.7", ["203.0.113.7/32"]), ("", None)):
+            with self.subTest(ip=ip):
+                target = tmp / "hostd.json"
+                subprocess.run([sys.executable, "-c", code.replace("/etc/bro/hostd.json", str(target)),
+                                "203-0-113-7.sslip.io", "runc", ip], check=True)
+                settings = json.loads(target.read_text())
+                self.assertEqual(settings.get("egress_blocked"), blocked)
+                self.assertEqual(settings["runtime"], "runc")
         self.assertLess(PROVISION.index("systemctl enable --now bro-hostd"), PROVISION.index("stage rootfs"))
 
 

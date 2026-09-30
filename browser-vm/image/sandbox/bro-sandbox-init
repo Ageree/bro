@@ -7,7 +7,12 @@ exactly the VM's command lines, users and environment.
   `ExecStart=`, `RestartSec=`, `TimeoutStopSec=`; `Restart=always` for all three, as on the VM). Like
   systemd for `Type=simple`, a unit is started without waiting for the one before it to be ready.
 - Stop is `KillMode=mixed`: SIGTERM to the main process (Chrome writes cookies to the profile), SIGKILL to
-  what is left of its process group once it exits or `TimeoutStopSec` runs out.
+  what is left of its process group once it exits or `TimeoutStopSec` runs out. A main process that
+  outlived `TimeoutStopSec` is logged as "<unit> killed": a pool host's park reads that line in the log
+  (browser-vm/host/hostd.py `init_killed_chrome`) and reports the profile as possibly behind.
+- Before the units start, the X server's lock and socket of display :99 go: a sandbox started again on the
+  overlay of a stopped one (a pool host's park that could not upload) would find the old Xvfb's lock with a
+  pid that is the new Xvfb's own, and Xvfb would refuse the display for ever.
 - The worker's `sudo systemctl start|stop|restart bro-chrome` reaches this process through the
   `systemctl` shim (`/usr/bin/systemctl` in the sandbox) over a root-only socket.
 - Environment variables `BRO_*` of this process pass to every unit (`BRO_WORKER_BIND` for the worker);
@@ -149,13 +154,17 @@ class Init:
         while service.pid is not None and time.monotonic() < deadline:
             time.sleep(0.1)
             self.reap()
+        killed = service.pid is not None
         # KillMode=mixed: the rest of the unit (Chrome's helpers) gets SIGKILL.
         with _suppress():
             os.killpg(pid, signal.SIGKILL)
         while service.pid is not None:
             time.sleep(0.05)
             self.reap()
-        log(f"{service.name} stopped")
+        if killed:
+            log(f"{service.name} killed: still running {service.unit['stop_timeout']:g} s after SIGTERM")
+        else:
+            log(f"{service.name} stopped")
 
     def control(self, line):
         parts = line.split()
@@ -202,6 +211,13 @@ class Init:
             self.stop(self.services[name])
 
 
+def clear_display_locks(tmp=Path("/tmp"), display=99):
+    """Xvfb's lock file and socket of a server that did not stop cleanly (see the module's docstring)."""
+    for path in (tmp / f".X{display}-lock", tmp / ".X11-unix" / f"X{display}"):
+        with _suppress():
+            path.unlink()
+
+
 class _suppress:
     def __enter__(self):
         return self
@@ -215,6 +231,7 @@ def main():
     Path("/tmp/.X11-unix").mkdir(mode=0o1777, exist_ok=True)
     with _suppress():
         os.chmod("/tmp/.X11-unix", 0o1777)
+    clear_display_locks()
     init = Init()
 
     def terminate(*_):

@@ -68,7 +68,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-30.1"
+VERSION = "2026-09-30.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1711,8 +1711,11 @@ async def reset_profile(request):
 
 
 async def park(request):
-    """Before a pool host freezes this sandbox (`runsc checkpoint`, browser-vm/host): the snapshot keeps
-    everything in memory, so the worker drops what it holds of the secrets first. The proxy login goes with
+    """Before a pool host parks this sandbox (browser-vm/host). Under runc (the pool's default) the host
+    then stops the sandbox gracefully and keeps the Chrome profile alone: runs, sessions with their agent
+    memory and saved tabs are gone after the restore, which starts this worker empty. Under gVisor the host
+    freezes it (`runsc checkpoint`): the snapshot keeps everything in memory, so the worker drops what it
+    holds of the secrets first. The proxy login goes with
     the forwarder's upstream and its open tunnels (Chrome gets 502 until the next POST /v1/session), the
     model key, 2Captcha key and site secrets with each session; after the restore Bro sends them again as
     after a worker restart. Best effort: Python does not zero freed strings, so copies may remain in the
@@ -1863,6 +1866,20 @@ def application():
     return app
 
 
+def quiet_browser_use(environ):
+    """browser-use's settings (read from the environment at use): nothing of it goes out but the run's
+    own traffic. From Cloud.ru GitHub, PyPI and openrouter.ai accept connections and answer nothing
+    (30.09.2026): pricing (LiteLLM's list from GitHub, then openrouter.ai) held finished runs for minutes,
+    and the version check at every run start (PyPI, a 3 s timeout) delays each one. Tokens are counted
+    either way; Bro prices them (shared/costs/prices.ts)."""
+    environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+    environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
+    environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
+    # Not defaults: `true` in the unit's environment would turn the fetches back on.
+    environ["BROWSER_USE_CALCULATE_COST"] = "false"
+    environ["BROWSER_USE_VERSION_CHECK"] = "false"
+
+
 async def vm_address():
     with contextlib.suppress(Exception):
         async with aiohttp.ClientSession() as http:
@@ -1876,11 +1893,7 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     for noisy in ("browser_use", "cdp_use", "bubus", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
-    os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
-    os.environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
-    # Not a default: `true` here would turn pricing (and its fetches) back on under calculate_cost=False.
-    os.environ["BROWSER_USE_CALCULATE_COST"] = "false"
+    quiet_browser_use(os.environ)
     for directory in (RUNS, SESSIONS, UPLOADS):
         directory.mkdir(parents=True, exist_ok=True)
     worker = Worker()

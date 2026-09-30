@@ -45,7 +45,7 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "hostd.py", "network.py", "sets.py", "caddy.py", "requirements.txt")
+FILES = ("provision.sh", "hostd.py", "network.py", "sets.py", "caddy.py", "seccomp.json", "requirements.txt")
 VENDOR = json.loads((HERE / "vendor.json").read_text())
 RUNTIMES = ("runc", "runsc")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")

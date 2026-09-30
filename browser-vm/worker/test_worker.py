@@ -64,6 +64,19 @@ class TokenTest(unittest.TestCase):
             worker.verify_token(TOKEN, CONFIG, 0, 1790000300 - worker.MAX_TOKEN_LIFETIME_S - 5)
 
 
+class BrowserUseSettingsTest(unittest.TestCase):
+    def test_nothing_of_browser_use_goes_out_but_the_run(self):
+        # From Cloud.ru PyPI and GitHub accept and never answer: pricing held runs for minutes, the version
+        # check (PyPI) delays every start. A `true` from the unit's environment is overridden.
+        environ = {"BROWSER_USE_CALCULATE_COST": "true", "BROWSER_USE_VERSION_CHECK": "true",
+                   "ANONYMIZED_TELEMETRY": "true"}
+        worker.quiet_browser_use(environ)
+        self.assertEqual(environ, {"BROWSER_USE_CALCULATE_COST": "false", "BROWSER_USE_VERSION_CHECK": "false",
+                                   "ANONYMIZED_TELEMETRY": "true", "BROWSER_USE_CLOUD_SYNC": "false",
+                                   "BROWSER_USE_SETUP_LOGGING": "false"})
+        self.assertIn("    quiet_browser_use(os.environ)\n", Path(worker.__file__).read_text())
+
+
 class ListenTest(unittest.TestCase):
     def listen_host(self, **env):
         # A fresh copy of the module, since the address is read once at import.
