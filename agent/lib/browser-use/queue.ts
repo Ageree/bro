@@ -1,4 +1,5 @@
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
@@ -397,6 +398,14 @@ export async function startQueuedBrowserRun(
           { waitsForAccount: null }
         );
       }
+      // Who asked for the errand decides how long its VM stays up after
+      // it, written before the start wakes or touches the VM.
+      if (onBrowserVm(current.profileId)) {
+        await keepBrowserVmForErrand(
+          current.workspaceId,
+          current.startedByPerson !== false
+        );
+      }
       run = await createQueuedRun(current, reference);
     }
   } catch (error) {
@@ -449,6 +458,7 @@ export async function startQueuedBrowserRun(
         rootSessionId: current.rootSessionId,
         sessionId: run.sessionId,
         site: current.site,
+        startedByPerson: current.startedByPerson,
         status: "running",
         // The run is the errand the person confirmed on the card, so it
         // carries that confirmation — and only that one.

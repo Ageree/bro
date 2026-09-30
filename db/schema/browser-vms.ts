@@ -106,6 +106,17 @@ export const browserVms = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+    // Null while the VM is on the person's idle window: it stops once
+    // unused for `BROWSER_VM_IDLE_MINUTES` since `last_used_at`. Set, the VM
+    // is on an errand nobody waits for (a schedule's, a report turn's) or on
+    // a page waiting for the person's code, and it stops at this moment,
+    // or a short grace after its last use, whichever comes later
+    // (`agent/lib/browser-vm/idle.ts`).
+    stopNotBefore: timestamp("stop_not_before", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // The watchdog measures a VM that does not come up from here.
     stateChangedAt: timestamp("state_changed_at", {
       mode: "date",
@@ -133,6 +144,14 @@ export const browserVms = pgTable(
     // it comes up again. Meanwhile only an errand powers it on: the reconcile
     // would otherwise start it over and over to wipe a forgotten profile.
     givenUpAt: timestamp("given_up_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    // Since when Cloud.ru bills the VM's compute: set when Bro powers it on
+    // (or first finds it on), cleared once the VM is off or gone and that
+    // stretch is on record in `usage_costs` (`closeUptime` in lifecycle.ts).
+    poweredOnAt: timestamp("powered_on_at", {
       mode: "date",
       precision: 3,
       withTimezone: true,

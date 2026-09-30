@@ -1,5 +1,6 @@
 import { defineHook, type HookContext } from "eve/hooks";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { keepBrowserVmAfterReport } from "@agent/lib/browser-vm/idle";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import {
   finishBrowserRunReport,
@@ -14,6 +15,17 @@ import {
 function reportedRunId(ctx: HookContext) {
   if (ctx.session.parent) return undefined;
   return reportedBrowserRunId(ctx.session.auth.current);
+}
+
+/**
+ * Mark the report delivered; true when this call was the one that did. A
+ * browser VM on the short window of an errand nobody waits for stops a
+ * little after this (`agent/lib/browser-vm/idle.ts`).
+ */
+async function finishReport(runId: string) {
+  const finished = await finishBrowserRunReport(runId);
+  if (finished) await keepBrowserVmAfterReport(runId);
+  return finished;
 }
 
 /**
@@ -54,9 +66,7 @@ export default defineHook({
         (result.kind === "tool-result" &&
           result.toolName === "browser_task" &&
           result.isError !== true);
-      await (handled
-        ? finishBrowserRunReport(runId)
-        : renewBrowserRunReportLease(runId));
+      await (handled ? finishReport(runId) : renewBrowserRunReportLease(runId));
     },
     async "turn.completed"(_event, ctx) {
       const runId = reportedRunId(ctx);
@@ -64,7 +74,7 @@ export default defineHook({
       // A turn that got a message through or acted has settled the report
       // already; one that ends here said nothing — its report had reached
       // the person before, or the model ended it without a word.
-      if (await finishBrowserRunReport(runId)) {
+      if (await finishReport(runId)) {
         console.info("[browser-use] report turn ended without a message", {
           runId,
           sessionId: ctx.session.id,
@@ -74,7 +84,7 @@ export default defineHook({
     // Someone stopped the turn on purpose; it is not sent again.
     async "turn.cancelled"(_event, ctx) {
       const runId = reportedRunId(ctx);
-      if (runId) await finishBrowserRunReport(runId);
+      if (runId) await finishReport(runId);
     },
     async "turn.failed"(event, ctx) {
       const runId = reportedRunId(ctx);

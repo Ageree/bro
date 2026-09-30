@@ -265,6 +265,10 @@
   (qwen 1 из 6), DeepSeek там картинку не получает вовсе.
 - Вектор токена worker общий у `browser-vm/worker/test_worker.py` и
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
+- Простой VM по тому, кто разбудил: `stop_not_before` null — окно человека по
+  `last_used_at`. Фоновое поручение пишет срок до старта (старт трогает
+  `last_used_at` и продлил бы окно человека), но не при идущем поручении
+  человека: снимок заморозил бы его окно (`idle.ts`, `stopIfIdle`).
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
   `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
 - В VM Evolution виден `/dev/kvm` (`nested=Y`), но поддержка (30.09):
@@ -277,6 +281,12 @@
   `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`, регион `ru-central-1`; без
   верного tenant — `NoSuchTenant`; скачивание частями в 4 потока в 3–4 раза
   быстрее одного.
+- Хост пула — `browser-vm/host/`. Его тестам нужен cryptography, а системный
+  пакет облачной сессии падает паникой pyo3: ставьте свой
+  (`pip install --ignore-installed cryptography cffi`). `nftables.service`
+  Ubuntu делает `flush ruleset`: на хосте он выключен, таблицу ставит `hostd`.
+  aiohttp перекодирует presigned URL (`%2F` → `/`, `%3A` → `:`), и подпись S3
+  не сходится: только `yarl.URL(url, encoded=True)` (`sets.transfer`).
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
@@ -343,6 +353,13 @@
 - Постоянные разрешения — поле `actions` той же политики: новый ключ `settings`
   требует миграции CHECK. Расширение решает `policyWidens`
   (`shared/spending/limit.ts`) той же проверкой покрытия, что и платёж.
+
+## Учёт расходов
+
+- `usage.total_cost` worker — цена browser-use по его долларовому прайсу
+  (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
+  `shared/costs/prices.ts`. Трафик прокси по запуску (`traffic`) отдаёт только
+  обновлённый worker; хуки родителя шаги субагентов не видят.
 
 ## Google
 

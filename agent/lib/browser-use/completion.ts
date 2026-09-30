@@ -20,6 +20,8 @@ import {
   type BrowserUseRunStatus,
 } from "./client";
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { keepBrowserVmForPersonStep } from "@agent/lib/browser-vm/idle";
+import { recordBrowserUseRunCost } from "@agent/lib/costs/browser";
 import {
   captchaRetryAt,
   captchaRetryWindowMinutes,
@@ -118,6 +120,17 @@ export async function settleBrowserRun(
       : undefined;
   if (status === undefined) {
     return { kind: "open" as const, summaryStatus: run.status };
+  }
+  // A VM run's cost is recorded from its worker (`browser-vm/runs.ts`).
+  const costUsd = run.totalCostUsd ?? undefined;
+  if (!isBrowserVmId(runId) && costUsd !== undefined) {
+    await recordBrowserUseRunCost({
+      costUsd,
+      now: new Date(),
+      runId,
+      sessionId: run.sessionId,
+      workspaceId: row.workspaceId,
+    });
   }
 
   const { interrupted, missingSite, parsed } = await networkVerdict(
@@ -246,6 +259,8 @@ export async function settleBrowserRun(
   const released = keepsPage(parsed.needs)
     ? false
     : await persistProfileCookies(claimed.id, run.sessionId);
+  // On a browser VM, the page waits for the person's reply that long.
+  if (keepsPage(parsed.needs)) await keepBrowserVmForPersonStep(claimed.id);
   await recordRunSignIns(claimed, {
     needs: parsed.needs,
     signedIn: parsed.signedIn,

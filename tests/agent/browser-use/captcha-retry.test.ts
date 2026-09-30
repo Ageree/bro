@@ -80,6 +80,13 @@ vi.mock("@db/services/browser-runs", () => ({
   parkBrowserRunForRetry,
   readBrowserRun,
 }));
+// Who asked for the errand decides how long its VM stays up after it.
+const keepBrowserVmForErrand = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, byPerson: boolean) => Promise<void>>(() =>
+    Promise.resolve()
+  )
+);
+vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForErrand }));
 vi.mock("@agent/lib/browser-use/secrets", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseSecrets>()),
   resolveBrowserSecretBindings,
@@ -112,6 +119,7 @@ function parkedRow(captchaAttempt: number) {
     rootSessionId: "session-root",
     sessionId: "walled-session",
     site: "https://shop.example",
+    startedByPerson: true,
     status: "waiting" as const,
     // What the person confirmed on the card when the errand started.
     submission: {
@@ -422,6 +430,51 @@ describe("the anti-bot retry policy", () => {
       retryAt: new Date("2026-09-23T12:45:00.000Z"),
     });
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [null, true],
+  ] as const)(
+    "keeps a VM retry of an errand the person started (%s) on their idle window: %s",
+    async (startedByPerson, byPerson) => {
+      readBrowserUseRun.mockResolvedValue({
+        sessionId: "vm:workspace:alice:s:1",
+        task: "Найди айфон\n\nSite: …",
+      });
+      const { startCaptchaRetry } =
+        await import("@agent/lib/browser-use/captcha-retry");
+
+      await startCaptchaRetry({
+        ...parkedRow(1),
+        profileId: "vm:workspace:alice:p1",
+        startedByPerson,
+      });
+
+      expect(keepBrowserVmForErrand).toHaveBeenCalledExactlyOnceWith(
+        "workspace:alice",
+        byPerson
+      );
+      expect(keepBrowserVmForErrand.mock.invocationCallOrder[0]).toBeLessThan(
+        createBrowserUseRun.mock.invocationCallOrder[0] ?? 0
+      );
+      // The retry carries who started the errand.
+      expect(handOffBrowserRunRetry).toHaveBeenCalledWith(
+        runId,
+        expect.objectContaining({ startedByPerson })
+      );
+    }
+  );
+
+  it("leaves the VM idle window alone for a Browser Use retry", async () => {
+    readBrowserUseRun.mockResolvedValue({ task: "Найди айфон" });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry(parkedRow(1));
+
+    expect(keepBrowserVmForErrand).not.toHaveBeenCalled();
   });
 
   it("goes on in a VM attempt's own session, whose agent kept what it found", async () => {

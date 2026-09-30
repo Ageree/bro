@@ -235,7 +235,32 @@ export const env = createEnv({
       .min(3, "BROWSER_VM_IDLE_MINUTES must be at least 3")
       .max(240, "BROWSER_VM_IDLE_MINUTES must be at most 240")
       .default(20),
+    // An errand nobody waits for — a schedule's, a background worker's, a
+    // browser report's follow-up — stops its VM this long after its report
+    // reached the conversation, unless a person's errand keeps it longer.
+    BROWSER_VM_IDLE_BACKGROUND_MINUTES: z.coerce
+      .number()
+      .int(
+        "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be a whole number of minutes"
+      )
+      .min(1, "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be at least 1")
+      .max(240, "BROWSER_VM_IDLE_BACKGROUND_MINUTES must be at most 240")
+      .default(2),
+    // A run that stopped for the person's code or answer keeps its VM this
+    // long after it settled: the page waits there for the reply.
+    BROWSER_VM_IDLE_CODE_MINUTES: z.coerce
+      .number()
+      .int("BROWSER_VM_IDLE_CODE_MINUTES must be a whole number of minutes")
+      .min(3, "BROWSER_VM_IDLE_CODE_MINUTES must be at least 3")
+      .max(240, "BROWSER_VM_IDLE_CODE_MINUTES must be at most 240")
+      .default(15),
     BROWSER_VM_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    // What a gigabyte of the VM's residential proxy traffic costs, for the
+    // cost accounting (`usage_costs`). Geonode bills about $0.27 a GB and up.
+    BROWSER_VM_PROXY_RUB_PER_GB: z.coerce
+      .number()
+      .nonnegative("BROWSER_VM_PROXY_RUB_PER_GB must not be negative")
+      .default(23),
     // 2Captcha, for a slider puzzle the VM's worker could not place itself:
     // it gets the puzzle and the page's address, nothing of the person.
     BROWSER_VM_TWOCAPTCHA_API_KEY: pastedKeySchema.optional(),
@@ -401,6 +426,19 @@ export const env = createEnv({
     // the owner's decision. "on" restores the per-day/per-month ceilings and
     // the paywall.
     USAGE_LIMITS: z.enum(["on", "off"]).default("off"),
+    // The bearer token of the owner's cost report (`GET /api/usage-costs`).
+    // Unset, the report does not exist.
+    USAGE_REPORT_TOKEN: z
+      .string()
+      .trim()
+      .min(32, "USAGE_REPORT_TOKEN must be at least 32 characters")
+      .optional(),
+    // Roubles per dollar for costs billed in dollars (OpenRouter, Browser Use
+    // Cloud), converted when the cost is recorded.
+    USAGE_USD_RUB: z.coerce
+      .number()
+      .positive("USAGE_USD_RUB must be greater than zero")
+      .default(84.41),
     VERCEL_BRANCH_URL: requiredValue.optional(),
     VERCEL_ENV: z.enum(["production", "preview", "development"]).optional(),
     VERCEL_PROJECT_ID: requiredValue.optional(),

@@ -118,6 +118,39 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"Proxy-Authorization: Basic {login}", head)
         self.assertEqual(head.count("Proxy-Authorization"), 1)
 
+    async def test_drop_closes_the_tunnels_that_carry_the_login(self):
+        held = asyncio.Event()
+
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            await writer.drain()
+            held.set()
+            await reader.read()  # keeps the tunnel open until the forwarder closes it
+            writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        forwarder = worker.Forwarder()
+        forwarder.configure({"host": "127.0.0.1", "port": up.sockets[0].getsockname()[1], "username": "u",
+                             "password": "p"})
+        server = await asyncio.start_server(forwarder.handle, "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+        writer.write(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+        await writer.drain()
+        await asyncio.wait_for(held.wait(), 5)
+        await reader.readuntil(b"\r\n\r\n")
+        self.assertEqual(len(forwarder.open), 2)
+        forwarder.drop()
+        self.assertEqual(await asyncio.wait_for(reader.read(), 5), b"")  # the tunnel is gone
+        for _ in range(50):
+            if not forwarder.open:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual((forwarder.open, forwarder.upstream), (set(), None))
+        writer.close()
+        server.close()
+        up.close()
+
 
 LLM = {"baseUrl": "https://llm.test/v1", "apiKey": "k", "model": "m"}
 
@@ -364,6 +397,21 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.max_steps, 60)
         self.assertEqual(started, {"n_steps": 1, "plan_generation_step": None, "last_compaction_step": None})
 
+    async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
+        async def browse(agent, on_step_start):
+            await on_step_start(agent)
+            self.worker.forwarder.totals["up"] += 1_000
+            self.worker.forwarder.totals["down"] += 250_000
+            return FakeHistory(True)
+
+        self.worker.forwarder.totals.update({"up": 7, "down": 70})  # the exit check before the run
+        FakeAgent.script = browse
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertEqual(run.public()["traffic"], {"up": 1_000, "down": 250_000})
+        self.assertEqual(self.on_disk("r1")["traffic"], {"up": 1_000, "down": 250_000})
+        self.assertEqual(worker.Run.load(self.on_disk("r1")).traffic, {"up": 1_000, "down": 250_000})
+
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)
         records = [("r1", "2026-09-28T10:00:00Z", {"n_steps": 5, "history": []}),
@@ -530,6 +578,46 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         # The follow-up run must resolve the same secret, not silently lose it.
         self.assertEqual(FakeAgent.built[-1].options["sensitive_data"], {"https://*.shop.test": {
             "site_password": "hunter2"}})
+
+    async def test_park_forgets_every_secret_in_memory(self):
+        binding = [{"alias": "site_password", "allowedDomains": ["shop.test"], "value": "hunter2"}]
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "secrets": binding, "captcha": {"twoCaptchaKey": "2c"},
+                                     "jev": {"apiKey": "jev-key"}, "maxSteps": 5})
+        await self.settled("r1")
+        tunnel = mock.Mock()
+        self.worker.forwarder.open.add(tunnel)  # a CONNECT in flight holds the login in its handler
+        self.assertEqual(await self.call("POST", "/v1/park"), (200, {"parked": True}))
+        tunnel.close.assert_called_once()
+        session = self.worker.sessions["s1"]
+        self.assertIsNone(self.worker.forwarder.upstream)  # Chrome gets 502 until the next POST /v1/session
+        self.assertEqual((session.llm, session.captcha, session.sensitive_data), (None, None, None))
+        self.assertEqual(session.options["maxSteps"], 5)
+        self.assertNotIn("jev", session.options)
+        # After the restore Bro sends the model again: until then a follow-up is refused, not run keyless.
+        status, answer = await self.call("POST", "/v1/sessions/s1/messages", {"text": "Go on."})
+        self.assertEqual((status, answer["error"]), (409, "session has no model; start a run"))
+
+    async def test_park_is_refused_while_a_run_works(self):
+        in_step, go_on = asyncio.Event(), asyncio.Event()
+
+        async def held(agent, on_step_start):
+            await on_step_start(agent)
+            in_step.set()
+            await go_on.wait()
+            agent.state.n_steps += 1
+            return FakeHistory(True)
+
+        FakeAgent.script = held
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        await self.reached(in_step)
+        self.assertEqual(await self.call("POST", "/v1/park"), (409, {"error": "busy"}))
+        self.assertIsNotNone(self.worker.forwarder.upstream)
+        self.worker.runs["r1"].cancel_requested = True  # cancelling is still working
+        self.assertEqual((await self.call("POST", "/v1/park"))[0], 409)
+        go_on.set()
+        await self.settled("r1")
+        self.assertEqual((await self.call("POST", "/v1/park"))[0], 200)
 
     async def test_a_second_post_runs_in_the_same_session_without_secrets_keeps_the_first_ones(self):
         # A retried `POST /v1/runs` in the same session whose caller happens not to resend `secrets`

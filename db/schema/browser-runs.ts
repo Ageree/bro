@@ -115,6 +115,12 @@ export const browserRuns = pgTable(
     // when the errand may only look. The errand's follow-ups and background
     // retries carry it; a new errand starts without one.
     submission: jsonb("submission").$type<ConfirmedSubmission>(),
+    // Whether the person started the errand in their own turn, rather than a
+    // schedule, a background worker or a report turn. A browser VM stays up
+    // longer after the person's errand (`agent/lib/browser-vm/idle.ts`); its
+    // queued start and background retries carry it. Null on runs from before
+    // it was recorded, which count as the person's.
+    startedByPerson: boolean("started_by_person"),
     // Which attempt of its errand this run is against an anti-bot wall: the
     // run the person started is 1, each background retry adds one.
     captchaAttempt: integer("captcha_attempt").notNull().default(1),

@@ -1,8 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
+import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
-import { listWorkspacesHoldingBrowsers } from "@db/services/browser-runs";
+import {
+  listWorkspacesHoldingBrowsers,
+  workspaceHasPendingBrowserErrand,
+} from "@db/services/browser-runs";
 import {
   claimBrowserVmLease,
   clearBrowserVmProfileReset,
@@ -14,7 +18,6 @@ import {
   releaseBrowserVmLease,
   updateBrowserVm,
 } from "@db/services/browser-vms";
-import { env } from "@shared/environment";
 import {
   CloudRuError,
   CloudRuUnsentError,
@@ -26,6 +29,7 @@ import {
   readCloudRuVm,
   setCloudRuVmPower,
 } from "./cloudru";
+import { browserVmIdleStopDue, browserVmUnusedBefore } from "./idle";
 import { browserVmProxy, browserVmProxySession } from "./proxy";
 import { browserVmCloudInit } from "./token";
 import {
@@ -50,6 +54,14 @@ import {
 
 type BrowserVm = typeof browserVms.$inferSelect;
 type CloudVm = NonNullable<Awaited<ReturnType<typeof readCloudRuVm>>>;
+
+/** The states in which Cloud.ru bills the VM's compute. */
+const poweredStates = new Set<BrowserVm["state"]>([
+  "creating",
+  "starting",
+  "ready",
+  "stopping",
+]);
 
 /** A create, a power change or a deletion request is answered well inside this. */
 const leaseMs = 2 * 60_000;
@@ -173,11 +185,103 @@ async function writeHeld(
   patch: Parameters<typeof updateBrowserVm>[1],
   now: Date
 ) {
-  return updateBrowserVm(
+  const leaseUntil = vm.leaseUntil ?? undefined;
+  const closed = await closeUptime(vm.workspaceId, patch, now);
+  const row = await updateBrowserVm(
     vm.workspaceId,
-    patch,
+    closed ? { ...patch, poweredOnAt: null } : patch,
     now,
-    vm.leaseUntil ?? undefined
+    leaseUntil
+  );
+  // A VM on its way up, up or on its way down bills from the first time Bro
+  // writes it so (the migration stamped the VMs already on).
+  if (row.poweredOnAt !== null || !poweredStates.has(row.state)) return row;
+  try {
+    return await updateBrowserVm(
+      vm.workspaceId,
+      { poweredOnAt: now },
+      now,
+      leaseUntil
+    );
+  } catch (error) {
+    // The accounting never fails a step on the VM.
+    console.warn("[usage-costs] the VM's power-on was not written down", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId: vm.workspaceId,
+    });
+    return row;
+  }
+}
+
+/**
+ * Whether Cloud.ru no longer bills the VM's compute: it is off, or a create
+ * or a give-up left no VM behind.
+ */
+function uptimeEnded(state: BrowserVm["state"], vmId: string | null) {
+  return state === "stopped" || (state === "failed" && vmId === null);
+}
+
+/**
+ * Record the stretch the VM was on when this write ends it, or when an
+ * earlier write ended it but could not record it (the end is then when the
+ * record took that state), and say whether the write may clear its start.
+ * The start is read afresh: a step may carry a row read before it powered
+ * on. A stretch that could not be recorded keeps its start for the next
+ * write to try again, unless the VM is on its way up again: the old stretch
+ * is then let go (logged), rather than billed through the time it was off.
+ * An unreadable record leaves the clock as it is.
+ */
+async function closeUptime(
+  workspaceId: string,
+  patch: Parameters<typeof updateBrowserVm>[1],
+  now: Date
+) {
+  let row: BrowserVm | undefined;
+  try {
+    row = await readBrowserVm(workspaceId);
+  } catch (error) {
+    console.warn("[usage-costs] the VM's power-on could not be read", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId,
+    });
+    return false;
+  }
+  if (row?.poweredOnAt === null || row?.poweredOnAt === undefined) return false;
+  const endedBefore = uptimeEnded(row.state, row.vmId);
+  const endsNow = uptimeEnded(
+    patch.state ?? row.state,
+    patch.vmId === undefined ? row.vmId : patch.vmId
+  );
+  if (!endedBefore && !endsNow) return false;
+  const recorded = await recordBrowserVmUptime(
+    workspaceId,
+    row.poweredOnAt,
+    endedBefore ? row.stateChangedAt : now
+  );
+  return recorded || !endsNow;
+}
+
+/**
+ * Record a removed VM's last stretch before its record goes. False when it
+ * could not be: the deletion keeps the record and the reconcile tries again,
+ * until the deletion is overdue and goes ahead without it.
+ */
+async function closeRemovedUptime(vm: BrowserVm, now: Date) {
+  let row: BrowserVm | undefined;
+  try {
+    row = await readBrowserVm(vm.workspaceId);
+  } catch (error) {
+    console.warn("[usage-costs] the VM's power-on could not be read", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId: vm.workspaceId,
+    });
+    return false;
+  }
+  if (row?.poweredOnAt === null || row?.poweredOnAt === undefined) return true;
+  return recordBrowserVmUptime(
+    vm.workspaceId,
+    row.poweredOnAt,
+    uptimeEnded(row.state, row.vmId) ? row.stateChangedAt : now
   );
 }
 
@@ -272,7 +376,7 @@ export async function prepareBrowserVmSession(
 export async function reconcileBrowserVms(now = new Date()) {
   const rows = await listBrowserVmsToReconcile(
     now,
-    idleSince(now),
+    browserVmUnusedBefore(now),
     reconcileLimit
   );
   await Promise.all(
@@ -315,11 +419,6 @@ export async function deleteBrowserVm(workspaceId: string, now = new Date()) {
 
 function starting(retryAfterMs: number) {
   return { kind: "starting" as const, retryAfterMs };
-}
-
-/** The moment before which an unused VM counts as idle. */
-function idleSince(now: Date) {
-  return new Date(now.getTime() - env.BROWSER_VM_IDLE_MINUTES * 60_000);
 }
 
 function overdue(vm: BrowserVm, now: Date, afterMs: number) {
@@ -675,7 +774,7 @@ async function wipeProfile(vm: BrowserVm, now: Date) {
 }
 
 /**
- * Check on a ready VM that went unused for the idle window or has a profile
+ * Check on a ready VM whose idle window may be over or that has a profile
  * to wipe, and stop it when idle. A worker that misses a health check keeps
  * its VM; after a few in a row the VM goes back to `starting`, where the
  * watchdog reboots it and then hands it to the owner.
@@ -708,28 +807,26 @@ async function tendReadyVm(vm: BrowserVm, now: Date) {
 }
 
 /**
- * Stop a VM nobody used for the idle window: no errand read or started a run
- * on it, no run of it is open, and no errand's page is kept in its browser.
- * Chrome is stopped first so it writes its cookies to the profile, and the
- * state is written before the power goes off: an errand that touched the VM
- * in between is seen and keeps it up.
+ * Stop a VM whose idle window is over (`idle.ts`: the person's, or the short
+ * one of an errand nobody waits for or a code wait): no run of it is open, no
+ * errand's page is kept in its browser, and no errand is queued for it,
+ * parked for a retry, or owed its report. Chrome is stopped first so it
+ * writes its cookies to the profile, and the state is written before the
+ * power goes off: an errand that touched the VM or moved its window in
+ * between is seen and keeps it up.
  */
 async function stopIfIdle(vm: BrowserVm, now: Date) {
   const { vmId, workspaceId } = vm;
   if (vmId === null) return;
-  if (
-    vm.lastUsedAt !== null &&
-    vm.lastUsedAt.getTime() > idleSince(now).getTime()
-  ) {
-    return;
-  }
+  if (!browserVmIdleStopDue(vm, now)) return;
   if (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs)) {
     return;
   }
   const holding = await listWorkspacesHoldingBrowsers([workspaceId], now);
   if (holding.length > 0) return;
+  if (await workspaceHasPendingBrowserErrand(workspaceId, now)) return;
   const stopping = await writeHeld(vm, { state: "stopping" }, now);
-  if (stopping.lastUsedAt?.getTime() !== vm.lastUsedAt?.getTime()) {
+  if (!browserVmIdleStopDue(stopping, now)) {
     await writeHeld(vm, { state: "ready" }, now);
     return;
   }
@@ -1101,6 +1198,12 @@ async function removeBrowserVm(vm: BrowserVm, now: Date) {
     present([vm.floatingIpId]).map(async (id) => deleteCloudRuFloatingIp(id))
   );
   await deleteCloudRuBackupsOf(present([vm.bootDiskId]));
+  if (
+    !(await closeRemovedUptime(vm, now)) &&
+    !overdue(vm, now, settleFailAfterMs)
+  ) {
+    return false;
+  }
   await deleteBrowserVmRecord(vm.workspaceId);
   return true;
 }
