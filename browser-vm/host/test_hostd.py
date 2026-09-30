@@ -406,6 +406,9 @@ class SandboxTest(HostTest):
         self.assertIn("203-0-113-7.sslip.io {", caddyfile)
         self.assertIn(f"handle_path /g/ws-abc/* {{\n\t\treverse_proxy 127.0.0.2:{self.worker_port}", caddyfile)
         self.assertIn(f"handle_path /g/ws-def/* {{\n\t\treverse_proxy 127.0.0.6:{self.worker_port}", caddyfile)
+        # The worker hands out CDP sockets under the prefix Caddy strips.
+        self.assertIn(f"127.0.0.2:{self.worker_port} {{\n\t\t\theader_up X-Forwarded-Prefix /g/ws-abc\n\t\t}}",
+                      caddyfile)
         self.assertIn("handle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090", caddyfile)
 
     async def test_generation_rules(self):

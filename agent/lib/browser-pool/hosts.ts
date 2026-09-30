@@ -19,7 +19,11 @@ import {
   updateBrowserHost,
 } from "@db/services/browser-hosts";
 import { env } from "@shared/environment";
-import { readBrowserHostCapacity, readBrowserHostHealth } from "./host";
+import {
+  browserHostReserveMb,
+  readBrowserHostCapacity,
+  readBrowserHostHealth,
+} from "./host";
 import { browserHostKey } from "./keys";
 import { presignBrowserStateObject } from "./s3";
 
@@ -58,8 +62,11 @@ const bootFailAfterMs = 15 * 60_000;
 const silentFailAfterMs = 5 * 60_000;
 /** A deletion Cloud.ru has not carried out this long after it goes to the owner. */
 const deleteAlertAfterMs = 15 * 60_000;
-/** `reserve_mb` of `hostd`: memory its sandboxes' limits leave to the host. */
-const hostReserveMb = 1_024;
+/**
+ * How long a failed host's deletion waits for its sandboxes to be taken off
+ * it: each is, a reconcile after the host failed, unless a step holds it.
+ */
+const strandedWaitMs = 10 * 60_000;
 /** How long the presigned URLs of the host's cloud-init stay good. */
 const bootUrlSeconds = 6 * 60 * 60;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
@@ -465,6 +472,15 @@ async function tendReady(host: BrowserHost, now: Date) {
  * the sets in Object Storage are what its sandboxes come back from.
  */
 async function removeHost(host: BrowserHost, now: Date) {
+  // The sandboxes still placed here are taken back to their sets first
+  // (`reconcileBrowserPool`): once the VM and its address go, the address
+  // may answer for another VM, and nothing of theirs must go there.
+  if (
+    (await countLiveSandboxesOnHost(host.id)) > 0 &&
+    !overdue(host, now, strandedWaitMs)
+  ) {
+    return false;
+  }
   const deleting =
     host.state === "deleting"
       ? host
@@ -530,7 +546,10 @@ function summary(
 ): BrowserHostCapacity {
   return {
     committedMb: capacity.memoryMb?.committed ?? 0,
-    limitMb: Math.max((capacity.memoryMb?.total ?? 0) - hostReserveMb, 0),
+    limitMb: Math.max(
+      (capacity.memoryMb?.total ?? 0) - browserHostReserveMb,
+      0
+    ),
     rootfsVersions: capacity.rootfsVersions,
     runsc: capacity.runsc,
     sandboxes: capacity.sandboxes.filter(

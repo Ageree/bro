@@ -23,6 +23,9 @@ type BrowserHostTarget = Readonly<
   Pick<typeof browserHosts.$inferSelect, "address" | "id">
 >;
 
+/** `reserve_mb` of `hostd`: memory its sandboxes' limits leave to the host. */
+export const browserHostReserveMb = 1_024;
+
 /** `hostd` refuses a token that lives longer. */
 const maximumTokenSeconds = 900;
 const healthTimeoutMs = 5_000;
@@ -77,6 +80,24 @@ const capacitySchema = z.object({
   shm: sizeSchema.nullable(),
 });
 
+const parkSchema = z.object({
+  chunks: z.number().int().positive(),
+  /** What a restore must match: runsc, CPU features, rootfs, memory. */
+  format: z.record(z.string(), z.json()),
+  generation: z.number().int(),
+  id: z.string(),
+  parts: z.record(
+    z.string(),
+    z.object({
+      bytes: z.number(),
+      chunks: z.number().int(),
+      plainBytes: z.number(),
+    })
+  ),
+  state: z.literal("parked"),
+  timings: z.record(z.string(), z.number()),
+});
+
 const sandboxSchema = z.object({
   error: z.string().nullish(),
   /** Why a restore fell back to a cold start. */
@@ -96,24 +117,11 @@ const sandboxSchema = z.object({
     "failed",
   ]),
   workspace: z.string(),
-});
-
-const parkSchema = z.object({
-  chunks: z.number().int().positive(),
-  /** What a restore must match: runsc, CPU features, rootfs, memory. */
-  format: z.record(z.string(), z.json()),
-  generation: z.number().int(),
-  id: z.string(),
-  parts: z.record(
-    z.string(),
-    z.object({
-      bytes: z.number(),
-      chunks: z.number().int(),
-      plainBytes: z.number(),
-    })
-  ),
-  state: z.literal("parked"),
-  timings: z.record(z.string(), z.number()),
+  /**
+   * What the last park of this sandbox answered, while its record stays on
+   * the host: how a park whose answer was lost is read back.
+   */
+  parked: parkSchema.nullish(),
 });
 
 /** A `hostd` reply that was not a 2xx, with its JSON error when it had one. */
@@ -328,11 +336,28 @@ export async function deleteBrowserSandbox(
   host: BrowserHostTarget,
   input: { readonly generation: number; readonly workspaceId: string }
 ) {
+  return deleteBrowserHostSandbox(host, {
+    generation: input.generation,
+    id: browserSandboxId(input.workspaceId),
+  });
+}
+
+/**
+ * The same by the sandbox's own id, as `GET /v1/capacity` lists it: how a
+ * sandbox the host holds for nobody Bro knows of is cleared away.
+ */
+export async function deleteBrowserHostSandbox(
+  host: BrowserHostTarget,
+  input: { readonly generation: number; readonly id: string }
+) {
+  if (!/^[a-z\d-]{1,63}$/u.test(input.id)) {
+    throw new Error("A sandbox id matches [a-z0-9-]{1,63}.");
+  }
   try {
     await request(
       host,
       "DELETE",
-      `/v1/sandboxes/${browserSandboxId(input.workspaceId)}?generation=${String(input.generation)}`,
+      `/v1/sandboxes/${input.id}?generation=${String(input.generation)}`,
       { timeoutMs: readTimeoutMs }
     );
     return true;

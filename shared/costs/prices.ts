@@ -7,8 +7,17 @@ import { env } from "@shared/environment";
  * prices include VAT (tariff 7.EVO.1, `docs/browser-cloud-migration.md`).
  */
 
-/** A powered-on Cloud.ru VM, roubles an hour, by flavor. */
-const vmHourlyRub = new Map([["gen-2-4", 2.97]]);
+/**
+ * A powered-on Cloud.ru VM, roubles an hour, by flavor: a workspace's VM and
+ * the hosts of the browser pool (`docs/browser-pool.md`, section 3).
+ */
+const vmHourlyRub = new Map([
+  ["gen-2-4", 2.97],
+  ["gen-2-8", 5.5],
+  ["gen-4-16", 7.98],
+  ["gen-8-32", 15.96],
+  ["gen-16-64", 31.92],
+]);
 
 /**
  * What a workspace VM bills whether it runs or not: its SSD boot disk and

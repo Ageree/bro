@@ -292,6 +292,14 @@
   (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`:
   первичный ключ `browser_hosts` не даёт создать лишний. Cloud-init хоста в TS
   байт в байт как `boot.py cloud-init`; тест сверяет скрипт с `boot.py`.
+- Песочница пула — та же запись `browser_vms`: `state` зеркалит
+  `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
+  `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней
+  (`inBrowserPool`). Запись с `sandbox_state`, но без `host_id` worker не зовёт:
+  адрес удалённого хоста уже чужой (`origin` в `worker.ts`).
+- Presigned S3 Cloud.ru (PUT, GET, листинг, DELETE) работают из облачной
+  сессии; `pnpm build:eve` без заглушек `DATABASE_URL`/`BETTER_AUTH_*` падает
+  на «Invalid environment variables», как `pnpm build`.
 - knip не видит использование модуля в тесте, если его динамический `import()`
   разобран из `Promise.all([...])`: экспорт, нужный только тестам, импортируйте
   отдельным `await import(...)`.
