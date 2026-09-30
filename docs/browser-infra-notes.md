@@ -165,11 +165,27 @@
 ## Пул в Бро (`agent/lib/browser-pool/`)
 
 - 30.09 вечером зона `ru.AZ-3` в проекте Cloud.ru выключена (`enabled: false`;
-  в `/v1/availability-zones` её уже нет): создание любой VM с умолчаниями
-  `CLOUDRU_ZONE`, `CLOUDRU_SUBNET` (`Default_ru.AZ-3`) и группой `bro-browser`
-  (тоже в AZ-3) — 422 `wrong_az_by_name`. Пока не заведены подсеть и группа
-  безопасности в `ru.AZ-1`/`ru.AZ-2` и три env Vercel, ни хост пула, ни VM
-  пилота не создаются.
+  в `/v1/availability-zones` остались `ru.AZ-1` и `ru.AZ-2`): создание любой
+  VM с умолчаниями `CLOUDRU_ZONE`, `CLOUDRU_SUBNET` (`Default_ru.AZ-3`) и
+  группой `bro-browser` (тоже в AZ-3) — 422 `wrong_az_by_name`. Образы VM
+  (`bro-browser-2026-09-29-5/-6`) есть только в AZ-3, так что путь «VM на
+  воркспейс» не создаёт VM нигде; хост пула грузится со стоковой
+  `ubuntu-22.04`, она есть в AZ-1 и AZ-2 — пул и есть способ вернуть пилоту
+  браузер.
+- Пул переезжает в `ru.AZ-1`: подсеть `Default_ru.AZ-1` (`10.0.1.0/24`, шлюз
+  `10.0.1.1`, как `Default_ru.AZ-3`: `routed_network`, DNS `8.8.4.4`/`8.8.8.8`,
+  тот же `vpc_id`) и группа `bro-browser-az1` с правилами `bro-browser`
+  (вход tcp 80 и 443 с `0.0.0.0/0`, выход — всё). Env: `CLOUDRU_ZONE=ru.AZ-1`,
+  `CLOUDRU_SUBNET=Default_ru.AZ-1`, `CLOUDRU_SECURITY_GROUP=bro-browser-az1`.
+  Эти три env общие для хостов пула и VM воркспейса (`createVm` в
+  `agent/lib/browser-vm/cloudru.ts`): VM в AZ-1 создастся лишь с образом там.
+  Подсеть и группа 30.09 не заведены: облачной сессии не дали менять сеть
+  проекта — их заводит владелец (консоль или `POST /v1/subnets`,
+  `POST /v1/security-groups` + `/rules`), sNAT не нужен.
+- Схема: `GET /v1/subnets?project_id=…` отдаёт `subnet_address`,
+  `routed_network`, `default_gateway`, `dns_servers`, `vpc_id`, зону;
+  `GET /v1/security-groups?project_id=…` — группы вместе с `rules`;
+  `/v1/vpcs` — 404.
 
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
