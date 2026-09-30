@@ -86,6 +86,9 @@ GENERATION_FILE = ROOT / "generation"
 TABS_FILE = ROOT / "tabs.json"
 CDP_HTTP = "http://127.0.0.1:9222"
 LISTEN_PORT = int(os.environ.get("BRO_WORKER_PORT", "8080"))
+# Behind Caddy on the VM the worker listens on loopback only; in a gVisor sandbox (browser-vm/image/sandbox)
+# the host reaches it over the sandbox's own network namespace, so there it listens on that interface.
+LISTEN_HOST = os.environ.get("BRO_WORKER_BIND", "127.0.0.1")
 FORWARD_PORT = 3128
 MAX_TOKEN_LIFETIME_S = 900
 # The profile's size is a walk over tens of thousands of cache files: done at most once a minute.
@@ -1878,7 +1881,7 @@ async def main():
     forward = await asyncio.start_server(worker.forwarder.handle, "127.0.0.1", FORWARD_PORT)
     runner = web.AppRunner(application(), access_log=None)
     await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", LISTEN_PORT).start()
+    await web.TCPSite(runner, LISTEN_HOST, LISTEN_PORT).start()
     log.info("worker %s listening; configured=%s", VERSION, worker.config is not None)
     with contextlib.suppress(OSError):  # up: the update that brought this code in is not rolled back
         PREVIOUS_CODE.unlink(missing_ok=True)

@@ -33,8 +33,12 @@ def console_url(name, fresh):
     if vm is None:
         sys.exit("no such VM")
     cloudru.api("POST", f"/v1/vms/{vm['id']}/remote-console", {"protocol": "serial"})
-    time.sleep(2)
-    url = cloudru.api("GET", f"/v1/vms/{vm['id']}")[1]["remote_console_ws"]
+    url = None
+    for _ in range(10):  # the address shows up a moment after the POST; never cache an empty one
+        time.sleep(2)
+        url = cloudru.api("GET", f"/v1/vms/{vm['id']}")[1].get("remote_console_ws")
+        if url and url.startswith("wss://"):
+            break
     cloudru.write_private(cache, url)
     return url
 
@@ -45,9 +49,9 @@ class Console:
         self.buf = ""
         self.ws = self.connect()
 
-    def connect(self):
+    def connect(self, only_fresh=False):
         error = None
-        for fresh in (False, True):
+        for fresh in (True,) if only_fresh else (False, True):
             try:
                 # websocket-client ignores SSL_CERT_FILE; the cloud session proxy needs its CA bundle.
                 ca = {"ca_certs": os.environ["SSL_CERT_FILE"]} if os.environ.get("SSL_CERT_FILE") else None
@@ -84,6 +88,10 @@ class Console:
     def login(self):
         password = (cloudru.STATE_DIR / f"{self.name}.password").read_text()
         match = self.wait(PROMPTS, 15)
+        if match is None:
+            # A cached console URL can go silent without failing to connect: ask Cloud.ru for a new one.
+            self.ws = self.connect(only_fresh=True)
+            match = self.wait(PROMPTS, 15)
         if match and match.re.pattern.startswith("login"):
             self.send("root\r")
             self.wait([r"Password: "], 10)

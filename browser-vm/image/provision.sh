@@ -6,6 +6,10 @@
 # Stages go to /var/lib/bro/stage, so the builder can follow the install over /v1/health.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+# BRO_SANDBOX=1: the root of a gVisor sandbox (browser-vm/image/sandbox/build_rootfs.sh, in a chroot) rather
+# than a VM: no Caddy, no firewall and no systemd there — the host does TLS and egress, and
+# bro-sandbox-init runs the same units' commands.
+SANDBOX="${BRO_SANDBOX:-0}"
 IMAGE_VERSION="${IMAGE_VERSION:-unversioned}"
 mkdir -p /var/lib/bro /opt/bro/worker /etc/bro
 mkdir -p /var/lib/bro/status
@@ -27,7 +31,8 @@ chown -R bro:bro /var/lib/bro /opt/bro/worker
 # recreated from a disk comes up on a new one, so a boot unit writes the Caddyfile every start.
 retry apt-get update -q
 retry apt-get install -yq debian-keyring debian-archive-keyring apt-transport-https curl gnupg ca-certificates \
-  iptables jq
+  iptables jq sudo python3
+if [ "$SANDBOX" != 1 ]; then
 retry curl -1sLf -o /tmp/caddy.gpg.key https://dl.cloudsmith.io/public/caddy/stable/gpg.key
 gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy.gpg.key
 rm -f /tmp/caddy.gpg.key
@@ -73,6 +78,7 @@ ExecStart=/usr/local/sbin/bro-boot
 [Install]
 WantedBy=multi-user.target
 UNIT
+fi
 stage caddy
 
 # Chrome for the user `bro` may reach only loopback (the worker's proxy forwarder, CDP) and public
@@ -164,6 +170,9 @@ stage chrome
 
 # Python: browser-use 0.13.10 (the agent), aiohttp (the worker), OpenCV (slider puzzles); jev-ultrafast
 # at the pinned commit for the jev-then-agent engine.
+# BRO_PYTHON_PREINSTALLED=1: /opt/bro/bu/.venv is already there (a sandbox root built where GitHub and PyPI
+# are out of reach, sandbox/build_rootfs.sh BRO_PYTHON_SETUP); jev is then not installed.
+if [ "${BRO_PYTHON_PREINSTALLED:-0}" != 1 ]; then
 export UV_PYTHON_INSTALL_DIR=/opt/bro/python UV_CACHE_DIR=/opt/bro/uv-cache
 retry sh -c 'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh'
 retry uv venv -q --python 3.12 /opt/bro/bu/.venv
@@ -174,6 +183,7 @@ retry git clone -q https://github.com/browser-use/jev-ultrafast.git /opt/bro/jev
 git -C /opt/bro/jev-ultrafast checkout -q 1231850
 (cd /opt/bro/jev-ultrafast && retry uv sync -q)
 rm -rf /opt/bro/uv-cache
+fi
 stage python
 
 # The worker is the VM's only way in (no SSH, cloud-init does not run again): an update that loads but does
@@ -221,8 +231,10 @@ TimeoutStopSec=10
 WantedBy=multi-user.target
 UNIT
 chown -R bro:bro /opt/bro
-systemctl daemon-reload
-systemctl enable bro-boot bro-firewall bro-xvfb bro-chrome bro-worker caddy
+if [ "$SANDBOX" != 1 ]; then
+  systemctl daemon-reload
+  systemctl enable bro-boot bro-firewall bro-xvfb bro-chrome bro-worker caddy
+fi
 echo "$IMAGE_VERSION" > /etc/bro/image
 stage installed
 
