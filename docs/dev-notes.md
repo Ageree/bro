@@ -276,6 +276,18 @@
   Bare Metal. Без KVM замораживает Chrome gVisor (`runsc checkpoint`), но не в
   сети хоста: только свой netns. Потоки `runsc restore` — в файл, не в пайп,
   иначе ждёт вечно. Стенд — `scripts/cloudru-sandbox-probe/`.
+- Снимок gVisor с нашим образом встаёт на другой VM и в netns с другим
+  адресом, но `runsc` забирает адреса netns себе: netns — новый на каждый
+  старт и restore. `root.readonly` в OCI — `false` (с ним `--overlay2` не
+  спасает), закрепляется пакет `runsc` целиком (`/usr/bin/gvisor-bin`).
+  Итоги этапа 1 и решение «обычные контейнеры» — `docs/browser-pool.md`.
+- С VM Cloud.ru 30.09 GitHub, PyPI, openrouter.ai и Википедия принимали TCP и
+  молчали, `archive.ubuntu.com` не отвечал: `build.py` (uv и jev с GitHub) так
+  не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
+  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`). Молчащий адрес вешает
+  browser-use после `done` (цены моделей): выход песочницы — `REJECT`, не `DROP`.
+- «Доступ ограничен: проблема с IP» Avito — счётчик запросов с адреса, не
+  среда: gVisor вердикт WB и Avito не менял.
 - VM без публичного IP в интернет не выходит, а sNAT подключается ко всей зоне
   сразу: в зоне с продовыми VM не создавать. S3: ключ —
   `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`, регион `ru-central-1`; без

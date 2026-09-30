@@ -13,6 +13,7 @@ import hmac
 import importlib.util
 import itertools
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -61,6 +62,21 @@ class TokenTest(unittest.TestCase):
     def test_refuses_a_token_that_lives_too_long(self):
         with self.assertRaisesRegex(worker.Unauthorized, "expired token"):
             worker.verify_token(TOKEN, CONFIG, 0, 1790000300 - worker.MAX_TOKEN_LIFETIME_S - 5)
+
+
+class ListenTest(unittest.TestCase):
+    def listen_host(self, **env):
+        # A fresh copy of the module, since the address is read once at import.
+        base = {k: v for k, v in os.environ.items() if k != "BRO_WORKER_BIND"}
+        with mock.patch.dict(os.environ, {**base, **env}, clear=True):
+            spec = importlib.util.spec_from_file_location("worker_listen_probe", worker.CODE)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        return module.LISTEN_HOST
+
+    def test_loopback_behind_caddy_unless_the_sandbox_asks_for_its_interface(self):
+        self.assertEqual(self.listen_host(), "127.0.0.1")
+        self.assertEqual(self.listen_host(BRO_WORKER_BIND="0.0.0.0"), "0.0.0.0")
 
 
 class SecretsTest(unittest.TestCase):

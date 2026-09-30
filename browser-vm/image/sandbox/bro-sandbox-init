@@ -1,0 +1,229 @@
+#!/usr/bin/python3
+"""PID 1 of a browser sandbox (gVisor `runsc`, or plain namespaces for comparison): runs what systemd runs on
+the browser VM, from the same unit files `provision.sh` writes, so Xvfb, Chrome and the worker start with
+exactly the VM's command lines, users and environment.
+
+- Units, in order: bro-xvfb, bro-chrome, bro-worker (`User=`, `Environment=`, `ExecStartPre=`,
+  `ExecStart=`, `RestartSec=`, `TimeoutStopSec=`; `Restart=always` for all three, as on the VM). Like
+  systemd for `Type=simple`, a unit is started without waiting for the one before it to be ready.
+- Stop is `KillMode=mixed`: SIGTERM to the main process (Chrome writes cookies to the profile), SIGKILL to
+  what is left of its process group once it exits or `TimeoutStopSec` runs out.
+- The worker's `sudo systemctl start|stop|restart bro-chrome` reaches this process through the
+  `systemctl` shim (`/usr/bin/systemctl` in the sandbox) over a root-only socket.
+- Environment variables `BRO_*` of this process pass to every unit (`BRO_WORKER_BIND` for the worker);
+  `BRO_CHROME_EXTRA_FLAGS` is appended to Chrome's command line. SIGTERM stops the units and exits.
+"""
+
+import os
+import pwd
+import selectors
+import shlex
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+UNIT_DIR = Path(os.environ.get("BRO_UNIT_DIR", "/etc/systemd/system"))
+SOCKET = os.environ.get("BRO_INIT_SOCKET", "/run/bro-init.sock")
+UNITS = ("bro-xvfb", "bro-chrome", "bro-worker")
+BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def log(message):
+    print(f"bro-sandbox-init: {message}", file=sys.stderr, flush=True)
+
+
+def parse_unit(text):
+    """The [Service] keys this init honours, from a systemd unit file."""
+    unit = {"user": None, "environment": {}, "pre": [], "start": None, "restart_sec": 1.0, "stop_timeout": 90.0}
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            section = line
+            continue
+        if section != "[Service]" or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "User":
+            unit["user"] = value
+        elif key == "Environment":
+            for pair in shlex.split(value):
+                name, _, setting = pair.partition("=")
+                unit["environment"][name] = setting
+        elif key == "ExecStartPre":
+            unit["pre"].append(shlex.split(value))
+        elif key == "ExecStart":
+            unit["start"] = shlex.split(value)
+        elif key == "RestartSec":
+            unit["restart_sec"] = float(value.rstrip("s"))
+        elif key == "TimeoutStopSec":
+            unit["stop_timeout"] = float(value.rstrip("s"))
+    return unit
+
+
+class Service:
+    def __init__(self, name, unit):
+        self.name = name
+        self.unit = unit
+        self.pid = None
+        self.wanted = True
+        self.start_at = 0.0
+
+    def environment(self):
+        account = self.account()
+        home = account.pw_dir if account else "/root"
+        env = {"PATH": BASE_PATH, "HOME": home, "USER": account.pw_name if account else "root", "LANG": "C.UTF-8"}
+        env.update({k: v for k, v in os.environ.items() if k.startswith("BRO_") and k != "BRO_CHROME_EXTRA_FLAGS"})
+        env.update(self.unit["environment"])
+        return env
+
+    def account(self):
+        # Without root (the unit tests) there is nobody to switch to: the units run as this user.
+        if not self.unit["user"] or os.getuid() != 0:
+            return None
+        return pwd.getpwnam(self.unit["user"])
+
+    def demote(self):
+        account = self.account()
+        if account is None:
+            return None
+
+        def switch():
+            os.initgroups(account.pw_name, account.pw_gid)
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+
+        return switch
+
+    def command(self):
+        argv = list(self.unit["start"])
+        if self.name == "bro-chrome":
+            argv += shlex.split(os.environ.get("BRO_CHROME_EXTRA_FLAGS", ""))
+        return argv
+
+    def start(self):
+        env = self.environment()
+        for pre in self.unit["pre"]:
+            subprocess.run(pre, env=env, preexec_fn=self.demote(), cwd="/", check=False, timeout=30)
+        process = subprocess.Popen(self.command(), env=env, preexec_fn=self.demote(), cwd="/",
+                                   start_new_session=True, stdin=subprocess.DEVNULL)
+        self.pid = process.pid
+        # The pid is reaped by the init's own waitpid(-1): keep Popen from waiting on it later.
+        process.returncode = 0
+        log(f"{self.name} started, pid {self.pid}")
+
+
+class Init:
+    def __init__(self):
+        self.services = {name: Service(name, parse_unit((UNIT_DIR / f"{name}.service").read_text()))
+                         for name in UNITS}
+        self.stopping = False
+
+    def reap(self):
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if pid == 0:
+                return
+            for service in self.services.values():
+                if service.pid == pid:
+                    log(f"{service.name} exited ({status})")
+                    service.pid = None
+                    service.start_at = time.monotonic() + service.unit["restart_sec"]
+
+    def stop(self, service):
+        service.wanted = False
+        pid = service.pid
+        if pid is None:
+            return
+        with _suppress():
+            os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + service.unit["stop_timeout"]
+        while service.pid is not None and time.monotonic() < deadline:
+            time.sleep(0.1)
+            self.reap()
+        # KillMode=mixed: the rest of the unit (Chrome's helpers) gets SIGKILL.
+        with _suppress():
+            os.killpg(pid, signal.SIGKILL)
+        while service.pid is not None:
+            time.sleep(0.05)
+            self.reap()
+        log(f"{service.name} stopped")
+
+    def control(self, line):
+        parts = line.split()
+        if len(parts) != 2 or parts[0] not in ("start", "stop", "restart") or parts[1] not in self.services:
+            return "error: start|stop|restart " + "|".join(UNITS)
+        action, service = parts[0], self.services[parts[1]]
+        if action in ("stop", "restart"):
+            self.stop(service)
+        if action in ("start", "restart"):
+            service.wanted = True
+            if service.pid is None:
+                service.start()
+        return "ok"
+
+    def serve(self):
+        with _suppress():
+            os.unlink(SOCKET)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)  # root only: the worker reaches it through sudo, like systemctl on the VM
+        server.bind(SOCKET)
+        os.umask(old)
+        server.listen(8)
+        server.setblocking(False)
+        selector = selectors.DefaultSelector()
+        selector.register(server, selectors.EVENT_READ)
+        for name in UNITS:
+            self.services[name].start()
+        while not self.stopping:
+            for _key, _events in selector.select(timeout=0.2):
+                connection, _ = server.accept()
+                with connection:
+                    connection.settimeout(5)
+                    try:
+                        line = connection.makefile().readline()
+                        connection.sendall((self.control(line) + "\n").encode())
+                    except OSError as error:
+                        log(f"control: {error}")
+            self.reap()
+            now = time.monotonic()
+            for service in self.services.values():
+                if service.wanted and service.pid is None and now >= service.start_at:
+                    service.start()
+        for name in reversed(UNITS):
+            self.stop(self.services[name])
+
+
+class _suppress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        return kind is not None and issubclass(kind, (ProcessLookupError, PermissionError, FileNotFoundError))
+
+
+def main():
+    # Xvfb keeps its socket in /tmp/.X11-unix, which only root may create with the sticky bit.
+    Path("/tmp/.X11-unix").mkdir(mode=0o1777, exist_ok=True)
+    with _suppress():
+        os.chmod("/tmp/.X11-unix", 0o1777)
+    init = Init()
+
+    def terminate(*_):
+        init.stopping = True
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    init.serve()
+
+
+if __name__ == "__main__":
+    main()

@@ -359,7 +359,7 @@ class SandboxTest(HostTest):
         self.assertEqual(json.loads(worker_json.read_text()), {"environment": "personal:abc", "key": WORKER_KEY})
         self.assertNotIn("127.0.0.53", (home / "resolv.conf").read_text())
         bundle = json.loads((home / "bundle" / "config.json").read_text())
-        self.assertEqual(bundle["root"], {"path": str(Path(host.config.root) / "rootfs" / "v1"), "readonly": True})
+        self.assertEqual(bundle["root"], {"path": str(Path(host.config.root) / "rootfs" / "v1"), "readonly": False})
         self.assertEqual(bundle["process"]["args"], ["/usr/local/sbin/bro-sandbox-init"])
         self.assertIn("BRO_WORKER_BIND=0.0.0.0", bundle["process"]["env"])
         mounts = {m["destination"]: m for m in bundle["mounts"]}
