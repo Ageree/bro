@@ -183,6 +183,14 @@ class Forwarder:
     def __init__(self):
         self.upstream = None
         self.totals = {"up": 0, "down": 0, "connections": 0, "refused": 0}
+        self.open = set()  # writers of tunnels in flight: each handler holds the login in its locals
+
+    def drop(self):
+        """Forget the login and close every tunnel carrying it, so their handlers end and let it go."""
+        self.upstream = None
+        for writer in list(self.open):
+            with contextlib.suppress(Exception):
+                writer.close()
 
     def configure(self, proxy):
         host, port = str(proxy["host"]), int(proxy["port"])
@@ -232,9 +240,17 @@ class Forwarder:
             return
         self.totals["connections"] += 1
         self.totals["up"] += len(request)
-        up_writer.write(request)
-        await up_writer.drain()
-        await asyncio.gather(self.pipe(client_reader, up_writer, "up"), self.pipe(up_reader, client_writer, "down"))
+        self.open.update((client_writer, up_writer))
+        try:
+            up_writer.write(request)
+            await up_writer.drain()
+            await asyncio.gather(self.pipe(client_reader, up_writer, "up"), self.pipe(up_reader, client_writer, "down"))
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self.open.difference_update((client_writer, up_writer))
+            with contextlib.suppress(Exception):
+                up_writer.close()
 
 
 def b64encode_text(text):
@@ -1681,14 +1697,16 @@ async def reset_profile(request):
 
 async def park(request):
     """Before a pool host freezes this sandbox (`runsc checkpoint`, browser-vm/host): the snapshot keeps
-    everything in memory, so the secrets go first. The proxy login goes with the forwarder's upstream
-    (Chrome gets 502 until the next POST /v1/session), the model key, 2Captcha key and site secrets with
-    each session; after the restore Bro sends them again as after a worker restart. Never mid-run: a
-    snapshot in the middle of a form is neither a success nor a failure."""
+    everything in memory, so the worker drops what it holds of the secrets first. The proxy login goes with
+    the forwarder's upstream and its open tunnels (Chrome gets 502 until the next POST /v1/session), the
+    model key, 2Captcha key and site secrets with each session; after the restore Bro sends them again as
+    after a worker restart. Best effort: Python does not zero freed strings, so copies may remain in the
+    snapshot, which stays encrypted under the workspace's key. Never mid-run: a snapshot in the middle of a
+    form is neither a success nor a failure."""
     authorize(request)
     if worker.busy() or any(run.status not in TERMINAL for run in worker.runs.values()):
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
-    worker.forwarder.upstream = None
+    worker.forwarder.drop()
     for session in worker.sessions.values():
         session.llm = session.captcha = session.sensitive_data = None
         session.options = {k: v for k, v in session.options.items() if k != "jev"}  # jev's own API key

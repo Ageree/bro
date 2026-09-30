@@ -18,7 +18,9 @@ the rootfs. Bro's own host creation (agent/lib/browser-vm, later) writes the sam
 
 Boot budget (estimated; measure on the first real host): stock boot ≈ 45 s, apt ≈ 60–90 s, venv ≈ 20 s,
 rootfs (≈ 0.5–0.8 GB zstd, inside Cloud.ru) ≈ 30–60 s, certificate ≈ 10 s — about 3–4 minutes, 6 at worst.
-Bro follows it on https://<domain>/h/v1/health (`stage`) once Caddy is up.
+Caddy and hostd start right after apt and the venv (≈ 2.5 minutes in), before the rootfs: from then on Bro
+follows `stage` on https://<domain>/h/v1/health, including a `failed:<stage>:line N`; before that a host
+that does not answer is only slow. It takes sandboxes at `ready`.
 """
 
 import argparse

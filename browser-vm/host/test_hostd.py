@@ -18,6 +18,7 @@ import time
 import unittest
 from pathlib import Path
 
+import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -55,6 +56,8 @@ class FakeRunner:
         self.calls = []
         self.containers = {}
         self.fail_restore = False
+        self.fail_checkpoint = False
+        self.stuck = set()  # containers `runsc delete` cannot remove
         self.host_rules, self.router_rules, self.caddyfiles = [], [], []
         self.checkpointed, self.restored = [], []
         self.image_bytes = random.Random(7).randbytes(300 * 1024)
@@ -112,6 +115,9 @@ class FakeRunner:
         elif command == "checkpoint":
             image = Path(option("image-path"))
             image.mkdir(parents=True)
+            if self.fail_checkpoint:
+                (image / "checkpoint.img").write_bytes(self.image_bytes[:1000])  # half written
+                return 1, "checkpoint failed"
             (image / "checkpoint.img").write_bytes(self.image_bytes)
             self.checkpointed.append(hashlib.sha256(self.image_bytes).hexdigest())
             self.containers[container] = "stopped"
@@ -121,6 +127,8 @@ class FakeRunner:
             self.restored.append(hashlib.sha256((Path(option("image-path")) / "checkpoint.img").read_bytes()).hexdigest())
             self.containers[container] = "running"
         elif command == "delete":
+            if container in self.stuck:
+                return 124, "runsc timed out after 60 s"
             self.containers.pop(container, None)
         elif command == "state":
             if container not in self.containers:
@@ -135,7 +143,7 @@ class FakeStorage:
     """Object Storage behind presigned URLs: records the order of PUTs and how many ran at once."""
 
     def __init__(self):
-        self.objects, self.puts, self.gets = {}, [], []
+        self.objects, self.puts, self.gets, self.raw = {}, [], [], []
         self.fail = set()
         self.in_flight = self.most_in_flight = 0
 
@@ -148,6 +156,7 @@ class FakeStorage:
             if key in self.fail:
                 return web.Response(status=500)
             self.objects[key] = await request.read()
+            self.raw.append(request.raw_path)
             self.puts.append(key)
             return web.Response(status=200)
         finally:
@@ -198,15 +207,18 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
     def park_body(self, generation=3, **overrides):
         return {"generation": generation, "dataKey": DATA_KEY, "upload": self.set_urls(generation), **overrides}
 
-    async def host(self, name="a"):
+    async def host(self, name="a", versions=("v1",), **settings):
         root = self.tmp / name
-        rootfs = root / "rootfs" / "v1" / "etc"
-        rootfs.mkdir(parents=True)
-        (rootfs / "passwd").write_text(f"root:x:0:0::/root:/bin/bash\nbro:x:{os.getuid()}:{os.getgid()}::/home/bro:/bin/bash\n")
-        config = hostd.Config(
-            root=str(root), shm=str(root / "shm"), runsc="/usr/bin/runsc", caddyfile=str(root / "Caddyfile"),
-            domain="203-0-113-7.sslip.io", transit_pool="127.0.0.0/16", worker_port=self.worker_port,
-            chunk_bytes=64 * 1024, parallel=4, start_timeout_s=3, restore_timeout_s=3)
+        for version in versions:
+            rootfs = root / "rootfs" / version / "etc"
+            rootfs.mkdir(parents=True)
+            (rootfs / "passwd").write_text(
+                f"root:x:0:0::/root:/bin/bash\nbro:x:{os.getuid()}:{os.getgid()}::/home/bro:/bin/bash\n")
+        config = hostd.Config(**{
+            "root": str(root), "shm": str(root / "shm"), "runsc": "/usr/bin/runsc",
+            "caddyfile": str(root / "Caddyfile"), "domain": "203-0-113-7.sslip.io", "transit_pool": "127.0.0.0/16",
+            "worker_port": self.worker_port, "chunk_bytes": 64 * 1024, "parallel": 4, "start_timeout_s": 3,
+            "restore_timeout_s": 3, **settings})
         runner = FakeRunner()
         host = hostd.Host(config, IDENTITY, runner)
         await host.start()
@@ -440,6 +452,67 @@ class SandboxTest(HostTest):
         self.assertEqual(again.sandboxes["ws-abc"]["state"], "running")
         self.assertEqual(again.sandboxes["ws-def"]["state"], "failed")
 
+    async def test_a_restarted_hostd_settles_a_sandbox_it_left_halfway(self):
+        host, runner, _client, _record = await self.started()
+        path = Path(host.config.root) / "sandboxes" / "ws-abc" / "sandbox.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), "state": "starting"}))
+        again = hostd.Host(host.config, IDENTITY, runner)
+        await again.start()
+        self.addAsyncCleanup(again.close)
+        self.assertEqual(again.sandboxes["ws-abc"]["state"], "running")  # its worker answers
+        path.write_text(json.dumps({**json.loads(path.read_text()), "state": "parking", "slot": None}))
+        third = hostd.Host(host.config, IDENTITY, runner)
+        await third.start()
+        self.addAsyncCleanup(third.close)
+        self.assertEqual(third.sandboxes["ws-abc"]["state"], "failed")
+
+    async def test_a_sandbox_runsc_cannot_delete_keeps_its_record(self):
+        host, runner, client, _record = await self.started()
+        runner.stuck.add("bro-ws-abc")
+        status, answer = await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3")
+        self.assertEqual((status, answer["error"]), (502, "runsc could not delete the sandbox"))
+        self.assertTrue((Path(host.config.root) / "sandboxes" / "ws-abc" / "profile").exists())
+        self.assertNotIn(["ip", "netns", "del", "bro-s-ws-abc"], runner.argv("ip"))
+        status, record = await self.call(client, "GET", "/v1/sandboxes/ws-abc")
+        self.assertEqual((status, record["state"]), (200, "failed"))
+        self.assertIn("/g/ws-abc/", runner.caddyfiles[-1])  # its slot is still taken
+        runner.stuck.clear()
+        self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 200)
+
+    async def test_a_rootfs_without_the_bro_user_is_a_failed_start(self):
+        host, runner, client = await self.host()
+        (Path(host.config.root) / "rootfs" / "v1" / "etc" / "passwd").write_text("root:x:0:0::/root:/bin/bash\n")
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
+        self.assertEqual(status, 502)
+        self.assertIn("no bro user", answer["error"])
+        self.assertEqual(runner.runsc_calls("create"), [])
+
+    async def test_memory_limits_never_add_up_to_more_than_the_host_has(self):
+        _host, _runner, client = await self.host(memory_limit_mb=5000)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        second = request(id="ws-def", workspace="personal:def")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", second))[0], 201)
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(id="ws-ghi", workspace="personal:ghi"))
+        self.assertEqual((status, answer["committedMb"]), (507, 4096))
+        await self.call(client, "DELETE", "/v1/sandboxes/ws-def?generation=3")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", second))[0], 201)
+
+    async def test_the_runsc_log_is_cut_to_its_newer_half(self):
+        host, _runner, _client, _record = await self.started()
+        host.config.log_max_bytes = 1000
+        log = Path(host.config.root) / "sandboxes" / "ws-abc" / "runsc.log"
+        log.write_bytes(b"o" * 1500 + b"n" * 500)
+        host.trim_logs()
+        self.assertEqual(log.read_bytes(), b"n" * 500)
+
+    def test_image_and_staging_of_two_ids_never_meet(self):
+        config = hostd.Config(root="/srv/bro", shm="/dev/shm")
+        a, b = hostd.Paths(config, "x"), hostd.Paths(config, "staging-x")
+        self.assertEqual(str(a.image), "/dev/shm/bro-x")
+        self.assertEqual(str(a.staging), "/srv/bro/staging/x")  # on disk: RAM holds only the image
+        self.assertNotIn(a.image, (b.image, b.staging))
+        self.assertNotIn(b.image, (a.image, a.staging))
+
 
 class ParkTest(HostTest):
     async def test_park_uploads_encrypted_chunks_in_parallel_and_the_manifest_last(self):
@@ -447,7 +520,8 @@ class ParkTest(HostTest):
         status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
         self.assertEqual(status, 200, parked)
         self.assertEqual(parked["state"], "parked")
-        self.assertEqual(parked["format"], {"runsc": "runsc version release-20260914.0", "cpu": host.cpu["features"]})
+        self.assertEqual(parked["format"], {"runsc": "runsc version release-20260914.0", "cpu": host.cpu["features"],
+                                            "rootfs": "v1", "memoryMb": 2048})
         self.assertEqual(set(parked["parts"]), {"profile", "image"})
         self.assertGreater(parked["parts"]["image"]["chunks"], 3)
         self.assertEqual(set(parked["timings"]), {"checkpointMs", "packMs", "uploadMs", "totalMs"})
@@ -475,6 +549,26 @@ class ParkTest(HostTest):
         self.assertNotIn("ws/3/manifest.json", self.storage.objects)
         self.assertEqual(runner.restored, runner.checkpointed)
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        # The frozen sandbox had taken its eth0 over: the namespaces were built again before the restore.
+        self.assertEqual(runner.argv("ip").count(["ip", "netns", "add", "bro-s-ws-abc"]), 2)
+        self.assertEqual(sorted(Path(_host.config.shm).iterdir()), [])
+
+    async def test_a_failed_checkpoint_leaves_no_image_in_memory(self):
+        host, runner, client, _record = await self.started()
+        runner.fail_checkpoint = True
+        runner.containers["bro-ws-abc"] = "running"
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["error"]), (502, "runsc checkpoint failed"))
+        self.assertEqual(sorted(Path(host.config.shm).iterdir()), [])
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        self.assertEqual(self.storage.objects, {})
+
+    async def test_urls_go_out_exactly_as_presigned(self):
+        _host, _runner, _client = await self.host()
+        url = str(self.s3.make_url("/bucket/")) + "personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"
+        async with aiohttp.ClientSession() as http:
+            await sets.transfer(http, "PUT", url, b"x")
+        self.assertEqual(self.storage.raw, ["/bucket/personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"])
 
     async def test_too_few_chunk_urls_is_a_failed_park_not_a_partial_set(self):
         _host, _runner, client, _record = await self.started()
@@ -523,6 +617,32 @@ class ParkTest(HostTest):
         self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "runsc restore failed"))
         self.assertEqual(self.profile_on(host), MARKER)
         self.assertEqual(len(runner.runsc_calls("create")), 1)
+        self.assertEqual(runner.argv("ip").count(["ip", "netns", "add", "bro-s-ws-abc"]), 2)
+        self.assertEqual(sorted(Path(host.config.shm).iterdir()), [])
+        self.assertFalse((Path(host.config.root) / "staging" / "ws-abc").exists())
+
+    async def test_a_snapshot_on_another_rootfs_starts_cold(self):
+        await self.parked_set()
+        host, runner, client = await self.host("b", versions=("v1", "v2"))
+        status, record = await self.call(client, "POST", "/v1/sandboxes", {**self.restore_body(), "rootfsVersion": "v2"})
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertIn("rootfs v1", record["fallback"])
+        self.assertEqual(runner.runsc_calls("restore"), [])
+        self.assertEqual(self.profile_on(host), MARKER)
+
+    async def test_links_out_of_the_profile_are_left_behind(self):
+        host, _runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        (profile / "SingletonSocket").symlink_to("/tmp/.org.chromium.Chromium.x/SingletonSocket")
+        (profile / "Escape").symlink_to("../../../../etc")
+        (profile / "SingletonLock").symlink_to("bro-sandbox-42")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
+        other, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual(status, 201, record)
+        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
+        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default", "SingletonLock"])
+        self.assertEqual(self.profile_on(other), MARKER)
 
     async def test_a_snapshot_from_other_cpu_features_is_not_even_tried(self):
         await self.parked_set()
@@ -562,6 +682,10 @@ class ParkTest(HostTest):
         body["workspace"] = "personal:other"
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", body))[0], 409)
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=2)))[0], 409)
+        # The same generation too: its park would overwrite the chunks of the set it came from.
+        _host, _runner, client = await self.host("c")
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=3))
+        self.assertEqual((status, answer["setGeneration"]), (409, 3))
 
     async def test_a_wrong_data_key_does_not_open_the_set(self):
         await self.parked_set()

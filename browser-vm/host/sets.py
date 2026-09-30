@@ -29,6 +29,7 @@ import aiohttp
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from yarl import URL
 
 FORMAT = 1
 PARTS = ("profile", "image")
@@ -112,10 +113,12 @@ def plan(sizes, chunk_bytes):
 
 
 async def transfer(http, method, url, data=None):
-    """One PUT or GET with retries (network errors and 5xx); a 4xx is final (an expired or wrong URL)."""
+    """One PUT or GET with retries (network errors and 5xx); a 4xx is final (an expired or wrong URL).
+    The URL goes out byte for byte as Bro presigned it: yarl would otherwise requote it (`%2F` in the
+    credential, `%3A` in a key), and the signature would no longer match."""
     for attempt in range(ATTEMPTS):
         try:
-            async with http.request(method, url, data=data,
+            async with http.request(method, URL(url, encoded=True), data=data,
                                     timeout=aiohttp.ClientTimeout(total=120)) as response:
                 if response.status < 300:
                     return await response.read()

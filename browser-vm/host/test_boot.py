@@ -131,6 +131,14 @@ class ProvisionTest(unittest.TestCase):
         for requirement in re.findall(r'"(aiohttp|cryptography)([^"]*)"', PROVISION):
             self.assertTrue(requirement[1].startswith("=="), requirement)
         self.assertNotIn("set -x", PROVISION)  # the log must not echo presigned URLs
+        self.assertIn("tar --numeric-owner -I zstd -xpf", PROVISION)  # the rootfs keeps its own ids
+
+    def test_the_stage_is_readable_before_the_slow_steps(self):
+        # hostd serves `stage` on /h/v1/health: it must be up before the rootfs download, or a failure
+        # there would only show as a host that never answers.
+        order = [line.split()[1] for line in PROVISION.splitlines() if re.match(r"stage [a-z]+$", line)]
+        self.assertEqual(order, ["start", "packages", "venv", "caddy", "hostd", "network", "rootfs", "ready"])
+        self.assertLess(PROVISION.index("systemctl enable --now bro-hostd"), PROVISION.index("stage rootfs"))
 
 
 if __name__ == "__main__":

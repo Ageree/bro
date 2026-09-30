@@ -15,10 +15,11 @@ host lives under `<root>/sandboxes/<id>/`:
   router.nft     the router namespace's ruleset
   sandbox.json   the record hostd keeps (no secrets)
 
-Parking freezes a sandbox (`runsc checkpoint` into /dev/shm/bro-<id>), packs its profile and the image,
-compresses (zstd), encrypts and uploads them as a set (sets.py) over URLs Bro presigned; restoring reverses
-that and falls back to a cold start with the profile alone when the snapshot does not fit this host (other
-runsc, other CPU features, runsc refusing it). hostd decides nothing about people: Bro chooses hosts, and
+Parking freezes a sandbox (`runsc checkpoint` into /dev/shm/bro-<id>: only the image itself is in RAM),
+packs its profile and the image in `<root>/staging/<id>/` on disk, compresses (zstd), encrypts and uploads
+them as a set (sets.py) over URLs Bro presigned; restoring reverses that and falls back to a cold start with
+the profile alone when the snapshot does not fit (other runsc, other CPU features, another rootfs, less
+memory, no room in /dev/shm, runsc refusing it). hostd decides nothing about people: Bro chooses hosts, and
 before a park Bro has already told the worker to drop its secrets (worker POST /v1/park).
 
 Auth: `Authorization: Bearer v1.<payload>.<sig>`, the worker's token format with the host's key
@@ -96,6 +97,11 @@ class Config:
     worker_port: int = 8080
     chunk_bytes: int = 16 * 1024 * 1024
     parallel: int = 6
+    parallel_parks: int = 2
+    # What sandbox memory limits may add up to; 0 = MemTotal less `reserve_mb`.
+    memory_limit_mb: int = 0
+    reserve_mb: int = 1024
+    log_max_bytes: int = 8 * 1024 * 1024
     start_timeout_s: float = 90
     restore_timeout_s: float = 30
     identity_file: str = "/etc/bro/host.json"
@@ -121,6 +127,10 @@ class Config:
     @property
     def rootfs(self):
         return Path(self.root) / "rootfs"
+
+    @property
+    def staging(self):
+        return Path(self.root) / "staging"
 
 
 def load_identity(path):
@@ -250,10 +260,35 @@ def pack(source, target):
     return Path(target).stat().st_size
 
 
+def skip_outward_links(member, target):
+    """tarfile's `data` filter (no devices, nothing outside the target, no owners, no setuid bits), except
+    that a link pointing out of the target is skipped instead of failing the set: Chrome keeps
+    SingletonSocket and SingletonCookie as absolute links into /tmp."""
+    try:
+        return tarfile.data_filter(member, target)
+    except (tarfile.AbsoluteLinkError, tarfile.LinkOutsideDestinationError):
+        return None
+
+
 def unpack(archive, target):
+    """Extract a tar hostd packed (blocking: run it in a thread). Files come out owned by hostd."""
     Path(target).mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive) as tar:
-        tar.extractall(target, filter="tar", numeric_owner=True)
+        tar.extractall(target, filter=skip_outward_links)
+
+
+def chown_tree(path, owner):
+    for directory, names, files in os.walk(path):
+        os.lchown(directory, *owner)
+        for name in names + files:
+            os.lchown(os.path.join(directory, name), *owner)
+
+
+def free_mb(path):
+    try:
+        return shutil.disk_usage(path).free // 2**20
+    except OSError:
+        return None
 
 
 def remove(path):
@@ -282,8 +317,8 @@ class Paths:
         self.log = self.dir / "runsc.log"
         self.router_rules = self.dir / "router.nft"
         self.record = self.dir / "sandbox.json"
-        self.image = Path(config.shm) / f"bro-{sandbox_id}"
-        self.staging = Path(config.shm) / f"bro-staging-{sandbox_id}"
+        self.image = Path(config.shm) / f"bro-{sandbox_id}"  # the checkpoint image, the only part in RAM
+        self.staging = config.staging / sandbox_id  # tars and their zstd, on disk
         self.container = f"bro-{sandbox_id}"
 
 
@@ -325,6 +360,8 @@ class Host:
         self.sandboxes = {}
         self.locks = {}
         self.shared = asyncio.Lock()  # transit slots, the nftables table, the Caddyfile
+        self.parking = asyncio.Semaphore(config.parallel_parks)  # each park holds an image and its staging
+        self.housekeeping = None
         self.cpu = cpu_info()
         self.runsc_version = None
         self.uplink = config.uplink or None
@@ -352,11 +389,22 @@ class Host:
                 if not alive and record.get("state") != "failed":
                     # The host restarted under it: its memory is gone; the profile stays for a DELETE.
                     record.update(state="failed", error="the sandbox was not running when hostd started")
-                    path.write_text(json.dumps(record))
+                elif alive and record.get("state") in ("starting", "restoring", "parking"):
+                    # hostd died halfway: a worker that answers makes it running again, otherwise it failed.
+                    ready = record.get("slot") is not None and await self.worker_ready(
+                        record, self.config.restore_timeout_s)
+                    record.update(state="running" if ready else "failed",
+                                  error=None if ready else f"hostd restarted while the sandbox was {record['state']}")
+                path.write_text(json.dumps(record))
                 self.sandboxes[record["id"]] = record
         await self.apply(strict=False)
+        self.housekeeping = asyncio.ensure_future(self.keep_logs())
 
     async def close(self):
+        if self.housekeeping is not None:
+            self.housekeeping.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.housekeeping
         if self.http is not None:
             await self.http.close()
 
@@ -404,18 +452,82 @@ class Host:
     def public(record):
         return {k: v for k, v in record.items() if k != "slot"} | {"route": f"/g/{record['id']}/"}
 
-    def wipe(self, paths):
+    @staticmethod
+    def wipe(paths):
+        """Blocking (large trees): run it in a thread."""
         for path in (paths.dir, paths.image, paths.staging):
             remove(path)
 
+    async def stop(self, paths):
+        """Whether the container is gone: `runsc delete --force`, and when that fails, `runsc state` must not
+        know it any more. A sandbox that outlived its record would hold memory nobody counts."""
+        code, output = await self.runner.run(self.runsc("delete", "--force", paths.container), timeout=60)
+        if code == 0:
+            return True
+        code, _ = await self.runner.run(self.runsc("state", paths.container), timeout=30)
+        if code in (0, 124):
+            log.error("runsc could not delete %s: %s", paths.container, output[-300:])
+            return False
+        return True
+
     async def teardown(self, record):
-        """Stop the sandbox and remove everything of it from the host (its record stays in memory)."""
+        """Stop the sandbox and remove everything of it from the host (its record stays in memory). When
+        the container cannot be deleted: 502, and its host dir, network and slot stay."""
         paths = Paths(self.config, record["id"])
-        await self.runner.run(self.runsc("delete", "--force", paths.container))
+        if not await self.stop(paths):
+            raise Refused(502, "runsc could not delete the sandbox")
         if record.get("slot") is not None:
             for argv in self.network.teardown(record["id"], record["slot"]):
-                await self.runner.run(argv)
-        self.wipe(paths)
+                await self.runner.run(argv)  # a namespace that is already gone is fine
+        await asyncio.to_thread(self.wipe, paths)
+
+    async def setup_network(self, record, paths):
+        for argv in self.network.setup(record["id"], record["slot"], paths.router_rules):
+            code, output = await self.runner.run(argv)
+            if code != 0:
+                raise RuntimeError(f"network setup failed at {' '.join(argv[:4])}: {output[-200:]}")
+
+    async def rebuild_network(self, record, paths):
+        """Both namespaces anew on the same slot: a sandbox that ran in them took its eth0's addresses and
+        routes over (runsc's netstack), so the next create or restore there would find none."""
+        for argv in self.network.teardown(record["id"], record["slot"]):
+            await self.runner.run(argv)
+        await self.setup_network(record, paths)
+
+    def admit(self, sandbox_id, memory):
+        """Sandbox memory limits never add up to more than the host has: past that the kernel's OOM killer
+        picks some other person's browser."""
+        limit = self.config.memory_limit_mb
+        if not limit:
+            info = meminfo()
+            if info is None:
+                return
+            limit = info["total"] - self.config.reserve_mb
+        committed = sum(r["memoryMb"] for r in self.sandboxes.values()
+                        if r["id"] != sandbox_id and r["state"] not in ("parked", "failed"))
+        if committed + memory > limit:
+            raise Refused(507, "the host has no room for this sandbox", committedMb=committed, limitMb=limit)
+
+    async def keep_logs(self):
+        while True:
+            await asyncio.sleep(60)
+            await asyncio.to_thread(self.trim_logs)
+
+    def trim_logs(self):
+        """runsc.log gets the sandbox's stdio for as long as it lives: past `log_max_bytes` only the newer
+        half stays (the sandbox appends, so it goes on writing at the new end)."""
+        for record in list(self.sandboxes.values()):
+            path = Paths(self.config, record["id"]).log
+            with contextlib.suppress(OSError):
+                size = path.stat().st_size
+                if size <= self.config.log_max_bytes:
+                    continue
+                with open(path, "r+b") as file:
+                    file.seek(size - self.config.log_max_bytes // 2)
+                    tail = file.read()
+                    file.seek(0)
+                    file.truncate()
+                    file.write(tail)
 
     # Start ------------------------------------------------------------------------------------------
 
@@ -460,6 +572,7 @@ class Host:
             rootfs = self.config.rootfs / version
             if not rootfs.is_dir():
                 raise Refused(409, "rootfs version is not on this host", rootfsVersion=version)
+            self.admit(sandbox_id, memory)
             if existing is not None:
                 await self.teardown(existing)
             record = {"id": sandbox_id, "workspace": workspace, "generation": generation, "memoryMb": memory,
@@ -470,8 +583,13 @@ class Host:
                 await self.bring_up(record, worker_key, source, rootfs)
             except Exception as error:
                 log.warning("sandbox %s did not start: %s", sandbox_id, error)
-                await self.teardown(record)
-                record.update(state="failed", error=str(error)[:300], slot=None)
+                try:
+                    await self.teardown(record)
+                    record["slot"] = None
+                except Refused:
+                    pass  # still there: its slot and host dir stay taken until a DELETE gets it
+                record.update(state="failed", error=str(error)[:300])
+                self.save(record)
                 await self.apply(strict=False)
                 if isinstance(error, Refused):
                     raise
@@ -511,12 +629,12 @@ class Host:
                                {"type": "network", "path": f"/var/run/netns/{sandbox_netns}"}],
                 # Its own cgroup: the memory limit, and a hostd restart does not take sandboxes with it.
                 "cgroupsPath": f"/bro-sandboxes/{record['id']}",
-                "resources": {"memory": {"limit": record["memoryMb"] * 2**20}},
+                "resources": {"memory": {"limit": record["memoryMb"] * 2**20}, "pids": {"limit": 4096}},
             },
         }
 
-    async def fetch_part(self, source, manifest, encryption, part, paths):
-        """Download, decrypt and decompress one part of a set; the path of its tar."""
+    async def fetch_part(self, source, manifest, encryption, part, paths, target):
+        """Download, decrypt and decompress one part of a set (staged on disk), and unpack it into `target`."""
         packed = paths.staging / f"{part}.tar.zst"
         await sets.download(self.http, manifest=manifest, encryption=encryption, part=part,
                             chunk_urls=source["chunkUrls"], target=packed, parallel=self.config.parallel)
@@ -525,26 +643,46 @@ class Host:
                                              timeout=300)
         if code != 0:
             raise RuntimeError(f"zstd could not unpack the {part}: {output[-200:]}")
-        return tar
+        await asyncio.to_thread(unpack, tar, target)
+        await asyncio.to_thread(remove, tar)
 
-    def fits(self, snapshot):
-        """Whether a snapshot of that format can be restored here; otherwise the reason it cannot."""
+    def snapshot_format(self, record):
+        """What a snapshot must match to be restored: its memory maps the rootfs's binaries and runs its
+        worker.py, and its cgroup must give it at least the memory it had."""
+        return {"runsc": self.runsc_version, "cpu": self.cpu["features"], "rootfs": record["rootfsVersion"],
+                "memoryMb": record["memoryMb"]}
+
+    def fits(self, snapshot, record):
+        """Whether a snapshot of that format can be restored here for this start; otherwise the reason."""
         if not isinstance(snapshot, dict):
             return "the set has no snapshot"
         if snapshot.get("runsc") != self.runsc_version:
             return f"snapshot of {snapshot.get('runsc')}, host runs {self.runsc_version}"
         if snapshot.get("cpu") != self.cpu["features"]:
             return "snapshot from a CPU with other features"
+        if snapshot.get("rootfs") != record["rootfsVersion"]:
+            return f"snapshot on rootfs {snapshot.get('rootfs')}, this start is on {record['rootfsVersion']}"
+        if not isinstance(snapshot.get("memoryMb"), int) or snapshot["memoryMb"] > record["memoryMb"]:
+            return "snapshot of a sandbox with more memory than this start gives"
         return None
 
     async def bring_up(self, record, worker_key, source, rootfs):
+        paths = Paths(self.config, record["id"])
+        try:
+            await self.bring_up_in(paths, record, worker_key, source, rootfs)
+        finally:
+            await asyncio.to_thread(remove, paths.staging)
+            await asyncio.to_thread(remove, paths.image)
+
+    async def bring_up_in(self, paths, record, worker_key, source, rootfs):
         sandbox_id, config = record["id"], self.config
-        paths = Paths(config, sandbox_id)
-        self.wipe(paths)
+        owner = bro_owner(rootfs)
+        if owner is None:
+            raise RuntimeError(f"rootfs {record['rootfsVersion']} has no bro user")
+        await asyncio.to_thread(self.wipe, paths)
         paths.dir.mkdir(parents=True, mode=0o700)
         paths.staging.mkdir(parents=True, mode=0o700)
         paths.profile.mkdir(mode=0o700)
-        owner = bro_owner(rootfs)
         paths.worker_json.touch(mode=0o600)
         paths.worker_json.write_text(json.dumps({"environment": record["workspace"], "key": worker_key}))
         paths.resolv.write_text("".join(f"nameserver {address}\n" for address in config.dns))
@@ -555,30 +693,34 @@ class Host:
             if manifest.get("workspace") != record["workspace"]:
                 raise Refused(409, "the set belongs to another workspace")
             set_generation = manifest.get("generation")
-            if not isinstance(set_generation, int) or set_generation > record["generation"]:
-                raise Refused(409, "the set is newer than this generation", setGeneration=set_generation)
-            unpack(await self.fetch_part(source, manifest, encryption, "profile", paths), paths.profile)
+            # Strictly older: this sandbox parks into <prefix>/<its generation>/ and never over the set it
+            # came from, which stays whole until the new manifest is in.
+            if not isinstance(set_generation, int) or set_generation >= record["generation"]:
+                raise Refused(409, "the set is not older than this generation", setGeneration=set_generation)
+            await self.fetch_part(source, manifest, encryption, "profile", paths, paths.profile)
             if source["snapshot"]:
-                fallback = self.fits(manifest.get("snapshot"))
-                if fallback is None and not any(p.get("name") == "image" for p in manifest["parts"]):
+                fallback = self.fits(manifest.get("snapshot"), record)
+                image = next((p for p in manifest["parts"] if p.get("name") == "image"), None)
+                if fallback is None and image is None:
                     fallback = "the set has no image"
+                room = free_mb(config.shm)
+                if fallback is None and room is not None and room < image.get("plainBytes", 0) // 2**20 + 256:
+                    fallback = "no room in /dev/shm for the image"
                 if fallback is None:
-                    unpack(await self.fetch_part(source, manifest, encryption, "image", paths), paths.image)
+                    await self.fetch_part(source, manifest, encryption, "image", paths, paths.image)
                     snapshot = True
-            remove(paths.staging)
+            await asyncio.to_thread(remove, paths.staging)
             timings["downloadMs"] = ms(started)
-        if owner is not None:
-            with contextlib.suppress(PermissionError):
-                os.chown(paths.profile, *owner)
-                os.chown(paths.worker_json, *owner)
+        try:
+            await asyncio.to_thread(chown_tree, paths.profile, owner)
+            os.chown(paths.worker_json, *owner)
+        except PermissionError:
+            raise RuntimeError("hostd cannot hand the profile to the bro user") from None
         async with self.shared:
             record["slot"] = self.network.allocate({r["slot"] for r in self.sandboxes.values()
                                                     if r is not record and r.get("slot") is not None})
         paths.router_rules.write_text(self.network.router_rules())
-        for argv in self.network.setup(sandbox_id, record["slot"], paths.router_rules):
-            code, output = await self.runner.run(argv)
-            if code != 0:
-                raise RuntimeError(f"network setup failed at {' '.join(argv[:4])}: {output[-200:]}")
+        await self.setup_network(record, paths)
         paths.bundle.mkdir()
         (paths.bundle / "config.json").write_text(json.dumps(self.bundle(record, paths, rootfs), indent=1))
         await self.apply()
@@ -593,8 +735,10 @@ class Host:
             else:
                 fallback = "runsc restore failed" if code != 0 else "the restored worker did not answer"
                 log.warning("sandbox %s: %s, starting cold", sandbox_id, fallback)
-                await self.runner.run(self.runsc("delete", "--force", paths.container))
-            remove(paths.image)
+                if not await self.stop(paths):
+                    raise RuntimeError("runsc could not delete the failed restore")
+                await self.rebuild_network(record, paths)
+            await asyncio.to_thread(remove, paths.image)
         if record["path"] is None:
             for argv in (self.runsc("create", f"--bundle={paths.bundle}", paths.container),
                          self.runsc("start", paths.container)):
@@ -640,67 +784,98 @@ class Host:
                 return record["parked"]  # a retried park that already succeeded
             if record["state"] != "running":
                 raise Refused(409, f"sandbox is {record['state']}")
-            record.update(generation=generation, state="parking")
+            async with self.parking:
+                result = await self.park_running(record, generation, target)
+        await self.apply(strict=False)
+        return result
+
+    async def park_running(self, record, generation, target):
+        sandbox_id = record["id"]
+        paths = Paths(self.config, sandbox_id)
+        # The image is about the size of the sandbox's memory, in /dev/shm; staging on disk holds its tar
+        # and the zstd of that for a moment.
+        expected = await self.used_mb(record) or record["memoryMb"]
+        shm_free, disk_free = free_mb(self.config.shm), free_mb(self.config.root)
+        if shm_free is not None and shm_free < expected + 256:
+            raise Refused(507, "no room in /dev/shm for the checkpoint", freeMb=shm_free, neededMb=expected + 256)
+        if disk_free is not None and disk_free < 2 * expected + 256:
+            raise Refused(507, "no room on disk to stage the set", freeMb=disk_free, neededMb=2 * expected + 256)
+        record.update(generation=generation, state="parking")
+        self.save(record)
+        started = time.monotonic()
+        await asyncio.to_thread(remove, paths.image)
+        code, output = await self.runner.run(
+            self.runsc("checkpoint", f"--image-path={paths.image}", paths.container), timeout=300)
+        if code != 0:
+            await asyncio.to_thread(remove, paths.image)
+            state_code, state = await self.runner.run(self.runsc("state", paths.container))
+            alive = False
+            with contextlib.suppress(ValueError, AttributeError):
+                alive = state_code == 0 and json.loads(state or "{}").get("status") == "running"
+            record.update(state="running" if alive else "failed",
+                          error=None if alive else "runsc checkpoint failed and the sandbox stopped")
             self.save(record)
-            paths = Paths(self.config, sandbox_id)
-            started = time.monotonic()
-            remove(paths.image)
-            code, output = await self.runner.run(
-                self.runsc("checkpoint", f"--image-path={paths.image}", paths.container), timeout=300)
-            if code != 0:
-                record["state"] = "running"
-                self.save(record)
-                raise Refused(502, "runsc checkpoint failed", output=output[-300:])
-            timings = {"checkpointMs": ms(started)}
-            snapshot = {"runsc": self.runsc_version, "cpu": self.cpu["features"]}
-            try:
-                stage = time.monotonic()
-                remove(paths.staging)
-                paths.staging.mkdir(parents=True, mode=0o700)
-                parts = []
-                for part, source in (("profile", paths.profile), ("image", paths.image)):
-                    tar = paths.staging / f"{part}.tar"
-                    plain = await asyncio.to_thread(pack, source, tar)
-                    code, output = await self.runner.run(
-                        [self.config.zstd, "-q", "-f", "-3", "-T0", "--rm", str(tar), "-o", f"{tar}.zst"], timeout=300)
-                    if code != 0:
-                        raise RuntimeError(f"zstd failed: {output[-200:]}")
-                    parts.append((part, Path(f"{tar}.zst"), plain))
-                timings["packMs"] = ms(stage)
-                stage = time.monotonic()
-                manifest = await sets.upload(
-                    self.http, key=target["key"], set_id=f"{record['workspace']}|{sandbox_id}|{generation}",
-                    parts=parts, chunk_urls=target["chunkUrls"], manifest_url=target["manifestUrl"],
-                    chunk_bytes=self.config.chunk_bytes, parallel=self.config.parallel,
-                    extra={"workspace": record["workspace"], "sandbox": sandbox_id, "generation": generation,
-                           "snapshot": snapshot})
-                timings["uploadMs"] = ms(stage)
-            except Exception as error:
-                log.warning("sandbox %s: park upload failed: %s", sandbox_id, error)
-                remove(paths.staging)
-                restored = await self.resume(record, paths)
-                raise Refused(502, f"the set was not written: {str(error)[:300]}", restoredLocally=restored) from None
-            timings["totalMs"] = ms(started)
+            raise Refused(502, "runsc checkpoint failed", output=output[-300:])
+        timings = {"checkpointMs": ms(started)}
+        snapshot = self.snapshot_format(record)
+        try:
+            stage = time.monotonic()
+            await asyncio.to_thread(remove, paths.staging)
+            paths.staging.mkdir(parents=True, mode=0o700)
+            parts = []
+            for part, source in (("profile", paths.profile), ("image", paths.image)):
+                tar = paths.staging / f"{part}.tar"
+                plain = await asyncio.to_thread(pack, source, tar)
+                code, output = await self.runner.run(
+                    [self.config.zstd, "-q", "-f", "-3", "-T0", "--rm", str(tar), "-o", f"{tar}.zst"], timeout=300)
+                if code != 0:
+                    raise RuntimeError(f"zstd failed: {output[-200:]}")
+                parts.append((part, Path(f"{tar}.zst"), plain))
+            timings["packMs"] = ms(stage)
+            stage = time.monotonic()
+            manifest = await sets.upload(
+                self.http, key=target["key"], set_id=f"{record['workspace']}|{sandbox_id}|{generation}",
+                parts=parts, chunk_urls=target["chunkUrls"], manifest_url=target["manifestUrl"],
+                chunk_bytes=self.config.chunk_bytes, parallel=self.config.parallel,
+                extra={"workspace": record["workspace"], "sandbox": sandbox_id, "generation": generation,
+                       "snapshot": snapshot})
+            timings["uploadMs"] = ms(stage)
+        except Exception as error:
+            log.warning("sandbox %s: park upload failed: %s", sandbox_id, error)
+            await asyncio.to_thread(remove, paths.staging)
+            restored = await self.resume(record, paths)
+            raise Refused(502, f"the set was not written: {str(error)[:300]}", restoredLocally=restored) from None
+        timings["totalMs"] = ms(started)
+        try:
             await self.teardown(record)
-            result = {
-                "id": sandbox_id, "state": "parked", "generation": generation, "format": snapshot,
-                "chunks": sum(len(p["chunks"]) for p in manifest["parts"]),
-                "parts": {p["name"]: {"plainBytes": p["plainBytes"], "bytes": p["bytes"], "chunks": len(p["chunks"])}
-                          for p in manifest["parts"]},
-                "timings": timings,
-            }
-            record.update(state="parked", slot=None, parked=result)
-            await self.apply(strict=False)
-            return result
+        except Refused:
+            # The set is in, but a sandbox Bro may restore elsewhere must not live on here too.
+            record.update(state="failed", error="the set is written but runsc could not delete the sandbox")
+            self.save(record)
+            raise Refused(502, "the set is written but runsc could not delete the sandbox", setWritten=True) from None
+        result = {
+            "id": sandbox_id, "state": "parked", "generation": generation, "format": snapshot,
+            "chunks": sum(len(p["chunks"]) for p in manifest["parts"]),
+            "parts": {p["name"]: {"plainBytes": p["plainBytes"], "bytes": p["bytes"], "chunks": len(p["chunks"])}
+                      for p in manifest["parts"]},
+            "timings": timings,
+        }
+        record.update(state="parked", slot=None, parked=result)
+        return result
 
     async def resume(self, record, paths):
         """After a park that could not upload: bring the frozen sandbox back here from its image."""
-        await self.runner.run(self.runsc("delete", "--force", paths.container))
-        code, _ = await self.runner.run(
-            self.runsc("restore", f"--image-path={paths.image}", f"--bundle={paths.bundle}", "--detach",
-                       paths.container), log_file=paths.log, timeout=120)
-        ready = code == 0 and await self.worker_ready(record, self.config.restore_timeout_s)
-        remove(paths.image)
+        ready = False
+        try:
+            if await self.stop(paths):
+                await self.rebuild_network(record, paths)
+                code, _ = await self.runner.run(
+                    self.runsc("restore", f"--image-path={paths.image}", f"--bundle={paths.bundle}", "--detach",
+                               paths.container), log_file=paths.log, timeout=120)
+                ready = code == 0 and await self.worker_ready(record, self.config.restore_timeout_s)
+        except RuntimeError as error:
+            log.warning("sandbox %s did not come back: %s", record["id"], error)
+        await asyncio.to_thread(remove, paths.image)
         record.update(state="running" if ready else "failed",
                       error=None if ready else "the park failed and the sandbox did not come back")
         self.save(record)
@@ -713,11 +888,16 @@ class Host:
             record = self.sandboxes.get(sandbox_id)
             if record is None:
                 # Leftovers of a record hostd lost still go.
-                self.wipe(Paths(self.config, sandbox_id))
+                await asyncio.to_thread(self.wipe, Paths(self.config, sandbox_id))
                 raise Refused(404, "no such sandbox")
             if generation < record["generation"]:
                 raise Refused(409, "stale generation", generation=record["generation"])
-            await self.teardown(record)
+            try:
+                await self.teardown(record)
+            except Refused:
+                record.update(state="failed", error="runsc could not delete the sandbox")
+                self.save(record)
+                raise
             del self.sandboxes[sandbox_id]
         await self.apply(strict=False)
         return {"id": sandbox_id, "deleted": True}
@@ -739,9 +919,18 @@ class Host:
         with contextlib.suppress(OSError):
             disk = shutil.disk_usage(self.config.shm)
             shm = {"totalMb": disk.total // 2**20, "freeMb": disk.free // 2**20}
-        versions = sorted(p.name for p in self.config.rootfs.glob("*") if p.is_dir()) if self.config.rootfs.exists() else []
+        disk = None
+        with contextlib.suppress(OSError):
+            root_disk = shutil.disk_usage(self.config.root)
+            disk = {"totalMb": root_disk.total // 2**20, "freeMb": root_disk.free // 2**20}
+        # A rootfs still unpacking is a hidden `.<version>.partial`: the pattern leaves it out.
+        versions = sorted(p.name for p in self.config.rootfs.glob("*")
+                          if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name)) if self.config.rootfs.exists() else []
+        memory = meminfo()
+        if memory is not None:
+            memory["committed"] = sum(r["memoryMb"] for r in live if r["state"] != "failed")
         return {
-            "host": self.identity["host"] if self.identity else None, "memoryMb": meminfo(), "shm": shm,
+            "host": self.identity["host"] if self.identity else None, "memoryMb": memory, "shm": shm, "disk": disk,
             "cpu": self.cpu, "runsc": self.runsc_version, "rootfsVersions": versions,
             "snapshotFormat": {"runsc": self.runsc_version, "cpu": self.cpu["features"]},
             "sandboxes": [{"id": r["id"], "state": r["state"], "generation": r["generation"],

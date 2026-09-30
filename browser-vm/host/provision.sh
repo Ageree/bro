@@ -3,13 +3,15 @@
 # boot.py) from the unpacked bundle in /opt/bro/host. Installs runsc of the release boot.json pins, Caddy,
 # nftables, zstd, the hostd venv and unit, and the sandbox rootfs from its presigned URL.
 # Nothing here is per person. The host key is in /etc/bro/host.json (cloud-init, 0600); hostd reads it.
-# Stages go to /srv/bro/stage: hostd's /v1/health shows it once Caddy is up.
+# Stages go to /srv/bro/stage. Caddy and hostd come up right after the packages, so from then on Bro reads
+# the stage (and a `failed:<stage>:line N`) on https://<domain>/h/v1/health; the slow rootfs download comes
+# after that. Only `ready` means the host takes sandboxes.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 BOOT=/etc/bro/boot.json
 ROOT=/srv/bro
-mkdir -p "$ROOT/rootfs" "$ROOT/sandboxes" /etc/bro
-chmod 700 "$ROOT/sandboxes"
+mkdir -p "$ROOT/rootfs" "$ROOT/sandboxes" "$ROOT/staging" /etc/bro
+chmod 700 "$ROOT/sandboxes" "$ROOT/staging"
 stage() {
   echo "$1" > "$ROOT/stage"
   echo "$(cut -d' ' -f1 /proc/uptime) $(date +%s) $1" >> "$ROOT/timeline"
@@ -61,24 +63,6 @@ stage venv
 python3 -m venv /opt/bro/venv
 retry /opt/bro/venv/bin/pip install -q "aiohttp==3.12.15" "cryptography==45.0.7"
 
-stage network
-# Sandboxes reach the internet through the host (network.py); nothing else is forwarded (hostd's table).
-echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/90-bro-host.conf
-sysctl -q --system
-
-stage rootfs
-ROOTFS="$ROOT/rootfs/$ROOTFS_VERSION"
-if [ ! -d "$ROOTFS" ]; then
-  ARCHIVE="$ROOT/rootfs/.$ROOTFS_VERSION.tar.zst"
-  retry curl -fsS -m 900 -o "$ARCHIVE" "$(field rootfs.url)"
-  echo "$(field rootfs.sha256)  $ARCHIVE" | sha256sum -c --quiet -
-  rm -rf "$ROOTFS.partial"
-  mkdir -p "$ROOTFS.partial"
-  tar -I zstd -xf "$ARCHIVE" -C "$ROOTFS.partial"
-  rm -f "$ARCHIVE"
-  mv "$ROOTFS.partial" "$ROOTFS"
-fi
-
 stage caddy
 DOMAIN=$(field domain)
 if [ -z "$DOMAIN" ]; then
@@ -123,4 +107,24 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now bro-hostd
+
+stage network
+# Sandboxes reach the internet through the host (network.py); nothing else is forwarded (hostd's table).
+echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/90-bro-host.conf
+sysctl -q --system
+
+stage rootfs
+ROOTFS="$ROOT/rootfs/$ROOTFS_VERSION"
+if [ ! -d "$ROOTFS" ]; then
+  ARCHIVE="$ROOT/rootfs/.$ROOTFS_VERSION.tar.zst"
+  PARTIAL="$ROOT/rootfs/.$ROOTFS_VERSION.partial"  # hidden: hostd lists only finished versions
+  retry curl -fsS -m 900 -o "$ARCHIVE" "$(field rootfs.url)"
+  echo "$(field rootfs.sha256)  $ARCHIVE" | sha256sum -c --quiet -
+  rm -rf "$PARTIAL"
+  mkdir -p "$PARTIAL"
+  # The rootfs's own uids and gids, not the host's accounts of the same names.
+  tar --numeric-owner -I zstd -xpf "$ARCHIVE" -C "$PARTIAL"
+  rm -f "$ARCHIVE"
+  mv "$PARTIAL" "$ROOTFS"
+fi
 stage ready

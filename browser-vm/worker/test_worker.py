@@ -118,6 +118,39 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"Proxy-Authorization: Basic {login}", head)
         self.assertEqual(head.count("Proxy-Authorization"), 1)
 
+    async def test_drop_closes_the_tunnels_that_carry_the_login(self):
+        held = asyncio.Event()
+
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            await writer.drain()
+            held.set()
+            await reader.read()  # keeps the tunnel open until the forwarder closes it
+            writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        forwarder = worker.Forwarder()
+        forwarder.configure({"host": "127.0.0.1", "port": up.sockets[0].getsockname()[1], "username": "u",
+                             "password": "p"})
+        server = await asyncio.start_server(forwarder.handle, "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+        writer.write(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+        await writer.drain()
+        await asyncio.wait_for(held.wait(), 5)
+        await reader.readuntil(b"\r\n\r\n")
+        self.assertEqual(len(forwarder.open), 2)
+        forwarder.drop()
+        self.assertEqual(await asyncio.wait_for(reader.read(), 5), b"")  # the tunnel is gone
+        for _ in range(50):
+            if not forwarder.open:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual((forwarder.open, forwarder.upstream), (set(), None))
+        writer.close()
+        server.close()
+        up.close()
+
 
 LLM = {"baseUrl": "https://llm.test/v1", "apiKey": "k", "model": "m"}
 
@@ -537,7 +570,10 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                                      "secrets": binding, "captcha": {"twoCaptchaKey": "2c"},
                                      "jev": {"apiKey": "jev-key"}, "maxSteps": 5})
         await self.settled("r1")
+        tunnel = mock.Mock()
+        self.worker.forwarder.open.add(tunnel)  # a CONNECT in flight holds the login in its handler
         self.assertEqual(await self.call("POST", "/v1/park"), (200, {"parked": True}))
+        tunnel.close.assert_called_once()
         session = self.worker.sessions["s1"]
         self.assertIsNone(self.worker.forwarder.upstream)  # Chrome gets 502 until the next POST /v1/session
         self.assertEqual((session.llm, session.captcha, session.sensitive_data), (None, None, None))
