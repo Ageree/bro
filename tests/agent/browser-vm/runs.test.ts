@@ -5,6 +5,7 @@ import type * as lifecycleModule from "@agent/lib/browser-vm/lifecycle";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 import type { browserVmRuns, browserVms } from "@db/schema/browser-vms";
 import type * as browserVmRecords from "@db/services/browser-vms";
+import type * as usageCostRecords from "@db/services/usage-costs";
 import {
   browserVmTestEnvironment,
   clearBrowserVmSettings,
@@ -76,6 +77,10 @@ const alertOwner = vi.hoisted(() =>
 );
 
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+const recordUsageCost = vi.hoisted(() =>
+  vi.fn<typeof usageCostRecords.recordUsageCost>()
+);
+vi.mock("@db/services/usage-costs", () => ({ recordUsageCost }));
 vi.mock("@db/services/browser-vms", () => records);
 vi.mock("@agent/lib/browser-vm/lifecycle", () => lifecycle);
 vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
@@ -98,6 +103,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     lastError: null,
     lastUsedAt: now,
     leaseUntil: null,
+    poweredOnAt: null,
     profileGeneration: 1,
     profileResetPending: false,
     proxyExit: null,
@@ -179,6 +185,7 @@ beforeEach(() => {
     Promise.resolve(ready)
   );
   lifecycle.touchBrowserVm.mockResolvedValue(vm);
+  recordUsageCost.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -552,6 +559,144 @@ describe("reading a VM run", () => {
       status: "completed",
       unreadMessages: [],
     });
+  });
+
+  it("records what a settled run spent on its model and its proxy, keyed by the run", async () => {
+    const client = await loadClient();
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        result: "RESULT: the parcel is in Moscow",
+        status: "completed",
+        traffic: { down: 9_000_000, up: 1_000_000 },
+        usage: {
+          total_completion_tokens: 2_000,
+          total_cost: 0.02,
+          total_prompt_cached_tokens: 50_000,
+          total_prompt_tokens: 150_000,
+          total_tokens: 152_000,
+        },
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+    await client.readBrowserUseRun(runId);
+
+    const finishedAt = new Date("2026-09-28T11:58:00Z");
+    expect(recordUsageCost).toHaveBeenCalledWith({
+      // 100k fresh × 9.66 + 50k cached × 1.21 + 2k out × 48.28 per million.
+      costRub: 1.12306,
+      costUsd: null,
+      idempotencyKey: `browser-run:${runId}`,
+      occurredAt: finishedAt,
+      runId,
+      sessionId,
+      source: "browser-run",
+      units: {
+        cachedInputTokens: 50_000,
+        inputTokens: 150_000,
+        model: "deepseek/deepseek-v4.1-flash",
+        outputTokens: 2_000,
+        steps: 3,
+        unpriced: false,
+      },
+      workspaceId,
+    });
+    expect(recordUsageCost).toHaveBeenCalledWith({
+      // 10 MB at the default 23 ₽ a gigabyte.
+      costRub: 0.23,
+      costUsd: null,
+      idempotencyKey: `proxy:${runId}`,
+      occurredAt: finishedAt,
+      runId,
+      sessionId,
+      source: "proxy",
+      units: { bytes: 10_000_000 },
+      workspaceId,
+    });
+  });
+
+  it("records nothing for a run still going, and never fails a read on the accounting", async () => {
+    const client = await loadClient();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    worker.readBrowserVmWorkerRun.mockResolvedValueOnce(workerRun());
+    await client.readBrowserUseRun(runId);
+    expect(recordUsageCost).not.toHaveBeenCalled();
+
+    recordUsageCost.mockRejectedValue(new Error("database is down"));
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        result: "RESULT: done",
+        status: "completed",
+        traffic: { down: 10, up: 10 },
+      })
+    );
+    const run = await client.readBrowserUseRun(runId);
+    expect(run.status).toBe("completed");
+  });
+
+  it("leaves a run the record already settled alone, and still records one a cancel closed", async () => {
+    const client = await loadClient();
+    const settled = workerRun({
+      finishedAt: "2026-09-28T11:58:00Z",
+      result: "RESULT: done",
+      status: "completed",
+      traffic: { down: 10, up: 10 },
+    });
+    records.readBrowserVmRun.mockResolvedValue(
+      runRecord({ result: "RESULT: done", status: "completed" })
+    );
+    worker.readBrowserVmWorkerRun.mockResolvedValue(settled);
+
+    await client.readBrowserUseRun(runId);
+
+    expect(recordUsageCost).not.toHaveBeenCalled();
+
+    records.readBrowserVmRun.mockResolvedValue(
+      runRecord({ status: "cancelled" })
+    );
+    worker.readBrowserVmWorkerRun.mockResolvedValue({
+      ...settled,
+      status: "cancelled",
+    });
+
+    await client.readBrowserUseRun(runId);
+
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: `proxy:${runId}` })
+    );
+  });
+
+  it("marks a run on a model with no price as unpriced", async () => {
+    const client = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_VM_MODEL: "someone/unknown" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        status: "completed",
+        usage: { total_completion_tokens: 10, total_prompt_tokens: 100 },
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+
+    expect(warn).toHaveBeenCalledWith(
+      "[usage-costs] no price for the VM model",
+      {
+        model: "someone/unknown",
+      }
+    );
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        costRub: 0,
+        idempotencyKey: `browser-run:${runId}`,
+      })
+    );
+    expect(recordUsageCost.mock.calls[0]?.[0].units?.unpriced).toBe(true);
   });
 
   it("tells a run its model refused for billing as such, and alerts the owner", async () => {

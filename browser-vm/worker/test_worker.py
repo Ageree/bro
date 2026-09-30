@@ -364,6 +364,21 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.max_steps, 60)
         self.assertEqual(started, {"n_steps": 1, "plan_generation_step": None, "last_compaction_step": None})
 
+    async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
+        async def browse(agent, on_step_start):
+            await on_step_start(agent)
+            self.worker.forwarder.totals["up"] += 1_000
+            self.worker.forwarder.totals["down"] += 250_000
+            return FakeHistory(True)
+
+        self.worker.forwarder.totals.update({"up": 7, "down": 70})  # the exit check before the run
+        FakeAgent.script = browse
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertEqual(run.public()["traffic"], {"up": 1_000, "down": 250_000})
+        self.assertEqual(self.on_disk("r1")["traffic"], {"up": 1_000, "down": 250_000})
+        self.assertEqual(worker.Run.load(self.on_disk("r1")).traffic, {"up": 1_000, "down": 250_000})
+
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)
         records = [("r1", "2026-09-28T10:00:00Z", {"n_steps": 5, "history": []}),

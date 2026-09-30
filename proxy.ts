@@ -13,6 +13,8 @@ export async function proxy(request: NextRequest) {
     // YooKassa signs nothing this proxy could check. The route trusts only the
     // payment id in the body and re-fetches the payment itself.
     pathname === "/api/yookassa" ||
+    // The owner's cost report checks its own bearer token.
+    pathname === "/api/usage-costs" ||
     pathname.startsWith("/api/auth/") ||
     pathname === "/eve/v1/health" ||
     // Provider webhooks verify their own signatures inside the channel.

@@ -23,7 +23,7 @@ Routes (all but a plain /v1/health need a token):
                                           (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
   POST /v1/runs                           start an agent run; idempotent on its id; 409 when busy
-  GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage, unreadMessages
+  GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage, traffic, unreadMessages
   POST /v1/runs/<id>/cancel               stop the agent (waits up to 20 s for it to end), keep the page
   GET  /v1/sessions/<id>                  latest run and its status
   POST /v1/sessions/<id>/messages         {text}: join the live run (unread when it ends: unreadMessages),
@@ -378,6 +378,7 @@ class Run:
         self.final_url = None
         self.final_title = None
         self.usage = None
+        self.traffic = None  # bytes through the residential proxy while it ran: {"up", "down"}, once it ended
         self.engine = "agent"
         self.jev = None
         self.messages = []
@@ -400,7 +401,8 @@ class Run:
             "result": self.result, "error": self.error, "success": self.success,
             "createdAt": self.created_at, "startedAt": self.started_at, "finishedAt": self.finished_at,
             "steps": self.steps[-50:], "stepCount": len(self.steps), "finalUrl": self.final_url,
-            "finalTitle": self.final_title, "usage": self.usage, "engine": self.engine, "jev": self.jev,
+            "finalTitle": self.final_title, "usage": self.usage, "traffic": self.traffic, "engine": self.engine,
+            "jev": self.jev,
             "unreadMessages": self.unread_messages,
         }
 
@@ -424,7 +426,7 @@ class Run:
                                ("success", "success"), ("createdAt", "created_at"),
                                ("startedAt", "started_at"), ("finishedAt", "finished_at"),
                                ("steps", "steps"), ("finalUrl", "final_url"), ("finalTitle", "final_title"),
-                               ("usage", "usage"), ("engine", "engine"), ("jev", "jev"),
+                               ("usage", "usage"), ("traffic", "traffic"), ("engine", "engine"), ("jev", "jev"),
                                ("unreadMessages", "unread_messages"), ("seq", "seq")]:
             if key in record:
                 setattr(run, attribute, record[key])
@@ -868,6 +870,8 @@ class Worker:
     async def execute(self, run, session, text):
         run.status = "running"
         run.started_at = now_iso()
+        # One run holds the browser at a time, so the proxy's bytes while it works are its own: Bro prices them.
+        traffic_start = dict(self.forwarder.totals)
         # The outcome is set only once the run has let go of the browser: until then a message still
         # joins it (and, if the agent never reads it, is recorded below as unread).
         status, result, error = "failed", None, "The run was interrupted."
@@ -920,6 +924,8 @@ class Worker:
                 # never starts a follow-up run.
                 run.unread_messages = list(run.messages)
                 run.messages = []
+            if run.traffic is None:
+                run.traffic = {key: max(0, self.forwarder.totals[key] - traffic_start[key]) for key in ("up", "down")}
             try:
                 run.save(session.agent_state)
             except Exception:  # Bro reads the end from memory; an update or a stop writes it again first

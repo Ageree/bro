@@ -17,6 +17,7 @@ export * from "./schedules";
 export * from "./sessions";
 export * from "./spending";
 export * from "./usage";
+export * from "./usage-costs";
 export * from "./vault";
 export * from "./workspaces";
 export * from "./workstreams";

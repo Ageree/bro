@@ -4,6 +4,7 @@ import type * as cloudRuModule from "@agent/lib/browser-vm/cloudru";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 import type { browserVms } from "@db/schema/browser-vms";
 import type * as browserVmRecords from "@db/services/browser-vms";
+import type * as usageCostRecords from "@db/services/usage-costs";
 import {
   browserVmTestEnvironment,
   clearBrowserVmSettings,
@@ -28,6 +29,8 @@ const records = vi.hoisted(() => ({
     vi.fn<typeof browserVmRecords.clearBrowserVmProfileReset>(),
   deleteBrowserVmRecord: vi.fn<typeof browserVmRecords.deleteBrowserVmRecord>(),
   ensureBrowserVmRecord: vi.fn<typeof browserVmRecords.ensureBrowserVmRecord>(),
+  listBrowserVmRunIdsBetween:
+    vi.fn<typeof browserVmRecords.listBrowserVmRunIdsBetween>(),
   listBrowserVmsToReconcile:
     vi.fn<typeof browserVmRecords.listBrowserVmsToReconcile>(),
   listOpenBrowserVmRuns: vi.fn<typeof browserVmRecords.listOpenBrowserVmRuns>(),
@@ -92,6 +95,10 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
   ...worker,
 }));
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+const recordUsageCost = vi.hoisted(() =>
+  vi.fn<typeof usageCostRecords.recordUsageCost>()
+);
+vi.mock("@db/services/usage-costs", () => ({ recordUsageCost }));
 
 function minutesAgo(minutes: number) {
   return new Date(now.getTime() - minutes * 60_000);
@@ -111,6 +118,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     lastError: null,
     lastUsedAt: minutesAgo(1),
     leaseUntil: null,
+    poweredOnAt: null,
     profileGeneration: 1,
     profileResetPending: false,
     proxyExit: {
@@ -296,6 +304,7 @@ beforeEach(() => {
     return Promise.resolve(true);
   });
   records.listOpenBrowserVmRuns.mockResolvedValue([]);
+  records.listBrowserVmRunIdsBetween.mockResolvedValue([]);
   cloud.findCloudRuVmByName.mockResolvedValue(undefined);
   cloud.readCloudRuVm.mockResolvedValue(cloudVm("running"));
   sleep.mockResolvedValue();
@@ -315,6 +324,7 @@ beforeEach(() => {
     reset: true,
   });
   alertOwner.mockResolvedValue(true);
+  recordUsageCost.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -630,8 +640,14 @@ describe("bringing a workspace's browser VM up for an errand", () => {
       expect.stringContaining("квота"),
       { repeatAfterMs: 6 * 60 * 60_000 }
     );
-    expect(stored()).toMatchObject({ leaseUntil: null, state: "failed" });
+    expect(stored()).toMatchObject({
+      leaseUntil: null,
+      poweredOnAt: null,
+      state: "failed",
+    });
     expect(stored().lastError).toContain("quota exceeded");
+    // The refused create never had a VM on: nothing is billed for it.
+    expect(recordUsageCost).not.toHaveBeenCalled();
   });
 });
 
@@ -1048,6 +1064,160 @@ describe("reconciling browser VMs", () => {
     await lifecycle.reconcileBrowserVms(now);
 
     expect(stored()).toMatchObject({ state: "stopped", vmId: "vm-1" });
+  });
+
+  it("records the hour a VM was on once it settles as stopped, and only once", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({
+        poweredOnAt: minutesAgo(60),
+        state: "stopping",
+        stateChangedAt: minutesAgo(1),
+      })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+
+    await lifecycle.reconcileBrowserVms(now);
+    await lifecycle.reconcileBrowserVms(new Date(now.getTime() + 60_000));
+
+    expect(stored()).toMatchObject({ poweredOnAt: null, state: "stopped" });
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith({
+      costRub: 2.97,
+      costUsd: null,
+      idempotencyKey: `browser-vm:${workspaceId}:${minutesAgo(60).toISOString()}`,
+      occurredAt: now,
+      runId: null,
+      sessionId: null,
+      source: "browser-vm",
+      units: { flavor: "gen-2-4", seconds: 3600, sharedBy: 1 },
+      workspaceId,
+    });
+  });
+
+  it("starts the VM's clock when it powers the VM on", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow({ state: "stopped" }));
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+
+    await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(stored()).toMatchObject({ poweredOnAt: now, state: "starting" });
+    expect(recordUsageCost).not.toHaveBeenCalled();
+  });
+
+  it("stops the VM as before when its time cannot be recorded, and records it on the next start", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ poweredOnAt: minutesAgo(30), state: "stopping" })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+    recordUsageCost.mockRejectedValueOnce(new Error("database is down"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    // The start stays until the stretch is on record.
+    expect(stored()).toMatchObject({
+      poweredOnAt: minutesAgo(30),
+      state: "stopped",
+    });
+
+    const later = new Date(now.getTime() + 3 * 60 * 60_000);
+    await lifecycle.ensureBrowserVm(workspaceId, later);
+
+    // Recorded up to the stop, not through the three hours it was off.
+    expect(recordUsageCost).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        idempotencyKey: `browser-vm:${workspaceId}:${minutesAgo(30).toISOString()}`,
+        occurredAt: now,
+        units: { flavor: "gen-2-4", seconds: 1800, sharedBy: 1 },
+      })
+    );
+    expect(stored()).toMatchObject({ poweredOnAt: later, state: "starting" });
+  });
+
+  it("shares the time a VM was on between the errands that ran on it", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({
+        poweredOnAt: minutesAgo(60),
+        state: "stopping",
+        stateChangedAt: minutesAgo(1),
+      })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+    records.listBrowserVmRunIdsBetween.mockResolvedValue(["run-a", "run-b"]);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    const key = `browser-vm:${workspaceId}:${minutesAgo(60).toISOString()}`;
+    expect(records.listBrowserVmRunIdsBetween).toHaveBeenCalledWith(
+      workspaceId,
+      minutesAgo(60),
+      now
+    );
+    expect(recordUsageCost).toHaveBeenCalledTimes(2);
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        costRub: 1.485,
+        idempotencyKey: `${key}:run-a`,
+        runId: "run-a",
+        units: { flavor: "gen-2-4", seconds: 1800, sharedBy: 2 },
+      })
+    );
+    expect(recordUsageCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: `${key}:run-b`,
+        runId: "run-b",
+      })
+    );
+    expect(stored().poweredOnAt).toBeNull();
+  });
+
+  it("keeps a deleted VM's record while its time cannot be recorded", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({
+        poweredOnAt: minutesAgo(20),
+        state: "deleting",
+        stateChangedAt: minutesAgo(1),
+      })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+    recordUsageCost.mockRejectedValueOnce(new Error("database is down"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    expect(rows.has(workspaceId)).toBe(true);
+
+    await lifecycle.reconcileBrowserVms(new Date(now.getTime() + 60_000));
+
+    expect(rows.has(workspaceId)).toBe(false);
+  });
+
+  it("records the time a deleted VM was still on", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ poweredOnAt: minutesAgo(20), state: "deleting" })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    expect(rows.has(workspaceId)).toBe(false);
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        costRub: 0.99,
+        source: "browser-vm",
+        units: { flavor: "gen-2-4", seconds: 1200, sharedBy: 1 },
+      })
+    );
   });
 
   it("finishes a deletion that was left half done", async () => {
