@@ -18,21 +18,22 @@
   (`runsc checkpoint`) и восстановление со снимком, откат на профиль, если
   снимок не подходит. Логика снимков и `fits` остаётся рабочей и под тестами.
 
-Проверено только на поддельных `runc`, `runsc`, `mount`, `ip`, `nft`, `zstd`,
-`caddy` и S3; на настоящих VM — следующим шагом этапа 2 (что проверить — ниже).
+Тесты — на поддельных `runc`, `runsc`, `mount`, `ip`, `nft`, `zstd`, `caddy` и
+S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
+`docs/browser-pool.md`), `runsc` на хосте пула — нет.
 
-| Файл               | Что это                                                                                               |
-| ------------------ | ----------------------------------------------------------------------------------------------------- |
-| `hostd.py`         | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд     |
-| `network.py`       | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль |
-| `sets.py`          | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL     |
-| `caddy.py`         | Caddyfile хоста: `/g/<id>/*` → worker песочницы, `/h/*` → `hostd`, admin только на unix-сокете        |
-| `provision.sh`     | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла     |
-| `boot.py`          | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                              |
-| `vendor.json`      | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                            |
-| `requirements.txt` | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                               |
-| `test_hostd.py`    | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)      |
-| `test_boot.py`     | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)       |
+| Файл               | Что это                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `hostd.py`         | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд              |
+| `network.py`       | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль          |
+| `sets.py`          | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL              |
+| `caddy.py`         | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
+| `provision.sh`     | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
+| `boot.py`          | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                       |
+| `vendor.json`      | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                     |
+| `requirements.txt` | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                        |
+| `test_hostd.py`    | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)               |
+| `test_boot.py`     | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                |
 
 ## Песочница
 
@@ -48,7 +49,7 @@
   (`readonly: false`). Свои pid-, ipc-, uts-, mount-, cgroup- и сетевой
   namespace; `maskedPaths`/`readonlyPaths` как у `runc spec`; устройства — только
   стандартные; `noNewPrivileges: false` и `CAP_SETUID`/`CAP_SETGID` (sudo
-  worker), без `SYS_ADMIN`, `MKNOD`, `NET_RAW`; `oomScoreAdj` 500. Seccomp — нет,
+  worker), без `SYS_ADMIN`, `MKNOD`, `NET_RAW`; `oomScoreAdj` 200 (ниже оценок рендереров Chrome). Seccomp — нет,
   если не задан `seccomp_profile`: своего профиля у `runc` нет, а профиль Docker
   по умолчанию запрещает `unshare`/`clone` с новым user namespace без
   `SYS_ADMIN`, на чём стоит собственная песочница Chrome (она работает без
@@ -83,6 +84,9 @@
   только снимок gVisor (`/dev/shm/bro-<id>`). Распаковка и удаление больших
   деревьев идут в потоке, не в цикле событий.
 - Все пути и программы — в `Config` (`/etc/bro/hostd.json` переопределяет).
+  `stand_host_ports` — **только для стенда**, в проде пусто: TCP-порты самого
+  хоста, до которых песочницам можно достучаться (прокси-заглушка стенда
+  вместо резидентского); любой другой порт хоста отвергается.
 
 ## API
 
@@ -206,7 +210,7 @@ SHA-256 бандла и корня песочницы) и `bro-host-boot`, ко�
 cd browser-vm/host
 python boot.py vendor --dir /tmp/bro-vendor                                    # Caddy и 14 колёс, всё по пинам
 python boot.py bundle --vendor /tmp/bro-vendor --out /tmp/bro-host.tgz         # печатает sha256 (≈ 23 МБ)
-python ../../scripts/cloudru-sandbox-probe/s3.py put pool/host/<sha256>.tgz /tmp/bro-host.tgz
+python ../../scripts/cloudru-sandbox-probe/s3.py put pool/host/host-<sha256[:12]>.tgz /tmp/bro-host.tgz
 ```
 
 Корень — один раз на VM Cloud.ru (≈ 3 минуты на 2 vCPU), колёса песочницы — с
@@ -218,28 +222,36 @@ BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
 # печатает sha256 архива; выгрузка — presigned PUT из сессии (s3.py presign put pool/rootfs/<версия>.tar.zst)
 ```
 
-Затем `boot.py cloud-init` с presigned GET бандла и корня (срок — на время
-загрузки хоста).
+На стенде это `vm/rootfs_build.sh wheels` и `vm/rootfs_build.sh build <версия>`
+(2,3 минуты на `gen-2-4`). Затем `boot.py cloud-init` с presigned GET бандла и
+корня (срок — на время загрузки хоста). Текущие артефакты — корень
+`pool/rootfs/sandbox-20260930.1.tar.zst` и бандл `pool/host/host-622fc3df2913.tgz`
+(sha256 и размеры — раздел 2 `docs/browser-pool.md`).
 
-### Что проверить на настоящей VM
+### Проверено на настоящих VM (этап 2, 30.09)
 
-1. Загрузка по cloud-init до `ready`: время стадий (`/srv/bro/timeline`),
-   зеркало apt, Caddy с сертификатом, `hostd` отвечает на `/h/v1/health`
-   (`runtime: runc`).
-2. Старт песочницы до ответа worker (этап 1: 0,4 с), `runc state`, лимит памяти
-   в `/sys/fs/cgroup/bro-sandboxes/<id>/memory.max`, оверлей в `mount`; Chrome
-   поднимается **без** `--no-sandbox` (в `runtime.log` нет ошибок zygote/namespace
-   sandbox), `sudo systemctl restart bro-chrome` из worker работает.
-3. Поручение RU-набора через `/g/<id>/…` за Caddy.
-4. Парковка: `chromeStop: systemctl`, cookie и localStorage в наборе; на
-   **другом** хосте `restore` → `cold`, вход на сайт на месте.
-5. Утечки (как `leak_check.py` пилота): соседняя песочница, `10.0.0.0/8`,
-   `169.254.169.254`, порты хоста — отказ сразу (TCP reset), не таймаут;
-   `curl https://raw.githubusercontent.com` из песочницы не висит минутами.
-6. Перезапуск `hostd` (песочница живёт, запись `running`), `DELETE` (оверлей
-   размонтирован, каталог и netns удалены), перезагрузка хоста.
-7. Профиль seccomp: с `seccomp_profile` — профиль Docker без запрета user
-   namespace — Chrome стартует со своей песочницей?
+Три хоста `gen-2-8`, стенд — `scripts/cloudru-sandbox-probe/pool.py` (README
+стенда), цифры — раздел 2 `docs/browser-pool.md`.
+
+1. Загрузка по cloud-init до `ready` по HTTPS — 132–133 с от создания VM;
+   установка 62–67 с (apt с зеркала 33 с, корень из S3 25–30 с). Одна первая
+   загрузка из четырёх встала в `(initramfs)`: лечит `reboot`.
+2. Старт песочницы 0,8 с до ответа worker; `memory.max` 3 ГБ, `pids.max` 4096,
+   tmpfs и overlay смонтированы; Chrome **без** `--no-sandbox`: zygote в своих
+   user- и pid-namespace, рендереры под seccomp-bpf.
+3. Короткое поручение (Рувики) через `/g/<id>/` — 60 с, 0,88 ₽; CDP-сокеты через
+   Caddy — с префиксом `/g/<id>/`.
+4. Парковка — `chromeStop: systemctl`, 1,7–2,0 с, набор 40–70 МБ; на
+   **другом** хосте — `cold` за 1,7 с, cookie и localStorage на месте.
+5. Утечки (`vm/leak.py` стенда изнутри песочницы): соседка, `10/8`, metadata,
+   порты хоста — отказ за < 1 мс. Таймаут — только на публичный IP самого хоста
+   (Cloud.ru не разворачивает на него трафик).
+6. Перезапуск `hostd` — песочница жива; перезагрузка хоста — песочница
+   `failed`, новая с тем же id и `DELETE` работают; `DELETE` не оставляет
+   монтирований, netns, veth, cgroup и каталогов.
+
+Не проверено: профиль seccomp (`seccomp_profile`) с песочницей Chrome, `runsc`
+на хосте пула, поручения под нагрузкой соседей (этап 3).
 
 ## Тесты
 

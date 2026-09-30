@@ -30,6 +30,10 @@ Evolution (29.09): технически он там запускается, но
 | `vm/bench.py`             | Драйвер worker (токены как у Бро): RU-набор, WB и Avito, форма, проверка после восстановления, память |
 | `vm/state.py`             | Парковка и восстановление: checkpoint, tar, zstd, AES-256-GCM, части в S3, манифест последним         |
 | `vm/full.sh`              | Сравнение: без gVisor, затем gVisor, каждый с пустым профилем                                         |
+| `vm/rootfs_build.sh`      | Этап 2: колёса с зеркала и корень песочницы в архив для S3 (`build_rootfs.sh` в режиме ARCHIVE)       |
+| `pool.py`                 | Этап 2: хост пула как у Бро (cloud-init `boot.py`), API `hostd` и worker по HTTPS, парковка, наборы   |
+| `vm/pool_inspect.sh`      | Этап 2, на хосте: `runc state`, cgroup, монтирования, namespace и seccomp процессов Chrome, лог       |
+| `vm/leak.py`              | Этап 2, изнутри песочницы: TCP до соседки, хоста, VPC, metadata — отказ сразу или таймаут             |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET` и `pip install websocket-client`;
 для этапа 1 ещё `CLOUDRU_S3_TENANT_ID` и `ROUTERAI_API_KEY`.
@@ -95,6 +99,45 @@ RU-набора по ≈ 22 ₽ и отладка).
 | Подъём на другой VM: S3 / расшифровка / распаковка / старт / worker | 1,0 / 0,04 / 0,14 / 0,4 с              | 1,0 / 0,09 / 0,62 / 0,73 / 0,19 с         |
 | Пережило подъём                                                     | cookie, localStorage                   | + вкладка и значение в поле, часы ±0,03 с |
 
+## Этап 2: хост пула на настоящих VM
+
+Хост поднимается так, как его поднимет Бро: стоковая `ubuntu-22.04` и
+cloud-init из `browser-vm/host/boot.py` с presigned GET бандла и корня. Стенд
+только дописывает в cloud-init пароль root для `console.py` (у хостов Бро входа
+нет). Ключ подписи — случайный (`$PROBE_STATE_DIR/pool-signing-key`), ключи
+worker и данных песочниц — там же (`pool-<id>.json`); удалите их после прогона.
+
+```sh
+# корень — один раз (≈ 15 минут вместе с VM, ≈ 1 ₽)
+python cloudru.py usage && python cloudru.py create probe-rootfs --disk 25
+python deliver.py probe-rootfs --code && python console.py push probe-rootfs vm/rootfs_build.sh /root/stand/vm/rootfs_build.sh
+python console.py run probe-rootfs 'bash /root/stand/vm/rootfs_build.sh wheels > /root/wheels.log 2>&1' --timeout 600
+python console.py run probe-rootfs 'cat /srv/bro/wheels.sha256' > w.sha256 && python verify_wheels.py w.sha256
+python console.py run probe-rootfs 'nohup bash /root/stand/vm/rootfs_build.sh build <версия> > /root/build.log 2>&1 &'
+python console.py run probe-rootfs "curl -fsS -T /srv/bro/<версия>.tar.zst '$(python s3.py presign put pool/rootfs/<версия>.tar.zst)'"
+python cloudru.py delete probe-rootfs
+# бандл — в сессии: README хоста, «Сборка бандла и корня»
+# pool.py берёт текущие корень и бандл (раздел 2 docs/browser-pool.md); другие — POOL_BUNDLE_KEY и т. п.
+python pool.py boot probe-host1                     # время до ready по HTTPS; нет ответа ≈ 3 минуты — set-power reboot
+python pool.py create probe-host1 sbx-a             # песочница; время до ответа worker с Chrome
+python console.py push probe-host1 vm/proxy.py /root/proxy.py   # прокси-заглушка и stand_host_ports [3130] в
+python console.py run probe-host1 'nohup python3 /root/proxy.py 3130 > /var/log/probe-proxy.log 2>&1 &'  # hostd.json
+python pool.py session probe-host1 sbx-a 172.31.0.1 # шлюз песочницы в слоте 0 (слот n — 172.31.0.<4n+1>)
+python pool.py markers probe-host1 sbx-a set        # cookie и localStorage на ya.ru через CDP за Caddy
+python pool.py errand probe-host1 sbx-a             # одно короткое поручение, ≈ 1 ₽ RouterAI
+python pool.py park probe-host1 sbx-a 2 && python cloudru.py delete probe-host1
+python pool.py boot probe-host2 && python pool.py create probe-host2 sbx-a --gen 3 --restore 2
+python pool.py session probe-host2 sbx-a 172.31.0.1 && python pool.py markers probe-host2 sbx-a check
+python pool.py create probe-host2 sbx-b             # соседка; затем на хосте:
+#   runc --root /run/runc-bro exec bro-sbx-a python3 -c "$(cat /root/leak.py)" <адрес хоста в VPC> <публичный IP>
+python pool.py delete probe-host2 sbx-a 3 && python pool.py forget <воркспейс sbx-a>
+python cloudru.py delete probe-host2 && python s3.py delete-prefix probe/stage2/ && python cloudru.py usage
+```
+
+Итоги — таблицы этапа 2 в разделе 2 `docs/browser-pool.md`. Прогон 30.09:
+четыре VM (`gen-2-4` для корня, три `gen-2-8`) ≈ 53 минуты — ≈ 5 ₽; RouterAI —
+0,88 ₽.
+
 ## Грабли
 
 - `set-password` Compute API на стоковом образе отвечает 422 «Guest agent is
@@ -142,6 +185,11 @@ proc` внутри.
 - Память gVisor по RSS и PSS процессов хоста завышена (общий memory file
   отображён многократно): смотреть MemTotal − MemAvailable хоста, cgroup и
   `runsc events --stats`.
+- Хост пула: первая загрузка стоковой VM иногда встаёт в `(initramfs)` (одна
+  из четырёх 30.09): `pool.py boot` ждёт 15 минут впустую — смотрите консоль и
+  делайте `set-power reboot`, cloud-init после него отрабатывает как надо.
+- Изнутри песочницы публичный IP своего же хоста не отвечает (таймаут, не
+  отказ): Cloud.ru не разворачивает трафик на плавающий IP той же VM.
 - Avito закрывает адрес «Доступ ограничен: проблема с IP» после серии
   запросов с него: в прогоне стена досталась проверке под gVisor сразу после
   набора без gVisor, а поручение под gVisor через 10 минут прошло без неё.

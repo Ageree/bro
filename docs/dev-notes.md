@@ -282,8 +282,8 @@
   спасает), закрепляется пакет `runsc` целиком (`/usr/bin/gvisor-bin`).
   Итоги этапа 1 и решение «обычные контейнеры» — `docs/browser-pool.md`.
 - С VM Cloud.ru 30.09 GitHub, PyPI, openrouter.ai и Википедия принимали TCP и
-  молчали, `archive.ubuntu.com` не отвечал: `build.py` (uv и jev с GitHub) так
-  не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
+  молчали (днём GitHub уже отвечал: выход непостоянен), `archive.ubuntu.com`
+  не отвечал: `build.py` (uv и jev с GitHub) так не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
   (`scripts/cloudru-sandbox-probe/vm/wheels.sh`). Молчащий адрес вешает
   browser-use после `done` (цены моделей): выход песочницы — `REJECT`, не `DROP`.
 - «Доступ ограничен: проблема с IP» Avito — счётчик запросов с адреса, не
@@ -303,6 +303,11 @@
   (`boot.py vendor`), пины — `vendor.json` и `requirements.txt` (колёса под
   Python 3.10 Ubuntu 22.04; `pip download --python-version` не видит маркеров
   3.10 — `async-timeout` вписан руками). Новая зависимость — перепин с sha256.
+- Worker на хосте пула живёт за Caddy под `/g/<id>/`: адреса CDP-сокетов он
+  строит с префиксом из `X-Forwarded-Prefix` (`browser-vm/host/caddy.py`),
+  без него они вели в 404. `oomScoreAdj` `runc` — пол для всех процессов
+  песочницы: при 500 Chrome не мог дать рендерерам свои 300+ (EACCES), теперь 200. Публичный IP своего хоста из песочницы — таймаут, не отказ: Cloud.ru не
+  разворачивает трафик на свой плавающий IP. Итоги этапа 2 — `docs/browser-pool.md`.
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
