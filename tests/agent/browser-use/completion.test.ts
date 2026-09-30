@@ -48,6 +48,7 @@ interface RunSummary {
   sessionId: string;
   status: string;
   task: string;
+  totalCostUsd?: number;
   unreadMessages?: readonly string[];
 }
 
@@ -244,6 +245,12 @@ const recordOrder = vi.hoisted(() =>
   >(() => Promise.resolve())
 );
 vi.mock("@db/services/orders", () => ({ recordOrder }));
+const recordUsageCost = vi.hoisted(() =>
+  vi.fn<(input: { readonly idempotencyKey: string }) => Promise<boolean>>(() =>
+    Promise.resolve(true)
+  )
+);
+vi.mock("@db/services/usage-costs", () => ({ recordUsageCost }));
 // The error class travels from the real module: a stop that meets a session
 // Browser Use no longer has is told apart by it.
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
@@ -395,6 +402,35 @@ describe("settling a browser run", () => {
     const prompt = send.mock.calls[0]?.[0];
     expect(prompt).toContain(`Browser run ${runId} finished`);
     expect(prompt).toContain("Result: ordered");
+  });
+
+  it("records what Browser Use charged for the run, in roubles, keyed by the run", async () => {
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: ordered\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Order the usual",
+      totalCostUsd: 0.5,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        costRub: 42.205,
+        costUsd: 0.5,
+        idempotencyKey: `browser-run:${runId}`,
+        runId,
+        sessionId: "session-1",
+        source: "browser-run",
+        workspaceId: row.workspaceId,
+      })
+    );
   });
 
   it("persists validated links and requires named links in the final response", async () => {

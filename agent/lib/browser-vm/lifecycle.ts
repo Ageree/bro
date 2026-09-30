@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
+import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
 import { listWorkspacesHoldingBrowsers } from "@db/services/browser-runs";
@@ -50,6 +51,14 @@ import {
 
 type BrowserVm = typeof browserVms.$inferSelect;
 type CloudVm = NonNullable<Awaited<ReturnType<typeof readCloudRuVm>>>;
+
+/** The states in which Cloud.ru bills the VM's compute. */
+const poweredStates = new Set<BrowserVm["state"]>([
+  "creating",
+  "starting",
+  "ready",
+  "stopping",
+]);
 
 /** A create, a power change or a deletion request is answered well inside this. */
 const leaseMs = 2 * 60_000;
@@ -173,12 +182,48 @@ async function writeHeld(
   patch: Parameters<typeof updateBrowserVm>[1],
   now: Date
 ) {
-  return updateBrowserVm(
+  const leaseUntil = vm.leaseUntil ?? undefined;
+  // The stretch the VM was on ends when it is written down as stopped. The
+  // start is read afresh: a step may carry a row read before it powered on.
+  const poweredOnAt =
+    patch.state === "stopped" ? await poweredOnSince(vm.workspaceId) : null;
+  const row = await updateBrowserVm(
     vm.workspaceId,
-    patch,
+    poweredOnAt === null ? patch : { ...patch, poweredOnAt: null },
     now,
-    vm.leaseUntil ?? undefined
+    leaseUntil
   );
+  if (poweredOnAt !== null) {
+    await recordBrowserVmUptime(vm.workspaceId, poweredOnAt, now);
+  }
+  // A VM on its way up, up or on its way down bills from the first time Bro
+  // writes it so; one found on without a start (from before the column) is
+  // counted from here.
+  if (row.poweredOnAt !== null || !poweredStates.has(row.state)) return row;
+  try {
+    return await updateBrowserVm(
+      vm.workspaceId,
+      { poweredOnAt: now },
+      now,
+      leaseUntil
+    );
+  } catch (error) {
+    // The accounting never fails a step on the VM.
+    console.warn("[usage-costs] the VM's power-on was not written down", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId: vm.workspaceId,
+    });
+    return row;
+  }
+}
+
+/** Since when the VM has been billed, or null; null too when unreadable. */
+async function poweredOnSince(workspaceId: string) {
+  try {
+    return (await readBrowserVm(workspaceId))?.poweredOnAt ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1101,6 +1146,10 @@ async function removeBrowserVm(vm: BrowserVm, now: Date) {
     present([vm.floatingIpId]).map(async (id) => deleteCloudRuFloatingIp(id))
   );
   await deleteCloudRuBackupsOf(present([vm.bootDiskId]));
+  const poweredOnAt = await poweredOnSince(vm.workspaceId);
+  if (poweredOnAt !== null) {
+    await recordBrowserVmUptime(vm.workspaceId, poweredOnAt, now);
+  }
   await deleteBrowserVmRecord(vm.workspaceId);
   return true;
 }

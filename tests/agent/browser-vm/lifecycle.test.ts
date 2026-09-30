@@ -4,6 +4,7 @@ import type * as cloudRuModule from "@agent/lib/browser-vm/cloudru";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 import type { browserVms } from "@db/schema/browser-vms";
 import type * as browserVmRecords from "@db/services/browser-vms";
+import type * as usageCostRecords from "@db/services/usage-costs";
 import {
   browserVmTestEnvironment,
   clearBrowserVmSettings,
@@ -92,6 +93,10 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
   ...worker,
 }));
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+const recordUsageCost = vi.hoisted(() =>
+  vi.fn<typeof usageCostRecords.recordUsageCost>()
+);
+vi.mock("@db/services/usage-costs", () => ({ recordUsageCost }));
 
 function minutesAgo(minutes: number) {
   return new Date(now.getTime() - minutes * 60_000);
@@ -111,6 +116,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     lastError: null,
     lastUsedAt: minutesAgo(1),
     leaseUntil: null,
+    poweredOnAt: null,
     profileGeneration: 1,
     profileResetPending: false,
     proxyExit: {
@@ -315,6 +321,7 @@ beforeEach(() => {
     reset: true,
   });
   alertOwner.mockResolvedValue(true);
+  recordUsageCost.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -1048,6 +1055,81 @@ describe("reconciling browser VMs", () => {
     await lifecycle.reconcileBrowserVms(now);
 
     expect(stored()).toMatchObject({ state: "stopped", vmId: "vm-1" });
+  });
+
+  it("records the hour a VM was on once it settles as stopped, and only once", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({
+        poweredOnAt: minutesAgo(60),
+        state: "stopping",
+        stateChangedAt: minutesAgo(1),
+      })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+
+    await lifecycle.reconcileBrowserVms(now);
+    await lifecycle.reconcileBrowserVms(new Date(now.getTime() + 60_000));
+
+    expect(stored()).toMatchObject({ poweredOnAt: null, state: "stopped" });
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith({
+      costRub: 2.97,
+      costUsd: null,
+      idempotencyKey: `browser-vm:${workspaceId}:${minutesAgo(60).toISOString()}`,
+      occurredAt: now,
+      runId: null,
+      sessionId: null,
+      source: "browser-vm",
+      units: { flavor: "gen-2-4", seconds: 3600 },
+      workspaceId,
+    });
+  });
+
+  it("starts the VM's clock when it powers the VM on", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow({ state: "stopped" }));
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+
+    await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(stored()).toMatchObject({ poweredOnAt: now, state: "starting" });
+    expect(recordUsageCost).not.toHaveBeenCalled();
+  });
+
+  it("stops the VM as before when its time cannot be recorded", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ poweredOnAt: minutesAgo(30), state: "stopping" })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
+    recordUsageCost.mockRejectedValue(new Error("database is down"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    expect(stored()).toMatchObject({ poweredOnAt: null, state: "stopped" });
+  });
+
+  it("records the time a deleted VM was still on", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ poweredOnAt: minutesAgo(20), state: "deleting" })
+    );
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    expect(rows.has(workspaceId)).toBe(false);
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        costRub: 0.99,
+        source: "browser-vm",
+        units: { flavor: "gen-2-4", seconds: 1200 },
+      })
+    );
   });
 
   it("finishes a deletion that was left half done", async () => {

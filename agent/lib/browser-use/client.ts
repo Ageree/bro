@@ -53,6 +53,12 @@ const runSummarySchema = z.object({
   status: runStatusSchema,
   task: z.string(),
   /**
+   * What Browser Use charged for the run's model, in dollars. A VM run has
+   * none (its cost is recorded from the worker), and an odd value reads as
+   * none rather than making the run unreadable.
+   */
+  totalCostUsd: z.coerce.number().nonnegative().nullish().catch(undefined),
+  /**
    * Messages queued into a VM run that it ended without reading. The worker
    * never starts a follow-up on its own, and neither does Bro: its settle
    * path surfaces them in the run's report instead

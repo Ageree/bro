@@ -111,6 +111,13 @@ const runSummarySchema = z.object({
   success: z.boolean().nullable(),
   task: z.string(),
   /**
+   * Bytes the run moved through the residential proxy, once it has ended.
+   * Absent from a worker older than the field.
+   */
+  traffic: z
+    .object({ down: z.number().nonnegative(), up: z.number().nonnegative() })
+    .nullish(),
+  /**
    * Messages queued into the run (`sendBrowserVmWorkerMessage`, answered
    * `queued`) that the agent never read before it settled. The worker never
    * starts a follow-up on its own; whoever reads this run and still tracks

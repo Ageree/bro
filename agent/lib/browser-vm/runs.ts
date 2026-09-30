@@ -8,6 +8,7 @@ import {
   updateBrowserVm,
   updateBrowserVmRun,
 } from "@db/services/browser-vms";
+import { recordBrowserVmRunCosts } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
 import { browserVmCaptcha, browserVmLlm } from "./backend";
@@ -668,6 +669,12 @@ async function mirror(
   run: WorkerRun,
   now: Date
 ) {
+  // Keyed by the run id, so every read of the settled run after the first
+  // adds nothing; a cancel may have closed the record before the worker
+  // reported what the run spent.
+  if (settledStatuses.has(run.status)) {
+    await recordBrowserVmRunCosts(browserVmWorkspace(run.id), run, now);
+  }
   if (record === undefined) {
     await recordBrowserVmRun({
       id: run.id,
