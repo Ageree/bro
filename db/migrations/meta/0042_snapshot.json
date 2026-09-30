@@ -1,6 +1,6 @@
 {
-  "id": "65ae433e-1c56-4c3f-9830-ea32bc2510f5",
-  "prevId": "2b396f9f-c191-40b0-aff8-0156f0a9106a",
+  "id": "238a9c7e-c530-4a1d-a2a4-5ddd9d81fe38",
+  "prevId": "65ae433e-1c56-4c3f-9830-ea32bc2510f5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1118,6 +1118,12 @@
         "last_error": {
           "name": "last_error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rebooted_at": {
+          "name": "rebooted_at",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": false
         },

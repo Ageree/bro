@@ -284,11 +284,17 @@
   Итоги этапа 1 и решение «обычные контейнеры» — `docs/browser-pool.md`.
 - С VM Cloud.ru 30.09 GitHub, PyPI, openrouter.ai и Википедия принимали TCP и
   молчали (днём GitHub уже отвечал: выход непостоянен), `archive.ubuntu.com`
-  не отвечал: `build.py` (uv и jev с GitHub) так не соберёт образ. Обход — `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей
-  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`, ставит только по пинам
+  не отвечал: `build.py` (uv и jev с GitHub) так не соберёт образ. Обход —
+  `mirror.yandex.ru` и зеркало PyPI со сверкой хэшей (`scripts/cloudru-sandbox-probe/vm/wheels.sh`, ставит только по пинам
   `verify_wheels.py`). Молчащий адрес вешает browser-use после `done` (цены
   моделей) и на старте (проверка версии на PyPI — `BROWSER_USE_VERSION_CHECK`):
   выход песочницы — `REJECT`, не `DROP`.
+- Код worker на живых VM Бро меняет сам: `BROWSER_VM_WORKER` (публикует
+  `browser-vm/worker/publish.py`), выкат перед поручением — `rollout.ts`,
+  только вперёд по `VERSION`. `/v1/admin/worker` берёт только `worker.py`, а
+  его `LOAD_CHECK` не видит ленивых импортов: новый ленивый импорт —
+  в `CANDIDATE_IMPORTS`. Неудачная версия пишется в `worker_failed_version` и
+  на той VM не повторяется — чините новой версией.
 - «Доступ ограничен: проблема с IP» Avito — счётчик запросов с адреса, не
   среда: gVisor вердикт WB и Avito не менял.
 - VM без публичного IP в интернет не выходит, а sNAT подключается ко всей зоне
