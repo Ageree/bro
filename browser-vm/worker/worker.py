@@ -68,7 +68,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-29.1"
+VERSION = "2026-09-30.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -472,12 +472,15 @@ def step_summary(state, output, number):
 
 
 def usage_summary(history, agent):
+    """The run's tokens, which Bro prices itself (shared/costs/prices.ts). browser-use counts them whether
+    or not it prices them; its `total_cost` is left out: runs never let it price (`calculate_cost=False`,
+    see `run_agent`), so it is 0, and a 0 would read as a free run."""
     usage = getattr(history, "usage", None)
     if usage is None:
         return None
     data = usage.model_dump() if hasattr(usage, "model_dump") else {}
     return {k: data.get(k) for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
-                                        "total_cost", "total_prompt_cached_tokens") if k in data}
+                                        "total_prompt_cached_tokens") if k in data}
 
 
 class Worker:
@@ -814,7 +817,10 @@ class Worker:
         agent = Agent(
             task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
             sensitive_data=session.sensitive_data or None, use_vision=bool(session.options.get("vision", False)),
-            calculate_cost=True, use_judge=False, available_file_paths=uploads,
+            # No pricing: browser-use would fetch LiteLLM's price list from raw.githubusercontent.com and
+            # then openrouter.ai for every model call of the run, 30 s each, after `done` — both silent from
+            # Cloud.ru (30.09), which held a finished run for minutes. Tokens are counted anyway.
+            calculate_cost=False, use_judge=False, available_file_paths=uploads,
             injected_agent_state=injected, register_new_step_callback=on_step,
             register_should_stop_callback=should_stop, extend_system_message=EXTEND_SYSTEM,
             # A restored state carries its own file system; browser-use refuses both at once.
@@ -1864,6 +1870,8 @@ async def main():
     os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
     os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
     os.environ.setdefault("BROWSER_USE_SETUP_LOGGING", "false")
+    # Not a default: `true` here would turn pricing (and its fetches) back on under calculate_cost=False.
+    os.environ["BROWSER_USE_CALCULATE_COST"] = "false"
     for directory in (RUNS, SESSIONS, UPLOADS):
         directory.mkdir(parents=True, exist_ok=True)
     worker = Worker()

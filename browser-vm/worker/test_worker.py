@@ -428,6 +428,28 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.on_disk("r1")["traffic"], {"up": 1_000, "down": 250_000})
         self.assertEqual(worker.Run.load(self.on_disk("r1")).traffic, {"up": 1_000, "down": 250_000})
 
+    async def test_a_run_reports_its_tokens_without_waiting_for_a_price_list(self):
+        # browser-use prices usage only with calculate_cost, fetching LiteLLM's list from GitHub and then
+        # openrouter.ai: both silent from Cloud.ru, which held finished runs for minutes. Tokens it counts
+        # regardless, and Bro prices them itself.
+        class Usage:
+            def model_dump(self):
+                return {"total_prompt_tokens": 12_000, "total_completion_tokens": 800, "total_tokens": 12_800,
+                        "total_prompt_cached_tokens": 9_000, "total_cost": 0.0, "entry_count": 4}
+
+        async def counted(agent, on_step_start):
+            await on_step_start(agent)
+            history = FakeHistory(True)
+            history.usage = Usage()
+            return history
+
+        FakeAgent.script = counted
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertIs(FakeAgent.built[0].options["calculate_cost"], False)
+        self.assertEqual(run.public()["usage"], {"total_prompt_tokens": 12_000, "total_completion_tokens": 800,
+                                                 "total_tokens": 12_800, "total_prompt_cached_tokens": 9_000})
+
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)
         records = [("r1", "2026-09-28T10:00:00Z", {"n_steps": 5, "history": []}),
