@@ -25,6 +25,7 @@ import {
   releaseBrowserVmLease,
   updateBrowserVm,
 } from "@db/services/browser-vms";
+import { usesBrowserPool } from "./backend";
 import {
   CloudRuError,
   CloudRuUnsentError,
@@ -163,7 +164,7 @@ const floatingIpSettlePollMs = 2_000;
 async function forgetGoneVm(
   vm: BrowserVm,
   now: Date,
-  patch: { readonly lastError?: string | null } = {}
+  patch: Parameters<typeof updateBrowserVm>[1] = {}
 ) {
   await Promise.all(
     present([vm.floatingIpId]).map(async (id) => deleteCloudRuFloatingIp(id))
@@ -186,6 +187,128 @@ async function forgetGoneVm(
     },
     now
   );
+}
+
+/**
+ * Hand a pool workspace's VM that is gone from Cloud.ru over to the pool
+ * (docs/browser-pool.md, stage 5): the caller made sure it is gone and holds
+ * the lease. What `forgetGoneVm` does — its address and the backups of its
+ * disk released, the profile generation moved on, since the profile went
+ * with the disk — and every field that still names the VM cleared, so the
+ * record reads as a workspace with no VM (`inBrowserPool`) and its next
+ * start is a fresh sandbox. The sticky proxy session stays. A stretch of
+ * the VM's time that could not be recorded is let go, logged, rather than
+ * charged later as the sandbox's.
+ */
+async function handOverGoneVm(vm: BrowserVm, now: Date) {
+  const handed = await forgetGoneVm(vm, now, {
+    healthFailures: 0,
+    image: null,
+    lastError: null,
+    proxyExit: null,
+    recoveries: 0,
+    vmName: null,
+    workerFailedVersion: null,
+    workerRolloutAt: null,
+  });
+  console.info("[browser-pool] a gone VM was handed over to the pool", {
+    vmId: vm.vmId,
+    vmName: vm.vmName,
+    workspaceId: vm.workspaceId,
+  });
+  if (handed.poweredOnAt === null) return handed;
+  console.warn("[usage-costs] the gone VM's last stretch was not recorded", {
+    poweredOnAt: handed.poweredOnAt.toISOString(),
+    workspaceId: vm.workspaceId,
+  });
+  return updateBrowserVm(
+    vm.workspaceId,
+    { poweredOnAt: null },
+    now,
+    vm.leaseUntil ?? undefined
+  );
+}
+
+/**
+ * A VM Cloud.ru no longer knows by its id, found by the reconcile: a pool
+ * workspace's is handed over to the pool once its name finds nothing
+ * either, anyone else's is forgotten as before. A pool workspace's VM that
+ * its name still finds is left as it is, and so is one Cloud.ru could not
+ * be asked about: the next round asks again.
+ */
+async function forgetGone(
+  vm: BrowserVm,
+  now: Date,
+  patch: { readonly lastError?: string | null } = {}
+) {
+  if (!(await usesBrowserPool({ workspaceId: vm.workspaceId }))) {
+    await forgetGoneVm(vm, now, patch);
+    return;
+  }
+  try {
+    if (
+      vm.vmName !== null &&
+      (await findCloudRuVmByName(vm.vmName)) !== undefined
+    ) {
+      console.warn("[browser-pool] the VM is gone by its id, not its name", {
+        vmName: vm.vmName,
+        workspaceId: vm.workspaceId,
+      });
+      return;
+    }
+  } catch (error) {
+    console.warn("[browser-pool] Cloud.ru could not confirm the VM gone", {
+      cause: error,
+      workspaceId: vm.workspaceId,
+    });
+    return;
+  }
+  await handOverGoneVm(vm, now);
+}
+
+/**
+ * An errand's step on a pool workspace's record that still names a VM of
+ * its own: a VM Cloud.ru still has (by its id) is started as before and
+ * stays the workspace's browser; one gone by its id and by its name is
+ * handed over to the pool, and the errand goes on to a sandbox, unless a
+ * run may still be open on it or a run holds its page. How long the errand
+ * waits, or the handed-over record. Cloud.ru is asked once for the id and
+ * at most once for the name, and a failure to ask hands nothing over.
+ */
+async function handOverForErrand(vm: BrowserVm, now: Date) {
+  const { workspaceId } = vm;
+  let byName: CloudVm | undefined;
+  try {
+    const cloud = vm.vmId === null ? undefined : await readCloudRuVm(vm.vmId);
+    if (cloud !== undefined) return starting(await startVm(vm, cloud, now));
+    byName =
+      vm.vmName === null ? undefined : await findCloudRuVmByName(vm.vmName);
+  } catch (error) {
+    console.warn("[browser-pool] Cloud.ru could not confirm the VM gone", {
+      cause: error,
+      workspaceId,
+    });
+    return starting(unsentRetryMs);
+  }
+  if (byName !== undefined) {
+    // Not the VM on record, yet named as it: nothing is created or taken
+    // over behind it.
+    await alert(
+      `browser-pool-handover:${workspaceId}`,
+      [
+        `Воркспейс ${workspaceId} в пуле браузеров, но в Cloud.ru есть VM ${byName.id} с его именем ${vm.vmName ?? "?"}, а запись Бро называет другую${vm.vmId === null ? "" : ` (${vm.vmId})`}.`,
+        "Поручения ждут. Удали эту VM в консоли Cloud.ru (с диском и адресом), и следующее поручение пойдёт в пул.",
+      ].join("\n")
+    );
+    return starting(quotaRetryMs);
+  }
+  if (
+    (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs)) ||
+    (await listWorkspacesHoldingBrowsers([workspaceId], now)).length > 0
+  ) {
+    return starting(transitionRetryMs);
+  }
+  return { kind: "handed" as const, vm: await handOverGoneVm(vm, now) };
 }
 
 /**
@@ -314,15 +437,20 @@ export async function ensureBrowserVm(workspaceId: string, now = new Date()) {
   if (record.state === "ready") return readyForErrand(record, now, false);
   const claimed = await claimBrowserVmLease(workspaceId, now, leaseMs);
   if (!claimed) return starting(leaseHeldRetryMs);
+  let handedOver: BrowserVm;
   try {
     // The reconcile that held the lease may have brought it up meanwhile.
     if (claimed.state === "ready") {
       return await readyForErrand(claimed, now, true);
     }
-    return starting(await bringUpForErrand(claimed, now));
+    const step = await bringUpForErrand(claimed, now);
+    if (step.kind === "starting") return step;
+    handedOver = step.vm;
   } finally {
     await releaseBrowserVmLease(workspaceId, claimed.leaseUntil ?? undefined);
   }
+  // A pool workspace's VM was gone: the same errand goes on to a sandbox.
+  return ensureBrowserSandbox(handedOver, now);
 }
 
 /** An errand used the VM: its idle stop counts from now. */
@@ -590,14 +718,24 @@ async function aliveWorker(vm: BrowserVm) {
 /**
  * The step an errand takes under the lease, and how long it should wait for
  * it. The state is written before Cloud.ru is asked, so a deletion marked
- * meanwhile is not overwritten after it.
+ * meanwhile is not overwritten after it. A pool workspace never gets a VM
+ * created: one whose own VM is gone is handed over to the pool, and the
+ * record comes back for the errand to go on with.
  */
-async function bringUpForErrand(vm: BrowserVm, now: Date) {
+async function bringUpForErrand(
+  vm: BrowserVm,
+  now: Date
+): Promise<ReturnType<typeof starting> | { kind: "handed"; vm: BrowserVm }> {
   // Already on its way up or down, or being deleted.
   if (vm.state !== "failed" && vm.state !== "stopped") {
-    return transitionRetryMs;
+    return starting(transitionRetryMs);
   }
-  return vm.vmId === null ? createVm(vm, now) : restartVm(vm, vm.vmId, now);
+  if (await usesBrowserPool({ workspaceId: vm.workspaceId })) {
+    return handOverForErrand(vm, now);
+  }
+  return starting(
+    await (vm.vmId === null ? createVm(vm, now) : restartVm(vm, vm.vmId, now))
+  );
 }
 
 /**
@@ -780,7 +918,7 @@ async function bringUp(vm: BrowserVm, now: Date) {
   const { workspaceId } = vm;
   const cloud = await cloudVmOf(vm);
   if (vm.vmId !== null && cloud === undefined) {
-    await forgetGoneVm(vm, now, { lastError: "The VM is gone from Cloud.ru." });
+    await forgetGone(vm, now, { lastError: "The VM is gone from Cloud.ru." });
     return;
   }
   const found = {
@@ -935,7 +1073,7 @@ async function stopIfIdle(vm: BrowserVm, now: Date) {
 async function settleStop(vm: BrowserVm, now: Date) {
   const cloud = vm.vmId === null ? undefined : await readCloudRuVm(vm.vmId);
   if (cloud === undefined) {
-    await forgetGoneVm(vm, now, { lastError: null });
+    await forgetGone(vm, now, { lastError: null });
     return;
   }
   if (cloud.state === "stopped") {
@@ -979,7 +1117,7 @@ async function settleFailure(vm: BrowserVm, now: Date) {
   if (vm.vmId === null) return;
   const cloud = await readCloudRuVm(vm.vmId);
   if (cloud === undefined) {
-    await forgetGoneVm(vm, now);
+    await forgetGone(vm, now);
     return;
   }
   if (cloud.state === "stopped") {
@@ -1005,7 +1143,7 @@ async function wipeStoppedVm(vm: BrowserVm, now: Date) {
   }
   const cloud = await readCloudRuVm(vm.vmId);
   if (cloud === undefined) {
-    await forgetGoneVm(vm, now);
+    await forgetGone(vm, now);
     return;
   }
   await startVm(vm, cloud, now);

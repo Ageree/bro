@@ -15,6 +15,11 @@
  * set and a new host bringing it up with the marker; the workspace deleted
  * with its sets; the empty host drained and deleted by the watchdog.
  *
+ * With BROWSER_POOL_E2E_SCENARIO=handover the run is another, shorter one
+ * (stage 5, the pilot's handover): the workspace's record names a VM of
+ * its own that Cloud.ru does not have, by id or by name, and the first
+ * errand hands it over to the pool and gets a sandbox on a new host.
+ *
  * Only three things are stood in for: owner alerts are collected rather
  * than sent; with BROWSER_POOL_E2E_CONSOLE=1 a host's user data gets a root
  * password for the serial console (the stand's `console.py`), to look at
@@ -52,6 +57,7 @@ const sessionSchema = z.object({
     .default("probe-host-"),
   BROWSER_POOL_E2E_CONSOLE: z.string().optional(),
   BROWSER_POOL_E2E_CYCLES: z.coerce.number().int().min(1).default(6),
+  BROWSER_POOL_E2E_SCENARIO: z.enum(["cycles", "handover"]).default("cycles"),
   BROWSER_POOL_E2E_RESULTS: z
     .string()
     .default(join(tmpdir(), "browser-pool-e2e.json")),
@@ -153,6 +159,9 @@ const settings = {
   BROWSER_HOST_IDLE_MINUTES: "30",
   BROWSER_HOST_MAX: "1",
   BROWSER_HOST_NAME_PREFIX: session.BROWSER_HOST_NAME_PREFIX,
+  // The bundle and root of section 2 are runc's; without it a session that
+  // has no BROWSER_HOST_RUNSC_RELEASE has no pool at all.
+  BROWSER_HOST_RUNTIME: "runc",
   BROWSER_POOL_WORKSPACES: workspaceId,
   BROWSER_SANDBOX_ROOTFS: session.BROWSER_SANDBOX_ROOTFS,
   BROWSER_STATE_BUCKET: session.BROWSER_STATE_BUCKET,
@@ -560,7 +569,10 @@ async function cleanUp({ cloud, hosts, keys, s3 }: Bro) {
   }
 }
 
-it("drives real pool hosts from Bro's own code", async () => {
+/** The scenario the run picks (BROWSER_POOL_E2E_SCENARIO). */
+const handoverRun = session.BROWSER_POOL_E2E_SCENARIO === "handover";
+
+it.skipIf(handoverRun)("drives real hosts from Bro's own code", async () => {
   bro = await load();
   const { cloud, hosts, keys, lifecycle, s3, vms, worker } = bro;
   const sandboxId = keys.browserSandboxId(workspaceId);
@@ -779,4 +791,81 @@ it("drives real pool hosts from Bro's own code", async () => {
   }
   expect(await hosts.listBrowserHosts()).toHaveLength(0);
   await save();
+});
+
+/**
+ * Stage 5's handover on real Cloud.ru: a record left naming a VM that is
+ * gone (an id and a name Cloud.ru has never had, an address of the
+ * documentation's). The first errand asks Cloud.ru for it by id and by
+ * name, hands the record over, and goes on to a sandbox on a new host of
+ * the probe's prefix; the workspace is then deleted with its sets, and the
+ * host with its address goes in the cleanup.
+ */
+it.runIf(handoverRun)("hands a gone VM over to a sandbox", async () => {
+  bro = await load();
+  const { hosts, lifecycle, s3, vms } = bro;
+  const sandboxId = bro.keys.browserSandboxId(workspaceId);
+  const goneId = crypto.randomUUID();
+  const goneName = `${session.BROWSER_HOST_NAME_PREFIX}gone-${randomBytes(4).toString("hex")}`;
+  await vms.ensureBrowserVmRecord(workspaceId);
+  const seeded = await vms.updateBrowserVm(
+    workspaceId,
+    {
+      bootDiskId: crypto.randomUUID(),
+      generation: 3,
+      host: "203.0.113.7",
+      image: "probe-image-gone",
+      lastUsedAt: new Date(Date.now() - 3 * 86_400_000),
+      state: "stopped",
+      vmId: goneId,
+      vmName: goneName,
+    },
+    new Date()
+  );
+  log("seeded a record naming a gone VM", JSON.stringify({ goneId, goneName }));
+
+  const handed = await ensureReady();
+  const host = await hosts.readBrowserHost(handed.vm.hostId ?? "");
+  const ready = await workerReady(handed.vm);
+  note(
+    "handover",
+    JSON.stringify({
+      attempts: handed.attempts,
+      creates: recorded.creates,
+      hostVm: host?.vmName,
+      record: {
+        generation: handed.vm.generation,
+        image: handed.vm.image,
+        profileGeneration: handed.vm.profileGeneration,
+        sandboxState: handed.vm.sandboxState,
+        vmId: handed.vm.vmId,
+        vmName: handed.vm.vmName,
+      },
+      seconds: seconds(handed.ms),
+      workerSeconds: seconds(ready.ms),
+    })
+  );
+  log("handed over", results.get("handover"));
+  await save();
+  expect(handed.vm).toMatchObject({
+    bootDiskId: null,
+    image: null,
+    profileGeneration: seeded.profileGeneration + 1,
+    sandboxState: "running",
+    vmId: null,
+    vmName: null,
+  });
+  expect(handed.vm.generation).toBeGreaterThan(seeded.generation);
+  expect(host?.vmName.startsWith(session.BROWSER_HOST_NAME_PREFIX)).toBe(true);
+  expect(recorded.alerts.map((alert) => alert.key)).not.toContain(
+    `browser-pool-handover:${workspaceId}`
+  );
+  await expectOneSandbox("after the handover");
+
+  const deleted = await lifecycle.deleteBrowserVm(workspaceId, new Date());
+  const setsLeft = await s3.listBrowserStateObjects(`sets/${sandboxId}/`);
+  note("deletion", JSON.stringify({ deleted, setsLeft: setsLeft.length }));
+  await save();
+  expect(deleted).toBe(true);
+  expect(setsLeft).toHaveLength(0);
 });

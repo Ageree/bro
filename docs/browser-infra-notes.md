@@ -164,6 +164,13 @@
 
 ## Пул в Бро (`agent/lib/browser-pool/`)
 
+- 30.09 вечером зона `ru.AZ-3` в проекте Cloud.ru выключена (`enabled: false`;
+  в `/v1/availability-zones` её уже нет): создание любой VM с умолчаниями
+  `CLOUDRU_ZONE`, `CLOUDRU_SUBNET` (`Default_ru.AZ-3`) и группой `bro-browser`
+  (тоже в AZ-3) — 422 `wrong_az_by_name`. Пока не заведены подсеть и группа
+  безопасности в `ru.AZ-1`/`ru.AZ-2` и три env Vercel, ни хост пула, ни VM
+  пилота не создаются.
+
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
   (`browserPoolConfigured`); `runc` — только явным `BROWSER_HOST_RUNTIME`, без
@@ -180,7 +187,9 @@
 - Песочница пула — та же запись `browser_vms`: `state` зеркалит
   `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
   `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней
-  (`inBrowserPool`). Запись с `sandbox_state`, но без `host_id` worker не зовёт:
+  (`inBrowserPool`); VM, которой нет в Cloud.ru ни по id, ни по имени,
+  передаётся пулу (`handOverGoneVm`): пилот мог остаться с записью удалённой
+  VM, а прежний путь создал бы ему новую. Запись с `sandbox_state`, но без `host_id` worker не зовёт:
   адрес удалённого хоста уже чужой (`origin` в `worker.ts`).
 - Presigned S3 Cloud.ru (PUT, GET, листинг, DELETE) работают из облачной
   сессии.

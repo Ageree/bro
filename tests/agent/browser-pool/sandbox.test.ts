@@ -41,6 +41,7 @@ const worker = vi.hoisted(() => ({
 const cloud = vi.hoisted(() => ({
   createCloudRuHostVm: vi.fn<typeof cloudRuModule.createCloudRuHostVm>(),
   createCloudRuVm: vi.fn<typeof cloudRuModule.createCloudRuVm>(),
+  deleteCloudRuBackupsOf: vi.fn<typeof cloudRuModule.deleteCloudRuBackupsOf>(),
   deleteCloudRuFloatingIp:
     vi.fn<typeof cloudRuModule.deleteCloudRuFloatingIp>(),
   deleteCloudRuVm: vi.fn<typeof cloudRuModule.deleteCloudRuVm>(),
@@ -99,6 +100,7 @@ beforeEach(() => {
   }));
   cloud.deleteCloudRuVm.mockResolvedValue(undefined);
   cloud.deleteCloudRuFloatingIp.mockResolvedValue(undefined);
+  cloud.deleteCloudRuBackupsOf.mockResolvedValue(0);
   cloud.findCloudRuVmByName.mockResolvedValue(undefined);
   cloud.createCloudRuVm.mockResolvedValue({
     id: "vm-bob",
@@ -670,7 +672,269 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
       "vm-alice",
       "power_on"
     );
+    // Found by its id, once: never handed over, nor looked up by name.
+    expect(cloud.readCloudRuVm).toHaveBeenCalledOnce();
+    expect(cloud.findCloudRuVmByName).not.toHaveBeenCalled();
+    expect(cloud.deleteCloudRuFloatingIp).not.toHaveBeenCalled();
     expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("handing a pool workspace's gone VM over", { timeout: 60_000 }, () => {
+  /** Alice's record naming a VM of her own, `vm-alice`, in `state`. */
+  async function seedOwnVm(
+    pool: Pool,
+    patch: Parameters<Pool["vms"]["updateBrowserVm"]>[1] = {}
+  ) {
+    return seedAlice(pool, {
+      bootDiskId: "disk-alice",
+      floatingIpId: "fip-alice",
+      generation: 2,
+      host: "45.132.176.9",
+      image: "bro-browser-test-1",
+      proxySession: "bro0123456789abr1",
+      state: "stopped",
+      vmId: "vm-alice",
+      vmName: "bro-wsalice-2",
+      ...patch,
+    });
+  }
+
+  /** Cloud.ru has the pool's hosts and nothing of Alice's. */
+  function aliceVmGone() {
+    cloud.readCloudRuVm.mockImplementation(async (id) =>
+      id.startsWith("vm-host-")
+        ? {
+            bootDiskId: `disk-${id}`,
+            floatingIpId: `fip-${id}`,
+            host: id === "vm-host-2" ? secondAddress : firstAddress,
+            id,
+            state: "running",
+          }
+        : undefined
+    );
+  }
+
+  it("hands a VM gone by its id and its name over, and starts a fresh sandbox", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedOwnVm(pool, { poweredOnAt: minutes(-90), state: "failed" });
+    aliceVmGone();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    const started = await pool.lifecycle.ensureBrowserVm(
+      alice.workspaceId,
+      now
+    );
+
+    expect(started).toMatchObject({
+      kind: "ready",
+      vm: {
+        bootDiskId: null,
+        floatingIpId: null,
+        generation: 3,
+        hostId: "bro-host-1",
+        image: null,
+        profileGeneration: 2,
+        proxySession: "bro0123456789abr1",
+        sandboxState: "running",
+        state: "ready",
+        vmId: null,
+        vmName: null,
+      },
+    });
+    expect(cloud.readCloudRuVm).toHaveBeenCalledWith("vm-alice");
+    expect(cloud.findCloudRuVmByName).toHaveBeenCalledExactlyOnceWith(
+      "bro-wsalice-2"
+    );
+    expect(cloud.deleteCloudRuFloatingIp).toHaveBeenCalledWith("fip-alice");
+    expect(cloud.deleteCloudRuBackupsOf).toHaveBeenCalledWith(["disk-alice"]);
+    expect(cloud.createCloudRuVm).not.toHaveBeenCalled();
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(hostClient.startBrowserSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bro-host-1" }),
+      { from: undefined, generation: 3, workspaceId: alice.workspaceId }
+    );
+    expect(info).toHaveBeenCalledWith(
+      "[browser-pool] a gone VM was handed over to the pool",
+      {
+        vmId: "vm-alice",
+        vmName: "bro-wsalice-2",
+        workspaceId: alice.workspaceId,
+      }
+    );
+    // The VM's last stretch is charged as the VM's, not the sandbox's.
+    expect(await pool.costsOf()).toContainEqual(
+      expect.objectContaining({
+        idempotencyKey: `browser-vm:${alice.workspaceId}:${minutes(-90).toISOString()}`,
+      })
+    );
+  });
+
+  it("keeps a VM Cloud.ru knows by its name, and tells the owner", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedOwnVm(pool);
+    aliceVmGone();
+    cloud.findCloudRuVmByName.mockResolvedValue({
+      bootDiskId: "disk-other",
+      floatingIpId: undefined,
+      host: undefined,
+      id: "vm-other",
+      state: "stopped",
+    });
+
+    const started = await pool.lifecycle.ensureBrowserVm(
+      alice.workspaceId,
+      now
+    );
+
+    expect(started).toEqual({ kind: "starting", retryAfterMs: 600_000 });
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      sandboxState: null,
+      vmId: "vm-alice",
+      vmName: "bro-wsalice-2",
+    });
+    expect(alertOwner).toHaveBeenCalledOnce();
+    expect(cloud.deleteCloudRuFloatingIp).not.toHaveBeenCalled();
+    expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+  });
+
+  it("hands nothing over while a run may be open on the VM", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedOwnVm(pool);
+    aliceVmGone();
+    await pool.vms.recordBrowserVmRun({
+      id: `vm:${alice.workspaceId}:r:1`,
+      sessionId: `vm:${alice.workspaceId}:s:1`,
+      status: "running",
+      task: "Find a table",
+      workspaceId: alice.workspaceId,
+    });
+
+    const started = await pool.lifecycle.ensureBrowserVm(
+      alice.workspaceId,
+      now
+    );
+
+    expect(started).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      floatingIpId: "fip-alice",
+      sandboxState: null,
+      vmId: "vm-alice",
+    });
+    expect(cloud.deleteCloudRuFloatingIp).not.toHaveBeenCalled();
+    expect(cloud.createCloudRuVm).not.toHaveBeenCalled();
+    expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "Cloud.ru answers the VM's read with a 503",
+      async () => {
+        const { CloudRuError } = await import("@agent/lib/browser-vm/cloudru");
+        cloud.readCloudRuVm.mockRejectedValue(
+          new CloudRuError(503, "/v1/vms/vm-alice", "unavailable")
+        );
+      },
+    ],
+    [
+      "the lookup by name times out",
+      async () => {
+        aliceVmGone();
+        cloud.findCloudRuVmByName.mockRejectedValue(
+          new DOMException("The operation timed out.", "TimeoutError")
+        );
+      },
+    ],
+  ])(
+    "hands nothing over when %s, and asks again later",
+    async (_case, failCloudRu) => {
+      const pool = await loadPool();
+      await seedHost(pool, 1);
+      await seedOwnVm(pool);
+      await failCloudRu();
+
+      const started = await pool.lifecycle.ensureBrowserVm(
+        alice.workspaceId,
+        now
+      );
+
+      expect(started).toEqual({ kind: "starting", retryAfterMs: 60_000 });
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        sandboxState: null,
+        state: "stopped",
+        vmId: "vm-alice",
+        vmName: "bro-wsalice-2",
+      });
+      expect(cloud.createCloudRuVm).not.toHaveBeenCalled();
+      expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+    }
+  );
+
+  it("asks Cloud.ru nothing new for a workspace outside the pool", async () => {
+    const pool = await loadPool();
+    await pool.vms.ensureBrowserVmRecord(bob.workspaceId);
+    await pool.vms.updateBrowserVm(
+      bob.workspaceId,
+      { state: "stopped", vmId: "vm-bob-old", vmName: "bro-wsbob-1" },
+      minutes(-60)
+    );
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+
+    const started = await pool.lifecycle.ensureBrowserVm(bob.workspaceId, now);
+
+    // As before the pool: its gone VM is forgotten and another created.
+    expect(started).toEqual({ kind: "starting", retryAfterMs: 180_000 });
+    expect(cloud.findCloudRuVmByName).not.toHaveBeenCalled();
+    expect(cloud.createCloudRuVm).toHaveBeenCalledOnce();
+    expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+    expect(await pool.vms.readBrowserVm(bob.workspaceId)).toMatchObject({
+      sandboxState: null,
+      state: "creating",
+      vmId: "vm-bob",
+    });
+  });
+
+  it("has the reconcile hand a gone VM over rather than bring it back", async () => {
+    const pool = await loadPool();
+    await seedOwnVm(pool, { state: "failed" });
+    await pool.vms.ensureBrowserVmRecord(bob.workspaceId);
+    await pool.vms.updateBrowserVm(
+      bob.workspaceId,
+      { state: "stopped", vmId: "vm-bob", vmName: "bro-wsbob-1" },
+      minutes(-60)
+    );
+    aliceVmGone();
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      floatingIpId: null,
+      sandboxState: null,
+      state: "stopped",
+      vmId: null,
+      vmName: null,
+    });
+    expect(cloud.findCloudRuVmByName).toHaveBeenCalledExactlyOnceWith(
+      "bro-wsalice-2"
+    );
+    // Bob's stopped VM, outside the pool, is not asked about.
+    expect(cloud.readCloudRuVm).not.toHaveBeenCalledWith("vm-bob");
+
+    // A later tick finds nothing of Alice's to power on or create.
+    cloud.readCloudRuVm.mockClear();
+    await pool.vms.updateBrowserVm(
+      alice.workspaceId,
+      { profileResetPending: true },
+      minutes(1)
+    );
+    await pool.lifecycle.reconcileBrowserVms(minutes(2));
+    expect(cloud.readCloudRuVm).not.toHaveBeenCalledWith("vm-alice");
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(cloud.createCloudRuVm).not.toHaveBeenCalled();
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
   });
 });
 

@@ -139,7 +139,8 @@ const setFaultPattern =
  * already is one, or a workspace in the pool (`usesBrowserPool`) that has no
  * VM of its own. A workspace that has a VM keeps it: its disk holds the
  * person's profile, and moving it into a set is the owner's step
- * (docs/browser-pool.md, stage 5).
+ * (docs/browser-pool.md, stage 5). One whose VM is gone from Cloud.ru is
+ * handed over first (`handOverGoneVm` in `agent/lib/browser-vm/lifecycle.ts`).
  */
 export async function inBrowserPool(record: BrowserVm) {
   if (record.sandboxState !== null) return true;
