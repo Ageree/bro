@@ -328,7 +328,8 @@ export async function readBrowserSandbox(
  * a restore needs; a park retried after it succeeded answers the same.
  */
 export async function parkBrowserSandbox(
-  host: BrowserHostTarget,
+  host: BrowserHostTarget &
+    Readonly<Partial<Pick<typeof browserHosts.$inferSelect, "capacity">>>,
   input: {
     /**
      * A park that failed before: every chunk URL `hostd` takes goes with it,
@@ -352,7 +353,9 @@ export async function parkBrowserSandbox(
           upload: {
             chunkUrls: setUrls(
               key,
-              input.ample === true ? maximumChunks : parkChunks(),
+              input.ample === true
+                ? maximumChunks
+                : parkChunks(host.capacity?.runtime),
               "PUT",
               parkUrlSeconds
             ),
@@ -445,10 +448,26 @@ export async function deleteBrowserHostSandbox(
  * Chunk URLs a park takes: a set holds the sandbox's profile and, under
  * runsc, its memory image, compressed, so their plain size (with a margin
  * for data zstd cannot shrink) bounds it. `hostd` says how many it used.
+ * The runtime is the one the host reports, not BROWSER_HOST_RUNTIME: hosts
+ * made before that setting changed run on as they were made. A host that
+ * reports none (a runsc-only `hostd`, or capacity not read yet) gets the
+ * runsc budget, which holds a runc set too; one Bro does not know gets
+ * every URL `hostd` takes.
  */
-function parkChunks() {
-  const imageMb =
-    env.BROWSER_HOST_RUNTIME === "runsc" ? env.BROWSER_SANDBOX_MEMORY_MB : 0;
+function parkChunks(runtime: string | null | undefined) {
+  let imageMb = env.BROWSER_SANDBOX_MEMORY_MB;
+  switch (runtime ?? "runsc") {
+    case "runc": {
+      imageMb = 0;
+      break;
+    }
+    case "runsc": {
+      break;
+    }
+    default: {
+      return maximumChunks;
+    }
+  }
   const megabytes = (imageMb + profileBudgetMb) * 1.02;
   const chunks = Math.ceil((megabytes * 1024 * 1024) / chunkBytes) + 2;
   return Math.min(chunks, maximumChunks);

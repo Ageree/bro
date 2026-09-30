@@ -64,10 +64,14 @@ const createFailAfterMs = 15 * 60_000;
 /**
  * A new VM's `hostd` answers about a minute after it runs (30.09: 33–82 s),
  * but one first boot in three or four hangs in `(initramfs)` and never
- * does; a reboot cures it. A booting host that has not answered at all this
- * long after its VM ran is rebooted, once.
+ * does; a reboot cures it (134 s to `ready` after it). A booting host that
+ * has not answered at all this long after its VM ran is rebooted, once. Not
+ * sooner: `hostd` and Caddy start only after apt and the venv, so a slow
+ * mirror is silent too, and a reboot mid-provision is final, as cloud-init
+ * runs `bro-host-boot` once per instance. `provision.sh`'s whole budget is
+ * 6 minutes at worst (boot.py), and `hostd` answers before its end.
  */
-const silentBootRebootMs = 3 * 60_000;
+const silentBootRebootMs = 6 * 60_000;
 /** `provision.sh`'s budget is 6 minutes; a host not ready by this is failed. */
 const bootFailAfterMs = 15 * 60_000;
 /** A ready host whose `hostd` did not answer for this long is failed. */
@@ -138,7 +142,10 @@ exec bash /opt/bro/host/provision.sh
 export function browserHostCloudInit(hostId: string, now = new Date()) {
   const bundle = env.BROWSER_HOST_BUNDLE;
   const rootfs = env.BROWSER_SANDBOX_ROOTFS;
-  const runtime = env.BROWSER_HOST_RUNTIME;
+  // Unset, as before the setting: runsc with a pinned release.
+  const runtime =
+    env.BROWSER_HOST_RUNTIME ??
+    (env.BROWSER_HOST_RUNSC_RELEASE === undefined ? "runc" : "runsc");
   const runscRelease =
     runtime === "runsc" ? env.BROWSER_HOST_RUNSC_RELEASE : "";
   if (bundle === undefined || rootfs === undefined) {

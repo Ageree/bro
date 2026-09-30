@@ -334,7 +334,8 @@
   только при падении: ход прогона — в файле итогов.
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
-  (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`
+  (`browserPoolConfigured`); `runc` — только явным `BROWSER_HOST_RUNTIME`, без
+  него пул как до настройки (`runsc` с выпуском). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`
   (префикс — `BROWSER_HOST_NAME_PREFIX`): первичный ключ `browser_hosts` не
   даёт создать лишний. Cloud-init хоста в TS байт в байт как
   `boot.py cloud-init`: тест `hosts.test.ts` запускает `python3 boot.py` и

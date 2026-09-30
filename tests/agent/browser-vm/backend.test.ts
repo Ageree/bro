@@ -164,6 +164,15 @@ describe("browser VM backend choice", () => {
     ).toBe(true);
   });
 
+  it("takes runc only when named, and an unset runtime as runsc", async () => {
+    // As before BROWSER_HOST_RUNTIME: the pool's other settings without the
+    // gVisor release leave it off, and with the release it runs runsc.
+    const unset = { ...browserPoolTestEnvironment, BROWSER_HOST_RUNTIME: "" };
+    expect((await loadBackend(unset)).browserPoolConfigured()).toBe(false);
+    const legacy = { ...unset, BROWSER_HOST_RUNSC_RELEASE: "20260914" };
+    expect((await loadBackend(legacy)).browserPoolConfigured()).toBe(true);
+  });
+
   it("leaves everyone off the pool while it is not configured", async () => {
     const backend = await loadBackend({
       BROWSER_BACKEND: "pool",

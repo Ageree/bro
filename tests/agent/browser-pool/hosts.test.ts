@@ -321,6 +321,22 @@ describe("browser host cloud-init", () => {
     ).toBe(gvisor);
   });
 
+  it("runs runsc when the runtime is unset and the release is pinned", async () => {
+    // A deployment set up before BROWSER_HOST_RUNTIME stays on gVisor.
+    const hosts = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        BROWSER_HOST_RUNSC_RELEASE: "20260914",
+        BROWSER_HOST_RUNTIME: "",
+      },
+      async () => import("@agent/lib/browser-pool/hosts")
+    );
+
+    expect(
+      bootJson(hosts.browserHostCloudInit("bro-host-1", now))
+    ).toMatchObject({ runscRelease: "20260914", runtime: "runsc" });
+  });
+
   it("needs the gVisor release only under runsc", async () => {
     const hosts = await importWithSettings(
       { ...browserPoolTestEnvironment, BROWSER_HOST_RUNTIME: "runsc" },
@@ -597,22 +613,24 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     await records.updateBrowserHost("bro-host-1", { state: "booting" }, now);
     hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
 
-    // Two minutes after the VM ran: a slow boot, left alone.
-    await hosts.reconcileBrowserHosts(minutes(2));
+    // Five minutes after the VM ran: maybe a slow mirror, still inside
+    // provision.sh's budget. A reboot would cut it off for good (cloud-init
+    // runs it once per instance), so it is left alone.
+    await hosts.reconcileBrowserHosts(minutes(5));
     expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
 
-    await hosts.reconcileBrowserHosts(minutes(3));
+    await hosts.reconcileBrowserHosts(minutes(6));
     expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
       "vm-host-1",
       "reboot"
     );
     expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
-      rebootedAt: minutes(3),
+      rebootedAt: minutes(6),
       state: "booting",
     });
 
     // Still silent after the reboot: never a second one, and failed in time.
-    await hosts.reconcileBrowserHosts(minutes(8));
+    await hosts.reconcileBrowserHosts(minutes(10));
     expect(cloud.setCloudRuVmPower).toHaveBeenCalledOnce();
     await hosts.reconcileBrowserHosts(minutes(15));
     expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("failed");
@@ -624,7 +642,7 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     await records.updateBrowserHost("bro-host-1", { state: "booting" }, now);
     hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
 
-    await hosts.reconcileBrowserHosts(minutes(5));
+    await hosts.reconcileBrowserHosts(minutes(7));
     expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
   });
 

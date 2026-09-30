@@ -21,6 +21,7 @@ export const browserVmTestEnvironment = {
 export const browserPoolTestEnvironment = {
   ...browserVmTestEnvironment,
   BROWSER_HOST_BUNDLE: `hosts/bundle-1.tgz:${"ab".repeat(32)}`,
+  BROWSER_HOST_RUNTIME: "runc",
   BROWSER_SANDBOX_ROOTFS: `2026-09-30.1:rootfs/2026-09-30.1.tar.zst:${"cd".repeat(32)}`,
   BROWSER_STATE_BUCKET: "bro-state-test",
   BROWSER_STATE_KEY: "22".repeat(32),
