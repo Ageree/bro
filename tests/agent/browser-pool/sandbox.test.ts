@@ -232,9 +232,10 @@ async function loadPool(settings: Record<string, string> = {}) {
       const vms = await import("@db/services/browser-vms");
       const hosts = await import("@db/services/browser-hosts");
       const lifecycle = await import("@agent/lib/browser-vm/lifecycle");
+      const runs = await import("@agent/lib/browser-vm/runs");
       await scope.ensureScope(alice);
       await scope.ensureScope(bob);
-      return { costsOf, hosts, lifecycle, vms };
+      return { costsOf, hosts, lifecycle, runs, vms };
     }
   );
 }
@@ -530,6 +531,53 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
       "power_on"
     );
     expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("runs on a sandbox", { timeout: 60_000 }, () => {
+  it("keeps a run open while the worker of its running sandbox does not answer", async () => {
+    const pool = await loadPool();
+    await seedRunning(pool, 1);
+    const runId = `vm:${alice.workspaceId}:r:1`;
+    await pool.vms.recordBrowserVmRun({
+      id: runId,
+      sessionId: `vm:${alice.workspaceId}:s:1`,
+      status: "running",
+      task: "Find a table",
+      workspaceId: alice.workspaceId,
+    });
+    // The stubbed network answers Object Storage alone: the worker is silent.
+
+    expect(await pool.runs.readBrowserVmRun(runId)).toMatchObject({
+      status: "running",
+    });
+    // A cancel that did not reach the worker is not taken as a stop.
+    await expect(pool.runs.cancelBrowserVmRun(runId)).rejects.toThrow(
+      "Unexpected request to https://45-132-176-117.sslip.io"
+    );
+  });
+
+  it("closes a run left open on a sandbox that is on no host", async () => {
+    const pool = await loadPool();
+    await seedAlice(pool, {
+      generation: 3,
+      sandboxState: "parked",
+      snapshotChunks: 4,
+      snapshotGeneration: 3,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+    const runId = `vm:${alice.workspaceId}:r:1`;
+    await pool.vms.recordBrowserVmRun({
+      id: runId,
+      sessionId: `vm:${alice.workspaceId}:s:1`,
+      status: "running",
+      task: "Find a table",
+      workspaceId: alice.workspaceId,
+    });
+
+    expect(await pool.runs.readBrowserVmRun(runId)).toMatchObject({
+      status: "failed",
+    });
   });
 });
 
