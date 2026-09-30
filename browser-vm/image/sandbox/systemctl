@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+"""`systemctl start|stop|restart <unit>` in a browser sandbox, which has no systemd: the worker's
+`sudo systemctl ... bro-chrome` goes to bro-sandbox-init (PID 1) over its root-only socket."""
+
+import os
+import socket
+import sys
+
+SOCKET = os.environ.get("BRO_INIT_SOCKET", "/run/bro-init.sock")
+
+if len(sys.argv) != 3 or sys.argv[1] not in ("start", "stop", "restart"):
+    sys.exit("systemctl in a browser sandbox: only start|stop|restart <unit>")
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+    connection.settimeout(120)  # a stop waits for Chrome to write the profile (TimeoutStopSec=30)
+    connection.connect(SOCKET)
+    connection.sendall(f"{sys.argv[1]} {sys.argv[2]}\n".encode())
+    reply = connection.makefile().readline().strip()
+if reply != "ok":
+    sys.exit(reply or "no answer from bro-sandbox-init")

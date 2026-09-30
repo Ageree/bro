@@ -14,6 +14,8 @@ HTTPS. План и итоги замеров — `docs/browser-cloud-migration.m
 | `image/provision.sh`    | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
 | `image/build.py`        | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
 | `image/test_image.py`   | Тесты образа (`python -m unittest`, только stdlib): `build.py` на поддельном Compute API, загрузка `provision.sh` |
+| `image/sandbox/`        | Корень песочницы для пула браузеров: `build_rootfs.sh`, init, заглушка `systemctl` |
+| `image/test_sandbox.py` | Тесты init песочницы: юниты из `provision.sh`, старт, перезапуск, `systemctl` через сокет |
 | `host/`                 | Хост пула браузеров: `hostd` (песочницы gVisor, парковка в S3), сеть, Caddy, загрузка хоста — `host/README.md`    |
 
 ## Как устроено
@@ -113,3 +115,29 @@ VM без worker). Откат виден по версии в `/v1/health`. На
 python -m unittest browser-vm/worker/test_worker.py
 python -m unittest browser-vm/image/test_image.py
 ```
+
+## Корень песочницы (пул браузеров)
+
+`image/sandbox/build_rootfs.sh` собирает каталог-корень песочницы
+(`/srv/bro/rootfs`, ≈ 1,6 ГБ) тем же `provision.sh` в `chroot` с
+`BRO_SANDBOX=1`: без Caddy, firewall и systemd — TLS и выход в сеть держит
+хост. Корень общий и не меняется: `runsc` кладёт поверх оверлей в памяти
+песочницы (`--overlay2=root:memory`), свои у песочницы только монтирования —
+каталог профиля хоста в `/var/lib/bro/profile`, `/etc/bro/worker.json` и
+`/etc/resolv.conf`.
+
+- PID 1 — `bro-sandbox-init`: читает юниты `bro-xvfb`, `bro-chrome`,
+  `bro-worker` из самого корня и запускает их команды, пользователя и окружение
+  как systemd на VM (`Restart=always`, остановка `KillMode=mixed`). Chrome
+  стартует с флагами VM и со своей песочницей (gVisor её держит).
+- `sudo systemctl start|stop|restart bro-chrome` worker доходит до init через
+  заглушку `/usr/bin/systemctl` и сокет только для root.
+- `BRO_WORKER_BIND=0.0.0.0` (окружение init) — worker слушает интерфейс
+  песочницы, а не loopback: хост ходит к нему по её netns.
+- `BRO_PYTHON_SETUP` — если с хоста не видно GitHub и PyPI (Cloud.ru 30.09):
+  скрипт делает `/opt/bro/bu/.venv` вместо шага uv, jev не ставится. Стенд
+  берёт python3.11 Ubuntu и колёса с зеркала, сверенные с PyPI
+  (`scripts/cloudru-sandbox-probe/vm/wheels.sh`).
+
+Запуск, заморозка и восстановление — стенд
+`scripts/cloudru-sandbox-probe/` (`vm/sandbox.sh`, `vm/state.py`).
