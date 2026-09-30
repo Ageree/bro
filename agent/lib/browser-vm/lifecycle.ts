@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
+import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
 import {
@@ -53,6 +54,14 @@ import {
 
 type BrowserVm = typeof browserVms.$inferSelect;
 type CloudVm = NonNullable<Awaited<ReturnType<typeof readCloudRuVm>>>;
+
+/** The states in which Cloud.ru bills the VM's compute. */
+const poweredStates = new Set<BrowserVm["state"]>([
+  "creating",
+  "starting",
+  "ready",
+  "stopping",
+]);
 
 /** A create, a power change or a deletion request is answered well inside this. */
 const leaseMs = 2 * 60_000;
@@ -176,11 +185,103 @@ async function writeHeld(
   patch: Parameters<typeof updateBrowserVm>[1],
   now: Date
 ) {
-  return updateBrowserVm(
+  const leaseUntil = vm.leaseUntil ?? undefined;
+  const closed = await closeUptime(vm.workspaceId, patch, now);
+  const row = await updateBrowserVm(
     vm.workspaceId,
-    patch,
+    closed ? { ...patch, poweredOnAt: null } : patch,
     now,
-    vm.leaseUntil ?? undefined
+    leaseUntil
+  );
+  // A VM on its way up, up or on its way down bills from the first time Bro
+  // writes it so (the migration stamped the VMs already on).
+  if (row.poweredOnAt !== null || !poweredStates.has(row.state)) return row;
+  try {
+    return await updateBrowserVm(
+      vm.workspaceId,
+      { poweredOnAt: now },
+      now,
+      leaseUntil
+    );
+  } catch (error) {
+    // The accounting never fails a step on the VM.
+    console.warn("[usage-costs] the VM's power-on was not written down", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId: vm.workspaceId,
+    });
+    return row;
+  }
+}
+
+/**
+ * Whether Cloud.ru no longer bills the VM's compute: it is off, or a create
+ * or a give-up left no VM behind.
+ */
+function uptimeEnded(state: BrowserVm["state"], vmId: string | null) {
+  return state === "stopped" || (state === "failed" && vmId === null);
+}
+
+/**
+ * Record the stretch the VM was on when this write ends it, or when an
+ * earlier write ended it but could not record it (the end is then when the
+ * record took that state), and say whether the write may clear its start.
+ * The start is read afresh: a step may carry a row read before it powered
+ * on. A stretch that could not be recorded keeps its start for the next
+ * write to try again, unless the VM is on its way up again: the old stretch
+ * is then let go (logged), rather than billed through the time it was off.
+ * An unreadable record leaves the clock as it is.
+ */
+async function closeUptime(
+  workspaceId: string,
+  patch: Parameters<typeof updateBrowserVm>[1],
+  now: Date
+) {
+  let row: BrowserVm | undefined;
+  try {
+    row = await readBrowserVm(workspaceId);
+  } catch (error) {
+    console.warn("[usage-costs] the VM's power-on could not be read", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId,
+    });
+    return false;
+  }
+  if (row?.poweredOnAt === null || row?.poweredOnAt === undefined) return false;
+  const endedBefore = uptimeEnded(row.state, row.vmId);
+  const endsNow = uptimeEnded(
+    patch.state ?? row.state,
+    patch.vmId === undefined ? row.vmId : patch.vmId
+  );
+  if (!endedBefore && !endsNow) return false;
+  const recorded = await recordBrowserVmUptime(
+    workspaceId,
+    row.poweredOnAt,
+    endedBefore ? row.stateChangedAt : now
+  );
+  return recorded || !endsNow;
+}
+
+/**
+ * Record a removed VM's last stretch before its record goes. False when it
+ * could not be: the deletion keeps the record and the reconcile tries again,
+ * until the deletion is overdue and goes ahead without it.
+ */
+async function closeRemovedUptime(vm: BrowserVm, now: Date) {
+  let row: BrowserVm | undefined;
+  try {
+    row = await readBrowserVm(vm.workspaceId);
+  } catch (error) {
+    console.warn("[usage-costs] the VM's power-on could not be read", {
+      error: error instanceof Error ? error.message : String(error),
+      workspaceId: vm.workspaceId,
+    });
+    return false;
+  }
+  if (row?.poweredOnAt === null || row?.poweredOnAt === undefined) return true;
+  return recordBrowserVmUptime(
+    vm.workspaceId,
+    row.poweredOnAt,
+    uptimeEnded(row.state, row.vmId) ? row.stateChangedAt : now
   );
 }
 
@@ -1097,6 +1198,12 @@ async function removeBrowserVm(vm: BrowserVm, now: Date) {
     present([vm.floatingIpId]).map(async (id) => deleteCloudRuFloatingIp(id))
   );
   await deleteCloudRuBackupsOf(present([vm.bootDiskId]));
+  if (
+    !(await closeRemovedUptime(vm, now)) &&
+    !overdue(vm, now, settleFailAfterMs)
+  ) {
+    return false;
+  }
   await deleteBrowserVmRecord(vm.workspaceId);
   return true;
 }

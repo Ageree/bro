@@ -148,6 +148,14 @@ export const browserVms = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+    // Since when Cloud.ru bills the VM's compute: set when Bro powers it on
+    // (or first finds it on), cleared once the VM is off or gone and that
+    // stretch is on record in `usage_costs` (`closeUptime` in lifecycle.ts).
+    poweredOnAt: timestamp("powered_on_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // Reboots the watchdog spent on a VM that did not come up.
     recoveries: integer("recoveries").notNull().default(0),
     // Health checks in a row the worker of a ready VM missed: one slow answer

@@ -345,6 +345,13 @@
   требует миграции CHECK. Расширение решает `policyWidens`
   (`shared/spending/limit.ts`) той же проверкой покрытия, что и платёж.
 
+## Учёт расходов
+
+- `usage.total_cost` worker — цена browser-use по его долларовому прайсу
+  (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
+  `shared/costs/prices.ts`. Трафик прокси по запуску (`traffic`) отдаёт только
+  обновлённый worker; хуки родителя шаги субагентов не видят.
+
 ## Google
 
 - Уровень доступа — `settings.google_workspace_access` (нет записи — `full`).

@@ -659,6 +659,38 @@ describe("browser VM persistence", () => {
     ).toEqual(["vm:ws_alice:r:2", "vm:ws_alice:r:3"]);
   }, 20_000);
 
+  it("finds the runs that were going during a stretch of the VM's time", async () => {
+    const { browserVms, createdAt } = await browserVmsDatabase();
+    await browserVms.recordBrowserVmRun(run("vm:ws_alice:r:1", "Earlier"));
+    await browserVms.recordBrowserVmRun(run("vm:ws_alice:r:2", "During"));
+    await browserVms.recordBrowserVmRun(run("vm:ws_alice:r:3", "Open"));
+    await browserVms.recordBrowserVmRun(run("vm:ws_alice:r:4", "Later"));
+    await browserVms.recordBrowserVmRun({
+      ...run("vm:ws_bob:r:1", "Bob's errand", "vm:ws_bob:s:one"),
+      workspaceId: bob.workspaceId,
+    });
+    await createdAt("vm:ws_alice:r:1", minutes(-120));
+    await createdAt("vm:ws_alice:r:2", minutes(-50));
+    await createdAt("vm:ws_alice:r:3", minutes(-20));
+    await createdAt("vm:ws_alice:r:4", minutes(10));
+    await browserVms.updateBrowserVmRun("vm:ws_alice:r:1", {
+      finishedAt: minutes(-90),
+      status: "completed",
+    });
+    await browserVms.updateBrowserVmRun("vm:ws_alice:r:2", {
+      finishedAt: minutes(-40),
+      status: "completed",
+    });
+
+    expect(
+      await browserVms.listBrowserVmRunIdsBetween(
+        alice.workspaceId,
+        minutes(-60),
+        minutes(0)
+      )
+    ).toEqual(["vm:ws_alice:r:2", "vm:ws_alice:r:3"]);
+  }, 20_000);
+
   it("finds a run by a whole line of its task from the last day", async () => {
     const { browserVms, createdAt } = await browserVmsDatabase();
     const line = "Errand id: errand-7, attempt 2";
