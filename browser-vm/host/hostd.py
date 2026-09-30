@@ -609,7 +609,10 @@ class Host:
                 "capabilities": {kind: CAPABILITIES for kind in ("bounding", "effective", "permitted")},
                 "rlimits": [{"type": "RLIMIT_NOFILE", "hard": 65536, "soft": 65536}],
             },
-            "root": {"path": str(rootfs), "readonly": True},
+            # Not "readonly": with it gVisor mounts the root read-only even under --overlay2=root:memory, and
+            # bro-sandbox-init dies on /run (stage 1 stand). Writes land in the overlay in the sandbox's
+            # memory; the rootfs directory itself is never written.
+            "root": {"path": str(rootfs), "readonly": False},
             # The same hostname everywhere: Chrome's SingletonLock names the host it was taken on.
             "hostname": "bro-sandbox",
             "mounts": [

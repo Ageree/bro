@@ -2,7 +2,9 @@
 # Root filesystem of a browser sandbox (docs/browser-pool.md): the browser VM image — Chrome in Xvfb with its
 # policies, browser-use, jev, the worker — installed by the same provision.sh (BRO_SANDBOX=1: no Caddy, no
 # firewall, no systemd) into a directory, plus bro-sandbox-init as PID 1 and the systemctl shim.
-#   build_rootfs.sh [ROOT=/srv/bro/rootfs] [IMAGE_VERSION=sandbox-<date>]
+#   build_rootfs.sh [ROOT=/srv/bro/rootfs] [IMAGE_VERSION=sandbox-<date>] [ARCHIVE=path.tar.zst]
+# ARCHIVE: the root also as the tar.zst a pool host unpacks (browser-vm/host/provision.sh: the archive's top is
+# the root itself, numeric owners), with its sha256 for boot.json.
 # Run as root on an Ubuntu 22.04 host with internet (≈ 10 minutes on 2 vCPU). The sandbox mounts ROOT
 # read-only with an in-memory overlay; per-sandbox files are bind mounts over the placeholders left here:
 # /var/lib/bro/profile (the profile directory on the host), /etc/bro/worker.json, /etc/resolv.conf.
@@ -80,3 +82,7 @@ mkdir -p "$ROOT/etc/bro" "$ROOT/var/lib/bro/profile"
 : > "$ROOT/etc/bro/worker.json"
 chroot "$ROOT" chown bro:bro /var/lib/bro/profile
 echo "rootfs $ROOT: $(du -sh --exclude=proc --exclude=sys --exclude=dev "$ROOT" | cut -f1), bro uid $(chroot "$ROOT" id -u bro)"
+if [ -n "${3:-}" ]; then
+  tar -C "$ROOT" --numeric-owner -I "zstd -3 -T0" -cpf "$3" .
+  echo "archive $3: $(du -h "$3" | cut -f1), sha256 $(sha256sum "$3" | cut -d' ' -f1)"
+fi
