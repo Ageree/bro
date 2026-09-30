@@ -1206,6 +1206,21 @@ Cloud.ru, что VM жива и на своём адресе (удалённую
 остальное остаются из образа). Публикация — `browser-vm/worker/publish.py`
 (порядок — в [`browser-vm/README.md`](../browser-vm/README.md)).
 
+Проверка на Cloud.ru (30.09, `tests/e2e/worker-rollout.e2e.ts`, вне
+`pnpm check`): VM создал сам lifecycle Бро из продового образа
+`bro-browser-2026-09-29-6` (готова за 76 с, без `(initramfs)`), worker образа —
+`2026-09-29.1`. Через 95 с (окно «VM только что отдана поручению» — 90 с)
+`ensureBrowserVm` скачал `2026-09-30.3` из бакета, выкатил его и вернул VM
+готовой за 11,6 с; `/v1/health` — `2026-09-30.3`, Chrome жив, алертов и
+`worker_failed_version` нет. На новом worker `GET /v1/runs`,
+`POST /v1/browser/restart`, `POST /v1/park` и повторная настройка прокси
+(`prepareBrowserVmSession`, выход RU) ответили; поручение по ru.wikipedia
+(deepseek-v4.1-flash через RouterAI) — 7 шагов за 44 с, ответ верный, `usage`
+(133 тыс. токенов, из них 70 тыс. из кэша, ≈ 0,8 ₽) и `traffic` (38 МБ) пришли,
+worker освободил браузер через 0,6 с после `done` — зависания после итога
+нет. Опубликовано
+`BROWSER_VM_WORKER=2026-09-30.3:workers/worker-2026-09-30.3.py:bca0bfadcc61f30b964749ccc22afc2b49b78a4a4a7b9de6cd49918cd227fce3`.
+
 **Флаг backend.** `BROWSER_BACKEND` (`browser-use` по умолчанию или `cloudru`)
 для всех и `BROWSER_VM_WORKSPACES` — пилотный список воркспейсов или email
 владельцев, которым VM включена раньше остальных.

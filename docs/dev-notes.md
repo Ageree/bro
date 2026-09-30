@@ -331,7 +331,8 @@
 - Код пула на настоящих хостах — `pnpm test:e2e:browser-pool`
   (`tests/e2e/`, `vitest.e2e.config.ts`, вне `pnpm check`; команда —
   `docs/browser-pool.md`, раздел 10). vitest без TTY печатает вывод теста
-  только при падении: ход прогона — в файле итогов.
+  только при падении: ход прогона — в файле итогов. Выкат worker на VM из
+  образа — `tests/e2e/worker-rollout.e2e.ts` (команда — в его шапке).
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
   (`browserPoolConfigured`); `runc` — только явным `BROWSER_HOST_RUNTIME`, без
