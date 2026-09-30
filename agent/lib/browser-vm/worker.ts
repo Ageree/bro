@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { browserSandboxId } from "@agent/lib/browser-pool/keys";
+import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
 import { signBrowserVmToken } from "./token";
 
@@ -523,16 +523,18 @@ function origin(vm: BrowserVmTarget) {
   if (host === null || !/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(host)) {
     throw new Error("The browser VM has no public IPv4 address yet.");
   }
-  const base = `https://${host.replaceAll(".", "-")}.sslip.io`;
   if (vm.hostId !== undefined && vm.hostId !== null) {
-    return `${base}/g/${browserSandboxId(vm.workspaceId)}`;
+    return browserSandboxWorkerOrigin(
+      { address: host, id: vm.hostId },
+      vm.workspaceId
+    );
   }
   // A sandbox whose host record went keeps the host's old address, which
   // Cloud.ru may have given to another VM: nothing goes there.
   if (vm.sandboxState !== undefined && vm.sandboxState !== null) {
     throw new Error("The browser sandbox is on no host.");
   }
-  return base;
+  return `https://${host.replaceAll(".", "-")}.sslip.io`;
 }
 
 async function readOrMissing<T>(read: () => Promise<T>) {

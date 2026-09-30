@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { usesBrowserPool } from "@agent/lib/browser-vm/backend";
+import {
+  browserPoolConfigured,
+  browserStateConfigured,
+  usesBrowserPool,
+} from "@agent/lib/browser-vm/backend";
+import { readCloudRuVm } from "@agent/lib/browser-vm/cloudru";
 import { browserVmIdleStopDue } from "@agent/lib/browser-vm/idle";
 import {
   BrowserVmWorkerError,
@@ -35,6 +40,7 @@ import {
   parkBrowserSandbox,
   readBrowserHostCapacity,
   readBrowserSandbox,
+  readWrittenBrowserSet,
   startBrowserSandbox,
 } from "./host";
 import { placeBrowserSandbox, reconcileBrowserHosts } from "./hosts";
@@ -99,6 +105,10 @@ const missedChecksToDemote = 3;
 const liveRunWindowMs = 30 * 60_000;
 /** As for a VM: a run still open after an hour is one nobody read. */
 const openRunWindowMs = 60 * 60_000;
+/** After a park that failed: the first retry, and every one after it. */
+const parkRetryMs = [10 * 60_000, 60 * 60_000] as const;
+/** Parks failed in a row before the owner is told. */
+const parkFailuresToAlert = 3;
 /** Stranded sandboxes one reconcile takes back to their sets. */
 const reconcileLimit = 20;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
@@ -107,7 +117,22 @@ const ownerAlertRepeatMs = 6 * 60 * 60_000;
 const refusalSchema = z.object({
   error: z.string().optional(),
   generation: z.number().int().nonnegative().optional(),
+  /** A start whose set is not older than it. */
+  setGeneration: z.number().int().nonnegative().nullish(),
+  /** A park whose set is in, but whose sandbox runsc could not delete. */
+  setWritten: z.boolean().optional(),
 });
+
+/**
+ * What `hostd` says when the set itself is at fault (`SetError` of
+ * `sets.py`, the checks of `bring_up_in` in `hostd.py`): it does not
+ * decrypt or verify, is malformed, incomplete or gone, or is another
+ * workspace's. Anything else — a token refused, Caddy or `hostd` down,
+ * runsc, the network, a URL that expired — is the host's trouble, and the
+ * set is kept.
+ */
+const setFaultPattern =
+  /does not decrypt|manifest (?:is|does|format)|the set has no|do not add up|does not match its checksum|belongs to another workspace|could not unpack|GET answered 404/u;
 
 /**
  * Whether the workspace's browser is a sandbox of the pool: a record that
@@ -149,7 +174,10 @@ export async function ensureBrowserSandbox(
       case "starting":
       case "restoring":
       case "parking": {
-        return starting(transitionRetryMs);
+        // The lease was free, so the step that began this is over (or its
+        // instance was frozen mid-call): read it back now rather than at
+        // the next reconcile.
+        return await followForErrand(claimed, now);
       }
       default: {
         return await bringUp(claimed, now);
@@ -164,13 +192,48 @@ export async function ensureBrowserSandbox(
 }
 
 /**
+ * A start or park left in the record by a step that is gone: follow it as
+ * the reconcile would, then carry on from where that leaves the sandbox —
+ * running, it serves the errand; back on a set, it is brought up.
+ */
+async function followForErrand(vm: BrowserVm, now: Date) {
+  await (vm.sandboxState === "parking"
+    ? followPark(vm, now)
+    : followStart(vm, now));
+  const after = await readBrowserVm(vm.workspaceId);
+  if (after?.leaseUntil?.getTime() !== vm.leaseUntil?.getTime()) {
+    return starting(transitionRetryMs);
+  }
+  switch (after?.sandboxState) {
+    case "running": {
+      return readyForErrand(after, now);
+    }
+    case "absent":
+    case "parked":
+    case "cold":
+    case "failed": {
+      return bringUp(after, now);
+    }
+    default: {
+      return starting(transitionRetryMs);
+    }
+  }
+}
+
+/**
  * Look after the pool once a minute: its hosts first, then sandboxes left on
  * a host that failed or went, then whatever a host holds that no record
  * places there. Never throws.
  */
 export async function reconcileBrowserPool(now = new Date()) {
-  await reconcileBrowserHosts(now);
   try {
+    // A deployment without the pool, and with no host left of it, asks
+    // nothing more. Hosts left over are looked after whichever of the
+    // pool's settings went: they bill until they are deleted.
+    if (!browserPoolConfigured() && (await listBrowserHosts()).length === 0) {
+      return;
+    }
+    await reconcileBrowserHosts(now);
     const stranded = await listStrandedBrowserSandboxes(now, reconcileLimit);
     await Promise.all(
       stranded.map(async (row) =>
@@ -297,7 +360,8 @@ function overdue(vm: BrowserVm, now: Date, afterMs: number) {
  */
 async function readyForErrand(vm: BrowserVm, now: Date) {
   if (vm.profileResetPending) return starting(transitionRetryMs);
-  if ((await holdingHost(vm)) === undefined) {
+  const host = await holdingHost(vm);
+  if (host === undefined || !(await hostVmStillThere(host))) {
     return starting(transitionRetryMs);
   }
   if ((await aliveWorker(vm)) === undefined) {
@@ -351,6 +415,8 @@ async function bringUp(record: BrowserVm, now: Date) {
       healthFailures: 0,
       host: host.address,
       hostId: host.id,
+      parkFailures: 0,
+      parkRetryAt: null,
       poweredOnAt: now,
       recoveries: 0,
       // A restore of a snapshot, or a start fresh or from the profile alone:
@@ -450,6 +516,23 @@ async function startRefused(
     return transitionRetryMs;
   }
   if (
+    error.status === 409 &&
+    refusal.setGeneration !== undefined &&
+    refusal.setGeneration !== null
+  ) {
+    // The set is as new as this start: the next start goes past it.
+    await offHost(
+      vm,
+      {
+        generation: Math.max(vm.generation, refusal.setGeneration),
+        lastError: error.message,
+        sandboxState: resting,
+      },
+      now
+    );
+    return transitionRetryMs;
+  }
+  if (
     error.status === 507 ||
     (error.status === 409 && refusal.error?.includes("rootfs") === true)
   ) {
@@ -461,27 +544,55 @@ async function startRefused(
 }
 
 /**
- * A start that failed on the host: a snapshot that did not restore leaves
- * the profile of its set (`cold`); a set whose profile did not come up
- * either is `failed`, the owner is told, and the next errand starts fresh;
- * a fresh start (no set on record) that failed is the host's trouble, and
- * the owner is told.
+ * A start that failed on the host. Only a set `hostd` found at fault
+ * (`setFaultPattern`) is fallen back from: a snapshot leaves the profile of
+ * its set (`cold`); a profile at fault too is `failed`, the owner is told,
+ * and the next errand starts fresh. Any other failure is the host's: the
+ * sandbox goes back to what it rested on, its set kept whole, and the
+ * owner is told.
  */
 async function fallBack(vm: BrowserVm, reason: string, now: Date) {
   const hasSet = vm.snapshotKey !== null;
-  const next: SandboxState =
-    vm.sandboxState === "restoring" ? "cold" : hasSet ? "failed" : "absent";
+  const restoring = vm.sandboxState === "restoring";
+  if (!hasSet || !setFaultPattern.test(reason)) {
+    await offHost(
+      vm,
+      { lastError: reason, sandboxState: restingAfterHostTrouble(vm) },
+      now
+    );
+    await alert(
+      `browser-sandbox-host:${vm.workspaceId}`,
+      [
+        `Хост пула браузеров не смог поднять песочницу воркспейса ${vm.workspaceId}: ${reason.slice(0, 300)}`,
+        ...(hasSet
+          ? [
+              "Набор в Object Storage цел: следующее поручение снова поднимет браузер из него.",
+            ]
+          : []),
+      ].join("\n")
+    );
+    return;
+  }
+  const next: SandboxState = restoring ? "cold" : "failed";
   await offHost(vm, { lastError: reason, sandboxState: next }, now);
-  if (vm.sandboxState === "restoring") return;
+  if (restoring) return;
   await alert(
     `browser-sandbox-failed:${vm.workspaceId}`,
-    hasSet
-      ? [
-          `Браузер воркспейса ${vm.workspaceId} не поднялся из последнего набора: ${reason.slice(0, 300)}`,
-          "Следующее поручение начнёт с пустого профиля: входы на сайты придётся повторить. Набор в Object Storage пока цел.",
-        ].join("\n")
-      : `Хост пула браузеров не смог поднять песочницу воркспейса ${vm.workspaceId}: ${reason.slice(0, 300)}`
+    [
+      `Браузер воркспейса ${vm.workspaceId} не поднялся из последнего набора: ${reason.slice(0, 300)}`,
+      "Следующее поручение начнёт с пустого профиля: входы на сайты придётся повторить. Набор в Object Storage пока цел.",
+    ].join("\n")
   );
+}
+
+/**
+ * Where a start that failed for the host's reasons leaves the sandbox: on
+ * the snapshot it was restoring, on the profile it started from, or on
+ * nothing.
+ */
+function restingAfterHostTrouble(vm: BrowserVm): SandboxState {
+  if (vm.snapshotKey === null) return "absent";
+  return vm.sandboxState === "restoring" ? "parked" : "cold";
 }
 
 /**
@@ -597,18 +708,37 @@ async function tendRunning(vm: BrowserVm, now: Date) {
  * open), `hostd` freezes the sandbox into a new set under its generation,
  * and the record keeps the set. The state is written first, so an errand
  * that moved the window in between is seen and keeps the sandbox. A park
- * `hostd` refused leaves the sandbox running there (it restores it in
- * place), and the next round tries again; a park never runs under a run.
+ * that failed leaves the sandbox running there (`hostd` restores it in
+ * place) and is tried again after a pause that grows (`parkRetryMs`); the
+ * owner hears of the third in a row. A park never runs under a run.
+ *
+ * Without the key and bucket the sets need (`browserStateConfigured`), an
+ * idle sandbox cannot be parked: it is deleted from its host and goes back
+ * to its last set, so the host empties and is deleted.
  */
 async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
   const { workspaceId } = vm;
   if (!browserVmIdleStopDue(vm, now)) return;
+  if (vm.parkRetryAt !== null && vm.parkRetryAt > now) return;
   if (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs)) {
     return;
   }
   const holding = await listWorkspacesHoldingBrowsers([workspaceId], now);
   if (holding.length > 0) return;
   if (await workspaceHasPendingBrowserErrand(workspaceId, now)) return;
+  if (!browserStateConfigured()) {
+    await abandonOnHost(
+      vm,
+      host,
+      now,
+      "The sandbox could not be parked: the pool's Object Storage settings are gone."
+    );
+    await alert(
+      `browser-sandbox-unparked:${workspaceId}`,
+      `Песочница воркспейса ${workspaceId} удалена с хоста без парковки: нет BROWSER_STATE_KEY, BROWSER_STATE_BUCKET или CLOUDRU_S3_TENANT_ID. Входы с последней парковки потеряны.`
+    );
+    return;
+  }
   const parking = await writeHeld(
     vm,
     { sandboxState: "parking", state: "stopping" },
@@ -621,19 +751,26 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
   try {
     await parkBrowserVmWorker(parking);
   } catch (error) {
-    // Busy with a run after all (409), or silent: it runs on as it was.
-    await writeHeld(vm, { sandboxState: "running", state: "ready" }, now);
-    if (!(error instanceof BrowserVmWorkerError && error.status === 409)) {
-      console.warn("[browser-pool] the worker did not drop its secrets", {
-        cause: error,
-        workspaceId,
-      });
+    // Busy with a run after all (409): it runs on as it was.
+    if (error instanceof BrowserVmWorkerError && error.status === 409) {
+      await writeHeld(vm, { sandboxState: "running", state: "ready" }, now);
+      return;
     }
+    console.warn("[browser-pool] the worker did not drop its secrets", {
+      cause: error,
+      workspaceId,
+    });
+    await parkFailed(
+      parking,
+      now,
+      `The worker did not drop its secrets: ${error instanceof Error ? error.message : String(error)}`
+    );
     return;
   }
   let parked: Awaited<ReturnType<typeof parkBrowserSandbox>>;
   try {
     parked = await parkBrowserSandbox(host, {
+      ample: vm.parkFailures > 0,
       generation: parking.generation,
       workspaceId,
     });
@@ -642,9 +779,18 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
       cause: error,
       workspaceId,
     });
+    if (!(error instanceof BrowserHostError)) return;
+    // The set is in, though the sandbox could not be deleted: it is the
+    // sandbox's set all the same, and the sweep clears the sandbox away.
+    if (
+      refusalOf(error).setWritten === true &&
+      (await recordWrittenSet(parking, now))
+    ) {
+      return;
+    }
     // A refusal says what the host did with the sandbox; a lost answer is
     // read back by the reconcile.
-    if (error instanceof BrowserHostError) await followPark(parking, now);
+    await followPark(parking, now, error.message);
     return;
   }
   await recordParked(parking, parked, now);
@@ -653,10 +799,12 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
 /**
  * A park `hostd` has not answered, or refused: read it back. Parked under
  * this generation, the set is recorded; running, the park did not go
- * through and the sandbox runs on; still parking long after, or failed or
- * missing, the sandbox is deleted there and goes back to its last set.
+ * through, the sandbox runs on and the failure counts (`parkFailed`); a
+ * set written by a park whose sandbox could not be deleted is recorded;
+ * still parking long after, or failed or missing, the sandbox is deleted
+ * there and goes back to its last set.
  */
-async function followPark(vm: BrowserVm, now: Date) {
+async function followPark(vm: BrowserVm, now: Date, reason?: string) {
   const host = await holdingHost(vm);
   if (host === undefined) {
     await backToSet(vm, now, "The sandbox's host failed or went.");
@@ -678,22 +826,75 @@ async function followPark(vm: BrowserVm, now: Date) {
       return;
     }
     if (sandbox.state === "running") {
-      await writeHeld(
+      await parkFailed(
         vm,
-        {
-          lastError: "The park did not go through; the sandbox runs on.",
-          sandboxState: "running",
-          state: "ready",
-        },
-        now
+        now,
+        reason ?? "The park did not go through; the sandbox runs on."
       );
       return;
     }
     if (sandbox.state === "parking" && !overdue(vm, now, stuckAfterMs)) {
       return;
     }
+    if (
+      sandbox.state === "failed" &&
+      sandbox.error?.startsWith("the set is written") === true &&
+      (await recordWrittenSet(vm, now))
+    ) {
+      return;
+    }
   }
   await abandonOnHost(vm, host, now, "The sandbox was lost while parking.");
+}
+
+/**
+ * A park that did not go through while the sandbox runs on: the sandbox is
+ * running again, the next park waits (`parkRetryMs`) and goes with every
+ * chunk URL `hostd` takes, and the owner is told of the third in a row.
+ */
+async function parkFailed(vm: BrowserVm, now: Date, reason: string) {
+  const failures = vm.parkFailures + 1;
+  const pause = parkRetryMs[Math.min(failures, parkRetryMs.length) - 1] ?? 0;
+  await writeHeld(
+    vm,
+    {
+      lastError: reason.slice(0, 500),
+      parkFailures: failures,
+      parkRetryAt: new Date(now.getTime() + pause),
+      sandboxState: "running",
+      state: "ready",
+    },
+    now
+  );
+  if (failures >= parkFailuresToAlert) {
+    await alert(
+      `browser-sandbox-park:${vm.workspaceId}`,
+      [
+        `Песочница воркспейса ${vm.workspaceId} не паркуется уже ${String(failures)} раз подряд: ${reason.slice(0, 300)}`,
+        "Она остаётся на хосте (и хост не удаляется); следующая попытка — через час.",
+      ].join("\n")
+    );
+  }
+}
+
+/**
+ * Record the set a park wrote at the sandbox's generation, read from its
+ * manifest: a park `hostd` answered with `setWritten`. False when there is
+ * no such set to be read.
+ */
+async function recordWrittenSet(vm: BrowserVm, now: Date) {
+  try {
+    const written = await readWrittenBrowserSet(vm.workspaceId, vm.generation);
+    if (written === undefined) return false;
+    await recordParked(vm, written, now);
+    return true;
+  } catch (error) {
+    console.warn("[browser-pool] the written set could not be read", {
+      cause: error,
+      workspaceId: vm.workspaceId,
+    });
+    return false;
+  }
 }
 
 /**
@@ -714,6 +915,8 @@ async function recordParked(
     vm,
     {
       lastError: null,
+      parkFailures: 0,
+      parkRetryAt: null,
       sandboxState: "parked",
       snapshotChunks: parked.chunks,
       snapshotFormat: JSON.stringify(parked.format),
@@ -867,6 +1070,27 @@ async function holdingHost(vm: BrowserVm) {
   const host = await readBrowserHost(vm.hostId);
   if (host?.address !== vm.host) return undefined;
   return host.state === "ready" || host.state === "draining" ? host : undefined;
+}
+
+/**
+ * Whether Cloud.ru still has the host's VM running at the address Bro
+ * knows. The errand's secrets go to that address next, and an address
+ * Cloud.ru took back goes to another VM at once (as `readyForErrand` in
+ * `agent/lib/browser-vm/lifecycle.ts` checks for a VM); the host's own
+ * reconcile fails it within the minute.
+ */
+async function hostVmStillThere(host: BrowserHost) {
+  if (host.vmId === null) return false;
+  try {
+    const cloud = await readCloudRuVm(host.vmId);
+    return cloud?.state === "running" && cloud.host === host.address;
+  } catch (error) {
+    console.warn("[browser-pool] the host's VM could not be checked", {
+      cause: error,
+      hostId: host.id,
+    });
+    return false;
+  }
 }
 
 /**

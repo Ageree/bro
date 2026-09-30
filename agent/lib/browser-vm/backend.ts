@@ -29,17 +29,30 @@ export function browserVmConfigured() {
  */
 export function browserPoolConfigured() {
   return (
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
-    env.CLOUDRU_S3_TENANT_ID !== undefined &&
-    env.BROWSER_STATE_BUCKET !== undefined &&
-    env.BROWSER_STATE_KEY !== undefined &&
+    browserStateConfigured() &&
     env.BROWSER_HOST_BUNDLE !== undefined &&
     env.BROWSER_HOST_RUNSC_RELEASE !== undefined &&
     env.BROWSER_SANDBOX_ROOTFS !== undefined &&
     env.BROWSER_VM_SIGNING_KEY !== undefined &&
     env.BROWSER_VM_PROXY !== undefined &&
     env.BROWSER_VM_LLM_API_KEY !== undefined
+  );
+}
+
+/**
+ * Whether sandboxes can be parked into sets and restored from them: the
+ * Cloud.ru key with its Object Storage tenant, the bucket, and the key the
+ * sets are sealed with. Less than `browserPoolConfigured`, which new
+ * sandboxes need: the pool's hosts are looked after, and their sandboxes
+ * parked, with only this and the host token key (`reconcileBrowserPool`).
+ */
+export function browserStateConfigured() {
+  return (
+    env.CLOUDRU_KEY_ID !== undefined &&
+    env.CLOUDRU_KEY_SECRET !== undefined &&
+    env.CLOUDRU_S3_TENANT_ID !== undefined &&
+    env.BROWSER_STATE_BUCKET !== undefined &&
+    env.BROWSER_STATE_KEY !== undefined
   );
 }
 

@@ -104,6 +104,8 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     lastError: null,
     lastUsedAt: now,
     leaseUntil: null,
+    parkFailures: 0,
+    parkRetryAt: null,
     poweredOnAt: null,
     profileGeneration: 1,
     profileResetPending: false,

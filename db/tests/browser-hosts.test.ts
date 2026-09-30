@@ -62,6 +62,10 @@ describe("browser host persistence", { timeout: 60_000 }, () => {
     expect(
       (await hosts.listBrowserHosts()).map((host) => host.id).toSorted()
     ).toEqual(["bro-host-1", "bro-host-2"]);
+
+    // The limit lowered to one while slot two lives: slot one stays free.
+    await hosts.deleteBrowserHostRecord("bro-host-1");
+    expect(await hosts.claimBrowserHostSlot(1, now, 120_000)).toBeUndefined();
   });
 
   it("fences writes and releases by the lease", async () => {

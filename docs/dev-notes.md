@@ -304,6 +304,10 @@
   (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`:
   первичный ключ `browser_hosts` не даёт создать лишний. Cloud-init хоста в TS
   байт в байт как `boot.py cloud-init`; тест сверяет скрипт с `boot.py`.
+  Сторож пула не ждёт `browserPoolConfigured`: хосты стоят денег, пока не
+  удалены, и убираются, пока есть хоть один. Набор отбрасывается только при
+  вине самого набора (`setFaultPattern` в `sandbox.ts`): 502 Caddy или runsc
+  раньше стирали входы человека.
 - Песочница пула — та же запись `browser_vms`: `state` зеркалит
   `sandbox_state`, чтобы запуски и очередь читали её как VM; «есть машина» —
   `vm_id` или `host_id` (`runs.ts`). Воркспейс со своей VM остаётся на ней

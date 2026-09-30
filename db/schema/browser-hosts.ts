@@ -78,6 +78,15 @@ export const browserHosts = pgTable(
       withTimezone: true,
     }),
     lastError: text("last_error"),
+    // Set when the host failed before it was ready: its record outlives its
+    // VM until then, holding its slot, so a boot that fails every time
+    // (a wrong bundle, root or mirror) does not create, bill and delete a
+    // host in a loop.
+    createBlockedUntil: timestamp("create_blocked_until", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // A lease, not a state: whoever holds a fresh one is the only caller
     // creating, checking or deleting this host.
     leaseUntil: timestamp("lease_until", {

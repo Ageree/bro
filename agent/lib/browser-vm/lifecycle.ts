@@ -36,7 +36,6 @@ import {
   readCloudRuVm,
   setCloudRuVmPower,
 } from "./cloudru";
-import { browserPoolConfigured } from "./backend";
 import { browserVmIdleStopDue, browserVmUnusedBefore } from "./idle";
 import { browserVmProxy, browserVmProxySession } from "./proxy";
 import { browserVmCloudInit } from "./token";
@@ -404,9 +403,10 @@ export async function reconcileBrowserVms(now = new Date()) {
         });
       }
     }),
-    // The pool's hosts and the sandboxes a failed host left behind; nothing
-    // at all while the pool is not configured.
-    ...(browserPoolConfigured() ? [reconcileBrowserPool(now)] : []),
+    // The pool's hosts and the sandboxes a failed host left behind, while
+    // the pool is configured or still has hosts: a host bills until it is
+    // deleted, whichever of the pool's settings was taken away.
+    reconcileBrowserPool(now),
   ]);
 }
 

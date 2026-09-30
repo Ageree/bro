@@ -203,7 +203,7 @@ describe("browser host cloud-init", () => {
       "https://s3.cloud.ru/bro-state-test/hosts/bundle-1.tgz"
     );
     expect(bundleUrl.searchParams.get("X-Amz-Date")).toBe("20260930T120000Z");
-    expect(bundleUrl.searchParams.get("X-Amz-Expires")).toBe("21600");
+    expect(bundleUrl.searchParams.get("X-Amz-Expires")).toBe("3600");
     expect(new URL(boot.rootfs.url).pathname).toBe(
       "/bro-state-test/rootfs/2026-09-30.1.tar.zst"
     );
@@ -343,11 +343,8 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
       hostClient.readBrowserHostCapacity.mock.calls.map(([host]) => host.id)
     ).toEqual(["bro-host-2", "bro-host-3"]);
 
-    // A host without the sandbox root is no place either.
-    hostClient.readBrowserHostCapacity.mockImplementation(async (host) => ({
-      ...capacity(host.id === "bro-host-2" ? 12_288 : 0),
-      rootfsVersions: ["2026-01-01.1"],
-    }));
+    // Every host full: the owner hears the pool is full.
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(12_288));
     expect(await hosts.placeBrowserSandbox(now)).toMatchObject({
       kind: "starting",
       retryAfterMs: 300_000,
@@ -358,6 +355,71 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
       expect.stringContaining("BROWSER_HOST_MAX = 3"),
       expect.anything()
     );
+  });
+
+  it("waits a minute, not five, for hosts without the current root to go", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, {
+      capacity: {
+        committedMb: 0,
+        limitMb: 14_976,
+        rootfsVersions: ["2026-01-01.1"],
+        runsc: null,
+        sandboxes: 1,
+      },
+      state: "ready",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue({
+      ...capacity(3072, [{ state: "running" }]),
+      rootfsVersions: ["2026-01-01.1"],
+    });
+
+    expect(await hosts.placeBrowserSandbox(now)).toEqual({
+      kind: "starting",
+      retryAfterMs: 60_000,
+    });
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+    expect(alertOwner).toHaveBeenCalledWith(
+      "browser-pool-rootfs",
+      expect.stringContaining("2026-09-30.1"),
+      expect.anything()
+    );
+    expect(alertOwner).not.toHaveBeenCalledWith(
+      "browser-pool-full",
+      expect.anything(),
+      expect.anything()
+    );
+
+    // The reconcile drains it while it still holds a sandbox, and deletes
+    // it once empty, without waiting out the idle hour.
+    await hosts.reconcileBrowserHosts(now);
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "draining"
+    );
+    hostClient.readBrowserHostCapacity.mockResolvedValue({
+      ...capacity(0),
+      rootfsVersions: ["2026-01-01.1"],
+    });
+    await hosts.reconcileBrowserHosts(minutes(1));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "deleting"
+    );
+  });
+
+  it("takes on a VM a lost create left under the slot's name", async () => {
+    const { hosts, records } = await loadPool();
+    cloud.findCloudRuVmByName.mockResolvedValue(cloudVm({ id: "vm-left" }));
+
+    expect(await hosts.placeBrowserSandbox(now)).toEqual({
+      kind: "starting",
+      retryAfterMs: 240_000,
+    });
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      leaseUntil: null,
+      state: "creating",
+      vmId: "vm-left",
+    });
   });
 });
 
@@ -426,9 +488,12 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     });
 
     await hosts.reconcileBrowserHosts(now);
-    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("failed");
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      createBlockedUntil: minutes(30),
+      state: "failed",
+    });
     expect(alertOwner).toHaveBeenCalledWith(
-      "browser-host-failed:bro-host-1",
+      "browser-host-failed:bro-host-1:vm-host-1",
       expect.stringContaining("failed:packages:line 52"),
       expect.anything()
     );
@@ -445,7 +510,47 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     cloud.readCloudRuVm.mockResolvedValue(undefined);
     await hosts.reconcileBrowserHosts(minutes(2));
     expect(cloud.deleteCloudRuFloatingIp).toHaveBeenCalledWith("fip-host-1");
+    // The VM is gone, but its slot is held for the cool-down: no new host
+    // is created (and billed) to fail the same way at once.
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      address: null,
+      floatingIpId: null,
+      vmId: null,
+    });
+    expect(await hosts.placeBrowserSandbox(minutes(3))).toEqual({
+      kind: "starting",
+      retryAfterMs: 300_000,
+    });
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+
+    await hosts.reconcileBrowserHosts(minutes(10));
+    expect(await records.readBrowserHost("bro-host-1")).toBeDefined();
+    await hosts.reconcileBrowserHosts(minutes(30));
     expect(await records.readBrowserHost("bro-host-1")).toBeUndefined();
+  });
+
+  it("tells the owner of a host Cloud.ru will not delete, even when it refuses outright", async () => {
+    const { hosts, records } = await loadPool();
+    const { CloudRuError } = await import("@agent/lib/browser-vm/cloudru");
+    await seedHost(records, { state: "deleting" });
+    cloud.deleteCloudRuVm.mockRejectedValue(
+      new CloudRuError(
+        409,
+        "/api/v1/vms/vm-host-1",
+        "vm_can_not_be_deleted_from_current_state"
+      )
+    );
+
+    await hosts.reconcileBrowserHosts(now);
+
+    expect(alertOwner).toHaveBeenCalledWith(
+      "browser-host-delete:bro-host-1",
+      expect.stringContaining("bro-host-1"),
+      expect.anything()
+    );
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "deleting"
+    );
   });
 
   it("drains an idle host and deletes it only if it stays empty", async () => {
@@ -461,12 +566,15 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
       "draining"
     );
-    // Drained hosts take no sandbox.
+    // An errand takes the empty draining host back rather than wait for a
+    // new one: it is ready again, and empty from now.
     expect(await hosts.placeBrowserSandbox(now)).toMatchObject({
-      kind: "starting",
+      host: { emptySince: now, id: "bro-host-1", state: "ready" },
+      kind: "ready",
     });
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
 
-    // A placement that raced the drain wrote its host first: back to ready.
+    // The placement writes its host before the start: the host holds it.
     await vms.ensureBrowserVmRecord(alice.workspaceId);
     await vms.updateBrowserVm(alice.workspaceId, {
       hostId: "bro-host-1",

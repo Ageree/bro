@@ -1,5 +1,5 @@
 {
-  "id": "29456dda-5d41-4bb8-9ca0-c905dc71ed16",
+  "id": "2b396f9f-c191-40b0-aff8-0156f0a9106a",
   "prevId": "df0dd0b8-e086-4936-89e1-255be80cf0e1",
   "version": "7",
   "dialect": "postgresql",
@@ -1121,6 +1121,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "create_blocked_until": {
+          "name": "create_blocked_until",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "lease_until": {
           "name": "lease_until",
           "type": "timestamp (3) with time zone",
@@ -1964,6 +1970,19 @@
           "primaryKey": false,
           "notNull": false
         },
+        "park_failures": {
+          "name": "park_failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "park_retry_at": {
+          "name": "park_retry_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp (3) with time zone",
@@ -2052,6 +2071,10 @@
         "browser_vms_snapshot_chunks_check": {
           "name": "browser_vms_snapshot_chunks_check",
           "value": "\"browser_vms\".\"snapshot_chunks\" IS NULL OR \"browser_vms\".\"snapshot_chunks\" >= 1"
+        },
+        "browser_vms_park_failures_check": {
+          "name": "browser_vms_park_failures_check",
+          "value": "\"browser_vms\".\"park_failures\" >= 0"
         },
         "browser_vms_state_check": {
           "name": "browser_vms_state_check",

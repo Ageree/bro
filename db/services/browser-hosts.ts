@@ -52,6 +52,8 @@ export async function claimBrowserHostSlot(
   leaseMs: number
 ) {
   const taken = new Set((await listBrowserHosts()).map((host) => host.id));
+  // A slot past a lowered limit still counts: no more hosts than `slots`.
+  if (taken.size >= slots) return undefined;
   for (let slot = 1; slot <= slots; slot += 1) {
     const id = hostIdOfSlot(slot);
     if (taken.has(id)) continue;

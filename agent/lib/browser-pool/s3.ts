@@ -159,6 +159,21 @@ export async function listBrowserStateObjects(prefix: string) {
   return keys;
 }
 
+/** The text of one object of the bucket, or undefined when there is none. */
+export async function readBrowserStateObject(key: string) {
+  try {
+    return await send(
+      "GET",
+      presignBrowserStateObject({ expiresSeconds: 300, key, method: "GET" })
+    );
+  } catch (error) {
+    if (error instanceof BrowserStateStoreError && error.status === 404) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 /**
  * Delete every object under `prefix` — a workspace's sets when it is
  * deleted (`sets/<sandbox>/`), or a set a newer one replaced. An object

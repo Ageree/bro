@@ -68,10 +68,13 @@ vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
 
 /** The pool's bucket as the stubbed Object Storage keeps it. */
 const bucket = new Set<string>();
+/** What a GET of an object of the bucket answers, by key. */
+const contents = new Map<string, string>();
 const databases: PGlite[] = [];
 
 beforeEach(() => {
   bucket.clear();
+  contents.clear();
   vi.stubGlobal("fetch", objectStorage);
   hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
   hostClient.readBrowserHostHealth.mockResolvedValue({
@@ -127,6 +130,12 @@ async function objectStorage(input: string | URL, init?: RequestInit) {
   if (init?.method === "DELETE") {
     bucket.delete(key);
     return new Response(null, { status: 204 });
+  }
+  if (!url.searchParams.has("list-type")) {
+    const content = contents.get(key);
+    return content === undefined
+      ? new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+      : new Response(content);
   }
   const prefix = url.searchParams.get("prefix") ?? "";
   const keys = [...bucket].filter((stored) => stored.startsWith(prefix));
@@ -421,7 +430,10 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
       snapshotKey: `sets/${aliceSandbox}/3/`,
     });
     hostClient.startBrowserSandbox.mockImplementationOnce(
-      hostErrorBody(502, { error: "sandbox did not start: download failed" })
+      hostErrorBody(502, {
+        error:
+          "sandbox did not start: chunk 2 of image does not decrypt: tampered, reordered or from another set",
+      })
     );
 
     expect(
@@ -443,6 +455,101 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
         workspaceId: alice.workspaceId,
       }
     );
+  });
+
+  it("keeps the set when the host, not the set, failed the start", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedAlice(pool, {
+      generation: 3,
+      sandboxState: "parked",
+      snapshotChunks: 5,
+      snapshotGeneration: 3,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+    // hostd restarting behind Caddy, then runsc failing: twice in a row.
+    hostClient.startBrowserSandbox
+      .mockImplementationOnce(hostErrorBody(502, { error: "bad gateway" }))
+      .mockImplementationOnce(
+        hostErrorBody(502, {
+          error: "sandbox did not start: runsc create failed (see run.log)",
+        })
+      );
+
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now);
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, minutes(1));
+
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotChunks: 5,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+      state: "stopped",
+    });
+    expect(alertOwner).toHaveBeenCalledWith(
+      `browser-sandbox-host:${alice.workspaceId}`,
+      expect.stringContaining("runsc create failed"),
+      expect.anything()
+    );
+
+    // The third errand restores the snapshot of the same set.
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, minutes(2));
+    expect(hostClient.startBrowserSandbox).toHaveBeenLastCalledWith(
+      expect.anything(),
+      {
+        from: { chunks: 5, key: `sets/${aliceSandbox}/3/`, snapshot: true },
+        generation: 6,
+        workspaceId: alice.workspaceId,
+      }
+    );
+  });
+
+  it("goes past a set the host finds not older than the start", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedAlice(pool, {
+      generation: 3,
+      sandboxState: "parked",
+      snapshotChunks: 5,
+      snapshotGeneration: 3,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+    hostClient.startBrowserSandbox.mockImplementationOnce(
+      hostErrorBody(409, {
+        error: "the set is not older than this generation",
+        setGeneration: 9,
+      })
+    );
+
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now);
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      generation: 9,
+      sandboxState: "parked",
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, minutes(1));
+    expect(hostClient.startBrowserSandbox).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ generation: 10 })
+    );
+  });
+
+  it("waits while Cloud.ru no longer has the host's VM at its address", async () => {
+    const pool = await loadPool();
+    await seedRunning(pool, 1);
+    cloud.readCloudRuVm.mockResolvedValue({
+      bootDiskId: "disk-other",
+      floatingIpId: "fip-other",
+      host: "45.132.176.250",
+      id: "vm-host-1",
+      state: "running",
+    });
+
+    expect(
+      await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
+    ).toMatchObject({ kind: "starting" });
+    expect(worker.readBrowserVmWorkerHealth).not.toHaveBeenCalled();
   });
 
   it("goes past a newer generation the host knows of the sandbox", async () => {
@@ -478,7 +585,11 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
     expect(
       await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
     ).toEqual({ kind: "starting", retryAfterMs: 30_000 });
-    // A second errand meanwhile does not start it again.
+    // A second errand meanwhile reads the start back and, while it is
+    // still going, does not start it again.
+    hostClient.readBrowserSandbox.mockResolvedValue(
+      sandbox({ generation: 1, state: "starting" })
+    );
     expect(
       await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
     ).toMatchObject({ kind: "starting" });
@@ -491,6 +602,21 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
       sandboxState: "running",
       state: "ready",
     });
+    expect(hostClient.startBrowserSandbox).toHaveBeenCalledOnce();
+  });
+
+  it("has an errand read back a start whose step is gone, and take the sandbox", async () => {
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    hostClient.startBrowserSandbox.mockRejectedValueOnce(
+      new Error("The operation was aborted due to timeout")
+    );
+    await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now);
+
+    hostClient.readBrowserSandbox.mockResolvedValue(sandbox({ generation: 1 }));
+    expect(
+      await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
+    ).toMatchObject({ kind: "ready", vm: { sandboxState: "running" } });
     expect(hostClient.startBrowserSandbox).toHaveBeenCalledOnce();
   });
 
@@ -596,7 +722,7 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     expect(worker.parkBrowserVmWorker).toHaveBeenCalledOnce();
     expect(hostClient.parkBrowserSandbox).toHaveBeenCalledWith(
       expect.objectContaining({ id: "bro-host-1" }),
-      { generation: 3, workspaceId: alice.workspaceId }
+      { ample: false, generation: 3, workspaceId: alice.workspaceId }
     );
     expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
       host: null,
@@ -690,10 +816,97 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
 
     expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
       hostId: "bro-host-1",
+      parkFailures: 1,
+      parkRetryAt: minutes(10),
       sandboxState: "running",
       snapshotKey: `sets/${aliceSandbox}/2/`,
       state: "ready",
     });
+
+    // Not every minute: the next park waits ten minutes, the ones after it
+    // an hour, and goes with every chunk URL hostd takes.
+    await pool.lifecycle.reconcileBrowserVms(minutes(5));
+    expect(hostClient.parkBrowserSandbox).toHaveBeenCalledOnce();
+    await pool.lifecycle.reconcileBrowserVms(minutes(11));
+    expect(hostClient.parkBrowserSandbox).toHaveBeenCalledTimes(2);
+    expect(hostClient.parkBrowserSandbox).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { ample: true, generation: 3, workspaceId: alice.workspaceId }
+    );
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      parkFailures: 2,
+      parkRetryAt: minutes(71),
+    });
+    expect(alertOwner).not.toHaveBeenCalled();
+
+    await pool.lifecycle.reconcileBrowserVms(minutes(72));
+    expect(alertOwner).toHaveBeenCalledWith(
+      `browser-sandbox-park:${alice.workspaceId}`,
+      expect.stringContaining("3 раз подряд"),
+      expect.anything()
+    );
+  });
+
+  it("records the set of a park whose sandbox hostd could not delete", async () => {
+    const pool = await loadPool();
+    await seedRunning(pool, 30);
+    bucket.add(`sets/${aliceSandbox}/2/manifest.json`);
+    bucket.add(`sets/${aliceSandbox}/3/manifest.json`);
+    contents.set(
+      `sets/${aliceSandbox}/3/manifest.json`,
+      JSON.stringify({
+        format: 1,
+        generation: 3,
+        mac: "ff",
+        parts: [
+          { chunks: [{}, {}, {}], name: "image" },
+          { chunks: [{}], name: "profile" },
+        ],
+        snapshot: { memoryMb: 3072, rootfs: "2026-09-30.1" },
+        workspace: alice.workspaceId,
+      })
+    );
+    hostClient.parkBrowserSandbox.mockImplementation(
+      hostErrorBody(502, {
+        error: "the set is written but runsc could not delete the sandbox",
+        setWritten: true,
+      })
+    );
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotChunks: 4,
+      snapshotGeneration: 3,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+      state: "stopped",
+    });
+    expect([...bucket]).toEqual([`sets/${aliceSandbox}/3/manifest.json`]);
+  });
+
+  it("takes an idle sandbox off its host when its sets cannot be written", async () => {
+    const pool = await loadPool({ BROWSER_STATE_KEY: "" });
+    await seedRunning(pool, 30);
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
+    expect(hostClient.deleteBrowserSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bro-host-1" }),
+      { generation: 3, workspaceId: alice.workspaceId }
+    );
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotKey: `sets/${aliceSandbox}/2/`,
+    });
+    expect(alertOwner).toHaveBeenCalledWith(
+      `browser-sandbox-unparked:${alice.workspaceId}`,
+      expect.stringContaining("BROWSER_STATE_KEY"),
+      expect.anything()
+    );
   });
 
   it("records a park whose answer was lost once the host says it parked", async () => {
@@ -721,6 +934,28 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
       snapshotKey: `sets/${aliceSandbox}/3/`,
       state: "stopped",
     });
+  });
+});
+
+describe("a pool turned off with hosts left", { timeout: 60_000 }, () => {
+  it("still looks after the hosts, which bill until deleted", async () => {
+    const pool = await loadPool({ BROWSER_HOST_BUNDLE: "" });
+    await seedHost(pool, 1, { emptySince: minutes(-61) });
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(await pool.hosts.readBrowserHost("bro-host-1")).toMatchObject({
+      state: "draining",
+    });
+  });
+
+  it("asks nothing of the pool once it is off and no host is left", async () => {
+    const pool = await loadPool({ BROWSER_HOST_BUNDLE: "" });
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(hostClient.readBrowserHostCapacity).not.toHaveBeenCalled();
+    expect(cloud.readCloudRuVm).not.toHaveBeenCalled();
   });
 });
 

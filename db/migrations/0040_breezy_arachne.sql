@@ -9,6 +9,7 @@ CREATE TABLE "browser_hosts" (
 	"last_seen_at" timestamp (3) with time zone,
 	"empty_since" timestamp (3) with time zone,
 	"last_error" text,
+	"create_blocked_until" timestamp (3) with time zone,
 	"lease_until" timestamp (3) with time zone,
 	"state_changed_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
@@ -23,9 +24,12 @@ ALTER TABLE "browser_vms" ADD COLUMN "snapshot_key" text;--> statement-breakpoin
 ALTER TABLE "browser_vms" ADD COLUMN "snapshot_generation" integer;--> statement-breakpoint
 ALTER TABLE "browser_vms" ADD COLUMN "snapshot_chunks" integer;--> statement-breakpoint
 ALTER TABLE "browser_vms" ADD COLUMN "snapshot_format" text;--> statement-breakpoint
+ALTER TABLE "browser_vms" ADD COLUMN "park_failures" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "browser_vms" ADD COLUMN "park_retry_at" timestamp (3) with time zone;--> statement-breakpoint
 CREATE INDEX "browser_hosts_state_idx" ON "browser_hosts" USING btree ("state","state_changed_at");--> statement-breakpoint
 ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_host_id_browser_hosts_id_fk" FOREIGN KEY ("host_id") REFERENCES "public"."browser_hosts"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "browser_vms_host_idx" ON "browser_vms" USING btree ("host_id");--> statement-breakpoint
 ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_sandbox_state_check" CHECK ("browser_vms"."sandbox_state" IS NULL OR "browser_vms"."sandbox_state" IN ('absent', 'starting', 'running', 'parking', 'parked', 'restoring', 'cold', 'failed'));--> statement-breakpoint
 ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_snapshot_generation_check" CHECK ("browser_vms"."snapshot_generation" IS NULL OR "browser_vms"."snapshot_generation" >= 0);--> statement-breakpoint
-ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_snapshot_chunks_check" CHECK ("browser_vms"."snapshot_chunks" IS NULL OR "browser_vms"."snapshot_chunks" >= 1);
+ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_snapshot_chunks_check" CHECK ("browser_vms"."snapshot_chunks" IS NULL OR "browser_vms"."snapshot_chunks" >= 1);--> statement-breakpoint
+ALTER TABLE "browser_vms" ADD CONSTRAINT "browser_vms_park_failures_check" CHECK ("browser_vms"."park_failures" >= 0);

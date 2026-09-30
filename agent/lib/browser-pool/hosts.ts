@@ -52,8 +52,12 @@ const hostBootingRetryMs = 60_000;
 const poolFullRetryMs = 5 * 60_000;
 /** Cloud.ru could not be asked (its key, IAM, the project): soon again. */
 const unsentRetryMs = 60_000;
-/** A create whose answer was lost has made its VM by then, if it made one. */
-const lostCreateMs = 5 * 60_000;
+/**
+ * A create whose answer was lost has made its VM by then, if it made one:
+ * Cloud.ru's listing may lag the create by minutes, and a record dropped
+ * too early leaves a VM nobody tracks.
+ */
+const lostCreateMs = 15 * 60_000;
 /** A VM without an address this long after its create is given up on. */
 const createFailAfterMs = 15 * 60_000;
 /** `provision.sh`'s budget is 6 minutes; a host not ready by this is failed. */
@@ -67,8 +71,18 @@ const deleteAlertAfterMs = 15 * 60_000;
  * it: each is, a reconcile after the host failed, unless a step holds it.
  */
 const strandedWaitMs = 10 * 60_000;
-/** How long the presigned URLs of the host's cloud-init stay good. */
-const bootUrlSeconds = 6 * 60 * 60;
+/**
+ * How long the presigned URLs of the host's cloud-init stay good: the host
+ * fetches both at its first boot, within minutes. The user data keeps the
+ * host's token key for good, so it is treated as a secret of the host.
+ */
+const bootUrlSeconds = 60 * 60;
+/**
+ * No host is created for this long after one failed before it was ready:
+ * a boot that fails every time would otherwise create, bill and delete a
+ * host in a loop while errands wait.
+ */
+const createCooldownMs = 30 * 60_000;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
 
 /**
@@ -186,29 +200,62 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
  *
  * The caller writes the host into the workspace's record before it starts
  * the sandbox there: a host empty for its idle time is first `draining`
- * (placement skips it) and deleted only if it is still empty a reconcile
- * later, so a placement that raced the drain keeps its host.
+ * and deleted only if it is still empty a reconcile later, so a placement
+ * that raced the drain keeps its host; a placement may also take an empty
+ * draining host back (`backInService`).
  */
 export async function placeBrowserSandbox(now = new Date()) {
   const hosts = await listBrowserHosts();
-  const ready = hosts
-    .filter((host) => host.state === "ready" && host.address !== null)
+  // The ready hosts, fullest first; then the draining ones, which an empty
+  // host is before it is deleted: taking one back is quicker than a new one.
+  const serving = hosts
+    .filter(
+      (host) =>
+        (host.state === "ready" || host.state === "draining") &&
+        host.address !== null
+    )
     .toSorted(
-      (a, b) => (b.capacity?.committedMb ?? 0) - (a.capacity?.committedMb ?? 0)
+      (a, b) =>
+        Number(a.state === "draining") - Number(b.state === "draining") ||
+        (b.capacity?.committedMb ?? 0) - (a.capacity?.committedMb ?? 0)
     );
-  for (const host of ready) {
+  // What the hosts said just now, for the reasons a new host is needed.
+  const read = new Map<string, BrowserHostCapacity>();
+  for (const host of serving) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Hosts are asked one at a time, the fullest first, and the first that fits is taken.
     const capacity = await freshCapacity(host);
-    if (capacity !== undefined && fits(capacity)) {
-      return { host, kind: "ready" as const };
-    }
+    if (capacity !== undefined) read.set(host.id, capacity);
+    if (capacity === undefined || !fits(capacity)) continue;
+    if (host.state === "ready") return { host, kind: "ready" as const };
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above: the first host that fits is taken.
+    const revived = await backInService(host, now);
+    if (revived !== undefined) return { host: revived, kind: "ready" as const };
   }
   if (
     hosts.some((host) => host.state === "creating" || host.state === "booting")
   ) {
     return starting(hostBootingRetryMs);
   }
-  return starting(await createBrowserHost(now));
+  return starting(await createBrowserHost(hosts, read, now));
+}
+
+/**
+ * Put a draining host back in service for a placement, under its lease, as
+ * if it had just emptied: the reconcile deletes a draining host only while
+ * it holds its lease, so one taken back here is not deleted under the
+ * sandbox. Undefined when another step holds it or it is on its way out.
+ */
+async function backInService(host: BrowserHost, now: Date) {
+  const claimed = await claimBrowserHostLease(host.id, now, leaseMs);
+  if (claimed === undefined) return undefined;
+  try {
+    if (claimed.state !== "draining" && claimed.state !== "ready") {
+      return undefined;
+    }
+    return await writeHeld(claimed, { emptySince: now, state: "ready" }, now);
+  } finally {
+    await releaseBrowserHostLease(host.id, claimed.leaseUntil ?? undefined);
+  }
 }
 
 /**
@@ -263,19 +310,24 @@ async function reconcileBrowserHost(id: string, now: Date) {
   }
 }
 
-/** Take a free slot and ask Cloud.ru for its VM. How long to wait. */
-async function createBrowserHost(now: Date) {
-  const slot = await claimBrowserHostSlot(env.BROWSER_HOST_MAX, now, leaseMs);
-  if (slot === undefined) {
-    await alert(
-      "browser-pool-full",
-      [
-        `Все хосты пула браузеров заняты (BROWSER_HOST_MAX = ${String(env.BROWSER_HOST_MAX)}): поручения ждут, пока освободится место.`,
-        "Если так часто, подними BROWSER_HOST_MAX (и квоту Cloud.ru) или возьми флейвор побольше.",
-      ].join("\n")
-    );
-    return poolFullRetryMs;
+/**
+ * Take a free slot and ask Cloud.ru for its VM, or adopt the VM of that
+ * name a lost create left behind. How long to wait. No host is created
+ * while one that failed at boot cools down (`createCooldownMs`).
+ */
+async function createBrowserHost(
+  hosts: readonly BrowserHost[],
+  read: ReadonlyMap<string, BrowserHostCapacity>,
+  now: Date
+) {
+  const cooling = hosts
+    .map((host) => host.createBlockedUntil?.getTime() ?? 0)
+    .filter((until) => until > now.getTime());
+  if (cooling.length > 0) {
+    return Math.min(Math.max(...cooling) - now.getTime(), poolFullRetryMs);
   }
+  const slot = await claimBrowserHostSlot(env.BROWSER_HOST_MAX, now, leaseMs);
+  if (slot === undefined) return noFreeSlot(hosts, read);
   let cloudInit: string;
   try {
     cloudInit = browserHostCloudInit(slot.id, now);
@@ -285,6 +337,19 @@ async function createBrowserHost(now: Date) {
     throw error;
   }
   try {
+    // A VM of this name a lost create left behind is taken on, not doubled.
+    const left = await findCloudRuVmByName(slot.vmName);
+    if (left !== undefined) {
+      await writeHeld(
+        slot,
+        {
+          lastError: `${slot.vmName} was already on Cloud.ru: the host goes on with that VM.`,
+          vmId: left.id,
+        },
+        now
+      );
+      return hostCreateRetryMs;
+    }
     const created = await createCloudRuHostVm({
       cloudInit,
       name: slot.vmName,
@@ -305,7 +370,14 @@ async function createBrowserHost(now: Date) {
       error.status >= 400 &&
       error.status < 500
     ) {
-      // Refused outright: nothing was created.
+      // Refused outright: nothing was created, unless the listing says so.
+      const made = await findCloudRuVmByName(slot.vmName).catch(
+        () => undefined
+      );
+      if (made !== undefined) {
+        await writeHeld(slot, { vmId: made.id }, now);
+        return hostCreateRetryMs;
+      }
       await deleteBrowserHostRecord(slot.id);
       await alert(
         "browser-host-create",
@@ -329,6 +401,50 @@ async function createBrowserHost(now: Date) {
   } finally {
     await releaseBrowserHostLease(slot.id, slot.leaseUntil ?? undefined);
   }
+}
+
+/**
+ * No slot is free. Hosts on their way out (draining, deleting, failed, or
+ * on a sandbox root that is no longer current) give theirs back within
+ * minutes, so the errand looks again in one; only a pool whose hosts are
+ * all in service and full is reported full.
+ */
+async function noFreeSlot(
+  hosts: readonly BrowserHost[],
+  read: ReadonlyMap<string, BrowserHostCapacity>
+) {
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  const outdated = hosts.filter((host) =>
+    outdatedRoot(read.get(host.id) ?? host.capacity)
+  );
+  if (outdated.length > 0 && rootfs !== undefined) {
+    await alert(
+      "browser-pool-rootfs",
+      [
+        `Хосты пула браузеров ${outdated.map((host) => host.vmName).join(", ")} без корня песочницы ${rootfs.version}: они выводятся из работы, когда опустеют, и поручения ждут нового хоста.`,
+        "Если ждать долго, удали их вручную или подними BROWSER_HOST_MAX.",
+      ].join("\n")
+    );
+  }
+  if (
+    outdated.length > 0 ||
+    hosts.some(
+      (host) =>
+        host.state === "draining" ||
+        host.state === "deleting" ||
+        host.state === "failed"
+    )
+  ) {
+    return hostBootingRetryMs;
+  }
+  await alert(
+    "browser-pool-full",
+    [
+      `Все хосты пула браузеров заняты (BROWSER_HOST_MAX = ${String(env.BROWSER_HOST_MAX)}): поручения ждут, пока освободится место.`,
+      "Если так часто, подними BROWSER_HOST_MAX (и квоту Cloud.ru) или возьми флейвор побольше.",
+    ].join("\n")
+  );
+  return poolFullRetryMs;
 }
 
 /** A VM asked for: find it if its answer was lost, take its address. */
@@ -432,11 +548,19 @@ async function tendReady(host: BrowserHost, now: Date) {
     return;
   }
   const held = summary(capacity);
+  // A host without the current sandbox root takes no new sandbox: it
+  // drains, and goes once its sandboxes have parked.
+  const outdated = outdatedRoot(held);
   const live = await countLiveSandboxesOnHost(host.id);
   if (live > 0 || held.sandboxes > 0) {
     await writeHeld(
       host,
-      { capacity: held, emptySince: null, lastSeenAt: now, state: "ready" },
+      {
+        capacity: held,
+        emptySince: null,
+        lastSeenAt: now,
+        state: outdated ? "draining" : "ready",
+      },
       now
     );
     return;
@@ -452,8 +576,9 @@ async function tendReady(host: BrowserHost, now: Date) {
     return;
   }
   const idle =
+    outdated ||
     now.getTime() - emptySince.getTime() >=
-    env.BROWSER_HOST_IDLE_MINUTES * 60_000;
+      env.BROWSER_HOST_IDLE_MINUTES * 60_000;
   await writeHeld(
     host,
     {
@@ -472,6 +597,15 @@ async function tendReady(host: BrowserHost, now: Date) {
  * the sets in Object Storage are what its sandboxes come back from.
  */
 async function removeHost(host: BrowserHost, now: Date) {
+  // A host that failed at boot and whose VM is gone keeps its slot until
+  // its cool-down is over (`createCooldownMs`).
+  if (host.vmId === null && coolingAfterBoot(host)) {
+    if ((host.createBlockedUntil?.getTime() ?? 0) <= now.getTime()) {
+      await deleteBrowserHostRecord(host.id);
+      return true;
+    }
+    return false;
+  }
   // The sandboxes still placed here are taken back to their sets first
   // (`reconcileBrowserPool`): once the VM and its address go, the address
   // may answer for another VM, and nothing of theirs must go there.
@@ -491,30 +625,82 @@ async function removeHost(host: BrowserHost, now: Date) {
       : await readCloudRuVm(deleting.vmId);
   if (cloud !== undefined) {
     const floatingIpId = deleting.floatingIpId ?? cloud.floatingIpId;
-    await deleteCloudRuVm(cloud.id, {
-      diskIds: [],
-      floatingIpIds: floatingIpId === undefined ? [] : [floatingIpId],
-    });
-    if (overdue(deleting, now, deleteAlertAfterMs)) {
-      await alert(
-        "browser-host-delete",
-        `Cloud.ru уже ${String(deleteAlertAfterMs / 60_000)} минут не удаляет хост пула браузеров ${deleting.vmName}: он может стоить денег, проверь консоль.`
-      );
+    try {
+      await deleteCloudRuVm(cloud.id, {
+        diskIds: [],
+        floatingIpIds: floatingIpId === undefined ? [] : [floatingIpId],
+      });
+    } finally {
+      // Also when Cloud.ru refuses the deletion outright (a VM stuck in
+      // `creating` cannot be deleted): the owner must hear of a host that
+      // bills on.
+      if (overdue(deleting, now, deleteAlertAfterMs)) {
+        await alert(
+          `browser-host-delete:${deleting.vmName}`,
+          `Cloud.ru уже ${String(deleteAlertAfterMs / 60_000)} минут не удаляет хост пула браузеров ${deleting.vmName}: он может стоить денег, проверь консоль.`
+        );
+      }
     }
     return false;
   }
   if (deleting.floatingIpId !== null) {
     await deleteCloudRuFloatingIp(deleting.floatingIpId);
   }
+  if ((deleting.createBlockedUntil?.getTime() ?? 0) > now.getTime()) {
+    await writeHeld(
+      deleting,
+      { address: null, capacity: null, floatingIpId: null, vmId: null },
+      now
+    );
+    return false;
+  }
   await deleteBrowserHostRecord(deleting.id);
   return true;
 }
 
+/** A failed boot's record, kept after its VM to hold creates back. */
+function coolingAfterBoot(host: BrowserHost) {
+  return (
+    host.createBlockedUntil !== null &&
+    host.address === null &&
+    host.floatingIpId === null
+  );
+}
+
 async function fail(host: BrowserHost, reason: string, now: Date) {
-  await writeHeld(host, { lastError: reason, state: "failed" }, now);
+  const atBoot = host.state === "creating" || host.state === "booting";
+  await writeHeld(
+    host,
+    {
+      createBlockedUntil: atBoot
+        ? new Date(now.getTime() + createCooldownMs)
+        : host.createBlockedUntil,
+      lastError: reason,
+      state: "failed",
+    },
+    now
+  );
+  // Keyed by the VM, so every host that fails is told of.
   await alert(
-    `browser-host-failed:${host.id}`,
-    `Хост пула браузеров ${host.vmName} выведен из работы и будет удалён: ${reason}`
+    `browser-host-failed:${host.id}:${host.vmId ?? "no-vm"}`,
+    [
+      `Хост пула браузеров ${host.vmName} выведен из работы и будет удалён: ${reason}`,
+      ...(atBoot
+        ? [
+            `Он не поднялся: новых хостов не будет ${String(createCooldownMs / 60_000)} минут. Проверь BROWSER_HOST_BUNDLE, BROWSER_SANDBOX_ROOTFS и доступ VM к зеркалам.`,
+          ]
+        : []),
+    ].join("\n")
+  );
+}
+
+/** Whether the host lacks the sandbox root errands start on now. */
+function outdatedRoot(capacity: BrowserHostCapacity | null) {
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  return (
+    rootfs !== undefined &&
+    capacity !== null &&
+    !capacity.rootfsVersions.includes(rootfs.version)
   );
 }
 

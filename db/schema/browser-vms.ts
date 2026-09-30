@@ -207,6 +207,16 @@ export const browserVms = pgTable(
     snapshotGeneration: integer("snapshot_generation"),
     snapshotChunks: integer("snapshot_chunks"),
     snapshotFormat: text("snapshot_format"),
+    // Parks of the running sandbox that failed in a row, and when the next
+    // may be tried: a park that keeps failing freezes and restores the
+    // sandbox each time, so it backs off, and the owner hears of the third.
+    // Both reset once a park goes through or the sandbox starts anew.
+    parkFailures: integer("park_failures").notNull().default(0),
+    parkRetryAt: timestamp("park_retry_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
@@ -237,6 +247,7 @@ export const browserVms = pgTable(
       sql`${table.snapshotChunks} IS NULL OR ${table.snapshotChunks} >= 1`
     ),
     index("browser_vms_host_idx").on(table.hostId),
+    check("browser_vms_park_failures_check", sql`${table.parkFailures} >= 0`),
     check(
       "browser_vms_state_check",
       sql`${table.state} IN ('creating', 'starting', 'ready', 'stopping', 'stopped', 'deleting', 'failed')`

@@ -4,7 +4,7 @@ import { browserVmKey } from "@agent/lib/browser-vm/token";
 import type { browserHosts } from "@db/schema/browser-hosts";
 import { env } from "@shared/environment";
 import { browserHostKey, browserSandboxId, browserStateDataKey } from "./keys";
-import { presignBrowserStateObject } from "./s3";
+import { presignBrowserStateObject, readBrowserStateObject } from "./s3";
 
 /**
  * The HTTP client of `hostd` on a host of the browser pool
@@ -96,6 +96,14 @@ const parkSchema = z.object({
   ),
   state: z.literal("parked"),
   timings: z.record(z.string(), z.number()),
+});
+
+/** What Bro reads of a set's manifest (`sets.upload` in `sets.py`). */
+const manifestSchema = z.object({
+  generation: z.number().int(),
+  parts: z.array(z.object({ chunks: z.array(z.unknown()) })),
+  snapshot: z.record(z.string(), z.json()),
+  workspace: z.string(),
 });
 
 const sandboxSchema = z.object({
@@ -304,7 +312,15 @@ export async function readBrowserSandbox(
  */
 export async function parkBrowserSandbox(
   host: BrowserHostTarget,
-  input: { readonly generation: number; readonly workspaceId: string }
+  input: {
+    /**
+     * A park that failed before: every chunk URL `hostd` takes goes with it,
+     * in case the set outgrew the usual budget.
+     */
+    readonly ample?: boolean;
+    readonly generation: number;
+    readonly workspaceId: string;
+  }
 ) {
   const key = browserStateSetKey(input.workspaceId, input.generation);
   const parked = parkSchema.parse(
@@ -317,7 +333,12 @@ export async function parkBrowserSandbox(
           dataKey: browserStateDataKey(input.workspaceId),
           generation: input.generation,
           upload: {
-            chunkUrls: setUrls(key, parkChunks(), "PUT", parkUrlSeconds),
+            chunkUrls: setUrls(
+              key,
+              input.ample === true ? maximumChunks : parkChunks(),
+              "PUT",
+              parkUrlSeconds
+            ),
             manifestUrl: manifestUrl(key, "PUT", parkUrlSeconds),
           },
         },
@@ -326,6 +347,42 @@ export async function parkBrowserSandbox(
     )
   );
   return { ...parked, key };
+}
+
+/**
+ * The set a park wrote at `generation`, read from its manifest in Object
+ * Storage (`sets.upload` of `browser-vm/host/sets.py`): how a park whose
+ * set is in but whose sandbox `hostd` could not delete (`setWritten`) is
+ * recorded all the same. Undefined when there is no whole set of the
+ * workspace there. The manifest's MAC is `hostd`'s to check on restore.
+ */
+export async function readWrittenBrowserSet(
+  workspaceId: string,
+  generation: number
+) {
+  const key = browserStateSetKey(workspaceId, generation);
+  const text = await readBrowserStateObject(`${key}manifest.json`);
+  if (text === undefined) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const manifest = manifestSchema.safeParse(json).data;
+  if (
+    manifest === undefined ||
+    manifest.workspace !== workspaceId ||
+    manifest.generation !== generation
+  ) {
+    return undefined;
+  }
+  const chunks = manifest.parts.reduce(
+    (total, part) => total + part.chunks.length,
+    0
+  );
+  if (chunks < 1) return undefined;
+  return { chunks, format: manifest.snapshot, generation };
 }
 
 /**
