@@ -73,6 +73,11 @@ class Console:
                 data = self.ws.recv()
             except websocket.WebSocketTimeoutException:
                 continue
+            except (websocket.WebSocketConnectionClosedException, OSError):
+                # Cloud.ru drops the console now and then; the command keeps running on the VM, and
+                # whatever it prints after the reconnect (the end marker included) still arrives.
+                self.ws = self.connect()
+                continue
             self.buf += data.decode(errors="replace") if isinstance(data, bytes) else data
         return None
 
