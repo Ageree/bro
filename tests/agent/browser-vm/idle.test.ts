@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as browserRunRecords from "@db/services/browser-runs";
 import type * as browserVmRecords from "@db/services/browser-vms";
 import {
   browserVmTestEnvironment,
@@ -14,15 +15,41 @@ const minutes = (count: number) => new Date(now.getTime() + count * 60_000);
 const records = vi.hoisted(() => ({
   clearBrowserVmStopNotBefore:
     vi.fn<typeof browserVmRecords.clearBrowserVmStopNotBefore>(),
+  ensureBrowserVmRecord: vi.fn<(workspaceId: string) => Promise<object>>(),
   extendBrowserVmStopNotBefore:
     vi.fn<typeof browserVmRecords.extendBrowserVmStopNotBefore>(),
 }));
 
+// The run row as far as the idle window reads it.
+const runs = vi.hoisted(() => ({
+  readBrowserRun:
+    vi.fn<
+      (
+        runId: string
+      ) => Promise<
+        | Pick<
+            NonNullable<
+              Awaited<ReturnType<typeof browserRunRecords.readBrowserRun>>
+            >,
+            "startedByPerson"
+          >
+        | undefined
+      >
+    >(),
+}));
+
 vi.mock("@db/services/browser-vms", () => records);
+vi.mock("@db/services/browser-runs", () => runs);
+
+function runStartedBy(startedByPerson: boolean | null) {
+  runs.readBrowserRun.mockResolvedValue({ startedByPerson });
+}
 
 beforeEach(() => {
   records.clearBrowserVmStopNotBefore.mockResolvedValue();
   records.extendBrowserVmStopNotBefore.mockResolvedValue();
+  records.ensureBrowserVmRecord.mockResolvedValue({});
+  runStartedBy(false);
 });
 
 afterEach(() => {
@@ -64,6 +91,16 @@ describe("how long a browser VM stays up, by who woke it", () => {
       { personIdleMs: 20 * 60_000, until: now },
       now
     );
+    // The workspace's first VM errand has no record to write the window on
+    // yet: it is made first.
+    expect(records.ensureBrowserVmRecord).toHaveBeenCalledExactlyOnceWith(
+      workspaceId
+    );
+    expect(
+      records.ensureBrowserVmRecord.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      records.extendBrowserVmStopNotBefore.mock.invocationCallOrder[0] ?? 0
+    );
   });
 
   it("keeps the VM for the code wait after a run stopped for the person", async () => {
@@ -85,6 +122,7 @@ describe("how long a browser VM stays up, by who woke it", () => {
 
     await idle.keepBrowserVmAfterReport(vmRunId, now);
 
+    expect(runs.readBrowserRun).toHaveBeenCalledExactlyOnceWith(vmRunId);
     expect(
       records.extendBrowserVmStopNotBefore
     ).toHaveBeenCalledExactlyOnceWith(
@@ -93,6 +131,26 @@ describe("how long a browser VM stays up, by who woke it", () => {
       now
     );
   });
+
+  it.each([true, null])(
+    "keeps the person's window after the report of their errand (started by the person: %s)",
+    async (startedByPerson) => {
+      const idle = await loadIdle({ BROWSER_VM_IDLE_BACKGROUND_MINUTES: "3" });
+      runStartedBy(startedByPerson);
+
+      await idle.keepBrowserVmAfterReport(vmRunId, now);
+
+      // A short window a background errand wrote while the person's errand
+      // was reporting cannot stop the VM before the person's is over.
+      expect(
+        records.extendBrowserVmStopNotBefore
+      ).toHaveBeenCalledExactlyOnceWith(
+        workspaceId,
+        { onlyIfSet: true, personIdleMs: 20 * 60_000, until: minutes(20) },
+        now
+      );
+    }
+  );
 
   it("leaves Browser Use runs alone", async () => {
     const idle = await loadIdle();

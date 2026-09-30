@@ -1,6 +1,8 @@
 import type { browserVms } from "@db/schema/browser-vms";
+import { readBrowserRun } from "@db/services/browser-runs";
 import {
   clearBrowserVmStopNotBefore,
+  ensureBrowserVmRecord,
   extendBrowserVmStopNotBefore,
 } from "@db/services/browser-vms";
 import { env } from "@shared/environment";
@@ -22,16 +24,17 @@ import { browserVmWorkspace, isBrowserVmId } from "./ids";
  *   `BROWSER_VM_IDLE_CODE_MINUTES` after it settled, for the reply.
  *
  * The two later ones set `stop_not_before`, which only ever moves later: an
- * errand nobody waits for, landing on a VM a person's errand keeps, first
- * writes down the end of the person's window. A person's errand puts the VM
- * back on the person's window. Whatever the window, the reconcile never
+ * errand nobody waits for, landing on a VM a person's errand kept, first
+ * writes down the end of the person's window, and leaves the VM on it while
+ * a person's errand is under way or queued. A person's errand — started,
+ * followed up, or started later from the queue or for an anti-bot retry —
+ * puts the VM back on the person's window, and its report keeps the VM that
+ * window after it. Whatever the window, the reconcile never
  * stops a VM with a run open or coming (`lifecycle.ts`, `stopIfIdle`).
  *
  * The writes are bookkeeping around an errand, so none of them fails it: a
  * write that did not land leaves the VM on the window it had.
  */
-
-type BrowserVm = typeof browserVms.$inferSelect;
 
 const minuteMs = 60_000;
 
@@ -57,7 +60,7 @@ export function browserVmUnusedBefore(now: Date) {
  * read or a start a moment ago still counts.
  */
 export function browserVmIdleStopDue(
-  vm: Pick<BrowserVm, "lastUsedAt" | "stopNotBefore">,
+  vm: Pick<typeof browserVms.$inferSelect, "lastUsedAt" | "stopNotBefore">,
   now: Date
 ) {
   const unused = browserVmUnusedBefore(now);
@@ -83,13 +86,18 @@ export async function keepBrowserVmForErrand(
   now = new Date()
 ) {
   await bookkeeping(workspaceId, async () => {
-    await (byPerson
-      ? clearBrowserVmStopNotBefore(workspaceId, now)
-      : extendBrowserVmStopNotBefore(
-          workspaceId,
-          { personIdleMs: personIdleMs(), until: now },
-          now
-        ));
+    if (byPerson) {
+      await clearBrowserVmStopNotBefore(workspaceId, now);
+      return;
+    }
+    // The workspace's first VM errand finds no record yet: it is made here,
+    // as the errand would make it, so the short window lands on it.
+    await ensureBrowserVmRecord(workspaceId);
+    await extendBrowserVmStopNotBefore(
+      workspaceId,
+      { personIdleMs: personIdleMs(), until: now },
+      now
+    );
   });
 }
 
@@ -119,7 +127,9 @@ export async function keepBrowserVmForPersonStep(
 
 /**
  * A VM run's report reached its conversation. A VM on a short window stops
- * a little after it; one on the person's window stays on it.
+ * a little after the report of an errand nobody waits for, and stays the
+ * person's window after the report of the person's own; a VM on the
+ * person's window stays on it.
  */
 export async function keepBrowserVmAfterReport(
   runId: string,
@@ -127,12 +137,16 @@ export async function keepBrowserVmAfterReport(
 ) {
   if (!isBrowserVmId(runId)) return;
   await bookkeeping(runId, async () => {
+    const run = await readBrowserRun(runId);
+    // A run from before the flag counts as the person's.
+    const keepMs =
+      run?.startedByPerson === false ? backgroundIdleMs() : personIdleMs();
     await extendBrowserVmStopNotBefore(
       browserVmWorkspace(runId),
       {
         onlyIfSet: true,
         personIdleMs: personIdleMs(),
-        until: new Date(now.getTime() + backgroundIdleMs()),
+        until: new Date(now.getTime() + keepMs),
       },
       now
     );

@@ -9,11 +9,13 @@ import {
   isNull,
   lte,
   ne,
+  notExists,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
 import {
+  browserRuns,
   browserVmRuns,
   browserVms,
   db,
@@ -22,6 +24,14 @@ import {
 
 type BrowserVmInsert = typeof browserVms.$inferInsert;
 type BrowserVmRunInsert = typeof browserVmRuns.$inferInsert;
+
+/** A browser errand's statuses before it settles, queued ones included. */
+const openBrowserRunStatuses = [
+  "created",
+  "queued",
+  "running",
+  "waiting",
+] as const satisfies readonly (typeof browserRuns.$inferSelect)["status"][];
 
 /** The states of a VM on its way up or down: the reconcile follows each. */
 const movingStates = [
@@ -178,12 +188,20 @@ export async function clearBrowserVmStopNotBefore(
 }
 
 /**
+ * A person's errand older than this no longer holds a VM on the person's
+ * window: a row stuck open would otherwise do so for good.
+ */
+const personErrandWindowMs = 6 * 60 * 60_000;
+
+/**
  * Keep the VM up at least until `until`, never shortening what is set. A VM
  * on the person's idle window has that window's end (its last use plus
  * `personIdleMs`) written down first, so an errand nobody waits for does not
- * cut short what a person's errand is owed. With `onlyIfSet`, a VM on the
- * person's window is left on it. One statement, so two callers at once
- * both count.
+ * cut short what a person's errand is owed — and it is not written down at
+ * all while a person's errand is under way or queued on the workspace: that
+ * errand keeps using the VM, and its window moves with it. With `onlyIfSet`,
+ * a VM on the person's window is left on it. One statement, so two callers
+ * at once both count.
  */
 export async function extendBrowserVmStopNotBefore(
   workspaceId: string,
@@ -194,6 +212,24 @@ export async function extendBrowserVmStopNotBefore(
   },
   now = new Date()
 ) {
+  const personErrandOpen = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        // Runs from before the flag count as the person's.
+        or(
+          isNull(browserRuns.startedByPerson),
+          eq(browserRuns.startedByPerson, true)
+        ),
+        inArray(browserRuns.status, [...openBrowserRunStatuses]),
+        gt(
+          browserRuns.createdAt,
+          new Date(now.getTime() - personErrandWindowMs)
+        )
+      )
+    );
   await db
     .update(browserVms)
     .set({
@@ -205,7 +241,7 @@ export async function extendBrowserVmStopNotBefore(
         eq(browserVms.workspaceId, workspaceId),
         input.onlyIfSet === true
           ? isNotNull(browserVms.stopNotBefore)
-          : undefined
+          : or(isNotNull(browserVms.stopNotBefore), notExists(personErrandOpen))
       )
     );
 }

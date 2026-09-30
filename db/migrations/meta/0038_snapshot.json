@@ -1,5 +1,5 @@
 {
-  "id": "454d0fab-04f1-4484-9744-5ac991a03deb",
+  "id": "60edd15b-6c2f-4b8c-ab5e-f9b8e5d310c3",
   "prevId": "f99befa0-1926-4f11-9e66-a7f6f4bab539",
   "version": "7",
   "dialect": "postgresql",
@@ -1238,6 +1238,12 @@
         "submission": {
           "name": "submission",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by_person": {
+          "name": "started_by_person",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         },

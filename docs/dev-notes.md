@@ -264,7 +264,8 @@
   `tests/agent/browser-vm/token.test.ts`: меняйте формат в обоих.
 - Простой VM по тому, кто разбудил: `stop_not_before` null — окно человека по
   `last_used_at`. Фоновое поручение пишет срок до старта (старт трогает
-  `last_used_at` и продлил бы окно человека); `idle.ts`, `stopIfIdle`.
+  `last_used_at` и продлил бы окно человека), но не при идущем поручении
+  человека: снимок заморозил бы его окно (`idle.ts`, `stopIfIdle`).
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
   `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
 - В VM Evolution виден `/dev/kvm` (`nested=Y`), но поддержка (30.09):

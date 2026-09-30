@@ -457,6 +457,71 @@ describe("browser VM persistence", () => {
     expect(await stopOf(bob)).toEqual(minutes(15));
   }, 20_000);
 
+  it("leaves the person's window moving while their errand is under way", async () => {
+    const { browserVms, client } = await browserVmsDatabase();
+    const browserRuns = await import("@db/services/browser-runs");
+    const personIdleMs = 20 * 60_000;
+    const stopOf = async () =>
+      (await browserVms.readBrowserVm(alice.workspaceId))?.stopNotBefore;
+    const errand = (id: string, startedByPerson: boolean | null) =>
+      browserRuns.createBrowserRun(alice, {
+        conversationChannel: "eve",
+        conversationId: "web-session",
+        id,
+        sessionId: `vm:ws_alice:s:${id}`,
+        startedByPerson,
+        status: "running",
+        task: "Проверь цену",
+      });
+    await browserVms.ensureBrowserVmRecord(alice.workspaceId);
+    await browserVms.updateBrowserVm(alice.workspaceId, {
+      lastUsedAt: minutes(-1),
+      state: "ready",
+    });
+
+    // A schedule's errand, and its own code wait, land while the person's
+    // errand runs: the VM stays on the person's window.
+    await errand("person", true);
+    await errand("schedule", false);
+    await browserVms.extendBrowserVmStopNotBefore(
+      alice.workspaceId,
+      { personIdleMs, until: now },
+      now
+    );
+    await browserVms.extendBrowserVmStopNotBefore(
+      alice.workspaceId,
+      { personIdleMs, until: minutes(15) },
+      now
+    );
+    expect(await stopOf()).toBeNull();
+
+    // The person's errand keeps using the VM, and its window moves with it.
+    await browserVms.updateBrowserVm(alice.workspaceId, {
+      lastUsedAt: minutes(30),
+    });
+    expect(await stopOf()).toBeNull();
+
+    // A run from before the flag counts as the person's too.
+    await client.query("UPDATE browser_runs SET status = 'done'");
+    await errand("older", null);
+    await browserVms.extendBrowserVmStopNotBefore(
+      alice.workspaceId,
+      { personIdleMs, until: now },
+      now
+    );
+    expect(await stopOf()).toBeNull();
+
+    // With nothing of the person's open, the window's end is written down
+    // from the last use.
+    await client.query("UPDATE browser_runs SET status = 'done'");
+    await browserVms.extendBrowserVmStopNotBefore(
+      alice.workspaceId,
+      { personIdleMs, until: now },
+      now
+    );
+    expect(await stopOf()).toEqual(minutes(50));
+  }, 20_000);
+
   it("clears a pending profile wipe only for the forget it answered", async () => {
     const { browserVms } = await browserVmsDatabase();
     await browserVms.ensureBrowserVmRecord(alice.workspaceId);

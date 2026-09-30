@@ -3468,6 +3468,10 @@ describe("browser_task on a workspace's own browser VM", () => {
       workspaceId,
       false
     );
+    // Its run says so, for its report.
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      startedByPerson: false,
+    });
   });
 
   it("leaves the VM's idle window alone for a Browser Use errand", async () => {
@@ -3576,6 +3580,59 @@ describe("browser_task on a workspace's own browser VM", () => {
       "opened a fresh browser on the same profile"
     );
   });
+
+  it.each([
+    ["the person answering", "photon-imessage", "попробуй ещё раз", true],
+    [
+      "a report turn",
+      "browser-result",
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
+      false,
+    ],
+  ] as const)(
+    "keeps the VM's idle window for a follow-up by %s",
+    async (_who, authenticator, said, byPerson) => {
+      usesBrowserVm.mockResolvedValue(true);
+      readBrowserUseRunStatus.mockResolvedValue("completed");
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), "Needs: decision"),
+        profileId: vmProfile(1),
+        sessionId: `vm:${workspaceId}:s:${sessionId}`,
+      });
+      createBrowserUseRun.mockResolvedValue({
+        id: `vm:${workspaceId}:r:${followUpRunId}`,
+        model: "deepseek/deepseek-v4.1-flash",
+        sessionId: `vm:${workspaceId}:s:${sessionId}`,
+        status: "running",
+      });
+      const tool = await resolvedBrowserTask([], said);
+
+      await tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          personSaid: byPerson ? said : undefined,
+          runId,
+          task: "Проверь цену ещё раз",
+        },
+        toolContext("better-auth:alice", authenticator)
+      );
+
+      // The person answering keeps the VM on their window; a report turn's
+      // follow-up is an errand nobody waits for.
+      expect(keepBrowserVmForErrand).toHaveBeenCalledExactlyOnceWith(
+        workspaceId,
+        byPerson
+      );
+      expect(keepBrowserVmForErrand.mock.invocationCallOrder[0]).toBeLessThan(
+        createBrowserUseRun.mock.invocationCallOrder[0] ?? 0
+      );
+      // The follow-up's run carries who started it, for its report.
+      expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+        startedByPerson: byPerson,
+      });
+    }
+  );
 
   it("does not hold the turn for a live view a VM run never has", async () => {
     usesBrowserVm.mockResolvedValue(true);
