@@ -73,7 +73,7 @@ import caddy
 import network
 import sets
 
-VERSION = "2026-09-30.4"
+VERSION = "2026-09-30.5"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
@@ -322,6 +322,12 @@ def bro_owner(rootfs):
     return None
 
 
+# Top-level directories of a profile no set carries: the profile image's own lost+found, and Chrome's
+# BrowserMetrics, where every Chrome that ends on SIGTERM (a park) leaves a 4 MiB .pma file it never
+# takes back: carried from set to set they grew the profile by 4 MiB a park (e2e 30.09: 4 → 25 MB in six).
+LEFT_OUT_OF_SETS = frozenset({"lost+found", "BrowserMetrics"})
+
+
 def pack(source, target):
     """A tar of the directory's regular files and directories only (blocking: run it in a thread). The
     profile is written by the sandbox and unpacked by root on another host (`unpack`): symlinks (Chrome's
@@ -337,8 +343,8 @@ def pack(source, target):
 
     with tarfile.open(target, "w") as tar:
         for child in sorted(source.iterdir()):
-            if child.name == "lost+found" and child.is_dir():
-                continue  # the profile image's own
+            if child.name in LEFT_OUT_OF_SETS and child.is_dir():
+                continue
             tar.add(child, arcname=child.name, filter=plain)
     return Path(target).stat().st_size
 

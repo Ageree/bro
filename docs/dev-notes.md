@@ -318,6 +318,14 @@
   `browser-vm/host/seccomp.json`. `kernel.unprivileged_userns_clone` у ядра
   Ubuntu нет, `sysctl -e` молча его пропускает. Запуски и память агента
   worker парковку `runc` не переживают: в наборе только профиль.
+- SIGTERM Chrome считает концом сеанса (`exit_type: SessionEnded`): cookie
+  последних 30 с не пишет и оставляет `BrowserMetrics/*.pma` по 4 МиБ.
+  Поэтому перед парковкой `runc` worker закрывает Chrome через CDP
+  (`closeChrome`), а `hostd` не пакует `BrowserMetrics` (`LEFT_OUT_OF_SETS`).
+- Код пула на настоящих хостах — `pnpm test:e2e:browser-pool`
+  (`tests/e2e/`, `vitest.e2e.config.ts`, вне `pnpm check`; команда —
+  `docs/browser-pool.md`, раздел 10). vitest без TTY печатает вывод теста
+  только при падении: ход прогона — в файле итогов.
 - Пул в Бро — `agent/lib/browser-pool/` (S3-подпись, ключи, клиент `hostd`,
   хосты); включается только `BROWSER_POOL_WORKSPACES` или `BROWSER_BACKEND=pool`
   (`browserPoolConfigured`). Хосты — слоты `bro-host-1…<BROWSER_HOST_MAX>`

@@ -101,6 +101,7 @@
     "start:app": "next start",
     "test": "turbo run test:app",
     "test:app": "vitest run",
+    "test:e2e:browser-pool": "vitest run --config vitest.e2e.config.ts tests/e2e/browser-pool.e2e.ts",
     "types:check": "turbo run types:check:app",
     "types:generate": "next typegen",
     "types:check:app": "tsc --noEmit -p tsconfig.json",

@@ -20,6 +20,9 @@ export default {
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).
     "scripts/costs/step-context.ts",
     "taze.config.ts",
+    // End-to-end runs against real clouds, by hand (docs/browser-pool.md).
+    "tests/e2e/**/*.e2e.ts",
+    "vitest.e2e.config.ts",
   ],
   ignoreDependencies: [
     // Imported through the owning Tailwind stylesheet rather than TypeScript.

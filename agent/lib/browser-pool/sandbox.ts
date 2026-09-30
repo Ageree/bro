@@ -756,7 +756,11 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
     return;
   }
   try {
-    await parkBrowserVmWorker(parking);
+    // Under runc the park stops Chrome with SIGTERM, which writes no
+    // cookies: the worker closes it the way that does first.
+    await parkBrowserVmWorker(parking, {
+      closeChrome: host.capacity?.runtime === "runc",
+    });
   } catch (error) {
     // Busy with a run after all (409): it runs on as it was.
     if (error instanceof BrowserVmWorkerError && error.status === 409) {

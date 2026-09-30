@@ -41,7 +41,9 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/browser/stop | /v1/browser/start | /v1/browser/restart
   POST /v1/profile/reset                  wipe the Chrome profile (forget every sign-in)
   POST /v1/park                           before a pool host freezes this sandbox: forget the model key, the
-                                          proxy login and site secrets (409 while a run works or cancels)
+                                          proxy login and site secrets (409 while a run works or cancels);
+                                          {"closeChrome": true} (runc) also closes Chrome through CDP so
+                                          its cookies are written before the host's SIGTERM
   POST /v1/admin/worker                   replace this worker's code (checksummed, must load, only when idle)
   GET  /v1/cdp/<token>/json[/version]     CDP discovery, socket URLs rewritten to this endpoint
   WS   /v1/cdp/<token>/devtools/...       CDP socket to one target of this VM's Chrome
@@ -68,7 +70,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-30.2"
+VERSION = "2026-09-30.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1722,13 +1724,44 @@ async def park(request):
     snapshot, which stays encrypted under the workspace's key. Never mid-run: a snapshot in the middle of a
     form is neither a success nor a failure."""
     authorize(request)
+    body = await request.json() if request.can_read_body else {}
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text=json.dumps({"error": "body must be an object"}),
+                                 content_type="application/json")
     if worker.busy() or any(run.status not in TERMINAL for run in worker.runs.values()):
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     worker.forwarder.drop()
     for session in worker.sessions.values():
         session.llm = session.captcha = session.sensitive_data = None
         session.options = {k: v for k, v in session.options.items() if k != "jev"}  # jev's own API key
-    return web.json_response({"parked": True})
+    answer = {"parked": True}
+    if body.get("closeChrome") is True:
+        answer["chrome"] = await close_chrome_for_park()
+    return web.json_response(answer)
+
+
+async def close_chrome_for_park(timeout=20):
+    """Under runc the host stops the sandbox with SIGTERM, which Chrome takes for the end of the session
+    (`exit_type: SessionEnded`) and exits without writing its cookie store: cookies of the last 30 s (its
+    commit interval) were lost with the park (e2e on Cloud.ru, 30.09). `Browser.close` is Chrome's own
+    shutdown, which writes them. The init starts Chrome again once the old one has exited (RestartSec), so
+    this waits for the old Chrome to go and the new one to answer: the SIGTERM then finds nothing unwritten,
+    and a park that does not go through leaves a Chrome up. "closed", or "timeout" when Chrome did not
+    come back in time (the park goes on: the profile was written by then or never will be)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        await cdp_command(await browser_socket(), "Browser.close", timeout=10)
+    except Exception as error:  # the socket may close before the answer
+        log.info("Browser.close: %s", error)
+    while await chrome_ready():
+        if asyncio.get_running_loop().time() >= deadline:
+            return "timeout"
+        await asyncio.sleep(0.1)
+    while not await chrome_ready():
+        if asyncio.get_running_loop().time() >= deadline:
+            return "timeout"
+        await asyncio.sleep(0.2)
+    return "closed"
 
 
 # CDP over the endpoint: Bro's existing CDP client (code typing, viewport capture, keep-alive visits)

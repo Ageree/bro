@@ -466,10 +466,23 @@ export async function resetBrowserVmWorkerProfile(vm: BrowserVmTarget) {
  * proxy login and the sites' secrets it holds, which the snapshot would keep.
  * It refuses (409) while a run is open, so a park never catches a run. After
  * the restore Bro sends them again, as after a worker restart.
+ *
+ * `closeChrome` (a runc host, which stops the sandbox with SIGTERM): the
+ * worker also closes Chrome through CDP and waits for the next one. Chrome
+ * takes SIGTERM for the end of the session and does not write its cookie
+ * store, so cookies of its last 30 s were lost with the park (e2e on
+ * Cloud.ru, 30.09). An older worker ignores it.
  */
-export async function parkBrowserVmWorker(vm: BrowserVmTarget) {
+export async function parkBrowserVmWorker(
+  vm: BrowserVmTarget,
+  { closeChrome = false }: { readonly closeChrome?: boolean } = {}
+) {
   parkedSchema.parse(
-    await request(vm, "POST", "/v1/park", { timeoutMs: writeTimeoutMs })
+    await request(vm, "POST", "/v1/park", {
+      body: { closeChrome },
+      // Closing Chrome waits for the init to start it again: up to 20 s.
+      timeoutMs: closeChrome ? slowWriteTimeoutMs : writeTimeoutMs,
+    })
   );
 }
 

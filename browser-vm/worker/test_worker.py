@@ -649,6 +649,27 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         status, answer = await self.call("POST", "/v1/sessions/s1/messages", {"text": "Go on."})
         self.assertEqual((status, answer["error"]), (409, "session has no model; start a run"))
 
+    async def test_park_under_runc_closes_chrome_and_waits_for_the_next_one(self):
+        # SIGTERM makes Chrome end the session without writing its cookie store; Browser.close writes it.
+        answers = iter([True, True, False, False, True])
+        ready = mock.AsyncMock(side_effect=lambda *args: next(answers))
+        closed = mock.AsyncMock(return_value={})
+        with mock.patch.object(worker, "chrome_ready", ready), \
+                mock.patch.object(worker, "cdp_command", closed), \
+                mock.patch.object(worker, "browser_socket", mock.AsyncMock(return_value="ws://chrome")):
+            self.assertEqual(await self.call("POST", "/v1/park", {"closeChrome": True}),
+                             (200, {"parked": True, "chrome": "closed"}))
+        closed.assert_awaited_once_with("ws://chrome", "Browser.close", timeout=10)
+        self.assertEqual(ready.await_count, 5)  # old one gone, new one up
+        self.assertIsNone(self.worker.forwarder.upstream)
+
+    async def test_park_without_close_leaves_chrome_alone(self):
+        closed = mock.AsyncMock()
+        with mock.patch.object(worker, "cdp_command", closed):
+            self.assertEqual(await self.call("POST", "/v1/park", {}), (200, {"parked": True}))
+            self.assertEqual(await self.call("POST", "/v1/park", [1]), (400, {"error": "body must be an object"}))
+        closed.assert_not_awaited()
+
     async def test_park_is_refused_while_a_run_works(self):
         in_step, go_on = asyncio.Event(), asyncio.Event()
 

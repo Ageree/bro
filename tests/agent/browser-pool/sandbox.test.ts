@@ -733,7 +733,11 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
 
     await pool.lifecycle.reconcileBrowserVms(now);
 
-    expect(worker.parkBrowserVmWorker).toHaveBeenCalledOnce();
+    // A host of a runsc-only hostd (no runtime reported) freezes Chrome as is.
+    expect(worker.parkBrowserVmWorker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: alice.workspaceId }),
+      { closeChrome: false }
+    );
     expect(hostClient.parkBrowserSandbox).toHaveBeenCalledWith(
       expect.objectContaining({ id: "bro-host-1" }),
       { ample: false, generation: 3, workspaceId: alice.workspaceId }
@@ -764,6 +768,20 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
   it("records a runc park without a snapshot, and starts it again from its profile", async () => {
     const pool = await loadPool();
     await seedRunning(pool, 30);
+    await pool.hosts.updateBrowserHost(
+      "bro-host-1",
+      {
+        capacity: {
+          committedMb: 3072,
+          limitMb: 14_976,
+          rootfsVersions: ["2026-09-30.1"],
+          runsc: null,
+          runtime: "runc",
+          sandboxes: 1,
+        },
+      },
+      minutes(-2)
+    );
     hostClient.parkBrowserSandbox.mockResolvedValue({
       ...parked(3),
       format: null,
@@ -771,6 +789,12 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     });
 
     await pool.lifecycle.reconcileBrowserVms(now);
+    // runc stops Chrome with SIGTERM, which writes no cookies: the worker
+    // closes Chrome first.
+    expect(worker.parkBrowserVmWorker).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: alice.workspaceId }),
+      { closeChrome: true }
+    );
     expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
       sandboxState: "parked",
       snapshotFormat: null,

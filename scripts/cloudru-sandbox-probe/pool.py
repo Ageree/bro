@@ -47,13 +47,13 @@ HOST_CODE = HERE.parent.parent / "browser-vm" / "host"
 SETS = "probe/stage2/sets"
 # The durable artifacts hosts boot from (docs/browser-pool.md, section 2); POOL_* variables override them.
 ARTIFACTS = {
-    "bundle": {"key": os.environ.get("POOL_BUNDLE_KEY", "pool/host/host-622fc3df2913.tgz"),
+    "bundle": {"key": os.environ.get("POOL_BUNDLE_KEY", "pool/host/host-d9b5f3673fb6.tgz"),
                "sha256": os.environ.get("POOL_BUNDLE_SHA256",
-                                         "622fc3df29139c365d463b801430c95be9af739981e5fc37c1333dd131801931")},
-    "rootfs": {"version": os.environ.get("POOL_ROOTFS_VERSION", "sandbox-20260930.1"),
-               "key": os.environ.get("POOL_ROOTFS_KEY", "pool/rootfs/sandbox-20260930.1.tar.zst"),
+                                         "d9b5f3673fb68db5c3ea158b2bf5c91dd7d134639c4b98de9bc78eec5af5f43e")},
+    "rootfs": {"version": os.environ.get("POOL_ROOTFS_VERSION", "sandbox-20260930.3"),
+               "key": os.environ.get("POOL_ROOTFS_KEY", "pool/rootfs/sandbox-20260930.3.tar.zst"),
                "sha256": os.environ.get("POOL_ROOTFS_SHA256",
-                                         "7fdd55faa7fbf8dd340fdc3d0586d7e7a6b7f21feaabe725aace244e86d41e24")},
+                                         "604b9e820c8ffb889caedc9cb7c908268e5b16337bbcf5c29bf6930d822497b0")},
 }
 STATE = cloudru.STATE_DIR
 ROUTERAI = "https://routerai.ru/api/v1"

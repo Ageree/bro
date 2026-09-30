@@ -704,6 +704,23 @@ class ParkTest(HostTest):
         self.assertFalse((restored / "Default" / "Hard").is_symlink())
         self.assertEqual(self.profile_on(other), MARKER)
 
+    async def test_chromes_browser_metrics_never_travel(self):
+        # Every Chrome a park stops leaves a 4 MiB .pma in BrowserMetrics and never takes it back: carried
+        # along, the profile grew by one a park (e2e on Cloud.ru, 30.09).
+        host, _runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        (profile / "BrowserMetrics").mkdir()
+        (profile / "BrowserMetrics" / "BrowserMetrics-1.pma").write_bytes(b"\0" * 4096)
+        (profile / "Default" / "BrowserMetrics").mkdir()  # only the top-level one is Chrome's metrics
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
+        other, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual(status, 201, record)
+        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
+        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default"])
+        self.assertTrue((restored / "Default" / "BrowserMetrics").is_dir())
+        self.assertEqual(self.profile_on(other), MARKER)
+
     async def test_a_cold_set_fetches_the_profile_alone(self):
         _runner, parked = await self.parked_set()
         self.storage.gets.clear()

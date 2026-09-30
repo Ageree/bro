@@ -139,7 +139,10 @@ memory snapshots»; набор gVisor на хосте `runc` поднимает�
 **Парковка `runc`**: SIGTERM init (`runc kill`): тот гасит worker, Chrome
 (SIGTERM и до `TimeoutStopSec` 30 с) и Xvfb и выходит. Внутри песочницы `hostd`
 ничего не запускает: `runc exec` в контейнер, который могла захватить страница,
-— вход известных побегов `runc`. `chromeStop: killed` — профиль мог отстать:
+— вход известных побегов `runc`. SIGTERM Chrome не сохраняет cookie последних
+30 с, поэтому до парковки Бро просит worker закрыть Chrome через CDP
+(`closeChrome`), а `BrowserMetrics` профиля в набор не идёт.
+`chromeStop: killed` — профиль мог отстать:
 init убил Chrome по таймауту (строка «bro-chrome killed» в `runtime.log` после
 SIGTERM), песочница не вышла за `chrome_stop_timeout_s` (45 с, тогда SIGKILL) или
 её уже не было. Набор пишется и тогда: после SIGTERM песочница в `running` не
@@ -255,7 +258,7 @@ BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
 На стенде это `vm/rootfs_build.sh wheels` и `vm/rootfs_build.sh build <версия>`
 (2,3 минуты на `gen-2-4`). Затем `boot.py cloud-init` с presigned GET бандла и
 корня (срок — на время загрузки хоста). Текущие артефакты — корень
-`pool/rootfs/sandbox-20260930.1.tar.zst` и бандл `pool/host/host-622fc3df2913.tgz`
+`pool/rootfs/sandbox-20260930.3.tar.zst` и бандл `pool/host/host-d9b5f3673fb6.tgz`
 (sha256 и размеры — раздел 2 `docs/browser-pool.md`).
 
 ### Проверено на настоящих VM (этап 2, 30.09)
@@ -280,11 +283,15 @@ BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
    `failed`, новая с тем же id и `DELETE` работают; `DELETE` не оставляет
    монтирований, netns, veth, cgroup и каталогов.
 
-Не проверено на VM: Chrome под `seccomp.json` (в сессии профиль проверен на
-`runc` 1.3.4 без Chrome: запрещённое — `EPERM`, user namespace от `bro`
-создаётся), профиль на образе ext4, парковка через SIGTERM init (этап 1 мерил
-её в 0,5 с), `runsc` на хосте пула, поручения под нагрузкой соседей (этап 3). До
-прогона стенда с новым бандлом пул людям не включать.
+Этап 4 (30.09, код Бро на настоящих хостах — раздел 2 `docs/browser-pool.md`):
+Chrome под `seccomp.json` со своей песочницей (namespace, seccomp-bpf, без
+`--no-sandbox`), профиль на образе ext4 (`loop`, `nodev,nosuid`), парковка
+SIGTERM init — 0,52 с, `chromeStop: sigterm`. SIGTERM Chrome считает концом
+сеанса и cookie последних 30 с не пишет: перед парковкой `runc` Бро просит
+worker закрыть Chrome через CDP (`POST /v1/park {"closeChrome": true}`).
+`BrowserMetrics` профиля (по 4 МиБ на каждый SIGTERM) в набор не идёт.
+Не проверено на VM: `runsc` на хосте пула, поручения под нагрузкой соседей
+(этап 3).
 
 ## Тесты
 
