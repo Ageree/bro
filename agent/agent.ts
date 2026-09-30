@@ -180,17 +180,25 @@ export default defineAgent({
         const scope = scopeFromPrincipal(caller);
         // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
         // the person's clock comes with this step's notes after the history
-        // instead of in the turn's instructions (`50-local-time.ts`).
-        const stableContext = await stepContextPilot(scope);
+        // instead of in the turn's instructions (`50-local-time.ts`). Its
+        // lookups run alongside the step's other reads.
         const clockOwed =
-          stableContext &&
           caller.principalType === "user" &&
           resolveModeValue(ctx, clockModes) !== null;
-        const [modelId, formOfAddress, timeZone] = await Promise.all([
-          getWorkspaceModelId(scope),
-          writesToPerson ? getFormOfAddress(scope) : undefined,
-          clockOwed ? readWorkspaceTimeZone(scope) : undefined,
-        ]);
+        const [modelId, formOfAddress, [stableContext, timeZone]] =
+          await Promise.all([
+            getWorkspaceModelId(scope),
+            writesToPerson ? getFormOfAddress(scope) : undefined,
+            stepContextPilot(scope).then(
+              async (pilot) =>
+                [
+                  pilot,
+                  pilot && clockOwed
+                    ? await readWorkspaceTimeZone(scope)
+                    : undefined,
+                ] as const
+            ),
+          ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         // Once a browser report's message is out, the rest of its turn
         // needs only a few tools; the pilot offers just those.

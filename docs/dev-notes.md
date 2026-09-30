@@ -181,7 +181,8 @@
   «последнее» системное (пометка шага) стоит перед историей и рвёт кэш.
   Состав шага меряет `scripts/costs/step-context.ts` (`docs/agent-costs.md`, 3.2).
   За флагом `STEP_CONTEXT_WORKSPACES` время и записки идут после истории
-  тегом `<bro-step-note>` (`agent/lib/step-context/`); новые опции
+  тегом `<bro-step-note>` (`agent/lib/step-context/`), а его подобия в
+  остальном промпте обезвреживаются (`defuseStepNoteTag`); новые опции
   `modelSelection` добавляйте только под флагом — тесты `agent.test.ts`
   сверяют опции целиком.
 - `GET /api/v1/credits` — только management-ключ (`OPENROUTER_MANAGEMENT_KEY`).

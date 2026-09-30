@@ -154,22 +154,6 @@ export const cardToolsBeforeOutcomeNote =
   "Tools that ask the person on an approval card (the calendar, mail, Notion, Slack, apps, schedules, spending) are held back in this report turn until a message of yours has reached the person: no card may come before the outcome. They come back right after it. When the report asks you to put a booking in the calendar or set up a later step, say in that message what you will add, then call its tool.";
 
 /**
- * All a browser report's turn may still need once its message is out, in the
- * pilot of the cache-friendly step (`stepContextPilot`): another message, the
- * errand's `continue` or `status`, the card steps the report asks for
- * (`stepsAfterMessage`) and the orders the outcome may be checked against.
- * The other ≈ 50 schemas, ≈ 20 thousand tokens, went with every step after
- * the message and were read at full price, since the tool set changed there.
- */
-export const reportToolsAfterOutcome = [
-  "browser_task",
-  "calendar-create-event",
-  "list_orders",
-  "schedules-create",
-  "send_message",
-] as const;
-
-/**
  * The card steps a browser report asks for once its message is out, each by
  * the instruction that asks for it (`agent/lib/browser-use/completion.ts`):
  * the calendar entry of a booking the site confirmed, the schedule of a step
@@ -187,6 +171,24 @@ const stepsAfterMessage = [
     tool: "schedules-create",
   },
 ] as const;
+
+/**
+ * All a browser report's turn may still need once its message is out, in the
+ * pilot of the cache-friendly step (`stepContextPilot`): another message, the
+ * errand's `continue` or `status`, the orders the outcome may be checked
+ * against, every card step the report may ask for (`stepsAfterMessage`) and
+ * `connect_google`, which the calendar's refusal names when Google is not
+ * connected (`googleNotConnectedWriteRefusal`). The other ≈ 50 schemas,
+ * ≈ 20 thousand tokens, went with every step after the message and were read
+ * at full price, since the tool set changed there.
+ */
+export const reportToolsAfterOutcome = [
+  "browser_task",
+  "connect_google",
+  "list_orders",
+  "send_message",
+  ...stepsAfterMessage.map(({ tool }) => tool),
+];
 
 /**
  * The card steps a browser report's own instructions ask for after its

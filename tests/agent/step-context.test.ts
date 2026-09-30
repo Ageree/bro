@@ -102,6 +102,20 @@ describe("the pilot list of the cache-friendly step", () => {
     expect(await pilot("someone@example.com, alice@example.COM")).toBe(true);
     expect(await pilot("someone@example.com, other")).toBe(false);
   });
+
+  it("looks the owner's email up once, and keeps a failed lookup out", async () => {
+    const { stepContextPilot } = await withSettings(
+      { ...openRouter, STEP_CONTEXT_WORKSPACES: "alice@example.com" },
+      async () => import("@agent/lib/step-context/pilot")
+    );
+    services.readAccountEmail.mockRejectedValueOnce(new Error("db down"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(await stepContextPilot({ workspaceId })).toBe(false);
+    expect(await stepContextPilot({ workspaceId })).toBe(true);
+    expect(await stepContextPilot({ workspaceId })).toBe(true);
+    expect(services.readAccountEmail).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("a step in the pilot", () => {
@@ -152,7 +166,7 @@ describe("a step in the pilot", () => {
   });
 
   it("gives a browser report's turn only its few tools once the message is out", async () => {
-    const { reportToolsAfterOutcome, cardToolsBeforeOutcome } =
+    const { cardToolsBeforeOutcome, reportToolsAfterOutcome, stepsAskedBy } =
       await import("@agent/lib/delivery/browser-report");
     const report = [humanMessage("Browser run finished")];
 
@@ -177,6 +191,20 @@ describe("a step in the pilot", () => {
     );
     expect(after?.offeredTools).toEqual(reportToolsAfterOutcome);
     expect(after?.withheldTools).toEqual(["ask_question"]);
+    // Every card step a report may ask for, and the sign-in the calendar's
+    // refusal names when Google is not connected.
+    const { googleNotConnectedWriteRefusal } =
+      await import("@agent/lib/google-workspace/client");
+    const { calendarInstruction, laterStepInstruction } =
+      await import("@agent/lib/browser-use/guidance");
+    const owed = stepsAskedBy(
+      `Result: booked.\n\n${calendarInstruction} ${laterStepInstruction}`
+    ).map(({ tool }) => tool);
+    expect(owed).toEqual(["calendar-create-event", "schedules-create"]);
+    expect(googleNotConnectedWriteRefusal).toContain("connect_google");
+    expect(reportToolsAfterOutcome).toEqual(
+      expect.arrayContaining([...owed, "connect_google", "send_message"])
+    );
 
     // Outside the pilot the turn keeps every tool after its message.
     const outside = await stepOptions(
