@@ -69,7 +69,7 @@ import caddy
 import network
 import sets
 
-VERSION = "2026-09-30.2"
+VERSION = "2026-09-30.3"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
@@ -121,6 +121,10 @@ class Config:
     dns: tuple = ("77.88.8.8", "1.1.1.1")
     # More destinations sandboxes are refused (CIDRs), on top of network.BLOCKED: refused at once.
     egress_blocked: tuple = ()
+    # STAND ONLY, empty in production: TCP ports of the host itself sandboxes may reach (the stage 2 stand's
+    # stand-in for the residential proxy, scripts/cloudru-sandbox-probe/pool.py). Every other host port is
+    # refused.
+    stand_host_ports: tuple = ()
     listen_host: str = "127.0.0.1"
     listen_port: int = 8090
     worker_port: int = 8080
@@ -160,7 +164,7 @@ class Config:
         unknown = set(values) - known
         if unknown:
             raise ValueError(f"unknown settings in {path}: {sorted(unknown)}")
-        for name in ("dns", "egress_blocked"):
+        for name in ("dns", "egress_blocked", "stand_host_ports"):
             if name in values:
                 values[name] = tuple(values[name])
         return cls(**values)
@@ -421,7 +425,8 @@ class Host:
         self.config, self.identity = config, identity
         self.runner = runner or Runner()
         self.network = network.Network(pool=config.transit_pool, worker_port=config.worker_port,
-                                       ip=config.ip, nft=config.nft, blocked=config.egress_blocked)
+                                       ip=config.ip, nft=config.nft, blocked=config.egress_blocked,
+                                       stand_ports=config.stand_host_ports)
         self.sandboxes = {}
         self.locks = {}
         self.shared = asyncio.Lock()  # transit slots, the nftables table, the Caddyfile
@@ -769,8 +774,11 @@ class Host:
             resources["devices"] = [{"allow": False, "access": "rwm"}]
             spec["linux"]["maskedPaths"] = MASKED_PATHS
             spec["linux"]["readonlyPaths"] = READONLY_PATHS
-            # Under memory pressure a browser goes before hostd, Caddy or sshd.
-            spec["process"]["oomScoreAdj"] = 500
+            # Under memory pressure a browser goes before hostd, Caddy or sshd. Below Chrome's own renderer
+            # scores (300 and up): runc sets this with privileges, which makes it the floor nobody in the
+            # sandbox may go under, and with 500 Chrome could not rank its renderers above its browser process
+            # (EACCES on every renderer, stage 2 host).
+            spec["process"]["oomScoreAdj"] = 200
             # No seccomp unless configured: runc applies none of its own, and Docker's default refuses the
             # user namespace Chrome's sandbox makes (unshare, clone with CLONE_NEWUSER without SYS_ADMIN).
             if self.seccomp is not None:

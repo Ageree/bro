@@ -446,7 +446,10 @@ class SandboxTest(HostTest):
         self.assertIn('iifname "brt*" ip daddr @blocked jump refuse', rules)
         self.assertIn('iifname "brt*" oifname "eth0" accept', rules)
         self.assertIn('oifname "brt*" drop', rules)  # nothing opens a connection into a sandbox but the host
-        self.assertIn("\t\tiifname \"brt*\" jump refuse\n\t}\n\tchain forward", rules)  # no port of the host
+        # ...and a neighbour sandbox is refused at once, before that silent drop (stage 2: it timed out).
+        self.assertIn('iifname "brt*" oifname "brt*" jump refuse\n\t\toifname "brt*" drop', rules)
+        self.assertIn("accept\n\t\tiifname \"brt*\" jump refuse\n\t}\n\tchain forward", rules)  # no port of the host
+        self.assertNotIn("dport", rules)  # the stand's open host port is off by default
         # Refused at once, never silently dropped: a silent address hung browser-use for minutes.
         self.assertIn("chain refuse {\n\t\tmeta l4proto tcp reject with tcp reset\n"
                       "\t\treject with icmpx type admin-prohibited\n\t}", rules)
@@ -457,9 +460,18 @@ class SandboxTest(HostTest):
         caddyfile = runner.caddyfiles[-1]
         self.assertIn("admin unix//run/caddy/admin.sock", caddyfile)
         self.assertIn("203-0-113-7.sslip.io {", caddyfile)
-        self.assertIn(f"handle_path /g/ws-abc/* {{\n\t\treverse_proxy 127.0.0.2:{self.worker_port}", caddyfile)
-        self.assertIn(f"handle_path /g/ws-def/* {{\n\t\treverse_proxy 127.0.0.6:{self.worker_port}", caddyfile)
+        self.assertIn(f"handle_path /g/ws-abc/* {{\n\t\treverse_proxy 127.0.0.2:{self.worker_port} {{\n"
+                      f"\t\t\theader_up X-Forwarded-Prefix /g/ws-abc\n", caddyfile)
+        self.assertIn(f"handle_path /g/ws-def/* {{\n\t\treverse_proxy 127.0.0.6:{self.worker_port} {{\n"
+                      f"\t\t\theader_up X-Forwarded-Prefix /g/ws-def\n", caddyfile)
         self.assertIn("handle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090", caddyfile)
+
+    def test_stand_host_ports_open_only_those_ports_of_the_host(self):
+        rules = network.Network(stand_ports=(3130,)).host_rules([0], "eth0")
+        self.assertIn('\t\tiifname "brt*" tcp dport { 3130 } accept\n\t\tiifname "brt*" jump refuse\n', rules)
+        self.assertEqual(rules.count("dport"), 1)  # the forward chain (other destinations) is unchanged
+        with self.assertRaises(ValueError):
+            network.Network(stand_ports=(0,))
 
     async def test_generation_rules(self):
         _host, runner, client = await self.host()
@@ -805,7 +817,7 @@ class RuncSandboxTest(HostTest):
         capabilities = bundle["process"]["capabilities"]["bounding"]
         for missing in ("CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_NET_RAW"):
             self.assertNotIn(missing, capabilities)
-        self.assertEqual(bundle["process"]["oomScoreAdj"], 500)
+        self.assertEqual(bundle["process"]["oomScoreAdj"], 200)
         (create, _log), = runner.runtime_calls("create")
         self.assertEqual(create[:3], ["/usr/sbin/runc", f"--root={host.config.runc_root}", "create"])
 

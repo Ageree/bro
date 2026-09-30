@@ -36,11 +36,15 @@ BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0
 
 
 class Network:
-    def __init__(self, *, pool="172.31.0.0/16", worker_port=8080, ip="ip", nft="nft", blocked=()):
+    def __init__(self, *, pool="172.31.0.0/16", worker_port=8080, ip="ip", nft="nft", blocked=(), stand_ports=()):
         self.pool = ipaddress.ip_network(pool)
         self.worker_port = worker_port
         self.ip, self.nft = ip, nft
         self.blocked = BLOCKED + tuple(str(ipaddress.ip_network(cidr)) for cidr in blocked)
+        # Stand only (a stand-in proxy on the host itself): TCP ports of the host sandboxes may reach.
+        self.stand_ports = tuple(sorted({int(port) for port in stand_ports}))
+        if any(not 0 < port < 65536 for port in self.stand_ports):
+            raise ValueError("stand ports must be TCP ports")
 
     @property
     def slots(self):
@@ -149,6 +153,8 @@ table ip bro_router {{
             f'\t\tiifname "{self.uplink_veth(slot)}" ip saddr != {self.transit(slot)[1]} drop\n'
             for slot in sorted(slots))
         blocked = ", ".join(self.blocked)
+        stand = (f'\t\tiifname "brt*" tcp dport {{ {", ".join(map(str, self.stand_ports))} }} accept\n'
+                 if self.stand_ports else "")
         return f"""table inet bro
 delete table inet bro
 table inet bro {{
@@ -159,12 +165,13 @@ table inet bro {{
 \tchain input {{
 \t\ttype filter hook input priority filter; policy accept;
 \t\tiifname "brt*" ct state established,related accept
-\t\tiifname "brt*" jump refuse
+{stand}\t\tiifname "brt*" jump refuse
 \t}}
 \tchain forward {{
 \t\ttype filter hook forward priority filter; policy accept;
 \t\tiifname "brt*" meta nfproto ipv6 drop
 {guards}\t\toifname "brt*" ct state established,related accept
+\t\tiifname "brt*" oifname "brt*" jump refuse
 \t\toifname "brt*" drop
 \t\tiifname "brt*" ip daddr @blocked jump refuse
 \t\tiifname "brt*" oifname "{uplink}" accept

@@ -1136,6 +1136,28 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
         data = await response.json()
         self.assertIn("/devtools/browser/BROWSER-ID", data["webSocketDebuggerUrl"])
 
+    async def test_socket_urls_keep_the_pool_hosts_sandbox_prefix(self):
+        # Behind a pool host's Caddy the worker lives under /g/<sandbox>/, which Caddy strips.
+        self.open_tab("T1", "s1")
+        token = cdp_token()
+
+        response = await self.client.get(f"/v1/cdp/{token}/json", headers={"X-Forwarded-Prefix": "/g/ws-abc"})
+        targets = await response.json()
+        version = await (await self.client.get(f"/v1/cdp/{token}/json/version",
+                                                headers={"X-Forwarded-Prefix": "/g/ws-abc"})).json()
+
+        self.assertTrue(targets[0]["webSocketDebuggerUrl"].endswith(f"/g/ws-abc/v1/cdp/{token}/devtools/page/T1"))
+        self.assertIn(f"/g/ws-abc/v1/cdp/{token}/devtools/browser/", version["webSocketDebuggerUrl"])
+
+    async def test_socket_urls_ignore_a_prefix_that_is_not_a_sandbox_path(self):
+        self.open_tab("T1", "s1")
+        token = cdp_token()
+
+        response = await self.client.get(f"/v1/cdp/{token}/json", headers={"X-Forwarded-Prefix": "//evil.example"})
+        targets = await response.json()
+
+        self.assertRegex(targets[0]["webSocketDebuggerUrl"], rf"^wss://[^/]+/v1/cdp/{token}/devtools/page/T1$")
+
     async def test_devtools_socket_refuses_another_sessions_tab(self):
         self.open_tab("T1", "s1")
         self.open_tab("T2", "s2")

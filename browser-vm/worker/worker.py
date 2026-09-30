@@ -1730,8 +1730,17 @@ async def park(request):
 
 # CDP over the endpoint: Bro's existing CDP client (code typing, viewport capture, keep-alive visits)
 # works against this VM unchanged. The token sits in the path because a WebSocket URL has no headers.
+# A pool host's Caddy serves each sandbox's worker under /g/<sandbox>/ and strips that prefix
+# (browser-vm/host/caddy.py), naming it in this header: the socket URLs handed out must carry it, or they
+# point at the host's 404. Only a sandbox path is taken; on a VM of its own there is no such header.
+FORWARDED_PREFIX = re.compile(r"/g/[a-z0-9-]{1,63}")
+
+
 def cdp_base(request, token):
-    return f"wss://{request.host}/v1/cdp/{token}"
+    prefix = request.headers.get("X-Forwarded-Prefix", "")
+    if not FORWARDED_PREFIX.fullmatch(prefix):
+        prefix = ""
+    return f"wss://{request.host}{prefix}/v1/cdp/{token}"
 
 
 def scoped_tab(scope):
