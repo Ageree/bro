@@ -490,6 +490,29 @@ describe("browser VM worker client", () => {
     ]);
   });
 
+  it("sends new worker code as it is, signed, with its checksum", async () => {
+    const { worker } = await loadWorker();
+    const code = new TextEncoder().encode('VERSION = "2026-09-30.1"\n');
+    const sent: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
+      sent.push({ init, url });
+      return Promise.resolve(
+        Response.json({ restarting: true, updated: true })
+      );
+    });
+
+    await worker.updateBrowserVmWorkerCode(vm, code, "ab".repeat(32));
+
+    const [call] = sent;
+    const headers = new Headers(call?.init.headers);
+    expect(call?.url).toBe(`${origin}/v1/admin/worker`);
+    expect(call?.init.method).toBe("POST");
+    expect(call?.init.body).toBe(code);
+    expect(headers.get("x-content-sha256")).toBe("ab".repeat(32));
+    expect(headers.get("content-type")).toBe("application/octet-stream");
+    expect(headers.get("authorization")).toMatch(/^Bearer v1\./u);
+  });
+
   it("reaches a sandbox of the pool under its route on the host, with the same tokens", async () => {
     const { token, worker } = await loadWorker();
     const sandbox = {

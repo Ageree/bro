@@ -135,6 +135,35 @@ describe("environment", () => {
     expect(env.SECRET_ENCRYPTION_KEY).toBe(key);
   });
 
+  it("reads the published browser VM worker as version, key and checksum", async () => {
+    const sha256 = "ab".repeat(32);
+    vi.stubEnv(
+      "BROWSER_VM_WORKER",
+      ` 2026-09-30.1:workers/worker-2026-09-30.1.py:${sha256}\n`
+    );
+
+    const { env } = await import("@shared/environment");
+    expect(env.BROWSER_VM_WORKER).toEqual({
+      key: "workers/worker-2026-09-30.1.py",
+      sha256,
+      version: "2026-09-30.1",
+    });
+  });
+
+  it.each([
+    "2026-09-30.1:workers/worker.py",
+    `workers/worker.py:${"ab".repeat(32)}`,
+  ])(
+    "rejects a browser VM worker without its version or checksum",
+    async (value) => {
+      vi.stubEnv("BROWSER_VM_WORKER", value);
+
+      await expect(import("@shared/environment")).rejects.toThrow(
+        "Invalid environment variables"
+      );
+    }
+  );
+
   it("rejects a missing required DATABASE_URL value during import", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

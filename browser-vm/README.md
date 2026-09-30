@@ -10,6 +10,7 @@ HTTPS. План и итоги замеров — `docs/browser-cloud-migration.m
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `worker/worker.py`      | Сервис на VM (`127.0.0.1:8080` за Caddy): поручения агента, сессии, файлы, прямые действия, CDP, прокси-форвардер |
 | `worker/jev_segment.py` | Короткий отрезок jev-ultrafast для движка `jev-then-agent`: вкладку jev дальше ведёт агент                        |
+| `worker/publish.py`     | Публикация `worker.py` для выката Бро: версия, sha256, значение `BROWSER_VM_WORKER`, загрузка по presigned PUT    |
 | `worker/test_worker.py` | Юнит-тесты worker (`python -m unittest`, нужен aiohttp); вектор токена общий с тестами Бро                        |
 | `image/provision.sh`    | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
 | `image/build.py`        | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
@@ -108,6 +109,34 @@ CLOUDRU_KEY_ID=… CLOUDRU_KEY_SECRET=… python browser-vm/image/build.py --ver
 `.prev` — через минуту, чтобы преходящая причина вроде полного диска не оставила
 VM без worker). Откат виден по версии в `/v1/health`. На VM из образов, собранных
 до отката, от такого кода защищает только проверка загрузки.
+
+### Публикация worker
+
+Выкатывает сам Бро (`agent/lib/browser-vm/rollout.ts`), когда задан
+`BROWSER_VM_WORKER`: перед поручением на свободной VM, чей worker сообщает
+другую версию, он скачивает файл из `BROWSER_STATE_BUCKET`, сверяет sha256 и
+шлёт его в `POST /v1/admin/worker`. Маршрут принимает один файл — `worker.py`;
+`jev_segment.py` и остальное остаются из образа, поэтому публикуется только
+`worker.py`, и изменения в других файлах так не доедут. Песочницы пула worker
+получают с корнем песочницы, их это не касается.
+
+1. Поднимите `VERSION` в `worker/worker.py`: Бро сравнивает её с `/v1/health`.
+2. Напечатайте версию, sha256, ключ объекта и значение переменной:
+   `python browser-vm/worker/publish.py`.
+3. Загрузите файл по presigned PUT на напечатанный ключ (ключ Cloud.ru из
+   Бро не уходит, ссылку подписывает оператор):
+   ```sh
+   URL=$(PROBE_BUCKET=<BROWSER_STATE_BUCKET> python scripts/cloudru-sandbox-probe/s3.py presign put workers/worker-<версия>.py)
+   python browser-vm/worker/publish.py --put-url "$URL"
+   ```
+4. Задайте в Vercel `BROWSER_VM_WORKER=<версия>:<ключ>:<sha256>` (строка из
+   шага 2) и передеплойте: env действует со следующего деплоя. Без
+   переменной Бро ничего не выкатывает.
+
+Сбой (файл не совпал с sha256, worker отверг код, новая версия не ответила
+за ~24 с) Бро пишет в лог `[browser-vm]` и один раз на версию — владельцу;
+поручение идёт на прежнем worker, а эту версию на этой VM он больше не
+пробует (`browser_vms.worker_failed_version`). Исправление — новая версия.
 
 Проверка worker и образа локально:
 

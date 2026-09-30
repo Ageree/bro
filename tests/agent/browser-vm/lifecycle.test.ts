@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type * as timersModule from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as cloudRuModule from "@agent/lib/browser-vm/cloudru";
@@ -66,6 +67,8 @@ const worker = vi.hoisted(() => ({
   resetBrowserVmWorkerProfile:
     vi.fn<typeof workerModule.resetBrowserVmWorkerProfile>(),
   setBrowserVmWorkerProxy: vi.fn<typeof workerModule.setBrowserVmWorkerProxy>(),
+  updateBrowserVmWorkerCode:
+    vi.fn<typeof workerModule.updateBrowserVmWorkerCode>(),
 }));
 
 const alertOwner = vi.hoisted(() =>
@@ -152,6 +155,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     updatedAt: minutesAgo(1),
     vmId: "vm-1",
     vmName: "bro-personal0123456789ab-1",
+    workerFailedVersion: null,
     workspaceId,
     ...overrides,
   };
@@ -351,12 +355,116 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function loadLifecycle() {
+async function loadLifecycle(settings: Record<string, string> = {}) {
   return importWithSettings(
-    browserVmTestEnvironment,
+    { ...browserVmTestEnvironment, ...settings },
     async () => import("@agent/lib/browser-vm/lifecycle")
   );
 }
+
+describe("rolling the published worker out before an errand", () => {
+  const code = new TextEncoder().encode('VERSION = "2026-09-30.1"\n');
+  const published = {
+    BROWSER_STATE_BUCKET: "bro-state-test",
+    BROWSER_VM_WORKER: `2026-09-30.1:workers/worker.py:${createHash("sha256")
+      .update(code)
+      .digest("hex")}`,
+    CLOUDRU_S3_TENANT_ID: "test-tenant",
+  };
+  const objectStorage = vi.fn<() => Promise<Response>>();
+
+  beforeEach(() => {
+    objectStorage.mockReset();
+    objectStorage.mockImplementation(async () => new Response(code));
+    vi.stubGlobal("fetch", objectStorage);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    worker.updateBrowserVmWorkerCode.mockResolvedValue();
+    worker.readBrowserVmWorkerHealth.mockReset();
+    worker.readBrowserVmWorkerHealth
+      .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
+      .mockResolvedValue(health({ worker: "2026-09-30.1" }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("updates an idle worker under the lease and hands the VM to the errand", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(workspaceId, vmRow());
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result.kind).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledOnce();
+    expect(records.claimBrowserVmLease).toHaveBeenCalledOnce();
+    expect(stored().leaseUntil).toBeNull();
+    expect(alertOwner).not.toHaveBeenCalled();
+  });
+
+  it("keeps the errand on the old worker when the rollout fails", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(workspaceId, vmRow());
+    objectStorage.mockRejectedValue(new Error("timeout"));
+    worker.readBrowserVmWorkerHealth.mockReset();
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ worker: "2026-09-29.1" })
+    );
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result.kind).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+    expect(alertOwner).toHaveBeenCalledOnce();
+    expect(stored().leaseUntil).toBeNull();
+  });
+
+  it("lets the errand wait while a worker that took the code is not back yet", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(workspaceId, vmRow());
+    worker.readBrowserVmWorkerHealth.mockReset();
+    worker.readBrowserVmWorkerHealth
+      .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
+      .mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(stored()).toMatchObject({
+      leaseUntil: null,
+      state: "ready",
+      workerFailedVersion: "2026-09-30.1",
+    });
+  });
+
+  it("lets the errand wait a moment while another step holds the VM", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(
+      workspaceId,
+      vmRow({ leaseUntil: new Date(now.getTime() + 60_000) })
+    );
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(objectStorage).not.toHaveBeenCalled();
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing of the worker without BROWSER_VM_WORKER", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow());
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result.kind).toBe("ready");
+    expect(records.claimBrowserVmLease).not.toHaveBeenCalled();
+    expect(objectStorage).not.toHaveBeenCalled();
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+  });
+});
 
 describe("bringing a workspace's browser VM up for an errand", () => {
   it("creates the first VM under a new generation and asks the errand to wait for it", async () => {

@@ -191,6 +191,10 @@ export const browserVms = pgTable(
     // watchdog only after a few.
     healthFailures: integer("health_failures").notNull().default(0),
     lastError: text("last_error"),
+    // The worker version (BROWSER_VM_WORKER) that could not be rolled out to
+    // this VM: it is not tried on the VM again, so a broken publication does
+    // not hold up every errand. A new VM (a new disk) starts without it.
+    workerFailedVersion: text("worker_failed_version"),
     // The pool (docs/browser-pool.md): where the workspace's sandbox is, the
     // host that holds it while it lives, and the last whole set in Object
     // Storage — its key prefix, the generation it was parked at, how many

@@ -225,6 +225,8 @@ const closedTabSchema = z.object({ closed: z.string() });
 
 const parkedSchema = z.object({ parked: z.literal(true) });
 
+const workerUpdateSchema = z.object({ updated: z.literal(true) });
+
 /** A worker reply that was not a 2xx, with enough of the body to act on. */
 export class BrowserVmWorkerError extends Error {
   readonly status: number;
@@ -473,6 +475,28 @@ export async function parkBrowserVmWorker(vm: BrowserVmTarget) {
   );
 }
 
+/**
+ * Replace the worker's own code with `code` (the whole of
+ * `browser-vm/worker/worker.py`). The worker checks the checksum, loads the
+ * new code in a separate Python first, refuses (409) while a run holds the
+ * browser, and then exits for systemd to start the new code: the new
+ * version shows in the health check seconds later, or the old one after a
+ * rollback.
+ */
+export async function updateBrowserVmWorkerCode(
+  vm: BrowserVmTarget,
+  code: Uint8Array<ArrayBuffer>,
+  sha256: string
+) {
+  workerUpdateSchema.parse(
+    await request(vm, "POST", "/v1/admin/worker", {
+      file: { bytes: code, headers: { "x-content-sha256": sha256 } },
+      // The load check imports browser-use, which takes seconds on a VM.
+      timeoutMs: slowWriteTimeoutMs,
+    })
+  );
+}
+
 /** A blank tab of its own for a keep-alive visit; its target id comes back. */
 export async function openBrowserVmWorkerTab(vm: BrowserVmTarget) {
   return tabSchema.parse(
@@ -554,6 +578,11 @@ async function request(
   path: string,
   options: {
     readonly body?: unknown;
+    /** A file sent as it is instead of a JSON body, with its own headers. */
+    readonly file?: {
+      readonly bytes: Uint8Array<ArrayBuffer>;
+      readonly headers: Readonly<Record<string, string>>;
+    };
     readonly signed?: boolean;
     readonly timeoutMs: number;
   }
@@ -574,6 +603,13 @@ async function request(
   if (options.body !== undefined) {
     headers.set("content-type", "application/json");
     init.body = JSON.stringify(options.body);
+  }
+  if (options.file !== undefined) {
+    headers.set("content-type", "application/octet-stream");
+    for (const [name, value] of Object.entries(options.file.headers)) {
+      headers.set(name, value);
+    }
+    init.body = options.file.bytes;
   }
   // No retry here: every caller knows better whether a repeat is safe, and a
   // start that lost its answer is looked up by its id instead.

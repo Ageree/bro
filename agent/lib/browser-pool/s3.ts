@@ -175,6 +175,26 @@ export async function readBrowserStateObject(key: string) {
 }
 
 /**
+ * The bytes of one object of the bucket, exactly as stored: a file whose
+ * checksum is checked must not pass through a text decoder. A missing
+ * object throws `BrowserStateStoreError` with 404, like any other refusal.
+ */
+export async function readBrowserStateObjectBytes(key: string) {
+  const response = await fetch(
+    presignBrowserStateObject({ expiresSeconds: 300, key, method: "GET" }),
+    { signal: AbortSignal.timeout(requestTimeoutMs) }
+  );
+  if (!response.ok) {
+    throw new BrowserStateStoreError(
+      response.status,
+      "GET",
+      await response.text()
+    );
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
  * Delete every object under `prefix` — a workspace's sets when it is
  * deleted (`sets/<sandbox>/`), or a set a newer one replaced. An object
  * already gone counts as deleted. How many were listed.
