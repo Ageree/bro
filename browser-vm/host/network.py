@@ -16,8 +16,13 @@ masquerade and nothing else — no other sandbox, no private or shared ranges (1
 100.64/10), no metadata (169.254/16), no port of the host itself (hostd, Caddy, ssh). Its transit veth may
 only carry its own router address, and IPv6 from sandboxes is dropped.
 
-Whether gVisor's restore tolerates a changed inside address is being measured separately; if it does, this
-module is where the scheme gets simpler.
+What a sandbox may not reach is refused at once (a TCP reset, an ICMP "prohibited"), never silently dropped:
+a silent address hung browser-use for minutes after `done` on the stage 1 stand. Only a forged source
+address and IPv6 are dropped: there is nobody to answer.
+
+Stage 1 showed that a gVisor restore tolerates a changed inside address, and runc makes no snapshots, so the
+router namespace per sandbox is no longer needed. It stays because it works and is tested; dropping it
+(a unique inside address from the host's pool, the worker reached directly) belongs here alone.
 """
 
 import ipaddress
@@ -31,10 +36,11 @@ BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0
 
 
 class Network:
-    def __init__(self, *, pool="172.31.0.0/16", worker_port=8080, ip="ip", nft="nft"):
+    def __init__(self, *, pool="172.31.0.0/16", worker_port=8080, ip="ip", nft="nft", blocked=()):
         self.pool = ipaddress.ip_network(pool)
         self.worker_port = worker_port
         self.ip, self.nft = ip, nft
+        self.blocked = BLOCKED + tuple(str(ipaddress.ip_network(cidr)) for cidr in blocked)
 
     @property
     def slots(self):
@@ -131,6 +137,8 @@ table ip bro_router {{
 \tchain input {{
 \t\ttype filter hook input priority filter; policy drop;
 \t\tct state established,related accept
+\t\tiifname "in0" meta l4proto tcp reject with tcp reset
+\t\tiifname "in0" reject
 \t}}
 }}
 """
@@ -140,27 +148,31 @@ table ip bro_router {{
         guards = "".join(
             f'\t\tiifname "{self.uplink_veth(slot)}" ip saddr != {self.transit(slot)[1]} drop\n'
             for slot in sorted(slots))
-        blocked = ", ".join(BLOCKED)
+        blocked = ", ".join(self.blocked)
         return f"""table inet bro
 delete table inet bro
 table inet bro {{
 \tset blocked {{
-\t\ttype ipv4_addr; flags interval;
+\t\ttype ipv4_addr; flags interval; auto-merge;
 \t\telements = {{ {blocked} }}
 \t}}
 \tchain input {{
 \t\ttype filter hook input priority filter; policy accept;
 \t\tiifname "brt*" ct state established,related accept
-\t\tiifname "brt*" drop
+\t\tiifname "brt*" jump refuse
 \t}}
 \tchain forward {{
 \t\ttype filter hook forward priority filter; policy accept;
 \t\tiifname "brt*" meta nfproto ipv6 drop
 {guards}\t\toifname "brt*" ct state established,related accept
 \t\toifname "brt*" drop
-\t\tiifname "brt*" ip daddr @blocked drop
+\t\tiifname "brt*" ip daddr @blocked jump refuse
 \t\tiifname "brt*" oifname "{uplink}" accept
-\t\tiifname "brt*" drop
+\t\tiifname "brt*" jump refuse
+\t}}
+\tchain refuse {{
+\t\tmeta l4proto tcp reject with tcp reset
+\t\treject with icmpx type admin-prohibited
 \t}}
 \tchain postrouting {{
 \t\ttype nat hook postrouting priority srcnat; policy accept;

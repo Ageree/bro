@@ -1,7 +1,9 @@
 #!/bin/bash
 # Sets up a Bro browser host on a stock ubuntu-22.04 VM: run once as root by bro-host-boot (cloud-init, see
-# boot.py) from the unpacked bundle in /opt/bro/host. Installs runsc of the release boot.json pins, Caddy,
-# nftables, zstd, the hostd venv and unit, and the sandbox rootfs from its presigned URL.
+# boot.py) from the unpacked bundle in /opt/bro/host. From Cloud.ru, GitHub and PyPI accept connections and
+# send nothing and archive.ubuntu.com does not answer (30.09.2026): apt goes to the mirror boot.json names
+# (mirror.yandex.ru), Caddy's binary and hostd's wheels come in the bundle (hash-pinned, see boot.py), and the
+# sandbox rootfs from its presigned Object Storage URL. The runtime is runc (default) or a pinned runsc.
 # Nothing here is per person. The host key is in /etc/bro/host.json (cloud-init, 0600); hostd reads it.
 # Stages go to /srv/bro/stage. Caddy and hostd come up right after the packages, so from then on Bro reads
 # the stage (and a `failed:<stage>:line N`) on https://<domain>/h/v1/health; the slow rootfs download comes
@@ -10,6 +12,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 BOOT=/etc/bro/boot.json
 ROOT=/srv/bro
+HOST=/opt/bro/host
 mkdir -p "$ROOT/rootfs" "$ROOT/sandboxes" "$ROOT/staging" /etc/bro
 chmod 700 "$ROOT/sandboxes" "$ROOT/staging"
 stage() {
@@ -21,13 +24,19 @@ trap 'stage "failed:$(cat "$ROOT/stage"):line $LINENO"' ERR
 field() { python3 -c 'import json, sys
 value = json.load(open(sys.argv[1]))
 for key in sys.argv[2].split("."):
-    value = value[key]
+    value = value.get(key, "") if isinstance(value, dict) else ""
 print(value)' "$BOOT" "$1"; }
 stage start
 
+RUNTIME=$(field runtime)
+RUNTIME="${RUNTIME:-runc}"
+if [ "$RUNTIME" != runc ] && [ "$RUNTIME" != runsc ]; then
+  stage "failed:runtime is neither runc nor runsc"
+  exit 1
+fi
 RUNSC_RELEASE=$(field runscRelease)
 # A dated release, never the moving `release` suite: snapshots only restore under the runsc that made them.
-if ! [[ "$RUNSC_RELEASE" =~ ^[0-9]{8}(\.[0-9]+)?$ ]]; then
+if [ "$RUNTIME" = runsc ] && ! [[ "$RUNSC_RELEASE" =~ ^[0-9]{8}(\.[0-9]+)?$ ]]; then
   stage "failed:runscRelease is not a dated release"
   exit 1
 fi
@@ -36,51 +45,96 @@ if ! [[ "$ROOTFS_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
   stage "failed:bad rootfs version"
   exit 1
 fi
-
-stage packages
-retry apt-get update -q
-retry apt-get install -yq curl gnupg ca-certificates debian-keyring debian-archive-keyring apt-transport-https \
-  nftables zstd iproute2 python3-venv
-retry curl -fsSL -o /tmp/gvisor.key https://gvisor.dev/archive.key
-gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg /tmp/gvisor.key
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases ${RUNSC_RELEASE} main" \
-  > /etc/apt/sources.list.d/gvisor.list
-retry curl -1sLf -o /tmp/caddy.gpg.key https://dl.cloudsmith.io/public/caddy/stable/gpg.key
-gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy.gpg.key
-retry curl -1sLf -o /etc/apt/sources.list.d/caddy-stable.list https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt
-rm -f /tmp/gvisor.key /tmp/caddy.gpg.key
-retry apt-get update -q
-retry apt-get install -yq runsc caddy
-if ! runsc --version | head -1 | grep -q "release-${RUNSC_RELEASE}"; then
-  stage "failed:runsc is not release ${RUNSC_RELEASE}"
+if [ ! -x "$HOST/vendor/caddy" ] || ! ls "$HOST"/wheels/*.whl >/dev/null 2>&1; then
+  stage "failed:the bundle has no vendored Caddy or wheels (boot.py vendor)"
   exit 1
 fi
-apt-mark hold runsc >/dev/null
+
+stage packages
+APT_MIRROR=$(field aptMirror)
+if [ -n "$APT_MIRROR" ]; then
+  # Every Ubuntu archive of the stock image (archive, security, the country mirrors) to the one that answers.
+  sed -i -E "s#https?://([a-z]{2}\.)?(archive|security)\.ubuntu\.com/ubuntu/?#${APT_MIRROR%/}/#g" \
+    /etc/apt/sources.list
+fi
+retry apt-get update -q
+PACKAGES=(curl ca-certificates nftables zstd iproute2 python3-venv)
+if [ "$RUNTIME" = runc ]; then PACKAGES+=(runc); else PACKAGES+=(gnupg); fi
+retry apt-get install -yq "${PACKAGES[@]}"
+if [ "$RUNTIME" = runsc ]; then
+  retry curl -fsSL -o /tmp/gvisor.key https://gvisor.dev/archive.key
+  gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg /tmp/gvisor.key
+  rm -f /tmp/gvisor.key
+  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases ${RUNSC_RELEASE} main" \
+    > /etc/apt/sources.list.d/gvisor.list
+  retry apt-get update -q
+  retry apt-get install -yq runsc
+  if ! runsc --version | head -1 | grep -q "release-${RUNSC_RELEASE}"; then
+    stage "failed:runsc is not release ${RUNSC_RELEASE}"
+    exit 1
+  fi
+  apt-mark hold runsc >/dev/null
+else
+  runc --version | head -1
+fi
 # Ubuntu's nftables.service starts with `flush ruleset`: it stays off, hostd applies its own table.
 systemctl disable --now nftables >/dev/null 2>&1 || true
 
 stage venv
 python3 -m venv /opt/bro/venv
-retry /opt/bro/venv/bin/pip install -q "aiohttp==3.12.15" "cryptography==45.0.7"
+# Offline and hash-checked: only the wheels the bundle carries, each the one requirements.txt pins.
+/opt/bro/venv/bin/pip install -q --no-index --find-links "$HOST/wheels" --require-hashes -r "$HOST/requirements.txt"
 
 stage caddy
+install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
+getent group caddy >/dev/null || groupadd --system caddy
+id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
+  --shell /usr/sbin/nologin caddy
+mkdir -p /etc/caddy
 DOMAIN=$(field domain)
 if [ -z "$DOMAIN" ]; then
   IP=""
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    [ $((i % 2)) = 1 ] && URL=https://api.ipify.org || URL=https://ipv4.icanhazip.com
-    IP=$(curl -fsS -m 5 "$URL" || true)
+  for i in 1 2 3 4 5 6 7 8 9; do
+    # Yandex first: from Cloud.ru foreign services may accept and never answer.
+    case $((i % 3)) in
+      1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
+      2) URL=https://api.ipify.org ;;
+      *) URL=https://ipv4.icanhazip.com ;;
+    esac
+    IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
     [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
     sleep 2
   done
   [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]]
   DOMAIN="${IP//./-}.sslip.io"
 fi
-python3 -c 'import json, sys; json.dump({"domain": sys.argv[1]}, open("/etc/bro/hostd.json", "w"))' "$DOMAIN"
-# The admin API only on a unix socket that root (hostd) reaches: on localhost:2019 any local process could
-# load a config that publishes a worker's CDP. hostd rewrites the Caddyfile and reloads over this socket.
-mkdir -p /etc/systemd/system/caddy.service.d
-printf '[Service]\nRuntimeDirectory=caddy\nRuntimeDirectoryMode=0750\n' > /etc/systemd/system/caddy.service.d/bro.conf
+python3 -c 'import json, sys; json.dump({"domain": sys.argv[1], "runtime": sys.argv[2]}, open("/etc/bro/hostd.json", "w"))' \
+  "$DOMAIN" "$RUNTIME"
+# The unit Caddy's own packages ship, for the static binary. The admin API only on a unix socket that root
+# (hostd) reaches: on localhost:2019 any local process could load a config that publishes a worker's CDP.
+# hostd rewrites the Caddyfile and reloads over this socket.
+cat > /etc/systemd/system/caddy.service <<'UNIT'
+[Unit]
+Description=Caddy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n%s {\n\thandle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' \
   "$DOMAIN" > /etc/caddy/Caddyfile
 systemctl daemon-reload
@@ -99,7 +153,8 @@ ExecStart=/opt/bro/venv/bin/python /opt/bro/host/hostd.py
 Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=2
-# Sandboxes outlive a hostd restart (their own cgroups too): only hostd itself is stopped.
+# Sandboxes outlive a hostd restart (their own cgroups too): only hostd itself is stopped. No PrivateMounts
+# or ProtectSystem either: the overlays hostd mounts for runc sandboxes must be the host's own.
 KillMode=process
 
 [Install]
@@ -110,8 +165,10 @@ systemctl enable --now bro-hostd
 
 stage network
 # Sandboxes reach the internet through the host (network.py); nothing else is forwarded (hostd's table).
-echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/90-bro-host.conf
-sysctl -q --system
+# Chrome's own sandbox makes a user namespace in a runc container: unprivileged ones stay allowed.
+printf 'net.ipv4.ip_forward = 1\nkernel.unprivileged_userns_clone = 1\nuser.max_user_namespaces = 15000\n' \
+  > /etc/sysctl.d/90-bro-host.conf
+sysctl -q -e --system
 
 stage rootfs
 ROOTFS="$ROOT/rootfs/$ROOTFS_VERSION"

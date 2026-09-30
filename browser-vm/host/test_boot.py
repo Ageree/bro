@@ -1,7 +1,8 @@
 """Host boot tests: cd browser-vm/host && python -m unittest (stdlib only).
 
-The user data `boot.py` renders, the bundle it packs, and its boot script run in a temp directory with a
-fake curl; `provision.sh` is checked for syntax and for what must never drift (pinned runsc, no flushed
+The user data `boot.py` renders, the bundle it packs (with a fake vendor directory and pins made for it),
+and its boot script run in a temp directory with a fake curl; `provision.sh` is checked for syntax and for
+what must never drift (runc by default and a pinned runsc, nothing fetched from GitHub or PyPI, no flushed
 nftables, sandboxes that outlive hostd).
 """
 
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import boot  # noqa: E402
 
 PROVISION = (Path(__file__).parent / "provision.sh").read_text()
-ARGS = dict(host_id="bro-host-1", key=bytes.fromhex("aa" * 32), runsc_release="20260914",
+ARGS = dict(host_id="bro-host-1", key=bytes.fromhex("aa" * 32),
             bundle_url="https://s3.cloud.ru/b/host.tgz?X-Amz-Signature=x&y='z", bundle_sha256="ab" * 32,
             rootfs_version="2026-09-30.1", rootfs_url="https://s3.cloud.ru/b/rootfs.tar.zst?sig=1",
             rootfs_sha256="cd" * 32)
@@ -48,24 +49,68 @@ class CloudInitTest(unittest.TestCase):
         settings = json.loads(settings)
         self.assertEqual(mode, "0600")
         self.assertEqual(settings["bundle"]["url"], ARGS["bundle_url"])  # a quote in a URL survives
-        self.assertEqual(settings["runscRelease"], "20260914")
+        self.assertEqual((settings["runtime"], settings["runscRelease"]), ("runc", ""))
+        self.assertEqual(settings["aptMirror"], "http://mirror.yandex.ru/ubuntu")
         self.assertEqual(settings["rootfs"], {"version": "2026-09-30.1", "url": ARGS["rootfs_url"],
                                               "sha256": "cd" * 32})
         self.assertIn("/usr/local/sbin/bro-host-boot > /var/log/bro-provision.log", user_data)
 
-    def test_only_a_dated_runsc_release_is_accepted(self):
-        for release in ("release", "latest", "2026-09-14", ""):
+    def test_runsc_needs_a_dated_release_and_runc_none(self):
+        for release in ("release", "latest", "2026-09-14", "", None):
             with self.subTest(release), self.assertRaises(ValueError):
-                boot.cloud_init(**{**ARGS, "runsc_release": release})
-        boot.cloud_init(**{**ARGS, "runsc_release": "20260914.0"})
+                boot.cloud_init(**{**ARGS, "runtime": "runsc", "runsc_release": release})
+        _mode, settings = written(boot.cloud_init(**{**ARGS, "runtime": "runsc", "runsc_release": "20260914.0"}),
+                                  "/etc/bro/boot.json")
+        self.assertEqual((json.loads(settings)["runtime"], json.loads(settings)["runscRelease"]), ("runsc", "20260914.0"))
+        with self.assertRaises(ValueError):
+            boot.cloud_init(**{**ARGS, "runtime": "docker"})
+        with self.assertRaises(ValueError):
+            boot.cloud_init(**{**ARGS, "apt_mirror": "http://mirror.yandex.ru/ubuntu; rm -rf /"})
 
-    def test_bundle_is_reproducible_and_holds_the_host_code(self):
-        first = boot.bundle()
-        self.assertEqual(first, boot.bundle())
+
+class BundleTest(unittest.TestCase):
+    def vendor(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (directory / "wheels").mkdir()
+        (directory / "caddy").write_bytes(b"caddy binary")
+        (directory / "wheels" / "aiohttp-3.12.15-cp310-cp310-manylinux_2_17_x86_64.whl").write_bytes(b"wheel a")
+        (directory / "wheels" / "yarl-1.25.1-cp310-cp310-manylinux_2_17_x86_64.whl").write_bytes(b"wheel y")
+        pins = {"caddy_sha256": boot.sha256(b"caddy binary"),
+                "wheel_hashes": {boot.sha256(b"wheel a"), boot.sha256(b"wheel y")}}
+        return directory, pins
+
+    def test_is_reproducible_and_holds_the_host_code_caddy_and_the_wheels(self):
+        directory, pins = self.vendor()
+        first = boot.bundle(directory, **pins)
+        self.assertEqual(first, boot.bundle(directory, **pins))
         with tarfile.open(fileobj=io.BytesIO(gzip.decompress(first))) as tar:
             members = {m.name: m.mode for m in tar.getmembers()}
-        self.assertEqual(set(members), set(boot.FILES))
-        self.assertEqual(members["provision.sh"], 0o755)
+        self.assertEqual(set(members), set(boot.FILES) | {
+            "vendor/caddy", "wheels/aiohttp-3.12.15-cp310-cp310-manylinux_2_17_x86_64.whl",
+            "wheels/yarl-1.25.1-cp310-cp310-manylinux_2_17_x86_64.whl"})
+        self.assertEqual((members["provision.sh"], members["vendor/caddy"]), (0o755, 0o755))
+
+    def test_an_unpinned_or_missing_file_never_goes_in(self):
+        directory, pins = self.vendor()
+        (directory / "caddy").write_bytes(b"another caddy")
+        with self.assertRaisesRegex(ValueError, "Caddy"):
+            boot.bundle(directory, **pins)
+        directory, pins = self.vendor()
+        (directory / "wheels" / "evil-1.0-py3-none-any.whl").write_bytes(b"evil")
+        with self.assertRaisesRegex(ValueError, "not pinned"):
+            boot.bundle(directory, **pins)
+        directory, pins = self.vendor()
+        (directory / "wheels" / "yarl-1.25.1-cp310-cp310-manylinux_2_17_x86_64.whl").unlink()
+        with self.assertRaisesRegex(ValueError, "missing"):
+            boot.bundle(directory, **pins)
+
+    def test_every_requirement_is_pinned_to_one_wheel_and_caddy_to_one_binary(self):
+        requirements = (Path(boot.__file__).parent / "requirements.txt").read_text()
+        names = re.findall(r"(?m)^([a-z0-9-]+)==\S+ \\$", requirements)
+        self.assertEqual(len(names), len(boot.pinned_wheels(requirements)))
+        self.assertTrue({"aiohttp", "cryptography", "async-timeout"} <= set(names))  # Python 3.10 needs it
+        self.assertRegex(boot.VENDOR["caddy"]["binarySha256"], r"^[0-9a-f]{64}$")
+        self.assertTrue(boot.VENDOR["caddy"]["url"].startswith("https://github.com/caddyserver/caddy/releases/"))
 
 
 class BootScriptTest(unittest.TestCase):
@@ -115,7 +160,9 @@ class ProvisionTest(unittest.TestCase):
     def test_is_valid_bash(self):
         subprocess.run(["bash", "-n", str(Path(__file__).parent / "provision.sh")], check=True)
 
-    def test_runsc_is_pinned_and_held(self):
+    def test_runc_by_default_and_runsc_pinned_and_held(self):
+        self.assertIn('RUNTIME="${RUNTIME:-runc}"', PROVISION)
+        self.assertIn("PACKAGES+=(runc)", PROVISION)
         self.assertIn("https://storage.googleapis.com/gvisor/releases ${RUNSC_RELEASE} main", PROVISION)
         self.assertNotIn("gvisor/releases release main", PROVISION)
         self.assertIn('grep -q "release-${RUNSC_RELEASE}"', PROVISION)
@@ -128,8 +175,14 @@ class ProvisionTest(unittest.TestCase):
         self.assertIn("admin unix//run/caddy/admin.sock", PROVISION)
         self.assertNotIn("127.0.0.53", PROVISION)
         self.assertIn('sha256sum -c --quiet -', PROVISION)  # the rootfs is checked before it is unpacked
-        for requirement in re.findall(r'"(aiohttp|cryptography)([^"]*)"', PROVISION):
-            self.assertTrue(requirement[1].startswith("=="), requirement)
+        # Nothing from GitHub, PyPI or Caddy's apt repository: they are silent from Cloud.ru.
+        self.assertIn('--no-index --find-links "$HOST/wheels" --require-hashes -r "$HOST/requirements.txt"',
+                      PROVISION)
+        for unreachable in ("github", "pypi.org", "cloudsmith", "archive.ubuntu.com/ubuntu "):
+            self.assertNotIn(unreachable, PROVISION)
+        self.assertIn('install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy', PROVISION)
+        self.assertIn("(archive|security)\\.ubuntu\\.com", PROVISION)  # apt goes to the mirror
+        self.assertIn("kernel.unprivileged_userns_clone = 1", PROVISION)  # Chrome's own sandbox under runc
         self.assertNotIn("set -x", PROVISION)  # the log must not echo presigned URLs
         self.assertIn("tar --numeric-owner -I zstd -xpf", PROVISION)  # the rootfs keeps its own ids
 

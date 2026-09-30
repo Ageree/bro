@@ -1,8 +1,10 @@
 """hostd tests: cd browser-vm/host && python -m unittest (needs aiohttp and cryptography; no root).
 
-runsc, ip, nft, zstd and caddy are a fake runner (records argv, writes a fake checkpoint image, can refuse a
-restore); Object Storage is an aiohttp server behind "presigned" URLs; the sandbox's worker is an aiohttp
-server the transit addresses reach (the transit pool is put on 127.0.0.0/16 for the tests).
+runc, runsc, mount, umount, ip, nft, zstd and caddy are a fake runner (records argv, writes a fake
+checkpoint image, can refuse a restore or a graceful Chrome stop); Object Storage is an aiohttp server behind
+"presigned" URLs; the sandbox's worker is an aiohttp server the transit addresses reach (the transit pool is
+put on 127.0.0.0/16 for the tests). The sandbox and park tests run under both runtimes where the behaviour
+is the same (`RUNTIME`); the snapshot tests are gVisor's, the stopped-Chrome park is runc's.
 """
 
 import asyncio
@@ -48,16 +50,23 @@ def request(**overrides):
             "workerKey": WORKER_KEY, "rootfsVersion": "v1", **overrides}
 
 
-class FakeRunner:
-    """runsc, ip, nft, zstd and caddy as the host would run them."""
+RUNSC_VERSION = "runsc version release-20260914.0"
+RUNC_VERSION = "runc version 1.1.12-0ubuntu2~22.04.1"
 
-    def __init__(self, version="runsc version release-20260914.0"):
-        self.version = version
+
+class FakeRunner:
+    """runc, runsc, mount, umount, ip, nft, zstd and caddy as the host would run them."""
+
+    def __init__(self):
         self.calls = []
         self.containers = {}
         self.fail_restore = False
         self.fail_checkpoint = False
-        self.stuck = set()  # containers `runsc delete` cannot remove
+        self.fail_exec = False  # `systemctl stop bro-chrome` in the sandbox fails
+        self.ignore_term = False  # the init does not stop on SIGTERM either
+        self.chrome_stopped = []  # containers whose Chrome was stopped gracefully, and how
+        self.stuck = set()  # containers `delete` cannot remove
+        self.mounted = set()
         self.host_rules, self.router_rules, self.caddyfiles = [], [], []
         self.checkpointed, self.restored = [], []
         self.image_bytes = random.Random(7).randbytes(300 * 1024)
@@ -65,8 +74,9 @@ class FakeRunner:
     def argv(self, tool):
         return [argv for argv, _log in self.calls if Path(argv[0]).name == tool]
 
-    def runsc_calls(self, command):
-        return [(argv, log) for argv, log in self.calls if Path(argv[0]).name == "runsc" and command in argv]
+    def runtime_calls(self, command):
+        return [(argv, log) for argv, log in self.calls
+                if Path(argv[0]).name in ("runc", "runsc") and command in argv]
 
     async def run(self, argv, *, log_file=None, timeout=120):
         self.calls.append((list(argv), log_file))
@@ -74,8 +84,17 @@ class FakeRunner:
             with open(log_file, "ab") as sink:  # a file the sandbox keeps, as the real runner gives
                 sink.write(b"runsc output\n")
         tool = Path(argv[0]).name
-        if tool == "runsc":
-            return self.runsc(argv[1:])
+        if tool in ("runsc", "runc"):
+            return self.runtime(tool, argv[1:])
+        if tool == "mount":
+            assert Path(argv[-1]).is_dir(), f"mount point {argv[-1]} missing"
+            self.mounted.add(argv[-1])
+            return 0, ""
+        if tool == "umount":
+            if argv[-1] not in self.mounted:
+                return 32, "not mounted"
+            self.mounted.discard(argv[-1])
+            return 0, ""
         if tool == "ip":
             if argv[1:] == ["-j", "route", "show", "default"]:
                 return 0, json.dumps([{"dst": "default", "gateway": "10.0.0.1", "dev": "eth0"}])
@@ -101,12 +120,15 @@ class FakeRunner:
             return 0, ""
         raise AssertionError(f"unexpected command {argv}")
 
-    def runsc(self, args):
+    def runtime(self, tool, args):
         if args == ["--version"]:
-            return 0, self.version + "\nspec: 1.1.0\n"
+            return 0, (RUNSC_VERSION if tool == "runsc" else RUNC_VERSION) + "\nspec: 1.1.0\n"
+        if tool == "runc":
+            assert not any(a.startswith(("--overlay2", "--platform")) for a in args), "runsc flags given to runc"
         flags = [a for a in args if a.startswith("--")]
         words = [a for a in args if not a.startswith("--")]
-        command, container = words[0], words[-1]
+        command = words[0]
+        container = words[1] if command in ("exec", "kill") else words[-1]
         option = lambda name: next(f.split("=", 1)[1] for f in flags if f.startswith(f"--{name}="))  # noqa: E731
         if command == "create":
             self.containers[container] = "created"
@@ -126,9 +148,21 @@ class FakeRunner:
                 return 1, "incompatible snapshot"
             self.restored.append(hashlib.sha256((Path(option("image-path")) / "checkpoint.img").read_bytes()).hexdigest())
             self.containers[container] = "running"
+        elif command == "exec":
+            assert tool == "runc"
+            if self.fail_exec or self.containers.get(container) != "running":
+                return 1, "exec failed"
+            assert words[2:] == ["/usr/bin/systemctl", "stop", "bro-chrome"], words
+            self.chrome_stopped.append((container, "systemctl"))
+        elif command == "kill":
+            if container not in self.containers:
+                return 1, "container does not exist"
+            if not self.ignore_term:
+                self.chrome_stopped.append((container, words[2]))
+                self.containers[container] = "stopped"
         elif command == "delete":
             if container in self.stuck:
-                return 124, "runsc timed out after 60 s"
+                return 124, f"{tool} timed out after 60 s"
             self.containers.pop(container, None)
         elif command == "state":
             if container not in self.containers:
@@ -176,6 +210,8 @@ class FakeStorage:
 
 
 class HostTest(unittest.IsolatedAsyncioTestCase):
+    RUNTIME = "runc"
+
     async def asyncSetUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.storage = FakeStorage()
@@ -215,7 +251,8 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
             (rootfs / "passwd").write_text(
                 f"root:x:0:0::/root:/bin/bash\nbro:x:{os.getuid()}:{os.getgid()}::/home/bro:/bin/bash\n")
         config = hostd.Config(**{
-            "root": str(root), "shm": str(root / "shm"), "runsc": "/usr/bin/runsc",
+            "root": str(root), "shm": str(root / "shm"), "runtime": self.RUNTIME, "runsc": "/usr/bin/runsc",
+            "runc": "/usr/sbin/runc", "mount": "/usr/bin/mount", "umount": "/usr/bin/umount",
             "caddyfile": str(root / "Caddyfile"), "domain": "203-0-113-7.sslip.io", "transit_pool": "127.0.0.0/16",
             "worker_port": self.worker_port, "chunk_bytes": 64 * 1024, "parallel": 4, "start_timeout_s": 3,
             "restore_timeout_s": 3, **settings})
@@ -241,6 +278,18 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
         (profile / "Default").mkdir()
         (profile / "Default" / "Cookies").write_bytes(MARKER)  # Chrome signed in somewhere
         return host, runner, client, record
+
+    async def parked_set(self):
+        host, runner, client, _record = await self.started()
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 200, parked)
+        return runner, parked
+
+    def restore_body(self, kind="restore", generation=4):
+        return request(generation=generation, **{kind: {**self.set_urls(3), "dataKey": DATA_KEY}})
+
+    def profile_on(self, host):
+        return (Path(host.config.root) / "sandboxes" / "ws-abc" / "profile" / "Default" / "Cookies").read_bytes()
 
 
 class TokenTest(unittest.TestCase):
@@ -334,7 +383,9 @@ class SandboxTest(HostTest):
     async def test_health_needs_no_token_and_everything_else_does(self):
         _host, _runner, client = await self.host()
         status, health = await self.call(client, "GET", "/v1/health", auth=False)
-        self.assertEqual((status, health["runsc"]), (200, "runsc version release-20260914.0"))
+        version = RUNSC_VERSION if self.RUNTIME == "runsc" else RUNC_VERSION
+        self.assertEqual((status, health["runtime"], health["runtimeVersion"]), (200, self.RUNTIME, version))
+        self.assertEqual(health["runsc"], RUNSC_VERSION if self.RUNTIME == "runsc" else None)
         for method, path in [("GET", "/v1/capacity"), ("POST", "/v1/sandboxes"), ("GET", "/v1/sandboxes/ws-abc"),
                              ("DELETE", "/v1/sandboxes/ws-abc?generation=3"), ("POST", "/v1/sandboxes/ws-abc/park")]:
             with self.subTest(path):
@@ -347,7 +398,7 @@ class SandboxTest(HostTest):
                 status, _ = await self.call(client, "POST", "/v1/sandboxes", request(id=bad))
                 self.assertEqual(status, 400)
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws_abc"))[0], 400)
-        self.assertEqual(runner.runsc_calls("create"), [])
+        self.assertEqual(runner.runtime_calls("create"), [])
 
     async def test_fresh_start_builds_the_sandbox_the_contract_describes(self):
         host, runner, client = await self.host()
@@ -359,8 +410,12 @@ class SandboxTest(HostTest):
         self.assertEqual(json.loads(worker_json.read_text()), {"environment": "personal:abc", "key": WORKER_KEY})
         self.assertNotIn("127.0.0.53", (home / "resolv.conf").read_text())
         bundle = json.loads((home / "bundle" / "config.json").read_text())
-        self.assertEqual(bundle["root"], {"path": str(Path(host.config.root) / "rootfs" / "v1"), "readonly": False})
         self.assertEqual(bundle["process"]["args"], ["/usr/local/sbin/bro-sandbox-init"])
+        self.assertEqual(bundle["hostname"], "bro-sandbox")
+        self.assertIs(bundle["process"]["noNewPrivileges"], False)  # the worker's sudo
+        for capability in ("CAP_SETUID", "CAP_SETGID"):
+            self.assertIn(capability, bundle["process"]["capabilities"]["bounding"])
+        self.assertEqual(bundle["linux"]["resources"]["pids"], {"limit": 4096})
         self.assertIn("BRO_WORKER_BIND=0.0.0.0", bundle["process"]["env"])
         mounts = {m["destination"]: m for m in bundle["mounts"]}
         self.assertEqual((mounts["/var/lib/bro/profile"]["source"], mounts["/var/lib/bro/profile"]["options"]),
@@ -369,10 +424,11 @@ class SandboxTest(HostTest):
         self.assertEqual(mounts["/etc/resolv.conf"]["source"], str(home / "resolv.conf"))
         self.assertIn({"type": "network", "path": "/var/run/netns/bro-s-ws-abc"}, bundle["linux"]["namespaces"])
         self.assertEqual(bundle["linux"]["resources"]["memory"]["limit"], 2048 * 2**20)
-        (create, log), = runner.runsc_calls("create")
-        self.assertIn("--overlay2=root:memory", create)
-        self.assertIn("--platform=systrap", create)
-        self.assertEqual(log, home / "runsc.log")  # stdio to a file, never a pipe
+        (create, log), = runner.runtime_calls("create")
+        self.assertEqual(Path(create[0]).name, self.RUNTIME)
+        self.assertIn(f"--bundle={home / 'bundle'}", create)
+        self.assertEqual(log, home / "runtime.log")  # stdio to a file, never a pipe
+        self.assertEqual(len(runner.runtime_calls("start")), 1)
         self.assertIn("127.0.0.2", self.worker_hits[-1])  # the worker was reached at the router's transit address
         # The worker key never reaches a command line.
         self.assertFalse(any(WORKER_KEY in " ".join(argv) for argv, _ in runner.calls))
@@ -387,10 +443,15 @@ class SandboxTest(HostTest):
             self.assertIn(blocked, rules)
         self.assertIn('iifname "brt0" ip saddr != 127.0.0.2 drop', rules)
         self.assertIn('iifname "brt1" ip saddr != 127.0.0.6 drop', rules)
-        self.assertIn('iifname "brt*" ip daddr @blocked drop', rules)
+        self.assertIn('iifname "brt*" ip daddr @blocked jump refuse', rules)
         self.assertIn('iifname "brt*" oifname "eth0" accept', rules)
         self.assertIn('oifname "brt*" drop', rules)  # nothing opens a connection into a sandbox but the host
-        self.assertIn("\t\tiifname \"brt*\" drop\n\t}\n\tchain forward", rules)  # no port of the host
+        self.assertIn("\t\tiifname \"brt*\" jump refuse\n\t}\n\tchain forward", rules)  # no port of the host
+        # Refused at once, never silently dropped: a silent address hung browser-use for minutes.
+        self.assertIn("chain refuse {\n\t\tmeta l4proto tcp reject with tcp reset\n"
+                      "\t\treject with icmpx type admin-prohibited\n\t}", rules)
+        self.assertEqual(rules.count('iifname "brt*" drop'), 0)
+        self.assertIn('iifname "in0" meta l4proto tcp reject with tcp reset', runner.router_rules[-1])
         self.assertIn('oifname "eth0" ip saddr 127.0.0.0/16 masquerade', rules)
         self.assertIn("dnat to 192.168.254.2", runner.router_rules[-1])
         caddyfile = runner.caddyfiles[-1]
@@ -405,7 +466,7 @@ class SandboxTest(HostTest):
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
         status, again = await self.call(client, "POST", "/v1/sandboxes", request())
         self.assertEqual((status, again["path"]), (200, "fresh"))
-        self.assertEqual(len(runner.runsc_calls("create")), 1)
+        self.assertEqual(len(runner.runtime_calls("create")), 1)
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request(generation=2)))[0], 409)
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request(workspace="personal:x")))[0], 409)
         status, adopted = await self.call(client, "POST", "/v1/sandboxes", request(generation=4))
@@ -439,7 +500,11 @@ class SandboxTest(HostTest):
         self.assertEqual(capacity["rootfsVersions"], ["v1"])
         self.assertEqual(capacity["sandboxes"], [{"id": "ws-abc", "state": "running", "generation": 3,
                                                   "memoryMb": 2048, "usedMb": 1500}])
-        self.assertEqual(capacity["snapshotFormat"]["runsc"], "runsc version release-20260914.0")
+        self.assertEqual(capacity["runtime"], self.RUNTIME)
+        if self.RUNTIME == "runsc":
+            self.assertEqual(capacity["snapshotFormat"]["runsc"], RUNSC_VERSION)
+        else:
+            self.assertIsNone(capacity["snapshotFormat"])  # runc makes no snapshots
         self.assertEqual(len(capacity["cpu"]["features"]), 16)
 
     async def test_a_restarted_hostd_keeps_live_sandboxes_and_fails_lost_ones(self):
@@ -466,13 +531,15 @@ class SandboxTest(HostTest):
         self.addAsyncCleanup(third.close)
         self.assertEqual(third.sandboxes["ws-abc"]["state"], "failed")
 
-    async def test_a_sandbox_runsc_cannot_delete_keeps_its_record(self):
+    async def test_a_sandbox_the_runtime_cannot_delete_keeps_its_record(self):
         host, runner, client, _record = await self.started()
         runner.stuck.add("bro-ws-abc")
+        netns_deletes = runner.argv("ip").count(["ip", "netns", "del", "bro-s-ws-abc"])  # the start's fresh netns
         status, answer = await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3")
-        self.assertEqual((status, answer["error"]), (502, "runsc could not delete the sandbox"))
+        self.assertEqual((status, answer["error"]), (502, f"{self.RUNTIME} could not delete the sandbox"))
         self.assertTrue((Path(host.config.root) / "sandboxes" / "ws-abc" / "profile").exists())
-        self.assertNotIn(["ip", "netns", "del", "bro-s-ws-abc"], runner.argv("ip"))
+        self.assertEqual(runner.argv("ip").count(["ip", "netns", "del", "bro-s-ws-abc"]), netns_deletes)
+        self.assertEqual(runner.argv("umount"), [])  # its root stays mounted under it
         status, record = await self.call(client, "GET", "/v1/sandboxes/ws-abc")
         self.assertEqual((status, record["state"]), (200, "failed"))
         self.assertIn("/g/ws-abc/", runner.caddyfiles[-1])  # its slot is still taken
@@ -485,7 +552,7 @@ class SandboxTest(HostTest):
         status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
         self.assertEqual(status, 502)
         self.assertIn("no bro user", answer["error"])
-        self.assertEqual(runner.runsc_calls("create"), [])
+        self.assertEqual(runner.runtime_calls("create"), [])
 
     async def test_memory_limits_never_add_up_to_more_than_the_host_has(self):
         _host, _runner, client = await self.host(memory_limit_mb=5000)
@@ -500,7 +567,7 @@ class SandboxTest(HostTest):
     async def test_the_runsc_log_is_cut_to_its_newer_half(self):
         host, _runner, _client, _record = await self.started()
         host.config.log_max_bytes = 1000
-        log = Path(host.config.root) / "sandboxes" / "ws-abc" / "runsc.log"
+        log = Path(host.config.root) / "sandboxes" / "ws-abc" / "runtime.log"
         log.write_bytes(b"o" * 1500 + b"n" * 500)
         host.trim_logs()
         self.assertEqual(log.read_bytes(), b"n" * 500)
@@ -515,6 +582,88 @@ class SandboxTest(HostTest):
 
 
 class ParkTest(HostTest):
+    """What a set is, whichever runtime made it (runc here; GvisorParkTest runs them under runsc)."""
+
+    async def test_urls_go_out_exactly_as_presigned(self):
+        _host, _runner, _client = await self.host()
+        url = str(self.s3.make_url("/bucket/")) + "personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"
+        async with aiohttp.ClientSession() as http:
+            await sets.transfer(http, "PUT", url, b"x")
+        self.assertEqual(self.storage.raw, ["/bucket/personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"])
+
+    async def test_too_few_chunk_urls_is_a_failed_park_not_a_partial_set(self):
+        host, _runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        (profile / "Default" / "History").write_bytes(random.Random(3).randbytes(300 * 1024))  # > 2 chunks
+        body = self.park_body()
+        body["upload"]["chunkUrls"] = body["upload"]["chunkUrls"][:2]
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", body)
+        self.assertEqual(status, 502)
+        self.assertIn("chunk URLs", answer["error"])
+        self.assertEqual(self.storage.objects, {})
+
+    async def test_links_out_of_the_profile_are_left_behind(self):
+        host, _runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        (profile / "SingletonSocket").symlink_to("/tmp/.org.chromium.Chromium.x/SingletonSocket")
+        (profile / "Escape").symlink_to("../../../../etc")
+        (profile / "SingletonLock").symlink_to("bro-sandbox-42")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
+        other, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual(status, 201, record)
+        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
+        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default", "SingletonLock"])
+        self.assertEqual(self.profile_on(other), MARKER)
+
+    async def test_a_cold_set_fetches_the_profile_alone(self):
+        _runner, parked = await self.parked_set()
+        self.storage.gets.clear()
+        host, runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body("profile"))
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertEqual(len(self.storage.gets), 1 + parked["parts"]["profile"]["chunks"])
+        self.assertEqual(self.profile_on(host), MARKER)
+
+    async def test_a_tampered_chunk_fails_the_start_and_leaves_nothing(self):
+        await self.parked_set()
+        key = "ws/3/chunk-0000"
+        data = self.storage.objects[key]
+        self.storage.objects[key] = data[:-1] + bytes([data[-1] ^ 1])
+        host, runner, client = await self.host("b")
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual(status, 502)
+        self.assertIn("checksum", answer["error"])
+        self.assertFalse((Path(host.config.root) / "sandboxes" / "ws-abc").exists())
+        self.assertEqual(runner.runtime_calls("restore") + runner.runtime_calls("create"), [])
+
+    async def test_a_set_of_another_workspace_or_a_newer_generation_is_refused(self):
+        await self.parked_set()
+        _host, _runner, client = await self.host("b")
+        body = self.restore_body()
+        body["workspace"] = "personal:other"
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", body))[0], 409)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=2)))[0], 409)
+        # The same generation too: its park would overwrite the chunks of the set it came from.
+        _host, _runner, client = await self.host("c")
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=3))
+        self.assertEqual((status, answer["setGeneration"]), (409, 3))
+
+    async def test_a_wrong_data_key_does_not_open_the_set(self):
+        await self.parked_set()
+        _host, _runner, client = await self.host("b")
+        body = self.restore_body()
+        body["restore"]["dataKey"] = "33" * 32
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", body)
+        self.assertEqual(status, 502)
+        self.assertIn("manifest does not verify", answer["error"])
+
+
+class GvisorParkTest(ParkTest):
+    """runsc: the park freezes the sandbox, and a restore brings its memory back."""
+
+    RUNTIME = "runsc"
+
     async def test_park_uploads_encrypted_chunks_in_parallel_and_the_manifest_last(self):
         host, runner, client, _record = await self.started()
         status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
@@ -531,7 +680,7 @@ class ParkTest(HostTest):
         for key, data in self.storage.objects.items():
             self.assertNotIn(MARKER, data, key)
             self.assertNotIn(runner.image_bytes[:64], data, key)
-        (checkpoint, _), = runner.runsc_calls("checkpoint")
+        (checkpoint, _), = runner.runtime_calls("checkpoint")
         self.assertIn(f"--image-path={host.config.shm}/bro-ws-abc", checkpoint)
         self.assertFalse((Path(host.config.root) / "sandboxes" / "ws-abc").exists())
         self.assertEqual(sorted(Path(host.config.shm).iterdir()), [])
@@ -563,34 +712,6 @@ class ParkTest(HostTest):
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
         self.assertEqual(self.storage.objects, {})
 
-    async def test_urls_go_out_exactly_as_presigned(self):
-        _host, _runner, _client = await self.host()
-        url = str(self.s3.make_url("/bucket/")) + "personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"
-        async with aiohttp.ClientSession() as http:
-            await sets.transfer(http, "PUT", url, b"x")
-        self.assertEqual(self.storage.raw, ["/bucket/personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"])
-
-    async def test_too_few_chunk_urls_is_a_failed_park_not_a_partial_set(self):
-        _host, _runner, client, _record = await self.started()
-        body = self.park_body()
-        body["upload"]["chunkUrls"] = body["upload"]["chunkUrls"][:2]
-        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", body)
-        self.assertEqual(status, 502)
-        self.assertIn("chunk URLs", answer["error"])
-        self.assertEqual(self.storage.objects, {})
-
-    async def parked_set(self):
-        host, runner, client, _record = await self.started()
-        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
-        self.assertEqual(status, 200, parked)
-        return runner, parked
-
-    def restore_body(self, kind="restore", generation=4):
-        return request(generation=generation, **{kind: {**self.set_urls(3), "dataKey": DATA_KEY}})
-
-    def profile_on(self, host):
-        return (Path(host.config.root) / "sandboxes" / "ws-abc" / "profile" / "Default" / "Cookies").read_bytes()
-
     async def test_restore_on_another_host(self):
         first, _parked = await self.parked_set()
         host, runner, client = await self.host("b")
@@ -598,12 +719,12 @@ class ParkTest(HostTest):
         self.assertEqual((status, record["path"], record["generation"]), (201, "restored", 4), record)
         self.assertEqual(self.profile_on(host), MARKER)
         self.assertEqual(runner.restored, first.checkpointed)  # the same memory image came back
-        (restore, log), = runner.runsc_calls("restore")
+        (restore, log), = runner.runtime_calls("restore")
         home = Path(host.config.root) / "sandboxes" / "ws-abc"
         self.assertIn("--detach", restore)
         self.assertIn(f"--bundle={home / 'bundle'}", restore)
-        self.assertEqual(log, home / "runsc.log")
-        self.assertEqual(runner.runsc_calls("create"), [])
+        self.assertEqual(log, home / "runtime.log")
+        self.assertEqual(runner.runtime_calls("create"), [])
         bundle = json.loads((home / "bundle" / "config.json").read_text())
         self.assertIn({"type": "network", "path": "/var/run/netns/bro-s-ws-abc"}, bundle["linux"]["namespaces"])
         self.assertFalse((Path(host.config.shm) / "bro-ws-abc").exists())
@@ -616,7 +737,7 @@ class ParkTest(HostTest):
         status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
         self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "runsc restore failed"))
         self.assertEqual(self.profile_on(host), MARKER)
-        self.assertEqual(len(runner.runsc_calls("create")), 1)
+        self.assertEqual(len(runner.runtime_calls("create")), 1)
         self.assertEqual(runner.argv("ip").count(["ip", "netns", "add", "bro-s-ws-abc"]), 2)
         self.assertEqual(sorted(Path(host.config.shm).iterdir()), [])
         self.assertFalse((Path(host.config.root) / "staging" / "ws-abc").exists())
@@ -627,22 +748,8 @@ class ParkTest(HostTest):
         status, record = await self.call(client, "POST", "/v1/sandboxes", {**self.restore_body(), "rootfsVersion": "v2"})
         self.assertEqual((status, record["path"]), (201, "cold"))
         self.assertIn("rootfs v1", record["fallback"])
-        self.assertEqual(runner.runsc_calls("restore"), [])
+        self.assertEqual(runner.runtime_calls("restore"), [])
         self.assertEqual(self.profile_on(host), MARKER)
-
-    async def test_links_out_of_the_profile_are_left_behind(self):
-        host, _runner, client, _record = await self.started()
-        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
-        (profile / "SingletonSocket").symlink_to("/tmp/.org.chromium.Chromium.x/SingletonSocket")
-        (profile / "Escape").symlink_to("../../../../etc")
-        (profile / "SingletonLock").symlink_to("bro-sandbox-42")
-        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
-        other, _runner, client = await self.host("b")
-        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
-        self.assertEqual(status, 201, record)
-        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
-        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default", "SingletonLock"])
-        self.assertEqual(self.profile_on(other), MARKER)
 
     async def test_a_snapshot_from_other_cpu_features_is_not_even_tried(self):
         await self.parked_set()
@@ -651,50 +758,179 @@ class ParkTest(HostTest):
         status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
         self.assertEqual((status, record["path"]), (201, "cold"))
         self.assertIn("CPU", record["fallback"])
-        self.assertEqual(runner.runsc_calls("restore"), [])
+        self.assertEqual(runner.runtime_calls("restore"), [])
         self.assertEqual(self.profile_on(host), MARKER)
 
-    async def test_a_cold_set_fetches_the_profile_alone(self):
-        _runner, parked = await self.parked_set()
+
+class GvisorSandboxTest(SandboxTest):
+    """The same sandbox contract under runsc."""
+
+    RUNTIME = "runsc"
+
+    async def test_gvisor_overlays_the_rootfs_itself(self):
+        host, runner, client = await self.host()
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        bundle = json.loads((Path(host.config.root) / "sandboxes" / "ws-abc" / "bundle" / "config.json").read_text())
+        self.assertEqual(bundle["root"], {"path": str(Path(host.config.root) / "rootfs" / "v1"), "readonly": False})
+        (create, _log), = runner.runtime_calls("create")
+        self.assertIn("--overlay2=root:memory", create)
+        self.assertIn("--platform=systrap", create)
+        self.assertEqual(runner.argv("mount"), [])
+        self.assertNotIn({"type": "cgroup"}, bundle["linux"]["namespaces"])
+
+
+class RuncSandboxTest(HostTest):
+    """What a plain container needs that gVisor gave by itself."""
+
+    async def test_the_root_is_an_overlay_on_a_tmpfs_of_its_own(self):
+        host, runner, client = await self.host(overlay_mb=1500)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        home = Path(host.config.root) / "sandboxes" / "ws-abc"
+        rootfs = Path(host.config.root) / "rootfs" / "v1"
+        tmpfs, overlay = runner.argv("mount")
+        self.assertEqual(tmpfs, ["/usr/bin/mount", "-t", "tmpfs", "-o", "size=1500m,mode=0755", "tmpfs",
+                                 str(home / "overlay")])
+        self.assertEqual(overlay, ["/usr/bin/mount", "-t", "overlay", "overlay", "-o",
+                                   f"lowerdir={rootfs},upperdir={home / 'overlay' / 'upper'},"
+                                   f"workdir={home / 'overlay' / 'work'}", str(home / "root")])
+        bundle = json.loads((home / "bundle" / "config.json").read_text())
+        self.assertEqual(bundle["root"], {"path": str(home / "root"), "readonly": False})
+        linux = bundle["linux"]
+        self.assertIn({"type": "cgroup"}, linux["namespaces"])
+        self.assertIn("/proc/kcore", linux["maskedPaths"])
+        self.assertIn("/proc/sys", linux["readonlyPaths"])
+        self.assertEqual(linux["resources"]["devices"], [{"allow": False, "access": "rwm"}])
+        self.assertEqual(linux["cgroupsPath"], "/bro-sandboxes/ws-abc")
+        self.assertNotIn("seccomp", linux)  # Chrome's own sandbox needs its user namespace
+        capabilities = bundle["process"]["capabilities"]["bounding"]
+        for missing in ("CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_NET_RAW"):
+            self.assertNotIn(missing, capabilities)
+        self.assertEqual(bundle["process"]["oomScoreAdj"], 500)
+        (create, _log), = runner.runtime_calls("create")
+        self.assertEqual(create[:3], ["/usr/sbin/runc", f"--root={host.config.runc_root}", "create"])
+
+    async def test_delete_unmounts_the_root_before_the_host_dir_goes(self):
+        host, runner, client, _record = await self.started()
+        home = Path(host.config.root) / "sandboxes" / "ws-abc"
+        self.assertEqual(runner.mounted, {str(home / "overlay"), str(home / "root")})
+        self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 200)
+        self.assertEqual(runner.mounted, set())
+        unmounted = [argv[-1] for argv in runner.argv("umount")]
+        self.assertLess(unmounted.index(str(home / "root")), unmounted.index(str(home / "overlay")))
+        self.assertFalse(home.exists())
+
+    async def test_a_configured_seccomp_profile_goes_into_the_bundle(self):
+        profile = {"defaultAction": "SCMP_ACT_ERRNO", "syscalls": [{"names": ["read"], "action": "SCMP_ACT_ALLOW"}]}
+        path = self.tmp / "seccomp.json"
+        path.write_text(json.dumps(profile))
+        host, _runner, client = await self.host(seccomp_profile=str(path))
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        bundle = json.loads((Path(host.config.root) / "sandboxes" / "ws-abc" / "bundle" / "config.json").read_text())
+        self.assertEqual(bundle["linux"]["seccomp"], profile)
+
+    async def test_memory_comes_from_the_config_when_the_request_names_none(self):
+        host, _runner, client = await self.host(memory_mb=3072)
+        body = request()
+        del body["memoryMb"]
+        status, record = await self.call(client, "POST", "/v1/sandboxes", body)
+        self.assertEqual((status, record["memoryMb"]), (201, 3072))
+        bundle = json.loads((Path(host.config.root) / "sandboxes" / "ws-abc" / "bundle" / "config.json").read_text())
+        self.assertEqual(bundle["linux"]["resources"]["memory"]["limit"], 3072 * 2**20)
+
+    def test_only_known_runtimes(self):
+        with self.assertRaises(ValueError):
+            hostd.Config(runtime="docker")
+        self.assertEqual(hostd.Config().runtime, "runc")
+
+
+class StoppedParkTest(HostTest):
+    """runc: the park stops Chrome gracefully and keeps the profile alone; a restore is a fresh start."""
+
+    async def test_park_stops_chrome_gracefully_and_uploads_the_profile_alone(self):
+        host, runner, client, _record = await self.started()
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 200, parked)
+        self.assertEqual((parked["state"], parked["runtime"], parked["format"]), ("parked", "runc", None))
+        self.assertEqual(set(parked["parts"]), {"profile"})
+        self.assertEqual(set(parked["timings"]), {"stopMs", "chromeStop", "packMs", "uploadMs", "totalMs"})
+        self.assertEqual(parked["timings"]["chromeStop"], "systemctl")
+        self.assertEqual(runner.chrome_stopped, [("bro-ws-abc", "systemctl")])
+        # Chrome writes its cookies before the container goes, and the profile is packed after that.
+        commands = [argv[2] for argv, _ in runner.calls if Path(argv[0]).name == "runc" and len(argv) > 2]
+        self.assertLess(commands.index("exec"), commands.index("delete"))
+        self.assertEqual(runner.runtime_calls("checkpoint"), [])
+        self.assertEqual(self.storage.puts[-1], "ws/3/manifest.json")
+        manifest = json.loads(self.storage.objects["ws/3/manifest.json"])
+        self.assertEqual((manifest["runtime"], manifest["snapshot"]), ("runc", None))
+        for key, data in self.storage.objects.items():
+            self.assertNotIn(MARKER, data, key)
+        self.assertEqual(runner.mounted, set())
+        self.assertFalse((Path(host.config.root) / "sandboxes" / "ws-abc").exists())
+        self.assertNotIn("/g/ws-abc/", runner.caddyfiles[-1])
+        self.assertEqual(await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()), (200, parked))
+
+    async def test_a_chrome_that_ignores_systemctl_gets_sigterm_through_the_init(self):
+        _host, runner, client, _record = await self.started()
+        runner.fail_exec = True
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, parked["timings"]["chromeStop"]), (200, "sigterm"))
+        self.assertEqual(runner.chrome_stopped, [("bro-ws-abc", "SIGTERM")])
+
+    async def test_a_chrome_that_does_not_stop_keeps_the_sandbox_running_and_writes_nothing(self):
+        host, runner, client, _record = await self.started()
+        host.config.chrome_stop_timeout_s = 0.3
+        runner.fail_exec = runner.ignore_term = True
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 502)
+        self.assertIn("Chrome did not stop", answer["error"])
+        self.assertEqual(self.storage.objects, {})
+        self.assertEqual(runner.runtime_calls("delete"), [])
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+
+    async def test_a_failed_upload_starts_the_same_sandbox_again_here(self):
+        host, runner, client, _record = await self.started()
+        self.storage.fail = {"ws/3/chunk-0000"}
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["restoredLocally"]), (502, True))
+        self.assertNotIn("ws/3/manifest.json", self.storage.objects)
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        self.assertEqual(len(runner.runtime_calls("create")), 2)
+        self.assertEqual(runner.argv("ip").count(["ip", "netns", "add", "bro-s-ws-abc"]), 2)  # a fresh netns
+        self.assertEqual(self.profile_on(host), MARKER)
+
+    async def test_restore_elsewhere_is_a_fresh_start_with_the_profile(self):
+        await self.parked_set()
+        host, runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"], record["generation"]), (201, "cold", 4), record)
+        self.assertIn("runc keeps no memory snapshots", record["fallback"])
+        self.assertEqual(self.profile_on(host), MARKER)
+        self.assertEqual(runner.runtime_calls("restore"), [])
+        self.assertEqual(len(runner.runtime_calls("create")), 1)
+
+    async def test_a_gvisor_set_comes_back_on_runc_with_its_profile_alone(self):
+        gvisor, _runner, client = await self.host("a", runtime="runsc")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", request())
+        self.assertEqual(status, 201, record)
+        profile = Path(gvisor.config.root) / "sandboxes" / "ws-abc" / "profile"
+        (profile / "Default").mkdir()
+        (profile / "Default" / "Cookies").write_bytes(MARKER)
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, set(parked["parts"])), (200, {"profile", "image"}))
         self.storage.gets.clear()
         host, runner, client = await self.host("b")
-        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body("profile"))
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
         self.assertEqual((status, record["path"]), (201, "cold"))
-        self.assertEqual(len(self.storage.gets), 1 + parked["parts"]["profile"]["chunks"])
+        self.assertEqual(len(self.storage.gets), 1 + parked["parts"]["profile"]["chunks"])  # no image chunk
         self.assertEqual(self.profile_on(host), MARKER)
 
-    async def test_a_tampered_chunk_fails_the_start_and_leaves_nothing(self):
+    async def test_a_runc_set_starts_cold_on_a_gvisor_host(self):
         await self.parked_set()
-        key = "ws/3/chunk-0001"
-        data = self.storage.objects[key]
-        self.storage.objects[key] = data[:-1] + bytes([data[-1] ^ 1])
-        host, runner, client = await self.host("b")
-        status, answer = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
-        self.assertEqual(status, 502)
-        self.assertIn("checksum", answer["error"])
-        self.assertFalse((Path(host.config.root) / "sandboxes" / "ws-abc").exists())
-        self.assertEqual(runner.runsc_calls("restore") + runner.runsc_calls("create"), [])
-
-    async def test_a_set_of_another_workspace_or_a_newer_generation_is_refused(self):
-        await self.parked_set()
-        _host, _runner, client = await self.host("b")
-        body = self.restore_body()
-        body["workspace"] = "personal:other"
-        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", body))[0], 409)
-        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=2)))[0], 409)
-        # The same generation too: its park would overwrite the chunks of the set it came from.
-        _host, _runner, client = await self.host("c")
-        status, answer = await self.call(client, "POST", "/v1/sandboxes", self.restore_body(generation=3))
-        self.assertEqual((status, answer["setGeneration"]), (409, 3))
-
-    async def test_a_wrong_data_key_does_not_open_the_set(self):
-        await self.parked_set()
-        _host, _runner, client = await self.host("b")
-        body = self.restore_body()
-        body["restore"]["dataKey"] = "33" * 32
-        status, answer = await self.call(client, "POST", "/v1/sandboxes", body)
-        self.assertEqual(status, 502)
-        self.assertIn("manifest does not verify", answer["error"])
+        host, runner, client = await self.host("b", runtime="runsc")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "the set has no snapshot"))
+        self.assertEqual(runner.runtime_calls("restore"), [])
+        self.assertEqual(self.profile_on(host), MARKER)
 
 
 if __name__ == "__main__":

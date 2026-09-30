@@ -299,6 +299,10 @@
   Ubuntu делает `flush ruleset`: на хосте он выключен, таблицу ставит `hostd`.
   aiohttp перекодирует presigned URL (`%2F` → `/`, `%3A` → `:`), и подпись S3
   не сходится: только `yarl.URL(url, encoded=True)` (`sets.transfer`).
+- Хост пула не ходит на GitHub и PyPI: Caddy и колёса `hostd` едут в бандле
+  (`boot.py vendor`), пины — `vendor.json` и `requirements.txt` (колёса под
+  Python 3.10 Ubuntu 22.04; `pip download --python-version` не видит маркеров
+  3.10 — `async-timeout` вписан руками). Новая зависимость — перепин с sha256.
 - `set-password` Compute API без гостевого агента (стоковый образ) — 422;
   в консоль пробной VM входить с паролем из cloud-init (`console.py` стенда).
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
@@ -368,9 +372,11 @@
 
 ## Учёт расходов
 
-- `usage.total_cost` worker — цена browser-use по его долларовому прайсу
-  (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
-  `shared/costs/prices.ts`. Трафик прокси по запуску (`traffic`) отдаёт только
+- `usage.total_cost` старого worker — цена browser-use по его долларовому
+  прайсу (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
+  `shared/costs/prices.ts`. Worker с 30.09 цену не просит (`calculate_cost`
+  тянул прайсы с GitHub и openrouter.ai и вешал запуск с Cloud.ru) и
+  `total_cost` не отдаёт. Трафик прокси по запуску (`traffic`) отдаёт только
   обновлённый worker; хуки родителя шаги субагентов не видят.
 
 ## Google

@@ -1,0 +1,19 @@
+{
+  "caddy": {
+    "version": "2.10.2",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz",
+    "sha256": "5c218bc34c9197369263da7e9317a83acdbd80ef45d94dca5eff76e727c67cdd",
+    "binarySha256": "4ef1f68c70219536b2711fd16547a79841a2dec2d6b4e56b1e3e5e9da76028e6"
+  },
+  "wheels": {
+    "python": "3.10",
+    "platforms": [
+      "manylinux_2_17_x86_64",
+      "manylinux2014_x86_64",
+      "manylinux_2_28_x86_64",
+      "manylinux_2_5_x86_64",
+      "manylinux1_x86_64"
+    ],
+    "abis": ["cp310", "abi3", "none"]
+  }
+}
