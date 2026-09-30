@@ -1,4 +1,4 @@
-"""Throwaway probe VMs in Cloud.ru Evolution for the microVM experiments (docs/browser-microvm.md).
+"""Throwaway probe VMs in Cloud.ru Evolution for the browser sandbox experiments (docs/browser-pool.md).
 
 Not Bro code and not the pilot (scripts/cloudru-browser-pilot): plain Ubuntu VMs with root login on the
 serial console, so console.py can run commands without any inbound port. The root password lives in
