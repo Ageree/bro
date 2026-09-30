@@ -21,7 +21,8 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
 On the host, /usr/local/sbin/bro-host-boot fetches the bundle, checks its SHA-256 and runs provision.sh,
 which points apt at the mirror, installs runc (or a pinned runsc), nftables and zstd, Caddy and the hostd
 venv from the bundle, their systemd units, and unpacks the rootfs. Bro's own host creation
-(agent/lib/browser-vm, later) writes the same user data.
+(`browserHostCloudInit` in agent/lib/browser-pool/hosts.ts) writes the same user data byte for byte, and
+tests/agent/browser-pool/hosts.test.ts runs this script to hold it to that: change both together.
 
 Boot budget (estimated; measure on the first real host): stock boot ≈ 45 s, apt ≈ 40–60 s, venv ≈ 10 s,
 rootfs (≈ 0.5 GB zstd, inside Cloud.ru, 17 s on the stage 1 stand) ≈ 20–60 s, certificate ≈ 10 s — about

@@ -454,12 +454,19 @@ async function bringUp(record: BrowserVm, now: Date) {
 
 /**
  * The set a start goes from: a parked one's snapshot, a cold one's profile.
- * A sandbox that failed from its set starts fresh (the owner was told).
+ * A set parked without a snapshot (runc keeps none: its format is null) is
+ * restored from its profile as `profile`, which `hostd` takes as is, rather
+ * than as a `restore` it could only fall back from. A sandbox that failed
+ * from its set starts fresh (the owner was told).
  */
 function setOf(vm: BrowserVm) {
   if (vm.snapshotKey === null || vm.snapshotChunks === null) return undefined;
   if (vm.sandboxState === "parked") {
-    return { chunks: vm.snapshotChunks, key: vm.snapshotKey, snapshot: true };
+    return {
+      chunks: vm.snapshotChunks,
+      key: vm.snapshotKey,
+      snapshot: vm.snapshotFormat !== null,
+    };
   }
   if (vm.sandboxState === "cold") {
     return { chunks: vm.snapshotChunks, key: vm.snapshotKey, snapshot: false };
@@ -919,7 +926,8 @@ async function recordParked(
       parkRetryAt: null,
       sandboxState: "parked",
       snapshotChunks: parked.chunks,
-      snapshotFormat: JSON.stringify(parked.format),
+      snapshotFormat:
+        parked.format === null ? null : JSON.stringify(parked.format),
       snapshotGeneration: parked.generation,
       snapshotKey: key,
     },

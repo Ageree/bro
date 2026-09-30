@@ -31,13 +31,14 @@ const maximumTokenSeconds = 900;
 const healthTimeoutMs = 5_000;
 const readTimeoutMs = 15_000;
 // A start downloads and unpacks a set (seconds), restores or boots Chrome
-// and waits up to 90 s for the worker; a park freezes, packs and uploads
-// gigabytes. Cut off sooner, a call that succeeded would read as failed.
+// and waits up to 90 s for the worker; a park stops Chrome (or, under runsc,
+// freezes the sandbox), packs and uploads up to gigabytes. Cut off sooner, a
+// call that succeeded would read as failed.
 const startTimeoutMs = 240_000;
 const parkTimeoutMs = 300_000;
 /** `chunk_bytes` of `hostd`: the size a set is cut into. */
 const chunkBytes = 16 * 1024 * 1024;
-/** Room for the profile archive next to the image in one set. */
+/** Room for the profile archive (next to the image under runsc) in a set. */
 const profileBudgetMb = 2_048;
 /** `hostd` takes at most this many chunk URLs. */
 const maximumChunks = 4_096;
@@ -45,9 +46,19 @@ const maximumChunks = 4_096;
 const parkUrlSeconds = 60 * 60;
 const restoreUrlSeconds = 30 * 60;
 
+/**
+ * `runc` or `runsc`, and that runtime's version. Absent from a `hostd`
+ * older than the runtime setting, which ran runsc only.
+ */
+const runtimeFields = {
+  runtime: z.string().nullish(),
+  runtimeVersion: z.string().nullish(),
+};
+
 const healthSchema = z.object({
   configured: z.boolean(),
   hostd: z.string(),
+  ...runtimeFields,
   runsc: z.string().nullable(),
   /** The boot stage of `provision.sh`: `ready`, or `failed:<stage>:line N`. */
   stage: z.string().nullable(),
@@ -67,6 +78,7 @@ const capacitySchema = z.object({
     })
     .nullable(),
   rootfsVersions: z.array(z.string()),
+  ...runtimeFields,
   runsc: z.string().nullable(),
   sandboxes: z.array(
     z.object({
@@ -82,8 +94,11 @@ const capacitySchema = z.object({
 
 const parkSchema = z.object({
   chunks: z.number().int().positive(),
-  /** What a restore must match: runsc, CPU features, rootfs, memory. */
-  format: z.record(z.string(), z.json()),
+  /**
+   * What a restore of the snapshot must match: runsc, CPU features, rootfs,
+   * memory. Null under runc, whose set is the profile alone.
+   */
+  format: z.record(z.string(), z.json()).nullable(),
   generation: z.number().int(),
   id: z.string(),
   parts: z.record(
@@ -94,15 +109,16 @@ const parkSchema = z.object({
       plainBytes: z.number(),
     })
   ),
+  runtime: z.string().nullish(),
   state: z.literal("parked"),
-  timings: z.record(z.string(), z.number()),
+  timings: z.record(z.string(), z.json()),
 });
 
 /** What Bro reads of a set's manifest (`sets.upload` in `sets.py`). */
 const manifestSchema = z.object({
   generation: z.number().int(),
   parts: z.array(z.object({ chunks: z.array(z.unknown()) })),
-  snapshot: z.record(z.string(), z.json()),
+  snapshot: z.record(z.string(), z.json()).nullable(),
   workspace: z.string(),
 });
 
@@ -303,12 +319,13 @@ export async function readBrowserSandbox(
 }
 
 /**
- * Freeze the workspace's sandbox into a new set at `generation` (the
- * sandbox's own or newer) and take it off the host. The worker must have
- * dropped its secrets first (`POST /v1/park` of the worker), and no run may
- * be going. The answer carries the set's key prefix, chunk count and
- * snapshot format, which a restore needs; a park retried after it
- * succeeded answers the same.
+ * Pack the workspace's sandbox into a new set at `generation` (the
+ * sandbox's own or newer) and take it off the host: under runc Chrome stops
+ * and the profile alone is the set; under runsc the sandbox is frozen with
+ * it. The worker must have dropped its secrets first (`POST /v1/park` of the
+ * worker), and no run may be going. The answer carries the set's key
+ * prefix, chunk count and snapshot format (null without a snapshot), which
+ * a restore needs; a park retried after it succeeded answers the same.
  */
 export async function parkBrowserSandbox(
   host: BrowserHostTarget,
@@ -425,12 +442,14 @@ export async function deleteBrowserHostSandbox(
 }
 
 /**
- * Chunk URLs a park takes: a set holds the sandbox's memory image and its
- * profile, compressed, so their plain size (with a margin for data zstd
- * cannot shrink) bounds it. `hostd` says how many it used.
+ * Chunk URLs a park takes: a set holds the sandbox's profile and, under
+ * runsc, its memory image, compressed, so their plain size (with a margin
+ * for data zstd cannot shrink) bounds it. `hostd` says how many it used.
  */
 function parkChunks() {
-  const megabytes = (env.BROWSER_SANDBOX_MEMORY_MB + profileBudgetMb) * 1.02;
+  const imageMb =
+    env.BROWSER_HOST_RUNTIME === "runsc" ? env.BROWSER_SANDBOX_MEMORY_MB : 0;
+  const megabytes = (imageMb + profileBudgetMb) * 1.02;
   const chunks = Math.ceil((megabytes * 1024 * 1024) / chunkBytes) + 2;
   return Math.min(chunks, maximumChunks);
 }

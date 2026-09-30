@@ -195,7 +195,8 @@ export const browserVms = pgTable(
     // host that holds it while it lives, and the last whole set in Object
     // Storage — its key prefix, the generation it was parked at, how many
     // chunks it has and the snapshot format `hostd` reported (JSON: runsc
-    // version, CPU features, rootfs version, memory). All null for a
+    // version, CPU features, rootfs version, memory; null for a set without
+    // a snapshot, as runc parks the profile alone). All null for a
     // workspace outside the pool; the VM columns above stay the VM's.
     sandboxState: text("sandbox_state", { enum: browserSandboxStates }),
     // Set null when the host's record goes: the sandbox died with the host,

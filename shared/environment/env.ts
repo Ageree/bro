@@ -157,7 +157,7 @@ export const env = createEnv({
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
     // Where a browser errand runs when its workspace is not in a pilot list
-    // below: Browser Use Cloud, the workspace's own Cloud.ru VM, or a gVisor
+    // below: Browser Use Cloud, the workspace's own Cloud.ru VM, or a
     // sandbox on a shared Cloud.ru host (`pool`, docs/browser-pool.md; see
     // `agent/lib/browser-vm/backend.ts`). The VM backend also needs every
     // CLOUDRU_* and BROWSER_VM_* value it lacks a default for; the pool needs
@@ -204,8 +204,24 @@ export const env = createEnv({
       .min(1, "BROWSER_HOST_MAX must be at least 1")
       .max(16, "BROWSER_HOST_MAX must be at most 16")
       .default(1),
-    // The dated gVisor release a host installs (`runscRelease` of boot.py): a
-    // snapshot restores only under the runsc that made it, so it is pinned.
+    // Host ids and VM names are this prefix and the slot number
+    // (`bro-host-1`…): a test stand takes another prefix, so its hosts and
+    // Bro's never share a name, a token key or a record.
+    BROWSER_HOST_NAME_PREFIX: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^[a-z][a-z\d-]{0,55}$/u.test(value),
+        "BROWSER_HOST_NAME_PREFIX must be lower-case letters, digits and dashes, such as bro-host-"
+      )
+      .default("bro-host-"),
+    // How a host runs its sandboxes (`runtime` of boot.py): plain containers
+    // (`runc`, profile-only sets), or gVisor with memory snapshots (`runsc`),
+    // which also needs BROWSER_HOST_RUNSC_RELEASE.
+    BROWSER_HOST_RUNTIME: z.enum(["runc", "runsc"]).default("runc"),
+    // The dated gVisor release a host installs under `runsc`
+    // (`runscRelease` of boot.py): a snapshot restores only under the runsc
+    // that made it, so it is pinned. Not used under `runc`.
     BROWSER_HOST_RUNSC_RELEASE: z
       .string()
       .trim()

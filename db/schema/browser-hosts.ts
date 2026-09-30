@@ -39,15 +39,19 @@ interface BrowserHostCapacity {
   readonly rootfsVersions: readonly string[];
   /** `runsc --version` of the host: part of every snapshot's format. */
   readonly runsc: string | null;
+  /** `runc` or `runsc`; absent from what an older `hostd` reported. */
+  readonly runtime?: string | null;
 }
 
 /**
- * A Cloud.ru VM that runs people's browsers as gVisor sandboxes. It holds
+ * A Cloud.ru VM that runs people's browsers as sandboxes (plain `runc`
+ * containers, or gVisor). It holds
  * nobody's data for longer than a sandbox lives there, so a host is created
  * when a sandbox needs room and deleted once it has been empty for a while.
  * The id is also the VM's name and the host's identity in its token key
  * (`agent/lib/browser-pool/keys.ts`); ids are the slots `bro-host-1` to
- * `bro-host-<BROWSER_HOST_MAX>`, so the primary key alone keeps two callers
+ * `bro-host-<BROWSER_HOST_MAX>` (BROWSER_HOST_NAME_PREFIX, for a test stand,
+ * names them otherwise), so the primary key alone keeps two callers
  * from creating more hosts than the quota holds. Every lifecycle step runs
  * under `lease_until`, as for `browser_vms`.
  */
@@ -78,6 +82,13 @@ export const browserHosts = pgTable(
       withTimezone: true,
     }),
     lastError: text("last_error"),
+    // When a booting host that never answered was rebooted: a first boot
+    // may hang in `(initramfs)`, and a reboot cures it. Only once.
+    rebootedAt: timestamp("rebooted_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // Set when the host failed before it was ready: its record outlives its
     // VM until then, holding its slot, so a boot that fails every time
     // (a wrong bundle, root or mirror) does not create, bill and delete a

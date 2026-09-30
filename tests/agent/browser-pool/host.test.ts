@@ -132,6 +132,8 @@ describe("browser host client", () => {
         configured: true,
         hostd: "2026-09-30.1",
         runsc: null,
+        runtime: "runc",
+        runtimeVersion: "runc version 1.1.12",
         stage: "rootfs",
       }),
       Response.json({
@@ -158,7 +160,11 @@ describe("browser host client", () => {
       })
     );
 
-    expect((await client.readBrowserHostHealth(host)).stage).toBe("rootfs");
+    expect(await client.readBrowserHostHealth(host)).toMatchObject({
+      runtime: "runc",
+      runtimeVersion: "runc version 1.1.12",
+      stage: "rootfs",
+    });
     expect(
       (await client.readBrowserHostCapacity(host)).memoryMb?.committed
     ).toBe(3072);
@@ -231,8 +237,42 @@ describe("browser host client", () => {
     ).toBe("1800");
   });
 
-  it("parks into a new set with PUT URLs enough for the whole sandbox", async () => {
+  it("parks a runc sandbox's profile alone, with no snapshot format", async () => {
     const client = await loadHost();
+    const calls = stubHost(
+      Response.json({
+        chunks: 4,
+        format: null,
+        generation: 6,
+        id: sandboxId,
+        parts: {
+          profile: { bytes: 50_000_000, chunks: 4, plainBytes: 90_000_000 },
+        },
+        runtime: "runc",
+        state: "parked",
+        timings: { chromeStop: "clean", stopMs: 1200, totalMs: 1900 },
+      })
+    );
+
+    const parked = await client.parkBrowserSandbox(host, {
+      generation: 6,
+      workspaceId,
+    });
+    expect(parked).toMatchObject({
+      chunks: 4,
+      format: null,
+      key: `sets/${sandboxId}/6/`,
+    });
+    const body = parkBodySchema.parse(JSON.parse(calls[0]?.body ?? ""));
+    // 2048 MB of profile with 2% to spare, in 16 MB chunks, and two more.
+    expect(body.upload.chunkUrls).toHaveLength(133);
+  });
+
+  it("parks a runsc sandbox with PUT URLs enough for its memory too", async () => {
+    const client = await loadHost({
+      BROWSER_HOST_RUNSC_RELEASE: "20260914",
+      BROWSER_HOST_RUNTIME: "runsc",
+    });
     const calls = stubHost(
       Response.json({
         chunks: 42,
