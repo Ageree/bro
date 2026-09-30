@@ -9,11 +9,13 @@ import {
   isNull,
   lte,
   ne,
+  notExists,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
 import {
+  browserRuns,
   browserVmRuns,
   browserVms,
   db,
@@ -22,6 +24,14 @@ import {
 
 type BrowserVmInsert = typeof browserVms.$inferInsert;
 type BrowserVmRunInsert = typeof browserVmRuns.$inferInsert;
+
+/** A browser errand's statuses before it settles, queued ones included. */
+const openBrowserRunStatuses = [
+  "created",
+  "queued",
+  "running",
+  "waiting",
+] as const satisfies readonly (typeof browserRuns.$inferSelect)["status"][];
 
 /** The states of a VM on its way up or down: the reconcile follows each. */
 const movingStates = [
@@ -39,6 +49,10 @@ const taskLineWindowMs = 24 * 60 * 60_000;
 
 function leaseFree(now: Date) {
   return or(isNull(browserVms.leaseUntil), lte(browserVms.leaseUntil, now));
+}
+
+function unusedSince(moment: Date) {
+  return or(isNull(browserVms.lastUsedAt), lte(browserVms.lastUsedAt, moment));
 }
 
 /** The workspace's VM record, or undefined when it never used the VM. */
@@ -154,6 +168,85 @@ export async function updateBrowserVm(
 }
 
 /**
+ * Put the VM back on the person's idle window: a person's errand keeps it
+ * `BROWSER_VM_IDLE_MINUTES` after its last use, whatever an earlier errand
+ * set. Nothing when the workspace has no VM record.
+ */
+export async function clearBrowserVmStopNotBefore(
+  workspaceId: string,
+  now = new Date()
+) {
+  await db
+    .update(browserVms)
+    .set({ stopNotBefore: null, updatedAt: now })
+    .where(
+      and(
+        eq(browserVms.workspaceId, workspaceId),
+        isNotNull(browserVms.stopNotBefore)
+      )
+    );
+}
+
+/**
+ * A person's errand older than this no longer holds a VM on the person's
+ * window: a row stuck open would otherwise do so for good.
+ */
+const personErrandWindowMs = 6 * 60 * 60_000;
+
+/**
+ * Keep the VM up at least until `until`, never shortening what is set. A VM
+ * on the person's idle window has that window's end (its last use plus
+ * `personIdleMs`) written down first, so an errand nobody waits for does not
+ * cut short what a person's errand is owed — and it is not written down at
+ * all while a person's errand is under way or queued on the workspace: that
+ * errand keeps using the VM, and its window moves with it. With `onlyIfSet`,
+ * a VM on the person's window is left on it. One statement, so two callers
+ * at once both count.
+ */
+export async function extendBrowserVmStopNotBefore(
+  workspaceId: string,
+  input: {
+    readonly onlyIfSet?: boolean;
+    readonly personIdleMs: number;
+    readonly until: Date;
+  },
+  now = new Date()
+) {
+  const personErrandOpen = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        // Runs from before the flag count as the person's.
+        or(
+          isNull(browserRuns.startedByPerson),
+          eq(browserRuns.startedByPerson, true)
+        ),
+        inArray(browserRuns.status, [...openBrowserRunStatuses]),
+        gt(
+          browserRuns.createdAt,
+          new Date(now.getTime() - personErrandWindowMs)
+        )
+      )
+    );
+  await db
+    .update(browserVms)
+    .set({
+      stopNotBefore: sql`greatest(coalesce(${browserVms.stopNotBefore}, ${browserVms.lastUsedAt} + make_interval(secs => ${input.personIdleMs / 1000})), ${input.until.toISOString()}::timestamptz)`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(browserVms.workspaceId, workspaceId),
+        input.onlyIfSet === true
+          ? isNotNull(browserVms.stopNotBefore)
+          : or(isNotNull(browserVms.stopNotBefore), notExists(personErrandOpen))
+      )
+    );
+}
+
+/**
  * The VM records the poller's reconcile should look at this minute, skipping
  * any whose lease an errand or a deletion holds. They come round in turn,
  * the one whose lease was taken longest ago first (then the one longest in
@@ -161,14 +254,17 @@ export async function updateBrowserVm(
  * Cloud.ru keeps in `error`, say — do not fill the limit every minute. VMs
  * on their way up or down come first, with a limit of their own, so VMs
  * that are up never crowd them out. Of the settled ones only those with
- * something to do are listed: a ready VM unused since `idleBefore` or with
+ * something to do are listed: a ready VM whose idle stop may be due or with
  * a forgotten profile to wipe, a failed one that may still be running, and
  * a stopped one whose profile the person asked to forget, unless it was
- * given up on: only an errand starts that one again.
+ * given up on: only an errand starts that one again. The idle stop may be
+ * due on the person's window (no `stop_not_before`) for a VM unused since
+ * `idleBefore`, and otherwise once `stop_not_before` passed with the VM
+ * unused since `graceBefore` (`agent/lib/browser-vm/idle.ts`).
  */
 export async function listBrowserVmsToReconcile(
   now: Date,
-  idleBefore: Date,
+  unused: { readonly graceBefore: Date; readonly idleBefore: Date },
   limit: number
 ) {
   const inTurn = [
@@ -192,9 +288,15 @@ export async function listBrowserVmsToReconcile(
             and(
               eq(browserVms.state, "ready"),
               or(
-                isNull(browserVms.lastUsedAt),
-                lte(browserVms.lastUsedAt, idleBefore),
-                eq(browserVms.profileResetPending, true)
+                eq(browserVms.profileResetPending, true),
+                and(
+                  isNull(browserVms.stopNotBefore),
+                  unusedSince(unused.idleBefore)
+                ),
+                and(
+                  lte(browserVms.stopNotBefore, now),
+                  unusedSince(unused.graceBefore)
+                )
               )
             ),
             and(eq(browserVms.state, "failed"), isNotNull(browserVms.vmId)),

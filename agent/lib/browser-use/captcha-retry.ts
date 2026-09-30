@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
 import {
   handOffBrowserRunRetry,
@@ -181,6 +182,14 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           phoneSignIn: signsInByPhone(previous.task),
           site: row.site ?? undefined,
         });
+        // The retry is the errand of whoever asked for it: that decides
+        // how long its VM stays up after it.
+        if (onVm) {
+          await keepBrowserVmForErrand(
+            row.workspaceId,
+            row.startedByPerson !== false
+          );
+        }
         starting = true;
         run = await createBrowserUseRun({
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
@@ -247,6 +256,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         rootSessionId: row.rootSessionId,
         sessionId: run.sessionId,
         site: row.site,
+        startedByPerson: row.startedByPerson,
         status: "running",
         // The retry is the same errand, so it carries the person's approval
         // to submit, and nothing more: its task is the previous attempt's.

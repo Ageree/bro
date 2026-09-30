@@ -872,6 +872,50 @@ describe("browsers kept for a sign-in", () => {
     ).toBe(0);
   }, 20_000);
 
+  it("knows when an errand is still coming to the workspace's browser", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const pending = async (who = alice) =>
+      browserRuns.workspaceHasPendingBrowserErrand(who.workspaceId);
+    expect(await pending()).toBe(false);
+
+    // A settled run whose report is on its way: the report turn may follow
+    // the errand up in the same page.
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Done",
+      report: "Готово",
+      status: "done",
+    });
+    expect(await pending()).toBe(true);
+    expect(await pending(bob)).toBe(false);
+    await browserRuns.finishBrowserRunReport(runId);
+    expect(await pending()).toBe(false);
+
+    // An errand parked for an anti-bot retry.
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: new Date(Date.now() + 60_000),
+    });
+    expect(await pending()).toBe(true);
+    await browserRuns.finishWalledBrowserRun(runId);
+    expect(await pending()).toBe(false);
+
+    // An errand queued for the browser until it is closed.
+    const queued = await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      pendingTask: "Закажи корм",
+      profileId: `vm:${bob.workspaceId}:p1`,
+      retryAt: new Date(Date.now() + 60_000),
+      sessionId: null,
+    });
+    expect(await pending(bob)).toBe(true);
+    await browserRuns.closeQueuedBrowserRun(queued.id, {
+      outcome: "Cancelled",
+      status: "stopped",
+    });
+    expect(await pending(bob)).toBe(false);
+  }, 20_000);
+
   it("claims only errands on a browser VM once Browser Use is full", async () => {
     const browserRuns = await browserRunsDatabase();
     const now = new Date();

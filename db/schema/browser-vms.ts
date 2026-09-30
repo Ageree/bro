@@ -134,6 +134,17 @@ export const browserVms = pgTable(
       precision: 3,
       withTimezone: true,
     }),
+    // Null while the VM is on the person's idle window: it stops once
+    // unused for `BROWSER_VM_IDLE_MINUTES` since `last_used_at`. Set, the VM
+    // is on an errand nobody waits for (a schedule's, a report turn's) or on
+    // a page waiting for the person's code, and it stops at this moment,
+    // or a short grace after its last use, whichever comes later
+    // (`agent/lib/browser-vm/idle.ts`).
+    stopNotBefore: timestamp("stop_not_before", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // The watchdog measures a VM that does not come up from here.
     stateChangedAt: timestamp("state_changed_at", {
       mode: "date",

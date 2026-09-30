@@ -42,6 +42,9 @@ const records = vi.hoisted(() => ({
 const listWorkspacesHoldingBrowsers = vi.hoisted(() =>
   vi.fn<(workspaceIds: readonly string[], now?: Date) => Promise<string[]>>()
 );
+const workspaceHasPendingBrowserErrand = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, now?: Date) => Promise<boolean>>()
+);
 
 const cloud = vi.hoisted(() => ({
   createCloudRuVm: vi.fn<typeof cloudRuModule.createCloudRuVm>(),
@@ -85,6 +88,7 @@ vi.mock("node:timers/promises", async (importOriginal) => ({
 }));
 vi.mock("@db/services/browser-runs", () => ({
   listWorkspacesHoldingBrowsers,
+  workspaceHasPendingBrowserErrand,
 }));
 vi.mock("@agent/lib/browser-vm/cloudru", async (importOriginal) => ({
   ...(await importOriginal<typeof cloudRuModule>()),
@@ -138,6 +142,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     snapshotKey: null,
     state: "ready",
     stateChangedAt: minutesAgo(60),
+    stopNotBefore: null,
     updatedAt: minutesAgo(1),
     vmId: "vm-1",
     vmName: "bro-personal0123456789ab-1",
@@ -315,6 +320,7 @@ beforeEach(() => {
   cloud.readCloudRuVm.mockResolvedValue(cloudVm("running"));
   sleep.mockResolvedValue();
   listWorkspacesHoldingBrowsers.mockResolvedValue([]);
+  workspaceHasPendingBrowserErrand.mockResolvedValue(false);
   cloud.setCloudRuVmPower.mockResolvedValue();
   cloud.deleteCloudRuVm.mockResolvedValue();
   cloud.deleteCloudRuFloatingIp.mockResolvedValue();
@@ -1047,6 +1053,12 @@ describe("reconciling browser VMs", () => {
         );
       },
     ],
+    [
+      "an errand is queued or parked for it, or its report is on its way",
+      () => {
+        workspaceHasPendingBrowserErrand.mockResolvedValue(true);
+      },
+    ],
   ])("keeps the VM up while %s", async (_reason, arrange) => {
     const lifecycle = await loadLifecycle();
     rows.set(workspaceId, vmRow({ lastUsedAt: minutesAgo(45) }));
@@ -1057,6 +1069,52 @@ describe("reconciling browser VMs", () => {
     expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
     expect(worker.controlBrowserVmWorkerChrome).not.toHaveBeenCalled();
     expect(stored().state).toBe("ready");
+  });
+
+  it.each([
+    ["a person's errand, unused for the idle window", null, 21, true],
+    ["a person's errand, used within the idle window", null, 19, false],
+    ["an errand nobody waits for, past its stop time", -1, 3, true],
+    ["an errand nobody waits for, used within the grace", -1, 1, false],
+    ["a code wait, before its deadline", 5, 30, false],
+    ["a code wait, past its deadline", -1, 30, true],
+  ] as const)(
+    "decides the idle stop by who woke the VM: %s",
+    async (_case, stopInMinutes, unusedMinutes, stops) => {
+      const lifecycle = await loadLifecycle();
+      rows.set(
+        workspaceId,
+        vmRow({
+          lastUsedAt: minutesAgo(unusedMinutes),
+          stopNotBefore:
+            stopInMinutes === null ? null : minutesAgo(-stopInMinutes),
+        })
+      );
+
+      await lifecycle.reconcileBrowserVms(now);
+
+      expect(stored().state).toBe(stops ? "stopping" : "ready");
+      expect(cloud.setCloudRuVmPower).toHaveBeenCalledTimes(stops ? 1 : 0);
+    }
+  );
+
+  it("keeps a VM up when its stop time moved while it was being stopped", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ lastUsedAt: minutesAgo(10), stopNotBefore: minutesAgo(1) })
+    );
+    // A person's errand puts the VM back on their window in the meantime.
+    workspaceHasPendingBrowserErrand.mockImplementation(() => {
+      rows.set(workspaceId, { ...stored(), stopNotBefore: null });
+      return Promise.resolve(false);
+    });
+
+    await lifecycle.reconcileBrowserVms(now);
+
+    expect(stored().state).toBe("ready");
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(worker.controlBrowserVmWorkerChrome).not.toHaveBeenCalled();
   });
 
   it("settles a VM that finished powering off as stopped", async () => {

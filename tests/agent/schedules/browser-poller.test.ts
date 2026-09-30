@@ -1036,7 +1036,8 @@ describe("a VM run that ended with messages it never read", () => {
 async function queuedErrand(
   index: number,
   submission?: BrowserSubmission,
-  profileId = "profile-1"
+  profileId = "profile-1",
+  startedByPerson = true
 ) {
   const { createQueuedBrowserRun } = await import("@db/services/browser-runs");
   return createQueuedBrowserRun(alice, {
@@ -1049,6 +1050,7 @@ async function queuedErrand(
     retryAt: minutesAgo(1),
     rootSessionId: "web-session",
     site: "https://example.ru",
+    startedByPerson,
     submission: submission ?? null,
     task: `Поручение ${String(index)}`,
   });
@@ -1089,6 +1091,35 @@ describe("the browser queue", () => {
     expect(parked?.status).toBe("queued");
     expect(parked?.retryAt?.getTime()).toBeGreaterThan(Date.now());
   }, 30_000);
+
+  it.each([
+    [true, null],
+    [false, "set"],
+  ] as const)(
+    "puts the VM on the window of whoever asked, when a queued errand starts on it (the person: %s)",
+    async (startedByPerson, window) => {
+      const vms = await import("@db/services/browser-vms");
+      await vms.ensureBrowserVmRecord(alice.workspaceId);
+      // An errand nobody waited for had put the VM on its short window.
+      await vms.updateBrowserVm(alice.workspaceId, {
+        stopNotBefore: startedByPerson ? new Date() : null,
+      });
+      await queuedErrand(
+        0,
+        undefined,
+        `vm:${alice.workspaceId}:p1`,
+        startedByPerson
+      );
+      const { attachSession } = webChat();
+
+      await tick(attachSession);
+
+      expect(cloud.created).toHaveLength(1);
+      const vm = await vms.readBrowserVm(alice.workspaceId);
+      expect(vm?.stopNotBefore === null ? null : "set").toBe(window);
+    },
+    30_000
+  );
 
   it("goes on with errands on a VM once Browser Use is at its cap, and with no one else's", async () => {
     const first = await queuedErrand(0);
