@@ -1,1 +1,0 @@
-ALTER TABLE "browser_vms" ADD COLUMN "worker_failed_version" text;

@@ -404,7 +404,7 @@ export const env = createEnv({
     // of the pool, whose worker comes with the root file system), as
     // `<version>:<object key>:<sha256 of worker.py>`; the file lies in
     // BROWSER_STATE_BUCKET (`browser-vm/worker/publish.py` prints the value).
-    // A VM whose worker reports another version gets it before an errand
+    // A VM whose worker reports an older version gets it before an errand
     // (`agent/lib/browser-vm/rollout.ts`). Unset, nothing is rolled out.
     BROWSER_VM_WORKER: versionedObjectSchema(
       "BROWSER_VM_WORKER",

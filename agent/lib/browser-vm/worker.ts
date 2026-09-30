@@ -477,22 +477,26 @@ export async function parkBrowserVmWorker(vm: BrowserVmTarget) {
 
 /**
  * Replace the worker's own code with `code` (the whole of
- * `browser-vm/worker/worker.py`). The worker checks the checksum, loads the
- * new code in a separate Python first, refuses (409) while a run holds the
+ * `browser-vm/worker/worker.py`). The worker checks the checksum, runs the
+ * new file's top-level code in a separate Python (its imports at the top,
+ * and, in a file that has `CANDIDATE_IMPORTS`, the lazy browser-use, OpenCV
+ * and numpy imports too), refuses (409) while a run holds the
  * browser, and then exits for systemd to start the new code: the new
  * version shows in the health check seconds later, or the old one after a
- * rollback.
+ * rollback. That a version answers proves only that it starts.
  */
 export async function updateBrowserVmWorkerCode(
   vm: BrowserVmTarget,
   code: Uint8Array<ArrayBuffer>,
-  sha256: string
+  sha256: string,
+  timeoutMs = slowWriteTimeoutMs
 ) {
   workerUpdateSchema.parse(
     await request(vm, "POST", "/v1/admin/worker", {
       file: { bytes: code, headers: { "x-content-sha256": sha256 } },
-      // The load check imports browser-use, which takes seconds on a VM.
-      timeoutMs: slowWriteTimeoutMs,
+      // The load check starts a Python and, with a candidate that checks its
+      // lazy imports, loads browser-use: seconds on a VM.
+      timeoutMs,
     })
   );
 }

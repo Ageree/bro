@@ -1,5 +1,5 @@
 {
-  "id": "d27b70c0-80e1-416c-9d58-da4d2698f813",
+  "id": "65ae433e-1c56-4c3f-9830-ea32bc2510f5",
   "prevId": "2b396f9f-c191-40b0-aff8-0156f0a9106a",
   "version": "7",
   "dialect": "postgresql",
@@ -1937,6 +1937,12 @@
         "worker_failed_version": {
           "name": "worker_failed_version",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_rollout_at": {
+          "name": "worker_rollout_at",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": false
         },

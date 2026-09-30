@@ -195,6 +195,15 @@ export const browserVms = pgTable(
     // this VM: it is not tried on the VM again, so a broken publication does
     // not hold up every errand. A new VM (a new disk) starts without it.
     workerFailedVersion: text("worker_failed_version"),
+    // When the last rollout of the published worker to this VM began (under
+    // the lease): an errand waits while one is under way, and one that did
+    // not go through for a passing cause is retried only after a while, not
+    // in every errand's path (`agent/lib/browser-vm/rollout.ts`).
+    workerRolloutAt: timestamp("worker_rollout_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // The pool (docs/browser-pool.md): where the workspace's sandbox is, the
     // host that holds it while it lives, and the last whole set in Object
     // Storage — its key prefix, the generation it was parked at, how many

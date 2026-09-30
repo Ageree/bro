@@ -124,6 +124,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     vmId: "vm-1",
     vmName: "bro-personal0123456789ab-3",
     workerFailedVersion: null,
+    workerRolloutAt: null,
     workspaceId,
     ...overrides,
   };

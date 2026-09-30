@@ -156,6 +156,7 @@ function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
     vmId: "vm-1",
     vmName: "bro-personal0123456789ab-1",
     workerFailedVersion: null,
+    workerRolloutAt: null,
     workspaceId,
     ...overrides,
   };
@@ -372,6 +373,9 @@ describe("rolling the published worker out before an errand", () => {
     CLOUDRU_S3_TENANT_ID: "test-tenant",
   };
   const objectStorage = vi.fn<() => Promise<Response>>();
+  /** A VM the last errand left a while ago: nobody is setting it up. */
+  const idleVm = (overrides: Partial<BrowserVmRow> = {}) =>
+    vmRow({ lastUsedAt: minutesAgo(5), ...overrides });
 
   beforeEach(() => {
     objectStorage.mockReset();
@@ -381,7 +385,9 @@ describe("rolling the published worker out before an errand", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     worker.updateBrowserVmWorkerCode.mockResolvedValue();
     worker.readBrowserVmWorkerHealth.mockReset();
+    // Before the lease, under it, then the new version.
     worker.readBrowserVmWorkerHealth
+      .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
       .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
       .mockResolvedValue(health({ worker: "2026-09-30.1" }));
   });
@@ -393,7 +399,7 @@ describe("rolling the published worker out before an errand", () => {
 
   it("updates an idle worker under the lease and hands the VM to the errand", async () => {
     const lifecycle = await loadLifecycle(published);
-    rows.set(workspaceId, vmRow());
+    rows.set(workspaceId, idleVm());
 
     const result = await lifecycle.ensureBrowserVm(workspaceId, now);
 
@@ -401,12 +407,41 @@ describe("rolling the published worker out before an errand", () => {
     expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledOnce();
     expect(records.claimBrowserVmLease).toHaveBeenCalledOnce();
     expect(stored().leaseUntil).toBeNull();
+    expect(stored().workerRolloutAt).not.toBeNull();
     expect(alertOwner).not.toHaveBeenCalled();
+  });
+
+  it("does nothing more when the worker is up to date by the time it holds the lease", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(workspaceId, idleVm());
+    worker.readBrowserVmWorkerHealth.mockReset();
+    worker.readBrowserVmWorkerHealth
+      .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
+      .mockResolvedValue(health({ worker: "2026-09-30.1" }));
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result.kind).toBe("ready");
+    expect(objectStorage).not.toHaveBeenCalled();
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+    expect(stored().workerRolloutAt).toBeNull();
+  });
+
+  it("checks for runs before it takes the lease, and needs none for a VM in use", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(workspaceId, idleVm());
+    listWorkspacesHoldingBrowsers.mockResolvedValue([workspaceId]);
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result.kind).toBe("ready");
+    expect(records.claimBrowserVmLease).not.toHaveBeenCalled();
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
   });
 
   it("keeps the errand on the old worker when the rollout fails", async () => {
     const lifecycle = await loadLifecycle(published);
-    rows.set(workspaceId, vmRow());
+    rows.set(workspaceId, idleVm());
     objectStorage.mockRejectedValue(new Error("timeout"));
     worker.readBrowserVmWorkerHealth.mockReset();
     worker.readBrowserVmWorkerHealth.mockResolvedValue(
@@ -419,13 +454,22 @@ describe("rolling the published worker out before an errand", () => {
     expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
     expect(alertOwner).toHaveBeenCalledOnce();
     expect(stored().leaseUntil).toBeNull();
+    // Not remembered, and not tried again by the next errand at once.
+    expect(stored().workerFailedVersion).toBeNull();
+    objectStorage.mockClear();
+    rows.set(workspaceId, { ...stored(), lastUsedAt: minutesAgo(5) });
+    await expect(lifecycle.ensureBrowserVm(workspaceId, now)).resolves.toEqual(
+      expect.objectContaining({ kind: "ready" })
+    );
+    expect(objectStorage).not.toHaveBeenCalled();
   });
 
   it("lets the errand wait while a worker that took the code is not back yet", async () => {
     const lifecycle = await loadLifecycle(published);
-    rows.set(workspaceId, vmRow());
+    rows.set(workspaceId, idleVm());
     worker.readBrowserVmWorkerHealth.mockReset();
     worker.readBrowserVmWorkerHealth
+      .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
       .mockResolvedValueOnce(health({ worker: "2026-09-29.1" }))
       .mockRejectedValue(new Error("connect ECONNREFUSED"));
 
@@ -439,23 +483,40 @@ describe("rolling the published worker out before an errand", () => {
     });
   });
 
-  it("lets the errand wait a moment while another step holds the VM", async () => {
+  it("goes on on the old worker while another step holds the VM for something else", async () => {
     const lifecycle = await loadLifecycle(published);
     rows.set(
       workspaceId,
-      vmRow({ leaseUntil: new Date(now.getTime() + 60_000) })
+      idleVm({ leaseUntil: new Date(Date.now() + 60_000) })
     );
 
     const result = await lifecycle.ensureBrowserVm(workspaceId, now);
 
-    expect(result).toEqual({ kind: "starting", retryAfterMs: 45_000 });
+    expect(result.kind).toBe("ready");
+    expect(objectStorage).not.toHaveBeenCalled();
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+  });
+
+  it("lets the errand wait while another step is rolling a worker out", async () => {
+    const lifecycle = await loadLifecycle(published);
+    rows.set(
+      workspaceId,
+      idleVm({
+        leaseUntil: new Date(Date.now() + 60_000),
+        workerRolloutAt: new Date(Date.now() - 10_000),
+      })
+    );
+
+    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
+
+    expect(result).toEqual({ kind: "starting", retryAfterMs: 60_000 });
     expect(objectStorage).not.toHaveBeenCalled();
     expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
   });
 
   it("asks nothing of the worker without BROWSER_VM_WORKER", async () => {
     const lifecycle = await loadLifecycle();
-    rows.set(workspaceId, vmRow());
+    rows.set(workspaceId, idleVm());
 
     const result = await lifecycle.ensureBrowserVm(workspaceId, now);
 
