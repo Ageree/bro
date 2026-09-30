@@ -14,9 +14,34 @@ export const browserVmTestEnvironment = {
   CLOUDRU_KEY_SECRET: "test-key-secret",
 };
 
+/**
+ * A deployment with the browser pool configured on top of the VM backend's
+ * keys, but without the VM image the pool does not need.
+ */
+export const browserPoolTestEnvironment = {
+  ...browserVmTestEnvironment,
+  BROWSER_HOST_BUNDLE: `hosts/bundle-1.tgz:${"ab".repeat(32)}`,
+  BROWSER_HOST_RUNSC_RELEASE: "20260914",
+  BROWSER_SANDBOX_ROOTFS: `2026-09-30.1:rootfs/2026-09-30.1.tar.zst:${"cd".repeat(32)}`,
+  BROWSER_STATE_BUCKET: "bro-state-test",
+  BROWSER_STATE_KEY: "22".repeat(32),
+  CLOUDRU_BROWSER_IMAGE: "",
+  CLOUDRU_S3_TENANT_ID: "test-tenant",
+};
+
 /** Every setting of the backend a test may stub, cleared between tests. */
 const browserVmSettings = [
   "BROWSER_BACKEND",
+  "BROWSER_HOST_BUNDLE",
+  "BROWSER_HOST_FLAVOR",
+  "BROWSER_HOST_IDLE_MINUTES",
+  "BROWSER_HOST_MAX",
+  "BROWSER_HOST_RUNSC_RELEASE",
+  "BROWSER_POOL_WORKSPACES",
+  "BROWSER_SANDBOX_MEMORY_MB",
+  "BROWSER_SANDBOX_ROOTFS",
+  "BROWSER_STATE_BUCKET",
+  "BROWSER_STATE_KEY",
   "BROWSER_VM_IDLE_MINUTES",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_LLM_BASE_URL",
@@ -31,6 +56,7 @@ const browserVmSettings = [
   "CLOUDRU_KEY_ID",
   "CLOUDRU_KEY_SECRET",
   "CLOUDRU_PROJECT_ID",
+  "CLOUDRU_S3_TENANT_ID",
   "CLOUDRU_SECURITY_GROUP",
   "CLOUDRU_SUBNET",
   "CLOUDRU_ZONE",

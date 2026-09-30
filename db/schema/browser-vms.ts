@@ -9,6 +9,7 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import { browserHosts } from "./browser-hosts";
 import { workspaces } from "./workspaces";
 
 /**
@@ -24,6 +25,33 @@ export const browserVmStates = [
   "deleting",
   "failed",
 ] as const;
+
+/**
+ * Where the browser of a pool workspace is (docs/browser-pool.md, section
+ * 5): `absent` before its first errand, `starting`, `running`, `parking` and
+ * `restoring` on a host (`host_id`), `parked` as a set in Object Storage
+ * (`snapshot_*`), `cold` when only the profile archive of the last set is
+ * usable, `failed` when the last whole set is all there is. Null on a
+ * workspace that is not in the pool.
+ */
+export const browserSandboxStates = [
+  "absent",
+  "starting",
+  "running",
+  "parking",
+  "parked",
+  "restoring",
+  "cold",
+  "failed",
+] as const;
+
+/** The sandbox states in which a host holds the workspace's browser. */
+export const liveBrowserSandboxStates = [
+  "starting",
+  "running",
+  "parking",
+  "restoring",
+] as const satisfies readonly (typeof browserSandboxStates)[number][];
 
 /**
  * A VM run as Bro knows it. `dispatching` is Bro's own step between
@@ -152,6 +180,22 @@ export const browserVms = pgTable(
     // watchdog only after a few.
     healthFailures: integer("health_failures").notNull().default(0),
     lastError: text("last_error"),
+    // The pool (docs/browser-pool.md): where the workspace's sandbox is, the
+    // host that holds it while it lives, and the last whole set in Object
+    // Storage — its key prefix, the generation it was parked at, how many
+    // chunks it has and the snapshot format `hostd` reported (JSON: runsc
+    // version, CPU features, rootfs version, memory). All null for a
+    // workspace outside the pool; the VM columns above stay the VM's.
+    sandboxState: text("sandbox_state", { enum: browserSandboxStates }),
+    // Set null when the host's record goes: the sandbox died with the host,
+    // and its last set is what restores it.
+    hostId: text("host_id").references(() => browserHosts.id, {
+      onDelete: "set null",
+    }),
+    snapshotKey: text("snapshot_key"),
+    snapshotGeneration: integer("snapshot_generation"),
+    snapshotChunks: integer("snapshot_chunks"),
+    snapshotFormat: text("snapshot_format"),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
@@ -169,6 +213,19 @@ export const browserVms = pgTable(
       .notNull(),
   },
   (table) => [
+    check(
+      "browser_vms_sandbox_state_check",
+      sql`${table.sandboxState} IS NULL OR ${table.sandboxState} IN ('absent', 'starting', 'running', 'parking', 'parked', 'restoring', 'cold', 'failed')`
+    ),
+    check(
+      "browser_vms_snapshot_generation_check",
+      sql`${table.snapshotGeneration} IS NULL OR ${table.snapshotGeneration} >= 0`
+    ),
+    check(
+      "browser_vms_snapshot_chunks_check",
+      sql`${table.snapshotChunks} IS NULL OR ${table.snapshotChunks} >= 1`
+    ),
+    index("browser_vms_host_idx").on(table.hostId),
     check(
       "browser_vms_state_check",
       sql`${table.state} IN ('creating', 'starting', 'ready', 'stopping', 'stopped', 'deleting', 'failed')`

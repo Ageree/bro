@@ -285,6 +285,13 @@ flowchart LR
   `runsc`, `ip`, `nft` и S3; `POST /v1/park` в worker. Осталось на этапе 2:
   прогон на настоящих VM (подъём, парковка, восстановление на другом хосте,
   проверка утечек как `leak_check.py`).
+- Готово в Бро (основа этапа 4, за флагом): переменные окружения и выбор
+  (`usesBrowserPool` в `agent/lib/browser-vm/backend.ts`; воркспейс пула —
+  тоже «VM»-воркспейс), колонки песочницы в `browser_vms` и таблица
+  `browser_hosts`, `agent/lib/browser-pool/` — подпись S3 (SigV4), ключ данных
+  и ключ хоста, клиент `hostd`, cloud-init, выбор, создание, осушение и
+  удаление хостов. Осталось: развилка в `lifecycle.ts`, адрес worker через хост
+  в `worker.ts`, парковка по таймеру простоя и сторож в тике `browser-runs`.
 - `browser-vm/image/sandbox/` — сборка корня песочницы и
   `/usr/local/sbin/bro-sandbox-init` (отдельная задача).
 - Переменные окружения (через `shared/environment/env.ts`):
