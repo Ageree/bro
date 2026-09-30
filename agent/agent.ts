@@ -29,6 +29,7 @@ import {
   cardToolsBeforeOutcome,
   cardToolsBeforeOutcomeNote,
   owedStepsNote,
+  reportToolsAfterOutcome,
 } from "@agent/lib/delivery/browser-report";
 import {
   declinedErrandNote,
@@ -41,9 +42,12 @@ import {
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
+import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { stepContextPilot } from "@agent/lib/step-context/pilot";
+import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 /**
  * What a report turn is told when its report already reached the person in
@@ -174,12 +178,37 @@ export default defineAgent({
             "scheduled-report": true,
           }) ?? false;
         const scope = scopeFromPrincipal(caller);
-        const [modelId, formOfAddress] = await Promise.all([
-          getWorkspaceModelId(scope),
-          writesToPerson ? getFormOfAddress(scope) : undefined,
-        ]);
+        // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
+        // the person's clock comes with this step's notes after the history
+        // instead of in the turn's instructions (`50-local-time.ts`). Its
+        // lookups run alongside the step's other reads.
+        const clockOwed =
+          caller.principalType === "user" &&
+          resolveModeValue(ctx, clockModes) !== null;
+        const [modelId, formOfAddress, [stableContext, timeZone]] =
+          await Promise.all([
+            getWorkspaceModelId(scope),
+            writesToPerson ? getFormOfAddress(scope) : undefined,
+            stepContextPilot(scope).then(
+              async (pilot) =>
+                [
+                  pilot,
+                  pilot && clockOwed
+                    ? await readWorkspaceTimeZone(scope)
+                    : undefined,
+                ] as const
+            ),
+          ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
+        // Once a browser report's message is out, the rest of its turn
+        // needs only a few tools; the pilot offers just those.
+        const reportToolsOnly =
+          stableContext &&
+          reportRunId !== undefined &&
+          !staleReport &&
+          sends.delivered.length > 0;
         const notes = [
+          timeZone === undefined ? undefined : localClock(new Date(), timeZone),
           formOfAddress
             ? replyDirective({
                 // Once the reply is out, the note must not read as a new
@@ -205,7 +234,7 @@ export default defineAgent({
           owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
           writesToPerson && sendFailed ? failedSendNote : undefined,
         ].filter((note) => note !== undefined);
-        return modelSelection(modelId, {
+        const selection: Parameters<typeof modelSelection>[1] = {
           // After the reply, a step with nothing to add may come back empty
           // (gpt-6-luna did it almost every time); it ends the turn rather
           // than failing a turn the person already has the answer to. So
@@ -239,6 +268,12 @@ export default defineAgent({
             ...(heldForAnswer ? actionsHeldForAnswer : []),
             ...(cardsHeld ? cardToolsBeforeOutcome : []),
           ],
+        };
+        if (!stableContext) return modelSelection(modelId, selection);
+        return modelSelection(modelId, {
+          ...selection,
+          offeredTools: reportToolsOnly ? reportToolsAfterOutcome : undefined,
+          stableContext,
         });
       },
     },

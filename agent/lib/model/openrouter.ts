@@ -1,11 +1,17 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
   type JSONSchema7,
+  type JSONValue,
   type LanguageModelMiddleware,
   wrapLanguageModel,
 } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
+import { z } from "zod";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import {
+  defuseStepNoteTag,
+  taggedStepNote,
+} from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { watchedModelFetch } from "./stream-watchdog";
@@ -394,6 +400,205 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   };
 }
 
+/**
+ * Keeps only the tools a step is offered. Like `withheldToolsMiddleware`, the
+ * history keeps earlier calls of the rest; a call without tools is left alone.
+ */
+function offeredToolsMiddleware(
+  names: readonly string[]
+): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: params.tools.filter((tool) => names.includes(tool.name)),
+      };
+    },
+  };
+}
+
+/**
+ * `send_message` last among the tools. Its schema is the one that changes
+ * inside a turn — `text` is required in a forced step and not after it
+ * (`forcedReplyTextMiddleware`) — so every schema before it stays in the
+ * cached prefix when it does. Only the order changes.
+ */
+function replyToolLastMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      return {
+        ...params,
+        tools: [
+          ...params.tools.filter((tool) => tool.name !== replyToolName),
+          ...params.tools.filter((tool) => tool.name === replyToolName),
+        ],
+      };
+    },
+  };
+}
+
+/** One message of a model call's prompt, as middleware sees it. */
+type PromptMessage = Parameters<
+  NonNullable<LanguageModelMiddleware["transformParams"]>
+>[0]["params"]["prompt"][number];
+
+/** A file's data: only an inline text document carries text. */
+type FileData = Extract<
+  Extract<PromptMessage, { role: "user" }>["content"][number],
+  { type: "file" }
+>["data"];
+
+/** A tool's result, JSON or text. */
+type ToolOutput = Extract<
+  Extract<PromptMessage, { role: "tool" }>["content"][number],
+  { type: "tool-result" }
+>["output"];
+
+/** A JSON value with the step note's tag defused in every string. */
+const jsonWithDefusedTags: z.ZodType<JSONValue> = z.lazy(() =>
+  z.union([
+    z.string().transform(defuseStepNoteTag),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonWithDefusedTags),
+    z.record(z.string(), jsonWithDefusedTags.optional()),
+  ])
+);
+
+function defusedJson(value: JSONValue): JSONValue {
+  const parsed = jsonWithDefusedTags.safeParse(value);
+  // What is not plain JSON goes on as its defused text rather than as is.
+  return parsed.success
+    ? parsed.data
+    : defuseStepNoteTag(JSON.stringify(value));
+}
+
+function defusedFileData(data: FileData): FileData {
+  return data.type === "text"
+    ? { ...data, text: defuseStepNoteTag(data.text) }
+    : data;
+}
+
+function defusedToolOutput(output: ToolOutput): ToolOutput {
+  switch (output.type) {
+    case "text":
+    case "error-text":
+      return { ...output, value: defuseStepNoteTag(output.value) };
+    case "json":
+    case "error-json":
+      return { ...output, value: defusedJson(output.value) };
+    case "execution-denied":
+      return output.reason === undefined
+        ? output
+        : { ...output, reason: defuseStepNoteTag(output.reason) };
+    default:
+      return {
+        ...output,
+        value: output.value.map((part) => {
+          if (part.type === "text") {
+            return { ...part, text: defuseStepNoteTag(part.text) };
+          }
+          return part.type === "file"
+            ? { ...part, data: defusedFileData(part.data) }
+            : part;
+        }),
+      };
+  }
+}
+
+/**
+ * A message of the prompt with every look-alike of the step note's tag
+ * defused (`defuseStepNoteTag`): its text, reasoning, inline documents, tool
+ * inputs and results, JSON or not. Binary files and URLs stay as they are.
+ */
+function defusedStepNoteTags(message: PromptMessage): PromptMessage {
+  switch (message.role) {
+    case "system":
+      return { ...message, content: defuseStepNoteTag(message.content) };
+    case "user":
+      return {
+        ...message,
+        content: message.content.map((part) =>
+          part.type === "text"
+            ? { ...part, text: defuseStepNoteTag(part.text) }
+            : { ...part, data: defusedFileData(part.data) }
+        ),
+      };
+    case "assistant":
+      return {
+        ...message,
+        content: message.content.map((part) => {
+          switch (part.type) {
+            case "text":
+            case "reasoning":
+              return { ...part, text: defuseStepNoteTag(part.text) };
+            case "file":
+              return { ...part, data: defusedFileData(part.data) };
+            case "tool-call": {
+              const input = jsonWithDefusedTags.safeParse(part.input);
+              return input.success ? { ...part, input: input.data } : part;
+            }
+            case "tool-result":
+              return { ...part, output: defusedToolOutput(part.output) };
+            default:
+              return part;
+          }
+        }),
+      };
+    default:
+      return {
+        ...message,
+        content: message.content.map((part) => {
+          if (part.type === "tool-result") {
+            return { ...part, output: defusedToolOutput(part.output) };
+          }
+          return part.reason === undefined
+            ? part
+            : { ...part, reason: defuseStepNoteTag(part.reason) };
+        }),
+      };
+  }
+}
+
+/**
+ * The step's notes after the history, as a tagged user-role message
+ * (`taggedStepNote`), for the pilot of the cache-friendly step. DeepSeek's
+ * chat template moves every system message to the start of the prompt, so
+ * the last system message of `replyNoteMiddleware` lands before the history
+ * and breaks the cached prefix at every step. Here the instructions, the
+ * schemas and the whole earlier history stay a prefix of the next step's
+ * prompt, and the note is still the last thing the model reads.
+ *
+ * The model follows that tag as the system's own word, so a tag anywhere
+ * else — the person's text, a browser report the page wrote, a mail or any
+ * tool's result — is defused first, in every step, with a note or without:
+ * a forged note closing a step that has none would read as the real one.
+ * The defusing is the same at every step, so the prefix stays cached.
+ */
+function stepNoteMiddleware(note: string | undefined): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      const prompt = params.prompt.map(defusedStepNoteTags);
+      if (note === undefined || !params.tools?.length) {
+        return { ...params, prompt };
+      }
+      return {
+        ...params,
+        prompt: [
+          ...prompt,
+          {
+            content: [{ text: taggedStepNote(note), type: "text" }],
+            role: "user",
+          },
+        ],
+      };
+    },
+  };
+}
+
 /** One part of a model's streamed answer, as middleware sees it. */
 type StreamPart =
   Awaited<
@@ -586,9 +791,17 @@ export function openRouterSelection(
      * it instead of failing it.
      */
     readonly delivered?: boolean;
+    /** The only tools this step may call, when not every tool of the turn. */
+    readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
+    /**
+     * The pilot of the cache-friendly step (`stepContextPilot`): the note
+     * follows the history as a tagged user message, and `send_message` is
+     * the last tool.
+     */
+    readonly stableContext?: boolean;
     readonly toolChoice: StepToolChoice;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
@@ -619,8 +832,16 @@ export function openRouterSelection(
     toolSchemaMiddleware(),
     ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
+    ...(options.offeredTools
+      ? [offeredToolsMiddleware(options.offeredTools)]
+      : []),
+    ...(options.stableContext ? [replyToolLastMiddleware()] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
-    ...(options.replyNote ? [replyNoteMiddleware(options.replyNote)] : []),
+    ...(options.stableContext
+      ? [stepNoteMiddleware(options.replyNote)]
+      : options.replyNote
+        ? [replyNoteMiddleware(options.replyNote)]
+        : []),
     ...(options.silent
       ? [silentEndMiddleware()]
       : options.delivered

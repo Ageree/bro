@@ -180,6 +180,11 @@
 - Шаблон чата DeepSeek склеивает все системные сообщения в начало промпта:
   «последнее» системное (пометка шага) стоит перед историей и рвёт кэш.
   Состав шага меряет `scripts/costs/step-context.ts` (`docs/agent-costs.md`, 3.2).
+  За флагом `STEP_CONTEXT_WORKSPACES` время и записки идут после истории
+  тегом `<bro-step-note>` (`agent/lib/step-context/`), а его подобия в
+  остальном промпте обезвреживаются (`defuseStepNoteTag`); новые опции
+  `modelSelection` добавляйте только под флагом — тесты `agent.test.ts`
+  сверяют опции целиком.
 - `GET /api/v1/credits` — только management-ключ (`OPENROUTER_MANAGEMENT_KEY`).
   Плагин `web` без `engine` у `openai/*` медленный и без ссылок: берём `exa`.
 - `web_fetch` помнит отказ хоста лишь в разговоре: память инстанса закрывала
@@ -335,6 +340,10 @@
 
 ## Бенчмарк
 
+- В `eve dev` OpenRouter не отдаёт цену шага: рубли локального прогона
+  считайте по токенам `usage_costs` и `shared/costs/prices.ts`. Кэш внутри
+  хода отстаёт от промпта на 6–14 тыс. и с флагом `STEP_CONTEXT_WORKSPACES`
+  (`docs/agent-costs.md`, 3.2): сравнивайте по видам шагов.
 - Драйвер `scripts/bench/` держит курсор сам: `eve/client` двигает `streamIndex`
   только по дочитанному ходу, `session.stream()` сдаётся рано.
 - `eve dev` без Docker ставит `just-bash`, и pnpm переписывает `pnpm-lock.yaml`

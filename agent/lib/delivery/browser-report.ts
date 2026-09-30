@@ -173,6 +173,24 @@ const stepsAfterMessage = [
 ] as const;
 
 /**
+ * All a browser report's turn may still need once its message is out, in the
+ * pilot of the cache-friendly step (`stepContextPilot`): another message, the
+ * errand's `continue` or `status`, the orders the outcome may be checked
+ * against, every card step the report may ask for (`stepsAfterMessage`) and
+ * `connect_google`, which the calendar's refusal names when Google is not
+ * connected (`googleNotConnectedWriteRefusal`). The other ≈ 50 schemas,
+ * ≈ 20 thousand tokens, went with every step after the message and were read
+ * at full price, since the tool set changed there.
+ */
+export const reportToolsAfterOutcome = [
+  "browser_task",
+  "connect_google",
+  "list_orders",
+  "send_message",
+  ...stepsAfterMessage.map(({ tool }) => tool),
+];
+
+/**
  * The card steps a browser report's own instructions ask for after its
  * message. The instructions close the report, after every line the page
  * wrote, so a page that quotes one in its own text asks for nothing.

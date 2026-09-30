@@ -45,6 +45,15 @@ const trimmedValue = z
   .trim()
   .refine((value) => value.length > 0, "Required");
 
+// A pilot list: workspace ids, or the emails of their owners, separated by
+// commas (`agent/lib/workspace-list.ts`).
+const workspaceListSchema = z.string().transform((value) =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+);
+
 /**
  * An object of BROWSER_STATE_BUCKET pinned by version and checksum, as
  * `<version>:<object key>:<sha256 of the object>`.
@@ -267,15 +276,7 @@ export const env = createEnv({
     // Workspace ids, or the emails of their owners, whose browser runs in a
     // sandbox of the pool whatever BROWSER_BACKEND says. They count as VM
     // workspaces everywhere else in Bro.
-    BROWSER_POOL_WORKSPACES: z
-      .string()
-      .transform((value) =>
-        value
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter((entry) => entry.length > 0)
-      )
-      .optional(),
+    BROWSER_POOL_WORKSPACES: workspaceListSchema.optional(),
     // The memory limit of one sandbox. A parked set is about this size, and a
     // snapshot restores only into a sandbox given at least as much.
     BROWSER_SANDBOX_MEMORY_MB: z.coerce
@@ -430,15 +431,7 @@ export const env = createEnv({
     ).optional(),
     // The pilot: workspace ids, or the emails of their owners, that get a VM
     // whatever BROWSER_BACKEND says.
-    BROWSER_VM_WORKSPACES: z
-      .string()
-      .transform((value) =>
-        value
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter((entry) => entry.length > 0)
-      )
-      .optional(),
+    BROWSER_VM_WORKSPACES: workspaceListSchema.optional(),
     // Cloud.ru Evolution, where the browser VMs live. The image is the one
     // `browser-vm/image/build.py` sealed; the security group is the one it
     // created. Without a project id the first project of the key's customer
@@ -559,6 +552,12 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
+    // workspace ids or owners' emails, or `*` for every workspace, whose
+    // steps keep per-step notes after the history and whose browser report
+    // turns keep only their few tools after the message. Only with
+    // OpenRouter. Unset, every step is built as before.
+    STEP_CONTEXT_WORKSPACES: workspaceListSchema.optional(),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(
