@@ -1,4 +1,8 @@
 import type * as Dns from "node:dns";
+import { EventEmitter } from "node:events";
+import type * as Https from "node:https";
+import { Readable } from "node:stream";
+import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -27,8 +31,53 @@ vi.mock("node:dns", async (importOriginal) => {
   };
 });
 
+interface SiteAnswer {
+  readonly body: Buffer;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/** The sites' answers as they come off the wire; with none, requests are real. */
+const site = vi.hoisted(() => ({
+  answers: new Array<SiteAnswer>(),
+}));
+
+vi.mock("node:https", async (importOriginal) => {
+  const original = await importOriginal<typeof Https>();
+  return {
+    ...original,
+    request: (
+      url: URL,
+      options: Https.RequestOptions,
+      callback: (response: Readable) => void
+    ) => {
+      const answer = site.answers.shift();
+      if (answer === undefined) return original.request(url, options, callback);
+      const outgoing = Object.assign(new EventEmitter(), {
+        destroy: () => undefined,
+        end: () => {
+          const response = Object.assign(Readable.from([answer.body]), {
+            headers: Object.fromEntries(
+              Object.entries(answer.headers).map(([name, value]) => [
+                name.toLowerCase(),
+                value,
+              ])
+            ),
+            rawHeaders: Object.entries(answer.headers).flat(),
+            statusCode: 200,
+          });
+          setImmediate(() => {
+            callback(response);
+          });
+        },
+      });
+      return outgoing;
+    },
+  };
+});
+
 afterEach(() => {
   clearSandboxSettings();
+  site.answers = [];
   dns.answer = [];
   dns.asked = [];
   vi.resetModules();
@@ -137,5 +186,69 @@ describe("a request the sandbox tool router makes", () => {
       error: "The file did not download: blocked-host.",
       ok: false,
     });
+  });
+
+  it("undoes stacked content codings in reverse order", async () => {
+    const { fetchPublic } = await import("@agent/lib/sandbox/public-fetch");
+    const page = "<p>Привет</p>";
+    site.answers.push({
+      // Brotli first, then gzip: the header lists them as applied.
+      body: gzipSync(brotliCompressSync(Buffer.from(page))),
+      headers: {
+        "Content-Encoding": "br, gzip",
+        "Content-Length": "999",
+        "Content-Type": "text/html",
+      },
+    });
+    const response = await fetchPublic(new URL("https://site.example.test/"));
+    expect(await response.text()).toBe(page);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    site.answers.push({
+      body: gzipSync(deflateSync(Buffer.from(page))),
+      headers: { "Content-Encoding": "Deflate, identity , X-Gzip" },
+    });
+    const again = await fetchPublic(new URL("https://site.example.test/"));
+    expect(await again.text()).toBe(page);
+  });
+
+  it("fails a coding it cannot undo, and bounds the decoded size", async () => {
+    const [{ fetchPublic }, { downloadWithin }] = await Promise.all([
+      import("@agent/lib/sandbox/public-fetch"),
+      import("@agent/lib/inbound-media/download"),
+    ]);
+    site.answers.push({
+      body: gzipSync(Buffer.from("text")),
+      headers: { "Content-Encoding": "gzip, compress" },
+    });
+    await expect(
+      downloadWithin(new URL("https://site.example.test/"), 1000, {
+        fetch: fetchPublic,
+      })
+    ).resolves.toEqual({ kind: "failed", reason: "network" });
+    // Each coding is a decoder of its own: a long chain is refused unread,
+    // even one that would unpack.
+    site.answers.push({
+      body: Array.from({ length: 6 }).reduce<Buffer>(
+        (packed) => gzipSync(packed),
+        Buffer.from("text")
+      ),
+      headers: { "Content-Encoding": Array(6).fill("gzip").join(", ") },
+    });
+    await expect(
+      downloadWithin(new URL("https://site.example.test/"), 1000, {
+        fetch: fetchPublic,
+      })
+    ).resolves.toEqual({ kind: "failed", reason: "network" });
+    // A megabyte of zeros packs into a kilobyte: the cap is on what unpacks.
+    site.answers.push({
+      body: gzipSync(gzipSync(Buffer.alloc(1024 * 1024))),
+      headers: { "Content-Encoding": "gzip, gzip" },
+    });
+    await expect(
+      downloadWithin(new URL("https://site.example.test/"), 64 * 1024, {
+        fetch: fetchPublic,
+      })
+    ).resolves.toEqual({ kind: "oversize" });
   });
 });

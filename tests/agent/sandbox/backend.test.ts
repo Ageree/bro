@@ -76,6 +76,21 @@ const createInput = {
   templateKey: null,
 };
 
+/** Megabytes of output on one stream. */
+const flood = (stream: "stderr" | "stdout", megabytes: number) =>
+  Array.from({ length: megabytes }, () => ({
+    data: Buffer.alloc(1024 * 1024, "e").toString("base64"),
+    type: stream,
+  }));
+const text = (value: string) => Buffer.from(value).toString("base64");
+/** Host events as one chunk of the command's stream. */
+const lines = (...events: readonly object[]) =>
+  new TextEncoder().encode(
+    events.map((event) => `${JSON.stringify(event)}\n`).join("")
+  );
+const cutNote = (bytes: number) =>
+  `\n[output cut: ${String(bytes)} bytes not kept while the reader was behind]\n`;
+
 describe("the Cloud.ru sandbox backend", () => {
   it("opens the session's sandbox with fresh links and the router token", async () => {
     const calls = stubHost(opened);
@@ -168,7 +183,7 @@ describe("the Cloud.ru sandbox backend", () => {
     expect(result.stdout).toContain("[output cut: 10 more bytes not kept]");
   });
 
-  it("pauses a command its reader is behind, and ends one nobody reads", async () => {
+  it("pauses a command its reader is behind, and ends it once both streams are cancelled", async () => {
     // A command that never stops writing: sandboxd sends what it is given.
     let produced = 0;
     const megabyte = Buffer.alloc(1024 * 1024, "y").toString("base64");
@@ -192,6 +207,9 @@ describe("the Cloud.ru sandbox backend", () => {
     const { session } = await cloudRuSandbox().create(createInput);
     const process = await session.spawn({ command: "yes" });
     const exit = process.wait();
+    // Held, but not read yet.
+    const stdout = process.stdout.getReader();
+    const stderr = process.stderr.getReader();
     await vi.waitFor(() => {
       expect(produced).toBeGreaterThan(2);
     });
@@ -200,10 +218,116 @@ describe("the Cloud.ru sandbox backend", () => {
     });
     // A megabyte waits for the reader; the host's stream is not drained.
     expect(produced).toBeLessThan(6);
-    await process.stdout.cancel();
-    await process.stderr.cancel();
+    await stdout.cancel();
+    await stderr.cancel();
     await expect(exit).rejects.toMatchObject({ name: "AbortError" });
     expect(calls[2]?.url).toContain("/procs/p1/kill");
+  });
+
+  it("finishes a command whose reader reads stdout only while stderr floods", async () => {
+    stubHost(opened, () =>
+      ndjson(
+        { pid: "p1", type: "start" },
+        { data: text("начало\n"), type: "stdout" },
+        ...flood("stderr", 3),
+        { data: text("конец\n"), type: "stdout" },
+        { code: 0, type: "exit" }
+      )
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const process = await session.spawn({ command: "noisy" });
+    const stdout = await new Response(process.stdout).text();
+    expect(stdout).toBe("начало\nконец\n");
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
+    // What was kept of the unread stream, and a note where the rest went.
+    const stderr = await new Response(process.stderr).text();
+    expect(stderr).toBe(
+      `${"e".repeat(1024 * 1024)}${cutNote(2 * 1024 * 1024)}`
+    );
+  });
+
+  it("finishes a command whose reader holds both streams but reads stdout first", async () => {
+    stubHost(opened, () =>
+      ndjson(
+        { pid: "p1", type: "start" },
+        ...flood("stderr", 2),
+        { data: text("готово\n"), type: "stdout" },
+        ...flood("stderr", 1),
+        { data: text("ещё\n"), type: "stderr" },
+        { code: 0, type: "exit" }
+      )
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const process = await session.spawn({ command: "noisy" });
+    const stderrReader = process.stderr.getReader();
+    expect(await new Response(process.stdout).text()).toBe("готово\n");
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
+    stderrReader.releaseLock();
+    const stderr = await new Response(process.stderr).text();
+    // The stream stays full until read: its late line is cut too.
+    expect(stderr).toBe(
+      `${"e".repeat(1024 * 1024)}${cutNote(2 * 1024 * 1024 + 7)}`
+    );
+  });
+
+  it("pauses for a slow stderr reader once stdout's waiting reader cancelled", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    stubHost(
+      opened,
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull: async (controller) => {
+              await gate;
+              controller.enqueue(
+                lines(...flood("stderr", 3), { code: 0, type: "exit" })
+              );
+              controller.close();
+            },
+            start: (controller) => {
+              controller.enqueue(lines({ pid: "p1", type: "start" }));
+            },
+          })
+        )
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const process = await session.spawn({ command: "noisy" });
+    const stdout = process.stdout.getReader();
+    const waiting = stdout.read();
+    await stdout.cancel();
+    await expect(waiting).resolves.toMatchObject({ done: true });
+    // Held, and read only once the command is well past a megabyte.
+    const held = process.stderr.getReader();
+    open();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    held.releaseLock();
+    const stderr = await new Response(process.stderr).text();
+    expect(stderr).not.toContain("[output cut");
+    expect(stderr).toHaveLength(3 * 1024 * 1024);
+    await expect(process.wait()).resolves.toEqual({ exitCode: 0 });
+  });
+
+  it("finishes a command whose caller only waits for its exit", async () => {
+    stubHost(opened, () =>
+      ndjson(
+        { pid: "p1", type: "start" },
+        ...flood("stdout", 2),
+        ...flood("stderr", 2),
+        { code: 7, type: "exit" }
+      )
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const process = await session.spawn({ command: "noisy" });
+    await expect(process.wait()).resolves.toEqual({ exitCode: 7 });
   });
 
   it("deletes the saved /workspace with the sandbox", async () => {

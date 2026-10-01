@@ -157,7 +157,8 @@ func TestWriteIsWhole(t *testing.T) {
 		"Authorization: Bearer %s\r\nContent-Length: 1000000\r\n\r\npartial", id, h.token())
 	time.Sleep(300 * time.Millisecond) // the partial body is in the script's file by now
 	connection.Close()
-	deadline := time.Now().Add(20 * time.Second)
+	// The cancel's kill in the sandbox and then the temporary file's removal: each may take up to 20 s.
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		h.m.mu.Lock()
 		active := h.m.sandboxes[id].active

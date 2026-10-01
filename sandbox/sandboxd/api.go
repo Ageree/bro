@@ -22,20 +22,26 @@ type API struct {
 	inflight sync.WaitGroup // requests in their handlers
 }
 
-// drain ends the server when sandboxd stops: open requests get `grace` to finish; then their connections
-// are closed, which cancels them (a cancelled exec kills its processes in the sandbox, so no command
-// outlives sandboxd past its timeout), and their cleanup gets up to `cleanup` more. False when some
-// request had not ended by then.
+// drain ends the server and the tools brokers when sandboxd stops: open requests and tool calls get
+// `grace` to finish; then their connections are closed, which cancels them (a cancelled exec kills its
+// processes in the sandbox, so no command outlives sandboxd past its timeout; a tool call's upstream
+// request is cancelled), and their cleanup gets up to `cleanup` more. False when some request had not
+// ended by then.
 func (a *API) drain(server *http.Server, grace, cleanup time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
-	if server.Shutdown(ctx) == nil {
-		return true
+	brokers := make(chan bool, 1)
+	go func() { brokers <- a.m.shutdownBrokers(ctx) }()
+	if server.Shutdown(ctx) != nil {
+		server.Close()
 	}
-	server.Close()
+	<-brokers
+	// Also the brokers a PUT started during the grace: from here on none starts.
+	a.m.closeBrokers()
 	done := make(chan struct{})
 	go func() {
 		a.inflight.Wait()
+		a.m.toolCalls.Wait()
 		close(done)
 	}()
 	select {

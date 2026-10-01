@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,7 +51,10 @@ type broker struct {
 	listener net.Listener
 	limiter  *bucket
 	slots    chan struct{}
-	closed   sync.Once
+	// calls is the context of its upstream requests: closing the broker cancels the ones in flight.
+	calls  context.Context
+	cancel context.CancelFunc
+	closed sync.Once
 }
 
 func (m *Manager) startBroker(sb *Sandbox, socket string) (*broker, error) {
@@ -68,6 +72,7 @@ func (m *Manager) startBroker(sb *Sandbox, socket string) (*broker, error) {
 	}
 	b := &broker{listener: listener, limiter: newBucket(brokerPerMinute, time.Minute),
 		slots: make(chan struct{}, brokerParallel)}
+	b.calls, b.cancel = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -81,19 +86,83 @@ func (m *Manager) startBroker(sb *Sandbox, socket string) (*broker, error) {
 	})
 	b.server = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: brokerTimeout,
 		WriteTimeout: brokerTimeout + 30*time.Second, ErrorLog: slog.NewLogLogger(m.log.Handler(), slog.LevelWarn)}
+	// Registered whole (its server set): sandboxd's stop shuts down and closes every registered broker.
+	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		b.cancel()
+		listener.Close()
+		return nil, errors.New("sandboxd is stopping")
+	}
+	m.brokers[b] = true
+	m.mu.Unlock()
 	go b.server.Serve(listener)
 	return b, nil
 }
 
 func (b *broker) close() {
-	b.closed.Do(func() { b.server.Close() })
+	b.closed.Do(func() {
+		// The connections first: a cancelled call's 502 does not reach a client that waits for the answer.
+		b.server.Close()
+		b.cancel()
+	})
+}
+
+// shutdownBrokers is the brokers' part of sandboxd's stop: they take no new tool calls, and the ones in
+// flight get until ctx ends. False when some were still running then.
+func (m *Manager) shutdownBrokers(ctx context.Context) bool {
+	m.mu.Lock()
+	brokers := make([]*broker, 0, len(m.brokers))
+	for b := range m.brokers {
+		brokers = append(brokers, b)
+	}
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	var open atomic.Bool
+	for _, b := range brokers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if b.server.Shutdown(ctx) != nil {
+				open.Store(true)
+			}
+		}()
+	}
+	wg.Wait()
+	return !open.Load()
+}
+
+// closeBrokers ends the brokers for good when sandboxd stops: tool calls still in flight are cancelled
+// (their upstream requests with them), no broker starts and no tool call begins after it; m.toolCalls
+// then counts down to the calls that have not finished their cleanup.
+func (m *Manager) closeBrokers() {
+	m.mu.Lock()
+	m.draining = true
+	brokers := make([]*broker, 0, len(m.brokers))
+	for b := range m.brokers {
+		brokers = append(brokers, b)
+	}
+	m.mu.Unlock()
+	for _, b := range brokers {
+		b.close()
+	}
 }
 
 func (m *Manager) forward(w http.ResponseWriter, r *http.Request, sb *Sandbox, b *broker) {
 	started := time.Now()
 	m.mu.Lock()
 	tools := sb.rec.Tools
+	draining := m.draining
+	if !draining {
+		m.toolCalls.Add(1)
+	}
 	m.mu.Unlock()
+	if draining {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, &apiError{http.StatusServiceUnavailable, "tools_unavailable", "sandboxd is restarting"})
+		return
+	}
+	defer m.toolCalls.Done()
 	if tools == nil {
 		writeError(w, &apiError{http.StatusServiceUnavailable, "tools_unavailable", "this sandbox has no tool router"})
 		return
@@ -122,7 +191,7 @@ func (m *Manager) forward(w http.ResponseWriter, r *http.Request, sb *Sandbox, b
 	// A tool call is work in the sandbox: the idle reaper leaves it running until the answer is back.
 	running, err := m.begin(sb.id)
 	if err != nil {
-		writeError(w, &apiError{http.StatusServiceUnavailable, "tools_unavailable", "the sandbox is not running"})
+		writeError(w, err) // 409 sandbox_stopped, as everywhere in the API
 		return
 	}
 	defer m.end(running)
@@ -137,8 +206,8 @@ func (m *Manager) forward(w http.ResponseWriter, r *http.Request, sb *Sandbox, b
 		return
 	}
 	// Not the connection's context: a client that half-closes its side after the request must still get
-	// the answer.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), brokerTimeout)
+	// the answer. Closing the broker (teardown, sandboxd's stop) cancels it.
+	ctx, cancel := context.WithTimeout(b.calls, brokerTimeout)
 	defer cancel()
 	upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, tools.URL, bytes.NewReader(body))
 	if err != nil {

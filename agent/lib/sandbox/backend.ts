@@ -212,62 +212,101 @@ interface CommandOptions {
 }
 
 /**
- * Output a command may have waiting for its reader, per stream, before the
- * command's own stream from the host is paused: an unread command blocks on
- * its output as on a full pipe, instead of piling it up in Bro's memory.
+ * Output a command may have waiting for its reader, per stream. While a
+ * reader is attached and behind, the command's stream from the host pauses
+ * there, as on a full pipe. A stream nobody holds, or one left full while
+ * its reader waits on the other stream, keeps only this much: the rest is
+ * cut (with a note where), so the command still runs to its exit.
  */
 const outputBufferBytes = 1024 * 1024;
 
 /**
- * One output stream of a command, fed as the host sends it. `write` waits
- * while the reader is behind, or until `signal` ends the command; a stream
- * the reader cancelled drops what comes, and `onCancel` hears of it.
+ * One output stream of a command, fed as the host sends it. Chunks wait in
+ * the pipe's own buffer and go out only as the reader asks, so the pipe
+ * knows whether its reader is waiting for more. A stream the reader
+ * cancelled drops what comes; `onChange` hears of every read and cancel.
  */
-function outputPipe(signal: AbortSignal, onCancel: () => void) {
+function outputPipe(onChange: () => void, onCancel: () => void) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
-  let drained: (() => void) | undefined;
+  let buffer: Uint8Array[] = [];
+  let buffered = 0;
+  let dropped = 0;
+  let readerWaiting = false;
   let cancelled = false;
-  const release = () => {
-    drained?.();
-    drained = undefined;
+  const cutNote = () => {
+    const note = new TextEncoder().encode(
+      `\n[output cut: ${String(dropped)} bytes not kept while the reader was behind]\n`
+    );
+    dropped = 0;
+    return note;
   };
   const stream = new ReadableStream<Uint8Array>(
     {
       cancel: () => {
         cancelled = true;
-        release();
+        buffer = [];
+        buffered = 0;
+        onChange();
         onCancel();
       },
-      pull: release,
+      // Called only when the reader asks: the stream itself queues nothing.
+      pull: () => {
+        const chunk = buffer.shift();
+        if (chunk === undefined) readerWaiting = true;
+        else {
+          buffered -= chunk.byteLength;
+          controller.enqueue(chunk);
+        }
+        onChange();
+      },
       start: (streamController) => {
         controller = streamController;
       },
     },
-    new ByteLengthQueuingStrategy({ highWaterMark: outputBufferBytes })
+    { highWaterMark: 0 }
   );
-  signal.addEventListener("abort", release, { once: true });
   return {
     get cancelled() {
       return cancelled;
     },
+    /** The reader has what it may hold and is not taking it. */
+    get full() {
+      return !cancelled && buffered >= outputBufferBytes;
+    },
+    /** A held reader asked and got nothing yet (not one since cancelled or let go). */
+    get readerWaiting() {
+      return readerWaiting && !cancelled && stream.locked;
+    },
     close: (error?: Error) => {
-      signal.removeEventListener("abort", release);
-      release();
-      try {
-        if (error === undefined) controller.close();
-        else controller.error(error);
-      } catch {
-        // Already closed or cancelled.
+      if (cancelled) return;
+      if (error !== undefined) {
+        controller.error(error);
+        return;
       }
+      if (dropped > 0) buffer.push(cutNote());
+      for (const chunk of buffer) controller.enqueue(chunk);
+      buffer = [];
+      buffered = 0;
+      controller.close();
     },
     stream,
-    write: async (chunk: Uint8Array) => {
+    write: (chunk: Uint8Array) => {
       if (cancelled) return;
-      controller.enqueue(chunk);
-      if ((controller.desiredSize ?? 1) > 0 || signal.aborted) return;
-      await new Promise<void>((resolve) => {
-        drained = resolve;
-      });
+      // Only a pipe left full (see `deliver`) gets more than it may hold.
+      if (buffered >= outputBufferBytes) {
+        dropped += chunk.byteLength;
+        return;
+      }
+      const parts = dropped > 0 ? [cutNote(), chunk] : [chunk];
+      if (readerWaiting) {
+        readerWaiting = false;
+        for (const part of parts) controller.enqueue(part);
+        return;
+      }
+      for (const part of parts) {
+        buffer.push(part);
+        buffered += part.byteLength;
+      }
     },
   };
 }
@@ -292,13 +331,45 @@ function spawnCommand(
     }
     controller.abort();
   };
+  // Something a paused command waits for: a read, a cancel or the end.
+  let changed: (() => void) | undefined;
+  const change = () => {
+    changed?.();
+    changed = undefined;
+  };
+  signal.addEventListener("abort", change, { once: true });
   // Nobody reads the output any more: the process goes, as on a closed pipe.
   const outputGone = () => {
     if (stdout.cancelled && stderr.cancelled) void kill();
   };
-  const stdout = outputPipe(signal, outputGone);
-  const stderr = outputPipe(signal, outputGone);
+  const stdout = outputPipe(change, outputGone);
+  const stderr = outputPipe(change, outputGone);
+  /**
+   * Hands a chunk to its stream and pauses the command while that stream is
+   * full, but only while its reader may yet take it: one nobody holds, or
+   * whose reader is stuck waiting on the other stream, would never drain, so
+   * the command goes on and that stream's excess is cut instead.
+   */
+  const deliver = async (
+    pipe: ReturnType<typeof outputPipe>,
+    other: ReturnType<typeof outputPipe>,
+    chunk: Uint8Array
+  ) => {
+    pipe.write(chunk);
+    while (
+      pipe.full &&
+      pipe.stream.locked &&
+      !other.readerWaiting &&
+      !signal.aborted
+    ) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each wake is re-checked.
+      await new Promise<void>((resolve) => {
+        changed = resolve;
+      });
+    }
+  };
   const closeStreams = (error?: Error) => {
+    signal.removeEventListener("abort", change);
     stdout.close(error);
     stderr.close(error);
   };
@@ -319,9 +390,9 @@ function spawnCommand(
         signal.throwIfAborted();
         if (event.type === "start") pid = event.pid;
         else if (event.type === "stdout") {
-          await stdout.write(Buffer.from(event.data, "base64"));
+          await deliver(stdout, stderr, Buffer.from(event.data, "base64"));
         } else if (event.type === "stderr") {
-          await stderr.write(Buffer.from(event.data, "base64"));
+          await deliver(stderr, stdout, Buffer.from(event.data, "base64"));
         } else if (event.type === "ping") {
           continue;
         } else if (event.type === "exit") {

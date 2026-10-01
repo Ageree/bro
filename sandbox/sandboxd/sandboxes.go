@@ -98,6 +98,11 @@ type Manager struct {
 
 	mu        sync.Mutex
 	sandboxes map[string]*Sandbox
+	// brokers: every broker from its start to its teardown. draining: sandboxd stops and has closed them
+	// (closeBrokers). toolCalls: tool calls in their handlers, added under mu while not draining.
+	brokers   map[*broker]bool
+	draining  bool
+	toolCalls sync.WaitGroup
 	dirty     bool // lastUsedAt moved since state.json was written
 	saveMu    sync.Mutex
 }
@@ -119,6 +124,7 @@ func newManager(config Config, runtime Runtime, log *slog.Logger) *Manager {
 		idleAfter:  time.Duration(config.IdleMinutes) * time.Minute,
 		instance:   hex.EncodeToString(instance),
 		sandboxes:  map[string]*Sandbox{},
+		brokers:    map[*broker]bool{},
 	}
 }
 
@@ -468,6 +474,7 @@ func (m *Manager) teardown(ctx context.Context, sb *Sandbox) error {
 	m.mu.Lock()
 	b := sb.broker
 	sb.broker = nil
+	delete(m.brokers, b)
 	m.mu.Unlock()
 	if b != nil {
 		b.close()

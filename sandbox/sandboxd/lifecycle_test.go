@@ -216,6 +216,7 @@ func TestStopHoldsNewRequests(t *testing.T) {
 	}()
 	select {
 	case err := <-began:
+		sb.op.Unlock() // the cleanup's DELETE takes it
 		t.Fatalf("a request started during the stop: %v", err)
 	case <-time.After(300 * time.Millisecond):
 	}

@@ -1,7 +1,7 @@
 import { lookup, type LookupAddress } from "node:dns";
 import { Agent, request } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
-import { pipeline, type Readable } from "node:stream";
+import { pipeline, type Readable, type Transform } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import type { IncomingMessage } from "node:http";
 
@@ -92,19 +92,58 @@ const publicAgent = new Agent({ lookup: publicLookup });
 
 const nullBodyStatuses: ReadonlySet<number> = new Set([204, 205, 304]);
 
-/** The body as sent, or decoded; an aborted response fails its decoder too. */
-function decoded(response: IncomingMessage) {
-  const encoding = response.headers["content-encoding"]?.trim().toLowerCase();
-  const decoder =
-    encoding === "gzip" || encoding === "x-gzip"
-      ? createGunzip()
-      : encoding === "br"
-        ? createBrotliDecompress()
-        : encoding === "deflate"
-          ? createInflate()
-          : undefined;
-  if (decoder === undefined) return response;
-  return pipeline(response, decoder, () => undefined);
+const decoders = {
+  br: createBrotliDecompress,
+  deflate: createInflate,
+  gzip: createGunzip,
+  "x-gzip": createGunzip,
+} satisfies Record<string, () => Transform>;
+
+function isKnownCoding(coding: string): coding is keyof typeof decoders {
+  return Object.hasOwn(decoders, coding);
+}
+
+/**
+ * Codings a body may stack. A site could list thousands in one header, each
+ * a decoder of its own: minutes of work and hundreds of megabytes for one
+ * small answer (curl caps the chain at five too, CVE-2022-32206).
+ */
+const maximumCodings = 5;
+
+/**
+ * The decoders for a `Content-Encoding`, in the order they undo it: codings
+ * are listed as applied (`gzip, br` is gzip, then Brotli). A body in a
+ * coding not undone here would reach the page reader still encoded, so the
+ * request fails instead, as a network error (the error is returned).
+ */
+function decodersFor(header: string | undefined) {
+  const codings = (header ?? "")
+    .split(",")
+    .map((coding) => coding.trim().toLowerCase())
+    .filter((coding) => coding.length > 0 && coding !== "identity");
+  if (codings.length > maximumCodings) {
+    return new TypeError(
+      `The site stacked ${String(codings.length)} content codings.`
+    );
+  }
+  const chain: Transform[] = [];
+  for (const coding of codings.toReversed()) {
+    if (!isKnownCoding(coding)) {
+      return new TypeError(
+        `The site sent an unknown content coding: ${coding}.`
+      );
+    }
+    chain.push(decoders[coding]());
+  }
+  return chain;
+}
+
+/** The body as sent, or decoded; an aborted response fails its decoders too. */
+function decoded(response: IncomingMessage, chain: readonly Transform[]) {
+  const last = chain.at(-1);
+  if (last === undefined) return response;
+  pipeline([response, ...chain], () => undefined);
+  return last;
 }
 
 /** A body as fetch hands it over, read only as fast as its reader asks. */
@@ -201,9 +240,18 @@ export async function fetchPublic(url: URL, init: RequestInit = {}) {
           reject(error);
           return;
         }
-        const body = decoded(response);
+        const empty = nullBodyStatuses.has(status);
+        const chain = empty
+          ? []
+          : decodersFor(response.headers["content-encoding"]);
+        if (chain instanceof Error) {
+          response.destroy();
+          reject(chain);
+          return;
+        }
+        const body = decoded(response, chain);
         resolve(
-          new Response(nullBodyStatuses.has(status) ? null : webBody(body), {
+          new Response(empty ? null : webBody(body), {
             headers: responseHeaders(response, body !== response),
             status,
           })

@@ -163,9 +163,108 @@ func TestBrokerParallel(t *testing.T) {
 			t.Fatalf("a tool call answered %d", status)
 		}
 	}
-	if most != brokerParallel {
-		t.Fatalf("%d tool calls in flight at once, want %d", most, brokerParallel)
+	mu.Lock()
+	got := most
+	mu.Unlock()
+	if got != brokerParallel {
+		t.Fatalf("%d tool calls in flight at once, want %d", got, brokerParallel)
 	}
+}
+
+// A tool call that waits while its sandbox stops gets 409 sandbox_stopped, as the API's requests do.
+func TestBrokerCallDuringStop(t *testing.T) {
+	h := newHarness(t)
+	upstream := httptestServer(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"data":{}}`)) })
+	h.create("sb-tools-stop", sandboxOptions{tools: &toolsConfig{URL: upstream + "/graphql", Token: "t"}})
+	sb := h.m.lookup("sb-tools-stop")
+	sb.op.Lock() // as a stop does
+	h.m.mu.Lock()
+	sb.stopping = true
+	h.m.mu.Unlock()
+	type answer struct {
+		status int
+		body   string
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		response, err := brokerHTTP(h.cfg.paths("sb-tools-stop").socket).Post("http://sandbox/graphql",
+			"application/json", strings.NewReader("{}"))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		answered <- answer{status: response.StatusCode, body: string(body)}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	h.m.mu.Lock()
+	sb.stopping, sb.rec.State = false, stateStopped
+	h.m.mu.Unlock()
+	sb.op.Unlock()
+	got := <-answered
+	h.m.mu.Lock()
+	sb.rec.State = stateRunning
+	h.m.mu.Unlock()
+	if got.err != nil || got.status != 409 || !strings.Contains(got.body, "sandbox_stopped") {
+		t.Fatalf("a tool call during the stop: %d %q %v", got.status, got.body, got.err)
+	}
+}
+
+// When sandboxd stops, a tool call still in flight is cancelled with its upstream request, and its
+// handler ends (the sandbox is not left busy).
+func TestDrainCancelsToolCalls(t *testing.T) {
+	h := newHarness(t)
+	reached := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	upstream := httptestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body) // the server notices the client going away once the body is read
+		reached <- struct{}{}
+		select {
+		case <-r.Context().Done():
+			cancelled <- struct{}{}
+		case <-time.After(time.Minute):
+		}
+	})
+	const id = "sb-drain-tools"
+	h.create(id, sandboxOptions{tools: &toolsConfig{URL: upstream + "/graphql", Token: "t"}})
+	socket := h.cfg.paths(id).socket
+	answered := make(chan error, 1)
+	go func() {
+		response, err := brokerHTTP(socket).Post("http://sandbox/graphql", "application/json", strings.NewReader("{}"))
+		if err == nil {
+			response.Body.Close()
+		}
+		answered <- err
+	}()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tool call did not reach the upstream")
+	}
+	if !h.server.drain(h.api.Config, 200*time.Millisecond, 10*time.Second) {
+		t.Fatal("the tool call did not end")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream request was not cancelled")
+	}
+	if err := <-answered; err == nil {
+		t.Fatal("the tool call was answered after the stop")
+	}
+	h.m.mu.Lock()
+	active := h.m.sandboxes[id].active
+	h.m.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("%d requests still count in the sandbox", active)
+	}
+	if response, err := brokerHTTP(socket).Get("http://sandbox/health"); err == nil {
+		response.Body.Close()
+		t.Fatal("the broker still serves after the stop")
+	}
+	h.restart()
 }
 
 // brokerFromInside posts to /run/bro/tools.sock from a process in the sandbox (perl is in ubuntu-base);
