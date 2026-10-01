@@ -723,6 +723,14 @@ function coolingAfterBoot(host: BrowserHost) {
 
 async function fail(host: BrowserHost, reason: string, now: Date) {
   const atBoot = host.state === "creating" || host.state === "booting";
+  // The owner's alert is the only other trace, and the record goes with
+  // the host: the log keeps why a host was taken out.
+  console.warn("[browser-pool] a host failed", {
+    hostId: host.id,
+    reason,
+    state: host.state,
+    vmId: host.vmId,
+  });
   await writeHeld(
     host,
     {
