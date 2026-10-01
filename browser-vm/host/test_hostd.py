@@ -721,6 +721,28 @@ class ParkTest(HostTest):
         self.assertTrue((restored / "Default" / "BrowserMetrics").is_dir())
         self.assertEqual(self.profile_on(other), MARKER)
 
+    async def test_chromes_caches_never_travel(self):
+        # Chrome builds its caches again; carried along they made the pilot's set 255 MiB (01.10).
+        host, _runner, client, _record = await self.started()
+        profile = Path(host.config.root) / "sandboxes" / "ws-abc" / "profile"
+        for cache in ("Default/Cache/Cache_Data", "Default/Code Cache/js", "Default/Service Worker/CacheStorage/x",
+                      "GrShaderCache"):
+            (profile / cache).mkdir(parents=True)
+            (profile / cache / "data_0").write_bytes(b"\0" * 4096)
+        (profile / "Default" / "Local Storage").mkdir()
+        (profile / "Default" / "Local Storage" / "leveldb").write_bytes(b"signed-in")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
+        other, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual(status, 201, record)
+        restored = Path(other.config.root) / "sandboxes" / "ws-abc" / "profile"
+        self.assertEqual(sorted(p.name for p in restored.iterdir()), ["Default"])
+        self.assertEqual(sorted(p.name for p in (restored / "Default").iterdir()),
+                         ["Cookies", "Local Storage", "Service Worker"])
+        self.assertEqual(list((restored / "Default" / "Service Worker").iterdir()), [])
+        self.assertEqual((restored / "Default" / "Local Storage" / "leveldb").read_bytes(), b"signed-in")
+        self.assertEqual(self.profile_on(other), MARKER)
+
     async def test_a_cold_set_fetches_the_profile_alone(self):
         _runner, parked = await self.parked_set()
         self.storage.gets.clear()
