@@ -64,7 +64,7 @@ import re
 import shutil
 import tarfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import aiohttp
 from aiohttp import web
@@ -73,7 +73,7 @@ import caddy
 import network
 import sets
 
-VERSION = "2026-09-30.5"
+VERSION = "2026-10-01.1"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
@@ -327,6 +327,14 @@ def bro_owner(rootfs):
 # takes back: carried from set to set they grew the profile by 4 MiB a park (e2e 30.09: 4 → 25 MB in six).
 LEFT_OUT_OF_SETS = frozenset({"lost+found", "BrowserMetrics"})
 
+# Chrome's caches, at any depth of the profile: Chrome builds them again, and nothing a person signed in
+# with lives there (cookies, Local Storage and IndexedDB do not). Carried along they made the pilot's set
+# 255 MiB after five errands (01.10), every park uploading and every start downloading all of it.
+CHROME_CACHES = frozenset({
+    "Cache", "Code Cache", "GPUCache", "CacheStorage", "ScriptCache", "ShaderCache", "GrShaderCache",
+    "GraphiteDawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "component_crx_cache", "extensions_crx_cache",
+})
+
 
 def pack(source, target):
     """A tar of the directory's regular files and directories only (blocking: run it in a thread). The
@@ -336,6 +344,8 @@ def pack(source, target):
     source = Path(source)
 
     def plain(member):
+        if member.isdir() and PurePosixPath(member.name).name in CHROME_CACHES:
+            return None
         if member.islnk():
             member.type, member.linkname = tarfile.REGTYPE, ""
             member.size = os.lstat(source / member.name).st_size
