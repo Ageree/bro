@@ -92,9 +92,12 @@ export function sharedFileLocation(input: {
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
     return undefined;
   }
+  // Downloaded, never rendered on the storage's origin: an SVG or HTML the
+  // task agent made must not run as a page.
   return presignBrowserStateObject({
     expiresSeconds: redirectSeconds,
     key,
     method: "GET",
+    responseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
   });
 }

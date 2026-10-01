@@ -158,6 +158,32 @@ describe("the sandbox tool router", () => {
     expect(decodePage(new TextEncoder().encode("ok"), undefined)).toBe("ok");
   });
 
+  it("runs one tool per request, however the query is written", async () => {
+    const { ask } = await router();
+    const aliased = await ask(
+      'mutation { a: toolExecute(name: "download", input: {}) { ok } b: toolExecute(name: "download", input: {}) { ok } }'
+    );
+    const body = z
+      .object({ errors: z.array(z.object({ message: z.string() })) })
+      .parse(await aliased.json());
+    expect(body.errors[0]?.message).toBe("One toolExecute per request.");
+    const fragment = await ask(
+      'mutation { ...on Mutation { toolExecute(name: "download", input: {}) { ok } } }'
+    );
+    expect(await fragment.text()).toContain("Fragments are not supported.");
+  });
+
+  it("reads a hostile page in linear time and survives odd entities", async () => {
+    const { pageText } = await router();
+    const hostile = "<script".repeat(200_000);
+    const started = performance.now();
+    expect(pageText(hostile)).toBe("");
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(pageText("a &#99999999; b &#x110000; c")).toBe(
+      "a &#99999999; b &#x110000; c"
+    );
+  });
+
   it("keeps the text of a page and drops its markup", async () => {
     const { pageText } = await router();
     expect(pageText("<p>a&nbsp;b</p><!-- c --><div>&#1044;&#x430;</div>")).toBe(

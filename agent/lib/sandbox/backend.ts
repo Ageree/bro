@@ -52,6 +52,8 @@ const sandboxOwner = "bro";
 const snapshotLinkSeconds = 7 * 24 * 60 * 60;
 /** A command that names no limit gets the host's default ceiling. */
 const defaultCommandTimeoutMs = 10 * 60_000;
+/** How much of one stream of a command's output `run` keeps. */
+const maximumCommandOutputBytes = 1024 * 1024;
 
 /** What `onSession` hands the backend: whose sandbox it is. */
 interface CloudRuSessionOptions {
@@ -60,6 +62,27 @@ interface CloudRuSessionOptions {
 
 function snapshotObjectKey(sandboxId: string) {
   return `sandbox/workspaces/${sandboxId}.snap`;
+}
+
+async function deleteSnapshot(sandboxId: string, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(30_000);
+  const response = await fetch(
+    presignBrowserStateObject({
+      expiresSeconds: 300,
+      key: snapshotObjectKey(sandboxId),
+      method: "DELETE",
+    }),
+    {
+      method: "DELETE",
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    }
+  );
+  await response.body?.cancel();
+  if (!response.ok && response.status !== 404) {
+    throw new Error(
+      `The sandbox snapshot was not deleted (Object Storage ${String(response.status)}).`
+    );
+  }
 }
 
 function toolsUrl() {
@@ -122,6 +145,34 @@ async function readAll(stream: ReadableStream<Uint8Array>) {
     chunks.push(value);
   }
   return concat(chunks);
+}
+
+/**
+ * A command's output as text, its first `maximumCommandOutputBytes` only:
+ * the rest is read and dropped, so a runaway command cannot fill the
+ * server's memory. eve shows the model far less than this anyway.
+ */
+async function readOutput(stream: ReadableStream<Uint8Array>) {
+  const chunks: Uint8Array[] = [];
+  let kept = 0;
+  let dropped = 0;
+  const reader = stream.getReader();
+  for (;;) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The stream arrives as a sequence of chunks.
+    const { done, value } = await reader.read();
+    if (done) break;
+    const room = maximumCommandOutputBytes - kept;
+    if (room > 0) {
+      const part = value.byteLength > room ? value.subarray(0, room) : value;
+      chunks.push(part);
+      kept += part.byteLength;
+    }
+    dropped += value.byteLength - Math.max(Math.min(room, value.byteLength), 0);
+  }
+  const text = new TextDecoder().decode(concat(chunks));
+  return dropped === 0
+    ? text
+    : `${text}\n[output cut: ${String(dropped)} more bytes not kept]`;
 }
 
 function sliceLines(text: string, startLine?: number, endLine?: number) {
@@ -212,6 +263,8 @@ function spawnCommand(
           stdoutController.enqueue(Buffer.from(event.data, "base64"));
         } else if (event.type === "stderr") {
           stderrController.enqueue(Buffer.from(event.data, "base64"));
+        } else if (event.type === "ping") {
+          continue;
         } else if (event.type === "exit") {
           closeStreams();
           return { exitCode: event.code };
@@ -291,15 +344,11 @@ function sandboxSession(sandboxId: string): SandboxSession {
     run: async (options) => {
       const process = spawnCommand(sandboxId, options);
       const [stdout, stderr, exit] = await Promise.all([
-        readAll(process.stdout),
-        readAll(process.stderr),
+        readOutput(process.stdout),
+        readOutput(process.stderr),
         process.wait(),
       ]);
-      return {
-        exitCode: exit.exitCode,
-        stderr: new TextDecoder().decode(stderr),
-        stdout: new TextDecoder().decode(stdout),
-      };
+      return { exitCode: exit.exitCode, stderr, stdout };
     },
     setNetworkPolicy: async (policy: SandboxNetworkPolicy) => {
       if (policy !== "deny-all") {
@@ -381,8 +430,10 @@ export function cloudRuSandbox(): SandboxBackend<
             metadata: { sandboxId, workspaceId },
             sessionKey: input.sessionKey,
           }),
-        delete: async () => {
+        delete: async (options) => {
           await deleteSandbox(sandboxId);
+          // Its saved `/workspace` goes too, or the next open restores it.
+          await deleteSnapshot(sandboxId, options?.abortSignal);
         },
         session,
         shutdown: async () => {

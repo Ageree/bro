@@ -1,4 +1,11 @@
-import { buildSchema, graphql } from "graphql";
+import {
+  buildSchema,
+  type DocumentNode,
+  execute,
+  parse,
+  validate,
+  visit,
+} from "graphql";
 import { z } from "zod";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
@@ -65,24 +72,85 @@ const entities: ReadonlyMap<string, string> = new Map([
   ["#39", "'"],
 ]);
 
-/** Readable text of a page: no scripts, styles or tags, one blank line at most. */
+/** Elements whose content is never text a reader sees. */
+const hiddenElements: ReadonlySet<string> = new Set([
+  "noscript",
+  "script",
+  "style",
+  "svg",
+  "template",
+]);
+/** Closing tags after which a reader sees a new line. */
+const lineBreakTags: ReadonlySet<string> = new Set([
+  "br",
+  "/div",
+  "/h1",
+  "/h2",
+  "/h3",
+  "/h4",
+  "/h5",
+  "/h6",
+  "/li",
+  "/p",
+  "/tr",
+]);
+
+function decodeEntity(match: string, name: string) {
+  const known = entities.get(name.toLowerCase());
+  if (known !== undefined) return known;
+  const hex = /^#x([\da-f]{1,6})$/iu.exec(name)?.[1];
+  const decimal = /^#(\d{1,7})$/u.exec(name)?.[1];
+  const code =
+    hex === undefined
+      ? decimal === undefined
+        ? undefined
+        : Number.parseInt(decimal, 10)
+      : Number.parseInt(hex, 16);
+  // A code point past Unicode would make the whole page fail to read.
+  return code === undefined || code > 0x10_ffff
+    ? match
+    : String.fromCodePoint(code);
+}
+
+/**
+ * Readable text of a page: no scripts, styles or tags, one blank line at
+ * most. One pass with `indexOf`, never a backtracking pattern over the page:
+ * a hostile page of unclosed `<script` tags must not stall the router.
+ */
 export function pageText(html: string) {
-  return html
-    .replace(/<(script|style|noscript|svg|template)\b[\s\S]*?<\/\1>/giu, " ")
-    .replace(/<!--[\s\S]*?-->/gu, " ")
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)\b[^>]*>/giu, "\n")
-    .replace(/<[^>]+>/gu, " ")
-    .replace(/&(#?\w+);/gu, (match, name: string) => {
-      const known = entities.get(name.toLowerCase());
-      if (known !== undefined) return known;
-      const code = /^#x([\da-f]+)$/iu.exec(name)?.[1];
-      if (code !== undefined)
-        return String.fromCodePoint(Number.parseInt(code, 16));
-      const decimal = /^#(\d+)$/u.exec(name)?.[1];
-      return decimal === undefined
-        ? match
-        : String.fromCodePoint(Number.parseInt(decimal, 10));
-    })
+  const lower = html.toLowerCase();
+  const pieces: string[] = [];
+  let at = 0;
+  while (at < html.length) {
+    const open = html.indexOf("<", at);
+    if (open === -1) {
+      pieces.push(html.slice(at));
+      break;
+    }
+    pieces.push(html.slice(at, open));
+    if (lower.startsWith("<!--", open)) {
+      const end = lower.indexOf("-->", open + 4);
+      pieces.push(" ");
+      at = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    const close = html.indexOf(">", open + 1);
+    if (close === -1) break;
+    const tag =
+      /^\/?[a-z][a-z\d]*/u.exec(lower.slice(open + 1, close))?.[0] ?? "";
+    if (hiddenElements.has(tag)) {
+      const end = lower.indexOf(`</${tag}`, close + 1);
+      const after = end === -1 ? -1 : html.indexOf(">", end);
+      pieces.push(" ");
+      at = after === -1 ? html.length : after + 1;
+      continue;
+    }
+    pieces.push(lineBreakTags.has(tag) ? "\n" : " ");
+    at = close + 1;
+  }
+  return pieces
+    .join("")
+    .replace(/&(#?\w{1,32});/gu, decodeEntity)
     .replace(/[ \t\f\v\r]+/gu, " ")
     .replace(/ *\n */gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
@@ -253,6 +321,28 @@ const rootValue = {
     })),
 };
 
+/**
+ * One tool call per request: aliases or fragments could otherwise run a
+ * dozen calls under the broker's one-request rate limit and size cap.
+ */
+function singleCallRefusal(document: DocumentNode) {
+  const seen = { calls: 0, fragments: 0 };
+  visit(document, {
+    Field(node) {
+      if (node.name.value === "toolExecute") seen.calls += 1;
+    },
+    FragmentDefinition() {
+      seen.fragments += 1;
+    },
+    InlineFragment() {
+      seen.fragments += 1;
+    },
+  });
+  if (seen.fragments > 0) return "Fragments are not supported.";
+  if (seen.calls > 1) return "One toolExecute per request.";
+  return undefined;
+}
+
 const requestSchema = z.object({
   operationName: z.string().nullish(),
   query: z.string().min(1).max(10_000),
@@ -284,11 +374,31 @@ export async function answerSandboxToolRequest(request: Request) {
       { status: 400 }
     );
   }
-  const result = await graphql({
+  let document: DocumentNode;
+  try {
+    document = parse(body.data.query);
+  } catch (error) {
+    return Response.json({
+      errors: [
+        { message: error instanceof Error ? error.message : "Bad query." },
+      ],
+    });
+  }
+  const refusal = singleCallRefusal(document);
+  const errors = refusal === undefined ? validate(schema, document) : [];
+  if (refusal !== undefined || errors.length > 0) {
+    return Response.json({
+      errors:
+        refusal === undefined
+          ? errors.map((error) => ({ message: error.message }))
+          : [{ message: refusal }],
+    });
+  }
+  const result = await execute({
+    document,
     operationName: body.data.operationName ?? undefined,
     rootValue,
     schema,
-    source: body.data.query,
     variableValues: body.data.variables ?? undefined,
   });
   console.info("[sandbox-tools] request", {

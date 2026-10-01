@@ -469,6 +469,30 @@ export function startsTurn(message: ModelMessage) {
   );
 }
 
+/**
+ * eve's own wording when it hands background work back: «Background task
+ * <id> (<agent>) is completed.», «… failed …», «… needs authorization.».
+ * A browser run's report is tagged as background work too, but it opens with
+ * «Browser run <id> finished.» (`agent/lib/browser-use/completion.ts`).
+ */
+const backgroundTaskOpening = /^Background task task_\S+ /u;
+
+/**
+ * Whether the current turn is eve's delivery of finished background work —
+ * the task agent's report — rather than anything the person wrote or a
+ * browser run's report. Such a turn keeps the previous turn's caller, so
+ * only its opening message tells it apart.
+ */
+export function turnOpenedByBackgroundTask(messages: readonly ModelMessage[]) {
+  const opening = messages.findLast(startsTurn);
+  return (
+    opening !== undefined &&
+    taggedMessageSchema.safeParse(opening).data?.kind ===
+      "execution.background_task" &&
+    backgroundTaskOpening.test(openingText(opening))
+  );
+}
+
 export function currentTurnMessages(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   return start === -1 ? messages : messages.slice(start + 1);

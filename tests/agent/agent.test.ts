@@ -764,6 +764,39 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  it("delivers the task agent's report after a browser report, with delivery tools only", async () => {
+    // eve opens the task agent's report in a turn that keeps the previous
+    // caller: here a browser report's, whose report already reached them.
+    services.browserRunReportDelivered.mockResolvedValue(true);
+    const taskReport = Object.assign(
+      {
+        content:
+          "Background task task_1 (task) is completed.\n\nResult:\nГотово: https://bro.example/eve/v1/sandbox-files/x/plan.pptx?sig=s",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([taskReport], "browser-result", reportAttributes)
+    );
+
+    expect(services.browserRunReportDelivered).not.toHaveBeenCalled();
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options?.silent).toBe(false);
+    expect(options?.toolChoice).toBe("auto");
+    expect(options?.replyNote ?? "").not.toContain(
+      "This browser report already reached the person"
+    );
+    expect(options?.offeredTools).toEqual([
+      "react_to_message",
+      "send_message",
+      "task",
+      "task_cancel",
+    ]);
+  });
+
   it("ends a report turn whose outcome an earlier turn already told", async () => {
     // «ну что там?» took the outcome from `browser_task status` while the
     // report waited behind that turn; the report must not tell it again.

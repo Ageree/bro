@@ -10,6 +10,7 @@ import {
   skippedSendNotice,
   turnMessageLimit,
   turnMustEnd,
+  turnOpenedByBackgroundTask,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -2946,3 +2947,26 @@ function sendInput(
     },
   ];
 }
+
+function tagged(content: string, kind: string): ModelMessage {
+  return Object.assign({ content, role: "user" as const }, { kind });
+}
+
+describe("turnOpenedByBackgroundTask", () => {
+  it("tells the task agent's report from the person and from a browser report", () => {
+    const person = tagged("сделай презентацию", "user");
+    const taskReport = tagged(
+      "Background task task_0998 (task) is completed.\n\nResult:\nГотово.",
+      "execution.background_task"
+    );
+    const browserReport = tagged(
+      "Browser run browser-run-1 finished.\n\nResult: записан.",
+      "execution.background_task"
+    );
+
+    expect(turnOpenedByBackgroundTask([person])).toBe(false);
+    expect(turnOpenedByBackgroundTask([person, taskReport])).toBe(true);
+    expect(turnOpenedByBackgroundTask([taskReport, browserReport])).toBe(false);
+    expect(turnOpenedByBackgroundTask([taskReport, person])).toBe(false);
+  });
+});

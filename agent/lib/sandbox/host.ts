@@ -12,6 +12,8 @@ import { signSandboxHostToken } from "./keys";
 const requestTimeoutMs = 60_000;
 /** Opening a sandbox may restore its snapshot first. */
 const openTimeoutMs = 120_000;
+/** `sandboxd`'s own ceiling for a command that names none. */
+const defaultExecTimeoutMs = 600_000;
 
 class SandboxHostError extends Error {
   readonly code: string;
@@ -224,6 +226,9 @@ const execEventSchema = z.discriminatedUnion("type", [
   z.object({ data: z.string(), type: z.literal("stderr") }),
   z.object({ code: z.number().int(), type: z.literal("exit") }),
   z.object({ message: z.string(), type: z.literal("error") }),
+  // Written while a command is silent, so no proxy or client gives up on
+  // the stream: undici drops a body after 300 s without bytes.
+  z.object({ type: z.literal("ping") }),
 ]);
 
 export type SandboxExecEvent = z.infer<typeof execEventSchema>;
@@ -246,6 +251,11 @@ export async function* execInSandbox(
   signal: AbortSignal
 ): AsyncGenerator<SandboxExecEvent> {
   const { id, origin } = host();
+  // The host ends the command at its timeout; the stream gets a minute more
+  // to bring the exit, then gives up on a host that went silent.
+  const deadline = AbortSignal.timeout(
+    (request.timeoutMs ?? defaultExecTimeoutMs) + 60_000
+  );
   const response = await fetch(`${origin}${sandboxPath(sandboxId, "/exec")}`, {
     body: JSON.stringify(request),
     headers: {
@@ -253,7 +263,7 @@ export async function* execInSandbox(
       "content-type": "application/json",
     },
     method: "POST",
-    signal,
+    signal: AbortSignal.any([signal, deadline]),
   });
   if (!response.ok) throw await failure(response);
   const reader = response.body?.getReader();

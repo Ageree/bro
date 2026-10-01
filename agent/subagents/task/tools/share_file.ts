@@ -61,6 +61,17 @@ export default defineTool({
   }),
   async execute({ name, path }, ctx) {
     const sandbox = await ctx.getSandbox();
+    // The size first: a huge file must not be read into Bro's memory.
+    const size = await sandbox.run({
+      command: 'stat -c %s -- "$P"',
+      env: { P: path },
+    });
+    if (size.exitCode !== 0) throw new Error(`There is no file at ${path}.`);
+    if (Number(size.stdout.trim()) > maximumSharedFileBytes) {
+      throw new Error(
+        `The file ${path} is over 10 MB: compress it or split it into parts.`
+      );
+    }
     const bytes = await sandbox.readBinaryFile({ path });
     if (bytes === null) throw new Error(`There is no file at ${path}.`);
     if (bytes.byteLength === 0) throw new Error(`The file ${path} is empty.`);

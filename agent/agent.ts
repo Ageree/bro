@@ -39,6 +39,7 @@ import { browserRunReportDelivered } from "@db/services/browser-runs";
 import {
   approvedResendOwed,
   turnMustEnd,
+  turnOpenedByBackgroundTask,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -52,6 +53,13 @@ import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 
 /** The tool eve makes of the task agent (`agent/subagents/task`). */
 const taskAgentTool = "task";
+/** All a turn that delivers the task agent's report may call. */
+const backgroundTaskTurnTools = [
+  "react_to_message",
+  "send_message",
+  taskAgentTool,
+  "task_cancel",
+];
 
 /**
  * What a report turn is told when its report already reached the person in
@@ -101,7 +109,13 @@ export default defineAgent({
         // of the person's, or `browser_task status` handed it over — has
         // already reached them, and so has one whose outcome an earlier turn
         // took from `status` and told them. That turn says nothing and ends.
-        const reportRunId = reportedBrowserRunId(ctx.session.auth.current);
+        // eve delivers the task agent's report in a turn of its own that
+        // keeps the previous turn's caller: after a browser report it would
+        // pass for that report again, and be dropped as stale.
+        const backgroundTaskTurn = turnOpenedByBackgroundTask(ctx.messages);
+        const reportRunId = backgroundTaskTurn
+          ? undefined
+          : reportedBrowserRunId(ctx.session.auth.current);
         const reportFirstStep =
           reportRunId !== undefined && turnTookNoStep(ctx.messages);
         const staleReport =
@@ -279,6 +293,16 @@ export default defineAgent({
             ...(taskAgent ? [] : [taskAgentTool]),
           ],
         };
+        // The task agent read web pages for its report, and that text now
+        // opens a turn that looks like the person's: it may only reach the
+        // person or go back to the task agent, never act in their name.
+        if (backgroundTaskTurn) {
+          return modelSelection(modelId, {
+            ...selection,
+            offeredTools: backgroundTaskTurnTools,
+            stableContext,
+          });
+        }
         if (!stableContext) return modelSelection(modelId, selection);
         return modelSelection(modelId, {
           ...selection,

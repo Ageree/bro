@@ -1,6 +1,7 @@
 import { defineAgent, defineDynamic } from "eve";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 import { getWorkspaceModelId } from "@db/services/settings";
 import { env } from "@shared/environment";
 
@@ -23,12 +24,16 @@ export default defineAgent({
     events: {
       "step.started": async (_event, ctx) => {
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
-        const modelId =
-          env.TASK_AGENT_MODEL ??
-          (caller === null
-            ? env.OPENROUTER_MODEL
-            : await getWorkspaceModelId(scopeFromPrincipal(caller)));
-        return modelSelection(modelId);
+        if (caller === null) throw new Error("The task agent needs a caller.");
+        const scope = scopeFromPrincipal(caller);
+        // Bro withholds `task` outside the pilot, but a Gateway model ignores
+        // withheld tools: the agent itself refuses before any sandbox work.
+        if (!(await taskAgentPilot(scope))) {
+          throw new Error("The task agent is not enabled for this workspace.");
+        }
+        return modelSelection(
+          env.TASK_AGENT_MODEL ?? (await getWorkspaceModelId(scope))
+        );
       },
     },
   }),

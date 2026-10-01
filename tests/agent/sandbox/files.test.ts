@@ -46,6 +46,12 @@ describe("shared sandbox files", () => {
       signature: link.searchParams.get("sig"),
     });
     expect(location).toContain(`/sandbox/files/${id ?? ""}/`);
+    // Downloaded, never rendered on the storage's origin.
+    expect(
+      new URL(location ?? "https://x").searchParams.get(
+        "response-content-disposition"
+      )
+    ).toBe(`attachment; filename*=UTF-8''${encodeURIComponent("итог.txt")}`);
     expect(
       sharedFileLocation({
         id: id ?? "",

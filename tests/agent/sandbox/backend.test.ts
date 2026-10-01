@@ -149,6 +149,42 @@ describe("the Cloud.ru sandbox backend", () => {
     });
   });
 
+  it("ignores the host's keepalive and keeps only the first megabyte of output", async () => {
+    const big = Buffer.alloc(1024 * 1024 + 10, "x").toString("base64");
+    stubHost(opened, () =>
+      ndjson(
+        { pid: "p1", type: "start" },
+        { type: "ping" },
+        { data: big, type: "stdout" },
+        { type: "ping" },
+        { code: 0, type: "exit" }
+      )
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const result = await session.run({ command: "yes | head -c 1048586" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.startsWith("x".repeat(1024 * 1024))).toBe(true);
+    expect(result.stdout).toContain("[output cut: 10 more bytes not kept]");
+  });
+
+  it("deletes the saved /workspace with the sandbox", async () => {
+    const calls = stubHost(
+      opened,
+      () => new Response(null, { status: 204 }),
+      () => new Response(null, { status: 204 })
+    );
+    const { cloudRuSandbox, keys } = await backend();
+    const handle = await cloudRuSandbox().create(createInput);
+    await handle.delete();
+    const sandboxId = keys.sandboxIdFor("session-1");
+    expect(calls[1]?.method).toBe("DELETE");
+    expect(calls[2]?.method).toBe("DELETE");
+    expect(calls[2]?.url).toContain(
+      `/bro-state-test/sandbox/workspaces/${sandboxId}.snap?`
+    );
+  });
+
   it("reads a missing file as null and anchors relative paths in /workspace", async () => {
     const calls = stubHost(
       opened,
