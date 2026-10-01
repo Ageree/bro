@@ -120,6 +120,9 @@ rm -f /tmp/chrome.deb
 # Chrome 154 ignores --force-webrtc-ip-handling-policy: without the policy WebRTC hands sites the VM's
 # own address past the proxy. The profile keeps no passwords or cards of its own either.
 mkdir -p /etc/opt/chrome/policies/managed
+# A fresh profile otherwise pulls ~160 MB of Chrome components (speech, on-device models, optimization
+# guide) through the residential proxy, billed per GB, on its first errand (01.10.2026): component
+# updates and model downloads are off here, the optimization guide in the unit's --disable-features.
 cat > /etc/opt/chrome/policies/managed/bro.json <<'JSON'
 {
   "WebRtcIPHandling": "disable_non_proxied_udp",
@@ -127,7 +130,9 @@ cat > /etc/opt/chrome/policies/managed/bro.json <<'JSON'
   "AutofillCreditCardEnabled": false,
   "BackgroundModeEnabled": false,
   "DefaultBrowserSettingEnabled": false,
-  "MetricsReportingEnabled": false
+  "MetricsReportingEnabled": false,
+  "ComponentUpdatesEnabled": false,
+  "GenAILocalFoundationalModelSettings": 1
 }
 JSON
 cat > /etc/systemd/system/bro-xvfb.service <<'UNIT'
@@ -153,7 +158,7 @@ Environment=DISPLAY=:99 TZ=Europe/Moscow LANG=ru_RU.UTF-8 LANGUAGE=ru_RU:ru
 # A profile restored from a backup or moved to a re-created VM still carries the old host's lock, and
 # Chrome refuses it as "in use by another computer": only this unit ever runs Chrome on this profile.
 ExecStartPre=/bin/sh -c 'rm -f /var/lib/bro/profile/SingletonLock /var/lib/bro/profile/SingletonSocket /var/lib/bro/profile/SingletonCookie'
-ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --proxy-bypass-list=<-loopback> --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en about:blank
+ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --proxy-bypass-list=<-loopback> --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en --disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction about:blank
 # SIGTERM lets Chrome write cookies and local storage to the profile before the VM powers off.
 KillMode=mixed
 TimeoutStopSec=30
