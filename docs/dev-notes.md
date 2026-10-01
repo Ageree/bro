@@ -81,8 +81,13 @@
 - Каналы без `turnPolicy` работают как `"steer"`: сообщение, пришедшее до
   начала ответа, перехватывает текущий ход; `"queue"` — только ходы-отчёты
   браузера (`completion.ts`) и расписания (`agent/lib/schedules/report.ts`). `defaultTools: false` выключает и готовую
-  песочницу eve (`bash`, `read_file`, `write_file`; на Vercel — Vercel
-  Sandbox), хотя `ctx.getSandbox()` работает (`node_modules/eve/docs/sandbox.mdx`).
+  песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
+  работает (`node_modules/eve/docs/sandbox.mdx`).
+- Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
+  на Vercel (Sandbox, Blob, Workflow, Gateway). eve живёт и вне Vercel:
+  `eve start`, состояние ходов — `@workflow/world-postgres`
+  (`experimental.workflow.world` в `agent.ts`), песочница — бэкенд `docker()`
+  (`node_modules/eve/docs/concepts/execution-model-and-durability.mdx`).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
