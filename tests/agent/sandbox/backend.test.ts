@@ -87,7 +87,7 @@ describe("the Cloud.ru sandbox backend", () => {
       `https://10-0-0-1.sslip.io/v1/sandboxes/${sandboxId}`
     );
     const body = openBody.parse(JSON.parse(calls[0]?.body ?? "{}"));
-    expect(body.workspace).toBe("personal:abc");
+    expect(body.workspace).toBe("bro");
     expect(body.tools.url).toBe(
       "https://bro.example.test/eve/v1/sandbox-tools"
     );
@@ -103,6 +103,27 @@ describe("the Cloud.ru sandbox backend", () => {
       backendName: "bro-cloudru",
       metadata: { sandboxId, workspaceId: "personal:abc" },
       sessionKey: "session-1",
+    });
+  });
+
+  it("opens before onSession knows the workspace, then renews the token", async () => {
+    const calls = stubHost(opened, opened);
+    const { cloudRuSandbox, keys } = await backend();
+    const handle = await cloudRuSandbox().create({
+      ...createInput,
+      existingMetadata: undefined,
+    });
+    const first = openBody.parse(JSON.parse(calls[0]?.body ?? "{}"));
+    expect(first.workspace).toBe("bro");
+    expect(keys.verifySandboxToolsToken(first.tools.token)?.ws).toBe("");
+    await handle.useSessionFn({ workspaceId: "personal:abc" });
+    const second = openBody.parse(JSON.parse(calls[1]?.body ?? "{}"));
+    expect(second.workspace).toBe("bro");
+    expect(keys.verifySandboxToolsToken(second.tools.token)?.ws).toBe(
+      "personal:abc"
+    );
+    expect((await handle.captureState()).metadata).toMatchObject({
+      workspaceId: "personal:abc",
     });
   });
 

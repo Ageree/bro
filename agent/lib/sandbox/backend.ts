@@ -39,6 +39,15 @@ import { sandboxToolsPath } from "./router";
  */
 const backendName = "bro-cloudru";
 const workspaceRoot = "/workspace";
+/**
+ * What `sandboxd` records as the sandbox's owner. eve opens the sandbox
+ * before `onSession` names the person's workspace, and `sandboxd` refuses
+ * to hand a live sandbox to another owner, so it is one label for every
+ * sandbox of this deployment; the sandbox id, from the session key, already
+ * keeps sessions apart. The person's workspace rides in the tool router's
+ * token, which every open renews.
+ */
+const sandboxOwner = "bro";
 /** The snapshot links outlive any pause the host's idle reaper may need. */
 const snapshotLinkSeconds = 7 * 24 * 60 * 60;
 /** A command that names no limit gets the host's default ceiling. */
@@ -88,7 +97,7 @@ function openRequest(sandboxId: string, workspaceId: string) {
       }),
       url: toolsUrl(),
     },
-    workspace: workspaceId,
+    workspace: sandboxOwner,
   };
 }
 
