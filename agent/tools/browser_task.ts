@@ -340,6 +340,13 @@ function reportFactsLine() {
 /**
  * The contract every run ends with. The labels are fixed so the outcome parses
  * the same way whatever language the errand was written in; the values are not.
+ *
+ * No example address in it: browser-use opens the one address a task names
+ * before its first step (`directly_open_url`), and a sample "https://..."
+ * was a second one, so every run spent its first step opening the Site — or,
+ * when browser-use skipped the Site itself (avito.ru/moskva reads as an .avi
+ * file to it), opened "https://" (bench of 01.10, `docs/agent-costs.md`,
+ * section 3.3).
  */
 function outcomeContract() {
   return [
@@ -352,7 +359,7 @@ function outcomeContract() {
     `NEEDS: exactly one of ${browserRunNeeds.join(", ")}`,
     "DETAILS: the one thing a person must supply or decide, or none",
     "NEXT: when the errand is one step of something that can only be finished later — online check-in that opens before a flight, a window for passing meter readings, a payment due date, a parcel to collect by a date — what that step is and when it becomes possible, exactly as the site states it (a date and time, or a rule such as «24 hours before departure» together with the departure time), or none",
-    'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []',
+    'LINKS: a JSON array of {"title":"human-readable option name","url":"its observed https:// URL"} objects, or []',
     'ITEMS: a JSON array with one object per option, basket line or slot you report — {"name":"…","price":"as the page shows it, with the currency","quantity":"…","url":"its observed https:// URL or null","details":"what the person needs to choose: dates or the slot, cancellation terms, delivery date, rating","replaces":"for a substitute, what the errand asked for that it replaces, or null","fee":true only for a delivery, service, packaging or small-order fee line} — or []',
     "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, each substitute with what it replaces, and every fee as a line of its own, not only the TOTAL; for a search, every option you report.",
     'CHARGES: a JSON array with one object per fine, tax, duty, bill or other charge you found — {"what":"what it is for: for a fine the offence and the article, for a tax its kind, object and period, for a bill the service and the month","amount":"…","date":"the date of the decree or the accrual","due":"the date it has to be paid by","discount":"the reduced amount and the date it lasts until, or null","reference":"the decree, bill or payment number (УИН), or null"} — or []',

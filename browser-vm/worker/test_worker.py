@@ -237,8 +237,11 @@ class FakeAgentState:
         # Non-None so a test can tell whether the worker reset them (W2): browser-use's own counters,
         # relative to n_steps, that a reset run must not carry over from a previous run's step count.
         self.plan_generation_step = 7
+        # The messages browser-use saved with the memory: its system message would win over the run's own.
+        saved = types.SimpleNamespace(system_message="saved system", state_message="saved state",
+                                      context_messages=["saved context"])
         self.message_manager_state = types.SimpleNamespace(agent_history_items=list(history),
-                                                            last_compaction_step=12)
+                                                            last_compaction_step=12, history=saved)
 
     @classmethod
     def model_validate(cls, data):
@@ -344,8 +347,14 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             (worker.os, "_exit", self.exits),
         ]:
             self.enterContext(mock.patch.object(target, name, value))
+        # httpx comes with browser-use on the image; the run's billing hook only needs its client built.
+        class AsyncClient(dict):
+            async def aclose(self):
+                pass
+
+        httpx = types.SimpleNamespace(AsyncClient=AsyncClient, Timeout=lambda *args, **kwargs: None)
         self.enterContext(mock.patch.dict(sys.modules, {
-            "browser_use": browser_use, "browser_use.agent": types.SimpleNamespace(),
+            "httpx": httpx, "browser_use": browser_use, "browser_use.agent": types.SimpleNamespace(),
             "browser_use.agent.views": views, "browser_use.agent.message_manager": types.SimpleNamespace(),
             "browser_use.agent.message_manager.views": message_views,
         }))
@@ -427,6 +436,76 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.max_steps, 60)
         self.assertEqual(started, {"n_steps": 1, "plan_generation_step": None, "last_compaction_step": None})
 
+    async def test_a_run_without_tuning_runs_the_agent_as_before(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        await self.settled("r1")
+        options = FakeAgent.built[0].options
+        self.assertEqual(options["extend_system_message"], worker.EXTEND_SYSTEM)
+        self.assertFalse({"flash_mode", "max_actions_per_step", "max_history_items"} & options.keys())
+        self.assertNotIn("extra_body", options["llm"])
+
+    async def test_tuning_reaches_the_agent_and_the_model(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "tuning": {"flashMode": True, "maxActionsPerStep": 8, "reasoning": "none",
+                                                "later": 1}})
+        await self.settled("r1")
+        options = FakeAgent.built[0].options
+        self.assertEqual({k: options[k] for k in ("flash_mode", "max_actions_per_step")},
+                         {"flash_mode": True, "max_actions_per_step": 8})
+        self.assertNotIn("max_history_items", options)  # a trimmed history loses the prompt cache
+        self.assertEqual(options["llm"]["extra_body"], {"extra_body": {"reasoning": {"enabled": False}}})
+        self.assertEqual(options["extend_system_message"], f"{worker.EXTEND_SYSTEM}\n\n{worker.BATCH_HINT}")
+        self.assertEqual(worker.tuned_llm_options({"reasoning": "low"}),
+                         {"extra_body": {"extra_body": {"reasoning": {"effort": "low"}}}})
+
+    async def test_a_wrong_tuning_is_refused_before_anything_starts(self):
+        for tuning in ({"maxActionsPerStep": 50}, {"flashMode": "yes"}, {"reasoning": "lots"},
+                       {"maxActionsPerStep": True}, []):
+            with self.subTest(tuning=tuning):
+                response = await self.client.post("/v1/runs", json={
+                    "id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.", "tuning": tuning},
+                    headers={"Authorization": f"Bearer {fresh_token()}"})
+                self.assertEqual(response.status, 400)
+        self.assertEqual((FakeAgent.built, self.worker.runs), ([], {}))
+
+    async def test_a_follow_up_keeps_the_sessions_tuning_and_gets_its_own_system_message(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "tuning": {"flashMode": True, "reasoning": "none"}})
+        await self.settled("r1")
+        status, answer = await self.call("POST", "/v1/sessions/s1/messages",
+                                         {"text": "Take the red one.", "runId": "r2"})
+        self.assertEqual((status, answer["status"]), (200, "started"))
+        await self.settled("r2")
+        follow_up = FakeAgent.built[-1]
+        self.assertEqual(follow_up.options["task"], "Take the red one.")
+        self.assertIs(follow_up.options["flash_mode"], True)
+        self.assertEqual(follow_up.options["llm"]["extra_body"], {"extra_body": {"reasoning": {"enabled": False}}})
+        # browser-use would keep the system message saved with the memory over the one this run builds.
+        saved = follow_up.options["injected_agent_state"].message_manager_state.history
+        self.assertEqual((saved.system_message, saved.state_message, saved.context_messages), (None, None, []))
+
+    async def test_each_step_records_the_tokens_since_the_last_one(self):
+        def entry(prompt, cached, completion):
+            return types.SimpleNamespace(usage=types.SimpleNamespace(
+                prompt_tokens=prompt, prompt_cached_tokens=cached, completion_tokens=completion))
+
+        async def two_steps(agent, on_step_start):
+            agent.token_cost_service = types.SimpleNamespace(usage_history=[entry(20_000, 0, 300)])
+            step = agent.options["register_new_step_callback"]
+            await step(types.SimpleNamespace(url="https://shop.test/"), types.SimpleNamespace(memory="Search."), 1)
+            # The step's own call and an extraction in between.
+            agent.token_cost_service.usage_history += [entry(5_000, 0, 100), entry(21_000, 19_000, 250)]
+            await step(types.SimpleNamespace(url="https://shop.test/"), types.SimpleNamespace(next_goal="Read."), 2)
+            return FakeHistory(True)
+
+        FakeAgent.script = two_steps
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertEqual([step["tokens"] for step in run.steps],
+                         [{"in": 20_000, "cached": 0, "out": 300, "calls": 1},
+                          {"in": 26_000, "cached": 19_000, "out": 350, "calls": 2}])
+        self.assertEqual([step["goal"] for step in run.steps], ["Search.", "Read."])
+
     async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
         async def browse(agent, on_step_start):
             await on_step_start(agent)
@@ -463,6 +542,42 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(FakeAgent.built[0].options["calculate_cost"], False)
         self.assertEqual(run.public()["usage"], {"total_prompt_tokens": 12_000, "total_completion_tokens": 800,
                                                  "total_tokens": 12_800, "total_prompt_cached_tokens": 9_000})
+
+    async def test_a_run_reports_what_the_service_billed_for_every_call_it_made(self):
+        # browser-use counts only the answers it could parse; the service bills the others too.
+        class Response:
+            def __init__(self, path, body, method="POST"):
+                self.request = types.SimpleNamespace(method=method, url=types.SimpleNamespace(path=path))
+                self.body = body
+
+            async def aread(self):
+                return b""
+
+            def json(self):
+                return self.body
+
+        class Usage:
+            def model_dump(self):
+                return {"total_prompt_tokens": 20_000, "total_completion_tokens": 300, "total_tokens": 20_300,
+                        "total_prompt_cached_tokens": 12_000}
+
+        async def billed(agent, on_step_start):
+            count = agent.options["llm"]["http_client"]["event_hooks"]["response"][0]
+            for response in (Response("/api/v1/chat/completions", {"usage": {"cost": 0.25}}),
+                             Response("/api/v1/chat/completions", {"usage": {"cost": 0.5}}),  # unparsed, billed
+                             Response("/api/v1/chat/completions", {"error": "overloaded"}),
+                             Response("/api/v1/models", {"usage": {"cost": 9}}, method="GET")):
+                await count(response)
+            history = FakeHistory(True)
+            history.usage = Usage()
+            return history
+
+        FakeAgent.script = billed
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertEqual(run.public()["usage"], {"total_prompt_tokens": 20_000, "total_completion_tokens": 300,
+                                                 "total_tokens": 20_300, "total_prompt_cached_tokens": 12_000,
+                                                 "billed": 0.75, "billed_calls": 2})
 
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)

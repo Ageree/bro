@@ -26,10 +26,12 @@ import urllib.request
 from pathlib import Path
 
 COMPUTE = "https://compute.api.cloud.ru/api"
-ZONE = "ru.AZ-3"
-SUBNET = "Default_ru.AZ-3"
+# ru.AZ-3 is switched off in the project since 30.09 (docs/browser-infra-notes.md): the same env as Bro's
+# (CLOUDRU_ZONE, CLOUDRU_SUBNET, CLOUDRU_SECURITY_GROUP) picks the zone, AZ-1 by default.
+ZONE = os.environ.get("CLOUDRU_ZONE", "ru.AZ-1")
+SUBNET = os.environ.get("CLOUDRU_SUBNET", "Default_ru.AZ-1")
 # Egress to 0.0.0.0/0, ingress only 80/443 — nothing listens there on a probe VM but the test HTTP server.
-SECURITY_GROUP = "bro-browser-pilot"
+SECURITY_GROUP = os.environ.get("CLOUDRU_SECURITY_GROUP", "bro-browser-az1")
 STATE_DIR = Path(os.environ.get("PROBE_STATE_DIR", Path.home() / ".bro-probe"))
 STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 TOKEN = STATE_DIR / "token"

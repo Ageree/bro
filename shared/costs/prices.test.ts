@@ -45,7 +45,7 @@ describe("cost prices", () => {
         inputTokens: 2_000_000,
         outputTokens: 1_000_000,
       })
-    ).toBe(59.15);
+    ).toBe(89.94);
     expect(
       prices.routerAiTokensRub("openai/gpt-5.6-luna", {
         cachedInputTokens: 0,

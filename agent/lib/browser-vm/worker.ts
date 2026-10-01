@@ -179,6 +179,20 @@ const runInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   task: z.string().min(1),
   timeoutSeconds: z.number().int().positive().optional(),
+  /**
+   * How the worker's browser-use agent runs (`agent_tuning` in
+   * browser-vm/worker/worker.py); absent, with browser-use's defaults. A
+   * worker older than 2026-10-01.1 ignores it.
+   */
+  tuning: z
+    .object({
+      flashMode: z.boolean().optional(),
+      maxActionsPerStep: z.number().int().min(1).max(10).optional(),
+      reasoning: z
+        .enum(["none", "minimal", "low", "medium", "high"])
+        .optional(),
+    })
+    .optional(),
 });
 
 const sessionSchema = z.object({

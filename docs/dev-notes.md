@@ -271,6 +271,12 @@
   отвергает вызов, а не даёт пустой ответ.
 - Текст поручения — `composeBrowserTask` (`agent/tools/browser_task.ts`), тесты
   по дословным фразам; эвалов нет: каждый кейс — платный прогон.
+- Правила Бро — в тексте задачи: из системного сообщения browser-use модель
+  теряла подвал `RESULT…NEEDS`. Адрес в задаче — один Site: его browser-use
+  открывает сам, без шага модели (`docs/agent-costs.md`, 3.3).
+- DeepSeek на RouterAI по умолчанию думает: в JSON шага тогда течёт
+  `｜｜DSML｜｜`, шаг пропадает, а вызов оплачен. Бро выключает это
+  (`runTuning` в `agent/lib/browser-vm/runs.ts`, `tuning` worker).
 - «accepted» от `attachSession(...).send` — не доставка: итог доставлен, когда
   ход-отчёт отправил сообщение, вызвал `browser_task` или закончился
   (`agent/hooks/browser-run-report.ts`). Аренду итога (10 минут) не
@@ -331,11 +337,14 @@
 ## Учёт расходов
 
 - `usage.total_cost` старого worker — цена browser-use по его долларовому
-  прайсу (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
-  `shared/costs/prices.ts`. Worker с 30.09 цену не просит (`calculate_cost`
-  тянул прайсы с GitHub и openrouter.ai и вешал запуск с Cloud.ru) и
-  `total_cost` не отдаёт. Трафик прокси по запуску (`traffic`) отдаёт только
-  обновлённый worker; хуки родителя шаги субагентов не видят.
+  прайсу (LiteLLM), а не рубли RouterAI. С 2026-10-01.1 worker отдаёт
+  `usage.billed` — счёт RouterAI за все вызовы, и за те, чей ответ browser-use
+  не разобрал и не посчитал; таблица `shared/costs/prices.ts` — запас для
+  старых worker: цена RouterAI 01.10 удвоилась за утро. Worker с 30.09 цену
+  не просит (`calculate_cost` тянул прайсы с GitHub и openrouter.ai и вешал
+  запуск с Cloud.ru) и `total_cost` не отдаёт. Трафик прокси по запуску
+  (`traffic`) отдаёт только обновлённый worker; хуки родителя шаги субагентов
+  не видят.
 
 ## Google
 
