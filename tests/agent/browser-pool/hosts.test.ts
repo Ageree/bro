@@ -867,6 +867,7 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
       "bro-host-2"
     );
     hostClient.readBrowserHostCapacity.mockRejectedValue(new Error("timeout"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await hosts.reconcileBrowserHosts(now);
     expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
@@ -876,6 +877,12 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     expect(await records.readBrowserHost("bro-host-2")).toMatchObject({
       lastError: "The host's VM is gone or has another address.",
       state: "failed",
+    });
+    expect(warn).toHaveBeenCalledWith("[browser-pool] a host failed", {
+      hostId: "bro-host-2",
+      reason: "The host's VM is gone or has another address.",
+      state: "ready",
+      vmId: "vm-host-2",
     });
   });
 
