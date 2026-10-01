@@ -28,6 +28,8 @@
   песочницах на общих хостах Cloud.ru (`runc`, gVisor — запасной) —
   `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
   хосты пула, worker) — `docs/browser-infra-notes.md`.
+- Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
+  `docs/instinct.md`.
 
 ## Процесс
 
@@ -76,6 +78,11 @@
 - Инструмент не видит историю: нужное из неё (фото, слова человека, отказы)
   резолвер `turn.started`/`step.started` кладёт в замыкание. Замыкание — только
   JSON, а вложения в истории — `URL` `eve-sandbox:`: храните ссылки.
+- Каналы без `turnPolicy` работают как `"steer"`: сообщение, пришедшее до
+  начала ответа, перехватывает текущий ход; `"queue"` — только ход-отчёт
+  браузера (`completion.ts`). `defaultTools: false` выключает и готовую
+  песочницу eve (`bash`, `read_file`, `write_file`; на Vercel — Vercel
+  Sandbox), хотя `ctx.getSandbox()` работает (`node_modules/eve/docs/sandbox.mdx`).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
