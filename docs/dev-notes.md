@@ -183,7 +183,7 @@
 - Шаблон чата DeepSeek склеивает все системные сообщения в начало промпта:
   «последнее» системное (пометка шага) стоит перед историей и рвёт кэш.
   Состав шага меряет `scripts/costs/step-context.ts` (`docs/agent-costs.md`, 3.2).
-  За флагом `STEP_CONTEXT_WORKSPACES` время и записки идут после истории
+  За флагом `STEP_CONTEXT_WORKSPACES` (с 01.10 — пилот) время и записки идут после истории
   тегом `<bro-step-note>` (`agent/lib/step-context/`), а его подобия в
   остальном промпте обезвреживаются (`defuseStepNoteTag`); новые опции
   `modelSelection` добавляйте только под флагом — тесты `agent.test.ts`
@@ -221,8 +221,9 @@
   `browser-vm/`, `agent/lib/browser-vm/`, `agent/lib/browser-pool/`, Cloud.ru
   или стендом — сначала прочитай его. Там же ключи и квоты Cloud.ru, выход VM
   в сеть, выкат worker, env пула и `BROWSER_STATE_KEY` (не менять никогда).
-- Пул браузеров выключен: без `BROWSER_POOL_WORKSPACES` и
-  `BROWSER_BACKEND=pool` поручения идут прежним путём (VM или Browser Use).
+- Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
+  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
+  Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
