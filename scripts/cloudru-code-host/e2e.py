@@ -5,7 +5,8 @@
 Signs host tokens with the key `host.py key NAME` wrote, then: health and refused tokens; PUT a sandbox
 with presigned snapshot links for sandbox/workspaces/e2e-<NAME>.snap; exec and its NDJSON; files written,
 read and deleted; sandbox/image/verify.py inside (python-pptx, openpyxl, python-docx, pptx -> pdf in
-soffice); no network (curl, Python, DNS); the tools socket; killing a process; stop with a snapshot in Object
+soffice); no network (curl, Python, DNS); the tools socket; killing a process; keepalive pings in a silent
+command; a process that overruns the memory budget dying alone (exit 137); stop with a snapshot in Object
 Storage; PUT again restoring /workspace; DELETE. Prints one line per step with its time and a JSON summary;
 exits 1 if any step failed. Never prints a token, a key or a presigned link.
 """
@@ -211,6 +212,22 @@ def main():
         assert took < 20 and code != 0, (code, took)
         again = api.request("POST", f"/v1/sandboxes/{SANDBOX}/procs/{pids[0]}/kill")[0]
         return {"code": code, "seconds": round(took, 1), "kill again": again}
+
+    @step("exec ping")
+    def _():
+        code, _, _, events = api.exec("sleep 20")
+        assert code == 0 and "ping" in events, (code, events)
+        return {"code": code, "pings": events.count("ping")}
+
+    @step("memory overrun")
+    def _():
+        assert api.request("PUT", f"/v1/sandboxes/{SANDBOX}/files?path=/workspace/before-oom.txt", raw=b"kept")[0] == 204
+        # Twice the guest's 1536 MB, every page touched: the process dies alone, the sandbox stays.
+        code, _, err, _ = api.exec("python3 -c \"b = b'\\x01' * (3072 << 20); print(len(b))\"")
+        assert code == 137, (code, err[-300:])
+        alive, out, _, _ = api.exec("cat /workspace/before-oom.txt; echo; echo alive")
+        assert alive == 0 and out == "kept\nalive\n", (alive, out)
+        return {"overrun exit": code, "after": out.split()}
 
     @step("file write+read")
     def _():

@@ -119,8 +119,10 @@
   из apt-репозитория gVisor со сверкой подписи и sha256.
 - Хост песочниц для кода — `sbx-code-1` (`scripts/cloudru-code-host/`,
   только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
-  из apt Google. Разовое выделение памяти больше лимита песочницы будит
-  OOM cgroup хоста, и он убивает весь `gvisor_sentry`, а не процесс.
+  из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в
+  cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
+  `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
+  (`sandbox/sandboxd/memory.go`): умирает один процесс, код 137.
 - `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
