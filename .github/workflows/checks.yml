@@ -66,3 +66,36 @@ jobs:
       - name: Worker
         working-directory: browser-vm/worker
         run: python -m unittest
+
+  code-sandbox:
+    name: Code sandbox (Go, Rust, host)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: sandbox/sandboxd/go.mod
+          cache: false
+
+      - name: sandboxd (fake runsc)
+        working-directory: sandbox/sandboxd
+        run: go vet ./... && go test ./...
+
+      - name: tools CLI
+        working-directory: sandbox/tools
+        run: cargo test --locked
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # The code host runs Ubuntu 22.04's Python 3.10.
+          python-version: "3.10"
+
+      - name: Code host (boot, provision)
+        working-directory: sandbox/host
+        run: python -m unittest

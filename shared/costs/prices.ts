@@ -29,12 +29,16 @@ export const vmFixedMonthlyRub = { disk: 114, publicIp: 149 } as const;
  * RouterAI's price of the model the VM's browser agent runs on, roubles per
  * million tokens. The worker's own `total_cost` comes from browser-use's
  * dollar price list and misses models it does not know, so the tokens are
- * priced here instead.
+ * priced here instead. Measured from the `usage.cost` RouterAI returns with
+ * each call (its `/models` list shows other numbers) at 08:40 MSK on
+ * 01.10.2026; by 09:50 the same calls cost exactly twice as much, so a
+ * worker's own bill (`billed`, agent/lib/costs/browser.ts) wins over these.
+ * Before that the table had 9.66 / 1.21 / 48.28.
  */
 const routerAiRubPerMillion = new Map([
   [
     "deepseek/deepseek-v4.1-flash",
-    { cachedInput: 1.21, input: 9.66, output: 48.28 },
+    { cachedInput: 0.36, input: 17.92, output: 71.66 },
   ],
 ]);
 

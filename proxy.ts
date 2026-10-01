@@ -19,6 +19,11 @@ export async function proxy(request: NextRequest) {
     pathname === "/eve/v1/health" ||
     // Provider webhooks verify their own signatures inside the channel.
     pathname === "/eve/v1/browser-use" ||
+    // The code sandbox's tool router checks the bearer token sandboxd adds,
+    // and a shared file's link carries its own signature: Telegram and
+    // iMessage deliveries fetch it without the person's cookie.
+    pathname === "/eve/v1/sandbox-tools" ||
+    pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {
     return NextResponse.next();

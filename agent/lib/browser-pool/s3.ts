@@ -111,18 +111,29 @@ export function presignBrowserStateObject(input: {
   readonly key: string;
   readonly method: S3Method;
   readonly now?: Date;
+  /** The `Content-Disposition` a GET answers with, signed into the URL. */
+  readonly responseContentDisposition?: string;
 }) {
   const store = stateStore();
+  const url = new URL(
+    `${endpoint}/${uriEncode(store.bucket)}/${input.key
+      .split("/")
+      .map((segment) => uriEncode(segment))
+      .join("/")}`
+  );
+  if (input.responseContentDisposition !== undefined) {
+    url.searchParams.set(
+      "response-content-disposition",
+      input.responseContentDisposition
+    );
+  }
   return presignS3Url({
     ...store.credentials,
     expiresSeconds: input.expiresSeconds,
     method: input.method,
     now: input.now ?? new Date(),
     region,
-    url: `${endpoint}/${uriEncode(store.bucket)}/${input.key
-      .split("/")
-      .map((segment) => uriEncode(segment))
-      .join("/")}`,
+    url: url.href,
   });
 }
 

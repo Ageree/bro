@@ -17,6 +17,13 @@ type WorkerRun = NonNullable<
 
 /** What browser-use reports of a run's model calls (`usage_summary`). */
 const workerUsageSchema = z.object({
+  /**
+   * What the model's service billed for every call of the run, in its own
+   * currency (`Billed` in browser-vm/worker/worker.py): the calls whose
+   * answer browser-use could not parse too. Absent from a worker older than
+   * 2026-10-01.1.
+   */
+  billed: z.number().nonnegative().nullish(),
   total_completion_tokens: z.number().nonnegative().nullish(),
   total_cost: z.number().nonnegative().nullish(),
   total_prompt_cached_tokens: z.number().nonnegative().nullish(),
@@ -25,7 +32,10 @@ const workerUsageSchema = z.object({
 
 /**
  * A settled VM run's model and proxy traffic, keyed by the run id so every
- * read of the settled run after the first changes nothing. The tokens are
+ * read of the settled run after the first changes nothing. RouterAI's own
+ * bill for the run's calls is the cost when the worker reports it: the
+ * token count misses the calls browser-use could not parse, and RouterAI's
+ * price changed twofold within one morning (01.10). Otherwise the tokens are
  * priced at RouterAI's roubles; a model without a price there falls back to
  * browser-use's own `total_cost`, which comes from its dollar price list.
  */
@@ -47,7 +57,11 @@ export async function recordBrowserVmRunCosts(
       outputTokens: usage.total_completion_tokens ?? 0,
     };
     const model = env.BROWSER_VM_MODEL;
-    const priced = routerAiTokensRub(model, tokens);
+    const billedRub =
+      URL.parse(env.BROWSER_VM_LLM_BASE_URL)?.hostname === "routerai.ru"
+        ? (usage.billed ?? undefined)
+        : undefined;
+    const priced = billedRub ?? routerAiTokensRub(model, tokens);
     const reportedUsd = usage.total_cost ?? undefined;
     const unpriced =
       priced === undefined && (reportedUsd === undefined || reportedUsd === 0);

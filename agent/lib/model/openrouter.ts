@@ -624,6 +624,61 @@ function saidNothing(content: GeneratedContent) {
   );
 }
 
+/** The parts of a streamed answer that make up a tool call. */
+const toolCallStreamParts: ReadonlySet<string> = new Set([
+  "tool-call",
+  "tool-input-delta",
+  "tool-input-end",
+  "tool-input-start",
+]);
+
+/**
+ * A step told to call no tool (`toolChoice: none`) that calls one anyway:
+ * DeepSeek did, with `task_cancel`, in the step that was to end a turn. eve
+ * ended the turn without running the call, the history kept a call without
+ * a result, and every later turn of the session failed on it
+ * (`AI_MissingToolResultsError`). Here such a call never leaves the model:
+ * the step keeps its text, and one with none left becomes the empty
+ * delivery of `quietEndMiddleware`, which sits outside this one.
+ */
+function noToolCallsMiddleware(): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate }) {
+      const result = await doGenerate();
+      if (!result.content.some((part) => part.type === "tool-call")) {
+        return result;
+      }
+      return {
+        ...result,
+        content: result.content.filter((part) => part.type !== "tool-call"),
+        finishReason: { ...result.finishReason, unified: "stop" as const },
+      };
+    },
+    async wrapStream({ doStream }) {
+      const result = await doStream();
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (toolCallStreamParts.has(part.type)) return;
+            if (
+              part.type === "finish" &&
+              part.finishReason.unified === "tool-calls"
+            ) {
+              controller.enqueue({
+                ...part,
+                finishReason: { ...part.finishReason, unified: "stop" },
+              });
+              return;
+            }
+            controller.enqueue(part);
+          },
+        })
+      );
+      return { ...result, stream };
+    },
+  };
+}
+
 /**
  * Once a turn's reply reached the person, a model with nothing more to say
  * may answer with no text and no tool call at all: `openai/gpt-6-luna` did
@@ -848,6 +903,8 @@ export function openRouterSelection(
         ? [quietEndMiddleware()]
         : []),
     outputCapMiddleware(maxOutputTokens()),
+    // Innermost: what it drops is never seen by the middleware above.
+    ...(toolChoice === "none" ? [noToolCallsMiddleware()] : []),
   ];
 
   return {

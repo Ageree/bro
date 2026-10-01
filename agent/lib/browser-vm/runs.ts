@@ -63,6 +63,17 @@ type WorkerRun = NonNullable<
 /** The steps and the time a run is given, about Browser Use's own budget. */
 const runMaxSteps = 60;
 const runTimeoutSeconds = 1_500;
+/**
+ * How the VM's browser-use agent runs (bench of 01.10, `docs/agent-costs.md`,
+ * section 3.3): DeepSeek's hidden reasoning off — browser-use has the model
+ * think in its answer anyway, and the hidden tokens were a third of the
+ * errand's price and slowed every step — and up to eight actions in a step,
+ * with the worker's hint to put the obvious ones together. Flash mode was
+ * cheaper still on the bench, but drops browser-use's own rules and the
+ * model's written reasoning: not before errands that sign in or stage a
+ * checkout were measured with it.
+ */
+const runTuning = { maxActionsPerStep: 8, reasoning: "none" } as const;
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
 /**
@@ -199,6 +210,7 @@ export async function createBrowserVmRun(input: {
     sessionId,
     task,
     timeoutSeconds: runTimeoutSeconds,
+    tuning: runTuning,
   });
   // The worker has it: the record says what the worker says from here. The
   // run is acting already, so a write that fails does not fail the start:

@@ -1399,7 +1399,7 @@ describe("browser_task result links", () => {
 
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
     expect(task).toContain(
-      'LINKS: a JSON array of {"title":"human-readable option name","url":"https://..."} objects, or []'
+      'LINKS: a JSON array of {"title":"human-readable option name","url":"its observed https:// URL"} objects, or []'
     );
     expect(task).toContain("write a complete useful report");
     expect(task).toContain("footer is routing metadata and never replaces");
@@ -5090,6 +5090,38 @@ describe("browser_task finds the option before the one card", () => {
     expect(task).toContain("Put that option first in ITEMS");
     expect(task).toContain("end with NEEDS: decision");
     expect(task).toContain("NEEDS: payment");
+  });
+
+  it("names no address but the Site, which browser-use then opens before the first step", async () => {
+    // browser-use's `directly_open_url` opens the one address a task names;
+    // a sample "https://..." in the footer was a second one, so every run
+    // spent a model step opening the Site itself (bench of 01.10).
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const options = {
+      aliases: [],
+      allowPayment: false,
+      collectImages: true,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Найди корм для кошек и назови цены первых трёх товаров",
+      facts: undefined,
+      home: "Москва, Россия",
+      site: "https://www.wildberries.ru",
+    } as const;
+
+    for (const task of [
+      composeBrowserTask(options),
+      composeBrowserContinuation({
+        ...options,
+        message: "Покажи ещё три",
+        searching: true,
+      }),
+    ]) {
+      expect(task.match(/(?:https?|file):\/\/[^\s<>"']+/gu)).toEqual([
+        "https://www.wildberries.ru",
+      ]);
+    }
   });
 
   it("ends a run at a code prompt before any budget or fallback site", async () => {

@@ -285,7 +285,22 @@ describe("model selection", () => {
   it("forwards toolChoice none, even for Anthropic with reasoning on", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");
-    const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();
+    const doGenerate = vi
+      .fn<LanguageModelV4["doGenerate"]>()
+      .mockResolvedValue({
+        content: [],
+        finishReason: { raw: "stop", unified: "stop" },
+        usage: {
+          inputTokens: {
+            cacheRead: undefined,
+            cacheWrite: undefined,
+            noCache: 1,
+            total: 1,
+          },
+          outputTokens: { reasoning: undefined, text: 0, total: 0 },
+        },
+        warnings: [],
+      });
     openRouter.chat.mockImplementation((modelId) => ({
       doGenerate,
       doStream: vi.fn<LanguageModelV4["doStream"]>(),
@@ -414,6 +429,73 @@ describe("model selection", () => {
 
       expect(await streamed.text).toBe("");
       expect(await streamed.toolCalls).toHaveLength(1);
+    });
+
+    it("drops a tool call a step told to call none makes anyway", async () => {
+      const toolCall = {
+        input: JSON.stringify({ taskIds: ["task_1"] }),
+        toolCallId: "call-1",
+        toolName: "task_cancel",
+        type: "tool-call" as const,
+      };
+      const toolCalls = { raw: "tool_calls", unified: "tool-calls" } as const;
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => ({
+          content: [toolCall],
+          finishReason: toolCalls,
+          usage,
+          warnings: [],
+        }),
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: "stream-start" as const, warnings: [] },
+            {
+              id: "call-1",
+              toolName: "task_cancel",
+              type: "tool-input-start" as const,
+            },
+            {
+              delta: toolCall.input,
+              id: "call-1",
+              type: "tool-input-delta" as const,
+            },
+            { id: "call-1", type: "tool-input-end" as const },
+            toolCall,
+            { finishReason: toolCalls, type: "finish" as const, usage },
+          ]),
+        }),
+      });
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+      openRouter.chat.mockReturnValue(model);
+      const { openRouterSelection } =
+        await import("@agent/lib/model/openrouter");
+      const selection = openRouterSelection("openai/gpt-6-luna", {
+        delivered: true,
+        toolChoice: "none",
+      });
+      const withCancel = {
+        ...tools,
+        task_cancel: tool({
+          inputSchema: z.object({ taskIds: z.array(z.string()) }),
+        }),
+      };
+
+      const generated = await generateText({
+        model: selection.model,
+        prompt: "done?",
+        tools: withCancel,
+      });
+      const streamed = streamText({
+        model: selection.model,
+        prompt: "done?",
+        tools: withCancel,
+      });
+
+      expect(generated.toolCalls).toHaveLength(0);
+      expect(generated.text).toBe("<eve-empty-delivery/>");
+      expect(await streamed.toolCalls).toHaveLength(0);
+      expect(await streamed.text).toBe("<eve-empty-delivery/>");
+      expect(await streamed.finishReason).toBe("stop");
     });
 
     it("leaves an empty answer to eve before anything was delivered", async () => {

@@ -29,7 +29,9 @@
   `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
   хосты пула, worker) — `docs/browser-infra-notes.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
-  `docs/instinct.md`.
+  `docs/instinct.md`; план переезда с Vercel на Cloud.ru по этапам —
+  `docs/cloudru-migration.md`; песочница для кода и task-агент —
+  `sandbox/README.md`.
 
 ## Процесс
 
@@ -101,6 +103,28 @@
     резолверы `turn.started` поэтому должны быть идемпотентны.
   - `attachSession` в хендлере расписания; `harness/emission.js` — ошибка
     повтора одобренного вызова в `action.result`.
+- Песочница task-агента — свой бэкенд eve `bro-cloudru`
+  (`agent/lib/sandbox/backend.ts`): eve зовёт `prewarm` бэкенда при сборке,
+  поэтому фабрика не бросает без `SANDBOX_*`, проверка — в `create`. Модель
+  субагента должна резолвиться на `step.started` (хэндл OpenRouter не
+  сериализуется), а динамический субагент eve требует статичную модель —
+  поэтому `task` скрыт через `withheldTools` везде, кроме пилота
+  `SANDBOX_WORKSPACES` (`agent/agent.ts`, тесты ждут `"task"` в списке).
+- Итог фоновой задачи eve приносит родителю отдельным ходом: сообщение
+  `[Task state]` с выводом задачи и указание «одним ответом человеку»
+  (`eve/dist/src/tasks/delivery-context.js`).
+- gVisor работает и в облачной сессии (root, cgroup v1): `sandboxd` гоняют на
+  настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
+  `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
+  из apt-репозитория gVisor со сверкой подписи и sha256.
+- Хост песочниц для кода — VM Cloud.ru (`scripts/cloudru-code-host/`,
+  только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
+  из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в
+  cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
+  `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
+  (`sandbox/sandboxd/memory.go`): умирает один процесс, код 137.
+- `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
+  HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
   пишет обёртка маршрута (`agent/channels/eve.ts`), иначе ранний поток — 403.
 - `first-contact` решает `workspaces.introduced_at`
@@ -221,7 +245,9 @@
 - Ключи окружения приходили с переводами строк и в типографских кавычках:
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
-- Env Vercel действует лишь со следующего деплоя.
+- Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
+  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: они в Blob
+  (`db/services/installation-secrets.ts`) — перед уходом с Vercel достать.
 
 ## Браузерные поручения
 
@@ -245,6 +271,12 @@
   отвергает вызов, а не даёт пустой ответ.
 - Текст поручения — `composeBrowserTask` (`agent/tools/browser_task.ts`), тесты
   по дословным фразам; эвалов нет: каждый кейс — платный прогон.
+- Правила Бро — в тексте задачи: из системного сообщения browser-use модель
+  теряла подвал `RESULT…NEEDS`. Адрес в задаче — один Site: его browser-use
+  открывает сам, без шага модели (`docs/agent-costs.md`, 3.3).
+- DeepSeek на RouterAI по умолчанию думает: в JSON шага тогда течёт
+  `｜｜DSML｜｜`, шаг пропадает, а вызов оплачен. Бро выключает это
+  (`runTuning` в `agent/lib/browser-vm/runs.ts`, `tuning` worker).
 - «accepted» от `attachSession(...).send` — не доставка: итог доставлен, когда
   ход-отчёт отправил сообщение, вызвал `browser_task` или закончился
   (`agent/hooks/browser-run-report.ts`). Аренду итога (10 минут) не
@@ -305,11 +337,14 @@
 ## Учёт расходов
 
 - `usage.total_cost` старого worker — цена browser-use по его долларовому
-  прайсу (LiteLLM), а не рубли RouterAI: токены VM-запуска цените по таблице
-  `shared/costs/prices.ts`. Worker с 30.09 цену не просит (`calculate_cost`
-  тянул прайсы с GitHub и openrouter.ai и вешал запуск с Cloud.ru) и
-  `total_cost` не отдаёт. Трафик прокси по запуску (`traffic`) отдаёт только
-  обновлённый worker; хуки родителя шаги субагентов не видят.
+  прайсу (LiteLLM), а не рубли RouterAI. С 2026-10-01.1 worker отдаёт
+  `usage.billed` — счёт RouterAI за все вызовы, и за те, чей ответ browser-use
+  не разобрал и не посчитал; таблица `shared/costs/prices.ts` — запас для
+  старых worker: цена RouterAI 01.10 удвоилась за утро. Worker с 30.09 цену
+  не просит (`calculate_cost` тянул прайсы с GitHub и openrouter.ai и вешал
+  запуск с Cloud.ru) и `total_cost` не отдаёт. Трафик прокси по запуску
+  (`traffic`) отдаёт только обновлённый worker; хуки родителя шаги субагентов
+  не видят.
 
 ## Google
 

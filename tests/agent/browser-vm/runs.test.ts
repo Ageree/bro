@@ -309,6 +309,7 @@ describe("starting a run on a workspace's browser VM", () => {
       sessionId: run.sessionId,
       task: vmTask,
       timeoutSeconds: 1500,
+      tuning: { maxActionsPerStep: 8, reasoning: "none" },
     });
   });
 
@@ -572,6 +573,36 @@ describe("reading a VM run", () => {
     });
   });
 
+  it("takes RouterAI's own bill for the run's model calls over its token count", async () => {
+    const client = await loadClient();
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        result: "RESULT: the parcel is in Moscow",
+        status: "completed",
+        usage: {
+          billed: 4.2,
+          billed_calls: 9,
+          total_completion_tokens: 2_000,
+          total_prompt_cached_tokens: 50_000,
+          total_prompt_tokens: 150_000,
+          total_tokens: 152_000,
+        },
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+
+    // The token count would price it at 1.95 ₽: it misses the calls
+    // browser-use could not parse, which RouterAI bills all the same.
+    const recorded = recordUsageCost.mock.calls
+      .map(([cost]) => cost)
+      .find((cost) => cost.source === "browser-run");
+    expect(recorded?.costRub).toBe(4.2);
+    expect(recorded?.costUsd).toBeNull();
+    expect(recorded?.units).toMatchObject({ inputTokens: 150_000 });
+  });
+
   it("records what a settled run spent on its model and its proxy, keyed by the run", async () => {
     const client = await loadClient();
     worker.readBrowserVmWorkerRun.mockResolvedValue(
@@ -595,8 +626,8 @@ describe("reading a VM run", () => {
 
     const finishedAt = new Date("2026-09-28T11:58:00Z");
     expect(recordUsageCost).toHaveBeenCalledWith({
-      // 100k fresh × 9.66 + 50k cached × 1.21 + 2k out × 48.28 per million.
-      costRub: 1.12306,
+      // 100k fresh × 17.92 + 50k cached × 0.36 + 2k out × 71.66 per million.
+      costRub: 1.95332,
       costUsd: null,
       idempotencyKey: `browser-run:${runId}`,
       occurredAt: finishedAt,

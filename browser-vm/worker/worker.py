@@ -22,7 +22,8 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/session                        {proxy: {host, port, username, password}} → exit address and speed
                                           (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
-  POST /v1/runs                           start an agent run; idempotent on its id; 409 when busy
+  POST /v1/runs                           start an agent run (`tuning`: how its browser-use agent runs); idempotent
+                                          on its id; 409 when busy
   GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage, traffic, unreadMessages
   POST /v1/runs/<id>/cancel               stop the agent (waits up to 20 s for it to end), keep the page
   GET  /v1/sessions/<id>                  latest run and its status
@@ -70,14 +71,15 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-09-30.3"
+VERSION = "2026-10-01.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
 PREVIOUS_CODE = CODE.with_name(CODE.name + ".prev")
 # Loads a new worker.py as a module in a separate Python: its imports and top-level code run, `main` does not.
 LOAD_CHECK = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='candidate')"
-# What worker.py imports only inside functions: browser-use when a run starts, OpenCV and numpy for a captcha.
+# What worker.py imports only inside functions: browser-use (and httpx, which it brings) when a run starts, OpenCV
+# and numpy for a captcha.
 # LOAD_CHECK (of the worker a new file replaces, whichever version that is) runs top-level code only, so a
 # candidate imports these there itself (`check_candidate_imports`): a file that needs a package or an API the
 # VM's image lacks is refused, not started to fail every errand. Keep it in step with the lazy imports.
@@ -86,6 +88,7 @@ CANDIDATE_IMPORTS = (
     ("browser_use.browser.events", ("SwitchTabEvent",)),
     ("browser_use.agent.message_manager.views", ("HistoryItem",)),
     ("browser_use.agent.views", ("AgentState",)),
+    ("httpx", ("AsyncClient", "Timeout")),
     ("cv2", ()),
     ("numpy", ()),
 )
@@ -125,6 +128,14 @@ OVERRUN_S = 90
 UNWIND_S = 15
 # Where restored memory ends: the steps before it served an earlier request of the session.
 NEW_REQUEST = "<sys>A new request starts here: the steps above served an earlier one in this session.</sys>"
+# What Bro may tune of the browser-use agent per run (`tuning`); a run without it is the agent as before.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
+TUNING_LIMITS = {"maxActionsPerStep": (1, 10)}
+BATCH_HINT = """
+Put the actions of one step together when the later ones do not depend on what the page shows after the
+earlier ones: type into a field and press Enter or its search button, fill several fields of one form, tick
+a filter and apply it. Look at the page between steps whenever an action opens, submits or changes it.
+""".strip()
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 log = logging.getLogger("bro-worker")
 
@@ -469,7 +480,7 @@ class Run:
         return run
 
 
-def step_summary(state, output, number):
+def step_summary(state, output, number, tokens=None):
     actions = []
     for action in getattr(output, "action", None) or []:
         data = action.model_dump(exclude_none=True) if hasattr(action, "model_dump") else {}
@@ -477,24 +488,127 @@ def step_summary(state, output, number):
             # Inputs can carry what the person typed or a secret placeholder: keep only the action name
             # and its element index.
             actions.append({"action": name, "index": (params or {}).get("index") if isinstance(params, dict) else None})
-    return {
+    summary = {
         "number": number, "at": now_iso(), "url": getattr(state, "url", None),
         "title": (getattr(state, "title", None) or "")[:200],
-        "goal": (getattr(output, "next_goal", None) or "")[:300],
+        # Flash mode has no next goal: its memory says where the step was going.
+        "goal": (getattr(output, "next_goal", None) or getattr(output, "memory", None) or "")[:300],
         "actions": actions[:10],
     }
+    if tokens is not None:
+        summary["tokens"] = tokens
+    return summary
 
 
-def usage_summary(history, agent):
-    """The run's tokens, which Bro prices itself (shared/costs/prices.ts). browser-use counts them whether
-    or not it prices them; its `total_cost` is left out: runs never let it price (`calculate_cost=False`,
-    see `run_agent`), so it is 0, and a 0 would read as a free run."""
+def step_tokens(entries):
+    """The model's tokens since the last step was counted (browser-use's own usage records): the step's call
+    and any extraction or compaction calls in between. What a step costs, and how much of it the prompt
+    cache took, is read from these."""
+    total = {"in": 0, "cached": 0, "out": 0, "calls": 0}
+    for entry in entries:
+        usage = getattr(entry, "usage", None)
+        total["in"] += getattr(usage, "prompt_tokens", 0) or 0
+        total["cached"] += getattr(usage, "prompt_cached_tokens", 0) or 0
+        total["out"] += getattr(usage, "completion_tokens", 0) or 0
+        total["calls"] += 1
+    return total
+
+
+def agent_tuning(value):
+    """Bro's `tuning` of the browser-use agent, checked: an unknown key is ignored (a newer Bro), a wrong
+    value refused. Absent, the agent runs with browser-use's defaults, as it always did."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise web.HTTPBadRequest(text="tuning must be an object")
+    tuning = {}
+    if value.get("flashMode") is not None:
+        if not isinstance(value["flashMode"], bool):
+            raise web.HTTPBadRequest(text="tuning.flashMode must be a boolean")
+        tuning["flashMode"] = value["flashMode"]
+    for key, (low, high) in TUNING_LIMITS.items():
+        number = value.get(key)
+        if number is None:
+            continue
+        if isinstance(number, bool) or not isinstance(number, int) or not low <= number <= high:
+            raise web.HTTPBadRequest(text=f"tuning.{key} must be a whole number from {low} to {high}")
+        tuning[key] = number
+    if value.get("reasoning") is not None:
+        if value["reasoning"] not in REASONING_EFFORTS:
+            raise web.HTTPBadRequest(text=f"tuning.reasoning must be one of {', '.join(REASONING_EFFORTS)}")
+        tuning["reasoning"] = value["reasoning"]
+    return tuning
+
+
+def system_extension(tuning):
+    """Bro's part of the agent's system message: the workspace rules, and the batching hint when a step may
+    hold more actions than browser-use's default. Bro's own rules of the errand stay in the task: moved
+    here, the report's labelled footer went missing from the answers (bench of 01.10.2026,
+    docs/agent-costs.md, section 3.3)."""
+    return f"{EXTEND_SYSTEM}\n\n{BATCH_HINT}" if "maxActionsPerStep" in tuning else EXTEND_SYSTEM
+
+
+def tuned_llm_options(tuning):
+    """ChatOpenRouter's options for the run's reasoning: DeepSeek V4.1 Flash on RouterAI reasons before it
+    answers unless told not to, and those tokens are billed as output and slow every step. browser-use
+    passes `extra_body` on to the OpenAI client, which merges its own `extra_body` into the request."""
+    reasoning = tuning.get("reasoning")
+    if reasoning is None:
+        return {}
+    body = {"reasoning": {"enabled": False} if reasoning == "none" else {"effort": reasoning}}
+    return {"extra_body": {"extra_body": body}}
+
+
+def tuned_agent_options(tuning):
+    """browser-use's own names for what Bro tuned. Its history is never trimmed (`max_history_items`): a
+    trimmed history changes the prompt right after the task at every step, and the prompt cache that holds
+    two thirds of every step's input is lost (docs/agent-costs.md, section 3.3)."""
+    names = {"flashMode": "flash_mode", "maxActionsPerStep": "max_actions_per_step"}
+    return {name: tuning[key] for key, name in names.items() if key in tuning}
+
+
+def usage_summary(history, agent, billed=None):
+    """The run's tokens, which Bro prices itself (shared/costs/prices.ts), and what the model's service billed
+    for them (`Billed`) when it says. browser-use counts tokens whether or not it prices them; its
+    `total_cost` is left out: runs never let it price (`calculate_cost=False`, see `run_agent`), so it is 0,
+    and a 0 would read as a free run."""
     usage = getattr(history, "usage", None)
-    if usage is None:
+    has_billed = billed is not None and billed.calls
+    if usage is None and not has_billed:
         return None
+    # No usage of browser-use's own when it could parse no answer at all: the service's bill still counts.
     data = usage.model_dump() if hasattr(usage, "model_dump") else {}
-    return {k: data.get(k) for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
-                                        "total_prompt_cached_tokens") if k in data}
+    summary = {k: data.get(k) for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
+                                           "total_prompt_cached_tokens") if k in data}
+    if has_billed:
+        summary.update(billed=round(billed.total, 6), billed_calls=billed.calls)
+    return summary
+
+
+class Billed:
+    """What the model's service billed for each call of a run, in its own currency (roubles at RouterAI): the
+    `usage.cost` of every answer, read off the HTTP client. browser-use's own count misses the calls whose
+    answer it could not parse — with DeepSeek's reasoning on, up to half the calls of a run (01.10.2026),
+    billed all the same — and the price changed within a morning (twice as much at 10:00 as at 08:40 MSK)."""
+
+    def __init__(self):
+        self.total, self.calls = 0.0, 0
+
+    async def count(self, response):
+        if response.request.method != "POST" or not response.request.url.path.endswith("/chat/completions"):
+            return
+        with contextlib.suppress(Exception):
+            await response.aread()
+            cost = (response.json().get("usage") or {}).get("cost")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                self.total += cost
+                self.calls += 1
+
+    def client(self):
+        import httpx
+
+        # The OpenAI client's own timeouts and retries still apply per request; only the hook is added.
+        return httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10), event_hooks={"response": [self.count]})
 
 
 class Worker:
@@ -682,6 +796,13 @@ class Worker:
         tools = Tools()
         report = session.workspace / "report"
 
+        def saved_picture(name):
+            # The agent looked for the picture in its own file system, which lists only its agent-files, did not
+            # find it and saved it again, up to seven times a run (bench of 01.10.2026): the result says why.
+            text = (f"Saved report/{name}. Pictures under report/ go to Bro, not to your file system, so they never "
+                    "show in its listing: this one is done, do not save it again.")
+            return ActionResult(extracted_content=text, long_term_memory=text)
+
         @tools.action("Save a screenshot of the visible page as a file in your workspace, for example "
                       "report/final.png. Use it whenever the task asks to save a screenshot or a picture.")
         async def save_screenshot(file_name: str, browser_session):
@@ -692,7 +813,7 @@ class Worker:
             image_format = "png" if name.lower().endswith(".png") else "jpeg"
             await browser_session.take_screenshot(path=str(report / name), format=image_format,
                                                   quality=None if image_format == "png" else 85)
-            return ActionResult(extracted_content=f"Saved report/{name}", long_term_memory=f"Saved report/{name}")
+            return saved_picture(name)
 
         @tools.action("Save a picture of one element of the page (an item photo) as a file in your workspace, "
                       "for example report/red-kettle.jpg. Give the element index from the page state.")
@@ -709,7 +830,7 @@ class Worker:
             await browser_session.take_screenshot(
                 path=str(report / name), format=image_format, quality=None if image_format == "png" else 85,
                 clip={"x": rect.x, "y": rect.y, "width": rect.width, "height": rect.height})
-            return ActionResult(extracted_content=f"Saved report/{name}", long_term_memory=f"Saved report/{name}")
+            return saved_picture(name)
 
         @tools.action("Enter a one-time code (from an SMS, a letter or an app) into the page's code field. Always use "
                       "this for codes instead of typing digits yourself: it finds the field even when it is split into "
@@ -775,8 +896,12 @@ class Worker:
 
         await self.release_direct(session)
 
+        tuning = session.options.get("tuning") or {}
         llm_config = session.llm
-        llm = ChatOpenRouter(model=llm_config["model"], base_url=llm_config["baseUrl"], api_key=llm_config["apiKey"])
+        billed = Billed()
+        http = billed.client()
+        llm = ChatOpenRouter(model=llm_config["model"], base_url=llm_config["baseUrl"], api_key=llm_config["apiKey"],
+                             http_client=http, **tuned_llm_options(tuning))
         browser = await self.browser_session(session, session.options)
         before = await page_ids()
         uploads = sorted(str(p) for p in UPLOADS.glob("*")) if UPLOADS.exists() else []
@@ -803,12 +928,28 @@ class Worker:
                     injected.message_manager_state.last_compaction_step = None
                 if hasattr(injected, "plan_generation_step"):
                     injected.plan_generation_step = None
+                # This run's own system message, not the one the memory was saved with: browser-use keeps a
+                # restored one over its own, and a follow-up's tuning (flash mode has a prompt of its own) or
+                # a newer worker's rules may differ from the run it continues. The state message is rebuilt
+                # at the first step anyway.
+                history = getattr(injected.message_manager_state, "history", None)
+                if history is not None:
+                    history.system_message = history.state_message = None
+                    history.context_messages = []
         # Each run gets its own step budget, counted from its own first step, injected or not.
         max_steps = int(session.options.get("maxSteps") or 60)
         deadline = time.monotonic() + int(session.options.get("timeoutSeconds") or 1500)
 
+        counted = 0  # browser-use's usage records already put on a step
+
         async def on_step(state, output, number):
-            run.steps.append(step_summary(state, output, number))
+            nonlocal counted
+            tokens = None
+            with contextlib.suppress(Exception):
+                entries = agent.token_cost_service.usage_history[counted:]
+                counted += len(entries)
+                tokens = step_tokens(entries)
+            run.steps.append(step_summary(state, output, number, tokens))
             run.final_url = getattr(state, "url", None) or run.final_url
             with contextlib.suppress(Exception):
                 run.save(agent.state.model_dump(mode="json"))
@@ -836,11 +977,13 @@ class Worker:
             # Cloud.ru (30.09), which held a finished run for minutes. Tokens are counted anyway.
             calculate_cost=False, use_judge=False, available_file_paths=uploads,
             injected_agent_state=injected, register_new_step_callback=on_step,
-            register_should_stop_callback=should_stop, extend_system_message=EXTEND_SYSTEM,
+            register_should_stop_callback=should_stop,
+            extend_system_message=system_extension(tuning),
             # A restored state carries its own file system; browser-use refuses both at once.
             file_system_path=None if injected is not None else str(session.workspace / "agent-files"),
             max_failures=4,
             enable_signal_handler=False,
+            **tuned_agent_options(tuning),
         )
         run.agent = agent
         try:
@@ -854,11 +997,13 @@ class Worker:
                 run.messages = pending_messages + run.messages
             run.agent = None
             await self.follow_focus(session, browser, before)
+            with contextlib.suppress(Exception):
+                await http.aclose()
         with contextlib.suppress(Exception):
             session.agent_state = agent.state.model_dump(mode="json")
         final = history.final_result()
         run.success = history.is_successful()
-        run.usage = usage_summary(history, agent)
+        run.usage = usage_summary(history, agent, billed)
         with contextlib.suppress(Exception):
             run.final_url = await browser.get_current_page_url()
             run.final_title = await browser.get_current_page_title()
@@ -1036,6 +1181,7 @@ class Worker:
         llm = body.get("llm") or {}
         if not all(isinstance(llm.get(k), str) and llm.get(k) for k in ("baseUrl", "apiKey", "model")):
             raise web.HTTPBadRequest(text="llm {baseUrl, apiKey, model} is required")
+        tuning = agent_tuning(body.get("tuning"))
         async with self.lock:
             if self.busy():
                 raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
@@ -1063,6 +1209,7 @@ class Worker:
                 session.captcha = {"twoCaptchaKey": key} if isinstance(key, str) and key else None
             session.options = {k: body.get(k) for k in ("maxSteps", "timeoutSeconds", "allowedDomains", "vision",
                                                          "jev", "jevCanFinish", "continueMemory")}
+            session.options["tuning"] = tuning or None
             run = Run(run_id, session_id, task)
             run.seq, self.run_seq = self.run_seq, self.run_seq + 1
             run.engine = body.get("engine") if body.get("engine") in ("agent", "jev-then-agent") else "agent"
@@ -1304,7 +1451,10 @@ one-time code you are given goes in with the enter_code action, never digit by d
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
 button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
-(async () => { ... })()) over scrolling and reading it screen by screen.
+(async () => { ... })()) over scrolling and reading it screen by screen, and take each option's link (the
+href of its anchor) in that same call rather than hunting for the links one find_elements call at a time.
+When the request asks your final answer to end with labelled lines (RESULT:, NEEDS:, LINKS:, ITEMS: and
+the rest), the text of your done action ends with every one of them, after the report.
 """.strip()
 
 

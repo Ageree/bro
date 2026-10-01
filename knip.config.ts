@@ -10,6 +10,8 @@ export default {
     "agent/memory/**/*.ts",
     "agent/schedules/**/*.ts",
     "agent/tools/**/*.ts",
+    // eve discovers each declared subagent's agent, sandbox and tools.
+    "agent/subagents/**/*.ts",
     "db/drizzle.config.ts",
     // Drizzle consumes every table and relation exported by this schema barrel.
     "db/schema/index.ts",

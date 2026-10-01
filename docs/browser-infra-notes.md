@@ -38,7 +38,10 @@
   не подключайте. Профиль с другой VM Chrome не откроет из-за `SingletonLock`
   со старым именем хоста — юнит Chrome в образе снимает его перед стартом.
 - Фильтр `name` у `GET /api/v1/vms` ищет подстроку (`bro-x-1` находит
-  `bro-x-10`): точное совпадение — в `findCloudRuVmByName`.
+  `bro-x-10`): точное совпадение — в `findCloudRuVmByName`. Стенд
+  (`scripts/cloudru-sandbox-probe/cloudru.py`, `pool.py`) создаёт VM в зоне
+  из тех же `CLOUDRU_ZONE`/`CLOUDRU_SUBNET`/`CLOUDRU_SECURITY_GROUP`, по
+  умолчанию `ru.AZ-1`.
 - VM без публичного IP в интернет не выходит, а sNAT подключается ко всей зоне
   сразу: в зоне с продовыми VM не создавать. S3: ключ —
   `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`, регион `ru-central-1`; без
@@ -96,7 +99,10 @@
 - Прокси Geonode: логин с любым `-session-<id>` — своя sticky-сессия,
   `lifetime` до 1440; выход меняется и внутри сессии и бывает медленным
   (Махачкала: страница WB 25–73 с) — проверяйте его перед задачей. WebRTC
-  закрывает только политика Chrome `WebRtcIPHandling`.
+  закрывает только политика Chrome `WebRtcIPHandling`. `-session-` берут
+  только порты sticky-диапазона (10000 и выше): на 9000 (так стоял
+  `BROWSER_VM_PROXY` облачной сессии 01.10) — 403 «Can not use -session- on
+  rotating ports range», и проверка выхода worker отвечает `error`.
 - Ozon не пускает само окружение (Chrome на Linux в VM) — не поддерживается;
   Wildberries и Avito проходят через домашний прокси. rzd.ru — корень НУЦ,
   владелец решил ему не доверять. Агент «находил» сайт в web.archive.org —

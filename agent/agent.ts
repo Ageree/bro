@@ -39,6 +39,7 @@ import { browserRunReportDelivered } from "@db/services/browser-runs";
 import {
   approvedResendOwed,
   turnMustEnd,
+  turnOpenedByBackgroundTask,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
@@ -48,6 +49,18 @@ import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
+import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
+import { openRouterActive } from "@shared/model/provider";
+
+/** The tool eve makes of the task agent (`agent/subagents/task`). */
+const taskAgentTool = "task";
+/** All a turn that delivers the task agent's report may call. */
+const backgroundTaskTurnTools = [
+  "react_to_message",
+  "send_message",
+  taskAgentTool,
+  "task_cancel",
+];
 
 /**
  * What a report turn is told when its report already reached the person in
@@ -97,7 +110,22 @@ export default defineAgent({
         // of the person's, or `browser_task status` handed it over — has
         // already reached them, and so has one whose outcome an earlier turn
         // took from `status` and told them. That turn says nothing and ends.
-        const reportRunId = reportedBrowserRunId(ctx.session.auth.current);
+        // eve delivers the task agent's report in a turn of its own that
+        // keeps the previous turn's caller: after a browser report it would
+        // pass for that report again, and be dropped as stale.
+        const backgroundTaskTurn = turnOpenedByBackgroundTask(ctx.messages);
+        // Such a turn is held to a few tools (below), and only the direct
+        // OpenRouter model holds a step to them: a Gateway id would offer
+        // every tool, those that act in the person's name too, to text the
+        // task agent brought from the web. It fails instead.
+        if (backgroundTaskTurn && !openRouterActive()) {
+          throw new Error(
+            "A background task's report needs the OpenRouter model, which alone limits its tools."
+          );
+        }
+        const reportRunId = backgroundTaskTurn
+          ? undefined
+          : reportedBrowserRunId(ctx.session.auth.current);
         const reportFirstStep =
           reportRunId !== undefined && turnTookNoStep(ctx.messages);
         const staleReport =
@@ -185,7 +213,7 @@ export default defineAgent({
         const clockOwed =
           caller.principalType === "user" &&
           resolveModeValue(ctx, clockModes) !== null;
-        const [modelId, formOfAddress, [stableContext, timeZone]] =
+        const [modelId, formOfAddress, [stableContext, timeZone], taskAgent] =
           await Promise.all([
             getWorkspaceModelId(scope),
             writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -198,6 +226,11 @@ export default defineAgent({
                     : undefined,
                 ] as const
             ),
+            // The task agent works for the person's own requests; a report
+            // or a worker never starts one.
+            resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
+              ? taskAgentPilot(scope)
+              : false,
           ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         // Once a browser report's message is out, the rest of its turn
@@ -267,8 +300,19 @@ export default defineAgent({
             ...(reportPastAnswer ? ["react_to_message", "send_message"] : []),
             ...(heldForAnswer ? actionsHeldForAnswer : []),
             ...(cardsHeld ? cardToolsBeforeOutcome : []),
+            ...(taskAgent ? [] : [taskAgentTool]),
           ],
         };
+        // The task agent read web pages for its report, and that text now
+        // opens a turn that looks like the person's: it may only reach the
+        // person or go back to the task agent, never act in their name.
+        if (backgroundTaskTurn) {
+          return modelSelection(modelId, {
+            ...selection,
+            offeredTools: backgroundTaskTurnTools,
+            stableContext,
+          });
+        }
         if (!stableContext) return modelSelection(modelId, selection);
         return modelSelection(modelId, {
           ...selection,
