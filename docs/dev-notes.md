@@ -117,7 +117,7 @@
   настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
   `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
   из apt-репозитория gVisor со сверкой подписи и sha256.
-- Хост песочниц для кода — `sbx-code-1` (`scripts/cloudru-code-host/`,
+- Хост песочниц для кода — VM Cloud.ru (`scripts/cloudru-code-host/`,
   только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
   из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в
   cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
