@@ -1,0 +1,14 @@
+{
+  "caddy": {
+    "version": "2.10.2",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz",
+    "sha256": "5c218bc34c9197369263da7e9317a83acdbd80ef45d94dca5eff76e727c67cdd",
+    "binarySha256": "4ef1f68c70219536b2711fd16547a79841a2dec2d6b4e56b1e3e5e9da76028e6"
+  },
+  "runsc": {
+    "release": "20260928",
+    "version": "20260928.0",
+    "url": "https://storage.googleapis.com/gvisor/releases/pool/20260928.0/binary-amd64/runsc.deb",
+    "sha256": "73fbf1152ac33a99652ca78a6b67051f4c5ca3f34b50e14a6cfe97104534365e"
+  }
+}

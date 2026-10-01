@@ -117,6 +117,10 @@
   настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
   `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
   из apt-репозитория gVisor со сверкой подписи и sha256.
+- Хост песочниц для кода — `sbx-code-1` (`scripts/cloudru-code-host/`,
+  только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
+  из apt Google. Разовое выделение памяти больше лимита песочницы будит
+  OOM cgroup хоста, и он убивает весь `gvisor_sentry`, а не процесс.
 - `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца

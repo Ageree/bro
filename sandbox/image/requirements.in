@@ -1,0 +1,15 @@
+# What the sandbox's Python (/opt/py, Python 3.10 of Ubuntu 22.04) offers out of the box. Pins with sha256
+# live in requirements.txt: `build_rootfs.sh lock` resolves this list into it (newest versions for 3.10).
+python-pptx
+python-docx
+openpyxl
+XlsxWriter
+pandas
+numpy
+matplotlib
+reportlab
+pypdf
+Pillow
+tabulate
+beautifulsoup4
+lxml
