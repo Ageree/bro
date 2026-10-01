@@ -259,7 +259,8 @@ BRO_PYTHON_SETUP=/root/stand/vm/wheels.sh BRO_PYTHON_WHEELS=/srv/bro/wheels \
 (2,3 минуты на `gen-2-4`). Затем `boot.py cloud-init` с presigned GET бандла и
 корня (срок — на время загрузки хоста). Текущие артефакты — корень
 `pool/rootfs/sandbox-20260930.3.tar.zst` и бандл `pool/host/host-d9b5f3673fb6.tgz`
-(sha256 и размеры — раздел 2 `docs/browser-pool.md`).
+в проде; бандл `pool/host/host-bd7cf2673def.tgz` (кэши Chrome вне набора) ждёт
+смены `BROWSER_HOST_BUNDLE` (sha256 и размеры — раздел 2 `docs/browser-pool.md`).
 
 ### Проверено на настоящих VM (этап 2, 30.09)
 

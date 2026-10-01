@@ -73,7 +73,7 @@ import caddy
 import network
 import sets
 
-VERSION = "2026-09-30.5"
+VERSION = "2026-10-01.1"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
