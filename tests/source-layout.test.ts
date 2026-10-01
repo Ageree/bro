@@ -50,6 +50,8 @@ describe("source layout", () => {
     expect(files("shared")).toEqual([]);
     expect(existsSync("shared/environment/env.ts")).toBe(true);
     expect(existsSync("db/services/installation-secrets.ts")).toBe(true);
-    expect(existsSync("agent/subagents")).toBe(false);
+    // The one declared subagent is the task agent with its code sandbox
+    // (sandbox/README.md); browser work stays the `browser_task` tool.
+    expect(directories("agent/subagents")).toEqual(["task"]);
   });
 });
