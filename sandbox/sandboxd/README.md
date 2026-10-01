@@ -28,20 +28,21 @@ sudo SANDBOXD_REAL_ROOTFS=/srv/sandboxd/rootfs/<версия> go test ./...   # 
 `-rootfs-version`, `-platform`, `-idle-minutes`, `-max-sandboxes` перекрывают
 файл для ручных запусков.
 
-| Ключ              | По умолчанию          | Что это                                                            |
-| ----------------- | --------------------- | ------------------------------------------------------------------ |
-| `host`, `key`     | —                     | id хоста и его ключ (64 hex): ими проверяются токены API           |
-| `listen`          | `127.0.0.1:8091`      | адрес API; снаружи — Caddy                                         |
-| `root`            | `/srv/sandboxd`       | `rootfs/<версия>/`, `sandboxes/<id>/`, `staging/`, `state.json`    |
-| `runsc`           | `/usr/bin/runsc`      | бинарник из пакета `runsc` (пакет целиком: `/usr/bin/gvisor-bin/`) |
-| `runsc_root`      | `/run/sandboxd/runsc` | `runsc --root`: в `/run`, перезагрузка забывает контейнеры         |
-| `platform`        | `systrap`             | платформа gVisor (KVM на VM Cloud.ru нет)                          |
-| `rootfs_version`  | `current`             | корень новых песочниц; симлинк разрешается при старте песочницы    |
-| `idle_minutes`    | `20`                  | простой, после которого песочница снимается и останавливается      |
-| `reserve_mb`      | `1024`                | память хоста вне песочниц: лимит — `MemTotal − reserve_mb`         |
-| `memory_limit_mb` | `0`                   | явный лимит суммы `memoryMb` вместо `MemTotal − reserve_mb`        |
-| `max_sandboxes`   | `16`                  | живых песочниц на хосте                                            |
-| `memory_mb`       | `1536`                | `memoryMb` песочницы, если `PUT` его не назвал                     |
+| Ключ                | По умолчанию          | Что это                                                             |
+| ------------------- | --------------------- | ------------------------------------------------------------------- |
+| `host`, `key`       | —                     | id хоста и его ключ (64 hex): ими проверяются токены API            |
+| `listen`            | `127.0.0.1:8091`      | адрес API; снаружи — Caddy                                          |
+| `root`              | `/srv/sandboxd`       | `rootfs/<версия>/`, `sandboxes/<id>/`, `staging/`, `state.json`     |
+| `runsc`             | `/usr/bin/runsc`      | бинарник из пакета `runsc` (пакет целиком: `/usr/bin/gvisor-bin/`)  |
+| `runsc_root`        | `/run/sandboxd/runsc` | `runsc --root`: в `/run`, перезагрузка забывает контейнеры          |
+| `platform`          | `systrap`             | платформа gVisor (KVM на VM Cloud.ru нет)                           |
+| `rootfs_version`    | `current`             | корень новых песочниц; симлинк разрешается при старте песочницы     |
+| `idle_minutes`      | `20`                  | простой, после которого песочница снимается и останавливается       |
+| `reserve_mb`        | `1024`                | память хоста вне песочниц: лимит — `MemTotal − reserve_mb`          |
+| `memory_limit_mb`   | `0`                   | явный лимит суммы `memoryMb` вместо `MemTotal − reserve_mb`         |
+| `max_sandboxes`     | `16`                  | живых песочниц на хосте                                             |
+| `memory_mb`         | `1536`                | `memoryMb` песочницы, если `PUT` его не назвал                      |
+| `exec_ping_seconds` | `15`                  | тишина в потоке `exec`, после которой идёт строка `{"type":"ping"}` |
 
 ## Песочница
 
@@ -51,10 +52,11 @@ sudo SANDBOXD_REAL_ROOTFS=/srv/sandboxd/rootfs/<версия> go test ./...   # 
 песочница держит их, пока живёт.
 
 ```
-runsc --root=/run/sandboxd/runsc --platform=systrap --network=none --overlay2=root:memory --host-uds=open \
-  run --detach --bundle=/srv/sandboxd/sandboxes/<id>/bundle <id>
-runsc <те же флаги> exec --user=1000:1000 --cwd=<cwd> --env=K=V … <id> /bin/bash -lc <команда>
-runsc <те же флаги> delete --force <id>      # остановка; kill, state, list --format=json — те же флаги
+runsc --root=/run/sandboxd/runsc --platform=systrap --network=none --overlay2=root:memory,size=<memoryMb/2>m \
+  --host-uds=open run --detach --bundle=/srv/sandboxd/sandboxes/<id>/bundle <id>
+runsc <флаги> update --memory=<(memoryMb + запас) МиБ в байтах> <id>   # сразу после run
+runsc <флаги> exec --user=1000:1000 --cwd=<cwd> --env=K=V … <id> /bin/bash -lc <команда>
+runsc <флаги> delete --force <id>      # остановка; kill, state, list --format=json — те же флаги
 ```
 
 - Корень — каталог rootfs только на чтение под оверлеем в памяти
@@ -66,8 +68,22 @@ runsc <те же флаги> delete --force <id>      # остановка; kill
 - Лимиты — `linux.resources`: память `memoryMb` и 1024 pids. cgroup —
   `/sandboxd/<id>` драйвером cgroupfs (у `runsc` он по умолчанию; флаг
   `--cgroupfs` устарел и ничего не делает). Там и sentry, и gofer, так что
-  перезапуск `sandboxd` песочниц не трогает. Проверено на cgroup v1; на
-  Ubuntu 22.04 (v2) после старта сверьте `/sys/fs/cgroup/sandboxd/<id>/memory.max`.
+  перезапуск `sandboxd` песочниц не трогает.
+- Память (`memory.go`). gVisor не держит гостя ни в своём `--total-memory`
+  (его `runsc` берёт из лимита cgroup, гость видит это как `MemTotal`), ни в
+  `RLIMIT_DATA`; страницы гостя ничьи в RSS, и OOM-killer cgroup убивал
+  `gvisor_sentry` — вместе со всей песочницей. Теперь: лимит в spec —
+  `memoryMb` (`MemTotal` гостя), после `run` — `runsc update --memory` на
+  `max(256, memoryMb/8)` МиБ больше; всем потомкам sentry (шаблон stub-ов
+  systrap и stub-ы процессов гостя, новые наследуют) — `oom_score_adj` 1000:
+  повышать можно без прав. OOM-killer убивает stub, gVisor — этот процесс
+  гостя (137), песочница живёт. Файлы в памяти ограничены, вместе ≤
+  `memoryMb`: оверлей — `size=` в `--overlay2`, `/tmp` и `/dev/shm` — tmpfs с
+  `size=` в spec (иначе gVisor сам монтирует на `/tmp` tmpfs в полпамяти хоста).
+- Умерший контейнер: sentry (pid и время старта из `runsc state`) проверяется
+  перед каждым запросом, `runsc state` — при `GET` и `PUT`, после сбоя `runsc
+exec` (код 128) — тоже; не бежит — запись `stopped` с причиной «the container
+  exited», работа в ней — 409 `sandbox_stopped`, `PUT` поднимает её заново.
 - `--network=none` держит netns в `<runsc_root>/null-netns` (bind mount
   `nsfs`): каталог `runsc_root` не чистят, пока живут песочницы.
 - Убийство команды: у каждого `exec` своя метка `BRO_EXEC_ID` в окружении;
@@ -101,7 +117,11 @@ query presigned-ссылок.
 release-20260928.0, ubuntu-base 22.04.5 с пользователем `sandbox`): полный
 набор тестов на настоящем `runsc`, включая убийство процессов в песочнице,
 брокер изнутри песочницы через сокет на привязке только для чтения, снимок и
-восстановление, и бинарник демоном с рестартом посреди живой песочницы.
+восстановление, и бинарник демоном с рестартом посреди живой песочницы. Там
+же выход гостя за память (разом, постепенно, двумя процессами, файлами в
+`/tmp`, `/dev/shm`, `/workspace`) и убитый sentry: `TestMemoryOverrun`,
+`TestDeadContainer`. На cgroup v2 (VM) механизм тот же — memcg OOM ядра;
+`TestMemoryOverrun` сверяет там `memory.max`.
 
 | Файл                         | Что это                                                                |
 | ---------------------------- | ---------------------------------------------------------------------- |
@@ -116,6 +136,7 @@ release-20260928.0, ubuntu-base 22.04.5 с пользователем `sandbox`)
 | `snapshot.go`                | формат `BROSNAP1`, снимок в S3 и восстановление                        |
 | `broker.go`                  | брокер инструментов на unix-сокете, ведро на 120 запросов в минуту     |
 | `state.go`                   | `state.json` и сверка с `runsc` после рестарта                         |
+| `memory.go`                  | бюджет памяти, запас cgroup, `oom_score_adj` stub-ов, живость sentry   |
 | `reaper.go`                  | простой, умершие контейнеры, старые записи                             |
 | `log.go`                     | URL и ошибки HTTP без query для журнала                                |
 | `testdata/token-vector.json` | общий с TypeScript вектор токена (`TestTokenVector`)                   |

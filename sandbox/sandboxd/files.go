@@ -110,7 +110,7 @@ func (a *API) readFile(w http.ResponseWriter, r *http.Request) {
 		case exitNotFound:
 			writeError(w, &apiError{http.StatusNotFound, "not_found", "no such file: " + p})
 		default:
-			writeError(w, &apiError{http.StatusInternalServerError, "read_failed", fallback(stderr.text(), "cat failed")})
+			writeError(w, m.failure(sb, code, &apiError{http.StatusInternalServerError, "read_failed", fallback(stderr.text(), "cat failed")}))
 		}
 		return
 	}
@@ -157,7 +157,7 @@ func (a *API) writeFile(w http.ResponseWriter, r *http.Request) {
 	case !ok:
 		writeError(w, &apiError{http.StatusBadGateway, "exec_failed", "the write did not finish"})
 	case code != 0:
-		writeError(w, &apiError{http.StatusConflict, "write_failed", fallback(stderr.text(), "the write failed")})
+		writeError(w, m.failure(sb, code, &apiError{http.StatusConflict, "write_failed", fallback(stderr.text(), "the write failed")}))
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -192,10 +192,19 @@ func (a *API) deleteFile(w http.ResponseWriter, r *http.Request) {
 	case code == exitNotFound:
 		writeError(w, &apiError{http.StatusNotFound, "not_found", "no such path: " + p})
 	case code != 0:
-		writeError(w, &apiError{http.StatusConflict, "delete_failed", fallback(stderr.text(), "rm failed")})
+		writeError(w, m.failure(sb, code, &apiError{http.StatusConflict, "delete_failed", fallback(stderr.text(), "rm failed")}))
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// failure is the answer to a file operation that exited with `code`: runsc's own failure in a container
+// that died is sandbox_stopped, anything else the operation's error.
+func (m *Manager) failure(sb *Sandbox, code int, otherwise *apiError) *apiError {
+	if code == runscFailed && m.confirmDead(sb) {
+		return m.stopped(sb)
+	}
+	return otherwise
 }
 
 func queryFlag(value string) bool {

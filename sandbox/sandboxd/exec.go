@@ -27,6 +27,8 @@ const (
 	// own per exec. Killing an exec kills every process of the sandbox that carries its value: the command,
 	// its children and whatever they left running in the background, also after a double fork or setsid.
 	markerEnv = "BRO_EXEC_ID"
+	// runscFailed is runsc's exit status when it fails itself (no such container, a dead sandbox).
+	runscFailed = 128
 )
 
 var (
@@ -218,7 +220,9 @@ func (a *API) exec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	stream.sendLocked(event{Type: "start", PID: pid})
+	stream.keepAlive(m.pingEvery)
 	stream.mu.Unlock()
+	defer stream.finish(nil)
 	started := time.Now()
 	waitErr := cmd.Wait()
 	cause := context.Cause(ctx)
@@ -230,30 +234,68 @@ func (a *API) exec(w http.ResponseWriter, r *http.Request) {
 		code, exited = 137, true
 	}
 	logged := []any{"sandbox", id, "pid", pid, "ms", time.Since(started).Milliseconds()}
+	// 128 is runsc's own failure (its message is in stderr): a container that died meanwhile is told as
+	// such, not as a command that failed.
+	died := exited && code == runscFailed && cause == nil && m.confirmDead(sb)
 	switch {
+	case died:
+		stream.finish(&event{Type: "error", Message: "sandbox_stopped: " + m.stopped(sb).Message})
+		m.log.Warn("exec ended: the sandbox died", logged...)
 	case errors.Is(cause, errClientGone) || r.Context().Err() != nil:
 		m.log.Info("exec ended: client went away", logged...)
 	case exited:
-		stream.send(event{Type: "exit", Code: &code})
+		stream.finish(&event{Type: "exit", Code: &code})
 		m.log.Info("exec ended", append(logged, "code", code)...)
 	default:
 		message := "the command ended without an exit status"
 		if waitErr != nil {
 			message = waitErr.Error()
 		}
-		stream.send(event{Type: "error", Message: message})
+		stream.finish(&event{Type: "error", Message: message})
 		m.log.Warn("exec failed", append(logged, "error", message)...)
 	}
 }
 
 // eventStream writes NDJSON lines, flushing each one; once a write fails (the client is gone) it calls
-// onFail and drops the rest.
+// onFail and drops the rest. Between start and the last line it writes {"type":"ping"} whenever nothing
+// else was written for `every`.
 type eventStream struct {
 	mu     sync.Mutex
 	w      io.Writer
 	rc     *http.ResponseController
 	onFail func()
 	failed bool
+	done   bool
+	every  time.Duration
+	idle   *time.Timer
+}
+
+// keepAlive starts the pings; the caller holds the lock.
+func (s *eventStream) keepAlive(every time.Duration) {
+	s.every = every
+	s.idle = time.AfterFunc(every, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.done {
+			s.sendLocked(event{Type: "ping"})
+		}
+	})
+}
+
+// finish writes the last line, if any, and ends the pings with it: nothing follows it.
+func (s *eventStream) finish(last *event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return
+	}
+	if last != nil {
+		s.sendLocked(*last)
+	}
+	s.done = true
+	if s.idle != nil {
+		s.idle.Stop()
+	}
 }
 
 func (s *eventStream) send(e event) error {
@@ -267,12 +309,15 @@ func (s *eventStream) sendLocked(e event) error {
 	if err != nil {
 		return err
 	}
-	if s.failed {
+	if s.failed || s.done {
 		return errClientGone
 	}
 	_, err = s.w.Write(append(line, '\n'))
 	if err == nil {
 		err = s.rc.Flush()
+	}
+	if err == nil && s.idle != nil {
+		s.idle.Reset(s.every)
 	}
 	if err != nil {
 		s.failed = true
@@ -316,7 +361,7 @@ func (m *Manager) killProc(id, pid string) error {
 	sb := m.sandboxes[id]
 	if sb == nil || sb.rec.State != stateRunning {
 		m.mu.Unlock()
-		return notFound(id)
+		return nil // no sandbox, no process
 	}
 	running := sb.procs[pid]
 	m.mu.Unlock()

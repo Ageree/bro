@@ -123,8 +123,10 @@ func (m *Manager) reconcile(ctx context.Context) error {
 			if err != nil {
 				m.log.Error("adopted sandbox has no broker", "sandbox", rec.ID, "error", err.Error())
 			}
+			state, _ := m.rt.State(ctx, rec.ID)
 			m.mu.Lock()
 			sb.broker = b
+			sb.sentry = identify(m.procfs, state.PID)
 			// Idle time counts from now: sandboxd itself was away.
 			sb.rec.LastUsedAt = time.Now().UTC()
 			m.mu.Unlock()

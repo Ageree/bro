@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -113,10 +114,16 @@ func TestCreateReattachAndGet(t *testing.T) {
 			run = call
 		}
 	}
-	want := []string{"--root=" + h.cfg.RunscRoot, "--platform=systrap", "--network=none", "--overlay2=root:memory",
+	want := []string{"--root=" + h.cfg.RunscRoot, "--platform=systrap", "--network=none", "--overlay2=root:memory,size=384m",
 		"--host-uds=open", "run", "--detach", "--bundle=" + h.cfg.paths("sb-create").bundle, "sb-create"}
 	if !slices.Equal(run, want) {
 		t.Fatalf("runsc run:\n got %q\nwant %q", run, want)
+	}
+	// The host cgroup gets the headroom on top of what the guest was told (memory.go).
+	if !slices.ContainsFunc(h.calls(), func(call []string) bool {
+		return slices.Equal(call[5:], []string{"update", fmt.Sprintf("--memory=%d", int64(768+256)<<20), "sb-create"})
+	}) {
+		t.Fatalf("no runsc update with the headroom: %q", h.calls())
 	}
 	var spec struct {
 		Process struct {
@@ -151,6 +158,11 @@ func TestCreateReattachAndGet(t *testing.T) {
 	if bind == nil || bind["source"] != h.cfg.paths("sb-create").run || !strings.Contains(string(data), `"ro"`) {
 		t.Fatalf("no /run/bro bind mount: %s", data)
 	}
+	for _, size := range []string{`"size=192m"`} { // /tmp and /dev/shm: a quarter each
+		if strings.Count(string(data), size) != 2 {
+			t.Fatalf("tmpfs sizes: %s", data)
+		}
+	}
 	info, err := os.Stat(h.cfg.paths("sb-create").socket)
 	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o666 {
 		t.Fatalf("tools.sock: %v %v", info, err)
@@ -158,7 +170,8 @@ func TestCreateReattachAndGet(t *testing.T) {
 }
 
 func TestCapacity(t *testing.T) {
-	h := newHarness(t, func(c *Config) { c.MaxSandboxes = 2; c.MemoryLimitMB = 1600 })
+	// Each sandbox counts with its headroom: 512 + 256.
+	h := newHarness(t, func(c *Config) { c.MaxSandboxes = 2; c.MemoryLimitMB = 2600 })
 	h.create("sb-a", sandboxOptions{memory: 512})
 	h.create("sb-b", sandboxOptions{memory: 512})
 	var failure map[string]string
@@ -172,8 +185,8 @@ func TestCapacity(t *testing.T) {
 	if status := h.call("DELETE", "/v1/sandboxes/sb-b", nil, nil); status != 204 {
 		t.Fatalf("DELETE: %d", status)
 	}
-	if status := h.call("PUT", "/v1/sandboxes/sb-c", h.sandboxBody("sb-c", sandboxOptions{memory: 1536}), &failure); status != 507 ||
-		failure["error"] != "host_full" || !strings.Contains(failure["message"], "1600 MiB") {
+	if status := h.call("PUT", "/v1/sandboxes/sb-c", h.sandboxBody("sb-c", sandboxOptions{memory: 2048}), &failure); status != 507 ||
+		failure["error"] != "host_full" || !strings.Contains(failure["message"], "2600 MiB") {
 		t.Fatalf("over the memory limit: %d %v", status, failure)
 	}
 	h.create("sb-c", sandboxOptions{memory: 1024})
@@ -198,7 +211,8 @@ func TestNetworkPolicy(t *testing.T) {
 	if status := h.call("POST", "/v1/sandboxes/sb-net/network", `{}`, &failure); status != 400 {
 		t.Fatalf("no policy: %d", status)
 	}
-	if status := h.call("POST", "/v1/sandboxes/sb-other/network", `{"policy":"deny-all"}`, &failure); status != 404 {
+	if status := h.call("POST", "/v1/sandboxes/sb-other/network", `{"policy":"deny-all"}`, &failure); status != 409 ||
+		failure["error"] != "sandbox_stopped" {
 		t.Fatalf("unknown sandbox: %d", status)
 	}
 	if h.real {
@@ -279,7 +293,7 @@ func TestReconcileAfterRestart(t *testing.T) {
 	if err := writeBundle(h.cfg, orphan, "sb-orphan", 256); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.m.rt.Run(ctx, "sb-orphan", orphan.bundle, orphan.log); err != nil {
+	if err := h.m.rt.Run(ctx, "sb-orphan", orphan.bundle, orphan.log, 128); err != nil {
 		t.Fatal(err)
 	}
 

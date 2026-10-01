@@ -42,7 +42,7 @@ func TestSnapshotStopRestore(t *testing.T) {
 	if status := h.call("GET", "/v1/sandboxes/"+id, nil, nil); status != 404 {
 		t.Fatalf("GET after stop: %d", status)
 	}
-	if result := h.exec(id, map[string]any{"command": "true"}); result.status != 404 {
+	if result := h.exec(id, map[string]any{"command": "true"}); result.status != 409 {
 		t.Fatalf("exec after stop: %d", result.status)
 	}
 	if status := h.call("POST", "/v1/sandboxes/"+id+"/stop", nil, nil); status != 404 {

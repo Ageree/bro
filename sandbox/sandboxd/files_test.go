@@ -108,7 +108,8 @@ func TestFiles(t *testing.T) {
 			t.Errorf("read through a symlink: %d %q", status, data)
 		}
 	}
-	if status := h.writeFile("sb-unknown", "/workspace/x", []byte("x")); status != 404 {
+	// Not 404: Bro reads that as "no such file".
+	if status := h.writeFile("sb-unknown", "/workspace/x", []byte("x")); status != 409 {
 		t.Errorf("write in an unknown sandbox: %d", status)
 	}
 }

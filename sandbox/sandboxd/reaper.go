@@ -81,14 +81,7 @@ func (m *Manager) notice(ctx context.Context) {
 			continue
 		}
 		if m.runningLocked(sb) {
-			if status, err := m.rt.State(ctx, sb.id); err == nil && status != "running" {
-				if err := m.teardown(ctx, sb); err != nil {
-					m.log.Error("cleanup of a dead sandbox failed", "sandbox", sb.id, "error", err.Error())
-				} else {
-					m.markStopped(sb, "the container exited")
-					m.log.Warn("sandbox died", "sandbox", sb.id, "status", status)
-				}
-			}
+			m.deadLocked(ctx, sb)
 		}
 		sb.op.Unlock()
 	}

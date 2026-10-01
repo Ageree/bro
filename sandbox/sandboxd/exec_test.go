@@ -65,7 +65,7 @@ func TestExecStream(t *testing.T) {
 			t.Errorf("%s: %d", name, result.status)
 		}
 	}
-	if result := h.exec("sb-missing", map[string]any{"command": "true"}); result.status != 404 {
+	if result := h.exec("sb-missing", map[string]any{"command": "true"}); result.status != 409 {
 		t.Fatalf("exec in an unknown sandbox: %d", result.status)
 	}
 }
@@ -160,7 +160,7 @@ func TestKillProc(t *testing.T) {
 	if status := h.call("POST", "/v1/sandboxes/sb-kill/procs/p999999/kill", nil, nil); status != 204 {
 		t.Fatalf("kill of an unknown pid: %d", status)
 	}
-	if status := h.call("POST", "/v1/sandboxes/sb-nope/procs/p1/kill", nil, nil); status != 404 {
+	if status := h.call("POST", "/v1/sandboxes/sb-nope/procs/p1/kill", nil, nil); status != 204 {
 		t.Fatalf("kill in an unknown sandbox: %d", status)
 	}
 }
@@ -177,5 +177,36 @@ func TestExecBackgroundChild(t *testing.T) {
 	}
 	if !h.processAlive("sb-bg", "bg.pid") {
 		t.Fatal("the background process was killed with the command")
+	}
+}
+
+// A command that is silent longer than exec_ping_seconds gets {"type":"ping"} lines meanwhile (clients and
+// proxies cut silent streams), never before start nor after exit; a talkative one gets none.
+func TestExecPing(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.ExecPingSeconds = 1 })
+	h.create("sb-ping", sandboxOptions{})
+	result := h.exec("sb-ping", map[string]any{"command": "echo before; sleep 3.5; echo after"})
+	var kinds []string
+	for _, e := range result.events {
+		kinds = append(kinds, e.Type)
+	}
+	pings := strings.Count(strings.Join(kinds, " "), "ping")
+	if result.code != 0 || pings < 2 || pings > 4 || kinds[0] != "start" || kinds[len(kinds)-1] != "exit" {
+		t.Fatalf("events of a silent command: %v", kinds)
+	}
+	if strings.Contains(strings.Join(kinds, " "), "start ping") {
+		t.Fatalf("a ping came right after start, before a whole quiet second: %v", kinds)
+	}
+	// While it writes every 0.2 s there is no ping (after its last line the runtime may take a while to
+	// report the exit: a ping there is right).
+	talkative := h.exec("sb-ping", map[string]any{"command": "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo $i; sleep 0.2; done"})
+	writing := false
+	for _, e := range talkative.events {
+		switch {
+		case e.Type == "stdout":
+			writing = string(e.Data) != "12\n"
+		case e.Type == "ping" && writing:
+			t.Fatalf("a ping while the command wrote every 0.2 s: %+v", talkative.events)
+		}
 	}
 }

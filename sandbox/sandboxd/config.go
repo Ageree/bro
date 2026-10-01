@@ -38,6 +38,8 @@ type Config struct {
 	MaxSandboxes  int `json:"max_sandboxes"`
 	// The memoryMb of a sandbox whose PUT names none.
 	MemoryMB int `json:"memory_mb"`
+	// An exec stream silent this long gets a {"type":"ping"} line (exec.go).
+	ExecPingSeconds int `json:"exec_ping_seconds"`
 }
 
 const (
@@ -63,6 +65,8 @@ func defaultConfig() Config {
 		ReserveMB:     1024,
 		MaxSandboxes:  16,
 		MemoryMB:      1536,
+
+		ExecPingSeconds: 15,
 	}
 }
 
@@ -106,6 +110,9 @@ func (c Config) validate() error {
 	}
 	if c.IdleMinutes < 1 {
 		problems = append(problems, errors.New("idle_minutes must be at least 1"))
+	}
+	if c.ExecPingSeconds < 1 {
+		problems = append(problems, errors.New("exec_ping_seconds must be at least 1"))
 	}
 	if c.MaxSandboxes < 1 {
 		problems = append(problems, errors.New("max_sandboxes must be at least 1"))

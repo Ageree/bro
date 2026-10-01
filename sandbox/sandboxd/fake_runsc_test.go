@@ -30,10 +30,12 @@ func TestMain(m *testing.M) {
 }
 
 type fakeState struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Bundle string `json:"bundle"`
-	PID    int    `json:"pid"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Bundle      string `json:"bundle"`
+	PID         int    `json:"pid"` // 0: no real sentry, sandboxd skips its process checks
+	MemoryLimit int64  `json:"memoryLimit"`
+	OverlayMB   string `json:"overlay"`
 }
 
 func fakeRunsc(args []string) int {
@@ -77,6 +79,8 @@ func fakeRunsc(args []string) int {
 		err = fakeKill(root, rest)
 	case "delete":
 		err = fakeDelete(root, rest)
+	case "update":
+		err = fakeUpdate(root, rest)
 	case "exec":
 		code, err = fakeExec(root, rest)
 	default:
@@ -130,10 +134,13 @@ func fakeLoadSpec(bundle string) (fakeSpec, error) {
 }
 
 func fakeRun(root string, globals map[string]string, args []string) error {
-	for name, want := range map[string]string{"network": "none", "overlay2": "root:memory", "host-uds": "open"} {
+	for name, want := range map[string]string{"network": "none", "host-uds": "open"} {
 		if globals[name] != want {
 			return fmt.Errorf("fake runsc: run without --%s=%s", name, want)
 		}
+	}
+	if !strings.HasPrefix(globals["overlay2"], "root:memory,size=") {
+		return fmt.Errorf("fake runsc: run without --overlay2=root:memory,size=…")
 	}
 	if _, err := os.Stat(filepath.Join(root, "fail-run")); err == nil {
 		return errors.New("fake runsc: run failed as asked")
@@ -172,7 +179,8 @@ func fakeRun(root string, globals map[string]string, args []string) error {
 			}
 		}
 	}
-	return fakeSave(root, fakeState{ID: id, Status: "running", Bundle: bundle, PID: 4242})
+	return fakeSave(root, fakeState{ID: id, Status: "running", Bundle: bundle,
+		OverlayMB: strings.TrimPrefix(globals["overlay2"], "root:memory,size=")})
 }
 
 func fakeCopyTree(source, target string) error {
@@ -231,6 +239,28 @@ func fakeList(root string) error {
 	data, _ := json.Marshal(states) // nil: "null", as runsc
 	fmt.Println(string(data))
 	return nil
+}
+
+func fakeUpdate(root string, args []string) error {
+	var limit int64
+	var id string
+	for _, arg := range args {
+		if value, ok := strings.CutPrefix(arg, "--memory="); ok {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return err
+			}
+			limit = parsed
+		} else {
+			id = arg
+		}
+	}
+	state, err := fakeLoad(root, id)
+	if err != nil {
+		return err
+	}
+	state.MemoryLimit = limit
+	return fakeSave(root, state)
 }
 
 func fakeKill(root string, args []string) error {
@@ -316,7 +346,7 @@ func fakeExec(root string, args []string) (int, error) {
 		return 0, err
 	}
 	if state.Status != "running" {
-		return 0, fmt.Errorf("container %q is not running", id)
+		return 0, fmt.Errorf("executing processes for container: cannot execute in container %q in state %s", id, state.Status)
 	}
 	spec, err := fakeLoadSpec(state.Bundle)
 	if err != nil {

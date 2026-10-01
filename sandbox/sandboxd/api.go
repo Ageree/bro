@@ -212,7 +212,7 @@ func (a *API) putSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getSandbox(w http.ResponseWriter, r *http.Request) {
-	view, err := a.m.status(r.PathValue("id"))
+	view, err := a.m.status(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -250,10 +250,12 @@ func (a *API) network(w http.ResponseWriter, r *http.Request) {
 		writeError(w, badRequest(`body must be {"policy": …}`))
 		return
 	}
-	if _, err := a.m.status(r.PathValue("id")); err != nil {
+	sb, err := a.m.begin(r.PathValue("id"))
+	if err != nil {
 		writeError(w, err)
 		return
 	}
+	a.m.end(sb)
 	if string(request.Policy) != `"deny-all"` {
 		writeError(w, &apiError{http.StatusConflict, "unsupported_policy", "sandboxes have no network: only deny-all"})
 		return
