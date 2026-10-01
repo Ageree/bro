@@ -79,8 +79,8 @@
   резолвер `turn.started`/`step.started` кладёт в замыкание. Замыкание — только
   JSON, а вложения в истории — `URL` `eve-sandbox:`: храните ссылки.
 - Каналы без `turnPolicy` работают как `"steer"`: сообщение, пришедшее до
-  начала ответа, перехватывает текущий ход; `"queue"` — только ход-отчёт
-  браузера (`completion.ts`). `defaultTools: false` выключает и готовую
+  начала ответа, перехватывает текущий ход; `"queue"` — только ходы-отчёты
+  браузера (`completion.ts`) и расписания (`agent/lib/schedules/report.ts`). `defaultTools: false` выключает и готовую
   песочницу eve (`bash`, `read_file`, `write_file`; на Vercel — Vercel
   Sandbox), хотя `ctx.getSandbox()` работает (`node_modules/eve/docs/sandbox.mdx`).
 - Хунки патча:
