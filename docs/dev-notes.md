@@ -29,7 +29,9 @@
   `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
   хосты пула, worker) — `docs/browser-infra-notes.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
-  `docs/instinct.md`.
+  `docs/instinct.md`; план переезда с Vercel на Cloud.ru по этапам —
+  `docs/cloudru-migration.md`; песочница для кода и task-агент —
+  `sandbox/README.md`.
 
 ## Процесс
 
@@ -101,6 +103,18 @@
     резолверы `turn.started` поэтому должны быть идемпотентны.
   - `attachSession` в хендлере расписания; `harness/emission.js` — ошибка
     повтора одобренного вызова в `action.result`.
+- Песочница task-агента — свой бэкенд eve `bro-cloudru`
+  (`agent/lib/sandbox/backend.ts`): eve зовёт `prewarm` бэкенда при сборке,
+  поэтому фабрика не бросает без `SANDBOX_*`, проверка — в `create`. Модель
+  субагента должна резолвиться на `step.started` (хэндл OpenRouter не
+  сериализуется), а динамический субагент eve требует статичную модель —
+  поэтому `task` скрыт через `withheldTools` везде, кроме пилота
+  `SANDBOX_WORKSPACES` (`agent/agent.ts`, тесты ждут `"task"` в списке).
+- Итог фоновой задачи eve приносит родителю отдельным ходом: сообщение
+  `[Task state]` с выводом задачи и указание «одним ответом человеку»
+  (`eve/dist/src/tasks/delivery-context.js`).
+- `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
+  HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
   пишет обёртка маршрута (`agent/channels/eve.ts`), иначе ранний поток — 403.
 - `first-contact` решает `workspaces.introduced_at`
@@ -221,7 +235,9 @@
 - Ключи окружения приходили с переводами строк и в типографских кавычках:
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
-- Env Vercel действует лишь со следующего деплоя.
+- Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
+  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: они в Blob
+  (`db/services/installation-secrets.ts`) — перед уходом с Vercel достать.
 
 ## Браузерные поручения
 

@@ -48,6 +48,10 @@ import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
+import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
+
+/** The tool eve makes of the task agent (`agent/subagents/task`). */
+const taskAgentTool = "task";
 
 /**
  * What a report turn is told when its report already reached the person in
@@ -185,7 +189,7 @@ export default defineAgent({
         const clockOwed =
           caller.principalType === "user" &&
           resolveModeValue(ctx, clockModes) !== null;
-        const [modelId, formOfAddress, [stableContext, timeZone]] =
+        const [modelId, formOfAddress, [stableContext, timeZone], taskAgent] =
           await Promise.all([
             getWorkspaceModelId(scope),
             writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -198,6 +202,11 @@ export default defineAgent({
                     : undefined,
                 ] as const
             ),
+            // The task agent works for the person's own requests; a report
+            // or a worker never starts one.
+            resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
+              ? taskAgentPilot(scope)
+              : false,
           ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         // Once a browser report's message is out, the rest of its turn
@@ -267,6 +276,7 @@ export default defineAgent({
             ...(reportPastAnswer ? ["react_to_message", "send_message"] : []),
             ...(heldForAnswer ? actionsHeldForAnswer : []),
             ...(cardsHeld ? cardToolsBeforeOutcome : []),
+            ...(taskAgent ? [] : [taskAgentTool]),
           ],
         };
         if (!stableContext) return modelSelection(modelId, selection);

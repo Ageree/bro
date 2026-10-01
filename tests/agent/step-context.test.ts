@@ -179,6 +179,7 @@ describe("a step in the pilot", () => {
     expect(before?.withheldTools).toEqual([
       "ask_question",
       ...cardToolsBeforeOutcome,
+      "task",
     ]);
 
     const after = await stepOptions(
@@ -190,7 +191,7 @@ describe("a step in the pilot", () => {
       )
     );
     expect(after?.offeredTools).toEqual(reportToolsAfterOutcome);
-    expect(after?.withheldTools).toEqual(["ask_question"]);
+    expect(after?.withheldTools).toEqual(["ask_question", "task"]);
     // Every card step a report may ask for, and the sign-in the calendar's
     // refusal names when Google is not connected.
     const { googleNotConnectedWriteRefusal } =

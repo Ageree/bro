@@ -140,7 +140,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru"),
         silent: false,
         toolChoice: "required",
-        withheldTools: [],
+        withheldTools: ["task"],
       }
     );
   });
@@ -160,7 +160,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru", true),
         silent: false,
         toolChoice: "auto",
-        withheldTools: [],
+        withheldTools: ["task"],
       }
     );
   });
@@ -211,7 +211,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru", true),
         silent: false,
         toolChoice: "none",
-        withheldTools: [],
+        withheldTools: ["task"],
       }
     );
   });
@@ -251,7 +251,7 @@ describe("interactive delivery enforcement", () => {
 
     expect(services.modelSelection).toHaveBeenLastCalledWith(
       "openai/gpt-5.6-sol-fast",
-      expect.objectContaining({ withheldTools: ["ask_question"] })
+      expect.objectContaining({ withheldTools: ["ask_question", "task"] })
     );
   });
 
@@ -271,7 +271,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("en"),
         silent: false,
         toolChoice: "required",
-        withheldTools: [],
+        withheldTools: ["task"],
       }
     );
   });
@@ -414,6 +414,7 @@ describe("interactive delivery enforcement", () => {
       "schedules-update",
       "workstreams__forget",
       "workstreams__forget_all",
+      "task",
     ]);
     // The model learns why they are gone, so it does not claim it used them.
     expect(options?.replyNote).toContain("are not available");
@@ -515,7 +516,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: `${note("ru")}\n\n${cardToolsBeforeOutcomeNote}`,
         silent: false,
         toolChoice: "required",
-        withheldTools: ["ask_question", ...cardToolsBeforeOutcome],
+        withheldTools: ["ask_question", ...cardToolsBeforeOutcome, "task"],
       }
     );
 
@@ -562,7 +563,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru"),
         silent: true,
         toolChoice: "auto",
-        withheldTools: ["ask_question", ...cardToolsBeforeOutcome],
+        withheldTools: ["ask_question", ...cardToolsBeforeOutcome, "task"],
       }
     );
   });
@@ -578,7 +579,7 @@ describe("interactive delivery enforcement", () => {
     );
 
     const [, options] = services.modelSelection.mock.lastCall ?? [];
-    expect(options?.withheldTools).toEqual(["ask_question"]);
+    expect(options?.withheldTools).toEqual(["ask_question", "task"]);
     expect(options?.replyNote).not.toContain(cardToolsBeforeOutcomeNote);
 
     // A message sent back for a rewrite reached nobody: the cards wait.
@@ -613,13 +614,14 @@ describe("interactive delivery enforcement", () => {
     expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual([
       "ask_question",
       ...cardToolsBeforeOutcome,
+      "task",
     ]);
 
     // A turn the person started keeps its cards from the first step.
     await agent.model.events["step.started"]?.({}, interactiveContext(pending));
-    expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual(
-      []
-    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual([
+      "task",
+    ]);
   });
 
   it("keeps a booked report's turn going until its calendar card came (review #22)", async () => {
@@ -653,7 +655,7 @@ describe("interactive delivery enforcement", () => {
       "иначе закончи ход без вызова инструментов"
     );
     expect(options?.toolChoice).toBe("auto");
-    expect(options?.withheldTools).toEqual(["ask_question"]);
+    expect(options?.withheldTools).toEqual(["ask_question", "task"]);
 
     // A card the person declined settles its step; the other is still owed.
     await agent.model.events["step.started"]?.(
@@ -824,6 +826,7 @@ describe("interactive delivery enforcement", () => {
       "ask_question",
       "react_to_message",
       "send_message",
+      "task",
     ]);
 
     // Once it has called a tool after the dropped send, it ends (review #3).
@@ -859,7 +862,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: note("ru"),
         silent: false,
         toolChoice: "auto",
-        withheldTools: ["ask_question"],
+        withheldTools: ["ask_question", "task"],
       }
     );
   });
@@ -882,7 +885,7 @@ describe("interactive delivery enforcement", () => {
         replyNote: undefined,
         silent: false,
         toolChoice: "auto",
-        withheldTools: [],
+        withheldTools: ["task"],
       }
     );
     // A worker writes to the report turn, not to the person.

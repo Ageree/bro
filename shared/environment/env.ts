@@ -552,12 +552,58 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    // The code sandbox host on Cloud.ru (`sandbox/README.md`): its id, its
+    // HTTPS origin (`https://<address with dashes>.sslip.io`), and the key
+    // its token key and the sandbox tool router's token key are derived from
+    // (`agent/lib/sandbox/keys.ts`). All three together switch the task
+    // agent's sandbox on.
+    SANDBOX_HOST_ID: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^[a-z0-9-]{1,63}$/u.test(value),
+        "SANDBOX_HOST_ID must be 1 to 63 lower-case letters, digits or dashes"
+      )
+      .optional(),
+    SANDBOX_HOST_ORIGIN: z
+      .string()
+      .trim()
+      .refine(
+        (value) => URL.parse(value)?.protocol === "https:",
+        "SANDBOX_HOST_ORIGIN must be an https origin"
+      )
+      .transform((value) => value.replace(/\/+$/u, ""))
+      .optional(),
+    SANDBOX_SIGNING_KEY: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^(?:[\da-f]{2}){32,}$/iu.test(value),
+        "SANDBOX_SIGNING_KEY must be at least 32 bytes written in hex"
+      )
+      .optional(),
+    // Where `sandboxd` sends the sandbox's tool calls; unset, this
+    // deployment's own `/api/sandbox/graphql`.
+    SANDBOX_TOOLS_URL: z
+      .string()
+      .trim()
+      .refine(
+        (value) => URL.parse(value)?.protocol === "https:",
+        "SANDBOX_TOOLS_URL must be an https URL"
+      )
+      .optional(),
+    // The pilot of the task agent and its sandbox: workspace ids or owners'
+    // emails, or `*` for every workspace.
+    SANDBOX_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report
     // turns keep only their few tools after the message. Only with
     // OpenRouter. Unset, every step is built as before.
     STEP_CONTEXT_WORKSPACES: workspaceListSchema.optional(),
+    // The model of the task agent (`agent/subagents/task`); unset, the
+    // workspace's own model.
+    TASK_AGENT_MODEL: trimmedValue.optional(),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(
