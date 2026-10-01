@@ -1,8 +1,11 @@
 import { z } from "zod";
+import { modelEndpoint } from "@agent/lib/model/endpoint";
+import {
+  failureStatus,
+  reportedErrorSchema,
+} from "@agent/lib/model/routerai/errors";
 import { env } from "@shared/environment";
-import { applicationOrigin } from "@shared/environment/origin";
 
-const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
 /**
  * One attempt. With the reading model told to write nothing, both engines
  * answered 24 probes of Russian local-business queries in 1.2–7.9 s
@@ -11,13 +14,17 @@ const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
 const attemptTimeoutMs = 9000;
 /** The pause before the other engine takes over. */
 const retryDelayMs = 500;
-const maxResults = 8;
+/**
+ * Pages one OpenRouter search asks for. RouterAI bills Exa by the page,
+ * about 1.08 ₽ each on 01.10, so it asks for ROUTERAI_SEARCH_MAX_RESULTS.
+ */
+const openRouterMaxResults = 8;
 /** Enough of a page excerpt to carry a price, an average bill, hours or an address. */
 const maxSnippetCharacters = 500;
 const maxSites = 5;
 
 /**
- * The search backends, in the order they are tried. Left to choose, OpenRouter
+ * The search engines, in the order they are tried. Left to choose, OpenRouter
  * runs an OpenAI model's native search: live probes on 24.09.2026 took
  * 4.7–25.7 s, past the 15 s timeout the tool then had, and 10 of 13 returned
  * no cited pages at all. Exa and Perplexity cite eight pages with excerpts at
@@ -47,9 +54,17 @@ export const webSearchInputSchema = z.object({
 
 export type WebSearchInput = z.infer<typeof webSearchInputSchema>;
 
+/** A failed search as the backend reported it, its status read from its code. */
+const reportedFailureSchema = reportedErrorSchema.transform((error) => ({
+  message: error.message ?? JSON.stringify(error),
+  status: failureStatus(error.code),
+}));
+
 /**
- * OpenRouter returns the pages its `web` plugin read as OpenAI-style
- * `url_citation` annotations, each with an excerpt of the page.
+ * Both backends return the pages their `web` plugin read as OpenAI-style
+ * `url_citation` annotations, each with an excerpt of the page. RouterAI
+ * answers a failure with HTTP 200 and an `error` instead of `choices`, often
+ * the upstream's whole JSON answer as text (probes of 01.10).
  */
 const responseSchema = z.object({
   choices: z
@@ -76,6 +91,10 @@ const responseSchema = z.object({
       })
     )
     .optional(),
+  // A success may carry `error: null`; it is no failure.
+  error: reportedFailureSchema
+    .nullish()
+    .transform((error) => error ?? undefined),
 });
 
 /** A page the model can cite or read with `web_fetch`. */
@@ -96,79 +115,124 @@ class WebSearchError extends Error {
   }
 }
 
+/** The backend a search goes to: the one that serves Bro's own model. */
+type SearchEndpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
+
 /**
- * Runs one web search through OpenRouter's `web` plugin and returns the pages
- * it found. A timeout, a throttle, a gateway failure or an empty answer hands
- * the query to the fallback engine after a short pause, and its failure is
- * the one thrown. Nothing is retried once `signal` aborts the turn.
+ * Runs one web search through the `web` plugin of the direct model backend
+ * (RouterAI or OpenRouter) and returns the pages it found. A timeout, a
+ * throttle, a gateway failure or an empty answer hands the query to the
+ * fallback engine after a short pause, and its failure is the one thrown.
+ * Nothing is retried once `signal` aborts the turn.
  */
 export async function searchWeb(
   input: WebSearchInput,
   signal: AbortSignal
 ): Promise<readonly WebSearchResult[]> {
-  const apiKey = env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured.");
+  const endpoint = modelEndpoint();
+  if (!endpoint) {
+    throw new Error(
+      "Web search needs a direct model backend: set ROUTERAI_API_KEY or OPENROUTER_API_KEY."
+    );
+  }
 
   try {
-    return await searchOnce(input, primaryEngine, apiKey, signal);
+    return await searchOnce(input, primaryEngine, endpoint, signal);
   } catch (error) {
     if (signal.aborted || !worthRetrying(error)) throw error;
   }
   // A turn aborted during the pause fails the fetch below straight away.
   await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-  return await searchOnce(input, fallbackEngine, apiKey, signal);
+  return await searchOnce(input, fallbackEngine, endpoint, signal);
 }
 
 async function searchOnce(
   input: WebSearchInput,
   engine: SearchEngine,
-  apiKey: string,
+  endpoint: SearchEndpoint,
   signal: AbortSignal
 ) {
-  const response = await fetch(completionsUrl, {
-    body: JSON.stringify(requestBody(input, engine)),
+  const response = await fetch(`${endpoint.baseURL}/chat/completions`, {
+    body: JSON.stringify(requestBody(input, engine, endpoint)),
     headers: {
-      authorization: `Bearer ${apiKey}`,
+      authorization: `Bearer ${endpoint.apiKey}`,
       "content-type": "application/json",
-      "HTTP-Referer": applicationOrigin(),
-      "X-Title": "Bro",
+      ...endpoint.headers,
     },
     method: "POST",
     signal: AbortSignal.any([signal, AbortSignal.timeout(attemptTimeoutMs)]),
   });
   const text = await response.text();
-  if (!response.ok) {
-    throw new WebSearchError(
-      `OpenRouter ${String(response.status)}: ${text.slice(0, 300)}`,
-      response.status === 408 ||
-        response.status === 429 ||
-        response.status >= 500
-    );
+  if (!response.ok) failed(endpoint, response.status, text);
+  const completion = parseCompletion(text, endpoint);
+  if (completion.error !== undefined && !completion.choices?.length) {
+    failed(endpoint, completion.error.status, completion.error.message);
   }
-  const results = readResults(text);
+  const results = readResults(completion, maxResults(endpoint));
   if (results.length === 0) {
     throw new WebSearchError("nothing was found", true);
   }
   return results;
 }
 
+/**
+ * Throws the failure with its status. A timeout, a throttle and a gateway
+ * failure are worth the other engine; a refusal (no credit, a bad key or
+ * model) fails it too. An error without a status is taken for the gateway's.
+ */
+function failed(
+  endpoint: SearchEndpoint,
+  status: number | undefined,
+  detail: string
+): never {
+  throw new WebSearchError(
+    `${endpoint.name} ${status === undefined ? "error" : String(status)}: ${detail.slice(0, 300)}`,
+    status === undefined || status === 408 || status === 429 || status >= 500
+  );
+}
+
 /** Whether another engine could still answer after this failure. */
 function worthRetrying(cause: unknown) {
   if (cause instanceof WebSearchError) return cause.retryable;
-  // A timeout of this attempt, or fetch failing to reach OpenRouter at all.
+  // A timeout of this attempt, or fetch failing to reach the backend at all.
   return (
     cause instanceof TypeError ||
     (cause instanceof Error && cause.name === "TimeoutError")
   );
 }
 
-/** Cheap model the plugin hands the results to; falls back to the inference default. */
-function searchModelId() {
-  return env.OPENROUTER_SEARCH_MODEL ?? env.OPENROUTER_MODEL;
+function maxResults(endpoint: SearchEndpoint) {
+  return endpoint.provider === "routerai"
+    ? env.ROUTERAI_SEARCH_MAX_RESULTS
+    : openRouterMaxResults;
 }
 
-/** The body OpenRouter's chat completions endpoint receives for one search. */
-function requestBody(input: WebSearchInput, engine: SearchEngine) {
+/**
+ * RouterAI's own DeepSeek endpoint hung for minutes on 01.10 (see
+ * `agent/lib/model/direct.ts`), and a search waits 9 s, so a DeepSeek reading
+ * model skips it here too, with the hosts ROUTERAI_PROVIDER_IGNORE names.
+ * OpenRouter keeps its own routing.
+ */
+function providerRouting(model: string, endpoint: SearchEndpoint) {
+  if (endpoint.provider !== "routerai") return {};
+  const ignore = [
+    ...new Set([
+      ...(model.startsWith("deepseek/") ? ["deepseek"] : []),
+      ...endpoint.providerIgnore,
+    ]),
+  ];
+  return ignore.length > 0 ? { provider: { ignore } } : {};
+}
+
+/** The body the chat completions endpoint receives for one search. */
+function requestBody(
+  input: WebSearchInput,
+  engine: SearchEngine,
+  endpoint: SearchEndpoint
+) {
+  // A cheap model the plugin hands the results to; the inference default
+  // when none is configured.
+  const model = endpoint.searchModel;
   return {
     // The citations carry the pages and their excerpts; nothing the model
     // writes is read. Letting it summarize them cost 2–4 s per search.
@@ -177,8 +241,9 @@ function requestBody(input: WebSearchInput, engine: SearchEngine) {
       { content: "Reply with the single word OK.", role: "system" },
       { content: input.query, role: "user" },
     ],
-    model: searchModelId(),
-    plugins: [webPlugin(input, engine)],
+    model,
+    plugins: [webPlugin(input, engine, maxResults(endpoint))],
+    ...providerRouting(model, endpoint),
     // DeepSeek spends roughly 1,600 hidden tokens before its first visible
     // character, which buys nothing here.
     reasoning: { enabled: false },
@@ -187,8 +252,8 @@ function requestBody(input: WebSearchInput, engine: SearchEngine) {
 }
 
 /** The plugin searches with the user message; it has no date filter. */
-function webPlugin(input: WebSearchInput, engine: SearchEngine) {
-  const plugin = { engine, id: "web", max_results: maxResults };
+function webPlugin(input: WebSearchInput, engine: SearchEngine, pages: number) {
+  const plugin = { engine, id: "web", max_results: pages };
   const sites = siteFilter(input.sites);
   return sites.length > 0 ? { ...plugin, include_domains: sites } : plugin;
 }
@@ -206,8 +271,11 @@ function siteFilter(sites: WebSearchInput["sites"]) {
   return [...new Set(normalized.filter((site) => site.length > 0))];
 }
 
-function readResults(text: string): readonly WebSearchResult[] {
-  const message = parseCompletion(text).choices?.[0]?.message;
+function readResults(
+  completion: z.infer<typeof responseSchema>,
+  limit: number
+): readonly WebSearchResult[] {
+  const message = completion.choices?.[0]?.message;
   const seen = new Set<string>();
   const results: WebSearchResult[] = [];
   for (const annotation of message?.annotations ?? []) {
@@ -222,16 +290,19 @@ function readResults(text: string): readonly WebSearchResult[] {
       title: oneLine(citation.title ?? "") || url.data,
       url: url.data,
     });
-    if (results.length === maxResults) break;
+    if (results.length === limit) break;
   }
   return results;
 }
 
-function parseCompletion(text: string) {
+function parseCompletion(text: string, endpoint: SearchEndpoint) {
   try {
     return responseSchema.parse(JSON.parse(text));
   } catch {
-    throw new WebSearchError("OpenRouter returned an unusable body.", true);
+    throw new WebSearchError(
+      `${endpoint.name} returned an unusable body.`,
+      true
+    );
   }
 }
 

@@ -251,10 +251,13 @@ read from the file's magic bytes; PDFs up to 10 MB become file parts; other
 files are described to the model in one line. A message that carries only a
 picture still tells the model `[фото]`.
 
-Voice notes are transcribed through OpenRouter's audio endpoint with
-`OPENROUTER_API_KEY`, so a deployment without the key answers a voice note with
-one line saying voice is not supported. iMessage voice notes arrive as
-CAF-Opus and are remuxed to Ogg in process. `OPENROUTER_STT_MODEL` is the
+Voice notes are transcribed through the direct model provider's audio endpoint
+(OpenRouter, or RouterAI's `/audio/transcriptions`, see
+[Model provider](#model-provider)), so a deployment without one answers a voice
+note with one line saying voice is not supported. On RouterAI the
+`ROUTERAI_STT_*` variables take the place of the `OPENROUTER_STT_*` ones below
+(fallback default `openai/whisper-large-v3-turbo`). iMessage voice notes arrive
+as CAF-Opus and are remuxed to Ogg in process. `OPENROUTER_STT_MODEL` is the
 transcription model (default `qwen/qwen3-asr-flash-2026-02-10`),
 `OPENROUTER_STT_FALLBACK_MODEL` takes over when the first model rejects the clip
 (default `openai/gpt-4o-transcribe`), and `OPENROUTER_STT_LANGUAGE` is the
@@ -271,15 +274,19 @@ people do, set `OPENROUTER_MANAGEMENT_KEY` (the credits endpoint rejects an
 inference key) and `TELEGRAM_OWNER_CHAT_ID`. Every ten minutes the schedule
 reads the OpenRouter balance and, when it falls below
 `OPENROUTER_CREDITS_ALERT_USD` (default 5), messages the owner through the bot.
+On RouterAI the ordinary `ROUTERAI_API_KEY` reads the balance, already in
+roubles, and the threshold is `ROUTERAI_CREDITS_ALERT_RUB` (default 300).
 The alert repeats once a day while the balance stays low, sooner if it keeps
 halving, and re-arms once the balance recovers; its state lives in
 `operational_alerts`.
 
 ### Pictures and chat games
 
-With `OPENROUTER_API_KEY` and private Blob storage, the agent gets a
-`generate_image` tool that draws through OpenRouter's Image API. The model is
-`OPENROUTER_IMAGE_MODEL` (default `google/gemini-3.1-flash-lite-image`) and must accept
+With a direct model provider and private Blob storage, the agent gets a
+`generate_image` tool that draws through the provider's image API (OpenRouter's
+`/images`, RouterAI's `/images/generations`). The model is
+`OPENROUTER_IMAGE_MODEL` or `ROUTERAI_IMAGE_MODEL` (default
+`google/gemini-3.1-flash-lite-image`) and must accept
 reference images: the person's photos from the conversation (up to the four
 newest) and earlier pictures travel as references, so a card can show the
 person's own dog and "make it brighter" edits the last version instead of
@@ -413,13 +420,30 @@ credit for that many tokens before it answers, and without a cap it reserves
 the model's whole limit. The workspace page switches its model picker to an
 OpenRouter id field whenever the key is present.
 
+[RouterAI](https://routerai.ru) serves the same API from Russia and is chosen
+with `MODEL_PROVIDER=routerai` plus `ROUTERAI_API_KEY`
+(`MODEL_PROVIDER=openrouter` forces OpenRouter; left unset, the OpenRouter key
+decides as above). Its
+settings mirror OpenRouter's under the `ROUTERAI_` prefix: `ROUTERAI_MODEL`
+(default `deepseek/deepseek-v4.1-flash`), `ROUTERAI_MODEL_CONTEXT_TOKENS`,
+`ROUTERAI_REASONING_EFFORT`, `ROUTERAI_MAX_OUTPUT_TOKENS`,
+`ROUTERAI_SEARCH_MODEL` and `ROUTERAI_SEARCH_MAX_RESULTS` (default 5), and
+`ROUTERAI_BASE_URL`. `ROUTERAI_PROVIDER_ORDER` pins upstream hosts (for
+`deepseek/*` the default is `sail-research,morph,deepinfra`: Sail Research was
+the one host that kept the prompt cache) and `ROUTERAI_PROVIDER_IGNORE` skips
+hosts for every model. RouterAI's own DeepSeek endpoint hangs, so `deepseek/*`
+always skips it. Costs come back in roubles and are recorded at
+`USAGE_USD_RUB`.
+
 `web_search` changes shape with the provider. The framework tool is
 provider-managed: an AI Gateway model searches through Exa, and a direct
 provider model is handed that provider's own search tool. OpenRouter exposes
-neither, so with `OPENROUTER_API_KEY` set the agent swaps in its own ordinary
-function tool, which runs the query through OpenRouter's `web` plugin on Exa,
+neither, and neither does RouterAI, so with either one the agent swaps in its
+own ordinary function tool, which runs the query through the provider's `web`
+plugin on Exa,
 falls back to Perplexity on a timeout, a throttle, a gateway failure or an
-empty answer, and returns up to eight titles, URLs, and page excerpts; `sites`
+empty answer, and returns up to eight titles, URLs, and page excerpts (on
+RouterAI up to `ROUTERAI_SEARCH_MAX_RESULTS`, as each result is billed); `sites`
 limits it to given sites. `OPENROUTER_SEARCH_MODEL` picks the model the plugin
 hands the results to (nothing it writes is read) and falls back to
 `OPENROUTER_MODEL`. The tool keeps the name `web_search`, and `web_fetch` is

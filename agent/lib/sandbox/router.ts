@@ -10,10 +10,7 @@ import { z } from "zod";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
-import {
-  searchWeb,
-  webSearchInputSchema,
-} from "@agent/lib/web-search/openrouter";
+import { searchWeb, webSearchInputSchema } from "@agent/lib/web-search/search";
 import { verifySandboxToolsToken } from "./keys";
 import { fetchPublic } from "./public-fetch";
 

@@ -494,10 +494,21 @@ export const env = createEnv({
     IMESSAGE_PROJECT_ID: requiredValue.optional(),
     IMESSAGE_PROJECT_SECRET: requiredValue.optional(),
     IMESSAGE_WEBHOOK_SECRET: requiredValue.optional(),
+    // Where Bro's own model calls go: `routerai` or `openrouter`, each with
+    // its key below. Left unset, an OpenRouter key alone selects OpenRouter
+    // and no key at all leaves the Vercel AI Gateway
+    // (`shared/model/provider.ts`).
+    MODEL_PROVIDER: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.enum(["openrouter", "routerai"]))
+      .optional(),
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
-    // OpenRouter replaces AI Gateway routing whenever its key is present.
+    // OpenRouter replaces AI Gateway routing whenever its key is present and
+    // MODEL_PROVIDER names no other provider.
     OPENROUTER_API_KEY: openRouterApiKeySchema.optional(),
     // The balance check alerts the owner below this many dollars of
     // OpenRouter credit. It needs OPENROUTER_MANAGEMENT_KEY, since the credits
@@ -552,6 +563,64 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    // RouterAI (routerai.ru), the OpenRouter-compatible reseller that
+    // answers from Russia, selected by MODEL_PROVIDER=routerai. Its prices
+    // and `usage.cost` are in roubles. The key and every knob below are its
+    // own, apart from the OPENROUTER_* ones, so switching back is one
+    // variable (`agent/lib/model/endpoint.ts`).
+    ROUTERAI_API_KEY: pastedKeySchema.optional(),
+    ROUTERAI_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.canParse(value),
+        "ROUTERAI_BASE_URL must be an absolute URL"
+      )
+      .default("https://routerai.ru/api/v1"),
+    // The balance check alerts the owner below this many roubles; RouterAI's
+    // `/credits` takes the ordinary key.
+    ROUTERAI_CREDITS_ALERT_RUB: z.coerce
+      .number()
+      .positive("ROUTERAI_CREDITS_ALERT_RUB must be greater than zero")
+      .default(300),
+    ROUTERAI_IMAGE_MODEL: trimmedValue.default(
+      "google/gemini-3.1-flash-lite-image"
+    ),
+    // Caps what one model step may write, reasoning included. Left unset it
+    // is 16,384 tokens, or 32,768 with reasoning on.
+    ROUTERAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().optional(),
+    ROUTERAI_MODEL: trimmedValue.default("deepseek/deepseek-v4.1-flash"),
+    ROUTERAI_MODEL_CONTEXT_TOKENS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(1_048_576),
+    // Upstream hosts, comma-separated. The order pins hosts for every model
+    // (unset, a DeepSeek model gets hosts that hold the prompt cache); the
+    // ignore list skips hosts on top of the ones the code always skips.
+    ROUTERAI_PROVIDER_IGNORE: trimmedValue.optional(),
+    ROUTERAI_PROVIDER_ORDER: trimmedValue.optional(),
+    ROUTERAI_REASONING_EFFORT: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .pipe(z.enum(["off", "low", "medium", "high"]))
+      .default("low"),
+    // `web_search` reads its plugin results with this model, unset the
+    // inference default, and asks the search engine for this many pages.
+    ROUTERAI_SEARCH_MAX_RESULTS: z.coerce
+      .number()
+      .int("ROUTERAI_SEARCH_MAX_RESULTS must be a whole number")
+      .min(1, "ROUTERAI_SEARCH_MAX_RESULTS must be at least 1")
+      .max(10, "ROUTERAI_SEARCH_MAX_RESULTS must be at most 10")
+      .default(5),
+    ROUTERAI_SEARCH_MODEL: trimmedValue.optional(),
+    // Voice notes go to RouterAI's `/audio/transcriptions`; the fallback
+    // model takes over when the first one rejects the clip, and the language
+    // is an ISO 639-1 hint, `auto` lets the model guess.
+    ROUTERAI_STT_FALLBACK_MODEL: trimmedValue.default(
+      "openai/whisper-large-v3-turbo"
+    ),
+    ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
+    ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
     // The code sandbox host on Cloud.ru (`sandbox/README.md`): its id, its
     // HTTPS origin (`https://<address with dashes>.sslip.io`), and the key
     // its token key and the sandbox tool router's token key are derived from
@@ -643,7 +712,8 @@ export const env = createEnv({
       .min(32, "USAGE_REPORT_TOKEN must be at least 32 characters")
       .optional(),
     // Roubles per dollar for costs billed in dollars (OpenRouter, Browser Use
-    // Cloud), converted when the cost is recorded.
+    // Cloud), converted when the cost is recorded. RouterAI bills roubles,
+    // which go through it the other way and come back unchanged.
     USAGE_USD_RUB: z.coerce
       .number()
       .positive("USAGE_USD_RUB must be greater than zero")
@@ -660,6 +730,31 @@ export const env = createEnv({
   },
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
+  // A provider chosen without its key would fail every turn with a 401 that
+  // names neither: the deployment fails to start instead.
+  createFinalSchema: (variables) =>
+    z.object(variables).superRefine((value, context) => {
+      if (
+        value.MODEL_PROVIDER === "routerai" &&
+        value.ROUTERAI_API_KEY === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "MODEL_PROVIDER=routerai needs ROUTERAI_API_KEY",
+          path: ["ROUTERAI_API_KEY"],
+        });
+      }
+      if (
+        value.MODEL_PROVIDER === "openrouter" &&
+        value.OPENROUTER_API_KEY === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "MODEL_PROVIDER=openrouter needs OPENROUTER_API_KEY",
+          path: ["OPENROUTER_API_KEY"],
+        });
+      }
+    }),
 });
 
 const authHostname = env.BETTER_AUTH_URL

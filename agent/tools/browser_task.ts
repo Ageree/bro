@@ -5,7 +5,7 @@ import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
-import { openRouterSelection } from "@agent/lib/model/openrouter";
+import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
@@ -71,7 +71,7 @@ import {
 } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { getWorkspaceModelId } from "@db/services/settings";
-import { openRouterActive } from "@shared/model/provider";
+import { directModelActive } from "@shared/model/provider";
 import {
   type BrowserSubmission,
   browserSubmissionSchema,
@@ -2471,8 +2471,8 @@ async function paymentUnanswered(
     return paymentQuestionRefusal(chargeRub);
   try {
     const modelId = await getWorkspaceModelId(scope);
-    const selection = openRouterActive()
-      ? openRouterSelection(modelId, { toolChoice: "none" })
+    const selection = directModelActive()
+      ? directModelSelection(modelId, { toolChoice: "none" })
       : null;
     const { output } = await generateText({
       abortSignal: AbortSignal.timeout(20_000),

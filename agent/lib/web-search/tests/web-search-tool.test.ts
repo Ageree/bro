@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 describe("web_search tool selection", () => {
-  it("keeps eve's provider-managed search when OpenRouter is inactive", async () => {
+  it("keeps eve's provider-managed search when no direct backend serves the model", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
 
     const tool = await loadTool();
@@ -73,7 +73,17 @@ describe("web_search tool selection", () => {
     // Resolved per turn, so Bro's own mail checks can go without it
     // (`tests/agent/capabilities.test.ts` covers which modes get it).
     expect(tool.default).toMatchObject({ kind: "eve:dynamic" });
-    expect(tool.openRouterWebSearch.execute).toBeTypeOf("function");
+    expect(tool.directWebSearch.execute).toBeTypeOf("function");
+  });
+
+  it("uses the function tool on RouterAI too", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    vi.stubEnv("MODEL_PROVIDER", "routerai");
+    vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+
+    const tool = await loadTool();
+
+    expect(tool.default).toMatchObject({ kind: "eve:dynamic" });
   });
 
   it("lists the results it found", async () => {
@@ -108,10 +118,10 @@ describe("web_search tool selection", () => {
       )
     );
 
-    const { openRouterWebSearch } = await loadTool();
+    const { directWebSearch } = await loadTool();
 
     expect(
-      await openRouterWebSearch.execute({ query: "ставка" }, toolContext())
+      await directWebSearch.execute({ query: "ставка" }, toolContext())
     ).toBe(
       [
         "1. Rate decision",
@@ -151,8 +161,8 @@ describe("web_search tool selection", () => {
         )
     );
     const search = async (query: string, sites?: string[]) => {
-      const { openRouterWebSearch } = await loadTool();
-      return await openRouterWebSearch.execute({ query, sites }, toolContext());
+      const { directWebSearch } = await loadTool();
+      return await directWebSearch.execute({ query, sites }, toolContext());
     };
 
     // RU 25.09, d13: «найди мне поезд до казани на следующие выходные».
@@ -278,9 +288,9 @@ describe("web_search tool selection", () => {
           })
         )
     );
-    const { openRouterWebSearch } = await loadTool();
+    const { directWebSearch } = await loadTool();
     const search = (query: string) =>
-      openRouterWebSearch.execute({ query }, toolContext());
+      directWebSearch.execute({ query }, toolContext());
 
     const pick = await search(
       "где поужинать Чистые пруды ресторан вегетарианское меню"
@@ -363,9 +373,9 @@ describe("web_search tool selection", () => {
           })
         )
     );
-    const { openRouterWebSearch } = await loadTool();
+    const { directWebSearch } = await loadTool();
 
-    const pick = await openRouterWebSearch.execute(
+    const pick = await directWebSearch.execute(
       { query: "ресторан Чистые пруды вегетарианское меню не сеть" },
       toolContext()
     );
@@ -401,7 +411,7 @@ describe("web_search tool selection", () => {
 
     // A narrow search for one place's bill is part of the pick too.
     expect(
-      await openRouterWebSearch.execute(
+      await directWebSearch.execute(
         { query: "Kiosk 1936 средний чек", sites: ["yandex.ru/maps"] },
         toolContext()
       )
@@ -439,9 +449,9 @@ describe("web_search tool selection", () => {
           })
         )
     );
-    const { openRouterWebSearch } = await loadTool();
+    const { directWebSearch } = await loadTool();
 
-    const note = await openRouterWebSearch.execute(
+    const note = await directWebSearch.execute(
       { query: "сапсан Москва Петербург 2 октября места у окна" },
       toolContext()
     );
@@ -463,11 +473,8 @@ describe("web_search tool selection", () => {
         new Response(JSON.stringify({ error: "upstream" }), { status: 503 })
     );
 
-    const { openRouterWebSearch } = await loadTool();
-    const pending = openRouterWebSearch.execute(
-      { query: "ставка" },
-      toolContext()
-    );
+    const { directWebSearch } = await loadTool();
+    const pending = directWebSearch.execute({ query: "ставка" }, toolContext());
     await vi.runAllTimersAsync();
 
     const text = await pending;
@@ -486,8 +493,8 @@ describe("web_search tool selection", () => {
     timeout.name = "TimeoutError";
     fetchMock.mockRejectedValue(timeout);
 
-    const { openRouterWebSearch } = await loadTool();
-    const pending = openRouterWebSearch.execute(
+    const { directWebSearch } = await loadTool();
+    const pending = directWebSearch.execute(
       { query: "ставка", sites: ["2gis.ru"] },
       toolContext()
     );

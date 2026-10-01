@@ -10,7 +10,10 @@
 export const inlineImageByteCap = 3 * 1024 * 1024;
 /** Matches the Telegram channel's `uploadPolicy` for PDFs. */
 export const pdfByteCap = 10 * 1024 * 1024;
-/** OpenRouter's transcription endpoint stops accepting audio around here. */
+/**
+ * OpenRouter's transcription endpoint stops accepting audio around here.
+ * RouterAI's limit was not measured, so the same cap applies there.
+ */
 export const audioByteCap = 25 * 1024 * 1024;
 
 function ascii(bytes: Uint8Array, offset: number, length: number) {

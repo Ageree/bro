@@ -5,7 +5,7 @@ import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
-import { openRouterActive } from "@shared/model/provider";
+import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 
 /**
@@ -32,9 +32,10 @@ export function keptData() {
  * cloud browser, which Bro never named.
  */
 export function dataProcessors(modelId: string) {
+  const direct = directModelProviderName();
   return [
-    openRouterActive()
-      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через OpenRouter к провайдеру, который эту модель запускает. Голосовые сообщения распознаёт и картинки рисует тоже модель через OpenRouter, а запросы веб-поиска OpenRouter передаёт поисковикам Exa и Perplexity.`
+    direct !== undefined
+      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${direct} передаёт поисковикам Exa и Perplexity.`
       : `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через Vercel AI Gateway к её провайдеру.`,
     ...(env.BROWSER_USE_API_KEY === undefined
       ? []

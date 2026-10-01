@@ -13,8 +13,8 @@ const calls = vi.hoisted(() => {
     generate:
       vi.fn<() => Promise<{ output: { violatedRuleIndex: number | null } }>>(),
     rules: vi.fn<() => Promise<{ index: number; text: string }[]>>(),
-    openRouterActive: vi.fn<() => boolean>(),
-    openRouterSelection: vi.fn<() => typeof selection>(() => selection),
+    directModelActive: vi.fn<() => boolean>(),
+    directModelSelection: vi.fn<() => typeof selection>(() => selection),
   };
 });
 
@@ -29,10 +29,10 @@ vi.mock("@db/services/settings", () => ({
   getWorkspaceModelId: async () => "openai/gpt-5.6-sol-fast",
 }));
 vi.mock("@shared/model/provider", () => ({
-  openRouterActive: calls.openRouterActive,
+  directModelActive: calls.directModelActive,
 }));
-vi.mock("@agent/lib/model/openrouter", () => ({
-  openRouterSelection: calls.openRouterSelection,
+vi.mock("@agent/lib/model/direct", () => ({
+  directModelSelection: calls.directModelSelection,
 }));
 
 import { outboundRuleApproval } from "./rule-approval";
@@ -47,7 +47,7 @@ function context(authenticator = "photon-imessage") {
 beforeEach(() => {
   vi.clearAllMocks();
   calls.rules.mockResolvedValue([]);
-  calls.openRouterActive.mockReturnValue(false);
+  calls.directModelActive.mockReturnValue(false);
 });
 
 describe("outbound saved rules", () => {
@@ -73,7 +73,7 @@ describe("outbound saved rules", () => {
   });
 
   it("disables OpenRouter reasoning for the bounded classifier without losing rule zero", async () => {
-    calls.openRouterActive.mockReturnValue(true);
+    calls.directModelActive.mockReturnValue(true);
     calls.rules.mockResolvedValue([{ index: 0, text: "Never write Mum" }]);
     calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 0 } });
 

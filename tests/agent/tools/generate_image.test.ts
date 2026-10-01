@@ -36,7 +36,7 @@ vi.mock("@db/services/artifacts", () => ({
   readReadyArtifact: mocks.readArtifact,
 }));
 
-/** The OpenRouter Image API request this tool is expected to send. */
+/** The Image API request this tool is expected to send, on either provider. */
 const requestBodySchema = z.object({
   aspect_ratio: z.string().optional(),
   input_references: z
@@ -80,6 +80,8 @@ const request = Object.assign(
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  // A RouterAI case selects it itself; every other case runs on OpenRouter.
+  vi.stubEnv("MODEL_PROVIDER", "");
   vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
   vi.stubEnv("OPENROUTER_IMAGE_MODEL", "test/image-model");
   vi.stubGlobal("fetch", fetchMock);
@@ -118,12 +120,16 @@ afterEach(() => {
 });
 
 describe("generate_image", () => {
-  it("is offered only to interactive turns on a deployment with OpenRouter", async () => {
+  it("is offered only to interactive turns on a deployment with a direct provider", async () => {
     expect(await resolve(dynamicContext([], "scheduled-worker"))).toBeNull();
 
     vi.stubEnv("OPENROUTER_API_KEY", "");
     vi.resetModules();
-    expect(await resolve(dynamicContext([]))).toBeNull();
+    expect(await resolve(dynamicContext([request]))).toBeNull();
+
+    useRouterAi();
+    vi.resetModules();
+    expect(await resolve(dynamicContext([request]))).not.toBeNull();
   });
 
   it("is offered only when the person asked for a picture or sent a photo", async () => {
@@ -561,7 +567,84 @@ describe("generate_image", () => {
     );
     expect(mocks.save).not.toHaveBeenCalled();
   });
+
+  it("draws on RouterAI's /images/generations with the same body", async () => {
+    useRouterAi();
+    mocks.readArtifact.mockResolvedValue({
+      byteSize: earlierPicture.byteLength,
+      contentHash: sha256(earlierPicture),
+      filename: "picture.png",
+      id: earlierId,
+      mediaType: "image/png",
+      storagePathname: "generated-images/user-1/earlier",
+    });
+    mocks.get.mockResolvedValue(blobResult(earlierPicture, "image/png"));
+    const tool = await resolveTool(dynamicContext([request]));
+
+    const result = await execute(tool, {
+      aspectRatio: "16:9",
+      images: [`/artifacts/${earlierId}`],
+      prompt: "The same card, wider",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("https://routerai.ru/api/v1/images/generations");
+    // RouterAI takes no OpenRouter attribution headers.
+    expect(init?.headers).toEqual({
+      authorization: "Bearer routerai-test-key",
+      "content-type": "application/json",
+    });
+    const body = requestBodySchema.parse(JSON.parse(init?.body ?? "{}"));
+    expect(body).toMatchObject({
+      aspect_ratio: "16:9",
+      model: "routerai/image-model",
+      n: 1,
+    });
+    expect(body.input_references?.[0]?.image_url.url).toBe(
+      `data:image/png;base64,${Buffer.from(earlierPicture).toString("base64")}`
+    );
+    expect(mocks.save.mock.calls[0]?.[1]).toMatchObject({
+      model: "routerai/image-model",
+    });
+    expect(result).toMatchObject({ status: "ready" });
+  });
+
+  it("reads RouterAI's refusals, the ones under HTTP 200 included", async () => {
+    useRouterAi();
+    const tool = await resolveTool(dynamicContext([request]));
+
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        error: JSON.stringify({
+          error: { code: 400, message: "Request blocked by content policy" },
+          user_id: "user_1",
+        }),
+      })
+    );
+    await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
+      "The image model refused the request (400): Request blocked by content policy"
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      Response.json(
+        { error: "Model 'nosuch/model' not found" },
+        { status: 400 }
+      )
+    );
+    await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
+      "The image model refused the request (400): Model 'nosuch/model' not found"
+    );
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
 });
+
+function useRouterAi() {
+  vi.stubEnv("OPENROUTER_API_KEY", "");
+  vi.stubEnv("MODEL_PROVIDER", "routerai");
+  vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+  vi.stubEnv("ROUTERAI_IMAGE_MODEL", "routerai/image-model");
+}
 
 async function resolve(context: DynamicResolveContext) {
   const definition = (await import("@agent/tools/generate_image")).default;

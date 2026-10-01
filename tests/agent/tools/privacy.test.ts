@@ -56,7 +56,9 @@ const optionalServices = [
   "CLOUDRU_KEY_SECRET",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
+  "ROUTERAI_API_KEY",
   "SUPERMEMORY_API_KEY",
   "TELEGRAM_BOT_TOKEN",
   "YOOKASSA_SECRET_KEY",
@@ -137,6 +139,24 @@ describe("privacy", () => {
     );
     expect(remove).toContain("«забудь мои входы на сайты»");
     expect(remove).toContain("«не заходи больше в <сайт>»");
+  });
+
+  it("names RouterAI, not OpenRouter, once the model runs there", async () => {
+    const { facts } = await withServices({
+      MODEL_PROVIDER: "routerai",
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    const processors = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash")
+      .join("\n");
+
+    expect(processors).toContain(
+      "языковая модель deepseek/deepseek-v4.1-flash: запрос идёт через RouterAI"
+    );
+    expect(processors).toContain("веб-поиска RouterAI передаёт поисковикам");
+    expect(processors).not.toContain("OpenRouter");
+    expect(processors).not.toContain("Vercel AI Gateway");
   });
 
   it("says nothing of visits the deployment does not make", async () => {

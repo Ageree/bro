@@ -12,8 +12,8 @@ import { env } from "@shared/environment";
  * reaching the web only through the `tools` CLI. It never talks to the
  * person and sees nothing of theirs but what Bro puts in its message.
  *
- * Its model is resolved per step like Bro's own: the direct OpenRouter
- * handle cannot live in session state.
+ * Its model is resolved per step like Bro's own: the direct model's handle
+ * (RouterAI or OpenRouter) cannot live in session state.
  */
 export default defineAgent({
   compaction: { thresholdPercent: 0.7 },

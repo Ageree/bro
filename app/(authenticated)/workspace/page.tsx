@@ -37,7 +37,7 @@ import {
   readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
-import { openRouterActive } from "@shared/model/provider";
+import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 import { localMonthKey } from "@shared/calendar/local-period";
 import { resolveTimeZone } from "@shared/user-profile/schema";
@@ -121,7 +121,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       console.warn("[proactive] could not wake the checks", { cause: error });
     }
   }
-  const openRouter = openRouterActive();
+  const directProvider = directModelProviderName();
   const imageStorageReady = Boolean(
     env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
   );
@@ -253,10 +253,17 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
           </Row>
           <Row
             side={
-              <ModelSelector modelId={workspaceModel} openRouter={openRouter} />
+              <ModelSelector
+                modelId={workspaceModel}
+                provider={directProvider}
+              />
             }
           >
-            <p>{openRouter ? "Модель (OpenRouter)" : "Модель AI Gateway"}</p>
+            <p>
+              {directProvider === undefined
+                ? "Модель AI Gateway"
+                : `Модель (${directProvider})`}
+            </p>
             <p className="type-status text-muted-foreground">
               {workspaceModel}
             </p>

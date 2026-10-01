@@ -2,15 +2,15 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { defaultWebSearch } from "eve/tools/web_search";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { resolveModeValue } from "@agent/lib/mode";
-import { openRouterActive } from "@shared/model/provider";
+import { directModelActive } from "@shared/model/provider";
 import {
   searchWeb,
   type WebSearchInput,
   webSearchInputSchema,
   type WebSearchResult,
-} from "@agent/lib/web-search/openrouter";
+} from "@agent/lib/web-search/search";
 
-export const openRouterWebSearch = defineTool({
+export const directWebSearch = defineTool({
   description:
     "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns up to eight pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough. Search pages show timetables and typical fares, not what is on sale: for tickets, seats or rooms on given dates use browser_task when it is offered.",
   inputSchema: webSearchInputSchema,
@@ -176,28 +176,28 @@ function formatResults(results: readonly WebSearchResult[]) {
 /**
  * eve's `web_search` is provider-managed: an AI Gateway model searches through
  * Exa, and a direct-provider model is handed that provider's native search
- * tool. OpenRouter has neither, so eve emits the gateway tool as
- * `type: "gateway:exa_search"` into a chat-completions body that accepts only
- * `type: "function"`, and every turn fails validation. When OpenRouter owns
- * inference the agent therefore gets an ordinary function tool of our own.
+ * tool. RouterAI and OpenRouter have neither, so eve emits the gateway tool
+ * as `type: "gateway:exa_search"` into a chat-completions body that accepts
+ * only `type: "function"`, and every turn fails validation. When either owns
+ * inference the agent therefore gets an ordinary function tool of our own,
+ * which searches through that backend's `web` plugin.
  *
  * The choice is made once, at module load: eve rejects a provider-managed
  * definition returned from a dynamic resolver, which may only return
- * `defineTool()` values. `OPENROUTER_API_KEY` is present in the build
- * environment, so this is the same decision the runtime would make.
+ * `defineTool()` values. MODEL_PROVIDER and the backend's key are present in
+ * the build environment, so this is the same decision the runtime would make.
  *
- * The OpenRouter tool is ours, so it is withheld from Bro's own mail checks
- * and from report turns: a search query could carry what an untrusted email
- * asked it to. The gateway tool is provider-managed and cannot be gated per
- * mode.
+ * Our tool is withheld from Bro's own mail checks and from report turns: a
+ * search query could carry what an untrusted email asked it to. The gateway
+ * tool is provider-managed and cannot be gated per mode.
  */
-export default openRouterActive()
+export default directModelActive()
   ? defineDynamic({
       events: {
         "turn.started": (_event, context) =>
           resolveModeValue(context, {
-            interactive: { web_search: openRouterWebSearch },
-            "scheduled-worker": { web_search: openRouterWebSearch },
+            interactive: { web_search: directWebSearch },
+            "scheduled-worker": { web_search: directWebSearch },
           }),
       },
     })

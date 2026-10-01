@@ -1,5 +1,6 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
+  generateId,
   type JSONSchema7,
   type JSONValue,
   type LanguageModelMiddleware,
@@ -13,21 +14,12 @@ import {
   taggedStepNote,
 } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
-import { applicationOrigin } from "@shared/environment/origin";
+import { modelEndpoint } from "./endpoint";
+import { routerAiModelFetch } from "./routerai/fetch";
 import { watchedModelFetch } from "./stream-watchdog";
 
-const applicationName = "Bro";
-
-/**
- * OpenRouter attributes traffic on its dashboard from these headers, and the
- * provider package only sets its own `X-OpenRouter-Title` variant.
- */
-function attributionHeaders() {
-  return {
-    "HTTP-Referer": applicationOrigin(),
-    "X-Title": applicationName,
-  };
-}
+/** The direct backend a selection is built for (`endpoint.ts`). */
+type ModelEndpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
 
 /**
  * Hosts that make a tool call list its keys exactly in schema order. A union
@@ -62,28 +54,61 @@ const brokenHosts = [
 ];
 
 /**
+ * RouterAI's own DeepSeek endpoint, which its routing picks first for
+ * `deepseek/deepseek-v4.1-flash`, sent nothing but `: PROCESSING` for minutes
+ * on 01.10: one call of eight answered, after 901 s. Skipped, the first token
+ * came in 1.3–6 s. This holds in code, not only in ROUTERAI_PROVIDER_IGNORE:
+ * losing it would hang every turn until the watchdog's ceiling.
+ */
+const routerAiDeepSeekSkipped = ["deepseek"];
+
+/**
+ * RouterAI bills the endpoint that served a call and caches the prompt per
+ * endpoint. DeepInfra cached a 55k-token prefix of
+ * `deepseek/deepseek-v4.1-flash` whole on every repeat (01.10): a repeated
+ * step cost 0.031 ₽ there against 0.071 ₽ on Sail Research and gave each
+ * tool call its own id. OpenInference, where routing lands without an order,
+ * cached only 533 tokens. Sail Research caches as well but stays in
+ * `brokenHosts`: on 01.10 it broke off answer after answer, as on 24.09.
+ * A pinned host is never skipped by the lists above; one that fails an
+ * answer is skipped for a while (`routerai/hosts.ts`).
+ */
+const routerAiDeepSeekOrder = ["deepinfra"];
+
+/**
  * The hosts above were measured on DeepSeek only. Another model a workspace
  * picks may be served by one of them alone, and ignoring it there would
  * leave no endpoint at all.
  */
-function skippedHosts(modelId: string) {
-  return modelId.startsWith("deepseek/")
-    ? [...keyOrderedHosts, ...brokenHosts]
-    : [];
+function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
+  if (!modelId.startsWith("deepseek/")) return [];
+  return [
+    ...(endpoint.provider === "routerai" ? routerAiDeepSeekSkipped : []),
+    ...keyOrderedHosts,
+    ...brokenHosts,
+  ];
 }
 
 /**
- * `OPENROUTER_PROVIDER_ORDER=baseten,fireworks` pins the upstream hosts. Left
- * unset, OpenRouter keeps its own sticky routing, which preserves the prompt
- * cache across turns. A DeepSeek model skips the hosts above either way; a
- * pinned host stays pinned.
+ * `OPENROUTER_PROVIDER_ORDER=baseten,fireworks` (or ROUTERAI_PROVIDER_ORDER)
+ * pins the upstream hosts. Left unset, OpenRouter keeps its own sticky
+ * routing, which preserves the prompt cache across turns; on RouterAI a
+ * DeepSeek model gets the caching hosts above. A DeepSeek model skips the
+ * hosts above either way, and ROUTERAI_PROVIDER_IGNORE adds hosts to skip
+ * for every model; a pinned host stays pinned.
  */
-function providerRouting(modelId: string) {
+function providerRouting(modelId: string, endpoint: ModelEndpoint) {
   const order =
-    env.OPENROUTER_PROVIDER_ORDER?.split(",")
-      .map((slug) => slug.trim().toLowerCase())
-      .filter((slug) => slug.length > 0) ?? [];
-  const ignore = skippedHosts(modelId).filter((slug) => !order.includes(slug));
+    endpoint.providerOrder ??
+    (endpoint.provider === "routerai" && modelId.startsWith("deepseek/")
+      ? routerAiDeepSeekOrder
+      : []);
+  const ignore = [
+    ...new Set([
+      ...skippedHosts(modelId, endpoint),
+      ...endpoint.providerIgnore,
+    ]),
+  ].filter((slug) => !order.includes(slug));
   if (order.length > 0 && ignore.length > 0) return { ignore, order };
   if (order.length > 0) return { order };
   return ignore.length > 0 ? { ignore } : undefined;
@@ -93,12 +118,15 @@ function providerRouting(modelId: string) {
  * eve's provider-agnostic `reasoning` effort never reaches OpenRouter: the
  * provider package builds its request body from its own settings and ignores
  * that call option. Reasoning therefore travels as an OpenRouter provider
- * option. The default is low for source-grounded comparison, accepting the
- * extra hidden tokens and latency. Explicit `off` uses `enabled: false`, the
- * only switch the model honors for disabling reasoning.
+ * option, which RouterAI reads the same way. The default is low for
+ * source-grounded comparison, accepting the extra hidden tokens and latency.
+ * Explicit `off` uses `enabled: false`, the only switch the model honors for
+ * disabling reasoning (RouterAI still bills hidden reasoning tokens under
+ * `include_reasoning: false`).
  */
-function reasoningOptions(): AgentModelOptionsDefinition {
-  const effort = env.OPENROUTER_REASONING_EFFORT;
+function reasoningOptions(
+  effort: ModelEndpoint["reasoningEffort"]
+): AgentModelOptionsDefinition {
   if (effort === "off") {
     return {
       providerOptions: { openrouter: { reasoning: { enabled: false } } },
@@ -819,10 +847,10 @@ function silentEndMiddleware(): LanguageModelMiddleware {
  * or a browser task written out in full. Reasoning tokens count against the
  * same limit, so a thinking step gets twice that.
  */
-function maxOutputTokens() {
+function maxOutputTokens(endpoint: ModelEndpoint) {
   return (
-    env.OPENROUTER_MAX_OUTPUT_TOKENS ??
-    (env.OPENROUTER_REASONING_EFFORT === "off" ? 16_384 : 32_768)
+    endpoint.maxOutputTokens ??
+    (endpoint.reasoningEffort === "off" ? 16_384 : 32_768)
   );
 }
 
@@ -837,8 +865,137 @@ function outputCapMiddleware(limit: number): LanguageModelMiddleware {
   };
 }
 
-/** eve model selection that calls OpenRouter directly instead of the Gateway. */
-export function openRouterSelection(
+/** What the provider package reports a call cost, in the backend's currency. */
+const reportedCostSchema = z.object({
+  usage: z.object({ cost: z.number().nonnegative() }).loose(),
+});
+
+/** A step's provider metadata, as middleware sees it. */
+type ProviderMetadata = Awaited<
+  ReturnType<NonNullable<LanguageModelMiddleware["wrapGenerate"]>>
+>["providerMetadata"];
+
+function withGatewayCost(
+  metadata: ProviderMetadata,
+  toUsd: (cost: number) => number
+): ProviderMetadata {
+  const reported = reportedCostSchema.safeParse(metadata?.openrouter);
+  if (!reported.success) return metadata;
+  return {
+    ...metadata,
+    gateway: { ...metadata?.gateway, cost: toUsd(reported.data.usage.cost) },
+  };
+}
+
+/**
+ * A step's price where eve reads it. eve 0.62 takes a step's `costUsd` only
+ * from `providerMetadata.gateway.cost` (`extractGatewayCostUsd` in
+ * `eve/dist/src/harness/step-hooks.js`), and the provider package reports it
+ * at `providerMetadata.openrouter.usage.cost`, so a direct step reached
+ * `usage_costs` unpriced. RouterAI's cost is roubles: it goes to eve as
+ * dollars at USAGE_USD_RUB, which `agent/hooks/usage-costs.ts` multiplies
+ * back, so the step's roubles are RouterAI's bill. The dollars in
+ * `chats.cost_usd` are at that rate too, not at RouterAI's own.
+ */
+function stepCostMiddleware(
+  toUsd: (cost: number) => number
+): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate }) {
+      const result = await doGenerate();
+      return {
+        ...result,
+        providerMetadata: withGatewayCost(result.providerMetadata, toUsd),
+      };
+    },
+    async wrapStream({ doStream }) {
+      const result = await doStream();
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            controller.enqueue(
+              part.type === "finish"
+                ? {
+                    ...part,
+                    providerMetadata: withGatewayCost(
+                      part.providerMetadata,
+                      toUsd
+                    ),
+                  }
+                : part
+            );
+          },
+        })
+      );
+      return { ...result, stream };
+    },
+  };
+}
+
+/**
+ * Sail Research, which served DeepSeek first on RouterAI, numbers a step's tool
+ * calls from zero (`call_0`, `call_1`), so every step of a turn reuses the
+ * same ids (01.10), and a host RouterAI falls back to may too. eve, AI SDK and the turn's own readers
+ * (`agent/lib/delivery/turn-sends.ts`, `claims.ts`, `turn-reads.ts`) pair a
+ * result with its call by that id across the whole turn: a `calculate` and
+ * the `send_message` after it both were `call_0`, and the reply counted as
+ * the calculation. Each call gets an id of its own here, the same for every
+ * part of one streamed call.
+ */
+function uniqueToolCallIdsMiddleware(): LanguageModelMiddleware {
+  return {
+    async wrapGenerate({ doGenerate }) {
+      const result = await doGenerate();
+      const ids = new Map<string, string>();
+      for (const part of result.content) {
+        if (part.type === "tool-call" || part.type === "tool-result") {
+          part.toolCallId = uniqueCallId(ids, part.toolCallId);
+        }
+      }
+      return result;
+    },
+    async wrapStream({ doStream }) {
+      const result = await doStream();
+      const ids = new Map<string, string>();
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (part.type === "tool-call" || part.type === "tool-result") {
+              controller.enqueue({
+                ...part,
+                toolCallId: uniqueCallId(ids, part.toolCallId),
+              });
+            } else if (
+              part.type === "tool-input-start" ||
+              part.type === "tool-input-delta" ||
+              part.type === "tool-input-end"
+            ) {
+              controller.enqueue({ ...part, id: uniqueCallId(ids, part.id) });
+            } else {
+              controller.enqueue(part);
+            }
+          },
+        })
+      );
+      return { ...result, stream };
+    },
+  };
+}
+
+/** The id one step gives a host's call id, made once per step. */
+function uniqueCallId(ids: Map<string, string>, hostId: string) {
+  const known = ids.get(hostId);
+  if (known !== undefined) return known;
+  const id = `call_${generateId()}`;
+  ids.set(hostId, id);
+  return id;
+}
+
+/**
+ * eve model selection that calls the direct provider (`endpoint.ts`:
+ * RouterAI or OpenRouter) instead of the Gateway.
+ */
+export function directModelSelection(
   modelId: string,
   options: {
     /**
@@ -862,21 +1019,27 @@ export function openRouterSelection(
     readonly withheldTools?: readonly string[];
   }
 ) {
-  const openrouter = createOpenRouter({
-    apiKey: env.OPENROUTER_API_KEY,
+  const endpoint = modelEndpoint();
+  if (endpoint === undefined) {
+    throw new Error("No direct model provider is configured.");
+  }
+  const routerAi = endpoint.provider === "routerai";
+  const provider = createOpenRouter({
+    apiKey: endpoint.apiKey,
+    baseURL: endpoint.baseURL,
     // A connection that went silent is sent again after 90 s instead of
-    // holding the turn for undici's five minutes (`stream-watchdog.ts`).
-    fetch: watchedModelFetch,
-    headers: attributionHeaders(),
+    // holding the turn for undici's five minutes (`stream-watchdog.ts`);
+    // RouterAI's errors are put in the shape the package reads first.
+    fetch: routerAi ? routerAiModelFetch : watchedModelFetch,
+    headers: endpoint.headers,
   });
-  const model = openrouter.chat(modelId, {
-    provider: providerRouting(modelId),
+  const model = provider.chat(modelId, {
+    provider: providerRouting(modelId, endpoint),
   });
   // OpenRouter sends `required` to Anthropic as a forced tool call, which
   // Anthropic rejects while extended thinking is on. `none` is accepted.
   const forcedToolAllowed =
-    !modelId.startsWith("anthropic/") ||
-    env.OPENROUTER_REASONING_EFFORT === "off";
+    !modelId.startsWith("anthropic/") || endpoint.reasoningEffort === "off";
   const toolChoice =
     options.toolChoice === "required" && !forcedToolAllowed
       ? "auto"
@@ -884,6 +1047,7 @@ export function openRouterSelection(
 
   const withheld = options.withheldTools ?? [];
   const middleware = [
+    ...(routerAi ? [stepCostMiddleware((rub) => rub / env.USAGE_USD_RUB)] : []),
     toolSchemaMiddleware(),
     ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
     ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
@@ -902,7 +1066,8 @@ export function openRouterSelection(
       : options.delivered
         ? [quietEndMiddleware()]
         : []),
-    outputCapMiddleware(maxOutputTokens()),
+    outputCapMiddleware(maxOutputTokens(endpoint)),
+    ...(routerAi ? [uniqueToolCallIdsMiddleware()] : []),
     // Innermost: what it drops is never seen by the middleware above.
     ...(toolChoice === "none" ? [noToolCallsMiddleware()] : []),
   ];
@@ -910,8 +1075,8 @@ export function openRouterSelection(
   return {
     model: wrapLanguageModel({ middleware, model }),
     // eve resolves an omitted context window from the AI Gateway catalog,
-    // which does not list OpenRouter model ids.
-    modelContextWindowTokens: env.OPENROUTER_MODEL_CONTEXT_TOKENS,
-    modelOptions: reasoningOptions(),
+    // which does not list OpenRouter or RouterAI model ids.
+    modelContextWindowTokens: endpoint.contextTokens,
+    modelOptions: reasoningOptions(endpoint.reasoningEffort),
   };
 }

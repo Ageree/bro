@@ -1,16 +1,22 @@
 import { z } from "zod";
-import { env } from "@shared/environment";
-import { applicationOrigin } from "@shared/environment/origin";
+import { modelEndpoint } from "@agent/lib/model/endpoint";
+import {
+  failureStatus,
+  reportedErrorSchema,
+} from "@agent/lib/model/routerai/errors";
 import { cafCodec, cafOpusToOgg } from "./caf-opus";
 import { audioByteCap, baseMediaType, sniffMediaType } from "./media-type";
 
 /**
- * Speech to text through OpenRouter's audio endpoint. Bake-off 2026-09-03 on
- * Russian assistant notes (digits, times, brands): Qwen3-ASR-Flash 0.011
- * number-normalised WER at about 1.5 s per clip, GPT-4o Transcribe 0.033 as
- * the quality fallback. Both take m4a and ogg.
+ * Speech to text through the direct model provider's
+ * `/audio/transcriptions`. OpenRouter takes the clip as JSON `input_audio`;
+ * RouterAI takes the OpenAI multipart form (`file`, `model`, `language`) and
+ * answered every speech model of its catalogue that way (probes of 01.10).
+ * Bake-off 2026-09-03 on Russian assistant notes (digits, times, brands):
+ * Qwen3-ASR-Flash 0.011 number-normalised WER at about 1.5 s per clip,
+ * GPT-4o Transcribe 0.033 as the quality fallback. Both take m4a and ogg.
  */
-const transcriptionsUrl = "https://openrouter.ai/api/v1/audio/transcriptions";
+const transcriptionsPath = "/audio/transcriptions";
 const requestTimeoutMs = 20_000;
 /**
  * The whole chain, primary and fallback together, must finish inside this
@@ -73,10 +79,23 @@ function extensionOf(filename: string | undefined) {
   return dot >= 0 && filename ? filename.slice(dot).toLowerCase() : undefined;
 }
 
+/** The media type a multipart `file` part declares for each format. */
+const mediaTypeByFormat: ReadonlyMap<string, string> = new Map([
+  ["aac", "audio/aac"],
+  ["flac", "audio/flac"],
+  ["m4a", "audio/mp4"],
+  ["mp3", "audio/mpeg"],
+  ["ogg", "audio/ogg"],
+  ["wav", "audio/wav"],
+  ["webm", "audio/webm"],
+]);
+
 /**
- * The `input_audio.format` OpenRouter expects, from the bytes first and the
- * declared type or file name second. A declared audio type with no known
- * container is sent as m4a, the most common phone recording.
+ * The clip's format as the provider names it (OpenRouter's
+ * `input_audio.format`, the file extension of RouterAI's upload), from the
+ * bytes first and the declared type or file name second. A declared audio
+ * type with no known container is sent as m4a, the most common phone
+ * recording.
  */
 export function transcriptionFormat(audio: InboundAudio) {
   const sniffed = sniffMediaType(audio.bytes);
@@ -91,15 +110,12 @@ export function transcriptionFormat(audio: InboundAudio) {
   return declared?.startsWith("audio/") === true ? "m4a" : undefined;
 }
 
-// OpenRouter answers a rejected clip either with `{ error: "..." }` or with
-// the OpenAI-style `{ error: { message } }` object.
-const transcriptionErrorSchema = z.union([
-  z.string().transform((message) => ({ message })),
-  z.object({ message: z.string().optional() }),
-]);
-
+// A rejected clip comes back as the OpenAI-style `{ error: { message } }`, as
+// `{ error: "text" }`, or, from RouterAI, as `{ error: "<the upstream's JSON
+// answer as text>" }` whose `code` is the real status, often under HTTP 200.
 const transcriptionResponseSchema = z.object({
-  error: transcriptionErrorSchema.nullish(),
+  error: reportedErrorSchema.nullish(),
+  id: z.string().optional(),
   text: z.string().optional(),
   usage: z
     .object({ cost: z.number().optional(), seconds: z.number().optional() })
@@ -112,10 +128,17 @@ type ParsedTranscription =
   | {
       readonly kind: "text";
       readonly cost: number | undefined;
+      /** Looks the cost up in `/generation` when the answer carries none. */
+      readonly generationId: string | undefined;
       readonly seconds: number | undefined;
       readonly text: string;
     }
-  | { readonly kind: "error"; readonly message: string };
+  | {
+      readonly kind: "error";
+      readonly message: string;
+      /** The HTTP failure status the error's own code names, if any. */
+      readonly status?: number | undefined;
+    };
 
 /** Reads one transcription response body; an unparseable body is an error. */
 export function parseTranscriptionResponse(body: string): ParsedTranscription {
@@ -127,10 +150,12 @@ export function parseTranscriptionResponse(body: string): ParsedTranscription {
   }
   if (json.error !== undefined && json.error !== null) {
     const message = json.error.message?.trim();
+    const status = failureStatus(json.error.code);
     return {
       kind: "error",
       message:
         message !== undefined && message.length > 0 ? message : "stt error",
+      status,
     };
   }
   if (json.text === undefined) {
@@ -140,6 +165,7 @@ export function parseTranscriptionResponse(body: string): ParsedTranscription {
   if (text.length === 0) return { kind: "error", message: "empty transcript" };
   return {
     cost: json.usage?.cost,
+    generationId: json.id,
     kind: "text",
     seconds: json.usage?.seconds,
     text,
@@ -167,58 +193,83 @@ export function shouldRetryWithFallback(
   return false;
 }
 
-/** Voice notes can be transcribed only when the OpenRouter key is set. */
+/** Voice notes are transcribed only by a direct provider, not the Gateway. */
 export function transcriptionAvailable() {
-  return env.OPENROUTER_API_KEY !== undefined;
+  return modelEndpoint() !== undefined;
 }
 
-function transcriptionLanguage() {
-  const language = env.OPENROUTER_STT_LANGUAGE;
+type Endpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
+
+function transcriptionLanguage(endpoint: Endpoint) {
+  const language = endpoint.sttLanguage;
   return language.toLowerCase() === "auto" ? undefined : language;
 }
 
 /** The body OpenRouter's transcription endpoint receives for one clip. */
-interface TranscriptionRequest {
+interface OpenRouterTranscriptionRequest {
   input_audio: { data: string; format: string };
   language?: string;
   model: string;
   temperature: number;
 }
 
-type TranscriptionAttempt =
-  | {
-      readonly ok: true;
-      readonly cost?: number;
-      readonly seconds?: number;
-      readonly text: string;
-    }
-  | { readonly ok: false; readonly error: string; readonly status?: number };
-
-async function transcribeOnce(
-  apiKey: string,
+/** The clip in the body this provider's transcription endpoint takes. */
+function transcriptionBody(
+  endpoint: Endpoint,
   model: string,
-  data: string,
-  format: string,
-  timeoutMs: number
-): Promise<TranscriptionAttempt> {
-  const body: TranscriptionRequest = {
-    input_audio: { data, format },
+  audio: PreparedAudio
+) {
+  const language = transcriptionLanguage(endpoint);
+  if (endpoint.provider === "routerai") {
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([Buffer.from(audio.bytes)], {
+        type: mediaTypeByFormat.get(audio.format) ?? "application/octet-stream",
+      }),
+      `voice.${audio.format}`
+    );
+    form.append("model", model);
+    if (language) form.append("language", language);
+    form.append("temperature", "0");
+    // fetch writes the multipart content type with its boundary itself.
+    return { body: form, contentType: undefined };
+  }
+  const body: OpenRouterTranscriptionRequest = {
+    input_audio: {
+      data: Buffer.from(audio.bytes).toString("base64"),
+      format: audio.format,
+    },
     model,
     temperature: 0,
   };
-  const language = transcriptionLanguage();
   if (language) body.language = language;
+  return {
+    body: JSON.stringify(body),
+    contentType: "application/json",
+  };
+}
+
+type TranscriptionAttempt =
+  | (Extract<ParsedTranscription, { kind: "text" }> & { readonly ok: true })
+  | { readonly ok: false; readonly error: string; readonly status?: number };
+
+async function transcribeOnce(
+  endpoint: Endpoint,
+  model: string,
+  audio: PreparedAudio,
+  timeoutMs: number
+): Promise<TranscriptionAttempt> {
+  const { body, contentType } = transcriptionBody(endpoint, model, audio);
+  const headers = new Headers(endpoint.headers);
+  headers.set("authorization", `Bearer ${endpoint.apiKey}`);
+  if (contentType) headers.set("content-type", contentType);
   let response: Response;
   let text: string;
   try {
-    response = await fetch(transcriptionsUrl, {
-      body: JSON.stringify(body),
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-        "HTTP-Referer": applicationOrigin(),
-        "X-Title": "Bro",
-      },
+    response = await fetch(`${endpoint.baseURL}${transcriptionsPath}`, {
+      body,
+      headers,
       method: "POST",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -231,7 +282,10 @@ async function transcribeOnce(
   }
   const parsed = parseTranscriptionResponse(text);
   if (parsed.kind === "error") {
-    return { error: parsed.message, ok: false, status: response.status };
+    // An error under HTTP 200 is a failure still: its own code is the
+    // status, and one without a code reads as an upstream failure.
+    const status = response.ok ? (parsed.status ?? 502) : response.status;
+    return { error: parsed.message, ok: false, status };
   }
   if (!response.ok) {
     return {
@@ -240,21 +294,19 @@ async function transcribeOnce(
       status: response.status,
     };
   }
-  return {
-    cost: parsed.cost,
-    ok: true,
-    seconds: parsed.seconds,
-    text: parsed.text,
-  };
+  return { ...parsed, ok: true };
 }
 
-/** Bytes and format as OpenRouter takes them; CAF Opus is remuxed to Ogg. */
-function prepareAudio(audio: InboundAudio):
-  | {
-      readonly kind: "audio";
-      readonly bytes: Uint8Array;
-      readonly format: string;
-    }
+interface PreparedAudio {
+  readonly bytes: Uint8Array;
+  readonly format: string;
+}
+
+/** Bytes and format as the provider takes them; CAF Opus is remuxed to Ogg. */
+function prepareAudio(
+  audio: InboundAudio
+):
+  | (PreparedAudio & { readonly kind: "audio" })
   | { readonly kind: "failed"; readonly reason: string } {
   const format = transcriptionFormat(audio);
   if (format === undefined) return { kind: "failed", reason: "not audio" };
@@ -278,9 +330,9 @@ function prepareAudio(audio: InboundAudio):
 export async function transcribeAudio(
   audio: InboundAudio
 ): Promise<TranscriptionResult> {
-  const apiKey = env.OPENROUTER_API_KEY;
-  if (apiKey === undefined) {
-    return { kind: "failed", reason: "missing OPENROUTER_API_KEY" };
+  const endpoint = modelEndpoint();
+  if (endpoint === undefined) {
+    return { kind: "failed", reason: "no direct model provider" };
   }
   if (audio.bytes.byteLength > audioByteCap) {
     return { kind: "failed", reason: "oversize" };
@@ -290,9 +342,8 @@ export async function transcribeAudio(
 
   const startedAt = Date.now();
   const deadline = startedAt + transcriptionBudgetMs;
-  const data = Buffer.from(prepared.bytes).toString("base64");
-  const primary = env.OPENROUTER_STT_MODEL;
-  const fallback = env.OPENROUTER_STT_FALLBACK_MODEL;
+  const primary = endpoint.sttModel;
+  const fallback = endpoint.sttFallbackModel;
   const models = fallback === primary ? [primary] : [primary, fallback];
 
   let lastReason = "stt failed";
@@ -306,16 +357,18 @@ export async function transcribeAudio(
     lastModel = model;
     // oxlint-disable-next-line eslint/no-await-in-loop -- The fallback model runs only after the primary answered.
     const attempt = await transcribeOnce(
-      apiKey,
+      endpoint,
       model,
-      data,
-      prepared.format,
+      prepared,
       Math.max(1, Math.min(requestTimeoutMs, remainingMs))
     );
     if (attempt.ok) {
       console.info("[inbound-media] voice transcribed", {
         chars: attempt.text.length,
         cost: attempt.cost,
+        // RouterAI bills in roubles, OpenRouter in dollars.
+        costCurrency: endpoint.costCurrency,
+        generationId: attempt.generationId,
         model,
         ms: Date.now() - startedAt,
         seconds: attempt.seconds,
@@ -330,6 +383,7 @@ export async function transcribeAudio(
     if (!retry) break;
   }
   console.warn("[inbound-media] voice transcription failed", {
+    backend: endpoint.provider,
     model: lastModel,
     reason: lastReason,
   });

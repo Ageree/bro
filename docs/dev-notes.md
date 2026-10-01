@@ -137,6 +137,9 @@
   (`setpriv --reuid=postgres`, данные вне `/tmp/claude-0`), `pnpm db:migrate` и
   `eve eval agent --tag <тег>` с `DATABASE_URL`,
   `BETTER_AUTH_URL=http://127.0.0.1:9`, `NODE_ENV=development`.
+  `agent` здесь — префикс путей: `eve eval agent <id>` гоняет весь набор.
+  `eve dev` при старте продолжает незаконченные ходы из `.eve/.workflow-data`
+  (и платит за них): прерванный прогон перед следующим уберите оттуда.
 
 ## Composio: Google, Notion, Slack и другие приложения
 
@@ -160,7 +163,7 @@
 ## Ход и доставка
 
 - В eve нет `toolChoice`: `send_message` форсирует резолвер модели на
-  `step.started` (`agent/agent.ts`, `agent/lib/model/openrouter.ts`), пока
+  `step.started` (`agent/agent.ts`, `agent/lib/model/direct.ts`), пока
   сообщение человека без ответа (`agent/lib/delivery/pending.ts`). Не
   форсируются шаги после десятого, `anthropic/*` с reasoning (отвергает), ход
   `browser-result` после первого шага, шаг после упавшего `send_message` и
@@ -188,11 +191,36 @@
 - Промпт, который Бро пишет сам себе, начинается с `backgroundTurnMarker`
   (`shared/chat/background-turn.ts`): веб его прячет, язык по нему не берётся.
 
-## OpenRouter
+## OpenRouter и RouterAI
 
+- Прямой провайдер выбирает `MODEL_PROVIDER` (`shared/model/provider.ts`), без
+  него — OpenRouter по ключу, иначе Gateway. RouterAI — тот же API OpenRouter
+  (провайдер AI SDK тот же, другой `baseURL`, `agent/lib/model/endpoint.ts`).
+- RouterAI: `deepseek/*` без `provider.ignore: ["deepseek"]` висит на
+  официальной точке DeepSeek (ответ через 900 с), поэтому `ignore` — в коде
+  (`direct.ts`), не только в env. Кэш и цена зависят от хоста (до 15 раз):
+  первым закреплён `deepinfra` (`routerAiDeepSeekOrder`): кэширует весь
+  префикс, повторный шаг вдвое дешевле `sail-research`. Тот тоже кэширует, но
+  01.10 рвал ответ за ответом (как 24.09) — остаётся в `brokenHosts`; хосты в
+  `order` эти списки не пропускают. `sail-research` к тому же нумерует вызовы
+  шага с `call_0`, и читатели хода по `toolCallId` путали вызовы — id
+  перевыдаёт `uniqueToolCallIdsMiddleware`.
+- RouterAI не переводит вызов на следующий хост `order`, если ответ уже пошёл:
+  сбой приходит в конце (`finish_reason: "error"` или «Upstream error from
+  …»), а повтор шага eve шёл на тот же хост, и ход висел до таймаута.
+  `agent/lib/model/routerai/` читает ответ целиком, упавший закреплённый хост
+  переносит в `ignore` на 10 минут (`hosts.ts`) и сразу повторяет вызов.
+- RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
+  SSE `data:{"error":…}`; без `routerai/fetch.ts` провайдер AI SDK принимал их
+  за пустой ответ, и «скоро вернусь» не видел 402/429/5xx.
+- RouterAI: `usage.cost` и `/credits` — в рублях. eve 0.62 берёт цену шага лишь
+  из `gateway.cost`, туда кладётся рубли ÷ `USAGE_USD_RUB` (`direct.ts`); шаги
+  OpenRouter пишутся без цены.
 - Модель по умолчанию — `deepseek/deepseek-v4.1-flash`
   (`shared/environment/env.ts`); в Vercel она не задана, кабинет её не меняет.
-- Хосты DeepSeek в `provider.ignore` (`agent/lib/model/openrouter.ts`):
+  Подсказки id в кабинете — свои у каждого провайдера (`model-selector.tsx`):
+  в `/models` RouterAI есть не все id OpenRouter.
+- Хосты DeepSeek в `provider.ignore` (`agent/lib/model/direct.ts`):
   `brokenHosts` (при `required` шлют `{}` или ломают вызов) и `keyOrderedHosts`;
   ветку union часть хостов выбирает по первому ключу (`discriminatorsFirst`).
   После правки гоняйте эвалы `schedules` и `reply`.
@@ -208,11 +236,12 @@
   (`agent/tools/ask_question.ts`).
 - `watchedModelFetch` (`agent/lib/model/stream-watchdog.ts`): тишина 90 с — один
   повтор до первого `data:`, нет `data:` 240 с (480 с с reasoning) — сбой;
-  комментарии `: OPENROUTER PROCESSING` — жизнь, в них идёт рассуждение.
+  комментарии (`: OPENROUTER PROCESSING`, у RouterAI `: PROCESSING`) — жизнь,
+  в них идёт рассуждение.
 - Мини-классификатор сохранённых правил с JSON-ответом и лимитом 96 токенов
   не должен наследовать reasoning основного агента: он съедает тот же бюджет и
   может оставить ответ пустым. Явный `reasoning.enabled=false` только в его
-  OpenRouter-вызове (`agent/lib/memory/rule-approval.ts`) сохраняет fail-closed
+  прямом вызове (`agent/lib/memory/rule-approval.ts`) сохраняет fail-closed
   проверку правил, а не обходит её.
 - Слабые модели заполняют каждый необязательный параметр: пустое и `*` там —
   пропуск (`givenScope`). gpt-6-luna после доставки отвечает пустым шагом, и eve

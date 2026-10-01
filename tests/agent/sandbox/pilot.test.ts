@@ -47,6 +47,18 @@ describe("the task agent's pilot", () => {
     expect(services.readAccountEmail).toHaveBeenCalledTimes(2);
   });
 
+  it("runs on RouterAI as on OpenRouter", async () => {
+    const { taskAgentPilot } = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      {
+        MODEL_PROVIDER: "routerai",
+        ROUTERAI_API_KEY: "routerai-test-key",
+        SANDBOX_WORKSPACES: "*",
+      }
+    );
+    expect(await taskAgentPilot({ workspaceId })).toBe(true);
+  });
+
   it("names nobody on the Gateway, whatever the list says", async () => {
     const { taskAgentPilot } = await importWithSandbox(
       async () => await import("@agent/lib/sandbox/pilot"),

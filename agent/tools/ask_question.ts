@@ -23,7 +23,7 @@ const askQuestionDescription =
  * (`eve/dist/src/harness/input-extraction.js`). So the rule has to be one
  * JSON Schema can carry — a pattern, not a refinement. The host never sees
  * this search pattern (`withoutSearchPattern` in
- * `agent/lib/model/openrouter.ts`).
+ * `agent/lib/model/direct.ts`).
  *
  * `prompt` comes first, as the model writes it: hosts that decode keys in
  * schema order dropped the answer options DeepSeek wrote after a prompt

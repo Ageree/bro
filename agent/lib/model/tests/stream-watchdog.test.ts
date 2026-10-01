@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The reasoning effort decides how long a working model may go without an
-// answer; each case sets it.
-const environment = vi.hoisted(() => ({ OPENROUTER_REASONING_EFFORT: "off" }));
+// answer; each case sets it. OpenRouter serves unless a case picks RouterAI.
+const environment = vi.hoisted(() => ({
+  BETTER_AUTH_URL: "https://bro.example",
+  MODEL_PROVIDER: "openrouter",
+  OPENROUTER_API_KEY: "openrouter-test-key",
+  OPENROUTER_REASONING_EFFORT: "off",
+  ROUTERAI_API_KEY: "routerai-test-key",
+  ROUTERAI_BASE_URL: "https://routerai.test/api/v1",
+  ROUTERAI_REASONING_EFFORT: "off",
+}));
 vi.mock("@shared/environment", () => ({ env: environment }));
 
 import { watchedModelFetch } from "../stream-watchdog";
@@ -89,7 +97,9 @@ async function firstCall() {
 
 beforeEach(() => {
   calls.length = 0;
+  environment.MODEL_PROVIDER = "openrouter";
   environment.OPENROUTER_REASONING_EFFORT = "off";
+  environment.ROUTERAI_REASONING_EFFORT = "off";
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
@@ -189,8 +199,13 @@ describe("the OpenRouter stall watchdog", () => {
 
     await expect(readAll(await answer)).resolves.toBe("data: [DONE]\n\n");
     expect(console.warn).toHaveBeenCalledWith(
-      "[model] OpenRouter call stalled before its answer",
-      { attempt: 1, idle: true, model: "deepseek/deepseek-v4.1-flash" }
+      "[model] direct model call stalled before its answer",
+      {
+        attempt: 1,
+        backend: "OpenRouter",
+        idle: true,
+        model: "deepseek/deepseek-v4.1-flash",
+      }
     );
   });
 
@@ -232,9 +247,32 @@ describe("the OpenRouter stall watchdog", () => {
     });
     expect(calls).toHaveLength(1);
     expect(console.warn).toHaveBeenCalledWith(
-      "[model] OpenRouter stream stalled mid-answer",
-      { idle: true }
+      "[model] direct model stream stalled mid-answer",
+      { backend: "OpenRouter", idle: true }
     );
+  });
+
+  // RouterAI's own DeepSeek endpoint sent `: PROCESSING` and nothing else
+  // for minutes (01.10).
+  it("keeps RouterAI's keep-alive as life and names RouterAI when it stalls", async () => {
+    environment.MODEL_PROVIDER = "routerai";
+    vi.stubGlobal("fetch", openRouterFetch());
+
+    const answer = settled(watchedModelFetch("https://routerai.test", request));
+    const stream = await firstCall();
+    for (let elapsed = 0; elapsed < 250; elapsed += 1) {
+      stream?.write(": PROCESSING\n\n");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- RouterAI sends one a second.
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+
+    // Alive all along, so never sent again; past the ceiling, it fails.
+    expect(calls).toHaveLength(1);
+    expect(await answer).toMatchObject({
+      idle: false,
+      message: "RouterAI sent no answer for 240 s.",
+      name: "ModelStreamStalledError",
+    });
   });
 
   it("counts an event split across two chunks", async () => {

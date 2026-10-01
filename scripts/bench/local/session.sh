@@ -9,9 +9,10 @@
 #
 # Needs Postgres on 127.0.0.1:5432 (PGUSER and PGPASSWORD, both default to
 # the compose.yaml user),
-# OPENROUTER_API_KEY, and for Google cases COMPOSIO_API_KEY with the tester's
-# active connection. BENCH_TESTER_ID overrides the tester's Bro user id, which
-# is otherwise read from that Composio connection.
+# OPENROUTER_API_KEY (or MODEL_PROVIDER=routerai with ROUTERAI_API_KEY), and
+# for Google cases COMPOSIO_API_KEY with the tester's active connection.
+# BENCH_TESTER_ID overrides the tester's Bro user id, which is otherwise read
+# from that Composio connection.
 set -euo pipefail
 WT=$(realpath "$1"); NAME="$2"; SCRIPT=$(realpath "$3")
 HERE=$(dirname "$(realpath "$0")")
@@ -26,11 +27,23 @@ COOKIE="$HOME/.bro-bench/$NAME.cookies"
 
 json() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(($1)(JSON.parse(s)))}catch{console.log('')}})"; }
 
-OR_LEFT=$(curl -s -m 20 https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-  | json 'j=>(j.data.total_credits-j.data.total_usage).toFixed(2)')
-echo "[session] OpenRouter credits left: \$${OR_LEFT:-unknown}"
-if [ -n "$OR_LEFT" ] && node -e "process.exit(Number('$OR_LEFT') < 0.5 ? 0 : 1)"; then
-  echo "[session] OpenRouter credits are exhausted: every model call would fail."
+# The model backend's balance: RouterAI (MODEL_PROVIDER=routerai) reports what
+# is left in roubles with the ordinary key, OpenRouter credits and usage in
+# dollars.
+if [ "${MODEL_PROVIDER:-}" = routerai ]; then
+  # A pasted key may carry spaces and typographic quotes, as env.ts allows.
+  RAI_KEY=$(node -e 'console.log((process.env.ROUTERAI_API_KEY??"").replace(/\s+/gu,"").replace(/^[\x27"‘’“”]+|[\x27"‘’“”]+$/gu,""))')
+  LEFT=$(curl -s -m 20 "${ROUTERAI_BASE_URL:-https://routerai.ru/api/v1}/credits" -H "Authorization: Bearer $RAI_KEY" \
+    | json 'j=>j.data.credits.toFixed(2)')
+  BACKEND=RouterAI; LEFT_SHOWN="${LEFT:-unknown} ₽"; LEFT_FLOOR=30
+else
+  LEFT=$(curl -s -m 20 https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+    | json 'j=>(j.data.total_credits-j.data.total_usage).toFixed(2)')
+  BACKEND=OpenRouter; LEFT_SHOWN="\$${LEFT:-unknown}"; LEFT_FLOOR=0.5
+fi
+echo "[session] $BACKEND credits left: $LEFT_SHOWN"
+if [ -n "$LEFT" ] && node -e "process.exit(Number('$LEFT') < $LEFT_FLOOR ? 0 : 1)"; then
+  echo "[session] $BACKEND credits are exhausted: every model call would fail."
   exit 3
 fi
 

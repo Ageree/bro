@@ -93,9 +93,15 @@ beforeEach(() => {
     vi.stubEnv(name, value);
   }
   for (const name of [
+    "MODEL_PROVIDER",
     "OPENROUTER_MODEL_CONTEXT_TOKENS",
     "OPENROUTER_PROVIDER_ORDER",
     "OPENROUTER_REASONING_EFFORT",
+    "ROUTERAI_API_KEY",
+    "ROUTERAI_PROVIDER_IGNORE",
+    "ROUTERAI_PROVIDER_ORDER",
+    "ROUTERAI_REASONING_EFFORT",
+    "USAGE_USD_RUB",
   ]) {
     vi.stubEnv(name, "");
   }
@@ -129,6 +135,7 @@ describe("model selection", () => {
       await import("@agent/lib/model/stream-watchdog");
     expect(openRouter.createOpenRouter).toHaveBeenCalledExactlyOnceWith({
       apiKey: "openrouter-test-key",
+      baseURL: "https://openrouter.ai/api/v1",
       // Every call goes through the stall watchdog.
       fetch: watchedModelFetch,
       headers: {
@@ -187,8 +194,8 @@ describe("model selection", () => {
       supportedUrls: {},
     }));
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
       toolChoice: "required",
     });
     const sendMessage = {
@@ -219,8 +226,8 @@ describe("model selection", () => {
       supportedUrls: {},
     }));
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
       replyNote: "Reply language for this turn: English.",
       toolChoice: "auto",
     });
@@ -260,8 +267,8 @@ describe("model selection", () => {
       supportedUrls: {},
     }));
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("openai/gpt-6-luna", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("openai/gpt-6-luna", {
       toolChoice: "required",
       withheldTools: ["ask_question"],
     });
@@ -310,11 +317,11 @@ describe("model selection", () => {
       supportedUrls: {},
     }));
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
+    const { directModelSelection } = await import("@agent/lib/model/direct");
     // Anthropic's extended thinking allows tool_choice auto and none and
     // rejects only a forced tool, so `none` is not downgraded like `required`.
     // The provider is mocked: this checks the forwarding, not Anthropic.
-    const selection = openRouterSelection("anthropic/claude-sonnet-4.5", {
+    const selection = directModelSelection("anthropic/claude-sonnet-4.5", {
       toolChoice: "none",
     });
     await selection.model.doGenerate({
@@ -373,9 +380,8 @@ describe("model selection", () => {
     ) {
       vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
       openRouter.chat.mockReturnValue(model);
-      const { openRouterSelection } =
-        await import("@agent/lib/model/openrouter");
-      return openRouterSelection("openai/gpt-6-luna", {
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      return directModelSelection("openai/gpt-6-luna", {
         delivered,
         toolChoice: "auto",
       });
@@ -467,9 +473,8 @@ describe("model selection", () => {
       });
       vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
       openRouter.chat.mockReturnValue(model);
-      const { openRouterSelection } =
-        await import("@agent/lib/model/openrouter");
-      const selection = openRouterSelection("openai/gpt-6-luna", {
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const selection = directModelSelection("openai/gpt-6-luna", {
         delivered: true,
         toolChoice: "none",
       });
@@ -532,9 +537,8 @@ describe("model selection", () => {
       });
       vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
       openRouter.chat.mockReturnValue(talkative);
-      const { openRouterSelection } =
-        await import("@agent/lib/model/openrouter");
-      const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
         delivered: true,
         silent: true,
         toolChoice: "none",
@@ -579,9 +583,8 @@ describe("model selection", () => {
         supportedUrls: {},
       }));
 
-      const { openRouterSelection } =
-        await import("@agent/lib/model/openrouter");
-      const selection = openRouterSelection(modelId, { toolChoice });
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const selection = directModelSelection(modelId, { toolChoice });
       const prompt = [
         {
           content: [{ text: "hello", type: "text" as const }],
@@ -611,8 +614,8 @@ describe("model selection", () => {
       supportedUrls: {},
     }));
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
       toolChoice: "auto",
     });
     await selection.model.doGenerate({ prompt: [], tools: [sendMessageTool] });
@@ -683,8 +686,8 @@ describe("model selection", () => {
       type: "function" as const,
     };
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    await directModelSelection("deepseek/deepseek-v4.1-flash", {
       toolChoice: "required",
     }).model.doGenerate({ prompt: [], tools: [askQuestion] });
 
@@ -734,11 +737,11 @@ describe("model selection", () => {
       type: "function" as const,
     };
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    await directModelSelection("deepseek/deepseek-v4.1-flash", {
       toolChoice: "required",
     }).model.doGenerate({ prompt: [], tools: [sendMessage] });
-    await openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    await directModelSelection("deepseek/deepseek-v4.1-flash", {
       toolChoice: "auto",
     }).model.doGenerate({ prompt: [], tools: [sendMessage] });
 
@@ -821,6 +824,275 @@ describe("model selection", () => {
       modelOptions: {
         providerOptions: { openrouter: { reasoning: { effort: "medium" } } },
       },
+    });
+  });
+
+  describe("on RouterAI", () => {
+    /** The model a step's call reaches, answering with this cost. */
+    function pricedModel(cost: number) {
+      const providerMetadata = {
+        openrouter: { provider: "Sail Research", usage: { cost } },
+      };
+      const usage = {
+        inputTokens: {
+          cacheRead: undefined,
+          cacheWrite: undefined,
+          noCache: 10,
+          total: 10,
+        },
+        outputTokens: { reasoning: undefined, text: 2, total: 2 },
+      };
+      const finishReason = { raw: "stop", unified: "stop" as const };
+      openRouter.chat.mockImplementation((modelId) => ({
+        doGenerate: vi.fn<LanguageModelV4["doGenerate"]>(async () => ({
+          content: [{ text: "Да", type: "text" }],
+          finishReason,
+          providerMetadata,
+          usage,
+          warnings: [],
+        })),
+        doStream: vi.fn<LanguageModelV4["doStream"]>(async () => ({
+          stream: convertArrayToReadableStream([
+            { id: "t", type: "text-start" },
+            { delta: "Да", id: "t", type: "text-delta" },
+            { id: "t", type: "text-end" },
+            { finishReason, providerMetadata, type: "finish", usage },
+          ]),
+        })),
+        modelId,
+        provider: "openrouter.chat",
+        specificationVersion: "v4",
+        supportedUrls: {},
+      }));
+    }
+
+    beforeEach(() => {
+      vi.stubEnv("MODEL_PROVIDER", "routerai");
+      vi.stubEnv("ROUTERAI_API_KEY", " routerai-test-key\n");
+      vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    });
+
+    // 01.10: RouterAI's own DeepSeek endpoint hung every unpinned call, and
+    // DeepInfra kept the whole prompt cached on repeats.
+    it("skips RouterAI's DeepSeek endpoint and pins the caching host by default", async () => {
+      const { modelSelection } = await import("@agent/lib/model/selection");
+      const selection = modelSelection("deepseek/deepseek-v4.1-flash");
+
+      const { routerAiModelFetch } =
+        await import("@agent/lib/model/routerai/fetch");
+      expect(openRouter.createOpenRouter).toHaveBeenCalledExactlyOnceWith({
+        apiKey: "routerai-test-key",
+        baseURL: "https://routerai.ru/api/v1",
+        // The watchdog, with RouterAI's errors made readable.
+        fetch: routerAiModelFetch,
+        // OpenRouter's dashboard attribution means nothing there.
+        headers: {},
+      });
+      expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
+        "deepseek/deepseek-v4.1-flash",
+        {
+          provider: {
+            // Sail Research caches too, but broke off answers on 01.10.
+            ignore: [
+              "deepseek",
+              "alibaba",
+              "morph",
+              "wafer",
+              "sail-research",
+              "modal",
+              "parasail",
+              "phala",
+              "inference-net",
+            ],
+            order: ["deepinfra"],
+          },
+        }
+      );
+      expect(selection).toMatchObject({
+        modelContextWindowTokens: 1_048_576,
+        modelOptions: {
+          providerOptions: { openrouter: { reasoning: { effort: "low" } } },
+        },
+      });
+    });
+
+    it("leaves another model to RouterAI's routing", async () => {
+      vi.stubEnv("ROUTERAI_REASONING_EFFORT", "off");
+
+      const { modelSelection } = await import("@agent/lib/model/selection");
+      const selection = modelSelection("openai/gpt-6-luna");
+
+      expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
+        "openai/gpt-6-luna",
+        { provider: undefined }
+      );
+      expect(selection).toMatchObject({
+        modelOptions: {
+          providerOptions: { openrouter: { reasoning: { enabled: false } } },
+        },
+      });
+    });
+
+    it("pins the configured order and skips the configured hosts for every model", async () => {
+      vi.stubEnv("ROUTERAI_PROVIDER_ORDER", " DeepSeek , baidu ");
+      vi.stubEnv("ROUTERAI_PROVIDER_IGNORE", "io-net, baidu");
+
+      const { modelSelection } = await import("@agent/lib/model/selection");
+      modelSelection("deepseek/deepseek-v4-flash");
+      modelSelection("qwen/qwen3.7-flash");
+
+      // A host pinned on purpose is served, even RouterAI's own DeepSeek.
+      expect(openRouter.chat).toHaveBeenNthCalledWith(
+        1,
+        "deepseek/deepseek-v4-flash",
+        {
+          provider: {
+            ignore: [
+              "alibaba",
+              "morph",
+              "wafer",
+              "sail-research",
+              "modal",
+              "parasail",
+              "phala",
+              "inference-net",
+              "io-net",
+            ],
+            order: ["deepseek", "baidu"],
+          },
+        }
+      );
+      expect(openRouter.chat).toHaveBeenNthCalledWith(2, "qwen/qwen3.7-flash", {
+        provider: { ignore: ["io-net"], order: ["deepseek", "baidu"] },
+      });
+    });
+
+    // eve 0.62 reads a step's price only from `providerMetadata.gateway.cost`.
+    it("hands eve RouterAI's roubles as dollars that convert back exactly", async () => {
+      vi.stubEnv("USAGE_USD_RUB", "84.41");
+      pricedModel(0.8441);
+
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const { model } = directModelSelection("deepseek/deepseek-v4.1-flash", {
+        toolChoice: "auto",
+      });
+      const generated = await generateText({ model, prompt: "Да?" });
+      const streamed = streamText({ model, prompt: "Да?" });
+
+      const { usdToRub } = await import("@shared/costs/prices");
+      for (const metadata of [
+        generated.finalStep.providerMetadata,
+        (await streamed.finalStep).providerMetadata,
+      ]) {
+        const cost = z
+          .object({ gateway: z.object({ cost: z.number() }) })
+          .parse(metadata).gateway.cost;
+        expect(cost).toBeCloseTo(0.01, 12);
+        expect(usdToRub(cost)).toBeCloseTo(0.8441, 12);
+        // What the provider package reported stays as it was.
+        expect(metadata?.openrouter).toMatchObject({ usage: { cost: 0.8441 } });
+      }
+    });
+
+    // 01.10: Sail Research numbers each step's calls from `call_0`, and the
+    // eval's `send_message` after a `calculate` counted as the calculation.
+    it("gives every call of every step an id of its own", async () => {
+      const usage = {
+        inputTokens: {
+          cacheRead: undefined,
+          cacheWrite: undefined,
+          noCache: 10,
+          total: 10,
+        },
+        outputTokens: { reasoning: undefined, text: 2, total: 2 },
+      };
+      const toolCalls = { raw: "tool_calls", unified: "tool-calls" } as const;
+      const calls = ["Москва", "Казань"].map((city, index) => ({
+        input: JSON.stringify({ city }),
+        toolCallId: `call_${String(index)}`,
+        toolName: "weather",
+        type: "tool-call" as const,
+      }));
+      openRouter.chat.mockReturnValue(
+        new MockLanguageModelV4({
+          doGenerate: async () => ({
+            content: calls,
+            finishReason: toolCalls,
+            usage,
+            warnings: [],
+          }),
+          doStream: async () => ({
+            stream: convertArrayToReadableStream([
+              { type: "stream-start" as const, warnings: [] },
+              ...calls.flatMap((call) => [
+                {
+                  id: call.toolCallId,
+                  toolName: call.toolName,
+                  type: "tool-input-start" as const,
+                },
+                {
+                  delta: call.input,
+                  id: call.toolCallId,
+                  type: "tool-input-delta" as const,
+                },
+                { id: call.toolCallId, type: "tool-input-end" as const },
+                call,
+              ]),
+              { finishReason: toolCalls, type: "finish" as const, usage },
+            ]),
+          }),
+        })
+      );
+
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const { model } = directModelSelection("deepseek/deepseek-v4.1-flash", {
+        toolChoice: "auto",
+      });
+      const weather = tool({ inputSchema: z.object({ city: z.string() }) });
+      const steps = [
+        await generateText({ model, prompt: "Погода?", tools: { weather } }),
+        await generateText({ model, prompt: "Погода?", tools: { weather } }),
+      ];
+      const streamed = streamText({
+        model,
+        prompt: "Погода?",
+        tools: { weather },
+      });
+      const inputStarts: string[] = [];
+      for await (const part of streamed.stream) {
+        if (part.type === "tool-input-start") inputStarts.push(part.id);
+      }
+      const streamedCalls = await streamed.toolCalls;
+
+      const ids = [
+        ...steps.flatMap((step) => step.toolCalls),
+        ...streamedCalls,
+      ].map((call) => call.toolCallId);
+      expect(new Set(ids).size).toBe(6);
+      expect(ids.some((id) => /^call_\d$/u.test(id))).toBe(false);
+      // Each streamed call keeps one id from its first part to its last.
+      expect(streamedCalls.map((call) => call.input)).toStrictEqual([
+        { city: "Москва" },
+        { city: "Казань" },
+      ]);
+      expect(inputStarts).toStrictEqual(
+        streamedCalls.map((call) => call.toolCallId)
+      );
+    });
+
+    it("leaves an OpenRouter step's metadata as it was", async () => {
+      vi.stubEnv("MODEL_PROVIDER", "openrouter");
+      pricedModel(0.01);
+
+      const { directModelSelection } = await import("@agent/lib/model/direct");
+      const { model } = directModelSelection("deepseek/deepseek-v4.1-flash", {
+        toolChoice: "auto",
+      });
+      const generated = await generateText({ model, prompt: "Да?" });
+
+      expect(generated.finalStep.providerMetadata).not.toHaveProperty(
+        "gateway"
+      );
     });
   });
 });

@@ -55,8 +55,8 @@ async function runStep(
   modelId: string,
   options: { readonly maxOutputTokens?: number } = {}
 ) {
-  const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-  const selection = openRouterSelection(modelId, { toolChoice: "auto" });
+  const { directModelSelection } = await import("@agent/lib/model/direct");
+  const selection = directModelSelection(modelId, { toolChoice: "auto" });
   await generateText({
     maxOutputTokens: options.maxOutputTokens,
     model: selection.model,

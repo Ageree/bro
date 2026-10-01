@@ -51,7 +51,7 @@ vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
 vi.mock("@agent/lib/model/credits", () => ({
-  checkOpenRouterCredits: vi.fn<() => Promise<void>>(),
+  checkModelCredits: vi.fn<() => Promise<void>>(),
   creditCheckDue: () => false,
 }));
 
