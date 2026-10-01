@@ -58,22 +58,13 @@ retry "${APT[@]}" update
 retry "${APT[@]}" install -y curl ca-certificates zstd python3
 
 stage runsc
+# The package of the dated gVisor release, vendored to Object Storage (boot.py vendor); no dependencies.
+# gVisor's own apt repository (Google Cloud Storage) is untested from Cloud.ru: no fallback to it.
 RUNSC_URL=$(field "$BOOT" runsc.url)
-if [ -n "$RUNSC_URL" ]; then
-  # The package of the dated gVisor release, vendored to Object Storage (boot.py vendor); no dependencies.
-  python3 "$HOST/fetch.py" --sha256 "$(field "$BOOT" runsc.sha256)" "$RUNSC_URL" /root/runsc.deb
-  retry "${APT[@]}" install -y /root/runsc.deb
-  rm -f /root/runsc.deb
-else
-  retry "${APT[@]}" install -y gnupg
-  retry curl -fsSL -o /tmp/gvisor.key https://gvisor.dev/archive.key
-  gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg /tmp/gvisor.key
-  rm -f /tmp/gvisor.key
-  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases ${RUNSC_RELEASE} main" \
-    > /etc/apt/sources.list.d/gvisor.list
-  retry "${APT[@]}" update
-  retry "${APT[@]}" install -y runsc
-fi
+[ -n "$RUNSC_URL" ] || fail "no runsc package URL"
+python3 "$HOST/fetch.py" --sha256 "$(field "$BOOT" runsc.sha256)" "$RUNSC_URL" /root/runsc.deb
+retry "${APT[@]}" install -y /root/runsc.deb
+rm -f /root/runsc.deb
 # runsc 2026 is a package, not a binary (sidecars in /usr/bin/gvisor-bin/): hold all of it.
 runsc --version | head -1 | grep -q "release-${RUNSC_RELEASE}" || fail "runsc is not release ${RUNSC_RELEASE}"
 apt-mark hold runsc >/dev/null

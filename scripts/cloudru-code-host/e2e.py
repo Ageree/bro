@@ -3,8 +3,8 @@
   python e2e.py NAME [--origin https://<ip-with-dashes>.sslip.io] [--keep-snapshot]
 
 Signs host tokens with the key `host.py key NAME` wrote, then: health and refused tokens; PUT a sandbox
-with presigned snapshot links for sandbox/workspaces/e2e-<NAME>.snap; exec and its NDJSON; files written,
-read and deleted; sandbox/image/verify.py inside (python-pptx, openpyxl, python-docx, pptx -> pdf in
+with presigned snapshot links for sandbox/workspaces/e2e-<NAME>-<sandbox>.snap; exec and its NDJSON; files
+written, read and deleted; sandbox/image/verify.py inside (python-pptx, openpyxl, python-docx, pptx -> pdf in
 soffice); no network (curl, Python, DNS); the tools socket; killing a process; keepalive pings in a silent
 command; a process that overruns the memory budget dying alone (exit 137); stop with a snapshot in Object
 Storage; PUT again restoring /workspace; DELETE. Prints one line per step with its time and a JSON summary;
@@ -112,7 +112,7 @@ def main():
         ip, _ = code_host.public_ip(code_host.found_vm(host))
         origin = f"https://{ip.replace('.', '-')}.sslip.io"
     api = Client(origin, host, key)
-    snapshot_key = f"sandbox/workspaces/e2e-{host}.snap"
+    snapshot_key = f"sandbox/workspaces/e2e-{host}-{SANDBOX}.snap"  # runs side by side
     s3.delete_prefix(snapshot_key)
     snapshot_secret = secrets.token_hex(32)
 
@@ -273,9 +273,10 @@ def main():
         py, py_out, py_err, _ = api.exec("python3 -c \"import urllib.request; urllib.request.urlopen('https://ya.ru', "
                                          "timeout=5)\"")
         assert py != 0, (py, py_out)
-        ip_code, ip_out, ip_err, _ = api.exec("curl -sS -m 10 http://77.88.55.242 -o /dev/null; "
-                                              "curl -sS -m 5 http://169.254.169.254/ -o /dev/null")
-        assert ip_code != 0, (ip_code, ip_out)
+        # Each probe on its own: a reachable public IP must not hide behind a refused metadata address.
+        ip_code, ip_out, ip_err, _ = api.exec("! curl -sS -m 10 http://77.88.55.242 -o /dev/null && "
+                                              "! curl -sS -m 5 http://169.254.169.254/ -o /dev/null")
+        assert ip_code == 0, (ip_code, ip_out, ip_err)
         dns, _, _, _ = api.exec("getent hosts ya.ru")
         assert dns != 0, dns
         links, links_out, _, _ = api.exec("cat /proc/net/dev | tail -n +3 | cut -d: -f1 | tr -d ' '")

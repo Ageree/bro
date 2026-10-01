@@ -59,8 +59,8 @@ type snapshotTarget struct {
 	Key string `json:"key"`
 }
 
-// Sandbox is one id's entry. Entries are never removed from Manager.sandboxes while sandboxd runs, so a
-// pointer to one stays the only one for its id.
+// Sandbox is one id's entry. The reaper drops an entry only when it is absent and nobody holds it (entry,
+// release), so a pointer that may still create a container stays the only one for its id.
 type Sandbox struct {
 	id string
 	// op serializes what changes the container: create, snapshot, stop, delete.
@@ -70,8 +70,12 @@ type Sandbox struct {
 	rec    record
 	broker *broker
 	procs  map[string]*proc
-	active int          // requests running in it (exec streams, file operations): an active sandbox is not idle
+	active int          // requests running in it (exec streams, file operations, tool calls): not idle
+	held   int          // PUTs and DELETEs that took the entry (entry) and have not released it
 	sentry procIdentity // its sandbox process on the host: a cheap check that it still lives
+	// stopping: a stop holds the op lock and takes no new requests (begin waits for it), so its snapshot
+	// misses no request's work and its teardown cuts none short.
+	stopping bool
 }
 
 type Manager struct {
@@ -145,7 +149,7 @@ func stoppedError(sb *Sandbox) *apiError {
 	return &apiError{http.StatusConflict, "sandbox_stopped", "the sandbox is not running: PUT it first"}
 }
 
-// entry is the sandbox's entry, made (absent) when the id is new.
+// entry is the sandbox's entry, made (absent) when the id is new; the caller holds it until release.
 func (m *Manager) entry(id string) *Sandbox {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -154,7 +158,14 @@ func (m *Manager) entry(id string) *Sandbox {
 		sb = &Sandbox{id: id, rec: record{ID: id, State: stateAbsent}}
 		m.sandboxes[id] = sb
 	}
+	sb.held++
 	return sb
+}
+
+func (m *Manager) release(sb *Sandbox) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sb.held--
 }
 
 func (m *Manager) lookup(id string) *Sandbox {
@@ -171,29 +182,35 @@ func (m *Manager) stopped(sb *Sandbox) *apiError {
 }
 
 // begin marks a request in a running sandbox (it is not idle while one runs); end undoes it. A sandbox
-// whose sentry is gone is found dead here, before its request starts.
+// whose sentry is gone is found dead here, before its request starts; one being stopped is waited for.
 func (m *Manager) begin(id string) (*Sandbox, error) {
-	m.mu.Lock()
-	sb := m.sandboxes[id]
-	if sb == nil || sb.rec.State != stateRunning {
-		defer m.mu.Unlock()
-		return nil, stoppedError(sb)
-	}
-	gone := sb.sentry.gone(m.procfs)
-	m.mu.Unlock()
-	if gone && m.confirmDead(sb) {
+	checked := false
+	for {
 		m.mu.Lock()
-		defer m.mu.Unlock()
-		return nil, stoppedError(sb)
+		sb := m.sandboxes[id]
+		switch {
+		case sb == nil || sb.rec.State != stateRunning:
+			err := stoppedError(sb)
+			m.mu.Unlock()
+			return nil, err
+		case sb.stopping:
+			// The stop holds the op lock until it is done: then the sandbox either runs on (its snapshot
+			// failed) or is stopped.
+			m.mu.Unlock()
+			sb.op.Lock()
+			sb.op.Unlock()
+			continue
+		case !checked && sb.sentry.gone(m.procfs):
+			m.mu.Unlock()
+			checked = true
+			m.confirmDead(sb)
+			continue
+		}
+		sb.active++
+		sb.rec.LastUsedAt, m.dirty = time.Now().UTC(), true
+		m.mu.Unlock()
+		return sb, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if sb.rec.State != stateRunning {
-		return nil, stoppedError(sb)
-	}
-	sb.active++
-	sb.rec.LastUsedAt, m.dirty = time.Now().UTC(), true
-	return sb, nil
 }
 
 // confirmDead asks runsc after a sign that the container died (its sentry gone, runsc exec failing): when
@@ -268,6 +285,7 @@ type putResult struct {
 func (m *Manager) put(ctx context.Context, id string, request putRequest, memoryMB int) (putResult, error) {
 	started := time.Now()
 	sb := m.entry(id)
+	defer m.release(sb)
 	sb.op.Lock()
 	defer sb.op.Unlock()
 	target := &snapshotTarget{Put: request.Snapshot.Put, Key: strings.ToLower(request.Snapshot.Key)}
@@ -286,8 +304,20 @@ func (m *Manager) put(ctx context.Context, id string, request putRequest, memory
 			return putResult{}, &apiError{http.StatusConflict, "workspace_mismatch", "the sandbox belongs to another workspace"}
 		}
 		sb.rec.Tools, sb.rec.Snapshot, sb.rec.LastUsedAt = request.Tools, target, now
+		brokerless := sb.broker == nil
 		m.mu.Unlock()
 		m.save()
+		// An adopted sandbox whose broker did not start after a restart (reconcile) gets it now.
+		if brokerless {
+			b, err := m.startBroker(sb, m.cfg.paths(id).socket)
+			if err != nil {
+				return putResult{}, fmt.Errorf("broker socket: %w", err)
+			}
+			m.mu.Lock()
+			sb.broker = b
+			m.mu.Unlock()
+			m.log.Info("broker started for a running sandbox", "sandbox", id)
+		}
 		return putResult{ID: id, State: stateRunning, MS: time.Since(started).Milliseconds()}, nil
 	}
 	if err := m.admit(id, memoryMB); err != nil {
@@ -520,9 +550,18 @@ func (m *Manager) stop(ctx context.Context, id, reason string) (snapshotResult, 
 }
 
 func (m *Manager) stopLocked(ctx context.Context, sb *Sandbox, reason string) (snapshotResult, error) {
-	if !m.runningLocked(sb) {
+	m.mu.Lock()
+	running := sb.rec.State == stateRunning
+	sb.stopping = running
+	m.mu.Unlock()
+	if !running {
 		return snapshotResult{}, notFound(sb.id)
 	}
+	defer func() {
+		m.mu.Lock()
+		sb.stopping = false
+		m.mu.Unlock()
+	}()
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotTimeout)
 	defer cancel()
@@ -549,6 +588,7 @@ func (m *Manager) stopLocked(ctx context.Context, sb *Sandbox, reason string) (s
 // leftovers removed.
 func (m *Manager) remove(ctx context.Context, id string) error {
 	sb := m.entry(id)
+	defer m.release(sb)
 	sb.op.Lock()
 	defer sb.op.Unlock()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)

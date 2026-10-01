@@ -1,5 +1,5 @@
 import { openRouterActive } from "@shared/model/provider";
-import { listsWorkspace } from "@agent/lib/workspace-list";
+import { listsWorkspaceRemembered } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
 import { sandboxHostConfigured } from "./host";
 
@@ -8,8 +8,9 @@ import { sandboxHostConfigured } from "./host";
  * (`agent/subagents/task`): only with the code sandbox host configured, only
  * with the direct OpenRouter model (the task agent's model is resolved per
  * step like Bro's), and only for the pilot named in SANDBOX_WORKSPACES by
- * workspace id or owner's email, or everyone with `*`. A failed lookup of
- * the email keeps the workspace out for that call.
+ * workspace id or owner's email, or everyone with `*`. Every interactive
+ * step asks, so the verdict by email is remembered for a while; a failed
+ * lookup of the email keeps the workspace out for that call.
  */
 export async function taskAgentPilot(scope: {
   readonly userId?: string;
@@ -21,7 +22,7 @@ export async function taskAgentPilot(scope: {
   }
   if (list.includes("*")) return true;
   try {
-    return await listsWorkspace(list, scope);
+    return await listsWorkspaceRemembered(list, scope);
   } catch (error) {
     console.warn("[sandbox] pilot lookup failed", { cause: error });
     return false;

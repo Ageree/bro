@@ -26,3 +26,37 @@ export async function listsWorkspace(
   });
   return email !== undefined && emails.includes(email.toLowerCase());
 }
+
+/**
+ * How long a workspace's verdict by its owner's email holds for a check
+ * that runs at every step: without it a pilot named by email paid a lookup
+ * of the email at each one.
+ */
+const verdictLifetimeMs = 10 * 60_000;
+
+const verdicts = new Map<
+  string,
+  { readonly expiresAt: number; readonly listed: boolean }
+>();
+
+/**
+ * `listsWorkspace` for a pilot asked at every step (STEP_CONTEXT_WORKSPACES,
+ * SANDBOX_WORKSPACES): a verdict by the owner's email is remembered per list
+ * and workspace for ten minutes. A failed lookup throws and is not
+ * remembered.
+ */
+export async function listsWorkspaceRemembered(
+  entries: readonly string[] | undefined,
+  scope: { readonly userId?: string; readonly workspaceId: string }
+) {
+  const list = entries ?? [];
+  if (list.includes(scope.workspaceId)) return true;
+  if (!list.some((entry) => entry.includes("@"))) return false;
+  const key = `${list.join(",")}\n${scope.workspaceId}`;
+  const now = Date.now();
+  const known = verdicts.get(key);
+  if (known && known.expiresAt > now) return known.listed;
+  const listed = await listsWorkspace(list, scope);
+  verdicts.set(key, { expiresAt: now + verdictLifetimeMs, listed });
+  return listed;
+}

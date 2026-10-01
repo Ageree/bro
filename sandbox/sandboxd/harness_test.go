@@ -66,13 +66,14 @@ func (b *syncBuffer) String() string {
 }
 
 type harness struct {
-	t    *testing.T
-	real bool
-	cfg  Config
-	m    *Manager
-	api  *httptest.Server
-	s3   *fakeS3
-	logs *syncBuffer
+	t      *testing.T
+	real   bool
+	cfg    Config
+	m      *Manager
+	server *API
+	api    *httptest.Server
+	s3     *fakeS3
+	logs   *syncBuffer
 }
 
 func realRootfs() string { return os.Getenv("SANDBOXD_REAL_ROOTFS") }
@@ -143,7 +144,8 @@ func (h *harness) start() {
 	if err := h.m.reconcile(context.Background()); err != nil {
 		h.t.Fatal(err)
 	}
-	h.api = httptest.NewServer((&API{m: h.m, now: time.Now}).handler())
+	h.server = &API{m: h.m, now: time.Now}
+	h.api = httptest.NewServer(h.server.handler())
 }
 
 // restart drops the API and the Manager (sandboxes keep running) and starts anew.
@@ -247,11 +249,14 @@ func (h *harness) sandboxBody(id string, options sandboxOptions) map[string]any 
 // create PUTs a sandbox and fails the test unless it answers 200.
 func (h *harness) create(id string, options sandboxOptions) putResult {
 	h.t.Helper()
+	var answer json.RawMessage
+	status := h.call("PUT", "/v1/sandboxes/"+id, h.sandboxBody(id, options), &answer)
+	if status != http.StatusOK {
+		h.t.Fatalf("PUT %s: %d %s", id, status, answer)
+	}
 	var result putResult
-	var failure map[string]string
-	if status := h.call("PUT", "/v1/sandboxes/"+id, h.sandboxBody(id, options), &result); status != http.StatusOK {
-		h.call("PUT", "/v1/sandboxes/"+id, h.sandboxBody(id, options), &failure)
-		h.t.Fatalf("PUT %s: %d %v", id, status, failure)
+	if err := json.Unmarshal(answer, &result); err != nil {
+		h.t.Fatalf("PUT %s: %s: %v", id, answer, err)
 	}
 	return result
 }
@@ -297,6 +302,9 @@ func readEvents(t *testing.T, response *http.Response) execResult {
 		case "exit":
 			result.code = *e.Code
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("the exec stream broke off after %d events: %v", len(result.events), err)
 	}
 	return result
 }

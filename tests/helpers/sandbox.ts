@@ -13,6 +13,13 @@ const sandboxTestEnvironment = {
 };
 
 /**
+ * What each setting stubbed here held before, so that clearing puts back
+ * exactly that: an override of any other key (SANDBOX_WORKSPACES,
+ * OPENROUTER_API_KEY) must not leak into the next test either.
+ */
+const replaced = new Map<string, string | undefined>();
+
+/**
  * Imports a module against these settings: `env` is parsed once per module
  * graph, so the graph is loaded afresh after the stubs are in place.
  */
@@ -25,6 +32,9 @@ export async function importWithSandbox<T>(
     ...sandboxTestEnvironment,
     ...overrides,
   })) {
+    // A test helper puts back the raw value it replaced; no setting is read.
+    // oxlint-disable-next-line eslint/no-restricted-properties -- See above.
+    if (!replaced.has(name)) replaced.set(name, process.env[name]);
     vi.stubEnv(name, value);
   }
   return await load();
@@ -32,10 +42,9 @@ export async function importWithSandbox<T>(
 
 /**
  * Clearing every stub would also drop the values `tests/setup-env.ts`
- * installs, so only these settings go back to what it set.
+ * installs, so only the settings stubbed here go back to what they were.
  */
 export function clearSandboxSettings() {
-  for (const name of Object.keys(sandboxTestEnvironment)) {
-    vi.stubEnv(name, name === "BETTER_AUTH_URL" ? "https://example.com" : "");
-  }
+  for (const [name, value] of replaced) vi.stubEnv(name, value ?? "");
+  replaced.clear();
 }

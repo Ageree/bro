@@ -5,6 +5,15 @@ import {
   sandboxToolsPath,
 } from "@agent/lib/sandbox/router";
 
+/** A link's name segment, or undefined for a malformed one (a lone `%`). */
+function decodedSegment(segment: string) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The code sandbox's two doors into Bro (`sandbox/README.md`): the tool
  * router, where the `tools` CLI's GraphQL requests arrive through the host's
@@ -24,11 +33,15 @@ export default defineChannel({
       async (request) => await answerSandboxToolRequest(request)
     ),
     GET(`${sandboxFilesPath}/:id/:name`, async (request, { params }) => {
-      const location = sharedFileLocation({
-        id: params.id ?? "",
-        name: decodeURIComponent(params.name ?? ""),
-        signature: new URL(request.url).searchParams.get("sig"),
-      });
+      const name = decodedSegment(params.name ?? "");
+      const location =
+        name === undefined
+          ? undefined
+          : sharedFileLocation({
+              id: params.id ?? "",
+              name,
+              signature: new URL(request.url).searchParams.get("sig"),
+            });
       if (location === undefined) return new Response(null, { status: 404 });
       return await Promise.resolve(
         new Response(null, {

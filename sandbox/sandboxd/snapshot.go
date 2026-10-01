@@ -284,9 +284,11 @@ func (f *firstError) Read(p []byte) (int, error) {
 }
 
 // Scripts run in the sandbox as the sandbox user, the directory in $W (never in the script text).
-// tar exits 1 when a file changed while it was read: the archive is still whole.
+// tar exits 1 when a file changed or vanished while it was read: the archive is still whole. A file it
+// cannot read (one its owner made unreadable) is exit 2 and fails the snapshot: a snapshot never leaves
+// files out silently.
 const (
-	snapshotScript = `exec tar --ignore-failed-read -cz -C "$W" .`
+	snapshotScript = `exec tar -cz -C "$W" .`
 	restoreScript  = `exec tar -xpz --no-same-owner -C "$W"`
 )
 

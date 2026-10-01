@@ -180,6 +180,25 @@ describe("environment", () => {
     );
   });
 
+  it("takes the sandbox host as a bare https origin", async () => {
+    vi.stubEnv("SANDBOX_HOST_ORIGIN", "https://10-0-0-1.sslip.io/");
+    const { env } = await import("@shared/environment");
+    expect(env.SANDBOX_HOST_ORIGIN).toBe("https://10-0-0-1.sslip.io");
+
+    for (const origin of [
+      "http://10-0-0-1.sslip.io",
+      "https://10-0-0-1.sslip.io/api",
+      "https://10-0-0-1.sslip.io?x=1",
+    ]) {
+      vi.resetModules();
+      vi.stubEnv("SANDBOX_HOST_ORIGIN", origin);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each value is parsed by a fresh import.
+      await expect(import("@shared/environment")).rejects.toThrow(
+        "Invalid environment variables"
+      );
+    }
+  });
+
   it("rejects a non-Postgres database URL", async () => {
     vi.stubEnv("DATABASE_URL", "https://example.com/database");
 

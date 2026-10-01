@@ -573,12 +573,14 @@ def usage_summary(history, agent, billed=None):
     `total_cost` is left out: runs never let it price (`calculate_cost=False`, see `run_agent`), so it is 0,
     and a 0 would read as a free run."""
     usage = getattr(history, "usage", None)
-    if usage is None:
+    has_billed = billed is not None and billed.calls
+    if usage is None and not has_billed:
         return None
+    # No usage of browser-use's own when it could parse no answer at all: the service's bill still counts.
     data = usage.model_dump() if hasattr(usage, "model_dump") else {}
     summary = {k: data.get(k) for k in ("total_prompt_tokens", "total_completion_tokens", "total_tokens",
                                            "total_prompt_cached_tokens") if k in data}
-    if billed is not None and billed.calls:
+    if has_billed:
         summary.update(billed=round(billed.total, 6), billed_calls=billed.calls)
     return summary
 

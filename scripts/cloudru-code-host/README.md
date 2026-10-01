@@ -22,9 +22,9 @@ S3 — из стенда `scripts/cloudru-sandbox-probe/` (`cloudru.py`, `consol
 
 ## Ключи
 
-`python host.py key sbx-code-1` один раз создаёт `SANDBOX_SIGNING_KEY`
-(32 случайных байта hex) в `~/.bro-code-host/signing.json` и пишет ключ хоста в
-`~/.bro-code-host/sbx-code-1.json` — оба `0600`, вне репозитория. Ключ хоста —
+`python scripts/cloudru-code-host/host.py key sbx-code-1` один раз создаёт
+`SANDBOX_SIGNING_KEY` (32 случайных байта hex) в `~/.bro-code-host/signing.json`
+и пишет ключ хоста в `~/.bro-code-host/sbx-code-1.json` — оба `0600`, вне репозитория. Ключ хоста —
 `HMAC-SHA256(SANDBOX_SIGNING_KEY, "bro-sandbox-host:" + id хоста)`, как его
 выводит Бро (`sandboxHostKey` в `agent/lib/sandbox/keys.ts`), поэтому Бро
 хватает того же `SANDBOX_SIGNING_KEY` в env, `SANDBOX_HOST_ID=sbx-code-1` и
@@ -46,19 +46,21 @@ python scripts/cloudru-code-host/e2e.py sbx-code-1
 
 В Object Storage:
 
-| Ключ                                  | Что                                                                   |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| `sandbox/rootfs/<версия>.tar.zst`     | корень песочницы, рядом `.sha256` и `.manifest.txt` (пакеты и колёса) |
-| `sandbox/runsc/runsc-<версия>.deb`    | пакет датированного выпуска gVisor из его apt-репозитория             |
-| `sandbox/host/code-host-<sha256>.tgz` | бандл: `provision.sh`, `fetch.py`, `sandboxd` и его юнит, Caddy       |
-| `sandbox/workspaces/…`                | снимки `/workspace` (Бро; `e2e.py` пишет `e2e-<хост>.snap` и стирает) |
+| Ключ                                  | Что                                                                               |
+| ------------------------------------- | --------------------------------------------------------------------------------- |
+| `sandbox/rootfs/<версия>.tar.zst`     | корень песочницы и рядом `.sha256`; `.manifest.txt` остаётся локально             |
+| `sandbox/runsc/runsc-<версия>.deb`    | пакет датированного выпуска gVisor из его apt-репозитория                         |
+| `sandbox/host/code-host-<sha256>.tgz` | бандл: `provision.sh`, `fetch.py`, `sandboxd` и его юнит, Caddy                   |
+| `sandbox/workspaces/…`                | снимки `/workspace` (Бро; `e2e.py` пишет `e2e-<хост>-<песочница>.snap` и стирает) |
 
 `deliver` печатает ссылки без подписи; целиком — только с `--print-urls`.
 `create` подписывает ссылки на 12 часов (cloud-init отрабатывает один раз), ждёт
-`running` и затем `https://<ip>.sslip.io/v1/health`. Стадию установки видно
-через serial-консоль: `python host.py status sbx-code-1 --stage` (пароль root —
-в `~/.bro-code-host/sbx-code-1.password`, в user data — только хэш; SSH нет).
-Первая загрузка иногда встаёт в `(initramfs)` и молчит — `host.py reboot`.
+`running` и затем `https://<ip с дефисами>.sslip.io/v1/health`. Здесь и ниже
+`host.py` — это `python scripts/cloudru-code-host/host.py` из корня репозитория.
+Стадию установки видно через serial-консоль: `host.py status sbx-code-1 --stage`
+(пароль root — в `~/.bro-code-host/sbx-code-1.password`, в user data — только
+хэш; SSH нет). Первая загрузка иногда встаёт в `(initramfs)` и молчит —
+`host.py reboot sbx-code-1`.
 
 Новый `sandboxd` на живом хосте — `host.py update-sandboxd sbx-code-1 --sandboxd
 <бинарник>`: бинарник едет через S3, консоль сверяет SHA-256, подменяет и
@@ -77,5 +79,6 @@ python scripts/cloudru-code-host/e2e.py sbx-code-1
 `sandboxd` и его юнит. Стадии — `/var/lib/bro/stage` и `timeline`, лог —
 `/var/log/bro-provision.log`. Конфиг `sandboxd` (`host`, `key`,
 `rootfs_version`) кладёт cloud-init в `/etc/bro/sandboxd.json` (`0600`).
-Без `--runsc-url` в `boot.py cloud-init` хост ставит `runsc` из apt-репозитория
-gVisor (`storage.googleapis.com`) — с Cloud.ru этот путь не проверен.
+`--runsc-url` в `boot.py cloud-init` обязателен: хост ставит `runsc` только из
+Object Storage (`host.py create` всегда даёт ссылку), apt-репозиторий gVisor
+(`storage.googleapis.com`) с Cloud.ru не проверен.

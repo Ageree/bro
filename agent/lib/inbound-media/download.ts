@@ -26,6 +26,12 @@ export interface DownloadOptions extends RequestInit {
    * rather than after the body has already arrived.
    */
   readonly allowUrl?: (url: URL) => boolean;
+  /**
+   * How one hop is requested; the global `fetch` by default. The sandbox
+   * tool router passes one that pins each connection to an address it
+   * checked (`agent/lib/sandbox/public-fetch.ts`) and follows no redirect.
+   */
+  readonly fetch?: (url: URL, init: RequestInit) => Promise<Response>;
 }
 
 /**
@@ -104,22 +110,25 @@ export async function downloadWithin(
   maxBytes: number,
   options?: DownloadOptions
 ): Promise<DownloadResult> {
-  const { allowUrl, ...init } = options ?? {};
+  const { allowUrl, fetch: requestHop = fetch, ...init } = options ?? {};
   if (url.protocol !== "https:") return { kind: "failed", reason: "not-https" };
   let target = url;
   for (let redirects = 0; ; redirects += 1) {
     let response: Response;
     try {
-      response = await fetch(target, {
+      response = await requestHop(target, {
         ...init,
         redirect: allowUrl ? "manual" : "follow",
         signal: AbortSignal.timeout(downloadTimeoutMs),
       });
     } catch (error) {
+      const name = error instanceof Error ? error.name : "";
       const reason =
-        error instanceof Error && error.name === "TimeoutError"
+        name === "TimeoutError"
           ? "timeout"
-          : "network";
+          : name === "BlockedHostError"
+            ? "blocked-host"
+            : "network";
       return { kind: "failed", reason };
     }
     if (allowUrl && redirectStatuses.has(response.status)) {

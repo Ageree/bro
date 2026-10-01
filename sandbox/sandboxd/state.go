@@ -35,7 +35,11 @@ func (m *Manager) save() {
 	m.mu.Unlock()
 	sort.Slice(state.Sandboxes, func(i, j int) bool { return state.Sandboxes[i].ID < state.Sandboxes[j].ID })
 	if err := writeFileAtomic(m.cfg.statePath(), state); err != nil {
-		m.log.Error("writing state.json failed", "error", err.Error())
+		// The next reaper tick tries again: a stale state.json would have a restart delete a live container.
+		m.mu.Lock()
+		m.dirty = true
+		m.mu.Unlock()
+		m.log.Error("writing state.json failed: retrying on the next tick", "error", err.Error())
 	}
 }
 
@@ -119,9 +123,11 @@ func (m *Manager) reconcile(ctx context.Context) error {
 		status := running[rec.ID]
 		switch {
 		case rec.State == stateRunning && status == "running":
+			// Without its broker the sandbox is still adopted: its /workspace lives only in its memory. The
+			// next PUT, which Bro sends before it uses a sandbox, starts the broker again.
 			b, err := m.startBroker(sb, m.cfg.paths(rec.ID).socket)
 			if err != nil {
-				m.log.Error("adopted sandbox has no broker", "sandbox", rec.ID, "error", err.Error())
+				m.log.Error("adopted sandbox has no broker until its next PUT", "sandbox", rec.ID, "error", err.Error())
 			}
 			state, _ := m.rt.State(ctx, rec.ID)
 			m.mu.Lock()

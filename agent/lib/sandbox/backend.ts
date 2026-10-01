@@ -20,6 +20,7 @@ import {
   sandboxHostConfigured,
   setSandboxNetwork,
   settleSandbox,
+  streamSandboxFile,
   writeSandboxFile,
 } from "./host";
 import {
@@ -211,9 +212,70 @@ interface CommandOptions {
 }
 
 /**
+ * Output a command may have waiting for its reader, per stream, before the
+ * command's own stream from the host is paused: an unread command blocks on
+ * its output as on a full pipe, instead of piling it up in Bro's memory.
+ */
+const outputBufferBytes = 1024 * 1024;
+
+/**
+ * One output stream of a command, fed as the host sends it. `write` waits
+ * while the reader is behind, or until `signal` ends the command; a stream
+ * the reader cancelled drops what comes, and `onCancel` hears of it.
+ */
+function outputPipe(signal: AbortSignal, onCancel: () => void) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let drained: (() => void) | undefined;
+  let cancelled = false;
+  const release = () => {
+    drained?.();
+    drained = undefined;
+  };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      cancel: () => {
+        cancelled = true;
+        release();
+        onCancel();
+      },
+      pull: release,
+      start: (streamController) => {
+        controller = streamController;
+      },
+    },
+    new ByteLengthQueuingStrategy({ highWaterMark: outputBufferBytes })
+  );
+  signal.addEventListener("abort", release, { once: true });
+  return {
+    get cancelled() {
+      return cancelled;
+    },
+    close: (error?: Error) => {
+      signal.removeEventListener("abort", release);
+      release();
+      try {
+        if (error === undefined) controller.close();
+        else controller.error(error);
+      } catch {
+        // Already closed or cancelled.
+      }
+    },
+    stream,
+    write: async (chunk: Uint8Array) => {
+      if (cancelled) return;
+      controller.enqueue(chunk);
+      if ((controller.desiredSize ?? 1) > 0 || signal.aborted) return;
+      await new Promise<void>((resolve) => {
+        drained = resolve;
+      });
+    },
+  };
+}
+
+/**
  * Starts one command and hands its output over as streams. The command
- * lives as long as its stream: `kill` and the caller's abort close it, and
- * the host kills the process with it.
+ * lives as long as its stream: `kill`, the caller's abort and cancelling
+ * both output streams close it, and the host kills the process with it.
  */
 function spawnCommand(
   sandboxId: string,
@@ -223,28 +285,22 @@ function spawnCommand(
   const signal = options.abortSignal
     ? AbortSignal.any([options.abortSignal, controller.signal])
     : controller.signal;
-  let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
-  let stderrController!: ReadableStreamDefaultController<Uint8Array>;
-  const stdout = new ReadableStream<Uint8Array>({
-    start: (streamController) => {
-      stdoutController = streamController;
-    },
-  });
-  const stderr = new ReadableStream<Uint8Array>({
-    start: (streamController) => {
-      stderrController = streamController;
-    },
-  });
   let pid: string | undefined;
-  const closeStreams = (error?: Error) => {
-    for (const stream of [stdoutController, stderrController]) {
-      try {
-        if (error === undefined) stream.close();
-        else stream.error(error);
-      } catch {
-        // Already closed.
-      }
+  const kill = async () => {
+    if (pid !== undefined) {
+      await killSandboxProcess(sandboxId, pid).catch(() => undefined);
     }
+    controller.abort();
+  };
+  // Nobody reads the output any more: the process goes, as on a closed pipe.
+  const outputGone = () => {
+    if (stdout.cancelled && stderr.cancelled) void kill();
+  };
+  const stdout = outputPipe(signal, outputGone);
+  const stderr = outputPipe(signal, outputGone);
+  const closeStreams = (error?: Error) => {
+    stdout.close(error);
+    stderr.close(error);
   };
   const exit = (async () => {
     try {
@@ -258,11 +314,14 @@ function spawnCommand(
         },
         signal
       )) {
+        // A command its reader gave up on stops here, even while the host
+        // still has output for it.
+        signal.throwIfAborted();
         if (event.type === "start") pid = event.pid;
         else if (event.type === "stdout") {
-          stdoutController.enqueue(Buffer.from(event.data, "base64"));
+          await stdout.write(Buffer.from(event.data, "base64"));
         } else if (event.type === "stderr") {
-          stderrController.enqueue(Buffer.from(event.data, "base64"));
+          await stderr.write(Buffer.from(event.data, "base64"));
         } else if (event.type === "ping") {
           continue;
         } else if (event.type === "exit") {
@@ -288,14 +347,9 @@ function spawnCommand(
     get pid() {
       return pid === undefined ? undefined : Number(pid.replace(/\D/gu, ""));
     },
-    stderr,
-    stdout,
-    kill: async () => {
-      if (pid !== undefined) {
-        await killSandboxProcess(sandboxId, pid).catch(() => undefined);
-      }
-      controller.abort();
-    },
+    stderr: stderr.stream,
+    stdout: stdout.stream,
+    kill,
     wait: async () => await exit,
   };
 }
@@ -313,16 +367,12 @@ function sandboxSession(sandboxId: string): SandboxSession {
   return {
     id: sandboxId,
     readBinaryFile,
-    readFile: async (options) => {
-      const bytes = await readBinaryFile(options);
-      if (bytes === null) return null;
-      return new ReadableStream<Uint8Array>({
-        start: (controller) => {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      });
-    },
+    readFile: async (options) =>
+      await streamSandboxFile(
+        sandboxId,
+        resolveSandboxPath(options.path),
+        options.abortSignal
+      ),
     readTextFile: async (options) => {
       const bytes = await readBinaryFile(options);
       if (bytes === null) return null;

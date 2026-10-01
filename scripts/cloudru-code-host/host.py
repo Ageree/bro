@@ -10,9 +10,10 @@
       records keys and sha256 in ~/.bro-code-host/deliver.json. Prints presigned GET links redacted, whole
       only with --print-urls
   python host.py create NAME [--flavor gen-2-8] [--disk 30] [--no-console] [--wait-minutes 20]
-      the VM in ru.AZ-1 with a public IP, cloud-init from boot.py (fresh 12-hour links), then waits for
-      https://<ip with dashes>.sslip.io/v1/health. Unless --no-console, root may log in on the serial
-      console with the password in ~/.bro-code-host/NAME.password (the user data holds only its hash)
+      the VM in CLOUDRU_ZONE (ru.AZ-1) with a public IP, cloud-init from boot.py (fresh 12-hour links), then
+      waits for it to run and then for https://<ip with dashes>.sslip.io/v1/health, each up to --wait-minutes.
+      Unless --no-console, root may log in on the serial console with the password in
+      ~/.bro-code-host/NAME.password (the user data holds only its hash)
   python host.py status NAME [--stage]      state, address, health; --stage reads the provision stage over
                                             the serial console
   python host.py reboot NAME                set-power reboot (a first boot stuck in initramfs)
@@ -99,6 +100,14 @@ def stored(key):
     return next((size for found, size in s3.listing(key) if found == key), None)
 
 
+def stored_text(key):
+    """A small object's text, or None when the bucket has none."""
+    code, body = s3.send(urllib.request.Request(s3.presign("GET", key, 300)))
+    if code not in (200, 404):
+        sys.exit(f"get {key} {code}: {body[:300]!r}")
+    return body.decode() if code == 200 else None
+
+
 def upload(key, path=None, data=None):
     data = Path(path).read_bytes() if data is None else data
     code, body = s3.send(urllib.request.Request(s3.presign("PUT", key), data, method="PUT"))
@@ -138,16 +147,19 @@ def cmd_deliver(args):
             sys.exit("--rootfs must be a rootfs-<version>.tar.zst of sandbox/image/build_rootfs.sh")
         version, rootfs_sha = match.group(1), file_sha256(args.rootfs)
         rootfs_key = f"sandbox/rootfs/{version}.tar.zst"
-        if stored(rootfs_key) != Path(args.rootfs).stat().st_size:
+        # The size alone does not tell a rebuilt archive of the same version: its recorded sha256 must match too,
+        # or new hosts would fetch the old bytes and fail fetch.py's check against this one.
+        recorded = (stored_text(rootfs_key + ".sha256") or "").split()[:1]
+        if stored(rootfs_key) != Path(args.rootfs).stat().st_size or recorded != [rootfs_sha]:
             upload(rootfs_key, args.rootfs)
             upload(rootfs_key + ".sha256", data=f"{rootfs_sha}  rootfs-{version}.tar.zst\n".encode())
     else:
         version = args.rootfs_version or json.loads(DELIVERED.read_text())["rootfs"]["version"]
         rootfs_key = f"sandbox/rootfs/{version}.tar.zst"
-        code, body = s3.send(urllib.request.Request(s3.presign("GET", rootfs_key + ".sha256", 300)))
-        if code != 200:
-            sys.exit(f"no {rootfs_key}.sha256 in the bucket ({code}): deliver --rootfs FILE")
-        rootfs_sha = body.decode().split()[0]
+        recorded = stored_text(rootfs_key + ".sha256")
+        if not recorded:
+            sys.exit(f"no {rootfs_key}.sha256 in the bucket: deliver --rootfs FILE")
+        rootfs_sha = recorded.split()[0]
 
     record = {
         "bundle": {"key": bundle_key, "sha256": bundle_sha, "size": len(bundle)},
@@ -233,6 +245,7 @@ def cmd_create(args):
         sys.exit(f"create {code}: {json.dumps(body, ensure_ascii=False)[:600]}")
     print(f"create {name} ({args.flavor}, {args.disk} GB) in {cloudru.ZONE}", flush=True)
     ip = None
+    deadline = started + args.wait_minutes * 60
     while True:
         found = cloudru.vm_by_name(name)
         state = found and found["state"]
@@ -243,6 +256,9 @@ def cmd_create(args):
             break
         if state in ("error", "failed"):
             sys.exit(f"{name} is {state}")
+        if time.time() > deadline:
+            sys.exit(f"{name} is {state} {ip or 'without a public IP'} after {args.wait_minutes} minutes: "
+                     f"python host.py status {name}, or python host.py delete {name}")
         time.sleep(10)
     domain = ip.replace(".", "-") + ".sslip.io"
     print(f"running at {ip}; waiting for https://{domain}/v1/health", flush=True)
@@ -315,7 +331,9 @@ def cmd_delete(args):
     _, floating_id = public_ip(vm)
     attachments = {"external_ips": [floating_id] if floating_id else []}
     code, body = cloudru.api("DELETE", f"/v1/vms/{vm['id']}", {"delete_attachments": attachments})
-    print("delete vm", code, body if code >= 300 else "")
+    if code >= 300:
+        sys.exit(f"delete vm {code}: {body}")
+    print("delete vm", code)
     while cloudru.vm_by_name(args.name) is not None:
         time.sleep(10)
     # A floating IP the VM's deletion left behind stays billed.

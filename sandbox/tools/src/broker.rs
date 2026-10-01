@@ -98,16 +98,21 @@ impl Broker {
         )
         .map_err(|error| self.unreachable(error))?;
 
+        let parsed: Option<Value> = serde_json::from_slice(&response.body).ok();
         if response.status == 429 {
             let wait = match response.header("retry-after") {
                 Some(seconds) => format!("retry in {seconds} s"),
                 None => "wait a minute and retry".to_string(),
             };
-            return Err(Fail::rate_limited(format!(
-                "rate limited: the broker allows 120 requests a minute per sandbox; {wait}"
-            )));
+            // The broker forwards the router's own statuses: only its
+            // `rate_limited` code means the broker's quota.
+            let who = if broker_code(parsed.as_ref()) == Some("rate_limited") {
+                "the broker allows 120 requests a minute per sandbox".to_string()
+            } else {
+                http_error(response.status, parsed.as_ref(), &response.body)
+            };
+            return Err(Fail::rate_limited(format!("rate limited: {who}; {wait}")));
         }
-        let parsed: Option<Value> = serde_json::from_slice(&response.body).ok();
         let errors = parsed
             .as_ref()
             .and_then(|value| value["errors"].as_array())
@@ -176,8 +181,10 @@ fn http_error(status: u16, parsed: Option<&Value>, body: &[u8]) -> String {
         Some((Some(text), None) | (None, Some(text))) => text.to_string(),
         _ => snippet(body),
     };
-    let what = match status {
-        413 => "the request is too large for the broker (25 MiB at most)".to_string(),
+    let what = match (status, broker_code(parsed)) {
+        (413, Some("too_large")) => {
+            "the request is too large for the broker (25 MiB at most)".to_string()
+        }
         _ => format!("the broker answered HTTP {status}"),
     };
     if detail.is_empty() {
@@ -185,6 +192,11 @@ fn http_error(status: u16, parsed: Option<&Value>, body: &[u8]) -> String {
     } else {
         format!("{what}: {detail}")
     }
+}
+
+/// The code of an error `sandboxd` itself wrote (`{"error": "<code>", …}`).
+fn broker_code(parsed: Option<&Value>) -> Option<&str> {
+    parsed.and_then(|value| value["error"].as_str())
 }
 
 fn snippet(body: &[u8]) -> String {

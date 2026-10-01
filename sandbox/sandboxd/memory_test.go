@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -213,9 +214,11 @@ func TestMemoryOverrun(t *testing.T) {
 		t.Fatalf("the guest sees %q", out)
 	}
 	allocate := map[string]string{
-		"at once":  `perl -e '$x = "a" x (768*1024*1024); print "allocated\n"'`,
-		"gradual":  `perl -e 'my @a; push @a, "a" x (1024*1024) for 1..1000; print "allocated\n"'`,
-		"together": `for i in 1 2; do perl -e 'my @a; push @a, "a" x (1024*1024) for 1..400; sleep 2' & done; wait; echo waited`,
+		"at once": `perl -e '$x = "a" x (768*1024*1024); print "allocated\n"'`,
+		"gradual": `perl -e 'my @a; push @a, "a" x (1024*1024) for 1..1000; print "allocated\n"'`,
+		// Each fits alone, the two together do not: one of them is killed.
+		"together": `p='my @a; push @a, "a" x (1024*1024) for 1..400; sleep 2'; perl -e "$p" & a=$!; perl -e "$p" & b=$!; ` +
+			`wait $a; first=$?; wait $b; echo "$first $?"`,
 	}
 	if strings.TrimSpace(h.sh(id, "command -v perl || true")) == "" {
 		t.Skip("no perl in the rootfs")
@@ -225,7 +228,11 @@ func TestMemoryOverrun(t *testing.T) {
 		if result.status != 200 || strings.Contains(result.stdout, "allocated") {
 			t.Fatalf("%s: %+v", name, result)
 		}
-		if name != "together" && result.code != 137 {
+		if name == "together" {
+			if codes := strings.Fields(result.stdout); result.code != 0 || len(codes) != 2 || !slices.Contains(codes, "137") {
+				t.Fatalf("together: exits %q, stderr %q", result.stdout, result.stderr)
+			}
+		} else if result.code != 137 {
 			t.Fatalf("%s: exit %d, stderr %q", name, result.code, result.stderr)
 		}
 		if out := h.sh(id, "cat /workspace/keep.txt"); out != "kept" {
@@ -242,4 +249,32 @@ func TestMemoryOverrun(t *testing.T) {
 	if status := h.call("GET", "/v1/sandboxes/"+id, nil, &view); status != 200 || view.State != "running" {
 		t.Fatalf("after the overruns: %d %+v", status, view)
 	}
+}
+
+// The sandbox's cgroup has its CPU quota (cpus), and `runsc update --memory` after the start leaves it.
+func TestCPUQuota(t *testing.T) {
+	h := newHarness(t)
+	if !h.real {
+		t.Skip("needs gVisor: SANDBOXD_REAL_ROOTFS")
+	}
+	const id = "sb-cpu"
+	h.create(id, sandboxOptions{})
+	found := false
+	for path, want := range map[string]string{
+		"/sys/fs/cgroup/sandboxd/" + id + "/cpu.max":                      "200000 100000",
+		"/sys/fs/cgroup/cpu/sandboxd/" + id + "/cpu.cfs_quota_us":         "200000",
+		"/sys/fs/cgroup/cpu/sandboxd/" + id + "/cpu.cfs_period_us":        "100000",
+		"/sys/fs/cgroup/cpu,cpuacct/sandboxd/" + id + "/cpu.cfs_quota_us": "200000",
+	} {
+		if data, err := os.ReadFile(path); err == nil {
+			found = true
+			if got := strings.TrimSpace(string(data)); got != want {
+				t.Fatalf("%s = %s, want %s", path, got, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no CPU quota file of the sandbox's cgroup")
+	}
+	t.Logf("CPUs the guest sees: %s", strings.TrimSpace(h.sh(id, "nproc")))
 }

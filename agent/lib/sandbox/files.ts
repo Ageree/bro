@@ -1,7 +1,7 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { presignBrowserStateObject } from "@agent/lib/browser-pool/s3";
 import { applicationOrigin } from "@shared/environment/origin";
-import { sandboxFileLinkSignature } from "./keys";
+import { sandboxFileLinkSignature, sandboxFileLinkValid } from "./keys";
 
 /**
  * Files the task agent made, handed to the person: the bytes go to Object
@@ -17,15 +17,44 @@ const uploadTimeoutMs = 60_000;
 /** The redirect's own link lives just long enough to be followed. */
 const redirectSeconds = 10 * 60;
 
-/** A file name a messenger shows as is: no path, no control characters. */
+/** Characters of a shared file's name, its extension included. */
+const maximumNameCharacters = 120;
+
+/**
+ * A file name a messenger shows as is: no path, no control characters, at
+ * most 120 characters. A long name is cut before its extension, which tells
+ * the person's device what opens the file. A name made by this is its own
+ * result: the link checks it so.
+ */
 export function sharedFileName(name: string) {
   const base = name.split(/[\\/]/u).at(-1) ?? "";
-  const clean = base
-    .replace(/[\p{Cc}\p{Cf}]/gu, "")
-    .replace(/[^\p{L}\p{N}._ ()-]+/gu, "_")
-    .trim()
-    .slice(0, 120);
-  return clean.length > 0 && clean !== "." && clean !== ".." ? clean : "file";
+  // Cut by code points: a name cut inside a pair would not encode as a URL.
+  const clean = Array.from(
+    base
+      .replace(/[\p{Cc}\p{Cf}]/gu, "")
+      .replace(/[^\p{L}\p{N}._ ()-]+/gu, "_")
+      .trim()
+  );
+  const extension =
+    clean.length > maximumNameCharacters
+      ? (/\.[\p{L}\p{N}]{1,10}$/u.exec(clean.join(""))?.[0] ?? "")
+      : "";
+  const short = `${clean
+    .slice(0, maximumNameCharacters - Array.from(extension).length)
+    .join("")
+    .trim()}${extension}`;
+  return short.length > 0 && short !== "." && short !== ".." ? short : "file";
+}
+
+/**
+ * A name as RFC 5987 writes it in `filename*`: `encodeURIComponent` leaves
+ * `'`, `(`, `)` and `*` as they are, which that grammar does not allow.
+ */
+function extendedFileName(name: string) {
+  return encodeURIComponent(name).replace(
+    /['()*]/gu,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
 }
 
 function objectKey(id: string, name: string) {
@@ -87,17 +116,13 @@ export function sharedFileLocation(input: {
   const name = sharedFileName(input.name);
   if (name !== input.name) return undefined;
   const key = objectKey(input.id, name);
-  const expected = Buffer.from(sandboxFileLinkSignature(key));
-  const given = Buffer.from(input.signature);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
-    return undefined;
-  }
+  if (!sandboxFileLinkValid(key, input.signature)) return undefined;
   // Downloaded, never rendered on the storage's origin: an SVG or HTML the
   // task agent made must not run as a page.
   return presignBrowserStateObject({
     expiresSeconds: redirectSeconds,
     key,
     method: "GET",
-    responseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+    responseContentDisposition: `attachment; filename*=UTF-8''${extendedFileName(name)}`,
   });
 }

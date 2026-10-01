@@ -568,10 +568,18 @@ export const env = createEnv({
     SANDBOX_HOST_ORIGIN: z
       .string()
       .trim()
-      .refine(
-        (value) => URL.parse(value)?.protocol === "https:",
-        "SANDBOX_HOST_ORIGIN must be an https origin"
-      )
+      .refine((value) => {
+        // An origin only: the client appends `/v1/sandboxes/…` to it.
+        const url = URL.parse(value);
+        return (
+          url?.protocol === "https:" &&
+          url.username === "" &&
+          url.password === "" &&
+          url.pathname === "/" &&
+          url.search === "" &&
+          url.hash === ""
+        );
+      }, "SANDBOX_HOST_ORIGIN must be an https origin, without a path or query")
       .transform((value) => value.replace(/\/+$/u, ""))
       .optional(),
     SANDBOX_SIGNING_KEY: z

@@ -504,13 +504,48 @@ fn missing_socket_exits_2() {
 #[test]
 fn rate_limit_exits_3() {
     let broker = Broker::start(|_| {
-        Reply::Raw("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 12\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        Reply::Raw("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 12\r\nContent-Type: application/json\r\nContent-Length: 71\r\nConnection: close\r\n\r\n{\"error\":\"rate_limited\",\"message\":\"at most 120 tool requests a minute\"}")
     });
     let output = broker.run(&["web-search", r#"{"query": "q"}"#]);
     assert_eq!(output.status.code(), Some(3));
     let text = stderr(&output);
     assert!(text.contains("rate limited"), "{text}");
+    assert!(text.contains("120 requests a minute"), "{text}");
     assert!(text.contains("retry in 12 s"), "{text}");
+}
+
+#[test]
+fn router_statuses_are_not_the_brokers_limits() {
+    // The broker forwards the router's status and body as is.
+    let broker = Broker::start(|_| {
+        Reply::Raw("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 12\r\nConnection: close\r\n\r\nslow down, 1")
+    });
+    let output = broker.run(&["web-search", r#"{"query": "q"}"#]);
+    assert_eq!(output.status.code(), Some(3));
+    let text = stderr(&output);
+    assert!(text.contains("HTTP 429: slow down, 1"), "{text}");
+    assert!(!text.contains("120 requests"), "{text}");
+
+    let broker = Broker::start(|_| Reply::Json(413, json!({"message": "input too big"})));
+    let output = broker.run(&["web-search", r#"{"query": "q"}"#]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(text.contains("HTTP 413: input too big"), "{text}");
+    assert!(!text.contains("25 MiB"), "{text}");
+
+    let broker = Broker::start(|_| {
+        Reply::Json(
+            413,
+            json!({"error": "too_large", "message": "a request may have at most 25 MiB"}),
+        )
+    });
+    let output = broker.run(&["web-search", r#"{"query": "q"}"#]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("too large for the broker"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]

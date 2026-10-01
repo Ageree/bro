@@ -114,7 +114,7 @@ def main():
 
     @timed("soffice")
     def _():
-        result = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", work, "deck.pptx"],
+        result = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", ".", "deck.pptx"],
                                 capture_output=True, text=True, timeout=300)
         assert result.returncode == 0 and os.path.exists("deck.pdf"), (result.returncode, result.stdout,
                                                                        result.stderr)

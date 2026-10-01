@@ -223,6 +223,7 @@ const (
 	sandboxUID  = 1000
 	sandboxGID  = 1000
 	pidsLimit   = 1024
+	cpuPeriod   = 100000 // µs: the CFS period, the quota is cpus of them
 )
 
 // containerEnv is the environment of every process in a sandbox; exec requests add to it.
@@ -241,8 +242,9 @@ const initScript = `trap "exit 0" TERM; while :; do sleep 3600 & wait $!; done`
 // ociSpec is the bundle's config.json. The memory limit is the guest's budget: runsc hands it to gVisor
 // as total memory (MemTotal inside) and makes it the cgroup's limit, which sandboxd then raises by the
 // headroom (memory.go). Files in memory are bounded: the overlay by run's --overlay2 size, /tmp and
-// /dev/shm here. pids bound fork bombs.
-func ociSpec(rootfs string, paths sandboxPaths, id string, memoryMB int) map[string]any {
+// /dev/shm here. pids bound fork bombs; the CPU quota keeps one sandbox from starving the others (runsc
+// also gives the guest that many CPUs).
+func ociSpec(rootfs string, paths sandboxPaths, id string, memoryMB, cpus int) map[string]any {
 	none := []string{}
 	return map[string]any{
 		"ociVersion": "1.0.2",
@@ -290,6 +292,7 @@ func ociSpec(rootfs string, paths sandboxPaths, id string, memoryMB int) map[str
 			"resources": map[string]any{
 				"memory": map[string]any{"limit": int64(memoryMB) << 20},
 				"pids":   map[string]any{"limit": pidsLimit},
+				"cpu":    map[string]any{"quota": int64(cpus) * cpuPeriod, "period": cpuPeriod},
 			},
 		},
 	}
@@ -305,7 +308,7 @@ func writeBundle(config Config, paths sandboxPaths, id string, memoryMB int) err
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(ociSpec(rootfs, paths, id, memoryMB), "", " ")
+	data, err := json.MarshalIndent(ociSpec(rootfs, paths, id, memoryMB, config.CPUs), "", " ")
 	if err != nil {
 		return err
 	}

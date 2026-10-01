@@ -50,8 +50,8 @@ def fetch_range(url, fd, start, end, timeout, progress):
                     raise OSError(f"range answered {response.status}")
                 while position <= end:
                     data = response.read(min(CHUNK, end - position + 1))
-                    if not data:
-                        break
+                    if not data:  # http.client returns b"" for a body cut short, it raises nothing
+                        raise OSError("the range ended early")
                     os.pwrite(fd, data, position)
                     position += len(data)
                     progress(len(data))

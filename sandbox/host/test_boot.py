@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -83,14 +84,15 @@ class CloudInitTest(unittest.TestCase):
 
     def test_refuses_what_provision_would_refuse(self):
         bad = [{"host_id": "Sbx_1"}, {"key": b"short"}, {"rootfs_version": "../x"}, {"runsc_release": "release"},
-               {"runsc_release": "2026-09-28"}, {"runsc_url": None}, {"bundle_sha256": "AB" * 32},
+               {"runsc_release": "2026-09-28"}, {"runsc_url": None}, {"runsc_url": ""}, {"runsc_sha256": None},
+               {"bundle_sha256": "AB" * 32},
                {"apt_mirror": "http://mirror.yandex.ru/ubuntu; rm -rf /"}, {"domain": "a b.example"}]
         for change in bad:
             with self.subTest(change), self.assertRaises(ValueError):
                 boot.cloud_init(**{**ARGS, **change})
-        apt_only = {**ARGS, "runsc_url": None, "runsc_sha256": None, "runsc_release": "20260928.0"}
-        _mode, settings = written(boot.cloud_init(**apt_only), "/etc/bro/code-host-boot.json")
-        self.assertEqual(json.loads(settings)["runsc"], {"release": "20260928.0", "url": "", "sha256": ""})
+        _mode, settings = written(boot.cloud_init(**{**ARGS, "runsc_release": "20260928.0"}),
+                                  "/etc/bro/code-host-boot.json")
+        self.assertEqual(json.loads(settings)["runsc"]["release"], "20260928.0")
 
 
 class BundleTest(unittest.TestCase):
@@ -138,12 +140,15 @@ class BootScriptTest(unittest.TestCase):
         (bundle_dir / "code-host.tgz").write_bytes(raw.getvalue())
         bin_dir = work / "bin"
         bin_dir.mkdir()
-        # curl -o <file> <url>: copy the fixture; the script's paths are moved under the temp directory.
-        (bin_dir / "curl").write_text(f"#!/bin/bash\nwhile [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n"
+        # curl -o <file> <url>: copy the fixture, only for the bundle's own URL (its query whole); the
+        # script's paths are moved under the temp directory.
+        url = "https://s3.cloud.ru/b/code-host.tgz?X-Amz-Signature=x&y=z"
+        (bin_dir / "curl").write_text(f"#!/bin/bash\n[ \"${{!#}}\" = '{url}' ] || exit 22\n"
+                                      f"while [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n"
                                       f"cp {bundle_dir / 'code-host.tgz'} \"$out\"\n")
         (bin_dir / "curl").chmod(0o755)
         settings = work / "boot.json"
-        settings.write_text(json.dumps({"bundle": {"url": "https://x", "sha256": hashlib.sha256(raw.getvalue()).hexdigest()}}))
+        settings.write_text(json.dumps({"bundle": {"url": url, "sha256": hashlib.sha256(raw.getvalue()).hexdigest()}}))
         script = boot.BOOT_SCRIPT.replace("/etc/bro/code-host-boot.json", str(settings)) \
             .replace("/root/", f"{work}/").replace("/opt/bro/code-host", str(work / "host"))
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
@@ -152,7 +157,7 @@ class BootScriptTest(unittest.TestCase):
         self.assertIn(f"provisioned from", result.stdout)
         self.assertFalse((work / "bro-code-host.tgz").exists())
 
-        settings.write_text(json.dumps({"bundle": {"url": "https://x", "sha256": "00" * 32}}))
+        settings.write_text(json.dumps({"bundle": {"url": url, "sha256": "00" * 32}}))
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
         self.assertNotEqual(result.returncode, 0)
@@ -162,6 +167,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
     body = b""
     ranges = True
     seen = []
+    cut = 0  # how many ranged answers (other than bytes=0-0) end half way
 
     def do_GET(self):  # noqa: N802
         header = self.headers.get("Range")
@@ -173,7 +179,12 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{len(self.body)}")
             self.send_header("Content-Length", str(end - start + 1))
             self.end_headers()
-            self.wfile.write(self.body[start:end + 1])
+            part = self.body[start:end + 1]
+            if header != "bytes=0-0" and self.cut:
+                type(self).cut -= 1
+                part = part[:len(part) // 2]
+                self.close_connection = True
+            self.wfile.write(part)
             return
         self.send_response(200)
         self.send_header("Content-Length", str(len(self.body)))
@@ -185,8 +196,8 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
 
 
 class FetchTest(unittest.TestCase):
-    def serve(self, body, ranges):
-        handler = type("Handler", (RangeHandler,), {"body": body, "ranges": ranges, "seen": []})
+    def serve(self, body, ranges, cut=0):
+        handler = type("Handler", (RangeHandler,), {"body": body, "ranges": ranges, "seen": [], "cut": cut})
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -208,6 +219,21 @@ class FetchTest(unittest.TestCase):
         out = private_dir(self) / "x"
         self.assertEqual(fetch.fetch(url, str(out), hashlib.sha256(body).hexdigest())[0], len(body))
         self.assertEqual(out.read_bytes(), body)
+
+    def test_a_range_cut_short_resumes_and_a_server_that_always_cuts_runs_out_of_attempts(self):
+        body = b"0123456789" * 1000
+        url, handler = self.serve(body, ranges=True, cut=2)
+        out = private_dir(self) / "x"
+        with mock.patch.object(fetch.time, "sleep"):
+            self.assertEqual(fetch.fetch(url, str(out), hashlib.sha256(body).hexdigest())[0], len(body))
+        self.assertEqual(out.read_bytes(), body)
+        self.assertEqual(handler.seen[1:], ["bytes=0-9999", "bytes=5000-9999", "bytes=7500-9999"])
+
+        url, handler = self.serve(body, ranges=True, cut=-1)
+        with mock.patch.object(fetch.time, "sleep"), self.assertRaises(SystemExit) as raised:
+            fetch.fetch(url, str(out), hashlib.sha256(body).hexdigest())
+        self.assertIn("ended early", str(raised.exception))
+        self.assertEqual(len(handler.seen), 1 + fetch.ATTEMPTS)
 
     def test_a_wrong_sha256_leaves_nothing_and_never_shows_the_query(self):
         url, _ = self.serve(b"object", ranges=True)
@@ -232,6 +258,7 @@ class ProvisionTest(unittest.TestCase):
         self.assertIn("admin unix//run/caddy/admin.sock", PROVISION)
         self.assertIn("flush_interval -1", PROVISION)
         self.assertNotIn("github.com", PROVISION)
+        self.assertNotIn("gvisor.dev", PROVISION)  # out of reach from Cloud.ru: runsc comes from Object Storage
         self.assertNotIn("pip install", PROVISION)
 
 

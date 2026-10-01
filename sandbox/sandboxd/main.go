@@ -91,10 +91,11 @@ func run() error {
 		return err
 	case <-ctx.Done():
 	}
-	// Sandboxes stay up: the next sandboxd adopts them. Open exec streams end with this process.
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	server.Shutdown(shutdown)
+	// Sandboxes stay up: the next sandboxd adopts them. Open requests end with this process, their commands
+	// killed in the sandbox: within systemd's TimeoutStopSec (15 s, sandbox/host/sandboxd.service).
+	if !api.drain(server, 5*time.Second, 8*time.Second) {
+		logger.Warn("requests still open at the stop")
+	}
 	manager.save()
 	logger.Info("sandboxd stopped")
 	if err := <-errs; err != nil && !errors.Is(err, http.ErrServerClosed) {

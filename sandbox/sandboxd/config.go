@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,6 +40,8 @@ type Config struct {
 	MaxSandboxes  int `json:"max_sandboxes"`
 	// The memoryMb of a sandbox whose PUT names none.
 	MemoryMB int `json:"memory_mb"`
+	// CPUs a sandbox may keep busy (its cgroup's CPU quota): one sandbox cannot starve the others.
+	CPUs int `json:"cpus"`
 	// An exec stream silent this long gets a {"type":"ping"} line (exec.go).
 	ExecPingSeconds int `json:"exec_ping_seconds"`
 }
@@ -65,6 +69,7 @@ func defaultConfig() Config {
 		ReserveMB:     1024,
 		MaxSandboxes:  16,
 		MemoryMB:      1536,
+		CPUs:          2,
 
 		ExecPingSeconds: 15,
 	}
@@ -83,6 +88,10 @@ func loadConfig(path string) (Config, error) {
 	if err := decoder.Decode(&config); err != nil {
 		return config, fmt.Errorf("%s: %w", path, err)
 	}
+	// One object and nothing after it: a second one or garbage is a broken file, not a comment.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return config, fmt.Errorf("%s: something follows the config object", path)
+	}
 	return config, nil
 }
 
@@ -94,8 +103,11 @@ func (c Config) validate() error {
 	if !hexKeyPattern.MatchString(c.Key) {
 		problems = append(problems, errors.New("key must be 64 hex characters"))
 	}
-	if c.Listen == "" || c.Runsc == "" || c.RunscRoot == "" {
-		problems = append(problems, errors.New("listen, runsc and runsc_root are required"))
+	if c.Runsc == "" || c.RunscRoot == "" {
+		problems = append(problems, errors.New("runsc and runsc_root are required"))
+	}
+	if !loopback(c.Listen) {
+		problems = append(problems, errors.New("listen must be a loopback address with a port (127.0.0.1:8091): Caddy terminates TLS in front of it"))
 	}
 	if !filepath.IsAbs(c.Root) || !filepath.IsAbs(c.RunscRoot) {
 		problems = append(problems, errors.New("root and runsc_root must be absolute paths"))
@@ -120,10 +132,26 @@ func (c Config) validate() error {
 	if c.MemoryMB < minMemoryMB || c.MemoryMB > maxMemoryMB {
 		problems = append(problems, fmt.Errorf("memory_mb must be %d to %d", minMemoryMB, maxMemoryMB))
 	}
+	if c.CPUs < 1 || c.CPUs > 256 {
+		problems = append(problems, errors.New("cpus must be 1 to 256"))
+	}
 	if c.ReserveMB < 0 || c.MemoryLimitMB < 0 {
 		problems = append(problems, errors.New("reserve_mb and memory_limit_mb must not be negative"))
 	}
 	return errors.Join(problems...)
+}
+
+// loopback is true for host:port whose host is a loopback IP or localhost.
+func loopback(listen string) bool {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil || port == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c Config) keyBytes() []byte {

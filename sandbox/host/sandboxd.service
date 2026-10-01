@@ -1,6 +1,5 @@
 [Unit]
 Description=Bro code sandboxes (sandboxd: gVisor runsc, API on 127.0.0.1:8091 behind Caddy)
-Documentation=file:///opt/bro/code-host/README.md
 After=network-online.target
 Wants=network-online.target
 

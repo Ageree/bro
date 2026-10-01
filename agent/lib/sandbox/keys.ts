@@ -127,11 +127,13 @@ const tokenJsonSchema = z
 
 /**
  * The claims of a valid tool router token, or undefined: a bad signature, a
- * malformed payload and an expired or overlong token all read the same.
+ * malformed payload and an expired or overlong token all read the same, and
+ * so does any token while the sandbox has no key.
  */
 export function verifySandboxToolsToken(token: string, now = Date.now()) {
   const [version, body, signature, ...rest] = token.split(".");
   if (
+    env.SANDBOX_SIGNING_KEY === undefined ||
     version !== "v1" ||
     body === undefined ||
     signature === undefined ||
@@ -191,4 +193,12 @@ export function sandboxFileLinkSignature(objectKey: string) {
   return createHmac("sha256", derived("bro-sandbox-file-links"))
     .update(objectKey)
     .digest("base64url");
+}
+
+/** Whether a link's signature opens this object; none does without a key. */
+export function sandboxFileLinkValid(objectKey: string, signature: string) {
+  if (env.SANDBOX_SIGNING_KEY === undefined) return false;
+  const expected = Buffer.from(sandboxFileLinkSignature(objectKey));
+  const given = Buffer.from(signature);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }

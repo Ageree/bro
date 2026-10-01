@@ -185,8 +185,10 @@ impl Parser {
                 break;
             }
             let rest = &buf[self.start..];
-            let Some(end) = find(rest, b"\r\n\r\n") else {
-                if rest.len() > MAX_HEAD {
+            // A head has at most `MAX_HEAD` bytes before its terminator; past
+            // that the body is not searched.
+            let Some(end) = find(&rest[..rest.len().min(MAX_HEAD + 4)], b"\r\n\r\n") else {
+                if rest.len() >= MAX_HEAD + 4 {
                     return Err(malformed("response head too large"));
                 }
                 return if eof {
@@ -389,6 +391,22 @@ mod tests {
         assert!(parse_response(b"HTTP/1.1 200 OK\r\nContent-Le", false)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn head_is_bounded_even_when_it_ends() {
+        let padding = "x".repeat(MAX_HEAD);
+        let raw = format!("HTTP/1.1 200 OK\r\nX-Pad: {padding}\r\nContent-Length: 0\r\n\r\n");
+        assert!(matches!(
+            parse_response(raw.as_bytes(), false),
+            Err(Error::Malformed(message)) if message == "response head too large"
+        ));
+        let fits = format!(
+            "HTTP/1.1 200 OK\r\nX-Pad: {}\r\nContent-Length: 0\r\n\r\n",
+            "x".repeat(MAX_HEAD - 43)
+        );
+        assert_eq!(fits.len(), MAX_HEAD + 4);
+        assert_eq!(complete(fits.as_bytes()).status, 200);
     }
 
     #[test]

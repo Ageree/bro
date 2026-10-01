@@ -6,14 +6,18 @@ import (
 	"strings"
 )
 
-// redact is a URL fit for a log line: scheme, host and path. Presigned URLs carry their signature in the
-// query, and a token may sit in userinfo.
+// redact is a URL fit for a log line: its origin only. Presigned URLs carry their signature in the query,
+// a token may sit in userinfo or in a path segment (/api/<token>/graphql); a dropped path shows as "/…".
 func redact(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" {
 		return "<invalid url>"
 	}
-	return parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
+	origin := parsed.Scheme + "://" + parsed.Host
+	if strings.Trim(parsed.EscapedPath(), "/") != "" {
+		origin += "/…"
+	}
+	return origin
 }
 
 // redactError is an HTTP client error without the URL it names (*url.Error prints it whole).

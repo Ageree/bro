@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -68,6 +69,34 @@ func TestExecStream(t *testing.T) {
 	if result := h.exec("sb-missing", map[string]any{"command": "true"}); result.status != 409 {
 		t.Fatalf("exec in an unknown sandbox: %d", result.status)
 	}
+}
+
+func TestExecTimeoutClamp(t *testing.T) {
+	for given, want := range map[int64]time.Duration{
+		1500: 1500 * time.Millisecond, 3_600_001: time.Hour, 9_223_372_036_855: time.Hour, 1 << 62: time.Hour,
+	} {
+		_, _, _, timeout, err := parseExec([]byte(fmt.Sprintf(`{"command":"true","timeoutMs":%d}`, given)))
+		if err != nil || timeout != want {
+			t.Errorf("timeoutMs %d: %s %v, want %s", given, timeout, err, want)
+		}
+	}
+}
+
+// When sandboxd stops, an exec still open is cancelled: its command dies in the sandbox, not later on its
+// own past any timeout.
+func TestDrainKillsOpenExecs(t *testing.T) {
+	h := newHarness(t)
+	h.create("sb-drain", sandboxOptions{})
+	events := h.openExec(context.Background(), "sb-drain", "sleep 300 & echo $! > d.pid; echo ready; wait")
+	nextEvent(t, events)
+	if e := nextEvent(t, events); string(e.Data) != "ready\n" {
+		t.Fatalf("ready: %+v", e)
+	}
+	if !h.server.drain(h.api.Config, 200*time.Millisecond, 30*time.Second) {
+		t.Fatal("the exec did not end")
+	}
+	h.restart()
+	h.waitDead("sb-drain", "d.pid")
 }
 
 func TestExecTimeout(t *testing.T) {
@@ -172,7 +201,8 @@ func TestExecBackgroundChild(t *testing.T) {
 	h.create("sb-bg", sandboxOptions{})
 	started := time.Now()
 	result := h.exec("sb-bg", map[string]any{"command": "sleep 30 & echo $! > bg.pid; echo started"})
-	if result.code != 0 || result.stdout != "started\n" || time.Since(started) > 8*time.Second {
+	if result.code != 0 || result.stdout != "started\n" || time.Since(started) < 1500*time.Millisecond ||
+		time.Since(started) > 8*time.Second {
 		t.Fatalf("background child: %+v after %s", result, time.Since(started))
 	}
 	if !h.processAlive("sb-bg", "bg.pid") {

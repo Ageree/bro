@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -190,5 +193,99 @@ func TestIdleReaper(t *testing.T) {
 	h.m.reap(ctx, time.Now().Add(stoppedRecordTTL+time.Hour))
 	if _, ok := readState(t, h)["sb-idle"]; ok {
 		t.Fatal("an old stopped record was not pruned")
+	}
+}
+
+// A request that comes while a stop runs waits for it: the stop's snapshot does not miss its work, and
+// the teardown does not cut it short. After a stop that went through it finds the sandbox stopped.
+func TestStopHoldsNewRequests(t *testing.T) {
+	h := newHarness(t)
+	h.create("sb-gate", sandboxOptions{})
+	sb := h.m.lookup("sb-gate")
+	sb.op.Lock() // as the reaper or a stop does
+	h.m.mu.Lock()
+	sb.stopping = true
+	h.m.mu.Unlock()
+	began := make(chan error, 1)
+	go func() {
+		running, err := h.m.begin("sb-gate")
+		if err == nil {
+			h.m.end(running)
+		}
+		began <- err
+	}()
+	select {
+	case err := <-began:
+		t.Fatalf("a request started during the stop: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	h.m.mu.Lock()
+	sb.stopping, sb.rec.State = false, stateStopped
+	h.m.mu.Unlock()
+	sb.op.Unlock()
+	if err := <-began; err == nil || !strings.Contains(err.Error(), "sandbox_stopped") {
+		t.Fatalf("after the stop: %v", err)
+	}
+	h.m.mu.Lock()
+	sb.rec.State = stateRunning
+	h.m.mu.Unlock()
+}
+
+// DELETE of an id sandboxd never knew leaves no entry for good: the reaper forgets absent ones.
+func TestAbsentEntriesForgotten(t *testing.T) {
+	h := newHarness(t)
+	for i := range 20 {
+		if status := h.call("DELETE", fmt.Sprintf("/v1/sandboxes/sb-never-%d", i), nil, nil); status != 204 {
+			t.Fatalf("DELETE: %d", status)
+		}
+	}
+	h.create("sb-live", sandboxOptions{})
+	h.m.reap(context.Background(), time.Now())
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	if len(h.m.sandboxes) != 1 || h.m.sandboxes["sb-live"] == nil {
+		t.Fatalf("entries after the reaper: %d", len(h.m.sandboxes))
+	}
+}
+
+// A state.json write that fails is tried again on the next tick: a stale file would have a restart delete
+// a live container.
+func TestStateWriteRetried(t *testing.T) {
+	h := newHarness(t)
+	h.create("sb-state", sandboxOptions{})
+	path := h.cfg.statePath()
+	os.Remove(path)
+	os.MkdirAll(filepath.Join(path, "in-the-way"), 0o700) // rename onto a directory fails
+	h.m.save()
+	h.m.mu.Lock()
+	dirty := h.m.dirty
+	h.m.mu.Unlock()
+	if !dirty || !strings.Contains(h.logs.String(), "writing state.json failed") {
+		t.Fatalf("a failed write is not marked for a retry (dirty %v)", dirty)
+	}
+	os.RemoveAll(path)
+	h.m.reap(context.Background(), time.Now())
+	if rec := readState(t, h)["sb-state"]; rec.State != stateRunning {
+		t.Fatalf("after the retry: %+v", rec)
+	}
+}
+
+// A file tar cannot read fails the snapshot (and so the stop) instead of being left out of it.
+func TestSnapshotUnreadableFile(t *testing.T) {
+	h := newHarness(t)
+	if !h.real && os.Geteuid() == 0 {
+		t.Skip("root reads every file: needs gVisor (SANDBOXD_REAL_ROOTFS) or a non-root run")
+	}
+	h.create("sb-unreadable", sandboxOptions{})
+	h.writeFile("sb-unreadable", "/workspace/secret.txt", []byte("x"))
+	h.sh("sb-unreadable", "chmod 000 secret.txt")
+	var failure map[string]string
+	if status := h.call("POST", "/v1/sandboxes/sb-unreadable/stop", nil, &failure); status != 502 ||
+		failure["error"] != "snapshot_failed" || !strings.Contains(failure["message"], "secret.txt") {
+		t.Fatalf("stop with an unreadable file: %d %v", status, failure)
+	}
+	h.sh("sb-unreadable", "chmod 600 secret.txt")
+	if status := h.call("POST", "/v1/sandboxes/sb-unreadable/stop", nil, nil); status != 200 {
+		t.Fatalf("stop once readable: %d", status)
 	}
 }

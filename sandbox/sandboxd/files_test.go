@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestFiles(t *testing.T) {
@@ -132,4 +136,67 @@ type zeros struct{}
 func (zeros) Read(p []byte) (int, error) {
 	clear(p)
 	return len(p), nil
+}
+
+// A write whose body breaks off leaves the file as it was and no temporary file behind; a directory whose
+// name ends in a newline is the directory written to.
+func TestWriteIsWhole(t *testing.T) {
+	h := newHarness(t)
+	const id = "sb-whole"
+	h.create(id, sandboxOptions{})
+	if status := h.writeFile(id, "/workspace/keep.txt", []byte("old contents")); status != 204 {
+		t.Fatalf("write: %d", status)
+	}
+	h.sh(id, "chmod 750 keep.txt")
+	// A body cut short: Content-Length promises more than the client sends before it hangs up.
+	connection, err := net.Dial("tcp", strings.TrimPrefix(h.api.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(connection, "PUT /v1/sandboxes/%s/files?path=/workspace/keep.txt HTTP/1.1\r\nHost: sandboxd\r\n"+
+		"Authorization: Bearer %s\r\nContent-Length: 1000000\r\n\r\npartial", id, h.token())
+	time.Sleep(300 * time.Millisecond) // the partial body is in the script's file by now
+	connection.Close()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		h.m.mu.Lock()
+		active := h.m.sandboxes[id].active
+		h.m.mu.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the broken write did not end")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if status, data := h.readFile(id, "/workspace/keep.txt"); status != 200 || string(data) != "old contents" {
+		t.Fatalf("after a broken write: %d %q", status, data)
+	}
+	if out := h.sh(id, "ls -A; stat -c %a keep.txt"); out != "keep.txt\n750\n" {
+		t.Fatalf("left behind: %q", out)
+	}
+	// A whole write keeps the file's mode.
+	if status := h.writeFile(id, "/workspace/keep.txt", []byte("new")); status != 204 {
+		t.Fatalf("write: %d", status)
+	}
+	if out := h.sh(id, "cat keep.txt; echo; stat -c %a keep.txt; ls -A"); out != "new\n750\nkeep.txt\n" {
+		t.Fatalf("after a whole write: %q", out)
+	}
+	if status := h.writeFile(id, "/workspace/dir\n/file", []byte("in a newline dir")); status != 204 {
+		t.Fatalf("write under a newline directory: %d", status)
+	}
+	if out := h.sh(id, `cat "dir"$'\n'"/file"`); out != "in a newline dir" {
+		t.Fatalf("under the newline directory: %q", out)
+	}
+	if status := h.writeFile(id, "/workspace/keep.txt/under", []byte("x")); status != 409 {
+		t.Fatalf("write under a file: %d", status)
+	}
+	h.writeFile(id, "/workspace/a-dir/inside", []byte("x"))
+	if status := h.writeFile(id, "/workspace/a-dir", []byte("x")); status != 409 {
+		t.Fatalf("write over a directory: %d", status)
+	}
+	if out := h.sh(id, "ls -A a-dir; ls -A | grep -c bro-write || true"); out != "inside\n0\n" {
+		t.Fatalf("after failed writes: %q", out)
+	}
 }

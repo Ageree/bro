@@ -56,8 +56,47 @@ func TestHealthAndAuth(t *testing.T) {
 	if status := h.call("GET", "/v1/sandboxes/Upper", nil, &failure); status != 400 {
 		t.Errorf("an upper-case id: %d", status)
 	}
-	if status := h.call("GET", "/v1/nothing", nil, &failure); status != 404 || failure["error"] != "not_found" {
+	// A path that carries a token, sent to the wrong URL, does not reach the logs.
+	if status := h.call("GET", "/api/secret-in-path", nil, &failure); status != 404 || failure["error"] != "not_found" {
 		t.Errorf("unknown route: %d %v", status, failure)
+	}
+	if status := h.call("GET", "/v1/sandboxes/token-like-SECRET", nil, &failure); status != 400 {
+		t.Errorf("an invalid id: %d", status)
+	}
+	h.assertNoSecrets("secret-in-path", "SECRET")
+	if !strings.Contains(h.logs.String(), `"route":"GET /v1/sandboxes/{id}"`) {
+		t.Errorf("no route in the request log:\n%s", h.logs.String())
+	}
+}
+
+func TestConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	key := strings.Repeat("ab", 32)
+	for name, text := range map[string]string{
+		"second object": `{"host":"h","key":"` + key + `"} {"host":"other"}`,
+		"garbage":       `{"host":"h","key":"` + key + `"} x`,
+		"unknown key":   `{"host":"h","key":"` + key + `","memory_limt_mb":1}`,
+	} {
+		path := filepath.Join(dir, "config.json")
+		os.WriteFile(path, []byte(text), 0o600)
+		if _, err := loadConfig(path); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
+	}
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(`{"host":"h","key":"`+key+`"}`+"\n"), 0o600)
+	config, err := loadConfig(path)
+	if err != nil || config.validate() != nil || config.CPUs != 2 {
+		t.Fatalf("a good config: %+v %v %v", config, err, config.validate())
+	}
+	for listen, ok := range map[string]bool{
+		"127.0.0.1:8091": true, "[::1]:8091": true, "localhost:8091": true,
+		"0.0.0.0:8091": false, ":8091": false, "10.0.0.5:8091": false, "127.0.0.1": false, "": false,
+	} {
+		config.Listen = listen
+		if err := config.validate(); (err == nil) != ok {
+			t.Errorf("listen %q: %v", listen, err)
+		}
 	}
 }
 
@@ -146,17 +185,21 @@ func TestCreateReattachAndGet(t *testing.T) {
 	if spec.Process.User["uid"] != 1000 || spec.Process.User["gid"] != 1000 || !spec.Process.NoNewPrivs ||
 		len(spec.Process.Capabilities["bounding"]) != 0 || spec.Root["readonly"] != false ||
 		spec.Linux.Resources["memory"]["limit"] != 768<<20 || spec.Linux.Resources["pids"]["limit"] != 1024 ||
+		spec.Linux.Resources["cpu"]["quota"] != 200000 || spec.Linux.Resources["cpu"]["period"] != 100000 ||
 		spec.Linux.CgroupsPath != "/sandboxd/sb-create" {
 		t.Fatalf("spec: %s", data)
 	}
 	var bind map[string]any
+	var options []any
 	for _, mount := range spec.Mounts {
 		if mount["destination"] == "/run/bro" {
 			bind = mount
+			options, _ = mount["options"].([]any)
 		}
 	}
-	if bind == nil || bind["source"] != h.cfg.paths("sb-create").run || !strings.Contains(string(data), `"ro"`) {
-		t.Fatalf("no /run/bro bind mount: %s", data)
+	// Read-only: nothing in the sandbox may put files next to the broker's socket.
+	if bind == nil || bind["source"] != h.cfg.paths("sb-create").run || !slices.Contains(options, any("ro")) {
+		t.Fatalf("no read-only /run/bro bind mount: %s", data)
 	}
 	for _, size := range []string{`"size=192m"`} { // /tmp and /dev/shm: a quarter each
 		if strings.Count(string(data), size) != 2 {
@@ -202,7 +245,10 @@ func TestNetworkPolicy(t *testing.T) {
 	if status := h.call("POST", "/v1/sandboxes/sb-net/network", `{"policy":"deny-all"}`, nil); status != 204 {
 		t.Fatalf("deny-all: %d", status)
 	}
-	for _, body := range []string{`{"policy":"allow-all"}`, `{"policy":{"allow":["example.com"]}}`} {
+	if status := h.call("POST", "/v1/sandboxes/sb-net/network", `{"policy":"deny\u002dall"}`, nil); status != 204 {
+		t.Fatalf("deny-all with an escape: %d", status)
+	}
+	for _, body := range []string{`{"policy":"allow-all"}`, `{"policy":{"allow":["example.com"]}}`, `{"policy":null}`} {
 		if status := h.call("POST", "/v1/sandboxes/sb-net/network", body, &failure); status != 409 ||
 			failure["error"] != "unsupported_policy" {
 			t.Fatalf("%s: %d %v", body, status, failure)
@@ -277,6 +323,7 @@ func TestReconcileAfterRestart(t *testing.T) {
 	h.create("sb-keep", sandboxOptions{tools: &toolsConfig{URL: upstream + "/graphql", Token: "router-token-keep"}})
 	h.create("sb-dead", sandboxOptions{})
 	h.create("sb-starting", sandboxOptions{})
+	h.create("sb-brokerless", sandboxOptions{})
 	if status := h.writeFile("sb-keep", "/workspace/x.txt", []byte("survives")); status != 204 {
 		t.Fatalf("write: %d", status)
 	}
@@ -296,8 +343,23 @@ func TestReconcileAfterRestart(t *testing.T) {
 	if err := h.m.rt.Run(ctx, "sb-orphan", orphan.bundle, orphan.log, 128); err != nil {
 		t.Fatal(err)
 	}
+	// A directory where sb-brokerless's socket goes: its broker cannot start when it is adopted.
+	blocked := h.cfg.paths("sb-brokerless").socket
+	os.Remove(blocked)
+	os.MkdirAll(filepath.Join(blocked, "in-the-way"), 0o700)
 
 	h.restart()
+	if !strings.Contains(h.logs.String(), "adopted sandbox has no broker") {
+		t.Fatalf("no log of the broker that did not start:\n%s", h.logs.String())
+	}
+	// The next PUT starts it.
+	os.RemoveAll(blocked)
+	h.create("sb-brokerless", sandboxOptions{tools: &toolsConfig{URL: upstream + "/graphql", Token: "router-token-keep"}})
+	if response, err := brokerHTTP(blocked).Get("http://sandbox/health"); err != nil || response.StatusCode != 200 {
+		t.Fatalf("broker after the PUT: %v %v", response, err)
+	} else {
+		response.Body.Close()
+	}
 	var view statusView
 	if status := h.call("GET", "/v1/sandboxes/sb-keep", nil, &view); status != 200 || view.State != "running" {
 		t.Fatalf("adopted sandbox: %d %+v", status, view)

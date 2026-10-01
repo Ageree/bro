@@ -39,14 +39,19 @@ var (
 )
 
 // killScript runs in the sandbox as the sandbox user with the marker as $1. It reads /proc/<pid>/environ
-// (gVisor has it) with bash builtins only, and goes round again until no marked process is left: a process
-// may fork while the first round runs.
+// (gVisor has it) with bash builtins only, and goes round again until a round finds no marked process: a
+// process may fork while a round runs. Zombies are dead already and skipped; killMarked's timeout bounds
+// the rounds.
 const killScript = `m="` + markerEnv + `=$1"
-for round in 1 2 3 4 5 6 7 8; do
+while :; do
   hit=
   for d in /proc/[0-9]*; do
     p=${d#/proc/}
     [ "$p" = "$$" ] && continue
+    s=
+    read -r s 2>/dev/null < "$d/stat" || continue
+    s=${s##*) }
+    [ "${s%% *}" = Z ] && continue
     while IFS= read -r -d '' e; do
       if [ "$e" = "$m" ]; then kill -9 "$p" 2>/dev/null && hit=1; break; fi
     done 2>/dev/null < "$d/environ"
@@ -154,7 +159,8 @@ func parseExec(body []byte) (execRequest, []string, []byte, time.Duration, error
 		if *request.TimeoutMS <= 0 {
 			return request, nil, nil, 0, badRequest("timeoutMs must be positive")
 		}
-		timeout = min(time.Duration(*request.TimeoutMS)*time.Millisecond, maxExecTimeout)
+		// Clamped in milliseconds: a huge value would overflow time.Duration and fire at once.
+		timeout = time.Duration(min(*request.TimeoutMS, maxExecTimeout.Milliseconds())) * time.Millisecond
 	}
 	var stdin []byte
 	if request.Stdin != nil {
@@ -312,6 +318,9 @@ func (s *eventStream) sendLocked(e event) error {
 	if s.failed || s.done {
 		return errClientGone
 	}
+	// A client that stops reading fails the write in time instead of blocking it (and the output copy,
+	// and the command's end) forever.
+	s.rc.SetWriteDeadline(time.Now().Add(writeStall))
 	_, err = s.w.Write(append(line, '\n'))
 	if err == nil {
 		err = s.rc.Flush()

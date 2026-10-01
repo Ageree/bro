@@ -59,21 +59,36 @@ pub fn build_input(schema: &Value, args: &[String]) -> Result<Map<String, Value>
             None => (&arg[2..], None),
         };
         let (property, negated) = resolve_flag(schema, properties, key)?;
-        let property_schema = properties.get(&property).unwrap_or(&Value::Null);
+        let property_schema = property_schema(schema, properties, &property);
         let types = accepted_types(property_schema);
         let value = if is_boolean(&types) {
+            // A nullable boolean also takes `null`: `--x=null` or `--x null`.
+            let nullable = types.contains(&"null") && !negated;
             let given = match inline {
-                Some(raw) => parse_bool(raw)
-                    .ok_or_else(|| format!("--{key} expects true or false, got {raw:?}"))?,
-                None => match args.get(i).and_then(|next| parse_bool_word(next)) {
-                    Some(word) => {
+                Some(raw) if nullable && raw.trim() == "null" => None,
+                Some(raw) => Some(parse_bool(raw).ok_or_else(|| {
+                    let expected = if nullable {
+                        "true, false or null"
+                    } else {
+                        "true or false"
+                    };
+                    format!("--{key} expects {expected}, got {raw:?}")
+                })?),
+                None => match args.get(i).map(String::as_str) {
+                    Some("null") if nullable => {
                         i += 1;
-                        word
+                        None
                     }
-                    None => true,
+                    next => match next.and_then(parse_bool_word) {
+                        Some(word) => {
+                            i += 1;
+                            Some(word)
+                        }
+                        None => Some(true),
+                    },
                 },
             };
-            Value::Bool(given != negated)
+            given.map_or(Value::Null, |given| Value::Bool(given != negated))
         } else {
             let raw = match inline {
                 Some(raw) => raw,
@@ -90,39 +105,45 @@ pub fn build_input(schema: &Value, args: &[String]) -> Result<Map<String, Value>
         set(&mut input, &property, value, &types)?;
     }
 
-    let open_slots: Vec<&str> = required(schema)
+    let slots: Vec<&str> = required(schema)
         .filter(|name| !input.contains_key(*name))
         .collect();
-    let mut slots = open_slots.into_iter().peekable();
-    let mut rest = positional.into_iter().peekable();
-    while let Some(raw) = rest.next() {
-        let Some(property) = slots.next() else {
-            return Err(format!(
-                "unexpected argument {raw:?}: quote a value with spaces, or pass JSON"
-            ));
+    let mut rest = positional.as_slice();
+    for (n, property) in slots.iter().enumerate() {
+        let Some((raw, _)) = rest.split_first() else {
+            let missing: Vec<String> = slots[n..].iter().map(|name| format!("<{name}>")).collect();
+            return Err(format!("missing {}", missing.join(" ")));
         };
-        let property_schema = properties.get(property).unwrap_or(&Value::Null);
+        let property_schema = property_schema(schema, properties, property);
         let types = accepted_types(property_schema);
-        let describe = |expected| format!("<{property}> expects {expected}, got {raw:?}");
-        let value =
-            if slots.peek().is_none() && types.contains(&"array") && rest.peek().is_some() {
-                // The last positional array takes the remaining arguments.
-                let item = &property_schema["items"];
-                let mut items = vec![convert(raw, item).map_err(describe)?];
-                for raw in rest.by_ref() {
-                    items.push(convert(raw, item).map_err(|expected| {
-                        format!("<{property}> expects {expected}, got {raw:?}")
-                    })?);
-                }
-                Value::Array(items)
-            } else {
-                convert(raw, property_schema).map_err(describe)?
-            };
-        input.insert(property.to_string(), value);
+        // An array takes every argument the required properties after it
+        // leave over, so `<urls>... <mode>` works as well as `<mode> <urls>...`.
+        let take = if types.contains(&"array") {
+            rest.len().saturating_sub(slots.len() - n - 1).max(1)
+        } else {
+            1
+        };
+        let value = if take == 1 {
+            convert(raw, property_schema)
+                .map_err(|expected| format!("<{property}> expects {expected}, got {raw:?}"))?
+        } else {
+            let item = &property_schema["items"];
+            let items = rest[..take]
+                .iter()
+                .map(|raw| {
+                    convert(raw, item)
+                        .map_err(|expected| format!("<{property}> expects {expected}, got {raw:?}"))
+                })
+                .collect::<Result<_, _>>()?;
+            Value::Array(items)
+        };
+        input.insert((*property).to_string(), value);
+        rest = &rest[take..];
     }
-    let missing: Vec<String> = slots.map(|name| format!("<{name}>")).collect();
-    if !missing.is_empty() {
-        return Err(format!("missing {}", missing.join(" ")));
+    if let Some(raw) = rest.first() {
+        return Err(format!(
+            "unexpected argument {raw:?}: quote a value with spaces, or pass JSON"
+        ));
     }
     Ok(input)
 }
@@ -135,7 +156,7 @@ pub fn usage(tool: &str, schema: &Value) -> String {
     let empty = Map::new();
     let properties = schema["properties"].as_object().unwrap_or(&empty);
     for name in &required {
-        let types = accepted_types(properties.get(*name).unwrap_or(&Value::Null));
+        let types = accepted_types(property_schema(schema, properties, name));
         line.push_str(&format!(" <{name}>"));
         if types.contains(&"array") {
             line.push_str("...");
@@ -170,6 +191,20 @@ fn type_hint(types: &[&str]) -> String {
         "value".to_string()
     } else {
         named.join("|")
+    }
+}
+
+/// A property's schema: declared, or the `additionalProperties` schema for
+/// one the tool does not list.
+fn property_schema<'a>(
+    schema: &'a Value,
+    properties: &'a Map<String, Value>,
+    name: &str,
+) -> &'a Value {
+    match (properties.get(name), &schema["additionalProperties"]) {
+        (Some(declared), _) => declared,
+        (None, extra @ Value::Object(_)) => extra,
+        (None, _) => &Value::Null,
     }
 }
 
@@ -522,6 +557,67 @@ mod tests {
         );
         let input = build(&schema, &["fast", "https://a"]).unwrap();
         assert_eq!(input, json!({"mode": "fast", "urls": ["https://a"]}));
+    }
+
+    #[test]
+    fn positional_array_leaves_room_for_later_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "urls": {"type": "array", "items": {"type": "string"}},
+                "mode": {"type": "string"},
+                "depth": {"type": "integer"}
+            },
+            "required": ["urls", "mode", "depth"]
+        });
+        assert_eq!(
+            usage("fetch", &schema),
+            "tools fetch <urls>... <mode> <depth>"
+        );
+        let input = build(&schema, &["https://a", "https://b", "fast", "2"]).unwrap();
+        assert_eq!(
+            input,
+            json!({"urls": ["https://a", "https://b"], "mode": "fast", "depth": 2})
+        );
+        let input = build(&schema, &["https://a", "fast", "2"]).unwrap();
+        assert_eq!(
+            input,
+            json!({"urls": ["https://a"], "mode": "fast", "depth": 2})
+        );
+        let error = build(&schema, &["https://a", "fast"]).unwrap_err();
+        assert_eq!(error, "missing <depth>");
+    }
+
+    #[test]
+    fn nullable_boolean_takes_null() {
+        let input = build(&search_schema(), &["--fresh=null", "q"]).unwrap();
+        assert_eq!(input, json!({"query": "q", "fresh": null}));
+        let input = build(&search_schema(), &["--fresh", "null", "q"]).unwrap();
+        assert_eq!(input, json!({"query": "q", "fresh": null}));
+        let error = build(&search_schema(), &["--fresh=maybe", "q"]).unwrap_err();
+        assert!(error.contains("true, false or null"), "{error}");
+        let schema = json!({"type": "object", "properties": {"on": {"type": "boolean"}}});
+        let error = build(&schema, &["--on=null"]).unwrap_err();
+        assert!(error.contains("expects true or false"), "{error}");
+    }
+
+    #[test]
+    fn unknown_options_follow_additional_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": {"type": "string"}
+        });
+        let input = build(&schema, &["q", "--extra", "42"]).unwrap();
+        assert_eq!(input, json!({"query": "q", "extra": "42"}));
+        let schema = json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "additionalProperties": {"type": "integer"}
+        });
+        let error = build(&schema, &["--limit", "ten"]).unwrap_err();
+        assert!(error.contains("--limit expects integer"), "{error}");
     }
 
     #[test]

@@ -579,6 +579,27 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                                                  "total_tokens": 20_300, "total_prompt_cached_tokens": 12_000,
                                                  "billed": 0.75, "billed_calls": 2})
 
+    async def test_a_run_without_parsed_usage_still_reports_its_bill(self):
+        # Every answer unparseable: browser-use has no usage, the service billed every call all the same.
+        class Response:
+            request = types.SimpleNamespace(method="POST", url=types.SimpleNamespace(path="/api/v1/chat/completions"))
+
+            async def aread(self):
+                return b""
+
+            def json(self):
+                return {"usage": {"cost": 0.4}}
+
+        async def unparsed(agent, on_step_start):
+            count = agent.options["llm"]["http_client"]["event_hooks"]["response"][0]
+            await count(Response())
+            return FakeHistory(False)
+
+        FakeAgent.script = unparsed
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        run = await self.settled("r1")
+        self.assertEqual(run.public()["usage"], {"billed": 0.4, "billed_calls": 1})
+
     async def test_a_restart_takes_the_newest_run_and_the_newest_memory(self):
         worker.RUNS.mkdir(parents=True)
         records = [("r1", "2026-09-28T10:00:00Z", {"n_steps": 5, "history": []}),

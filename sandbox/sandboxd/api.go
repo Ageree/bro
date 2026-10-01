@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,15 +9,41 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-const version = "2026-10-01.1"
+const version = "2026-10-01.2"
 
 // API is sandboxd's HTTP interface (sandbox/README.md, "API sandboxd").
 type API struct {
-	m   *Manager
-	now func() time.Time
+	m        *Manager
+	now      func() time.Time
+	inflight sync.WaitGroup // requests in their handlers
+}
+
+// drain ends the server when sandboxd stops: open requests get `grace` to finish; then their connections
+// are closed, which cancels them (a cancelled exec kills its processes in the sandbox, so no command
+// outlives sandboxd past its timeout), and their cleanup gets up to `cleanup` more. False when some
+// request had not ended by then.
+func (a *API) drain(server *http.Server, grace, cleanup time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if server.Shutdown(ctx) == nil {
+		return true
+	}
+	server.Close()
+	done := make(chan struct{})
+	go func() {
+		a.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(cleanup):
+		return false
+	}
 }
 
 func (a *API) handler() http.Handler {
@@ -87,32 +114,57 @@ func (r *recorder) Write(p []byte) (int, error) {
 
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
-// logged writes one line per request (the path only: queries carry file paths, never tokens) and turns
-// a panic into a 500 with the reason.
+// logged writes one line per request and turns a panic into a 500 with the reason. The line names the
+// route and a valid sandbox id, never the raw path or query: a client's path may carry anything (a token
+// sent to the wrong URL), queries carry file paths.
 func (a *API) logged(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.inflight.Add(1)
+		defer a.inflight.Done()
 		started := time.Now()
 		rec := &recorder{ResponseWriter: w}
 		defer func() {
+			// The mux has set r.Pattern by now: the route, or "/" for none.
+			line := []any{"route", r.Pattern}
+			if r.Pattern == "" || r.Pattern == "/" {
+				line = []any{"route", "none", "method", r.Method}
+			}
+			if id := r.PathValue("id"); sandboxIDPattern.MatchString(id) {
+				line = append(line, "sandbox", id)
+			}
 			if failure := recover(); failure != nil {
 				if failure == http.ErrAbortHandler {
-					a.m.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
-						"ms", time.Since(started).Milliseconds(), "aborted", true)
+					a.m.log.Info("request", append(line, "status", rec.status, "ms", time.Since(started).Milliseconds(),
+						"aborted", true)...)
 					panic(failure)
 				}
-				a.m.log.Error("request panicked", "method", r.Method, "path", r.URL.Path, "panic", fmt.Sprint(failure))
+				a.m.log.Error("request panicked", append(line, "panic", fmt.Sprint(failure))...)
 				if rec.status == 0 {
 					writeError(rec, &apiError{http.StatusInternalServerError, "internal", fmt.Sprint(failure)})
 				}
 				return
 			}
-			if r.URL.Path != "/v1/health" {
-				a.m.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
-					"ms", time.Since(started).Milliseconds())
+			if r.Pattern != "GET /v1/health" {
+				a.m.log.Info("request", append(line, "status", rec.status, "ms", time.Since(started).Milliseconds())...)
 			}
 		}()
 		next.ServeHTTP(rec, r)
 	})
+}
+
+// writeStall is how long a streamed answer (an exec's events, a file) may wait for its client to read:
+// past it the write fails and the request ends as if the client had gone.
+const writeStall = 2 * time.Minute
+
+// stallWriter is a response writer whose every write gets writeStall.
+type stallWriter struct {
+	w  io.Writer
+	rc *http.ResponseController
+}
+
+func (s stallWriter) Write(p []byte) (int, error) {
+	s.rc.SetWriteDeadline(time.Now().Add(writeStall))
+	return s.w.Write(p)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -256,7 +308,9 @@ func (a *API) network(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.m.end(sb)
-	if string(request.Policy) != `"deny-all"` {
+	// Compared decoded: "deny\u002dall" is deny-all too.
+	var policy any
+	if json.Unmarshal(request.Policy, &policy); policy != "deny-all" {
 		writeError(w, &apiError{http.StatusConflict, "unsupported_policy", "sandboxes have no network: only deny-all"})
 		return
 	}

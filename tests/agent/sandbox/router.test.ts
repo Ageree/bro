@@ -5,9 +5,18 @@ import {
   importWithSandbox,
 } from "@tests/helpers/sandbox";
 
+/** The router's own requests, which pin each hop to a checked address. */
+const network = vi.hoisted(() => ({
+  fetchPublic: vi.fn<(url: URL, init: RequestInit) => Promise<Response>>(),
+}));
+
+vi.mock("@agent/lib/sandbox/public-fetch", () => ({
+  fetchPublic: network.fetchPublic,
+}));
+
 afterEach(() => {
   clearSandboxSettings();
-  vi.unstubAllGlobals();
+  network.fetchPublic.mockReset();
   vi.resetModules();
 });
 
@@ -110,7 +119,7 @@ describe("the sandbox tool router", () => {
   });
 
   it("reads a page as text and downloads a file as base64", async () => {
-    vi.stubGlobal("fetch", (url: URL) =>
+    network.fetchPublic.mockImplementation(async (url: URL) =>
       Promise.resolve(
         url.pathname.endsWith(".csv")
           ? new Response("a,b\n1,2\n", {
@@ -144,6 +153,31 @@ describe("the sandbox tool router", () => {
     });
   });
 
+  it("requests every redirect hop through the checked connection", async () => {
+    network.fetchPublic.mockImplementation(async (url: URL) =>
+      Promise.resolve(
+        url.hostname === "short.example.test"
+          ? new Response(null, {
+              headers: { location: "https://inner.example.test/admin" },
+              status: 302,
+            })
+          : new Response("ok", { headers: { "content-type": "text/plain" } })
+      )
+    );
+    const { ask } = await router();
+    const page = await executed(
+      await ask(execute, {
+        input: { url: "https://short.example.test/x" },
+        name: "web_fetch",
+      })
+    );
+    expect(page.output).toMatchObject({ content: "ok" });
+    expect(network.fetchPublic.mock.calls.map(([url]) => url.href)).toEqual([
+      "https://short.example.test/x",
+      "https://inner.example.test/admin",
+    ]);
+  });
+
   it("reads a page in the encoding it names", async () => {
     const { decodePage } = await router();
     const cp1251 = new Uint8Array([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]);
@@ -175,7 +209,8 @@ describe("the sandbox tool router", () => {
 
   it("reads a hostile page in linear time and survives odd entities", async () => {
     const { pageText } = await router();
-    const hostile = "<script".repeat(200_000);
+    // Openers whose `>` is there, but never a closing `</script>`.
+    const hostile = "<script>".repeat(200_000);
     const started = performance.now();
     expect(pageText(hostile)).toBe("");
     expect(performance.now() - started).toBeLessThan(2_000);

@@ -15,11 +15,11 @@ Storage, and everything else travels there from here.
 
   SANDBOX_SIGNING_KEY=… python boot.py cloud-init --host-id sbx-code-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
-      [--runsc-url … --runsc-sha256 …] [--runsc-release 20260928] [--apt-mirror …] [--domain …] \\
+      --runsc-url … --runsc-sha256 … [--runsc-release 20260928] [--apt-mirror …] [--domain …] \\
       [--console-password-hash '$6$…']
       the user data for one host (base64 it for the Compute API). Without --domain the host serves
-      <its public IP with dashes>.sslip.io. Without --runsc-url it installs runsc from gVisor's apt repository
-      instead (storage.googleapis.com, untested from Cloud.ru). The console password hash, when given, lets
+      <its public IP with dashes>.sslip.io. The runsc package comes from Object Storage too (the vendored one):
+      gVisor's own apt repository is untested from Cloud.ru. The console password hash, when given, lets
       root log in on the serial console (there is no SSH)
 
 On the host, /usr/local/sbin/bro-code-host-boot fetches the bundle, checks its SHA-256 and runs
@@ -136,7 +136,7 @@ def quoted(text):
 
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
-               runsc_release=None, runsc_url=None, runsc_sha256=None, apt_mirror=APT_MIRROR, domain=None,
+               runsc_url, runsc_sha256, runsc_release=None, apt_mirror=APT_MIRROR, domain=None,
                console_password_hash=None):
     runsc_release = runsc_release or VENDOR["runsc"]["release"]
     if not HOST_ID.fullmatch(host_id):
@@ -148,9 +148,9 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     # A dated release, never the moving `release` suite: what runs sandboxes changes only with a new host.
     if not RUNSC_RELEASE.fullmatch(runsc_release):
         raise ValueError("runsc needs a dated gVisor release such as 20260928")
-    if bool(runsc_url) != bool(runsc_sha256):
-        raise ValueError("a runsc package URL goes with its sha256")
-    for name, digest in (("bundle", bundle_sha256), ("rootfs", rootfs_sha256), ("runsc", runsc_sha256 or "0" * 64)):
+    if not runsc_url:
+        raise ValueError("the runsc package needs its Object Storage URL (boot.py vendor, then upload it)")
+    for name, digest in (("bundle", bundle_sha256), ("rootfs", rootfs_sha256), ("runsc", runsc_sha256 or "")):
         if not SHA256.fullmatch(digest):
             raise ValueError(f"{name} sha256 must be 64 lower-case hex characters")
     if apt_mirror and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?", apt_mirror):
@@ -166,7 +166,7 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         "hostId": host_id, "domain": domain or "", "aptMirror": apt_mirror or "",
         "bundle": {"url": bundle_url, "sha256": bundle_sha256},
         "rootfs": {"version": rootfs_version, "url": rootfs_url, "sha256": rootfs_sha256},
-        "runsc": {"release": runsc_release, "url": runsc_url or "", "sha256": runsc_sha256 or ""},
+        "runsc": {"release": runsc_release, "url": runsc_url, "sha256": runsc_sha256},
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     lines = [
@@ -212,9 +212,10 @@ def main(argv=None):
     pack.add_argument("--sandboxd", required=True)
     pack.add_argument("--out", required=True)
     init = commands.add_parser("cloud-init")
-    for name in ("host-id", "bundle-url", "bundle-sha256", "rootfs-version", "rootfs-url", "rootfs-sha256"):
+    for name in ("host-id", "bundle-url", "bundle-sha256", "rootfs-version", "rootfs-url", "rootfs-sha256",
+                 "runsc-url", "runsc-sha256"):
         init.add_argument(f"--{name}", required=True)
-    for name in ("runsc-release", "runsc-url", "runsc-sha256", "domain", "console-password-hash"):
+    for name in ("runsc-release", "domain", "console-password-hash"):
         init.add_argument(f"--{name}")
     init.add_argument("--apt-mirror", default=APT_MIRROR)
     args = parser.parse_args(argv)

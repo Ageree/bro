@@ -15,13 +15,16 @@ import {
   webSearchInputSchema,
 } from "@agent/lib/web-search/openrouter";
 import { verifySandboxToolsToken } from "./keys";
+import { fetchPublic } from "./public-fetch";
 
 /**
  * The tool router of the code sandbox (`sandbox/README.md`): the GraphQL
  * endpoint the `tools` CLI reaches through `sandboxd`, which adds the token
  * the sandbox never sees. Only tools without the person's data and without
  * actions in their name live here: a prompt injected into a page the task
- * agent reads can at most search, read and download public pages.
+ * agent reads can at most search, read and download public pages: every
+ * hop of a read goes only to an address checked public
+ * (`./public-fetch.ts`), never into Bro's own network.
  */
 
 /** Under `/eve/v1/`, the only prefix that reaches eve in production. */
@@ -179,6 +182,7 @@ async function fetchPage(input: z.infer<typeof webFetchInputSchema>) {
   const url = publicUrl(input.url);
   const download = await downloadWithin(url, maximumPageBytes, {
     allowUrl: (next) => !isBlockedHost(next.hostname),
+    fetch: fetchPublic,
     headers: { "user-agent": "Mozilla/5.0 (compatible; BroSandbox/1.0)" },
   });
   if (download.kind === "oversize") throw new Error("The page is over 5 MB.");
@@ -207,6 +211,7 @@ async function downloadFile(input: z.infer<typeof downloadInputSchema>) {
   const url = publicUrl(input.url);
   const download = await downloadWithin(url, maximumDownloadBytes, {
     allowUrl: (next) => !isBlockedHost(next.hostname),
+    fetch: fetchPublic,
   });
   if (download.kind === "oversize") throw new Error("The file is over 15 MB.");
   if (download.kind === "failed") {

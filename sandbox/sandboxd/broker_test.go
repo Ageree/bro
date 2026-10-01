@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type upstreamCall struct {
 	path, auth, custom, contentType, body string
+	active                                int // requests sandboxd counts in sb-tools meanwhile
 }
 
 func TestBroker(t *testing.T) {
@@ -19,8 +21,11 @@ func TestBroker(t *testing.T) {
 	calls := make(chan upstreamCall, 300)
 	upstream := httptestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		h.m.mu.Lock()
+		active := h.m.sandboxes["sb-tools"].active
+		h.m.mu.Unlock()
 		calls <- upstreamCall{r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Bro-Test"),
-			r.Header.Get("Content-Type"), string(body)}
+			r.Header.Get("Content-Type"), string(body), active}
 		if r.URL.Path == "/redirect" {
 			http.Redirect(w, r, "https://elsewhere.example/steal", http.StatusFound)
 			return
@@ -64,6 +69,10 @@ func TestBroker(t *testing.T) {
 		call.contentType != "application/json" || call.body != `{"query":"{ tools { name } }"}` {
 		t.Fatalf("upstream saw %+v", call)
 	}
+	// A tool call is work in the sandbox: the idle reaper does not stop it meanwhile.
+	if call.active != 1 {
+		t.Fatalf("requests in the sandbox during a tool call: %d", call.active)
+	}
 
 	// Every PUT brings a fresh token.
 	tools.Token = "router-token-2"
@@ -73,8 +82,7 @@ func TestBroker(t *testing.T) {
 		t.Fatalf("after the PUT the broker sent %q", call.auth)
 	}
 
-	if h.real {
-		h.brokerFromInside(t, "sb-tools")
+	if h.real && h.brokerFromInside(t, "sb-tools") {
 		if call := <-calls; call.auth != "Bearer router-token-2" || call.body != "{}" {
 			t.Fatalf("upstream saw from inside %+v", call)
 		}
@@ -115,11 +123,57 @@ func TestBroker(t *testing.T) {
 	h.assertNoSecrets("router-token-1", "router-token-2", "deadbeef")
 }
 
-// brokerFromInside posts to /run/bro/tools.sock from a process in the sandbox (perl is in ubuntu-base).
-func (h *harness) brokerFromInside(t *testing.T, id string) {
+// At most brokerParallel tool calls of a sandbox are in flight (each may hold 25 MiB): the others wait.
+func TestBrokerParallel(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	inflight, most := 0, 0
+	upstream := httptestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inflight++
+		most = max(most, inflight)
+		mu.Unlock()
+		time.Sleep(300 * time.Millisecond)
+		mu.Lock()
+		inflight--
+		mu.Unlock()
+		w.Write([]byte(`{"data":{}}`))
+	})
+	h.create("sb-parallel", sandboxOptions{tools: &toolsConfig{URL: upstream + "/graphql", Token: "t"}})
+	client := brokerHTTP(h.cfg.paths("sb-parallel").socket)
+	var wg sync.WaitGroup
+	statuses := make(chan int, brokerParallel+3)
+	for range brokerParallel + 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			response, err := client.Post("http://sandbox/graphql", "application/json", strings.NewReader("{}"))
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			response.Body.Close()
+			statuses <- response.StatusCode
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != 200 {
+			t.Fatalf("a tool call answered %d", status)
+		}
+	}
+	if most != brokerParallel {
+		t.Fatalf("%d tool calls in flight at once, want %d", most, brokerParallel)
+	}
+}
+
+// brokerFromInside posts to /run/bro/tools.sock from a process in the sandbox (perl is in ubuntu-base);
+// false when it could not (no perl).
+func (h *harness) brokerFromInside(t *testing.T, id string) bool {
 	if strings.TrimSpace(h.sh(id, "command -v perl || true")) == "" {
 		t.Log("no perl in the rootfs: the broker is not tried from inside")
-		return
+		return false
 	}
 	time.Sleep(time.Second) // a token or two back in the bucket
 	out := h.sh(id, `perl -MIO::Socket::UNIX -e '
@@ -131,6 +185,7 @@ func (h *harness) brokerFromInside(t *testing.T, id string) {
 		t.Fatalf("from inside the sandbox: %q", out)
 	}
 	t.Logf("broker from inside the sandbox: %s", strings.TrimSpace(out))
+	return true
 }
 
 func TestBucket(t *testing.T) {
@@ -172,6 +227,20 @@ func TestValidTools(t *testing.T) {
 	for _, token := range []string{"", "a b", "a\nb", strings.Repeat("x", 9000)} {
 		if err := validTools(&toolsConfig{URL: "https://a/b", Token: token}); err == nil {
 			t.Errorf("token %q taken", fmt.Sprint(len(token)))
+		}
+	}
+}
+
+// A URL in a log line or an error keeps its origin only: a token may sit in a path segment.
+func TestRedact(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://router.example/api/SECRET/graphql?sig=SECRET": "https://router.example/…",
+		"https://user:SECRET@s3.example/":                      "https://s3.example",
+		"http://127.0.0.1:9000":                                "http://127.0.0.1:9000",
+		"not a url":                                            "<invalid url>",
+	} {
+		if got := redact(raw); got != want {
+			t.Errorf("redact(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }

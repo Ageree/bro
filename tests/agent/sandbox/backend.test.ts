@@ -168,6 +168,44 @@ describe("the Cloud.ru sandbox backend", () => {
     expect(result.stdout).toContain("[output cut: 10 more bytes not kept]");
   });
 
+  it("pauses a command its reader is behind, and ends one nobody reads", async () => {
+    // A command that never stops writing: sandboxd sends what it is given.
+    let produced = 0;
+    const megabyte = Buffer.alloc(1024 * 1024, "y").toString("base64");
+    const endless = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            produced += 1;
+            const event =
+              produced === 1
+                ? { pid: "p1", type: "start" }
+                : { data: megabyte, type: "stdout" };
+            controller.enqueue(
+              new TextEncoder().encode(`${JSON.stringify(event)}\n`)
+            );
+          },
+        })
+      );
+    const calls = stubHost(opened, endless, () => Response.json({ ok: true }));
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    const process = await session.spawn({ command: "yes" });
+    const exit = process.wait();
+    await vi.waitFor(() => {
+      expect(produced).toBeGreaterThan(2);
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    // A megabyte waits for the reader; the host's stream is not drained.
+    expect(produced).toBeLessThan(6);
+    await process.stdout.cancel();
+    await process.stderr.cancel();
+    await expect(exit).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls[2]?.url).toContain("/procs/p1/kill");
+  });
+
   it("deletes the saved /workspace with the sandbox", async () => {
     const calls = stubHost(
       opened,

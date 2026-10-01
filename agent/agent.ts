@@ -50,6 +50,7 @@ import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
+import { openRouterActive } from "@shared/model/provider";
 
 /** The tool eve makes of the task agent (`agent/subagents/task`). */
 const taskAgentTool = "task";
@@ -113,6 +114,15 @@ export default defineAgent({
         // keeps the previous turn's caller: after a browser report it would
         // pass for that report again, and be dropped as stale.
         const backgroundTaskTurn = turnOpenedByBackgroundTask(ctx.messages);
+        // Such a turn is held to a few tools (below), and only the direct
+        // OpenRouter model holds a step to them: a Gateway id would offer
+        // every tool, those that act in the person's name too, to text the
+        // task agent brought from the web. It fails instead.
+        if (backgroundTaskTurn && !openRouterActive()) {
+          throw new Error(
+            "A background task's report needs the OpenRouter model, which alone limits its tools."
+          );
+        }
         const reportRunId = backgroundTaskTurn
           ? undefined
           : reportedBrowserRunId(ctx.session.auth.current);

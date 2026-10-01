@@ -10,8 +10,15 @@ import { signSandboxHostToken } from "./keys";
 
 /** A request other than a command's stream is answered well inside this. */
 const requestTimeoutMs = 60_000;
-/** Opening a sandbox may restore its snapshot first. */
-const openTimeoutMs = 120_000;
+/**
+ * The host's own ceilings, a minute more: `sandboxd` gives starting a
+ * sandbox (its snapshot restored first) 15 minutes, a snapshot or stop 20
+ * and a file of up to 512 MiB 30. A call given up earlier would fail here
+ * while the host carries on.
+ */
+const openTimeoutMs = 16 * 60_000;
+const settleTimeoutMs = 21 * 60_000;
+const fileTimeoutMs = 31 * 60_000;
 /** `sandboxd`'s own ceiling for a command that names none. */
 const defaultExecTimeoutMs = 600_000;
 
@@ -140,18 +147,16 @@ export async function settleSandbox(
 ) {
   const response = await send("POST", sandboxPath(sandboxId, `/${action}`), {
     json: {},
-    timeoutMs: openTimeoutMs,
+    timeoutMs: settleTimeoutMs,
   });
   // A sandbox already stopped by the host's idle reaper has nothing to save.
-  if (response.status === 404) return;
-  if (!response.ok) throw await failure(response);
+  if (!response.ok && response.status !== 404) throw await failure(response);
   await response.body?.cancel();
 }
 
 export async function deleteSandbox(sandboxId: string) {
   const response = await send("DELETE", sandboxPath(sandboxId));
-  if (response.status === 404) return;
-  if (!response.ok) throw await failure(response);
+  if (!response.ok && response.status !== 404) throw await failure(response);
   await response.body?.cancel();
 }
 
@@ -170,19 +175,44 @@ function filePath(sandboxId: string, path: string, extra = "") {
   );
 }
 
+/**
+ * The file's bytes as they arrive, or null when there is no such file: a
+ * reader that wants only so much cancels the rest instead of holding a file
+ * of up to 512 MiB in memory.
+ */
+export async function streamSandboxFile(
+  sandboxId: string,
+  path: string,
+  signal?: AbortSignal
+) {
+  const response = await send("GET", filePath(sandboxId, path), {
+    signal,
+    timeoutMs: fileTimeoutMs,
+  });
+  if (response.status === 404) {
+    await response.body?.cancel();
+    return null;
+  }
+  if (!response.ok) throw await failure(response);
+  return (
+    response.body ??
+    new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        controller.close();
+      },
+    })
+  );
+}
+
 /** The file's bytes, or null when there is no such file. */
 export async function readSandboxFile(
   sandboxId: string,
   path: string,
   signal?: AbortSignal
 ) {
-  const response = await send("GET", filePath(sandboxId, path), { signal });
-  if (response.status === 404) {
-    await response.body?.cancel();
-    return null;
-  }
-  if (!response.ok) throw await failure(response);
-  return new Uint8Array(await response.arrayBuffer());
+  const stream = await streamSandboxFile(sandboxId, path, signal);
+  if (stream === null) return null;
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 export async function writeSandboxFile(
@@ -194,6 +224,7 @@ export async function writeSandboxFile(
   const response = await send("PUT", filePath(sandboxId, path), {
     body: Buffer.from(content),
     signal,
+    timeoutMs: fileTimeoutMs,
   });
   if (!response.ok) throw await failure(response);
   await response.body?.cancel();

@@ -22,6 +22,10 @@ const (
 	maxBrokerBody   = 25 << 20
 	brokerTimeout   = 120 * time.Second
 	brokerPerMinute = 120
+	// Tool calls of one sandbox in flight at once; the others wait for a slot before their body is read,
+	// so a sandbox holds at most brokerParallel × maxBrokerBody of sandboxd's memory.
+	brokerParallel = 4
+	brokerSlotWait = 30 * time.Second
 )
 
 // Headers tools.headers may not set: the broker's own, and what would confuse the upstream request.
@@ -45,6 +49,7 @@ type broker struct {
 	server   *http.Server
 	listener net.Listener
 	limiter  *bucket
+	slots    chan struct{}
 	closed   sync.Once
 }
 
@@ -61,7 +66,8 @@ func (m *Manager) startBroker(sb *Sandbox, socket string) (*broker, error) {
 		listener.Close()
 		return nil, err
 	}
-	b := &broker{listener: listener, limiter: newBucket(brokerPerMinute, time.Minute)}
+	b := &broker{listener: listener, limiter: newBucket(brokerPerMinute, time.Minute),
+		slots: make(chan struct{}, brokerParallel)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -98,6 +104,28 @@ func (m *Manager) forward(w http.ResponseWriter, r *http.Request, sb *Sandbox, b
 			"at most 120 tool requests a minute per sandbox"})
 		return
 	}
+	// A call that waits past brokerSlotWait gets 429 busy (not rate_limited: that is the bucket's): the CLI
+	// says "retry", where a longer wait would end in its own timeout or in this server's ReadTimeout.
+	wait := time.NewTimer(brokerSlotWait)
+	defer wait.Stop()
+	select {
+	case b.slots <- struct{}{}:
+		defer func() { <-b.slots }()
+	case <-wait.C:
+		w.Header().Set("Retry-After", "5")
+		writeError(w, &apiError{http.StatusTooManyRequests, "busy",
+			"at most 4 tool requests at once per sandbox, and the others have waited 30 s"})
+		return
+	case <-r.Context().Done():
+		return
+	}
+	// A tool call is work in the sandbox: the idle reaper leaves it running until the answer is back.
+	running, err := m.begin(sb.id)
+	if err != nil {
+		writeError(w, &apiError{http.StatusServiceUnavailable, "tools_unavailable", "the sandbox is not running"})
+		return
+	}
+	defer m.end(running)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBrokerBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -108,7 +136,6 @@ func (m *Manager) forward(w http.ResponseWriter, r *http.Request, sb *Sandbox, b
 		writeError(w, badRequest("the body did not arrive whole"))
 		return
 	}
-	m.touch(sb)
 	// Not the connection's context: a client that half-closes its side after the request must still get
 	// the answer.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), brokerTimeout)
