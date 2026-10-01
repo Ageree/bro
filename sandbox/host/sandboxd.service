@@ -1,0 +1,24 @@
+[Unit]
+Description=Bro code sandboxes (sandboxd: gVisor runsc, API on 127.0.0.1:8091 behind Caddy)
+Documentation=file:///opt/bro/code-host/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sandboxd -config /etc/bro/sandboxd.json
+Restart=always
+RestartSec=2
+# Sandboxes outlive sandboxd: their runsc sandbox and gofer processes live in cgroups of their own
+# (/sandboxd/<id>) and a new sandboxd adopts them from /srv/sandboxd/state.json and `runsc list`. Only the main
+# process is stopped; `runsc exec` clients of open requests finish on their own.
+KillMode=process
+TimeoutStopSec=15
+# No RuntimeDirectory=: systemd would empty /run/sandboxd (runsc's --root) on every stop and orphan every
+# running sandbox.
+LimitNOFILE=1048576
+TasksMax=infinity
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

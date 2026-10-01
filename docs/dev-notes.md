@@ -113,6 +113,10 @@
 - Итог фоновой задачи eve приносит родителю отдельным ходом: сообщение
   `[Task state]` с выводом задачи и указание «одним ответом человеку»
   (`eve/dist/src/tasks/delivery-context.js`).
+- gVisor работает и в облачной сессии (root, cgroup v1): `sandboxd` гоняют на
+  настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
+  `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
+  из apt-репозитория gVisor со сверкой подписи и sha256.
 - `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
