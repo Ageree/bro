@@ -2134,15 +2134,18 @@ function phoneSignInAllowed(
  * whose start bound it carries on (the row's site says less: a follow-up of
  * an errand started without one records the site it brought), and whether
  * the errand is to be done rather than only found. Undefined when it cannot
- * be read, which carries neither on.
+ * be read, which carries neither on. A queued errand that never started has
+ * no run to read: its `queued:` id is Bro's own, and the instruction it
+ * waited with is kept only while it still waits.
  */
-async function replacedRunTask(runId: string) {
+async function replacedRunTask(row: ErrandRow) {
+  if (row.id.startsWith("queued:")) return row.pendingTask ?? undefined;
   try {
-    return (await readBrowserUseRun(runId)).task;
+    return (await readBrowserUseRun(row.id)).task;
   } catch (error) {
     console.warn("[browser-use] the replaced run's task could not be read", {
       cause: error,
-      runId,
+      runId: row.id,
     });
     return undefined;
   }
@@ -3599,7 +3602,7 @@ async function runBrowserTask(
 
         // What the run this follow-up replaces was told: whether its errand
         // signs in by phone and is to be done carries on from there.
-        const replaced = await replacedRunTask(row.id);
+        const replaced = await replacedRunTask(row);
         // No quota gate: `browserRunQuotaGate` counts as it reads, and a
         // continuation is the same errand the month was already charged for.
         const [bound, facts] = await Promise.all([

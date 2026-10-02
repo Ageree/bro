@@ -5423,6 +5423,34 @@ describe("browser_task sign-in by the person's phone", () => {
 
     expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
   });
+
+  it("reads no run at Browser Use for a queued errand that never started", async () => {
+    // RU 02.10: the errand expired in the queue, the report turn went on with
+    // it, and Browser Use answered 422 to its `queued:` id, which is Bro's own.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "The errand never started"),
+      id: "queued:errand-1",
+      site: "https://www.ozon.ru",
+      status: "failed",
+    });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run queued:errand-1 finished.`
+    );
+
+    await report.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        runId: "queued:errand-1",
+        task: "Попробуй ещё раз",
+      },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(readBrowserUseRun).not.toHaveBeenCalled();
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
+  });
 });
 
 describe("browser_task delivery address before the card", () => {
