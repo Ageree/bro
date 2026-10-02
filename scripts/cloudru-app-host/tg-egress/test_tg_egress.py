@@ -101,6 +101,18 @@ class ParseTest(unittest.TestCase):
         cfg = config(TG_EGRESS_UPSTREAMS="149.154.167.220, 149.154.167.221:443")
         self.assertEqual(cfg.upstreams, [("149.154.167.220", 443), ("149.154.167.221", 443)])
 
+    def test_a_stagger_of_zero_is_refused(self):
+        # Zero would retry an address that refuses at once in a tight loop.
+        for value in ("0", "-300"):
+            with self.subTest(value), self.assertRaises(ValueError) as caught:
+                config(TG_EGRESS_STAGGER_MS=value)
+            self.assertIn("TG_EGRESS_STAGGER_MS", str(caught.exception))
+
+    def test_an_ipv6_address_keeps_its_brackets(self):
+        self.assertEqual(tg_egress.authority("2001:db8::1", 443), "[2001:db8::1]:443")
+        self.assertEqual(tg_egress.authority("api.telegram.org", 443), "api.telegram.org:443")
+        self.assertEqual(tg_egress.address(tg_egress.authority("2001:db8::1", 8443)), ("2001:db8::1", 8443))
+
     def test_default_upstream_is_the_address_that_answers_from_cloudru(self):
         self.assertEqual(tg_egress.Config({}).upstreams, [("149.154.167.220", 443)])
         self.assertIsNone(tg_egress.Config({}).proxy)
@@ -161,6 +173,21 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         began = time.monotonic()
         self.assertEqual(await self.h.roundtrip(port), b"hello telegram\n")
         self.assertLess(time.monotonic() - began, 0.09)
+
+    async def test_an_ipv6_upstream_wins_and_goes_first_next_time(self):
+        # 2001:db8::7 is dialed at the echo server: not every test machine has IPv6.
+        echo_port = tg_egress.address(await self.h.echo())[1]
+        good = f"[2001:db8::7]:{echo_port}"
+        dial = tg_egress.open_direct
+
+        async def direct(host, port, timeout):
+            return await dial("127.0.0.1" if host == "2001:db8::7" else host, port, timeout)
+
+        forwarder, port = await self.h.forwarder(config(TG_EGRESS_UPSTREAMS=f"{refused()},{good}"))
+        with mock.patch.object(tg_egress, "open_direct", direct):
+            self.assertEqual(await self.h.roundtrip(port), b"hello telegram\n")
+        self.assertEqual(forwarder.stats.paths[good]["won"], 1)
+        self.assertEqual(forwarder.turn, 1)
 
     async def test_a_refused_address_moves_on_at_once(self):
         good = await self.h.echo()
@@ -267,6 +294,7 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
             up_reader, up_writer = await asyncio.open_connection(host, port)
             writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
             await asyncio.gather(tg_egress.pipe(reader, up_writer), tg_egress.pipe(up_reader, writer))
+            up_writer.close()
             writer.close()
 
         server = await asyncio.start_server(proxy, "127.0.0.1", 0)
@@ -281,6 +309,44 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         snapshot = json.dumps(forwarder.stats.snapshot(forwarder.config))
         self.assertNotIn("secret", snapshot)
         self.assertNotIn(base64.b64encode(b"user:secret").decode(), snapshot)
+
+    async def test_the_proxy_is_asked_for_an_ipv6_target_in_brackets(self):
+        seen = []
+
+        async def proxy(reader, writer):
+            seen.append((await reader.readuntil(b"\r\n\r\n")).decode())
+            writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+            writer.close()
+
+        server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+        self.h.closers.append(server)
+        cfg = config(TG_EGRESS_PROXY=f"127.0.0.1:{server.sockets[0].getsockname()[1]}",
+                     TG_EGRESS_TARGET="[2001:db8::1]:443")
+        with self.assertRaises(ConnectionError):
+            await tg_egress.open_proxy(cfg, 3)
+        self.assertTrue(seen[0].startswith("CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost: [2001:db8::1]:443\r\n"))
+
+    async def test_tells_systemd_it_is_ready_once_it_listens(self):
+        # Type=notify: bro-web and bro-eve, ordered after the unit, start only once both listeners are bound.
+        name = f"bro-tg-egress-test-{os.getpid()}-{id(self)}"
+        notify = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(notify.close)
+        notify.bind("\0" + name)
+        notify.setblocking(False)
+        listen, health = refused(), refused()
+        cfg = config(TG_EGRESS_UPSTREAMS=await self.h.echo(), TG_EGRESS_LISTEN=listen, TG_EGRESS_HEALTH=health)
+        with mock.patch.dict(os.environ, {"NOTIFY_SOCKET": "@" + name}), mock.patch.object(tg_egress, "log"):
+            serving = asyncio.ensure_future(tg_egress.Forwarder(cfg).serve())
+            try:
+                message = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(notify, 64), 5)
+                for where in (listen, health):
+                    _reader, writer = await asyncio.open_connection(*tg_egress.address(where))
+                    writer.close()
+            finally:
+                serving.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await serving
+        self.assertEqual(message, b"READY=1")
 
     async def test_a_proxy_refusal_is_a_failed_attempt(self):
         async def proxy(reader, writer):
@@ -302,6 +368,7 @@ class ForwardTest(unittest.IsolatedAsyncioTestCase):
         server = await asyncio.start_server(forwarder.health, "127.0.0.1", 0)
         self.h.closers.append(server)
         reader, writer = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+        self.addCleanup(writer.close)
         writer.write(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
         raw = await reader.read()
         head, body = raw.split(b"\r\n\r\n", 1)
@@ -342,7 +409,7 @@ esac
         env = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
         env.pop("TG_EGRESS_LISTEN", None)
         env.update(environ or {})
-        subprocess.run(["bash", str(directory / "setup.sh"), *args], check=True, env=env)
+        subprocess.run(["bash", str(directory / "setup.sh"), *args], check=True, env=env, capture_output=True)
         return directory
 
     def read(self, directory):
@@ -378,12 +445,37 @@ esac
         self.assertEqual(rules, [])
         self.assertNotIn("api.telegram.org", hosts)
 
+    def test_a_shared_hosts_line_keeps_its_other_names(self):
+        hosts, _ = self.read(self.run_setup(
+            hosts="127.0.0.1 localhost api.telegram.org # mine\n149.154.166.110 api.telegram.org\n"
+                  "# 1.2.3.4 api.telegram.org\n"))
+        self.assertEqual(hosts, "127.0.0.1 localhost  # mine\n# 1.2.3.4 api.telegram.org\n"
+                                "127.77.0.1 api.telegram.org # bro-tg-egress\n")
+
+    def test_another_redirect_for_the_address_is_left_alone(self):
+        other = "-A OUTPUT -d 127.77.0.1/32 -p tcp --dport 80 -j REDIRECT --to-ports 8080"
+        directory = self.run_setup(rules=other + "\n" + self.rule(7000) + "\n")
+        self.assertEqual(self.read(directory)[1], [other, self.rule(7443)])
+        self.run_setup(directory=directory)  # nothing to change
+        self.assertEqual(self.read(directory)[1], [other, self.rule(7443)])
+        self.run_setup("--remove", directory=directory)
+        self.assertEqual(self.read(directory)[1], [other])
+
+    def test_a_port_out_of_range_is_refused_before_iptables(self):
+        for port in ("0", "65536", "99999"):
+            with self.subTest(port), self.assertRaises(subprocess.CalledProcessError) as caught:
+                self.run_setup(port)
+            self.assertEqual(caught.exception.returncode, 2)
+        directory = self.run_setup("65535")
+        self.assertEqual(self.read(directory)[1], [self.rule(65535)])
+
     def test_the_unit_takes_the_port_from_the_settings(self):
         unit = (HERE / "bro-tg-egress.service").read_text()
         self.assertIn("ExecStartPre=+/bin/bash /opt/bro/tg-egress/setup.sh\n", unit)
         self.assertIn("EnvironmentFile=-/etc/bro/tg-egress.env", unit)
         self.assertEqual(tg_egress.Config({}).listen, ("127.0.0.1", 7443))
         self.assertIn("DynamicUser=yes", unit)
+        self.assertIn("\nType=notify\n", unit)
         self.assertIn("LimitNOFILE=", unit)
 
 

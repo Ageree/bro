@@ -96,8 +96,9 @@
   149.154.167.220 и теряет ~1/6 SYN — на VM Бро весь Telegram идёт через
   `scripts/cloudru-app-host/tg-egress/` (код не трогать). VM проекта не
   достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
-  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`),
-  хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
+  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
+  таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
+  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера

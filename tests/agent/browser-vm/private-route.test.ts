@@ -1,5 +1,14 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer as createTcpServer } from "node:net";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { z } from "zod";
 import {
   clearBrowserVmSettings,
@@ -60,6 +69,7 @@ describe("private routing between the project's VMs", () => {
     const init = { method: "GET" };
     expect(route.withPrivateRoute(init)).toEqual({ method: "GET" });
     expect(route.privateRouteDispatcher()).toBeUndefined();
+    await route.resolvePrivateRoute("https://203-0-113-7.sslip.io/v1/health");
     expect(listCloudRuPrivateAddresses).not.toHaveBeenCalled();
   });
 
@@ -80,6 +90,90 @@ describe("private routing between the project's VMs", () => {
       `203-0-113-7.sslip.io:${String(port)}`,
     ]);
     // The listing is kept: one Compute API read for both calls.
+    expect(listCloudRuPrivateAddresses).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the sslip.io name in TLS while it dials the private address", async () => {
+    // A bare TCP listener at the private address reads the ClientHello: the
+    // SNI, which the certificate is checked against too, is the name.
+    const hellos: Buffer[] = [];
+    const tls = createTcpServer((socket) => {
+      let hello = Buffer.alloc(0);
+      socket.on("data", (chunk: Buffer) => {
+        hello = Buffer.concat([hello, chunk]);
+        if (hello.length >= 5 && hello.length >= 5 + hello.readUInt16BE(3)) {
+          hellos.push(hello);
+          socket.destroy();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => {
+      tls.listen(0, "127.0.0.1", resolve);
+    });
+    onTestFinished(() => {
+      tls.close();
+    });
+    const tlsPort = z.object({ port: z.number() }).parse(tls.address()).port;
+    listCloudRuPrivateAddresses.mockResolvedValue(
+      new Map([["203.0.113.7", "127.0.0.1"]])
+    );
+    const route = await loadRoute("on");
+    await expect(
+      fetch(
+        `https://203-0-113-7.sslip.io:${String(tlsPort)}/v1/health`,
+        route.withPrivateRoute({})
+      )
+    ).rejects.toThrow("fetch failed");
+    expect(hellos).toHaveLength(1);
+    // A TLS handshake record that names the host.
+    expect(hellos[0]?.[0]).toBe(0x16);
+    expect(hellos[0]?.includes("203-0-113-7.sslip.io")).toBe(true);
+  });
+
+  it("lists again for a known address after half a minute, since a deleted VM's floating IP may be another's", async () => {
+    // The address was a VM's whose private address answers no more.
+    listCloudRuPrivateAddresses.mockResolvedValue(
+      new Map([["203.0.113.7", "127.0.0.2"]])
+    );
+    const route = await loadRoute("on");
+    const url = `http://203-0-113-7.sslip.io:${String(port)}/v1/health`;
+    await expect(fetch(url, route.withPrivateRoute({}))).rejects.toThrow(
+      "fetch failed"
+    );
+    // A new VM got it; within half a minute the map is trusted as it is.
+    listCloudRuPrivateAddresses.mockResolvedValue(
+      new Map([["203.0.113.7", "127.0.0.1"]])
+    );
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 20_000);
+    await expect(fetch(url, route.withPrivateRoute({}))).rejects.toThrow(
+      "fetch failed"
+    );
+    expect(listCloudRuPrivateAddresses).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(now + 31_000);
+    expect(await (await fetch(url, route.withPrivateRoute({}))).text()).toBe(
+      "ok"
+    );
+    expect(listCloudRuPrivateAddresses).toHaveBeenCalledTimes(2);
+  });
+
+  it("looks the address up ahead of a request, so its timeout is not spent on the listing", async () => {
+    listCloudRuPrivateAddresses.mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve(new Map([["203.0.113.7", "127.0.0.1"]]));
+          }, 1_000);
+        })
+    );
+    const route = await loadRoute("on");
+    const url = `http://203-0-113-7.sslip.io:${String(port)}/v1/health`;
+    await route.resolvePrivateRoute(url);
+    const response = await fetch(
+      url,
+      route.withPrivateRoute({ signal: AbortSignal.timeout(800) })
+    );
+    expect(await response.text()).toBe("ok");
     expect(listCloudRuPrivateAddresses).toHaveBeenCalledTimes(1);
   });
 

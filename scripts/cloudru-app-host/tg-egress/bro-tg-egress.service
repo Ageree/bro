@@ -6,7 +6,8 @@ Wants=network-online.target
 Before=bro-web.service bro-eve.service bro-watchdog.service
 
 [Service]
-Type=simple
+# READY=1 once both listeners are bound (tg_egress.py notify_ready): the services above start only then.
+Type=notify
 DynamicUser=yes
 EnvironmentFile=-/etc/bro/tg-egress.env
 # The hosts line and the REDIRECT rule, as root, every start (the rule does not survive a boot). The port

@@ -18,13 +18,19 @@ import { listCloudRuPrivateAddresses } from "./cloudru";
  */
 
 const sslipName = /^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})\.sslip\.io$/iu;
-/** A known address is trusted this long; a VM keeps its addresses for life. */
-const freshMs = 5 * 60_000;
+/**
+ * A known address is trusted this long, then listed again before use. A VM
+ * keeps its addresses for life, but a deleted VM's floating IP may go to the
+ * next VM at once: an older map would dial the gone VM's private address.
+ */
+const freshMs = 30_000;
 /**
  * An address a listing lacked is dialed publicly this long before it is
- * looked up again. Counted per address: a VM Bro has just created is missing
- * from any older listing, and its first call must list again, not hang on
- * the public address. Short, since a listing may lag a VM's floating IP.
+ * looked up again, so a name outside the project costs no Compute API read
+ * per call. Counted per address: a VM created after the last listing is not
+ * held back by another address's miss, and its first call lists again. Short,
+ * since a VM whose floating IP the listing lagged hangs on its public address
+ * until the window ends.
  */
 const missMs = 10_000;
 /** After a failed listing, none is tried again this long. */
@@ -104,14 +110,19 @@ async function privateAddressOf(publicAddress: string) {
   }
 }
 
-const lookup: LookupFunction = (hostname, options, callback) => {
+/** The public address an sslip.io name stands for, or undefined for any other name. */
+function sslipAddress(hostname: string) {
   const match = sslipName.exec(hostname);
-  if (match === null) {
+  return match === null ? undefined : match.slice(1, 5).join(".");
+}
+
+const lookup: LookupFunction = (hostname, options, callback) => {
+  // An sslip.io name resolves to the address written in it.
+  const publicAddress = sslipAddress(hostname);
+  if (publicAddress === undefined) {
     dnsLookup(hostname, options, callback);
     return;
   }
-  // An sslip.io name resolves to the address written in it.
-  const publicAddress = match.slice(1, 5).join(".");
   void (async () => {
     // Never rejects: a failed listing falls back to the public address.
     const address = (await privateAddressOf(publicAddress)) ?? publicAddress;
@@ -131,6 +142,18 @@ export function privateRouteDispatcher() {
   if (env.CLOUDRU_PRIVATE_ROUTING !== "on") return undefined;
   agent ??= new Agent({ connect: { lookup } });
   return agent;
+}
+
+/**
+ * Looks up the private address behind `url` ahead of a request to it, so a
+ * timeout started after this is the VM's to answer in, not spent waiting on
+ * the Compute API (the lookup then finds it known). Resolves either way:
+ * without an address the request dials the public one, as without routing.
+ */
+export async function resolvePrivateRoute(url: string) {
+  if (env.CLOUDRU_PRIVATE_ROUTING !== "on") return;
+  const publicAddress = sslipAddress(new URL(url).hostname);
+  if (publicAddress !== undefined) await privateAddressOf(publicAddress);
 }
 
 /**

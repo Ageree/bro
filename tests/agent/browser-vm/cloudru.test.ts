@@ -306,6 +306,24 @@ describe("Cloud.ru VMs", () => {
     ]);
   });
 
+  it("says so when the project's VMs run past the pages it reads", async () => {
+    const cloudRu = await loadCloudRu({ CLOUDRU_PROJECT_ID: projectId });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fullPage = () =>
+      Response.json({
+        items: Array.from({ length: 100 }, (_, index) => listedVm(index + 1)),
+      });
+    const calls = stubCloudRu(...Array.from({ length: 10 }, () => fullPage));
+
+    const addresses = await cloudRu.listCloudRuPrivateAddresses();
+    expect(addresses.size).toBe(100);
+    expect(calls.filter((call) => call.url !== iam)).toHaveLength(10);
+    expect(warn).toHaveBeenCalledWith(
+      "[browser-vm] gave up paging through Cloud.ru VMs",
+      { mapped: 100, pages: 10 }
+    );
+  });
+
   it("finds a VM by its exact name in the project, and nothing for a name no VM has", async () => {
     const cloudRu = await loadCloudRu({ CLOUDRU_PROJECT_ID: projectId });
     const calls = stubCloudRu(

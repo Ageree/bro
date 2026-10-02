@@ -54,7 +54,9 @@ python3 /opt/bro/tg-egress/tg_egress.py --check   # ok — api.telegram.org по
 ```
 
 `bro-eve`, `bro-web` и `bro-watchdog` стоит запускать после него
-(`After=bro-tg-egress.service`; юнит сам ставит `Before=` на них).
+(`After=bro-tg-egress.service`; юнит сам ставит `Before=` на них). Юнит —
+`Type=notify`: форвардер сообщает systemd о готовности, когда оба порта уже
+слушают, и только тогда стартуют сервисы после него.
 
 `--check` идёт к `api.telegram.org` по имени, как любой клиент: строка в
 `/etc/hosts`, правило REDIRECT, форвардер, Telegram. Он падает и тогда, когда
@@ -82,7 +84,12 @@ Telegram идёт тем же путём. При сбое `--check` сторож
 (адреса через запятую, по умолчанию 149.154.167.220), `TG_EGRESS_ATTEMPT_MS`,
 `TG_EGRESS_STAGGER_MS`, `TG_EGRESS_PARALLEL`, `TG_EGRESS_DEADLINE_MS` и запасной
 путь `TG_EGRESS_PROXY` (`http://<login>:<password>@<host>:<port>` или `host:port:user:pass`)
-с `TG_EGRESS_PROXY_AFTER_MS`. Порт правила REDIRECT `setup.sh` берёт из
+с `TG_EGRESS_PROXY_AFTER_MS`; `TG_EGRESS_STAGGER_MS` — больше нуля. Ещё:
+`TG_EGRESS_HEALTH` (127.0.0.1:7444, где `/health`), `TG_EGRESS_TARGET`
+(api.telegram.org:443 — куда просить `CONNECT` у прокси и куда ходит
+`--check`), `TG_EGRESS_DOWN_AFTER` (5 соединений подряд без Telegram — путь
+лежит) и `TG_EGRESS_DOWN_DEADLINE_MS` (4000 — сколько ждёт соединение, пока
+путь лежит). Порт правила REDIRECT `setup.sh` берёт из
 `TG_EGRESS_LISTEN` того же файла и убирает правила на прежний порт.
 
 Прокси с VM не проверен (боевые ключи Geonode на пробную VM не попадали):

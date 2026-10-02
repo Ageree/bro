@@ -90,7 +90,9 @@ class CloudInitTest(unittest.TestCase):
         for change in bad:
             with self.subTest(change), self.assertRaises(ValueError):
                 boot.cloud_init(**{**ARGS, **change})
-        for hosts in ([("brobro.tech", "10.0.1.7; rm")], [("bro tech", "10.0.1.7")], [("brobro.tech", "999.0.1.7")]):
+        for hosts in ([("brobro.tech", "10.0.1.7; rm")], [("bro tech", "10.0.1.7")], [("brobro.tech", "999.0.1.7")],
+                      [("brobro.tech", "\u0661\u0660.0.1.7")],  # Arabic-Indic digits: \d, but not for provision.sh
+                      [("brobro.tech", "10.0.1.7"), ("brobro.tech", "10.0.1.8")]):
             with self.subTest(hosts), self.assertRaises(ValueError):
                 boot.cloud_init(**ARGS, hosts=hosts)
         _mode, settings = written(boot.cloud_init(**{**ARGS, "runsc_release": "20260928.0"}),
@@ -258,21 +260,53 @@ class HostsTest(unittest.TestCase):
         self.assertEqual(json.loads(settings)["hosts"], [])
         self.assertEqual(boot.hosts_entry(" BroBro.tech = 10.0.1.7"), ("brobro.tech", "10.0.1.7"))
 
-    def run_stage(self, entries, hosts):
-        script = re.search(r"<<'PY'\n(.*?)\nPY\n", PROVISION, re.S).group(1)
+    TEMPLATE = "127.0.1.1 {{fqdn}} {{hostname}}\n127.0.0.1 localhost\n"
+    # provision.sh's hosts stage: the arguments it is run with there, and its script.
+    ARGV, SCRIPT = re.search(r"^python3 - ([^\n]*) <<'PY'\n(.*?)\nPY\n", PROVISION, re.S | re.M).groups()
+
+    def run_stage(self, entries, hosts, template=None):
+        """The stage with the very arguments provision.sh gives it, each file in a temp directory (the template
+        only when given). Returns the hosts file, the template (or None) and the directory."""
         directory = private_dir(self)
-        (directory / "boot.json").write_text(json.dumps({"hosts": entries}))
-        (directory / "hosts").write_text(hosts)
-        subprocess.run([sys.executable, "-c", script, str(directory / "boot.json"), str(directory / "hosts"),
-                        str(directory / "absent.tmpl")], check=True)
-        return (directory / "hosts").read_text()
+        files = {'"$BOOT"': directory / "boot.json", "/etc/hosts": directory / "hosts",
+                 "/etc/cloud/templates/hosts.debian.tmpl": directory / "hosts.debian.tmpl"}
+        files['"$BOOT"'].write_text(json.dumps({"hosts": entries}))
+        files["/etc/hosts"].write_text(hosts)
+        if template is not None:
+            files["/etc/cloud/templates/hosts.debian.tmpl"].write_text(template)
+        subprocess.run([sys.executable, "-c", self.SCRIPT, *(str(files[arg]) for arg in self.ARGV.split())],
+                       check=True, capture_output=True)
+        tmpl = directory / "hosts.debian.tmpl"
+        return (directory / "hosts").read_text(), tmpl.read_text() if tmpl.exists() else None, directory
 
     def test_provision_writes_one_marked_line_per_name(self):
         entries = [{"name": "brobro.tech", "address": "10.0.1.7"}]
-        hosts = self.run_stage(entries, "127.0.0.1 localhost\n1.2.3.4 brobro.tech\n")
+        hosts, template, _ = self.run_stage(entries, "127.0.0.1 localhost\n1.2.3.4 brobro.tech\n")
         self.assertEqual(hosts, "127.0.0.1 localhost\n10.0.1.7 brobro.tech # bro-private\n")
-        self.assertEqual(self.run_stage(entries, hosts), hosts)  # run again: the same file
-        self.assertEqual(self.run_stage([], hosts), "127.0.0.1 localhost\n")
+        self.assertIsNone(template)  # an image without the template: nothing made up
+        self.assertEqual(self.run_stage(entries, hosts)[0], hosts)  # run again: the same file
+        self.assertEqual(self.run_stage([], hosts)[0], "127.0.0.1 localhost\n")
+
+    def test_provision_pins_the_names_in_cloud_inits_template_too(self):
+        entries = [{"name": "brobro.tech", "address": "10.0.1.7"}]
+        hosts, template, _ = self.run_stage(entries, "127.0.0.1 localhost\n", template=self.TEMPLATE)
+        self.assertEqual(template, self.TEMPLATE + "10.0.1.7 brobro.tech # bro-private\n")
+        self.assertEqual(self.run_stage(entries, hosts, template=template)[1], template)
+
+    def test_provision_replaces_the_files_whole_with_their_mode(self):
+        directory = self.run_stage([{"name": "brobro.tech", "address": "10.0.1.7"}], "127.0.0.1 localhost\n")[2]
+        (directory / "hosts").chmod(0o640)
+        inode = (directory / "hosts").stat().st_ino
+        subprocess.run([sys.executable, "-c", self.SCRIPT, str(directory / "boot.json"), str(directory / "hosts")],
+                       check=True)
+        self.assertNotEqual((directory / "hosts").stat().st_ino, inode)  # renamed over, never truncated
+        self.assertEqual((directory / "hosts").stat().st_mode & 0o7777, 0o640)
+        self.assertEqual(sorted(path.name for path in directory.iterdir()), ["boot.json", "hosts"])
+
+    def test_provision_refuses_a_name_pinned_twice(self):
+        entries = [{"name": "brobro.tech", "address": "10.0.1.7"}, {"name": "brobro.tech", "address": "10.0.1.8"}]
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_stage(entries, "127.0.0.1 localhost\n")
 
     def test_stage_comes_before_sandboxd(self):
         self.assertLess(PROVISION.index("stage hosts"), PROVISION.index("stage sandboxd"))
