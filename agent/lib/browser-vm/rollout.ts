@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   BrowserStateStoreError,
-  browserStateStoreConfigured,
   readBrowserStateObjectBytes,
 } from "@agent/lib/browser-pool/s3";
+import { objectStorageConfigured } from "@shared/object-storage/s3";
 import { alertOwner } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
 import { listWorkspacesHoldingBrowsers } from "@db/services/browser-runs";
@@ -91,7 +91,7 @@ export function browserVmWorkerDue(
   if (published === undefined) return undefined;
   if (vm.sandboxState !== null || vm.hostId !== null) return undefined;
   // Without the bucket there is nothing to fetch: said once, in the docs.
-  if (!browserStateStoreConfigured()) return undefined;
+  if (!objectStorageConfigured()) return undefined;
   if (health.busy || !newer(published.version, health.worker)) {
     return undefined;
   }

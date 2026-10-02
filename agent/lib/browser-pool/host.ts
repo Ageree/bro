@@ -4,7 +4,8 @@ import { browserVmKey } from "@agent/lib/browser-vm/token";
 import type { browserHosts } from "@db/schema/browser-hosts";
 import { env } from "@shared/environment";
 import { browserHostKey, browserSandboxId, browserStateDataKey } from "./keys";
-import { presignBrowserStateObject, readBrowserStateObject } from "./s3";
+import { presignStoredObject } from "@shared/object-storage/s3";
+import { readBrowserStateObject } from "./s3";
 
 /**
  * The HTTP client of `hostd` on a host of the browser pool
@@ -484,7 +485,7 @@ function setUrls(
   }
   const now = new Date();
   return Array.from({ length: count }, (_, index) =>
-    presignBrowserStateObject({
+    presignStoredObject({
       expiresSeconds,
       key: `${key}chunk-${String(index).padStart(4, "0")}`,
       method,
@@ -498,7 +499,7 @@ function manifestUrl(
   method: "GET" | "PUT",
   expiresSeconds: number
 ) {
-  return presignBrowserStateObject({
+  return presignStoredObject({
     expiresSeconds,
     key: `${key}manifest.json`,
     method,

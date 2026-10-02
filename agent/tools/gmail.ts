@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { del, put } from "@vercel/blob";
 import {
   defineDynamic,
   defineTool,
@@ -55,9 +54,13 @@ import {
   findGmailAttachmentArtifact,
   saveGmailAttachmentArtifact,
 } from "@db/services/gmail-attachments";
-import { env } from "@shared/environment";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
+import {
+  artifactStorageConfigured,
+  deleteArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 /**
  * A read the turn guard refused comes back as `{ refused }` instead of the
@@ -160,9 +163,9 @@ export const gmailAttachment = defineTool({
     if (!caller) {
       throw new Error("Gmail attachments need an authenticated user.");
     }
-    if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) {
+    if (!artifactStorageConfigured()) {
       throw new Error(
-        "Private Blob storage is not connected on this deployment, so attachments cannot be forwarded."
+        "Private file storage is not connected on this deployment, so attachments cannot be forwarded."
       );
     }
     const scope = scopeFromPrincipal(caller);
@@ -178,7 +181,7 @@ export const gmailAttachment = defineTool({
 });
 
 /**
- * Copies one attachment into private Blob and records it as an artifact of
+ * Copies one attachment into private object storage and records it as an artifact of
  * this session. The same part asked for again in the session reuses the copy.
  */
 async function storeGmailAttachment(
@@ -223,21 +226,12 @@ async function storeGmailAttachment(
     .update(scope.workspaceId)
     .digest("hex")
     .slice(0, 32)}/${id}`;
-  await put(
-    storagePathname,
-    Buffer.from(
-      read.bytes.buffer,
-      read.bytes.byteOffset,
-      read.bytes.byteLength
-    ),
-    {
-      abortSignal: ctx.abortSignal,
-      access: "private",
-      addRandomSuffix: false,
-      allowOverwrite: false,
-      contentType: mediaType,
-    }
-  );
+  await putArtifactObject({
+    bytes: read.bytes,
+    mediaType,
+    pathname: storagePathname,
+    signal: ctx.abortSignal,
+  });
   const saved = await saveGmailAttachmentArtifact(scope, {
     ...part,
     byteSize: read.bytes.byteLength,
@@ -250,7 +244,7 @@ async function storeGmailAttachment(
   if (saved.id !== id) {
     // A concurrent call stored the same part first; its copy is the one the
     // artifact points at, so this upload has no reader.
-    await del(storagePathname).catch(() => undefined);
+    await deleteArtifactObject(storagePathname).catch(() => undefined);
   }
   return readyAttachment(request, saved);
 }

@@ -4,8 +4,8 @@ import { satisfies } from "eve/evals/expect";
 import { z } from "zod";
 import { agentEvalTags } from "@evals/agent/shared";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
-import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
+import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 
 const tags = [...agentEvalTags, "content"] as const;
 /** A CC0 photo of a golden retriever from Wikimedia Commons. */
@@ -15,12 +15,10 @@ const imagesInputSchema = z.object({ images: z.array(z.string()) });
 
 /**
  * `generate_image` exists only on a deployment with a direct model provider
- * (RouterAI or OpenRouter) and private Blob storage, so the picture cases run
+ * (RouterAI or OpenRouter) and private file storage, so the picture cases run
  * only against one.
  */
-const picturesConfigured =
-  directModelActive() &&
-  (env.BLOB_READ_WRITE_TOKEN ?? env.BLOB_STORE_ID) !== undefined;
+const picturesConfigured = directModelActive() && artifactStorageConfigured();
 
 const gameCases = [
   defineEval({

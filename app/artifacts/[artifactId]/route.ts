@@ -1,9 +1,11 @@
-import { get } from "@vercel/blob";
 import { z } from "zod";
 import { getAuthSession } from "@db/services/auth/session";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { accessScopeForUser } from "@shared/identity/access-scope";
-import { env } from "@shared/environment";
+import {
+  artifactStorageConfigured,
+  openArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 export const runtime = "nodejs";
 
@@ -16,48 +18,48 @@ export async function GET(
   if (!session || !parsedId.success) return notFound();
 
   const scope = accessScopeForUser(`better-auth:${session.user.id}`);
-  const opened = await openArtifact(scope, parsedId.data, {
-    ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
-    signal: request.signal,
-  });
-  if (!opened) return notFound();
+  const artifact = await readReadyArtifact(scope, parsedId.data);
+  if (!artifact || !artifactStorageConfigured()) return notFound();
+
+  let result: Awaited<ReturnType<typeof openArtifactObject>>;
+  try {
+    result = await openArtifactObject(artifact.storagePathname, {
+      ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+      signal: request.signal,
+    });
+    if (
+      result?.status === 200 &&
+      (result.size !== artifact.byteSize ||
+        result.contentType !== artifact.mediaType)
+    ) {
+      // Dropping the body of an object that already failed rejects too.
+      await result.stream.cancel();
+      return notFound();
+    }
+  } catch (error) {
+    // Object Storage refused, timed out or dropped the connection, before or
+    // while its body was let go.
+    console.error("[artifacts] Object Storage read failed", error);
+    return new Response("Storage unavailable", {
+      headers: privateImageHeaders(),
+      status: 502,
+    });
+  }
+  if (!result) return notFound();
 
   const headers = privateImageHeaders();
-  headers.set("etag", opened.result.blob.etag);
-  if (opened.result.statusCode === 304) {
+  if (result.etag) headers.set("etag", result.etag);
+  if (result.status === 304) {
     return new Response(null, { headers, status: 304 });
   }
 
-  headers.set("content-length", String(opened.artifact.byteSize));
-  headers.set("content-type", opened.artifact.mediaType);
+  headers.set("content-length", String(artifact.byteSize));
+  headers.set("content-type", artifact.mediaType);
   headers.set(
     "content-disposition",
-    contentDisposition(opened.artifact.filename, opened.artifact.mediaType)
+    contentDisposition(artifact.filename, artifact.mediaType)
   );
-  return new Response(opened.result.stream, { headers, status: 200 });
-}
-
-async function openArtifact(
-  scope: ReturnType<typeof accessScopeForUser>,
-  artifactId: string,
-  options: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal }
-) {
-  const artifact = await readReadyArtifact(scope, artifactId);
-  if (!artifact) return undefined;
-  if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
-  const result = await get(artifact.storagePathname, {
-    access: "private",
-    abortSignal: options.signal,
-    ifNoneMatch: options.ifNoneMatch,
-  });
-  if (!result) return undefined;
-  if (
-    result.statusCode === 200 &&
-    (result.blob.size !== artifact.byteSize ||
-      result.blob.contentType !== artifact.mediaType)
-  )
-    return undefined;
-  return { artifact, result };
+  return new Response(result.stream, { headers, status: 200 });
 }
 
 function notFound() {

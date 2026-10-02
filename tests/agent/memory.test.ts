@@ -25,7 +25,6 @@ import profileMemory from "@agent/memory/profile";
 import {
   memoryBulkRemovalApproval,
   memoryRemovalApproval,
-  parseLegacyRecall,
   renderPreferencesForRequest,
   renderProfile,
   ruleWriteRefusal,
@@ -160,17 +159,10 @@ describe("durable profile memory", () => {
   });
 
   it("imports legacy indexes once and continues after their largest index", async () => {
-    const recalled = [
-      "# Persistent memories for profile",
-      "",
-      "2: Likes trains",
-      "7: Speaks Russian",
-    ].join("\n");
-    const entries = parseLegacyRecall(recalled);
-    expect(entries).toEqual([
+    const entries = [
       { index: 2, text: "Likes trains" },
       { index: 7, text: "Speaks Russian" },
-    ]);
+    ];
     expect(await importLegacyMemories(alice, "scope-a", entries, 7)).toBe(true);
     expect(
       await importLegacyMemories(

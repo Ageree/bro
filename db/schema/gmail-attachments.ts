@@ -13,7 +13,7 @@ import {
 import { workspaceMemberships } from "./workspaces";
 
 /**
- * A Gmail attachment copied into private Blob so it can travel as a private
+ * A Gmail attachment copied into private object storage so it can travel as a private
  * artifact (`/artifacts/<id>`). One row per message part and session: asking
  * for the same attachment again in that session reuses the stored copy.
  */
