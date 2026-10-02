@@ -1,0 +1,32 @@
+[Unit]
+Description=Caddy
+After=network-online.target
+Wants=network-online.target
+# Caddy faces the internet: without its egress rules (no metadata service, whose user data holds deployd's
+# host key) it does not start.
+Requires=bro-egress.service
+After=bro-egress.service
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+# The admin API is a unix socket only (on localhost:2019 any local process could load a config).
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force --address unix//run/caddy/admin.sock
+# Restart=on-failure brings Caddy back on its own after a crash, a panic (exit 2) or an OOM kill: it is the
+# only way in, for the app and for deployd.
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
