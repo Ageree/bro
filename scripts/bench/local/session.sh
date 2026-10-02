@@ -37,7 +37,13 @@ if [ "$PROVIDER" = routerai ]; then
   # A pasted key may carry spaces and typographic quotes, as env.ts allows.
   RAI_KEY=$(node -e 'console.log((process.env.ROUTERAI_API_KEY??"").replace(/\s+/gu,"").replace(/^[\x27"‘’“”]+|[\x27"‘’“”]+$/gu,""))')
   RAI_BASE=$(printf '%s' "${ROUTERAI_BASE_URL:-}" | tr -d '[:space:]' | sed -E 's#/+$##')
-  LEFT=$(curl -s -m 20 "${RAI_BASE:-https://routerai.ru/api/v1}/credits" -H "Authorization: Bearer $RAI_KEY" \
+  RAI_BASE="${RAI_BASE:-https://routerai.ru/api/v1}"
+  # The key goes in a header: never send it over plain HTTP.
+  case "$RAI_BASE" in
+    https://*) ;;
+    *) echo "[session] ROUTERAI_BASE_URL must use https://" >&2; exit 2 ;;
+  esac
+  LEFT=$(curl -s -m 20 "$RAI_BASE/credits" -H "Authorization: Bearer $RAI_KEY" \
     | json 'j=>j.data.credits.toFixed(2)')
   BACKEND=RouterAI; LEFT_SHOWN="${LEFT:-unknown} ₽"; LEFT_FLOOR=30
 else

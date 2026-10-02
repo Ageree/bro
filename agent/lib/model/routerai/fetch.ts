@@ -214,6 +214,20 @@ export async function routerAiModelFetch(
   return attemptRouterAiFetch(input, init, 1);
 }
 
+/**
+ * One call through RouterAI with the model's failure reading and host
+ * skipping, but no second try: a failed pinned host is noted, so the next
+ * call skips it, and the failure is returned as is. For a call that is paid
+ * per attempt (a web search bills its pages each time) and has its own
+ * fallback.
+ */
+export async function routerAiFetchOnce(
+  input: string | URL | Request,
+  init?: RequestInit
+): Promise<Response> {
+  return attemptRouterAiFetch(input, init, attempts);
+}
+
 async function attemptRouterAiFetch(
   input: string | URL | Request,
   init: RequestInit | undefined,

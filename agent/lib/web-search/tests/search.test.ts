@@ -458,7 +458,7 @@ describe("RouterAI web search", () => {
     expect(body.plugins[0]?.max_results).toBe(3);
   });
 
-  it("asks the next host when the pinned one failed the search", async () => {
+  it("pays for one search when the pinned host fails and asks the next host through the other engine", async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -473,13 +473,18 @@ describe("RouterAI web search", () => {
       .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
-    expect(await searchWeb({ query: "rates" }, turnSignal())).toHaveLength(1);
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
+    expect(await pending).toHaveLength(1);
 
+    // No second Exa search inside the model's fetch: the failed host is
+    // skipped by the one fallback call.
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(0).body.plugins[0]?.engine).toBe("exa");
     const retried = requestAt(1).body;
     expect(retried.provider?.order).toBeUndefined();
     expect(retried.provider?.ignore).toContain("deepinfra");
-    expect(retried.plugins[0]?.engine).toBe("exa");
+    expect(retried.plugins[0]?.engine).toBe("perplexity");
   });
 
   it("leaves another reading model to RouterAI's routing", async () => {

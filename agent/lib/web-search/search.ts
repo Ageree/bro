@@ -5,7 +5,7 @@ import {
   failureStatus,
   reportedErrorSchema,
 } from "@agent/lib/model/routerai/errors";
-import { routerAiModelFetch } from "@agent/lib/model/routerai/fetch";
+import { routerAiFetchOnce } from "@agent/lib/model/routerai/fetch";
 import { env } from "@shared/environment";
 
 /**
@@ -154,8 +154,10 @@ async function searchOnce(
   endpoint: SearchEndpoint,
   signal: AbortSignal
 ) {
-  // On RouterAI the model's own fetch skips a pinned host that failed.
-  const send = endpoint.provider === "routerai" ? routerAiModelFetch : fetch;
+  // On RouterAI a pinned host that failed is skipped from the next call on,
+  // but the call is not repeated here: each attempt bills Exa's pages, and
+  // the fallback engine below is the retry.
+  const send = endpoint.provider === "routerai" ? routerAiFetchOnce : fetch;
   const response = await send(`${endpoint.baseURL}/chat/completions`, {
     body: JSON.stringify(requestBody(input, engine, endpoint)),
     headers: {
