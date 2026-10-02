@@ -9,6 +9,9 @@
  *   node ops/migrate.mjs world   the schema of @workflow/world-postgres and
  *                                its graphile-worker queue into
  *                                WORKFLOW_POSTGRES_URL
+ *   node ops/migrate.mjs unlock  the queue jobs a stopped eve still holds,
+ *                                back to the queue (bro-eve.service, before
+ *                                every start)
  *
  * Both are what `pnpm db:migrate` and the world's own `bootstrap` CLI do,
  * with the same migration tables, so either may run against a database the
@@ -100,6 +103,53 @@ async function migrateWorld() {
   }
 }
 
+// eve exits at once on SIGTERM (its sandbox shutdown plugin calls
+// process.exit) before the queue's graceful shutdown hands its jobs back. A
+// job the old process held then stays locked until graphile's 4-hour sweep,
+// and the step it ran waits out the workflow core's inline-ownership lease
+// (860 s): a turn cut by a restart resumed 14 minutes later. bro-eve.service
+// runs this before every start; with one eve per world database every lock
+// then belongs to a process that is gone, unless another session is open.
+async function unlockWorld() {
+  const pool = openPool(connection("WORKFLOW_POSTGRES_URL"));
+  try {
+    const schema = await pool.query<{ ready: boolean }>(
+      "SELECT to_regclass('graphile_worker._private_jobs') IS NOT NULL AS ready"
+    );
+    if (schema.rows[0]?.ready !== true) {
+      console.log("migrate unlock: no queue yet");
+      return;
+    }
+    const others = await pool.query<{ count: string }>(
+      "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND usename = current_user AND pid <> pg_backend_pid()"
+    );
+    const open = Number(others.rows[0]?.count ?? "0");
+    if (open > 0) {
+      console.log(
+        `migrate unlock: ${String(open)} other sessions on the world database, no lock released`
+      );
+      return;
+    }
+    const locked = await pool.query<{ locked_by: string }>(
+      "SELECT locked_by FROM graphile_worker._private_jobs WHERE locked_by IS NOT NULL UNION SELECT locked_by FROM graphile_worker._private_job_queues WHERE locked_by IS NOT NULL"
+    );
+    const workers = locked.rows.map((row) => row.locked_by);
+    if (workers.length > 0) {
+      const worker = await makeWorkerUtils({ pgPool: pool });
+      try {
+        await worker.forceUnlockWorkers(workers);
+      } finally {
+        await worker.release();
+      }
+    }
+    console.log(
+      `migrate unlock: released the jobs of ${String(workers.length)} stopped workers`
+    );
+  } finally {
+    await pool.end();
+  }
+}
+
 async function timed(name: string, step: () => Promise<void>) {
   const started = Date.now();
   try {
@@ -115,11 +165,12 @@ async function timed(name: string, step: () => Promise<void>) {
 const wanted = process.argv.slice(2);
 if (
   wanted.length === 0 ||
-  wanted.some((name) => name !== "app" && name !== "world")
+  wanted.some((name) => name !== "app" && name !== "world" && name !== "unlock")
 ) {
-  console.error("usage: node ops/migrate.mjs app|world ...");
+  console.error("usage: node ops/migrate.mjs app|world|unlock ...");
   process.exit(2);
 }
 // Bro's tables first: the world's schema is the one a release can do without.
 if (wanted.includes("app")) await timed("app", migrateApp);
 if (wanted.includes("world")) await timed("world", migrateWorld);
+if (wanted.includes("unlock")) await timed("unlock", unlockWorld);

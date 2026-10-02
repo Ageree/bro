@@ -952,6 +952,10 @@ class BootTest(unittest.TestCase):
         for line in ("PORT=4274 HOST=127.0.0.1", "WORKFLOW_LOCAL_BASE_URL=http://127.0.0.1:4274", "TZ=UTC",
                      "Restart=always", "EnvironmentFile=/etc/bro/env"):
             self.assertIn(line, eve)
+        # The queue jobs a stopped eve held go back before every start, and a failure there never blocks it.
+        self.assertIn("\nExecStartPre=-/usr/bin/timeout 30 /usr/local/bin/node /srv/bro/current/ops/migrate.mjs unlock\n",
+                      eve)
+        self.assertLess(eve.index("ExecStartPre="), eve.index("ExecStart=/"))
         web = (HERE / "bro-web.service").read_text()
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
         for unit in ("bro-web.service", "bro-eve.service"):

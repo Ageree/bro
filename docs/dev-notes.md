@@ -110,6 +110,12 @@
   `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
   (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
   поведением по умолчанию, пока Vercel — путь отката.
+- eve на SIGTERM выходит сразу (`sandboxShutdownPlugin`), и очередь Graphile
+  не успевает вернуть свои задания: они заперты на 4 ч, а шаг ждёт аренду
+  ядра workflow (860 с) — ход после рестарта продолжался через 14 минут.
+  Перед каждым стартом eve `ops/migrate.mjs unlock` (ExecStartPre в
+  `bro-eve.service`) возвращает задания; аренду не уменьшайте — шаги
+  пойдут дважды. Один eve на базу мира: иначе unlock заберёт живые задания.
 - `next start` сам eve не поднимает (запуск зашит в `rewrites()`, их Next 16
   вызывает только при сборке): eve — свой процесс `node .output/server/index.mjs`,
   не `eve start` (обёртка копит весь вывод ребёнка в памяти).
@@ -147,6 +153,10 @@
   до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`), и
   `brobro.tech` — только когда домен уже на VM: иначе вызовы task-агента прода
   уходят с Vercel на VM.
+- Переключение 02.10: cron Vercel выключает `PATCH /v1/projects/<id>/crons`
+  с `{"enabled": false}` (`crons.disabledAt`); для страховки на Vercel ещё
+  `EVE_SCHEDULES=off` с передеплоем. Явная A-запись в DNS Vercel перекрывает
+  системный ALIAS проекта — домены с проекта снимать не пришлось.
 - Релиз для VM собирается с `MODEL_PROVIDER` VM (`build_env` в
   `scripts/cloudru-app-host/host.py`): `web_search` выбирается при загрузке
   модуля, и без него в сборку попадал инструмент Gateway — RouterAI отвечал 400
