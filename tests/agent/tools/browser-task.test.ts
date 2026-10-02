@@ -5451,6 +5451,35 @@ describe("browser_task sign-in by the person's phone", () => {
     expect(readBrowserUseRun).not.toHaveBeenCalled();
     expect(phoneAsked()).toMatchObject({ phoneSignIn: false });
   });
+
+  it("takes the queued errand's own instruction for sign-in by phone", async () => {
+    // A queued errand keeps the instruction it was composed with until it
+    // closes: a follow-up carries the phone on from there, not from Browser Use.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "The errand never started"),
+      id: "queued:errand-1",
+      pendingTask: await phoneTask(),
+      site: "https://www.ozon.ru",
+      status: "failed",
+    });
+    const report = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run queued:errand-1 finished.`
+    );
+
+    await report.execute(
+      {
+        action: "continue",
+        personWants: "look",
+        runId: "queued:errand-1",
+        task: "Попробуй ещё раз",
+      },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(readBrowserUseRun).not.toHaveBeenCalled();
+    expect(phoneAsked()).toMatchObject({ phoneSignIn: true });
+  });
 });
 
 describe("browser_task delivery address before the card", () => {
