@@ -236,6 +236,23 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(deployd.read_env(self.paths)["A"], "1")
         self.assertNotEqual(self.paths.env.read_text(), before)
 
+    def test_env_put_can_migrate_the_new_databases_first(self):
+        self.release("v1")
+        self.runner.calls.clear()
+        self.deployd.do_env({"env": {"DATABASE_URL": "postgres://new", "WORKFLOW_POSTGRES_URL": "postgres://w2"},
+                             "migrate": True}, self.log.append)
+        migrate = next(c for c in self.runner.calls if c["argv"][0] == deployd.NODE)
+        self.assertEqual(migrate["env"]["WORKFLOW_POSTGRES_URL"], "postgres://w2")
+        first_restart = next(i for i, c in enumerate(self.runner.calls) if c["argv"][:2] == ["systemctl", "restart"])
+        self.assertLess(self.runner.calls.index(migrate), first_restart)
+        self.runner.migrate_exit = 1
+        self.runner.calls.clear()
+        with self.assertRaisesRegex(deployd.Refused, "migrations failed"):
+            self.deployd.do_env({"env": {"DATABASE_URL": "postgres://other", "WORKFLOW_POSTGRES_URL": "postgres://w3"},
+                                 "migrate": True}, self.log.append)
+        self.assertEqual(deployd.read_env(self.paths)["WORKFLOW_POSTGRES_URL"], "postgres://w2")
+        self.assertFalse(any(c["argv"][:2] == ["systemctl", "restart"] for c in self.runner.calls))
+
     def test_ops_runs_only_scripts_of_the_current_release(self):
         self.release("v1")
         with self.assertRaisesRegex(deployd.Refused, "no ops/db-backup.sh"):
@@ -306,7 +323,7 @@ class ReleaseTest(unittest.TestCase):
         (self.paths.host_ops).mkdir(parents=True)
         (self.paths.host_ops / "tg-bridge.sh").write_text("")
         for args in (["switch-to-bridge"], ["switch-to-webhook", "https://bro-next.vercel.app/eve/v1/telegram"],
-                     ["status"]):
+                     ["status"], ["hold"]):
             self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)  # no release needed
             call = self.runner.calls[-1]
             self.assertEqual(call["argv"], ["/bin/bash", str(self.paths.host_ops / "tg-bridge.sh"), *args])

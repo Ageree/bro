@@ -3,6 +3,8 @@
 # (scripts/cloudru-app-host/tg-bridge/README.md, «Переключение»):
 #
 #   tg-bridge.sh status                      the units, the bridge's health and getWebhookInfo
+#   tg-bridge.sh hold                        only deleteWebhook (pending kept): Telegram holds the updates
+#                                            (24 h) until switch-to-bridge, e.g. while the database moves
 #   tg-bridge.sh switch-to-bridge            tg-egress must answer first; then deleteWebhook (pending kept),
 #                                            enable and start the bridge, wait for its health
 #   tg-bridge.sh switch-to-webhook URL       stop and disable the bridge, confirm what it delivered,
@@ -32,12 +34,15 @@ case "${1:-}" in
     fi
     exec python3 "$BRIDGE" status
     ;;
-  switch-to-bridge)
+  hold | switch-to-bridge)
     [ $# = 1 ] || exit 2
     # The bridge polls through tg-egress: a path that does not answer would leave the bot with neither.
     if [ -f "$EGRESS" ] && ! timeout 40 python3 "$EGRESS" --check; then
       echo "tg-egress does not reach api.telegram.org: the webhook stays (journalctl -u bro-tg-egress)"
       exit 1
+    fi
+    if [ "$1" = hold ]; then
+      exec python3 "$BRIDGE" switch-to-bridge --no-start
     fi
     exec python3 "$BRIDGE" switch-to-bridge
     ;;
@@ -49,7 +54,7 @@ case "${1:-}" in
     exec python3 "$BRIDGE" switch-to-webhook "$2"
     ;;
   *)
-    echo "usage: tg-bridge.sh status | switch-to-bridge | switch-to-webhook URL"
+    echo "usage: tg-bridge.sh status | hold | switch-to-bridge | switch-to-webhook URL"
     exit 2
     ;;
 esac

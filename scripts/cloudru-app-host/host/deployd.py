@@ -20,9 +20,11 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
                                       path to Telegram (tg_egress.py --check, when tg-egress is installed)
   POST /ops/v1/rollback               {version?} -> 202 {job}: the previous (or named) release
   GET  /ops/v1/env                    the names in /etc/bro/env and the file's sha256, never values
-  PUT  /ops/v1/env                    {env: {NAME: value}, opsEnv?: {NAME: value}} -> 202 {job}: the whole
-                                      file, then a restart; opsEnv (only OPS_ONLY_ENV names) goes to
-                                      /etc/bro/ops-env, which only ops scripts get, and is removed without it
+  PUT  /ops/v1/env                    {env: {NAME: value}, opsEnv?: {NAME: value}, migrate?: true} -> 202
+                                      {job}: the whole file, then a restart; opsEnv (only OPS_ONLY_ENV names)
+                                      goes to /etc/bro/ops-env, which only ops scripts get, and is removed
+                                      without it; migrate: the current release's migrations on the env's
+                                      databases first (a new database has no schema; the world fails without)
   GET  /ops/v1/sites                  the app's domains
   PUT  /ops/v1/sites                  {sites: [domain, ...]} the whole list: Caddyfile, reload; www.<site>
                                       next to <site> redirects to it (308)
@@ -82,7 +84,7 @@ BRIDGE = "bro-tg-bridge"
 BRIDGE_DRAIN_S = 15
 # Scripts of the host bundle that deployd runs as root, never a release's copy: bro owns a release's files.
 ROOT_OPS = ("tg-bridge.sh",)
-OPS_ACTION = {"tg-bridge.sh": re.compile(r"status|switch-to-bridge|switch-to-webhook https://[a-z0-9.-]+/eve/v1/telegram")}
+OPS_ACTION = {"tg-bridge.sh": re.compile(r"status|hold|switch-to-bridge|switch-to-webhook https://[a-z0-9.-]+/eve/v1/telegram")}
 # Stopped for a restore (ops/db-restore.sh); a restart or the next release starts them again.
 STOPPABLE = ("bro-web", "bro-eve")
 KEEP_RELEASES = 5
@@ -623,6 +625,17 @@ class Deployd:
         if self.current_version() is None:
             log("no release yet: nothing to restart")
             return {"names": sorted(values), "healthy": None}
+        if body.get("migrate") is True:
+            try:
+                self.migrate(self.current_version(), log)
+            except Refused:
+                # Nothing restarted yet: the services still run on the previous env, so it goes back as it was.
+                if had_env:
+                    os.replace(previous, self.paths.env)
+                else:
+                    self.paths.env.unlink()
+                log("the previous env is back")
+                raise
         with self.bridge_paused(log):
             return self.restart_with_env(values, previous, had_env, log)
 
@@ -690,7 +703,7 @@ class Deployd:
     def root_ops(self, script, args, log):
         """A script of the host bundle as root, with no env of the app: tg-bridge.sh reads /etc/bro/env itself."""
         if not OPS_ACTION[script].fullmatch(" ".join(args)):
-            raise Refused(f"{script}: status, switch-to-bridge or switch-to-webhook https://<host>/eve/v1/telegram")
+            raise Refused(f"{script}: status, hold, switch-to-bridge or switch-to-webhook https://<host>/eve/v1/telegram")
         path = self.paths.host_ops / script
         if not path.is_file():
             raise Refused(f"the host bundle has no ops/{script}: host.py update-host first")

@@ -825,7 +825,9 @@ def cmd_env(args):
         sys.exit(f"missing {', '.join(missing)}: put them in {SECRETS / (args.profile + '.json')} (0600)")
     if args.dry_run:
         return
-    job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env})
+    # migrate: the release's schema on the env's databases before the app starts on them (the prod env's are
+    # new on the first PUT; the Postgres world does not start without its schema).
+    job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env, "migrate": True})
     follow(args.name, job)
 
 
