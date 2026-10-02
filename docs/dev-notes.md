@@ -101,6 +101,13 @@
 - Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
   Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
   `SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
+- Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
+  VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
+  видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
+  регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
+- В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
+  stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
+  таблицы других ролей.
 - esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
   `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
   для `tar -I zstd`: `apt-get install -y zstd`.

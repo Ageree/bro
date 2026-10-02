@@ -135,7 +135,7 @@ data — ключ deployd).
 - Старые сессии Vercel Workflow не переносятся: новые ходы идут в новый мир,
   старые доживают на Vercel до отключения.
 
-Осталось: создать `bro-app-1`, кластер PostgreSQL (этап 5), env стенда
+Осталось: создать `bro-app-1`, env стенда
 (`host.py env --profile stand`), сайт `cloud.brobro.tech` и прогнать стенд;
 проверить ход через мир Postgres, переживание `systemctl restart bro-eve`,
 поток SSE через Caddy и доступность `api.telegram.org` с VM. Квота
@@ -147,18 +147,72 @@ data — ключ deployd).
 Готово: перезапуск сервера не теряет ходов и карточек, расписания не
 дублируются.
 
-### 5. База: Neon → PostgreSQL Cloud.ru
+### 5. База: Neon → PostgreSQL Cloud.ru — кластер и бэкапы готовы, данные не перенесены
 
-`pg_dump`/`pg_restore` в окно обслуживания (`host.py ops <vm> db-restore.sh`:
-кластер доступен только из подсети VM), `DATABASE_URL` на новую базу,
-миграции — `ops/migrate.mjs` при каждой выкладке. Превью больше не делят базу с продом.
+Сделано (`scripts/cloudru-app-host/README.md`, раздел «База»): кластер
+Managed PostgreSQL 18 `bro-pg` (Standard 1 vCPU/2 ГБ, SSD 20 ГБ, один узел,
+подсеть `Default_ru.AZ-1`), пользователь `bro_app`, базы `bro`,
+`bro_workflow`, `bro_stand`, `bro_stand_workflow` и `bro_restore_check`, все
+libc `C.UTF-8` (`host.py pg create|users|databases|status`, повторяемы;
+пароль и ключ бэкапов — в `new-secrets.json`, `host.py env` сам собирает из
+них `DATABASE_URL` и `WORKFLOW_POSTGRES_URL` профиля). Кластер виден только из
+подсети VM: Vercel до него не достанет, поэтому база переезжает в одно окно с
+приложением (этап 6), а все операции с ней — ops-скрипты на VM.
 
-Откат: на время окна Бро только читает (запись в Neon остановлена), и до
-первой записи в новую базу откат — вернуть `DATABASE_URL`. После неё вернуть
-переменную значит потерять записи, сделанные в Cloud.ru: на неделю наблюдения
-держать логическую репликацию Cloud.ru → Neon (публикация на всех таблицах), а
-если её нет — откатываться только с обратным `pg_dump` новых записей в новое
-окно только для чтения.
+- Бэкап каждую ночь (`bro-backup.timer`, 04:10 МСК): `pg_dump -Fc` → AES-256
+  (`BACKUP_ENCRYPTION_KEY`) → `backups/postgres/<время>.dump.enc` в
+  `bucket-ac164a` с манифестом, 14 дней; сразу за ним — восстановление в
+  `bro_restore_check` со сверкой числа строк каждой таблицы. Сбой — сообщение
+  владельцу в Telegram, нет удачного бэкапа больше суток — тоже. Свои бэкапы
+  кластера (ежедневно, 14 дней) — второй слой: они восстанавливают лишь в
+  новый кластер.
+- Перенос — `db-copy.sh neon app --replace`: дамп Neon (`pg_dump` 18, без
+  `neon_auth`, со схемой `drizzle` и её шестью «осиротевшими» строками — они
+  безвредны: drizzle смотрит только на последний `created_at`), число строк
+  источника до и после дампа и в дампе совпадает, копия источника —
+  зашифрованной в `backups/postgres/<время>-neon.dump.enc`, восстановление
+  одной транзакцией и сверка каждой таблицы.
+
+Осталось: на VM проверить, что `pg_dump` достаёт Neon по 5432 (`host.py ops
+bro-app-1 db-copy.sh neon app --dump-only` с `host.py env … --with-neon`;
+из облачной сессии 5432 закрыт), репетиция переноса в `bro_stand` и первый
+ночной бэкап с проверкой.
+
+Окно переноса (вместе с этапом 6):
+
+1. Расписания Vercel выключить. Neon — только чтение для приложения:
+   `ALTER DATABASE neondb SET default_transaction_read_only = on` и
+   `pg_terminate_backend` прочих соединений роли (Vercel переподключится
+   уже в режиме чтения; запись у Бро на Vercel падает, чтение работает).
+2. `host.py env bro-app-1 --profile prod --with-neon`, затем `host.py stop
+bro-app-1 bro-eve bro-web`.
+3. `host.py ops bro-app-1 db-copy.sh neon app --replace`.
+4. `host.py restart bro-app-1`, проверки, DNS `brobro.tech` на VM (этап 6).
+   `NEON_DATABASE_URL` остаётся в env на неделю наблюдения — для отката.
+
+Откат базы:
+
+- **До первой записи в Cloud.ru** (DNS ещё не переключали или переключили и
+  сразу вернули): DNS назад, в Neon `ALTER DATABASE neondb RESET
+default_transaction_read_only` и `pg_terminate_backend` соединений Vercel,
+  расписания Vercel включить. Neon всё это время не менялся.
+- **После записей в Cloud.ru** — обратный перенос в новое окно только для
+  чтения. Neon с момента переноса стоит только на чтение, поэтому в нём нечего
+  беречь, и вместо дампа «новых строк» переносится база целиком: так
+  приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
+bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
+bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon,
+  перед этим кладёт зашифрованную копию `app` в Object Storage) → в Neon
+  `RESET default_transaction_read_only` и `pg_terminate_backend` → DNS назад,
+  расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
+  нет. VM с базой не удалять, пока Vercel не проработал неделю.
+- Логическая репликация Cloud.ru → Neon не используется: у `bro_app` нет
+  права `REPLICATION` (роли кластера — `pg_monitor`, `pg_read_all_data`,
+  `pg_write_all_data`, `pg_signal_backend`), а `wal_level` Neon — `replica`;
+  не проверена — не полагаться.
+
+Готово: бэкап за прошлую ночь восстанавливается проверкой, перенос с
+Neon сошёлся по всем таблицам, откат отрепетирован на `bro_stand`.
 
 ### 6. Переключение
 

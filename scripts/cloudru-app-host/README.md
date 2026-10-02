@@ -13,18 +13,19 @@ Caddy :443 ─ /eve/* ───────────────▶ bro-eve  
 bro-eve ── мир @workflow/world-postgres (graphile-worker в процессе) ──▶ PostgreSQL Cloud.ru
 ```
 
-| Файл                    | Что делает                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------- |
-| `host.py`               | команды из сессии (справка — `-h`)                                              |
-| `host/boot.py`          | `vendor`, бандл хоста и cloud-init                                              |
-| `host/provision.sh`     | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                      |
-| `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                     |
-| `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy; Telegram владельцу                     |
-| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`          |
-| `host/egress.sh`        | iptables для `bro`: без metadata `169.254/16` и без порта deployd               |
-| `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)        |
-| `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs` |
-| `ops/db-*.sh`           | дамп и восстановление базы с VM (кластер доступен только из её подсети)         |
+| Файл                    | Что делает                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `host.py`               | команды из сессии (справка — `-h`)                                                   |
+| `host/boot.py`          | `vendor`, бандл хоста и cloud-init                                                   |
+| `host/provision.sh`     | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                           |
+| `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
+| `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
+| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
+| `host/egress.sh`        | iptables для `bro`: без metadata `169.254/16` и без порта deployd                    |
+| `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
+| `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
+| `ops/db-*.sh`           | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
+| `ops/store.py`          | Object Storage и манифесты бэкапов (подпись — `s3.py` стенда, едет в релиз)          |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET`, `CLOUDRU_S3_TENANT_ID`; Compute
 API, serial-консоль и подпись S3 — из стенда `scripts/cloudru-sandbox-probe/`,
@@ -46,12 +47,13 @@ cloud-init в `/etc/bro/deployd.json`; сам `DEPLOY_SIGNING_KEY` на VM не 
 подписанного ключом PGDG `InRelease`) и кладёт Node и пакеты в Object Storage;
 Caddy едет в бандле хоста.
 
-| Ключ в `bucket-ac164a`           | Что                                                 |
-| -------------------------------- | --------------------------------------------------- |
-| `app/vendor/<файл>`              | Node `tar.xz` и три `.deb` клиента PostgreSQL       |
-| `app/host/app-host-<sha256>.tgz` | бандл: `host/*` и Caddy                             |
-| `app/releases/<версия>.tar.zst`  | релиз и рядом `.sha256`                             |
-| `app/backups/…`                  | дампы, если их выгрузить (`s3put:` у `host.py ops`) |
+| Ключ в `bucket-ac164a`           | Что                                              |
+| -------------------------------- | ------------------------------------------------ |
+| `app/vendor/<файл>`              | Node `tar.xz` и три `.deb` клиента PostgreSQL    |
+| `app/host/app-host-<sha256>.tgz` | бандл: `host/*` и Caddy                          |
+| `app/releases/<версия>.tar.zst`  | релиз и рядом `.sha256`                          |
+| `backups/postgres/…`             | зашифрованные бэкапы прода и манифесты (14 дней) |
+| `backups/stand/postgres/…`       | то же для стенда                                 |
 
 ## VM
 
@@ -145,9 +147,14 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    подписи песочниц и браузерных VM, `BROWSER_STATE_KEY`. Вернуть ключ можно
    в `stand.json`; `host.py env` тогда печатает предупреждение для каждого
    ключа хранилища прода;
-6. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор): базы
-   `DATABASE_URL`, `WORKFLOW_POSTGRES_URL` (обязательны), `OPS_ALERT_CHAT_ID`
-   и всё, что надо перекрыть; `null` удаляет имя.
+6. `new-secrets.json` после `host.py pg users`: `DATABASE_URL`,
+   `WORKFLOW_POSTGRES_URL`, `BACKUP_CHECK_DATABASE_URL` (пользователь
+   `bro_app`, базы профиля — раздел «База»), `BACKUP_ENCRYPTION_KEY`; профиль
+   добавляет `BACKUP_PREFIX`; `--with-neon` — ещё `NEON_DATABASE_URL`
+   (прямой адрес Neon из `vercel-production.json`) на время переноса;
+7. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор):
+   `OPS_ALERT_CHAT_ID` и всё, что надо перекрыть (и базы, если они другие);
+   `null` удаляет имя.
 
 Значения чистятся от переводов строк, пробелов и кавычек по краям. Значение с
 переводом строки deployd не примет. Если после нового env сервисы не поднялись
@@ -160,10 +167,67 @@ host.py rollback bro-app-1                         # ещё раз — на ре
   заранее). `/ops/v1/*` есть только на ops-хосте `sslip.io`.
 - `host.py logs NAME bro-eve --lines 500` — хвост journald.
 - `host.py restart NAME [bro-web bro-eve caddy]`, `host.py stop NAME bro-eve bro-web`.
-- `host.py ops NAME db-dump.sh app s3put:app/backups/<имя>.dump` — дамп с
-  выгрузкой; `host.py ops NAME db-restore.sh app s3get:<ключ> <sha256> --replace`
-  — восстановление (сначала `stop`). Скрипты берутся только из `ops/`
-  текущего релиза; аргумент `s3get:`/`s3put:` превращается в presigned-ссылку.
+- `host.py ops NAME <скрипт> [аргументы]` — `ops/<скрипт>` текущего релиза
+  от `bro` с env сервисов (базы — раздел «База»); аргумент `s3get:`/`s3put:`
+  превращается в presigned-ссылку.
+
+## База
+
+Managed PostgreSQL Cloud.ru 18, кластер `bro-pg` в подсети VM
+(`Default_ru.AZ-1`): у него только внутренний адрес, базу видят лишь VM этой
+подсети, поэтому всё, что ходит в базу, — ops-скрипты на VM.
+
+```sh
+host.py pg create      # кластер, если его нет (Standard 1 vCPU/2 ГБ, SSD 20 ГБ, свои бэкапы в 03:00, 14 дней)
+host.py pg users       # bro_app; пароль и BACKUP_ENCRYPTION_KEY — в new-secrets.json
+host.py pg databases   # bro, bro_workflow, bro_stand, bro_stand_workflow, bro_restore_check (C.UTF-8)
+host.py pg status      # кластер, диск, базы, пользователи, бэкапы провайдера
+```
+
+Все четыре повторяемы: что есть, остаётся, чего нет — создаётся. Адрес
+кластера (`PG_HOST`, `PG_PORT`, `PG_CLUSTER_ID`) тоже в `new-secrets.json`.
+Локаль баз — libc `C.UTF-8`: порядок строк как у `builtin C.UTF-8` Neon, а
+регистр по Unicode (у `C` `ILIKE` не видит регистра кириллицы, а память ищет
+так). Пароль `bro_app` сменить: `pg users --reset-password`, затем
+`host.py env` каждой VM.
+
+Скрипты (`host.py ops NAME <скрипт> …`; базы — по именам: `app`, `check`,
+`neon`, `db:<имя>`; пароль в командную строку не попадает, только в env
+команды):
+
+| Скрипт                                                       | Что делает                                                                                                                                                                 |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db-backup.sh`                                               | `pg_dump -Fc` базы `app` → `openssl` AES-256 (`BACKUP_ENCRYPTION_KEY`) → `<BACKUP_PREFIX>/<UTC>.dump.enc` и манифест `.json`; старше 14 дней — удалить, три новых остаются |
+| `db-restore.sh KEY\|latest app\|check\|db:<имя> [--replace]` | сверить с манифестом, расшифровать, в одной транзакции снести свои таблицы цели и восстановить, сверить число строк каждой таблицы                                         |
+| `db-restore-check.sh [KEY\|latest]`                          | восстановить в `bro_restore_check`, сверить с дампом (строго) и с живой базой (печатает разницу), очистить                                                                 |
+| `db-copy.sh FROM TO [--replace] [--dump-only]`               | перенос базы целиком с проверкой: `neon app` — переезд, `app neon` — откат (`docs/cloudru-migration.md`, этап 5)                                                           |
+
+- Дамп лежит только во временном каталоге `0700` в `/var/backups/bro` и
+  удаляется по выходу; с VM уходит лишь зашифрованным. В манифесте — sha256
+  шифровки и дампа, размер и число строк по таблицам, данных нет.
+- Цель с таблицами — только с `--replace`; `app` — только при остановленном Бро
+  (`host.py stop NAME bro-eve bro-web`, скрипт проверяет соединения), базу
+  мира скрипты не трогают. Восстановление — одна транзакция: сбой оставляет
+  цель как была.
+- `db-copy.sh` сверяет число строк источника до и после дампа: источник
+  должен стоять только на чтение. Схема Neon `neon_auth` и чужие таблицы не
+  копируются, `drizzle` (журнал миграций, с шестью «сиротами» Neon) — да.
+  Копия источника шифруется в `<BACKUP_PREFIX>/<время>-<FROM>.dump.enc` и не
+  удаляется сама. `--dump-only` — репетиция: доступен ли источник, сколько
+  идёт дамп.
+- Ключ `BACKUP_ENCRYPTION_KEY` есть только в `new-secrets.json` и
+  `/etc/bro/env`: без него бэкапы не прочитать — копию хранить вне сессии.
+  Шифр — `openssl enc -aes-256-cbc -pbkdf2` (без MAC: целостность — по sha256
+  манифеста; писать в бакет может лишь владелец ключа Cloud.ru).
+
+`bro-backup.timer` — каждую ночь в 04:10–04:20 по Москве (`Persistent`:
+пропущенный запуск догоняется): `db-backup.sh`, затем
+`db-restore-check.sh latest`. Сбой любого — сразу сообщение владельцу
+(`bro-backup-alert.service`, `watchdog.py alert backup`); если удачного бэкапа
+нет больше суток (`/var/backups/bro/last-backup.json`), watchdog скажет и
+это. Без `BACKUP_ENCRYPTION_KEY` бэкапы выключены, без
+`BACKUP_CHECK_DATABASE_URL` — проверка. Логи — `host.py logs NAME bro-backup`.
+База мира (`bro_workflow`) не бэкапится: в ней только идущие ходы.
 
 ## Watchdog
 

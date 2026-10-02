@@ -1,0 +1,24 @@
+[Unit]
+Description=Bro nightly database backup (encrypted dump to Object Storage, then a restore check)
+After=network-online.target
+Wants=network-online.target
+Requires=bro-egress.service
+After=bro-egress.service
+ConditionPathExists=/srv/bro/current/ops/db-backup.sh
+# A failed backup or restore check: the owner hears it in Telegram (watchdog.py alert).
+OnFailure=bro-backup-alert.service
+
+[Service]
+Type=oneshot
+User=bro
+Group=bro
+WorkingDirectory=/srv/bro/current
+EnvironmentFile=/etc/bro/env
+Environment=HOME=/var/lib/bro-home PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash /srv/bro/current/ops/db-backup.sh
+ExecStart=/bin/bash /srv/bro/current/ops/db-restore-check.sh latest
+TimeoutStartSec=3h
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true

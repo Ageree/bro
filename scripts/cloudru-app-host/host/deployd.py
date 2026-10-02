@@ -53,7 +53,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.2"
+VERSION = "2026-10-02.3"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -64,7 +64,7 @@ SCRIPT = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.(sh|mjs)")
 ARGUMENT = re.compile(r"[A-Za-z0-9._:/=@%?&+-]{1,2048}")
 # Releases come only from the project's Object Storage (host.py build): a presigned GET.
 RELEASE_HOSTS = ("s3.cloud.ru",)
-UNITS = ("bro-web", "bro-eve", "caddy", "deployd", "bro-watchdog")
+UNITS = ("bro-web", "bro-eve", "caddy", "deployd", "bro-watchdog", "bro-backup")
 RESTARTABLE = ("bro-web", "bro-eve", "caddy")
 # Stopped for a restore (ops/db-restore.sh); a restart or the next release starts them again.
 STOPPABLE = ("bro-web", "bro-eve")
@@ -87,6 +87,7 @@ class Paths:
         self.current = self.srv / "current"
         self.downloads = self.srv / "downloads"
         self.history = self.srv / "history.json"
+        self.backups = root / "var/backups/bro"
 
 
 class Unauthorized(Exception):

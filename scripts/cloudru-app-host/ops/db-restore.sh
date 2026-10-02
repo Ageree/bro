@@ -1,26 +1,23 @@
 #!/bin/bash
-# Restores a dump into one database of the VM's env, run by deployd (POST /ops/v1/ops) as bro:
+# A backup from Object Storage into one database (scripts/cloudru-app-host/README.md, «База»):
 #
-#   db-restore.sh app|world GET_URL SHA256 --replace
+#   db-restore.sh KEY|latest app|check|db:<name> [--replace]
 #
-# GET_URL is a presigned Object Storage link to a pg_dump --format=custom file (db-dump.sh, or a dump of
-# Neon made from the session), checked against SHA256 before anything is touched. --replace is required:
-# the restore drops what the dump holds (pg_restore --clean --if-exists) in one transaction. Stop the
-# services that write first (host.py restart is not enough: stop bro-eve, bro-web).
-set -euo pipefail
-case "${1:-}" in
-  app) URL=${DATABASE_URL_UNPOOLED:-${DATABASE_URL:-}} ;;
-  world) URL=${WORKFLOW_POSTGRES_URL:-} ;;
-  *) echo "usage: db-restore.sh app|world GET_URL SHA256 --replace" >&2; exit 2 ;;
-esac
-[ -n "$URL" ] || { echo "no connection string for $1 in /etc/bro/env" >&2; exit 2; }
-[[ "${3:-}" =~ ^[0-9a-f]{64}$ ]] || { echo "SHA256: 64 hex characters" >&2; exit 2; }
-[ "${4:-}" = "--replace" ] || { echo "the restore replaces data: pass --replace" >&2; exit 2; }
-FILE="/var/backups/bro/restore-$1.dump"
-curl -fsS --retry 3 -m 3600 -o "$FILE" "$2"
-echo "$3  $FILE" | sha256sum -c --quiet - || { rm -f "$FILE"; echo "sha256 mismatch" >&2; exit 1; }
-echo "restore $(stat -c %s "$FILE") bytes into $1"
-pg_restore --clean --if-exists --no-owner --no-privileges --single-transaction --exit-on-error \
-  --dbname "$URL" "$FILE"
-rm -f "$FILE"
-echo "restored"
+# KEY is backups/…/<time>.dump.enc (db-backup.sh, db-copy.sh); latest is the newest nightly dump under
+# BACKUP_PREFIX. The object must match its manifest (sha256 before and after decryption, the tables), then the
+# target's own tables are dropped and the dump restored in one transaction, and every table must hold the
+# dump's row count. A target with tables needs --replace; app also needs Bro stopped
+# (host.py stop NAME bro-eve bro-web), and the world's database is refused.
+source "$(dirname "$0")/db-lib.sh"
+[ $# -ge 2 ] || die "usage: db-restore.sh KEY|latest app|check|db:<name> [--replace]"
+KEY=$1
+[ "$KEY" = latest ] && KEY=$(store latest "$BACKUP_PREFIX")
+REPLACE=no
+[ "${3:-}" = "--replace" ] && REPLACE=yes
+connection DST "$2"
+refuse_world DST
+guard_target DST "$REPLACE"
+workdir
+fetch_backup "$KEY" "$WORK/db.dump" "$WORK/counts"
+restore DST "$WORK/db.dump" "$WORK/counts"
+echo "restored $KEY into $2"

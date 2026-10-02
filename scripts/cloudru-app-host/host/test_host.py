@@ -24,8 +24,12 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+# ops/store.py imports the stand's s3.py, which `host.py build` puts next to it in a release.
+sys.path.insert(1, str(Path(__file__).resolve().parents[1] / "ops"))
+sys.path.insert(2, str(Path(__file__).resolve().parents[3] / "scripts" / "cloudru-sandbox-probe"))
 import boot  # noqa: E402
 import deployd  # noqa: E402
+import store  # noqa: E402
 import watchdog  # noqa: E402
 
 HERE = Path(__file__).parent
@@ -194,14 +198,14 @@ class ReleaseTest(unittest.TestCase):
 
     def test_ops_runs_only_scripts_of_the_current_release(self):
         self.release("v1")
-        with self.assertRaisesRegex(deployd.Refused, "no ops/db-dump.sh"):
-            self.deployd.do_ops({"script": "db-dump.sh"}, self.log.append)
+        with self.assertRaisesRegex(deployd.Refused, "no ops/db-backup.sh"):
+            self.deployd.do_ops({"script": "db-backup.sh"}, self.log.append)
         with self.assertRaisesRegex(deployd.Refused, "script"):
             self.deployd.do_ops({"script": "../web/server.js"}, self.log.append)
-        (self.paths.releases / "v1" / "ops" / "db-dump.sh").write_text("")
+        (self.paths.releases / "v1" / "ops" / "db-backup.sh").write_text("")
         with self.assertRaisesRegex(deployd.Refused, "args"):
-            self.deployd.do_ops({"script": "db-dump.sh", "args": ["a b"]}, self.log.append)
-        self.deployd.do_ops({"script": "db-dump.sh", "args": ["app"]}, self.log.append)
+            self.deployd.do_ops({"script": "db-backup.sh", "args": ["a b"]}, self.log.append)
+        self.deployd.do_ops({"script": "db-backup.sh", "args": ["app"]}, self.log.append)
         call = self.runner.calls[-1]
         self.assertEqual(call["argv"][0], "/bin/bash")
         self.assertEqual(call["user"], "bro")
@@ -336,6 +340,22 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual([name for name, _ in watchdog.step(state, {"web": False, "eve": False}, 660, "h")],
                          ["eve"])
 
+    def test_backups_must_be_fresh_once_they_are_on(self):
+        with tempfile.TemporaryDirectory() as root:
+            paths = deployd.Paths(root)
+            now = 2_000_000
+            self.assertIsNone(watchdog.backup_fresh(paths, {}, now))
+            env = {"BACKUP_ENCRYPTION_KEY": "k"}
+            self.assertIsNone(watchdog.backup_fresh(paths, env, now))  # none has run yet
+            paths.backups.mkdir(parents=True)
+            (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": now - 3600}))
+            self.assertTrue(watchdog.backup_fresh(paths, env, now))
+            self.assertFalse(watchdog.backup_fresh(paths, env, now + 26 * 3600))
+        state = {"backup": {"downSince": 0}}
+        [(_, text)] = watchdog.step(state, {"backup": False}, 300, "bro-app-1")
+        self.assertIn("бэкапа базы", text)
+        self.assertIn("host.py logs bro-app-1 bro-backup", text)
+
     def test_a_blip_says_nothing(self):
         state = {}
         watchdog.step(state, {"web": False}, 0, "h")
@@ -418,6 +438,49 @@ class BootTest(unittest.TestCase):
         self.assertNotRegex(provision, r"chown bro:bro [^\n]*/srv/bro")
 
 
+class BackupTest(unittest.TestCase):
+    OPS = HERE.parent / "ops"
+
+    def test_scripts_parse_and_share_the_library(self):
+        for script in sorted(self.OPS.glob("*.sh")):
+            subprocess.run(["bash", "-n", str(script)], check=True)
+            if script.name != "db-lib.sh":
+                self.assertIn('source "$(dirname "$0")/db-lib.sh"', script.read_text(), script.name)
+        lib = (self.OPS / "db-lib.sh").read_text()
+        # A password never reaches a command line; a restore is one transaction.
+        self.assertIn('PGPASSWORD="${!pass}"', lib)
+        self.assertIn("--single-transaction", lib)
+        self.assertIn("-pass env:BACKUP_ENCRYPTION_KEY", lib)
+        self.assertIn("--exclude-schema=neon_auth", lib)
+
+    def test_pruning_keeps_two_weeks_and_never_the_newest_three(self):
+        now = store.datetime.datetime(2026, 10, 30, 1, 10, tzinfo=store.datetime.timezone.utc)
+        day = store.datetime.timedelta(days=1)
+        dumps = [((now - n * day).strftime("%Y%m%dT%H%M%SZ"), f"backups/postgres/{n}") for n in range(20, -1, -1)]
+        doomed = store.doomed(dumps, 14, 3, now)
+        self.assertEqual(doomed, [f"backups/postgres/{n}" for n in range(20, 14, -1)])
+        old = [(stamp, key) for stamp, key in dumps if stamp < "20261010"]
+        self.assertEqual(store.doomed(old, 14, 3, now), [key for _, key in old[:-3]])
+
+    def test_only_backup_keys(self):
+        self.assertTrue(store.KEY.fullmatch("backups/postgres/20261002T011000Z.dump.enc"))
+        self.assertTrue(store.KEY.fullmatch("backups/stand/postgres/20261002T011000Z-neon.json"))
+        for key in ("app/releases/x.tar.zst", "backups/../pool/x.dump.enc", "backups/postgres/latest.dump.enc"):
+            self.assertIsNone(store.KEY.fullmatch(key), key)
+        self.assertTrue(store.NIGHTLY.fullmatch("20261002T011000Z.dump.enc"))
+        self.assertIsNone(store.NIGHTLY.fullmatch("20261002T011000Z-neon.dump.enc"))
+
+    def test_the_nightly_units(self):
+        service = (HERE / "bro-backup.service").read_text()
+        for line in ("OnFailure=bro-backup-alert.service", "User=bro", "EnvironmentFile=/etc/bro/env",
+                     "Requires=bro-egress.service", "ops/db-backup.sh", "ops/db-restore-check.sh latest"):
+            self.assertIn(line, service)
+        self.assertIn("Europe/Moscow", (HERE / "bro-backup.timer").read_text())
+        self.assertIn("watchdog.py alert backup", (HERE / "bro-backup-alert.service").read_text())
+        self.assertIn("bro-backup.timer", (HERE / "provision.sh").read_text())
+        self.assertIn("bro-backup", deployd.UNITS)
+
+
 def load_host_py():
     """host.py of the session, loaded by path (its name is that of this directory), with a scratch state."""
     import importlib.util
@@ -436,9 +499,30 @@ class HostCliTest(unittest.TestCase):
 
     def test_the_readme_restore_command_parses(self):
         args = self.host.parser().parse_args(
-            ["ops", "bro-app-1", "db-restore.sh", "app", "s3get:app/backups/x.dump", "a" * 64, "--replace"])
+            ["ops", "bro-app-1", "db-restore.sh", "latest", "app", "--replace"])
         self.assertEqual(args.script, "db-restore.sh")
-        self.assertEqual(args.args, ["app", "s3get:app/backups/x.dump", "a" * 64, "--replace"])
+        self.assertEqual(args.args, ["latest", "app", "--replace"])
+        args = self.host.parser().parse_args(["ops", "bro-app-1", "db-copy.sh", "neon", "app", "--replace"])
+        self.assertEqual(args.args, ["neon", "app", "--replace"])
+        for argument in ("db:bro_stand", "backups/postgres/20261002T011000Z.dump.enc", "--dump-only"):
+            self.assertRegex(argument, deployd.ARGUMENT)
+
+    def test_databases_come_from_new_secrets_per_profile(self):
+        secrets_file = self.host.SECRETS / "new-secrets.json"
+        self.host.SECRETS.mkdir(parents=True, exist_ok=True)
+        secrets_file.write_text(json.dumps({"PG_HOST": "10.0.0.9", "PG_PORT": "5432",
+                                            "PG_BRO_APP_PASSWORD": "a/b@c:d", "BACKUP_ENCRYPTION_KEY": "k" * 44}))
+        self.addCleanup(secrets_file.unlink)
+        prod, _ = self.host.compose_env("prod", {})
+        stand, _ = self.host.compose_env("stand", {})
+        self.assertEqual(prod["DATABASE_URL"], "postgresql://bro_app:a%2Fb%40c%3Ad@10.0.0.9:5432/bro")
+        self.assertTrue(prod["WORKFLOW_POSTGRES_URL"].endswith("/bro_workflow"))
+        self.assertTrue(stand["DATABASE_URL"].endswith("/bro_stand"))
+        self.assertTrue(stand["WORKFLOW_POSTGRES_URL"].endswith("/bro_stand_workflow"))
+        self.assertTrue(prod["BACKUP_CHECK_DATABASE_URL"].endswith("/bro_restore_check"))
+        self.assertNotEqual(prod["BACKUP_PREFIX"], stand["BACKUP_PREFIX"])
+        self.assertEqual(prod["BACKUP_ENCRYPTION_KEY"], "k" * 44)
+        self.assertNotIn("NEON_DATABASE_URL", prod)
 
     def test_the_stand_gets_no_key_that_reaches_people_or_production(self):
         session = {name: "x" for name in (
