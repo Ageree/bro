@@ -162,6 +162,14 @@
   cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
   `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
   (`sandbox/sandboxd/memory.go`): умирает один процесс, код 137.
+- Убийство `exec` (`killScript` в `sandbox/sandboxd/exec.go`) узнаёт процессы
+  по `/proc/<pid>/environ`, а у процесса посреди `execve` оно пусто, пока
+  читается бинарник (на Linux; фейковый runsc гоняет команды на хосте). Так
+  `TestDrainKillsOpenExecs` раз в десятки прогонов CI оставлял `sleep` живым:
+  он первый в пакете запускает `sleep`, и кэш диска раннера, видимо, холодный.
+  Поэтому скрипт добивает и потомков помеченных процессов по родителям.
+  Повтор без CI: холодный бинарник `sleep` в `/usr/local/bin` и
+  `blkio.throttle.read_bps_device` на диск (cgroup v1).
 - `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
