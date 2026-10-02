@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Работа Python-разработчиком в Москве: вакансии</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #111;
+        background: #f4f4f5;
+      }
+      header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 32px;
+        background: #fff;
+      }
+      header b {
+        font-size: 20px;
+        color: #d6001c;
+        margin-right: 18px;
+      }
+      header input {
+        width: 420px;
+        height: 38px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 0 10px;
+        font: inherit;
+      }
+      header button {
+        height: 38px;
+        border: 0;
+        border-radius: 8px;
+        background: #0070ff;
+        color: #fff;
+        padding: 0 18px;
+        font: 700 15px Arial;
+        cursor: pointer;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 18px 16px;
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      .bar button {
+        border: 1px solid #ccc;
+        background: #fff;
+        border-radius: 16px;
+        padding: 6px 14px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .applied {
+        color: #555;
+      }
+      .vac {
+        background: #fff;
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+      }
+      .vac a {
+        font-weight: 700;
+        color: #0070ff;
+        text-decoration: none;
+      }
+      .vac .pay {
+        margin-top: 4px;
+      }
+      .shade {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.35);
+        z-index: 30;
+      }
+      .dlg {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: 440px;
+        background: #fff;
+        border-radius: 14px;
+        z-index: 31;
+        display: flex;
+        flex-direction: column;
+      }
+      .dlg h2 {
+        margin: 0;
+        padding: 16px 20px 8px;
+        font-size: 22px;
+      }
+      .dlg .x {
+        position: absolute;
+        top: 14px;
+        right: 16px;
+        border: 0;
+        background: none;
+        font-size: 22px;
+        cursor: pointer;
+      }
+      .dlg .body {
+        flex: 1;
+        overflow: auto;
+        padding: 4px 20px;
+      }
+      .dlg h3 {
+        font-size: 16px;
+        margin: 16px 0 6px;
+      }
+      .dlg label.chk {
+        display: block;
+        margin: 4px 0;
+      }
+      .dlg .salary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dlg .salary input {
+        width: 180px;
+        height: 36px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 0 10px;
+        font: inherit;
+      }
+      .period {
+        position: relative;
+      }
+      .period > button {
+        border: 1px solid #ccc;
+        background: #fff;
+        border-radius: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font: inherit;
+        min-width: 200px;
+        text-align: left;
+      }
+      .pop {
+        position: absolute;
+        top: 44px;
+        left: 0;
+        width: 260px;
+        background: #fff;
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+        padding: 10px 14px;
+        z-index: 5;
+      }
+      .pop label {
+        display: block;
+        margin: 5px 0;
+        cursor: pointer;
+      }
+      .pop .ok {
+        margin-top: 8px;
+        border: 0;
+        background: #0070ff;
+        color: #fff;
+        border-radius: 8px;
+        padding: 7px 14px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .foot {
+        display: flex;
+        gap: 8px;
+        padding: 12px 20px;
+        border-top: 1px solid #eee;
+      }
+      .foot button {
+        flex: 1;
+        height: 42px;
+        border-radius: 10px;
+        font: 700 15px Arial;
+        cursor: pointer;
+      }
+      .foot .reset {
+        background: #fff;
+        border: 1px solid #ccc;
+      }
+      .foot .show {
+        background: #0070ff;
+        color: #fff;
+        border: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>работа.ру</b
+      ><input
+        aria-label="Поиск по вакансиям"
+        value="Python-разработчик"
+      /><button type="button">Найти</button>
+    </header>
+    <main>
+      <h1 id="h">Работа Python-разработчиком в Москве</h1>
+      <div class="bar">
+        <button type="button" id="filters">Фильтры</button
+        ><span class="applied" id="applied">Фильтры не выбраны</span>
+      </div>
+      <div id="list"></div>
+    </main>
+    <script>
+      (() => {
+        const ALL = [
+          ["Python-разработчик (Django)", 120000, 2],
+          ["Senior Python Developer", 350000, 20],
+          ["Backend-разработчик Python", 180000, 5],
+          ["Python-разработчик в финтех", 260000, 3],
+          ["Младший Python-разработчик", 70000, 1],
+          ["Python Team Lead", 400000, 12],
+          ["Разработчик Python / Data", 210000, 6],
+          ["Python-программист (удалённо)", 150000, 25],
+        ];
+        // Applied filters (the list and the URL follow them) and the dialog's draft, which only "Показать" applies.
+        let applied = { salary: 0, period: 0 },
+          draft = null,
+          dialog = null,
+          pop = null,
+          timer = null;
+        const PERIODS = [
+          [0, "За всё время"],
+          [1, "За сутки"],
+          [7, "За неделю"],
+          [30, "За месяц"],
+        ];
+        const match = (f) =>
+          ALL.filter(
+            (v) => v[1] >= f.salary && (!f.period || v[2] <= f.period)
+          );
+        const fmt = (n) => n.toLocaleString("ru-RU").replace(/ /g, " ");
+        const plural = (n) =>
+          n % 10 === 1 && n % 100 !== 11
+            ? "вакансию"
+            : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100)
+              ? "вакансии"
+              : "вакансий";
+        function drawList() {
+          const rows = match(applied);
+          document.getElementById("h").textContent =
+            `Работа Python-разработчиком в Москве: ${rows.length} ${plural(rows.length).replace("вакансию", "вакансия")}`;
+          document.getElementById("list").innerHTML = rows
+            .map(
+              (v) =>
+                `<div class="vac"><a href="#v">${v[0]}</a><div class="pay">от ${fmt(v[1])} ₽ на руки</div><div class="applied">Опубликовано ${v[2]} дн. назад</div></div>`
+            )
+            .join("");
+          const parts = [];
+          if (applied.salary) parts.push(`доход от ${fmt(applied.salary)} ₽`);
+          if (applied.period)
+            parts.push(
+              PERIODS.find((p) => p[0] === applied.period)[1].toLowerCase()
+            );
+          document.getElementById("applied").textContent = parts.length
+            ? "Выбрано: " + parts.join(", ")
+            : "Фильтры не выбраны";
+          const ok = applied.salary === 150000 && applied.period === 7;
+          document.title =
+            (ok ? "PASS - " : "") +
+            "Работа Python-разработчиком в Москве: вакансии";
+        }
+        function count() {
+          // The count on the apply button follows the draft after a short debounce, as a request would.
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            if (!dialog) return;
+            const n = match(draft).length;
+            dialog.querySelector(".show").textContent =
+              `Показать ${n} ${plural(n)}`;
+          }, 300);
+        }
+        function closeDialog() {
+          if (dialog) {
+            dialog.remove();
+            document.querySelector(".shade")?.remove();
+            dialog = null;
+            pop = null;
+          }
+        }
+        function openDialog() {
+          if (dialog) return;
+          draft = { ...applied };
+          const shade = document.createElement("div");
+          shade.className = "shade";
+          shade.addEventListener("click", closeDialog);
+          dialog = document.createElement("div");
+          dialog.className = "dlg";
+          dialog.setAttribute("role", "dialog");
+          dialog.setAttribute("aria-modal", "true");
+          dialog.setAttribute("aria-labelledby", "dlgTitle");
+          const n = match(draft).length;
+          dialog.innerHTML = `<h2 id="dlgTitle">Фильтры</h2><button class="x" aria-label="Закрыть">×</button>
+      <div class="body">
+        <h3>Опыт работы</h3>
+        <label class="chk"><input type="checkbox"> Нет опыта</label><label class="chk"><input type="checkbox"> От 1 года до 3 лет</label>
+        <label class="chk"><input type="checkbox"> От 3 до 6 лет</label>
+        <h3>Уровень дохода</h3>
+        <div class="salary"><input id="salary" inputmode="numeric" aria-label="Доход от" placeholder="от" value="${draft.salary || ""}"> ₽ в месяц</div>
+        <h3>Дата публикации</h3>
+        <div class="period"><button type="button" id="periodBtn" aria-haspopup="dialog">${PERIODS.find((p) => p[0] === draft.period)[1]}</button></div>
+      </div>
+      <div class="foot"><button class="reset" type="button">Сбросить</button><button class="show" type="button">Показать ${n} ${plural(n)}</button></div>`;
+          document.body.append(shade, dialog);
+          dialog.querySelector(".x").addEventListener("click", closeDialog);
+          dialog.querySelector("#salary").addEventListener("input", (e) => {
+            draft.salary = +e.target.value.replace(/\D/g, "") || 0;
+            count();
+          });
+          dialog.querySelector(".reset").addEventListener("click", () => {
+            draft = { salary: 0, period: 0 };
+            closeDialog();
+            openDialog();
+          });
+          dialog.querySelector(".show").addEventListener("click", () => {
+            applied = { ...draft };
+            closeDialog();
+            history.replaceState(
+              null,
+              "",
+              `?text=python&salary=${applied.salary || ""}&period=${applied.period || ""}`
+            );
+            document.getElementById("list").innerHTML =
+              "<p>Загружаем вакансии…</p>";
+            setTimeout(drawList, 300);
+          });
+          // The publication period is picked in a nested popup that only sets the dialog's draft ("Применить").
+          dialog.querySelector("#periodBtn").addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (pop) {
+              pop.remove();
+              pop = null;
+              return;
+            }
+            let choice = draft.period;
+            pop = document.createElement("div");
+            pop.className = "pop";
+            pop.setAttribute("role", "dialog");
+            pop.setAttribute("aria-label", "Дата публикации");
+            pop.innerHTML =
+              PERIODS.map(
+                (p) =>
+                  `<label><input type="radio" name="period" value="${p[0]}" ${p[0] === choice ? "checked" : ""}> ${p[1]}</label>`
+              ).join("") +
+              '<button class="ok" type="button">Применить</button>';
+            pop.addEventListener("change", (ev) => {
+              choice = +ev.target.value;
+            });
+            pop.querySelector(".ok").addEventListener("click", () => {
+              draft.period = choice;
+              dialog.querySelector("#periodBtn").textContent = PERIODS.find(
+                (p) => p[0] === choice
+              )[1];
+              pop.remove();
+              pop = null;
+              count();
+            });
+            dialog.querySelector(".period").appendChild(pop);
+          });
+        }
+        document
+          .getElementById("filters")
+          .addEventListener("click", openDialog);
+        drawList();
+      })();
+    </script>
+  </body>
+</html>

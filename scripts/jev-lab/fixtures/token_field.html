@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Дешёвые авиабилеты</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #111;
+        background: #fff4e0;
+      }
+      header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+        background: #ff7a00;
+        color: #fff;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 18px 16px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 8px 0 18px;
+      }
+      .form {
+        display: flex;
+        gap: 6px;
+        align-items: stretch;
+      }
+      .field {
+        background: #fff;
+        border-radius: 10px;
+        padding: 6px 12px;
+        min-height: 58px;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .field .cap {
+        font-size: 12px;
+        color: #777;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+      }
+      .row input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 16px;
+        padding: 2px 0;
+        min-width: 80px;
+        flex: 1;
+        background: transparent;
+      }
+      .origin,
+      .dest {
+        flex: 2;
+      }
+      .when {
+        flex: 1.2;
+      }
+      .when input {
+        border: 0;
+        font: inherit;
+        font-size: 16px;
+      }
+      .tokens {
+        display: flex;
+        gap: 4px;
+      }
+      .token {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        background: #eef;
+        border-radius: 6px;
+        padding: 2px 4px 2px 8px;
+      }
+      .token .x {
+        width: 18px;
+        height: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .token .x:hover {
+        background: #dde;
+      }
+      .find {
+        background: #ff7a00;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 0 28px;
+        font: 700 16px Arial;
+        cursor: pointer;
+      }
+      .list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        width: 320px;
+        background: #fff;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        z-index: 10;
+        margin: 4px 0 0;
+        padding: 4px 0;
+        list-style: none;
+      }
+      .list li {
+        padding: 7px 12px;
+        cursor: pointer;
+      }
+      .list li:hover {
+        background: #fff0e0;
+      }
+      .list li small {
+        color: #888;
+        margin-left: 6px;
+      }
+      #results {
+        margin-top: 22px;
+      }
+      .flight {
+        background: #fff;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .err {
+        color: #d00;
+        min-height: 20px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Авиакасса</header>
+    <main>
+      <h1>Поиск дешёвых авиабилетов</h1>
+      <div class="form">
+        <div class="field origin" id="originField">
+          <span class="cap">Откуда</span>
+          <div class="row">
+            <div class="tokens" role="list" id="tokens"></div>
+            <input
+              id="origin"
+              role="combobox"
+              aria-label="Откуда"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="originList"
+              autocomplete="off"
+            />
+          </div>
+        </div>
+        <div class="field dest" id="destField">
+          <span class="cap">Куда</span>
+          <div class="row">
+            <input
+              id="dest"
+              role="combobox"
+              aria-label="Куда"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="destList"
+              autocomplete="off"
+              placeholder="Город или аэропорт"
+            />
+          </div>
+        </div>
+        <div class="field when">
+          <span class="cap">Когда</span
+          ><input
+            type="date"
+            id="when"
+            aria-label="Дата вылета"
+            min="2026-10-02"
+          />
+        </div>
+        <button class="find" id="find" type="button">Найти билеты</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        const CITIES = [
+          ["Москва", "MOW", "Россия", "moscow"],
+          ["Москва, Шереметьево", "SVO", "Россия", "moscow sheremetyevo"],
+          ["Московский", "MSK", "Таджикистан", "moskovsky"],
+          ["Казань", "KZN", "Россия", "kazan"],
+          ["Казанлык", "KZL", "Болгария", "kazanlak"],
+          ["Вашингтон", "WAS", "США", "washington"],
+          ["Сочи", "AER", "Россия", "sochi"],
+        ];
+        // The origin is a multi-value field: a picked city becomes a token and the input empties. Geolocation preset one.
+        let origins = [["Вашингтон", "WAS"]],
+          dest = null,
+          submitted = false;
+        const tokens = document.getElementById("tokens"),
+          origin = document.getElementById("origin");
+        function edited() {
+          if (submitted) {
+            submitted = false;
+            document.title = "Дешёвые авиабилеты";
+            document.getElementById("results").innerHTML = "";
+          }
+        }
+        function drawTokens() {
+          tokens.innerHTML = "";
+          for (const [name, code] of origins) {
+            const t = document.createElement("div");
+            t.className = "token";
+            t.setAttribute("role", "listitem");
+            const v = document.createElement("span");
+            v.textContent = `${name} (${code})`;
+            const x = document.createElement("div");
+            x.className = "x";
+            x.setAttribute("role", "button");
+            x.setAttribute("aria-label", "Удалить");
+            x.tabIndex = -1;
+            x.innerHTML =
+              '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1L9 9M9 1L1 9" stroke="#557" stroke-width="1.6"/></svg>';
+            x.addEventListener("click", (e) => {
+              e.stopPropagation();
+              origins = origins.filter((o) => o[1] !== code);
+              drawTokens();
+              edited();
+            });
+            t.append(v, x);
+            tokens.appendChild(t);
+          }
+        }
+        function suggest(input, field, listId, pick) {
+          let timer = null,
+            list = null;
+          const close = () => {
+            if (list) {
+              list.remove();
+              list = null;
+              input.setAttribute("aria-expanded", "false");
+            }
+          };
+          input.addEventListener("input", () => {
+            edited();
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+              close();
+              const q = input.value.trim().toLowerCase();
+              if (q.length < 2) return;
+              const hits = CITIES.filter(
+                (c) =>
+                  c[0].toLowerCase().startsWith(q.slice(0, 3)) ||
+                  c[3].startsWith(q.slice(0, 3))
+              );
+              if (!hits.length) return;
+              list = document.createElement("ul");
+              list.className = "list";
+              list.id = listId;
+              list.setAttribute("role", "listbox");
+              for (const c of hits) {
+                const li = document.createElement("li");
+                li.setAttribute("role", "option");
+                li.innerHTML = `${c[0]} <small>${c[1]}, ${c[2]}</small>`;
+                li.addEventListener("mousedown", (e) => {
+                  e.preventDefault();
+                  pick(c);
+                  input.value = field === "origin" ? "" : c[0];
+                  close();
+                });
+                list.appendChild(li);
+              }
+              document
+                .getElementById(
+                  field === "origin" ? "originField" : "destField"
+                )
+                .appendChild(list);
+              input.setAttribute("aria-expanded", "true");
+            }, 250);
+          });
+          input.addEventListener("blur", () => setTimeout(close, 150));
+        }
+        suggest(origin, "origin", "originList", (c) => {
+          if (!origins.some((o) => o[1] === c[1])) origins.push([c[0], c[1]]);
+          drawTokens();
+          edited();
+        });
+        const destInput = document.getElementById("dest");
+        suggest(destInput, "dest", "destList", (c) => {
+          dest = c;
+          edited();
+        });
+        destInput.addEventListener("input", () => {
+          dest = null;
+        });
+        document.getElementById("when").addEventListener("change", edited);
+        drawTokens();
+        document.getElementById("find").addEventListener("click", () => {
+          const err = document.getElementById("err"),
+            results = document.getElementById("results");
+          const when = document.getElementById("when").value;
+          if (!origins.length) {
+            err.textContent = "Укажите город отправления";
+            return;
+          }
+          if (!dest) {
+            err.textContent = "Выберите город прибытия из списка";
+            return;
+          }
+          if (!when) {
+            err.textContent = "Укажите дату вылета";
+            return;
+          }
+          err.textContent = "";
+          submitted = true;
+          const codes = origins.map((o) => o[1]);
+          const ok =
+            codes.length === 1 &&
+            ["MOW", "SVO"].includes(codes[0]) &&
+            dest[1] === "KZN" &&
+            when === "2026-11-20";
+          document.title = ok
+            ? "PASS - Москва — Казань, 20 ноября 2026"
+            : `Билеты: ${codes.join(",")} — ${dest[1]}, ${when}`;
+          history.replaceState(
+            null,
+            "",
+            `?from=${codes.join(",")}&to=${dest[1]}&date=${when}`
+          );
+          results.innerHTML = "<p>Ищем билеты…</p>";
+          setTimeout(() => {
+            if (!submitted) return;
+            const rows = codes.flatMap((c) => [
+              [`${c} 07:10 → KZN 08:45`, "4 320 ₽"],
+              [`${c} 18:40 → KZN 20:15`, "5 870 ₽"],
+            ]);
+            results.innerHTML =
+              `<h2>${codes.join(", ")} — ${dest[0]}, ${when}</h2>` +
+              rows
+                .map(
+                  (r) =>
+                    `<div class="flight"><span>${r[0]}</span><span>${r[1]}</span></div>`
+                )
+                .join("");
+          }, 300);
+        });
+      })();
+    </script>
+  </body>
+</html>

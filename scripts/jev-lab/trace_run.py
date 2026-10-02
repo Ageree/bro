@@ -38,6 +38,9 @@ def decision_row(d):
         "elements": len((body.get("state") or {}).get("elements", [])),
         "latency_ms": d.get("latency_ms"),
         "elapsed_ms": d.get("elapsed_ms"),
+        **({"unapplied": len(body["state"]["unapplied_inputs"]["inputs"])}
+           if (body.get("state") or {}).get("unapplied_inputs") else {}),
+        **({"unapplied_recheck": d["unapplied_recheck"]} if d.get("unapplied_recheck") else {}),
     }
 
 
@@ -71,7 +74,8 @@ if live:
         final_url=live["page"]["url"],
         title=live["page"].get("title"),
         loop_ms=live.get("elapsed_ms"),
-        actions=[{k: h.get(k) for k in ("step", "operation", "action", "kind", "text", "page_changed", "url")}
+        actions=[{k: h.get(k) for k in ("step", "operation", "action", "kind", "text", "page_changed", "url", "effect")
+                  if k != "effect" or h.get(k)} | ({"tab": h["tab"]} if h.get("tab") else {})
                  for h in live["history"]],
         decisions=[decision_row(d) for d in live["decisions"]],
         text_calls=len(live["text_calls"]),

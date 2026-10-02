@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Отели со скидкой до 40% — партнёрское предложение</title>
+    <style>
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        background: #fff;
+      }
+      header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+        background: #2a9d2a;
+        color: #fff;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 18px 16px;
+      }
+      form {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 18px;
+      }
+      .hotel {
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Гостиницы.Партнёр</header>
+    <main>
+      <h1>Отели для вашей поездки</h1>
+      <form
+        onsubmit="
+          event.preventDefault();
+          document.title = 'Отели: ' + city.value;
+        "
+      >
+        <input id="city" aria-label="Город" placeholder="Город" />
+        <input aria-label="Даты" placeholder="Даты поездки" />
+        <button>Найти отели</button>
+      </form>
+      <div class="hotel">
+        <span>Гранд Отель Жемчужина</span><span>от 7 900 ₽ за ночь</span>
+      </div>
+      <div class="hotel">
+        <span>Radisson Collection Paradise</span
+        ><span>от 12 400 ₽ за ночь</span>
+      </div>
+      <div class="hotel">
+        <span>Хостел Морской</span><span>от 1 300 ₽ за ночь</span>
+      </div>
+    </main>
+    <script>
+      const city = new URLSearchParams(location.search).get("city");
+      if (city) document.getElementById("city").value = city;
+    </script>
+  </body>
+</html>

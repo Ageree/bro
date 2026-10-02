@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Авиабилеты дёшево — поиск</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #111;
+        background: #e8f1ff;
+      }
+      header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+        background: #0c73fe;
+        color: #fff;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 18px 16px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 8px 0 18px;
+      }
+      form {
+        display: flex;
+        gap: 6px;
+      }
+      label {
+        background: #fff;
+        border-radius: 10px;
+        padding: 6px 12px;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+      }
+      label span {
+        font-size: 12px;
+        color: #777;
+      }
+      label input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 16px;
+        padding: 2px 0;
+      }
+      button {
+        background: #ff6d00;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 0 28px;
+        font: 700 16px Arial;
+        cursor: pointer;
+      }
+      .hint {
+        margin-top: 16px;
+        color: #555;
+      }
+      .err {
+        color: #d00;
+        min-height: 20px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Летим</header>
+    <main>
+      <h1>Поиск дешёвых авиабилетов</h1>
+      <form id="search">
+        <label
+          ><span>Откуда</span
+          ><input id="from" name="from" placeholder="Город вылета"
+        /></label>
+        <label
+          ><span>Куда</span
+          ><input id="to" name="to" placeholder="Город прилёта"
+        /></label>
+        <label
+          ><span>Когда</span
+          ><input id="when" name="date" type="date" min="2026-10-02"
+        /></label>
+        <button type="submit">Найти билеты</button>
+      </form>
+      <div class="err" id="err"></div>
+      <p class="hint">
+        Сравниваем цены 700 авиакомпаний. Популярно: Москва — Сочи, Москва —
+        Калининград.
+      </p>
+    </main>
+    <script>
+      // Results open in a new tab; this tab is sent to a partner's hotel offers on another site (a "popunder").
+      document.getElementById("search").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const from = document.getElementById("from").value.trim(),
+          to = document.getElementById("to").value.trim();
+        const date = document.getElementById("when").value;
+        if (!from || !to || !date) {
+          document.getElementById("err").textContent = "Заполните все поля";
+          return;
+        }
+        const q = new URLSearchParams({ from, to, date });
+        window.open("popunder_results.html?" + q, "_blank");
+        setTimeout(() => {
+          location.href =
+            "http://localhost:8765/popunder_partner.html?city=" +
+            encodeURIComponent(to);
+        }, 150);
+      });
+    </script>
+  </body>
+</html>

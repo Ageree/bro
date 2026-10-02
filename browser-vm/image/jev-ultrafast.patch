@@ -1,8 +1,8 @@
 diff --git a/jev_ultrafast/agent.py b/jev_ultrafast/agent.py
-index 726d880..7868e96 100644
+index 726d880..fe5d593 100644
 --- a/jev_ultrafast/agent.py
 +++ b/jev_ultrafast/agent.py
-@@ -3,11 +3,87 @@
+@@ -3,11 +3,143 @@
  import base64
  import time
  from pathlib import Path
@@ -10,7 +10,7 @@ index 726d880..7868e96 100644
  
 -from .browser import Browser, StalePage
 -from .model import action_space, choose, field_context, field_text
-+from .browser import Browser, Refused, Rejected, StalePage
++from .browser import Browser, Refused, Rejected, StalePage, site
 +from .model import NoFieldValue, action_space, choose, field_context, field_text
  from .questions import MAX_STEPS
  
@@ -24,8 +24,19 @@ index 726d880..7868e96 100644
 +REFUSALS = 2
 +# The same action from the same page state at most this often: open/close or check/uncheck cannot oscillate.
 +REPEATS = 2
++# WAITs in a row that changed nothing on one page state (each up to 3-6 s) before WAIT is withheld until it changes.
++IDLE_WAITS = 2
++# A page still navigating when the run starts is read again for up to this long.
++FIRST_READ_S = 15.0
++# A DONE chosen while an input made in a dialog, form or floating panel has not taken effect yet (nothing outside it
++# changed since: "Показать 982 вакансии" still unpressed) is asked again once, with those inputs named and without
++# DONE for that one decision; at most this often per run. DONE is offered again from the decision after.
++UNAPPLIED_CHECKS = 3
 +# The loop's own bookkeeping (sets, tuple-keyed counts) is not part of the inspector's JSON state.
-+INTERNAL = {"browser", "withheld", "why", "tried", "refused", "visited", "rejected"}
++INTERNAL = {"browser", "withheld", "why", "tried", "refused", "visited", "rejected", "unapplied"}
++# Element state an input can set; a change in it is an edit. So is a changed name ("When: Add dates" → "Nov 12 - 15",
++# a picked day now "Selected"): only inputs whose page outside their scope stayed as it was count at all.
++EDITED = ("value", "current_value", "checked", "selected", "chips", "label")
 +
 +
 +def action_key(action):
@@ -39,6 +50,46 @@ index 726d880..7868e96 100644
 +    """A short, code-observed account of what the last action changed, so the model does not repeat a no-op.
 +    `earlier` are (step, fingerprint) of states seen before `before`; returning to one is called out. Everything
 +    the page words itself (its title, element names, text) is quoted, apart from the code's own account."""
++    # New tabs the action opened (the browser's `tab` note): followed to the action's own site, or not followed.
++    tab, notes = after.get("tab") or {}, []
++    if tab.get("followed"):
++        notes.append(f"it opened a new tab on {tab['site']}; continued in that tab")
++    if tab.get("left"):
++        notes.append(f"the tab acted in went to {unquote(tab['left'])[:80]}, another site; closed that tab")
++    notes += [f"a new tab it opened was not followed: {unquote(url)[:80]}" for url in tab.get("not_followed", ())]
++    account = account_of(before, after, earlier)
++    return "; ".join(notes + [account]) if notes else account
++
++
++def edits(before, after):
++    """Element values, checks and selections that differ between two observations of one document, as
++    (name, old, new); plus whether any form field's value changed."""
++    old = {}
++    for a in before["actions"]:
++        if a.get("node") is not None:
++            old.setdefault(a["node"], a)
++    out, seen = [], set()
++    for a in after["actions"]:
++        b = old.get(a.get("node"))
++        if not b or a["node"] in seen:
++            continue
++        seen.add(a["node"])
++        for key in EDITED:
++            old_value, new_value = b.get(key), a.get(key)
++            if key == "label" and a["kind"] == "select":
++                continue  # a select's label names an option
++            if old_value != new_value:
++                values = [", ".join(v) if isinstance(v, list) else str(v or "") for v in (old_value, new_value)]
++                out.append((b["label"].split(" → ")[0][:40], *values))
++                break
++    # Form fields present in both (a panel that closed takes its fields away; that is no edit).
++    old_fields = {f[0]: f[1:4] for f in (before.get("page_key") or [None] * 7)[6] or ()}
++    new_fields = (after.get("page_key") or [None] * 7)[6] or ()
++    fields = any(f[0] in old_fields and old_fields[f[0]] != f[1:4] for f in new_fields)
++    return out, fields
++
++
++def account_of(before, after, earlier):
 +    if after["fingerprint"] == before["fingerprint"]:
 +        return "no visible change"
 +    back = next((step for step, fp in reversed(earlier) if fp == after["fingerprint"]), None)
@@ -46,7 +97,9 @@ index 726d880..7868e96 100644
 +        return f"back to the same page state as before step {back} (no net progress)"
 +    url, title = unquote(after["url"])[:120], (after.get("title") or "")[:60]
 +    if (before.get("marker") or [None])[0] != (after.get("marker") or [None])[0]:
-+        return f"opened {url} (title {title!r})" if after["url"] != before["url"] else (
++        # A page on another site than the one acted on is said to be one: the user named a site, not this one.
++        where = "" if site(after["url"]) == site(before["url"]) else " on another site"
++        return f"opened {url}{where} (title {title!r})" if after["url"] != before["url"] else (
 +            f"reloaded the page (title {title!r})")
 +
 +    def nodes(page):
@@ -63,9 +116,12 @@ index 726d880..7868e96 100644
 +        if not b:
 +            continue
 +        name = a["label"].split(" → ")[0][:40]
-+        for key in ("current_value" if a["kind"] == "select" else "value", "checked", "selected", "expanded"):
++        for key in ("current_value" if a["kind"] == "select" else "value", "checked", "selected", "expanded",
++                    "chips"):
 +            if b.get(key) != a.get(key):
-+                parts.append(f"{name!r} {key}: {str(b.get(key) or '')[:40]!r} → {str(a.get(key) or '')[:40]!r}")
++                old_value, new_value = (", ".join(v) if isinstance(v, list) else str(v or "") for v in
++                                        (b.get(key), a.get(key)))
++                parts.append(f"{name!r} {key}: {old_value[:40]!r} → {new_value[:40]!r}")
 +    appeared = [a["label"][:30] for node, a in new.items() if node not in old]
 +    gone = sum(node not in new for node in old)
 +    if appeared:
@@ -92,17 +148,16 @@ index 726d880..7868e96 100644
  
  class Agent:
      def __init__(self, url, goals, *, record_dir=None, screenshots=False):
-@@ -20,7 +96,8 @@ class Agent:
+@@ -20,7 +152,7 @@ class Agent:
          self.record_dir = Path(record_dir) if record_dir else None
          self.screenshots = screenshots or bool(record_dir)
          try:
 -            page = self.browser.observe(screenshot=self.screenshots)
-+            # Late-rendering pages (hydration, consent banners) settle before the first decision.
-+            page = self.browser.observe(screenshot=self.screenshots, settle=1.5)
++            page = self.first_observation()
          except Exception:
              self.browser.close()
              raise
-@@ -33,6 +110,8 @@ class Agent:
+@@ -33,6 +165,8 @@ class Agent:
              status="ready",
              plan=plan,
              plan_index=0,
@@ -111,8 +166,24 @@ index 726d880..7868e96 100644
              decisions=[],
              text_calls=[],
              elapsed_ms=0,
-@@ -45,7 +124,7 @@ class Agent:
+@@ -43,9 +177,23 @@ class Agent:
+             self.record_dir.mkdir(parents=True, exist_ok=True)
+             (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
  
++    def first_observation(self):
++        """Read-only. Late-rendering pages (hydration, consent banners) settle before the first decision, and a page
++        that is still navigating (a self-reloading "Loading…" interstitial, a redirect chain) is read again until it
++        holds a document, within the budget, instead of ending the run before its first decision."""
++        deadline = time.monotonic() + FIRST_READ_S
++        while True:
++            try:
++                return self.browser.observe(screenshot=self.screenshots, settle=1.5)
++            except (StalePage, TimeoutError, RuntimeError):
++                # RuntimeError: a CDP call into a context the navigation just destroyed.
++                if time.monotonic() > deadline:
++                    raise
++                time.sleep(0.2)
++
      def snapshot(self):
          return {
 -            **{k: v for k, v in self.state.items() if k != "browser"},
@@ -120,7 +191,7 @@ index 726d880..7868e96 100644
              "elements": action_space(self.state["page"]["actions"])[0],
          }
  
-@@ -59,7 +138,7 @@ class Agent:
+@@ -59,7 +207,7 @@ class Agent:
              except StalePage:
                  state["decision"] = None
                  state["status"] = "ready"
@@ -129,7 +200,7 @@ index 726d880..7868e96 100644
                  state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                  return self.snapshot()
          elif name == "predict":
-@@ -74,7 +153,18 @@ class Agent:
+@@ -74,7 +222,25 @@ class Agent:
                  raise ValueError("This run has stopped. Start a fresh demo.")
              if len(state["decisions"]) >= MAX_STEPS * 2:
                  raise ValueError("Reached the demo's model-call budget")
@@ -145,15 +216,24 @@ index 726d880..7868e96 100644
 +                for a in state["page"]["actions"]
 +                if action_key(a) in state.get("withheld", ()) or repeated.get(action_key(a), 0) >= REPEATS
 +            }
-+            state["decision"] = choose(state["page"], state["goal"], state["history"], withheld=withheld)
++            # Inputs a DONE was already asked again about, still not applied, stay named to the model.
++            shown = [{k: i[k] for k in ("step", "action", "value", "in")}
++                     for i in self.prune_unapplied(state["page"]) if i.get("shown")]
++            # Right after such a DONE was asked again, that one decision has no DONE: one more action first.
++            extra = {"unapplied": shown} if shown else {}
++            if state.pop("done_withheld", False):
++                extra["done"] = False
++            state["decision"] = choose(state["page"], state["goal"], state["history"], withheld=withheld, **extra)
              state["decisions"].append(
                  {
                      **state["decision"],
-@@ -94,6 +184,13 @@ class Agent:
+@@ -94,6 +260,15 @@ class Agent:
                  if not state["browser"].fresh(page):
                      state["status"] = "ready"
                      raise StalePage("Page changed since the decision. Choose again.")
 +                if selected == "BLOCKED" and self.reconsider_stop(page):
++                    return self.snapshot()
++                if selected == "DONE" and self.recheck_unapplied():
 +                    return self.snapshot()
 +                last = state["history"][-1] if state["history"] else None
 +                quick = last and last["kind"] != "wait" and last["page_changed"] and (
@@ -163,7 +243,7 @@ index 726d880..7868e96 100644
                  state["status"] = "done" if selected == "DONE" else "blocked"
                  state["plan_index"] = int(selected == "DONE")
                  state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-@@ -104,62 +201,147 @@ class Agent:
+@@ -104,62 +279,216 @@ class Agent:
                  raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
              text, helper = None, None
              if action["kind"] == "fill":
@@ -223,7 +303,7 @@ index 726d880..7868e96 100644
              # Browser.act checks freshness immediately before input, including after text generation.
 -            state["browser"].act(action, page, text=text)
 +            try:
-+                state["browser"].act(action, page, text=text)
++                result = state["browser"].act(action, page, text=text)
 +            except Refused as error:
 +                # Nothing was input. Without this, a covered target is chosen, refused and re-chosen forever.
 +                if isinstance(error, Rejected):
@@ -283,13 +363,18 @@ index 726d880..7868e96 100644
 +                effect=effect(page, state["page"], visited[:-1]),
                  url=state["page"]["url"],
                  elapsed_ms=state["elapsed_ms"],
++                **({"tab": state["page"]["tab"]} if state["page"].get("tab") else {}),
              )
++            self.track_unapplied(action, page, state["page"], text,
++                                 result.get("scope") if isinstance(result, dict) else None)
 +            withheld = state.setdefault("withheld", set())
 +            state["refused"] = {}
 +            if changed:
 +                withheld.clear()
 +                state.get("why", {}).clear()
-+            elif action["kind"] != "wait":
++            elif action["kind"] != "wait" or self.idle_waits():
++                # A WAIT is withheld only after IDLE_WAITS in a row changed nothing on this page state: the page is
++                # not loading anything (it shows, say, its own "use the format dd.mm.yyyy" message).
 +                withheld.add(action_key(action))
 +                state.setdefault("why", {})[action_key(action)] = "tried_without_effect"
              if state["record"]:
@@ -314,6 +399,70 @@ index 726d880..7868e96 100644
              raise ValueError("Unknown command")
          return self.snapshot()
  
++    def track_unapplied(self, action, before, after, text, scope):
++        """Inputs whose effect waits to be applied. An input made in a dialog, form or floating panel (`scope`, from
++        the executor, with a digest of the page's text outside it just before the input) that set a value is
++        pending while the URL, the document and that outside text stay as they were: then the page has not taken it
++        in (a salary typed into a filter dialog whose "Показать 982 вакансии" is unpressed; dates picked in a search
++        panel that was not submitted). Any of them changing (results reloaded, a navigation) applies or drops it."""
++        state = self.state
++        doc = (after.get("marker") or [None])[0]
++        digests = after.get("scopes") or {}
++        pending = self.prune_unapplied(after)
++        if not scope or after["url"] != before["url"] or doc != (before.get("marker") or [None])[0]:
++            return
++        if digests.get(str(scope["id"])) != scope["outside"]:  # the page outside already took it in
++            return
++        changed, fields = edits(before, after)
++        if action["kind"] == "fill":
++            value = text
++        elif action["kind"] == "select":
++            value = action["label"].split(" → ")[-1]
++        elif changed:  # the clicked element's own change, if it has one
++            name, old, new = next((c for c in changed if c[0] == action["label"].split(" → ")[0][:40]), changed[0])
++            value = f"{name!r}: {old[:40]!r} → {new[:40]!r}"
++        elif fields:
++            value = "a form field changed"
++        else:
++            return
++        pending.append({"step": state["history"][-1]["step"], "action": action["label"].split(" → ")[0][:60],
++                        "value": value, "in": scope.get("label") or "", "scope": scope["id"],
++                        "outside": scope["outside"], "url": after["url"], "doc": doc})
++
++    def prune_unapplied(self, page):
++        """The pending inputs that this observation still shows unapplied: same URL and document, and the text
++        outside each input's scope as it was (results that reloaded since, late, applied it)."""
++        doc, digests = (page.get("marker") or [None])[0], page.get("scopes") or {}
++        pending = self.state.setdefault("unapplied", [])
++        pending[:] = [i for i in pending if i["url"] == page["url"] and i["doc"] == doc
++                      and digests.get(str(i["scope"])) == i["outside"]]
++        return pending
++
++    def recheck_unapplied(self):
++        """A DONE while inputs wait to be applied that the model has not been told about: choose again, with them
++        named (code-observed), instead of stopping, and without DONE in that one decision (named alone, the inputs
++        did not always turn a DONE: airbnb, dates re-picked and not searched). Each input is named once this way,
++        at most UNAPPLIED_CHECKS times a run; from the next decision on DONE is offered again."""
++        state = self.state
++        pending = self.prune_unapplied(state["page"])
++        if not any(not i.get("shown") for i in pending) or state.get("unapplied_checks", 0) >= UNAPPLIED_CHECKS:
++            return False
++        state["unapplied_checks"] = state.get("unapplied_checks", 0) + 1
++        for item in pending:
++            item["shown"] = True
++        state["done_withheld"] = True
++        state["status"] = "ready"
++        if state["decisions"]:
++            state["decisions"][-1]["unapplied_recheck"] = len(pending)
++        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
++        return True
++
++    def idle_waits(self):
++        """Whether the last IDLE_WAITS actions were WAITs on one page state that changed nothing."""
++        last = self.state["history"][-IDLE_WAITS:]
++        return len(last) == IDLE_WAITS and len({h["fingerprint"] for h in last}) == 1 and all(
++            h["kind"] == "wait" and h["page_changed"] is False for h in last)
++
 +    def reobserve(self, budget=10.0, settle=None):
 +        """Read-only recovery after a stale decision; a loading document may take a few attempts."""
 +        deadline = time.monotonic() + budget
@@ -344,10 +493,10 @@ index 726d880..7868e96 100644
          while self.state["status"] not in {"done", "blocked"}:
              yield self.command("tick")
 diff --git a/jev_ultrafast/browser.py b/jev_ultrafast/browser.py
-index 38e3ace..96688f3 100644
+index 38e3ace..c3db97c 100644
 --- a/jev_ultrafast/browser.py
 +++ b/jev_ultrafast/browser.py
-@@ -2,29 +2,142 @@
+@@ -2,36 +2,180 @@
  
  import hashlib
  import json
@@ -355,6 +504,7 @@ index 38e3ace..96688f3 100644
  import sys
  import time
  from pathlib import Path
++from urllib.parse import urlsplit
  
  from browser_harness.admin import ensure_daemon
 -from browser_harness.helpers import cdp
@@ -458,6 +608,24 @@ index 38e3ace..96688f3 100644
 +# pulsing "live" dot, an animated logo) never hold it.
 +WAIT_S, WAIT_LIMIT_S = 3.0, 6.0
 +
++
++# A new tab the owned tab opens (a search whose results open in a new tab while the page sends its own tab to a
++# partner site: a "popunder") is followed when it is on the site the input was made on, unless the owned tab itself
++# went on to another page of that site (Browser.follow). Its URL may still be blank for a moment after it opens.
++NEW_TAB_URL_S = 1.5
++# Second-level labels under which a registrable domain has three labels (example.co.uk, example.com.ru).
++SECOND_LEVEL = {"co", "com", "net", "org", "gov", "edu", "ac", "msk", "spb"}
++
++
++def site(url):
++    """The registrable domain of a URL, approximately: two last host labels, three under co.uk-like suffixes."""
++    host = (urlsplit(url).hostname or "").lower()
++    labels = host.split(".")
++    if not host or host.replace(".", "").isdigit() or ":" in host or len(labels) < 3:
++        return host
++    keep = 3 if len(labels[-1]) == 2 and labels[-2] in SECOND_LEVEL else 2
++    return ".".join(labels[-keep:])
++
  
  class StalePage(ValueError):
      """A decision no longer refers to the observed page."""
@@ -476,23 +644,47 @@ index 38e3ace..96688f3 100644
      def __init__(self, url):
          ensure_daemon()
          self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
++        # Tabs that exist before the run are never taken for tabs its own inputs opened.
++        self.known = {t["targetId"] for t in cdp("Target.getTargets").get("targetInfos", [])}
          self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+-        # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
+-        self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+-        self.call("Page.navigate", url=url)
++        self.prepare()
++        try:
++            self.call("Page.navigate", url=url)
++        except TimeoutError:  # A slow server: the navigation goes on in the tab; the readiness wait covers it.
++            pass
+         deadline = time.monotonic() + 15
+         while time.monotonic() < deadline:
+-            if self.evaluate("document.readyState") == "complete":
+-                break
++            try:
++                if self.evaluate("document.readyState") == "complete":
++                    break
++            except (StalePage, RuntimeError, TimeoutError):  # Between documents (a redirect, a reload).
++                pass
+             time.sleep(0.02)
+ 
++    def prepare(self):
++        """Set up the owned tab's session (at the start, and for a tab the run continues in)."""
 +        # A tab the compositor does not draw stalls CSS transitions, headless and headed alike: a menu or listbox
 +        # that fades in stays at opacity 0 and cannot be observed. The owned tab is therefore brought to the
 +        # front. JEV_BACKGROUND_TAB=1 leaves the user's visible tab alone instead; the snapshot then counts a
 +        # stalled fade-in as visible.
 +        if os.environ.get("JEV_BACKGROUND_TAB") != "1":
 +            cdp("Target.activateTarget", targetId=self.target)
-         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
--        # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
++        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
 +        # Keep rAF/menus rendering even when the browser window itself is not focused.
-         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
++        self.call("Emulation.setFocusEmulationEnabled", enabled=True)
 +        # Request start/finish events tell whether an action started loading data (read-only observation).
 +        self.call("Network.enable")
-         self.call("Page.navigate", url=url)
-         deadline = time.monotonic() + 15
-         while time.monotonic() < deadline:
-@@ -41,52 +154,165 @@ class Browser:
++
+     def call(self, method, **params):
+         return cdp(method, session_id=self.session, **params)
+ 
+@@ -41,52 +185,269 @@ class Browser:
              raise StalePage("Document changed during evaluation")
          return response.get("result", {}).get("value")
  
@@ -540,15 +732,119 @@ index 38e3ace..96688f3 100644
 -            except RuntimeError:
 +                suggested = (response.get("result") or {}).get("value") is True
 +            except (RuntimeError, TimeoutError):  # Navigation or a busy renderer; the reads below decide.
-                 pass
++                pass
 +            page = self.effect(action, suggested, deadline)
 +        else:
 +            page = self.read()
++        page = self.follow(page)
 +        if settle:
 +            page = self.settle(page, settle)
 +        if screenshot:
 +            page["screenshot"] = self.call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
 +        return page
++
++    def opened(self):
++        """Page targets this tab opened since the last look (their opener is this tab). Read-only."""
++        out = []
++        for info in cdp("Target.getTargets").get("targetInfos", []):
++            if info["targetId"] in self.known:
++                continue
++            self.known.add(info["targetId"])
++            if info.get("type") == "page" and info.get("openerId") == self.target:
++                out.append(info)
++        return out
++
++    def follow(self, page):
++        """If an input opened a new tab (Target opener = this tab), decide whether the run continues there.
++        It does when the new tab is on the site the input was made on, unless this tab itself went on to another
++        page of that site (then this tab holds the input's result). So it follows a search whose results open in a
++        new tab while the page sends this tab to a partner site (now or a moment later), and a link that opens in a
++        new tab. A tab this tab left for another site is closed; the run never goes on in a tab on another site.
++        The page carries a `tab` note for the trace and the action's effect."""
++        try:
++            opened = self.opened()
++        except Exception:  # Tab bookkeeping is an observation; never fail an executed action over it.
++            return page
++        note = self.behind_left() or {}
++        document, address = getattr(self, "acted_on", None) or (None, None)
++        acted = site(address or page["url"])
++        left = site(page["url"]) != acted
++        went_on = not left and address is not None and (
++            page["url"] != address or (page.get("marker") or [document])[0] != document)
++        ignored = []
++        for info in opened:
++            url = self.url_of(info)
++            if not note.get("followed") and site(url) == acted and not went_on:
++                note.update(opened=url, followed=True, site=acted)
++                if left:
++                    note["left"] = page["url"]
++                behind = self.target
++                page = self.switch(info["targetId"], close=left)
++                # A tab left behind on the site may still be on its way to another site (a redirect that came
++                # late): it is closed once it gets there, now or after a later input.
++                self.behind = None if left else (behind, acted)
++                note.update(self.behind_left() or {})
++            else:
++                ignored.append(url)
++        if ignored:
++            note["not_followed"] = ignored
++        if note:
++            page["tab"] = note
++        return page
++
++    def url_of(self, info):
++        """A new tab's URL; it may be blank for a moment after the tab opens."""
++        url, deadline = info.get("url") or "", time.monotonic() + NEW_TAB_URL_S
++        while url in {"", "about:blank"} and time.monotonic() < deadline:
++            time.sleep(0.05)
++            try:
++                url = cdp("Target.getTargetInfo", targetId=info["targetId"])["targetInfo"].get("url") or ""
++            except Exception:  # closed again
++                break
++        return url
++
++    def behind_left(self):
++        """Close the tab the run left behind once it is on another site than the one acted on there."""
++        target, acted = getattr(self, "behind", None) or (None, None)
++        if not target:
++            return None
++        try:
++            url = cdp("Target.getTargetInfo", targetId=target)["targetInfo"].get("url") or ""
++        except Exception:  # already closed
++            self.behind = None
++            return None
++        if site(url) == acted:
++            return None
++        self.behind = None
++        try:
++            cdp("Target.closeTarget", targetId=target)
++        except Exception:
++            pass
++        return {"left": url}
++
++    def switch(self, target, close=False):
++        """Continue the run in another tab: it becomes this browser's target (callers that hand the tab on read
++        `target`). The tab left behind is closed if `close`. Returns the new tab's first settled read."""
++        old = self.target
++        self.target = target
++        self.session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
++        self.prepare()
++        self.after_input = None
++        if close:
++            try:
++                cdp("Target.closeTarget", targetId=old)
++            except Exception:
+                 pass
++        deadline = time.monotonic() + 5
++        while True:
++            try:
++                page = self.read()
++                break
++            except StalePage:  # still loading its first document
++                if time.monotonic() > deadline:
++                    raise
++                time.sleep(0.1)
++        return self.settle(page, 2.0)
 +
 +    def read(self):
          for attempt in range(10):
@@ -689,7 +985,7 @@ index 38e3ace..96688f3 100644
              node = action["node"]
              if type(node) is not int:
                  return False
-@@ -101,7 +327,13 @@ class Browser:
+@@ -101,7 +462,13 @@ class Browser:
          if not self.fresh(page, action):
              raise StalePage("Page changed since this decision. Observe again.")
          if action["kind"] == "wait":
@@ -704,7 +1000,7 @@ index 38e3ace..96688f3 100644
          result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
          self.after_input = action if action["kind"] != "wait" else None
          return result
-@@ -113,8 +345,15 @@ class Browser:
+@@ -113,8 +480,15 @@ class Browser:
  
  
  def fingerprint(state):
@@ -722,7 +1018,7 @@ index 38e3ace..96688f3 100644
  
  
  def browser_operation(request):
-@@ -129,6 +368,8 @@ def browser_operation(request):
+@@ -129,6 +503,8 @@ def browser_operation(request):
          if result.get("exceptionDetails"):
              if operation == "act" and request["action"]["kind"] == "select":
                  raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
@@ -731,7 +1027,7 @@ index 38e3ace..96688f3 100644
              raise StalePage("Document changed during evaluation")
          return result.get("result", {}).get("value")
  
-@@ -136,33 +377,91 @@ def browser_operation(request):
+@@ -136,33 +512,104 @@ def browser_operation(request):
          action = request["action"]
          kind = action["kind"]
          if kind == "scroll":
@@ -788,6 +1084,19 @@ index 38e3ace..96688f3 100644
 +                e.focus({preventScroll:true});
 +                if (e.getRootNode().activeElement!==e) return null;
 +              }
++              // Where this input's effect may wait to be applied (a dialog, a form, a floating panel; for a popup
++              // item, its field's), and a digest of the text outside it now. Snapshots report that digest from here
++              // on, so the loop can tell whether the page took the input in. Read-only.
++              let scope=null;
++              const around=['click','fill','select'].includes(action.kind) && c.scopeOf(c.owner?.get(e) || e);
++              if (around) {
++                if (!c.ids.has(around)) c.ids.set(around,c.next++);
++                const id=c.ids.get(around);
++                c.scopes.delete(id);
++                c.scopes.set(id,around);
++                if (c.scopes.size>4) c.scopes.delete(c.scopes.keys().next().value);
++                scope={id,label:c.scopeName(around),outside:c.outside(around)};
++              }
 +              // Input begins. Floating layers already showing next to the target are not a popup it opens; then a
 +              // popup that opens next to it, or keeps open, belongs to it. Texts that changed since the last read
 +              // changed on their own (churn); what changes from here on may be this input's effect.
@@ -802,6 +1111,8 @@ index 38e3ace..96688f3 100644
                  e.dispatchEvent(new Event('input',{bubbles:true}));
                  e.dispatchEvent(new Event('change',{bubbles:true}));
                }
+-              return {x,y};
+-            })(""" + json.dumps(action) + ")")
 +              if (action.kind==='fill' && action.format) {
 +                // Through the native setter, which frameworks track.
 +                e.focus();
@@ -815,8 +1126,7 @@ index 38e3ace..96688f3 100644
 +                e.scrollBy({top:action.delta,behavior:'instant'});
 +                if (e.scrollTop===before) return null;
 +              }
-               return {x,y};
--            })(""" + json.dumps(action) + ")")
++              return {x,y,scope};
 +            })(""" + json.dumps({**action, "text": request.get("text")} if set_value(action) else action) + ")")
              if target is None:
                  if kind == "select":
@@ -834,30 +1144,104 @@ index 38e3ace..96688f3 100644
                  x, y = target["x"], target["y"]
                  for event in ("mousePressed", "mouseReleased"):
                      call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
+@@ -183,6 +630,8 @@ def browser_operation(request):
+                         modifiers=4 if sys.platform == "darwin" else 2,
+                     )
+                     call("Input.insertText", text=request["text"])
++            if target.get("scope"):
++                return {"executed": action["id"], "scope": target["scope"]}
+         return {"executed": action["id"]}
+ 
+     info = evaluate(READ_STATE)
 diff --git a/jev_ultrafast/model.py b/jev_ultrafast/model.py
-index d311747..5e86398 100644
+index d311747..90c4df4 100644
 --- a/jev_ultrafast/model.py
 +++ b/jev_ultrafast/model.py
-@@ -10,6 +10,18 @@ import httpx
+@@ -3,6 +3,7 @@
+ import json
+ import math
+ import os
++import threading
+ import time
+ 
+ import httpx
+@@ -10,20 +11,83 @@ import httpx
  from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
  
  CLIENT = httpx.Client(http2=True, timeout=25)
++# Every model call (a decision or a field value) has a total wall-clock deadline. httpx's timeouts are per read: a
++# provider that keeps the connection alive (keep-alive whitespace before a JSON body, HTTP/2 pings) never trips them,
++# and such calls sat for 100-160 s. A model call is read-only, so a stalled or dropped one is made once more, on a
++# fresh connection; browser mutations are still never retried.
++CALL_DEADLINE_S = float(os.environ.get("JEV_MODEL_DEADLINE_S", "15"))
++CALL_ATTEMPTS = 2
 +# Observed control state and link context the model sees per element / per target. `submits` is the form button
 +# a PRESS_ENTER target presses, `selects` the option it picks in a combobox; `suggestion_for` / `option_of` the
-+# field or dropdown whose open popup holds an item.
++# field or dropdown whose open popup holds an item; `chips` the values a multi-value field holds as tokens, and
++# `removes` the token a remove button takes away.
 +# These are code-observed fields, kept apart from page text (labels, sections), which a page can word as it likes.
 +TARGET_KEYS = ("role", "checked", "selected", "expanded", "to", "emphasized", "submits", "selects",
-+               "suggestion_for", "option_of")
++               "suggestion_for", "option_of", "chips", "removes")
 +ELEMENT_KEYS = ("value", *TARGET_KEYS)
 +
 +
 +class NoFieldValue(ValueError):
 +    """The text helper gave no valid value for this field; nothing was typed. The only helper failure that the loop
 +    answers by sampling again and then withholding the field; a missing key or a broken provider ends the run."""
++
++
++class CallTimeout(TimeoutError):
++    """A model call outlived its total deadline; its connection was abandoned."""
++
++
++def fresh_client(stalled):
++    """Replace the shared client whose connection stalled, and close that one in the background: closing it ends
++    the abandoned request, and a new connection does not queue behind it."""
++    global CLIENT
++    if CLIENT is stalled:
++        CLIENT = httpx.Client(http2=True, timeout=25)
++    threading.Thread(target=stalled.close, daemon=True).start()
++
++
++def post_within(url, key, body, seconds):
++    """One POST that returns within `seconds` or raises CallTimeout. The request runs on a daemon thread, so an
++    abandoned one never holds the process."""
++    client, box, done = CLIENT, {}, threading.Event()
++
++    def run():
++        try:
++            box["response"] = client.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
++        except BaseException as error:  # handed to the caller
++            box["error"] = error
++        finally:
++            done.set()
++
++    threading.Thread(target=run, daemon=True).start()
++    if not done.wait(seconds):
++        fresh_client(client)
++        raise CallTimeout(f"no response within {seconds:g} s")
++    if "error" in box:
++        raise box["error"]
++    return box["response"]
  
  
  def post_json(url, key, body):
-@@ -23,7 +35,10 @@ def post_json(url, key, body):
++    lost = 0
+     for attempt in range(3):
+         try:
+-            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+-        except httpx.HTTPError:
+-            raise RuntimeError("Model connection failed; no action executed.") from None
++            response = post_within(url, key, body, CALL_DEADLINE_S)
++        except (CallTimeout, httpx.HTTPError) as error:
++            # Read-only: a stalled or dropped call is made once more; a second loss ends the run.
++            lost += 1
++            if lost < CALL_ATTEMPTS:
++                continue
++            reason = "timed out" if isinstance(error, CallTimeout) else "failed"
++            raise RuntimeError(f"Model connection {reason} twice; no action executed.") from None
+         if response.status_code in {429, 529, 503} and attempt < 2:
+             time.sleep(0.5 * 2**attempt)
              continue
          if response.is_error:
              raise RuntimeError(f"Model provider returned HTTP {response.status_code}; no action executed.")
@@ -869,7 +1253,7 @@ index d311747..5e86398 100644
      raise RuntimeError("Model unavailable")
  
  
-@@ -45,29 +60,53 @@ def validate_choice(answer, ids):
+@@ -45,29 +109,53 @@ def validate_choice(answer, ids):
      return answer
  
  
@@ -929,13 +1313,19 @@ index d311747..5e86398 100644
          if operation not in element["operations"]:
              element["operations"].append(operation)
          target = index
-@@ -78,12 +117,16 @@ def action_space(actions):
+@@ -78,16 +166,31 @@ def action_space(actions):
      return elements, targets, controls
  
  
 -def choose(state, goal, history):
 -    elements, targets, controls = action_space(state["actions"])
-+def choose(state, goal, history, withheld=()):
++# Said, with the inputs themselves, when a DONE was chosen while inputs had not taken effect (agent.recheck_unapplied).
++UNAPPLIED = ("Code-observed: since these inputs, the URL and the page outside the dialog, form or panel they were "
++             "made in have not changed, so they have not taken effect yet. That dialog's or form's own apply, "
++             "show-results or search control applies them; results seen before it do not reflect them.")
++
++
++def choose(state, goal, history, withheld=(), unapplied=(), done=True):
 +    elements, targets, controls = action_space(state["actions"], withheld)
      labels = {
          "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -948,7 +1338,16 @@ index d311747..5e86398 100644
      }
      operations = {key: labels[key] for key in targets}
      operations.update({key: value["label"] for key, value in controls.items()})
-@@ -98,7 +141,7 @@ def choose(state, goal, history):
+     operations.update(DONE="Every requirement is visibly satisfied.", BLOCKED="No supported operation can progress.")
++    if unapplied:
++        operations["DONE"] = ("Every requirement is visibly satisfied, and no input listed in unapplied_inputs still "
++                              "waits to be applied.")
++    if not done:  # one action first (agent.recheck_unapplied)
++        del operations["DONE"]
+     questions = {
+         "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
+     }
+@@ -98,7 +201,7 @@ def choose(state, goal, history):
                  index: {
                      "element": f"[{index}] {a['label']}",
                      "current_value": a.get("current_value", a.get("value", "")),
@@ -957,7 +1356,7 @@ index d311747..5e86398 100644
                  }
                  for index, a in candidates.items()
              },
-@@ -110,13 +153,16 @@ def choose(state, goal, history):
+@@ -110,21 +213,35 @@ def choose(state, goal, history):
              "page": {k: state[k] for k in ("url", "title", "text")},
              "elements": elements,
              "recent_actions": [
@@ -969,20 +1368,47 @@ index d311747..5e86398 100644
          },
          "questions": questions,
      }
++    if unapplied:
++        body["state"]["unapplied_inputs"] = {"inputs": list(unapplied), "observed": UNAPPLIED}
      started = time.perf_counter()
 -    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
+-    operation = operation_answer["choice"]
 +    url = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
-+    result = post_json(url, os.environ["TYPESAFE_API_KEY"], body)
-     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
-     operation = operation_answer["choice"]
++    # An answer that fails validation is asked for once more: a decision is read-only, and nothing was executed.
++    for attempt in range(2):
++        result = post_json(url, os.environ["TYPESAFE_API_KEY"], body)
++        try:
++            answers = result["answers"]
++            operation_answer = validate_choice(answers.get("operation", {}), operations)
++            operation = operation_answer["choice"]
++            target_answer = None
++            if operation in targets:
++                # Unused target heads cannot cause an action. Validate the head selected by the operation.
++                target_answer = validate_choice(answers.get(operation.lower() + "_target", {}), targets[operation])
++            break
++        except (ValueError, KeyError, TypeError, AttributeError):
++            if attempt:
++                raise ValueError("Invalid TypeSafe response; no action executed.") from None
      target = None
-@@ -148,10 +194,13 @@ def choose(state, goal, history):
+-    target_answer = None
+     probabilities = {}
+     if operation in targets:
+-        # Unused target heads cannot cause an action. Validate the head selected by the operation.
+-        target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
+         target = target_answer["choice"]
+         choice = targets[operation][target]["id"]
+         probabilities = {a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()}
+@@ -148,10 +265,16 @@ def choose(state, goal, history):
      }
  
  
 -def field_context(goal, action, page, history):
 +def field_context(goal, action, page, history, rejected=()):
-+    field = {k: action.get(k) for k in ("label", "role", "value", "format") if k != "format" or k in action}
++    # The field's own format hints (a native date format, a placeholder such as "дд.мм.гггг", a pattern) are named
++    # only where the field has them, so the helper's input for other fields is unchanged.
++    field = {k: action.get(k) for k in ("label", "role", "value", "format", "placeholder", "pattern")
++             if k in ("label", "role", "value") or k in action}
 +    if rejected:  # Only after a rejection: otherwise the helper's input is unchanged.
 +        field["values_this_field_rejected"] = list(rejected)
      return {
@@ -992,7 +1418,7 @@ index d311747..5e86398 100644
          "page": {"title": page["title"], "text": page["text"][:6000]},
          "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
      }
-@@ -190,7 +239,7 @@ def field_text(context):
+@@ -190,7 +313,7 @@ def field_text(context):
          if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
              raise ValueError()
      except (ValueError, KeyError, TypeError):
@@ -1042,7 +1468,7 @@ index 649e2db..8153a01 100644
  TARGET = """Choose the best observed target if the next operation is the one specified in this question.
  Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 diff --git a/jev_ultrafast/snapshot.js b/jev_ultrafast/snapshot.js
-index cf74837..5de09f4 100644
+index cf74837..717d93b 100644
 --- a/jev_ultrafast/snapshot.js
 +++ b/jev_ultrafast/snapshot.js
 @@ -1,30 +1,187 @@
@@ -1240,7 +1666,7 @@ index cf74837..5de09f4 100644
    const role = e => {
      const explicit=e.getAttribute('role');
      if (roles.includes(explicit)) return explicit;
-@@ -37,34 +194,435 @@
+@@ -37,34 +194,550 @@
        if (['button','submit','reset','image'].includes(e.type)) return 'button';
        if (e.type==='search') return 'searchbox';
        if (e.type==='number') return 'spinbutton';
@@ -1289,8 +1715,9 @@ index cf74837..5de09f4 100644
 +      let m=v.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/), y, mo, d;
 +      if (m) [y,mo,d]=[+m[1],+m[2],+m[3]];
 +      else if ((m=v.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/))) [d,mo,y]=[+m[1],+m[2],+m[3]];
-+      else if (/^1\d{12}$/.test(v)) {
-+        const t=new Date(+v);
++      else if (/^1\d{12}$/.test(v) || (v.length<=80 && /\b20\d\d\b/.test(v) && /\p{L}{3}/u.test(v) &&
++          Number.isFinite(Date.parse(v)))) {  // epoch ms, or a date string ("Fri Oct 02 2026 00:00:00 GMT…")
++        const t=new Date(/^\d+$/.test(v) ? +v : Date.parse(v));
 +        if (t.getUTCDate()===day) [y,mo,d]=[t.getUTCFullYear(),t.getUTCMonth()+1,day];
 +        else [y,mo,d]=[t.getFullYear(),t.getMonth()+1,t.getDate()];
 +      }
@@ -1348,6 +1775,29 @@ index cf74837..5de09f4 100644
 +  // focused text field or next to the control acted on last.
 +  const entry = e => !!e && (e.isContentEditable || e.tagName==='TEXTAREA' ||
 +    (e.tagName==='INPUT' && ['text','search','email','url','tel'].includes(e.type)));
++  // The tokens a multi-value field shows beside its input (a picked city as a chip with a remove button) are its
++  // current values, though the input itself reports an empty value. A chip is the innermost element around an
++  // icon-only control (its remove button) that has a short text of its own, inside the field's wrapper (its
++  // ancestors up to three levels, short of one that holds another field) and not around the input. A text that is
++  // the field's own name or placeholder is not a chip.
++  const chipsOf = (e,own) => {
++    const out=[], fields='input:not([type="hidden"]),textarea,select';
++    for (let w=e.parentElement, k=0; w && k<3 && w!==e.ownerDocument.body && !out.length; w=w.parentElement, k++) {
++      if ([...w.querySelectorAll(fields)].some(f=>f!==e)) break;
++      for (const r of w.querySelectorAll(selector+',svg,[aria-label]')) {
++        if (r===e || r.contains(e) || out.some(([c])=>c.contains(r)) || !visible(r) ||
++            !/^[^\p{L}\p{N}]?$/u.test((r.innerText ?? '').trim()) ||
++            !(r.matches(selector) || getComputedStyle(r).cursor==='pointer')) continue;
++        for (let c=r.parentElement; c && c!==w && !c.contains(e); c=c.parentElement) {
++          const text=c.innerText.replace(r.innerText ?? '','').replace(/\s+/g,' ').trim();
++          if (!/[\p{L}\p{N}]/u.test(text)) continue;
++          if (text.length<=60 && text!==own && text!==e.getAttribute('placeholder')) out.push([c,text,r]);
++          break;
++        }
++      }
++    }
++    return out;
++  };
 +  const POPUP='[role="listbox"],[role="menu"],[role="tree"]';
 +  const ITEM='[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="treeitem"]';
 +  const byId = (from,id) => id ? from.getRootNode().getElementById?.(id) || from.ownerDocument.getElementById(id) : null;
@@ -1362,6 +1812,35 @@ index cf74837..5de09f4 100644
 +        getComputedStyle(e).cursor==='pointer');
 +      return c;
 +    };
++  };
++  // A clickable that holds many cells (a month of days, rows of a list) handles their clicks by delegation: a click
++  // at its centre picks whichever cell happens to be there, so it is never a target itself; its cells are. Cells
++  // are its smallest text-bearing descendants of one repeated shape (tag, depth and first class), at least CELLS of
++  // them with distinct texts over at least three rows. Where some carry a pointer cursor, only those (the others
++  // are disabled days). Native links and buttons are left whole: a card link's parts all open the same card.
++  const CELLS=6;
++  cache.cells = e => {
++    if (e.childElementCount<1 || /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|LABEL)$/.test(e.tagName) ||
++        e.isContentEditable) return null;
++    const all=e.getElementsByTagName('*'), depth=new Map([[e,0]]), groups=new Map();
++    if (all.length<CELLS || all.length>1500) return null;
++    for (const d of all) {
++      const k=(depth.get(d.parentElement) ?? -1000)+1;
++      depth.set(d,k);
++      let own='';
++      for (let n=d.firstChild; n; n=n.nextSibling) if (n.nodeType===3) own+=n.nodeValue;
++      own=own.trim();
++      if (k<1 || !own || own.length>40) continue;
++      const key=d.tagName+' '+k+' '+(d.classList[0]||'');
++      (groups.get(key) || groups.set(key,[]).get(key)).push([d,own]);
++    }
++    let best=null;
++    for (const g of groups.values()) if (g.length>=CELLS && (!best || g.length>best.length)) best=g;
++    if (!best || new Set(best.map(([,t])=>t)).size<CELLS) return null;
++    const rects=best.map(([d])=>d.getBoundingClientRect()).filter(r=>r.width && r.height);
++    if (new Set(rects.map(r=>Math.round(r.top))).size<3) return null;
++    const cells=best.map(([d])=>d), pointed=cells.filter(d=>getComputedStyle(d).cursor==='pointer');
++    return pointed.length ? pointed : cells;
 +  };
 +  const submits = b => (b.tagName==='BUTTON' && b.type==='submit') ||
 +    (b.tagName==='INPUT' && ['submit','image'].includes(b.type));
@@ -1460,6 +1939,40 @@ index cf74837..5de09f4 100644
 +    const floating = x => ['absolute','fixed'].includes(getComputedStyle(x).position);
 +    for (const owner of new Set([cache.owner?.get(e) || e, entry(active) && active]))
 +      if (owner) for (const layer of layers(owner,taken,limit,floating)) if (cache.point(layer)) cache.statics.add(layer);
++  };
++  // Where an input's effect may wait to be applied: the outermost dialog, form or floating panel (fixed, absolute or
++  // sticky) around the control, short of a page-sized wrapper (a dialog may be page-sized). A value set there may
++  // take effect only when that dialog's or form's own control applies or submits it ("Показать 982 вакансии").
++  cache.scopes ||= new Map();
++  const DIALOG='dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
++  cache.scopeOf = e => {
++    let scope=null;
++    for (let a=e; a && a!==a.ownerDocument.body && a!==a.ownerDocument.documentElement; a=up(a)) {
++      if (a.nodeType!==1) continue;
++      const dialog=a.matches(DIALOG);
++      if (!dialog && a.tagName!=='FORM' && !['fixed','absolute','sticky'].includes(getComputedStyle(a).position))
++        continue;
++      const r=a.getBoundingClientRect();
++      if (dialog || r.width*r.height<0.9*innerWidth*innerHeight) scope=a;
++    }
++    return scope;
++  };
++  // Its name: its label, or a dialog's first heading (a form's or panel's first heading is often a section in it).
++  cache.scopeName = a => clip(((a.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>byId(a,id)?.textContent)
++    .filter(Boolean).join(' ') || a.getAttribute('aria-label') || (a.matches(DIALOG) &&
++    a.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]')?.textContent) || '').replace(/\s+/g,' ').trim(),60);
++  // A digest of the page's stable visible text outside a scope and outside open popups (suggestions are not
++  // results): when it changes after an input made in the scope, the page took the input in.
++  const digest = parts => {
++    let h=0x811c9dc5;
++    for (const part of parts) for (let i=0; i<part.length; i++) h=Math.imul(h^part.charCodeAt(i),16777619);
++    return (h>>>0).toString(36)+':'+parts.length;
++  };
++  const beyond = (scope,roots) => n => !cache.inside(scope,n) && !roots.some(r=>cache.inside(r,n));
++  cache.outside = scope => {
++    const out=[], away=beyond(scope,cache.popups().map(([r])=>r));
++    cache.words(trees(),(value,parent,key)=>{ if (!cache.volatile.has(key) && away(parent)) out.push(value); });
++    return digest(out);
 +  };
 +  // The open popups of the focused or an expanded control are part of the page key: a click chosen before the
 +  // suggestions arrived is stale.
@@ -1562,7 +2075,7 @@ index cf74837..5de09f4 100644
 +    if (!point?.covered) return point;
 +    return clipped(e) ? null : point;
 +  };
-+  const scrollables=[], forest=trees(scrollables), found=[], shown=new Map();
++  const scrollables=[], forest=trees(scrollables), found=[], shown=new Map(), containers=new Set(), split=[];
 +  const candidates=forest.flatMap(t=>[...t.querySelectorAll(selector)]);
 +  if (forest.length>1) candidates.sort(deepOrder);
 +  for (const e of candidates) {
@@ -1580,6 +2093,15 @@ index cf74837..5de09f4 100644
 +        const at=visible(label) && place(label);
 +        if (at && !at.covered && !at.foreign) { target=label; point=at; break; }
 +      }
++    }
++    // A role="button" (or link, option…) around a whole month of days: its days are the targets, wherever its own
++    // centre is.
++    const cells=shown.get(e) && target===e &&
++      !['textbox','searchbox','spinbutton','combobox','checkbox','radio','switch'].includes(rname) && cache.cells(e);
++    if (cells) {
++      containers.add(e);
++      split.push(...cells);
++      continue;
 +    }
 +    // Only a control nested in it can be clicked: that control is a target of its own.
 +    if (!point || point.foreign) continue;
@@ -1608,29 +2130,38 @@ index cf74837..5de09f4 100644
 +    const at=performance.now();
 +    for (const key of cache.tracked||[]) if (key.isConnected) cache.reread(key,key.textContent.trim(),at);
 +  };
-+  const words=[], stable=[], seeds=[], tracked=[], now=performance.now(); let length=0;
-+  for (const tree of forest) {
-+    const doc=tree.ownerDocument || tree, o=offset(tree), view=doc.defaultView;
-+    if (!o || !(tree.body || tree.nodeType===11)) continue;
-+    const walker=doc.createTreeWalker(tree.body || tree,NodeFilter.SHOW_TEXT), range=doc.createRange();
-+    let node;
-+    while ((node=walker.nextNode()) && length<6000) {
-+      const value=node.textContent.trim(), parent=node.parentElement;
-+      if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
-+      range.selectNodeContents(node); const local=range.getBoundingClientRect();
-+      const r={width:local.width,height:local.height,top:local.top+o.y,bottom:local.bottom+o.y,
-+        left:local.left+o.x,right:local.right+o.x};
-+      if (r.width>0 && r.height>0 && r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth &&
-+          local.bottom>0 && local.top<view.innerHeight && local.right>0 && local.left<view.innerWidth) {
-+        words.push(value); length+=value.length; seeds.push(parent);
-+        // textContent assignments replace the text node, so a lone text child is tracked by its element.
-+        const key=parent.childNodes.length===1 ? parent : node;
-+        tracked.push(key);
-+        if (cache.reread(key,value,now)<3) stable.push(value);
-+        else cache.volatile.add(key);
++  // The page's visible text: each text node on screen, in document order, up to 6000 characters. `visit` gets its
++  // text, its element, and the key its rewrites are tracked by (textContent assignments replace the text node, so a
++  // lone text child is tracked by its element).
++  cache.words = (forest,visit) => {
++    let length=0;
++    for (const tree of forest) {
++      const doc=tree.ownerDocument || tree, o=offset(tree), view=doc.defaultView;
++      if (!o || !(tree.body || tree.nodeType===11)) continue;
++      const walker=doc.createTreeWalker(tree.body || tree,NodeFilter.SHOW_TEXT), range=doc.createRange();
++      let node;
++      while ((node=walker.nextNode()) && length<6000) {
++        const value=node.textContent.trim(), parent=node.parentElement;
++        if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
++        range.selectNodeContents(node); const local=range.getBoundingClientRect();
++        const r={width:local.width,height:local.height,top:local.top+o.y,bottom:local.bottom+o.y,
++          left:local.left+o.x,right:local.right+o.x};
++        if (r.width>0 && r.height>0 && r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth &&
++            local.bottom>0 && local.top<view.innerHeight && local.right>0 && local.left<view.innerWidth) {
++          length+=value.length;
++          visit(value,parent,parent.childNodes.length===1 ? parent : node);
++        }
 +      }
 +    }
-+  }
++  };
++  cache.trees=trees;
++  const words=[], stable=[], seeds=[], tracked=[], now=performance.now();
++  cache.words(forest,(value,parent,key)=>{
++    words.push(value); seeds.push(parent); tracked.push(key);
++    if (cache.reread(key,value,now)<3) stable.push(value);
++    else cache.volatile.add(key);
++  });
++  const parents=seeds.slice();
 +  cache.tracked=tracked;
 +  // Widgets often make plain elements clickable: calendar days, menu and suggestion items, styled chips. Offer an
 +  // element where a pointer cursor begins (its parent has none) when it is on screen, a click at its centre reaches
@@ -1647,12 +2178,22 @@ index cf74837..5de09f4 100644
 +  const popups=cache.popups(forest), inPopup = e => popups.some(([root])=>cache.inside(root,e));
 +  // (ARIA items are controls: the loop above already offers them.)
 +  for (const [root] of popups) for (const e of cache.items(root,undefined,false)) starts.add(e);
++  const cells=new Set(split);
++  for (const e of split) starts.add(e);
 +  const offered=new Set(found.map(f=>f.target)), around=new Set(), controls=found.length;
 +  for (const c of [...offered,...candidates.filter(c=>shown.get(c) ?? visible(c))])
 +    for (let a=up(c); a && !around.has(a); a=up(a)) around.add(a);
 +  for (const e of starts) {
-+    if (offered.has(e) || around.has(e) || e.matches(selector) || e.parentElement?.closest(selector) ||
-+        e.closest('[aria-disabled="true"]') || !visible(e)) continue;
++    const host=e.parentElement?.closest(selector);
++    if (offered.has(e) || e.matches(selector) || (host && !containers.has(host)) ||
++        e.closest('[aria-disabled="true"]')) continue;
++    // A role-less clickable around many cells (they inherit its pointer cursor) is replaced by its cells.
++    const inner=!cells.has(e) && cache.cells(e);
++    if (inner) {
++      for (const c of inner) { cells.add(c); starts.add(c); }
++      continue;
++    }
++    if (around.has(e) || !visible(e)) continue;
 +    let inside=false;
 +    for (let a=up(e); a && !inside; a=up(a)) inside=offered.has(a);
 +    if (inside || (e.textContent.length>400 && !e.getAttribute('aria-label'))) continue;
@@ -1667,7 +2208,7 @@ index cf74837..5de09f4 100644
 +  }
 +  if (found.length>controls) found.sort((a,b)=>forest.length>1 ? deepOrder(a.target,b.target) :
 +    a.target.compareDocumentPosition(b.target) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
-+  const actions=[], enters=new Map();
++  const actions=[], enters=new Map(), removers=new Map();
 +  for (const {e,target,rname,point,box} of found) {
 +    const own=clip(name(e),150), placeholder=own ? '' : hint(e);
 +    const base={node:identity(target),role:rname,rect:point.rect,
@@ -1693,15 +2234,33 @@ index cf74837..5de09f4 100644
      if (e.tagName==='SELECT') {
        for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
          actions.push({...base,kind:'select',value:o.value,
-@@ -73,35 +631,129 @@
+@@ -73,35 +746,157 @@
        const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
          (['textbox','searchbox','spinbutton'].includes(rname) ||
            (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
 -      const value='value' in e ? String(e.value) :
 +      const value='value' in e && e.tagName!=='LI' ? String(e.value) :
          e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';
-       actions.push({...base,kind:editable?'fill':'click',value});
-       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
+-      actions.push({...base,kind:editable?'fill':'click',value});
+-      if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
++      // A multi-value field's chips are its values, before any text typed into it; its chips' remove buttons say
++      // which chip they remove.
++      const chips=editable && e.tagName==='INPUT' ? chipsOf(e,own) : [];
++      const shown_value=[...chips.map(([,text])=>text),value].filter(Boolean).join(', ');
++      if (chips.length) {
++        base.chips=chips.map(([,text])=>text);
++        for (const [,text,r] of chips) removers.set(r,text);
++      }
++      const own_action={...base,kind:editable?'fill':'click',value:shown_value};
++      if (editable) {
++        // For the text helper only: the field's own format hints, a placeholder ("дд.мм.гггг", "e.g. London") that is
++        // not already its name and does not rotate, and a pattern. Hints, not page meaning: outside the marker.
++        const shown=own ? hint(e) : '', pattern=e.getAttribute('pattern');
++        if (shown && !cache.hints.get(e)?.changes && shown!==own) own_action.placeholder=clip(shown,80);
++        if (pattern) own_action.pattern=pattern.slice(0,80);
++      }
++      actions.push(own_action);
++      if (editable) actions.push({...base,kind:'click',value:shown_value,label:'Open '+base.label});
 +      // Enter submits a filled single-line field, e.g. a search box without a visible button.
 +      if (editable && e.tagName==='INPUT' && value.trim()) {
 +        const enter={...base,kind:'enter',value,label:'Press Enter in '+base.label};
@@ -1731,6 +2290,10 @@ index cf74837..5de09f4 100644
 +    const click=clicks.get(cache.ids.get(button));
 +    if (click) Object.assign(enter,{submits:clip(click.label,60),submit_node:click.node});
 +    else actions.splice(actions.indexOf(enter),1);
++  }
++  for (const a of actions) {
++    const chip=removers.get(cache.nodes.get(a.node));
++    if (chip && a.kind==='click') a.removes=chip;
 +  }
 +  // A scrollable list or panel is a target too: scrolling it is the only way to reach its other items.
 +  for (const e of scrollables) {
@@ -1796,11 +2359,18 @@ index cf74837..5de09f4 100644
 -  const page_key=cache.pageKey(), guards={};
 -  for (const a of actions) if (!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
 +  const stable_text=stable.length===words.length ? text : stable.join('\n').slice(0,6000);
++  // For each scope an input was made in (the executor registers it), the digest of the text outside it.
++  const scopes={};
++  for (const [id,scope] of cache.scopes) {
++    const away=beyond(scope,popups.map(([r])=>r));
++    scopes[id]=digest(words.filter((w,i)=>!cache.volatile.has(tracked[i]) && away(parents[i])));
++  }
 +  const page_key=cache.pageKey(forest,popups), guards={}, texts=new Map();
 +  for (const a of actions) if (!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node),texts);
    // Compare meaning and identity. Geometry is always resolved and hit-tested just before input.
 -  const semantics=actions.map(({rect,...action})=>action);
-+  const semantics=actions.map(({rect,covered,label,...action})=>action.hinted ? action : {...action,label});
++  const semantics=actions.map(({rect,covered,label,placeholder,pattern,...action})=>
++    action.hinted ? action : {...action,label});
    const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
 -    document.title,text,semantics,page_key[6]];
 +    document.title,stable_text,semantics,page_key[6]];
@@ -1832,7 +2402,9 @@ index cf74837..5de09f4 100644
 +      t.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
 +  });
    return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
+-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
 +    ...(stable_text===text ? {} : {stable_text}),
 +    ready:document.readyState,leaving,animating,loading,
-     scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
++    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,
++    ...(cache.scopes.size ? {scopes} : {})};
  })()

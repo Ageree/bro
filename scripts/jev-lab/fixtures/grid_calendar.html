@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Отели — бронирование онлайн</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #111;
+        background: #eef6e8;
+      }
+      header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 8px 0 18px;
+      }
+      .form {
+        position: relative;
+        display: flex;
+        gap: 6px;
+      }
+      .box {
+        background: #fff;
+        border-radius: 10px;
+        padding: 6px 14px;
+        height: 58px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .box .cap {
+        font-size: 12px;
+        color: #777;
+      }
+      .box input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 16px;
+        padding: 0;
+        width: 100%;
+        background: transparent;
+      }
+      .dest {
+        flex: 2;
+      }
+      .date {
+        flex: 1;
+        cursor: pointer;
+      }
+      .date input {
+        cursor: pointer;
+      }
+      .guests {
+        flex: 1;
+      }
+      .find {
+        background: #1a5cff;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 0 30px;
+        font: 700 16px Arial;
+        cursor: pointer;
+      }
+      .popup {
+        position: absolute;
+        top: 66px;
+        left: 30%;
+        width: 560px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        z-index: 20;
+        padding: 12px 18px;
+      }
+      .nav {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+      .nav button {
+        border: 0;
+        background: #f0f0f0;
+        border-radius: 6px;
+        width: 32px;
+        height: 28px;
+        cursor: pointer;
+      }
+      /* The whole grid handles clicks by delegation: its cells only inherit its pointer cursor. */
+      .grid {
+        cursor: pointer;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+        outline: none;
+      }
+      .mtitle {
+        font-weight: 700;
+        margin: 4px 0;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+      }
+      .row div {
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+      }
+      .wd {
+        color: #999;
+        font-size: 12px;
+      }
+      .cell.past {
+        color: #ccc;
+        cursor: default;
+      }
+      .cell.in,
+      .cell.out {
+        background: #1a5cff;
+        color: #fff;
+      }
+      #results {
+        margin-top: 22px;
+      }
+      .hotel {
+        background: #fff;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .err {
+        color: #d00;
+        min-height: 20px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Отельки</header>
+    <main>
+      <h1>Найдём, где остановиться</h1>
+      <div class="form">
+        <div class="box dest">
+          <span class="cap">Направление</span
+          ><input
+            id="dest"
+            aria-label="Направление"
+            placeholder="Город, отель или аэропорт"
+          />
+        </div>
+        <div class="box date" id="inBox">
+          <span class="cap">Заезд</span
+          ><input
+            id="checkin"
+            aria-label="Заезд"
+            readonly
+            placeholder="Дата заезда"
+          />
+        </div>
+        <div class="box date" id="outBox">
+          <span class="cap">Выезд</span
+          ><input
+            id="checkout"
+            aria-label="Выезд"
+            readonly
+            placeholder="Дата выезда"
+          />
+        </div>
+        <div class="box guests">
+          <span class="cap">Гости</span
+          ><input id="guests" aria-label="Гости" value="2 взрослых" readonly />
+        </div>
+        <button class="find" id="find" type="button">Найти</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        const TODAY = new Date(2026, 9, 2);
+        const NOM = [
+          "Январь",
+          "Февраль",
+          "Март",
+          "Апрель",
+          "Май",
+          "Июнь",
+          "Июль",
+          "Август",
+          "Сентябрь",
+          "Октябрь",
+          "Ноябрь",
+          "Декабрь",
+        ];
+        const GEN = [
+          "янв",
+          "фев",
+          "мар",
+          "апр",
+          "мая",
+          "июн",
+          "июл",
+          "авг",
+          "сен",
+          "окт",
+          "ноя",
+          "дек",
+        ];
+        const iso = (d) =>
+          d &&
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const form = document.querySelector(".form"),
+          checkin = document.getElementById("checkin"),
+          checkout = document.getElementById("checkout");
+        let first = new Date(2026, 9, 1),
+          popup = null,
+          start = null,
+          end = null,
+          picking = "in",
+          submitted = false;
+
+        function edited() {
+          if (submitted) {
+            submitted = false;
+            document.title = "Отели — бронирование онлайн";
+            document.getElementById("results").innerHTML = "";
+          }
+        }
+        function show() {
+          checkin.value = start
+            ? `${start.getDate()} ${GEN[start.getMonth()]} 2026`
+            : "";
+          checkout.value = end
+            ? `${end.getDate()} ${GEN[end.getMonth()]} 2026`
+            : "";
+        }
+        function month(m0) {
+          const m = document.createElement("div");
+          m.className = "month";
+          m.dataset.y = m0.getFullYear();
+          m.dataset.m = m0.getMonth();
+          m.innerHTML = `<div class="mtitle">${NOM[m0.getMonth()]} ${m0.getFullYear()}</div>`;
+          const head = document.createElement("div");
+          head.className = "row";
+          head.innerHTML = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            .map((w) => `<div class="wd">${w}</div>`)
+            .join("");
+          m.appendChild(head);
+          const days = new Date(
+            m0.getFullYear(),
+            m0.getMonth() + 1,
+            0
+          ).getDate();
+          let row = document.createElement("div");
+          row.className = "row";
+          for (let i = 0; i < (m0.getDay() + 6) % 7; i++)
+            row.appendChild(document.createElement("div"));
+          for (let n = 1; n <= days; n++) {
+            const d = new Date(m0.getFullYear(), m0.getMonth(), n);
+            const c = document.createElement("div");
+            c.className =
+              "cell" +
+              (d < TODAY ? " past" : "") +
+              (iso(d) === iso(start) ? " in" : "") +
+              (iso(d) === iso(end) ? " out" : "");
+            c.textContent = n;
+            row.appendChild(c);
+            if (row.children.length === 7) {
+              m.appendChild(row);
+              row = document.createElement("div");
+              row.className = "row";
+            }
+          }
+          if (row.children.length) m.appendChild(row);
+          return m;
+        }
+        function draw() {
+          popup.innerHTML = "";
+          const nav = document.createElement("div");
+          nav.className = "nav";
+          const prev = document.createElement("button"),
+            next = document.createElement("button");
+          prev.setAttribute("aria-label", "Предыдущий месяц");
+          prev.textContent = "‹";
+          next.setAttribute("aria-label", "Следующий месяц");
+          next.textContent = "›";
+          prev.onclick = (e) => {
+            e.stopPropagation();
+            if (first > new Date(2026, 9, 1)) {
+              first = new Date(first.getFullYear(), first.getMonth() - 1, 1);
+              draw();
+            }
+          };
+          next.onclick = (e) => {
+            e.stopPropagation();
+            first = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+            draw();
+          };
+          nav.append(prev, next);
+          // One delegating handler for every day: a role=button wrapper, as many date pickers render it.
+          const grid = document.createElement("div");
+          grid.className = "grid";
+          grid.setAttribute("role", "button");
+          grid.tabIndex = -1;
+          grid.append(
+            month(first),
+            month(new Date(first.getFullYear(), first.getMonth() + 1, 1))
+          );
+          grid.addEventListener("click", (e) => {
+            const c = e.target.closest(".cell");
+            if (!c || c.classList.contains("past")) return;
+            const m = c.closest(".month"),
+              d = new Date(+m.dataset.y, +m.dataset.m, +c.textContent);
+            if (picking === "in" || (start && d <= start)) {
+              start = d;
+              end = null;
+              picking = "out";
+              show();
+              edited();
+              draw();
+              return;
+            }
+            end = d;
+            picking = "in";
+            show();
+            edited();
+            close();
+          });
+          popup.append(nav, grid);
+        }
+        function open(which) {
+          picking = which === "out" && start ? "out" : "in";
+          if (popup) return;
+          popup = document.createElement("div");
+          popup.className = "popup";
+          draw();
+          form.appendChild(popup);
+        }
+        function close() {
+          if (popup) {
+            popup.remove();
+            popup = null;
+          }
+        }
+        document.getElementById("inBox").addEventListener("click", (e) => {
+          e.stopPropagation();
+          open("in");
+        });
+        document.getElementById("outBox").addEventListener("click", (e) => {
+          e.stopPropagation();
+          open("out");
+        });
+        document.addEventListener("mousedown", (e) => {
+          if (popup && !popup.contains(e.target) && !e.target.closest(".date"))
+            close();
+        });
+        document.getElementById("dest").addEventListener("input", edited);
+        document.getElementById("find").addEventListener("click", () => {
+          const err = document.getElementById("err"),
+            results = document.getElementById("results");
+          const dest = document.getElementById("dest").value.trim();
+          if (!dest) {
+            err.textContent = "Укажите направление";
+            return;
+          }
+          if (!start || !end) {
+            err.textContent = "Выберите даты заезда и выезда";
+            return;
+          }
+          err.textContent = "";
+          submitted = true;
+          close();
+          const ok =
+            /казан/i.test(dest) &&
+            iso(start) === "2026-11-12" &&
+            iso(end) === "2026-11-15";
+          document.title = ok
+            ? "PASS - Казань, 12–15 ноября 2026"
+            : `Отели: ${dest}, ${checkin.value} — ${checkout.value}`;
+          history.replaceState(
+            null,
+            "",
+            `?q=${encodeURIComponent(dest)}&dates=${iso(start)}-${iso(end)}`
+          );
+          results.innerHTML = "<p>Ищем отели…</p>";
+          setTimeout(() => {
+            if (!submitted) return;
+            const rows = [
+              ["Отель Ривьера", "от 5 400 ₽"],
+              ["Kazan Palace", "от 9 900 ₽"],
+              ["Хостел Центр", "от 1 200 ₽"],
+            ];
+            results.innerHTML =
+              `<h2>${dest}: ${checkin.value} — ${checkout.value}</h2>` +
+              rows
+                .map(
+                  (r) =>
+                    `<div class="hotel"><span>${r[0]}</span><span>${r[1]}</span></div>`
+                )
+                .join("");
+          }, 300);
+        });
+      })();
+    </script>
+  </body>
+</html>

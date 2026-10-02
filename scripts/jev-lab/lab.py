@@ -1,7 +1,7 @@
 """jev-lab: run jev-ultrafast (decision model TypeSafe Jev) on Bro's browser tasks with full traces.
 
   python3 lab.py chrome --port 9231                 start a Chrome (own profile) for this port
-  python3 lab.py serve                              serve fixtures/ on 127.0.0.1:8765 (idempotent)
+  python3 lab.py serve                              serve fixtures/ on 127.0.0.1:8765 (LAB_FIXTURE_PORT)
   python3 lab.py run --jev DIR --port 9231 TASK [TASK ...] [--rounds N] [--tag NAME]
   python3 lab.py run --jev DIR --port 9231 --set dev|heldout|fresh|fixture|env|all
   python3 lab.py table runs/NAME.jsonl [...]        success table per task
@@ -10,13 +10,14 @@
 Every run appends one JSON line (trace, success, final page) to runs/<tag>.jsonl and saves a final screenshot to
 shots/. Use your own --port (and thereby your own Chrome profile and browser-harness daemon); never share one.
 LAB_HEADED=1 starts a headed Chrome under Xvfb (display :port-9000), as on Bro's VM; a port keeps the mode its
-Chrome was started with. jev runs in DIR/.venv (or JEV_PYTHON) with DIR first on PYTHONPATH. Keys come from
+Chrome was started with. LAB_CLEAN_PROFILE=1 gives every run a new Chrome profile. jev runs in DIR/.venv (or JEV_PYTHON) with DIR first on PYTHONPATH. Keys come from
 TYPESAFE_API_KEY and OPENROUTER_API_KEY (the text helper); see README.md.
 """
 
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -79,11 +80,15 @@ def start_chrome(port):
     sys.exit(f"Chrome on {port} did not start")
 
 
+FIXTURE_PORT = int(os.environ.get("LAB_FIXTURE_PORT", "8765"))
+
+
 def serve():
     with socket.socket() as s:
-        if s.connect_ex(("127.0.0.1", 8765)) == 0:
+        if s.connect_ex(("127.0.0.1", FIXTURE_PORT)) == 0:
             return
-    subprocess.Popen([sys.executable, "-m", "http.server", "8765", "--bind", "127.0.0.1", "-d", str(HERE / "fixtures")],
+    subprocess.Popen([sys.executable, "-m", "http.server", str(FIXTURE_PORT), "--bind", "127.0.0.1", "-d",
+                      str(HERE / "fixtures")],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     time.sleep(0.5)
 
@@ -107,10 +112,29 @@ def env_for(jev_dir, port):
     }
 
 
+def clean_profile(jev_dir, port):
+    """LAB_CLEAN_PROFILE=1: every run starts from a new Chrome profile, so no run inherits cookies, filled forms or
+    'continue your search' state from the previous one. Stops this port's daemon and Chrome, wipes the profile."""
+    subprocess.run([python_for(jev_dir), "-c", "import sys; from browser_harness.admin import restart_daemon; "
+                    "restart_daemon(sys.argv[1])", f"lab{port}"], env=env_for(jev_dir, port), capture_output=True,
+                   timeout=30)
+    subprocess.run(["pkill", "-f", f"remote-debugging-port={port}"], capture_output=True)
+    for _ in range(50):
+        if not chrome_up(port):
+            break
+        time.sleep(0.1)
+    shutil.rmtree(HERE / "profiles" / str(port), ignore_errors=True)
+    start_chrome(port)
+
+
 def run_one(jev_dir, port, name, deadline, tag):
+    if os.environ.get("LAB_CLEAN_PROFILE") == "1":
+        clean_profile(jev_dir, port)
     kind, url, goal, check = all_tasks()[name]
     if kind == "fixture":
         serve()
+    for folder in ("runs", "shots"):
+        (HERE / folder).mkdir(exist_ok=True)
     stamp = time.strftime("%H%M%S")
     shot = HERE / "shots" / f"{tag}-{name}-{stamp}.jpg"
     started = time.perf_counter()

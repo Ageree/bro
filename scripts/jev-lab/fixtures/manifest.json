@@ -82,5 +82,29 @@
     "path": "label_chips.html",
     "goal": "Покажи только поезда с купе, которые отправляются вечером. Остановись, когда виден отфильтрованный список.",
     "widget": "Filter chips made of display:none radio/checkbox inputs with styled <label for> (car type, departure time slots); filters apply instantly"
+  },
+  {
+    "name": "fx_grid_calendar",
+    "path": "grid_calendar.html",
+    "goal": "Найди отели в Казани с 12 по 15 ноября 2026 года для двоих взрослых. Остановись, когда видны отели с ценами.",
+    "widget": "Range date picker whose two-month grid is one role=button wrapper with cursor:pointer and a single delegated click handler; the day cells are plain divs that only inherit its cursor (no roles, no listeners, no date attributes); a click at the wrapper's centre picks an arbitrary day"
+  },
+  {
+    "name": "fx_token_field",
+    "path": "token_field.html",
+    "goal": "Найди авиабилеты из Москвы в Казань на 20 ноября 2026 года, один взрослый. Остановись, когда видны рейсы.",
+    "widget": "Multi-value origin field: a picked suggestion becomes a token (chip) and the input empties; a geolocated token 'Вашингтон (WAS)' is preset; each token has an icon-only remove button labelled only 'Удалить'; destination autocomplete and a native date field; PASS only with Moscow as the single origin"
+  },
+  {
+    "name": "fx_popunder",
+    "path": "popunder.html",
+    "goal": "Найди авиабилеты из Москвы в Сочи на 16 октября 2026 года в одну сторону. Остановись, когда видны варианты с ценами.",
+    "widget": "Popunder: submitting the search opens the results in a new tab (same site) and, 150 ms later, sends the search tab to a partner's hotel offers on another site (localhost vs 127.0.0.1) with its own search form; PASS only on the results tab"
+  },
+  {
+    "name": "fx_filter_dialog",
+    "path": "filter_dialog.html",
+    "goal": "Найди вакансии Python-разработчика с зарплатой от 150 000 рублей, опубликованные за последнюю неделю. Остановись, когда видны вакансии.",
+    "widget": "Results page with a modal filter dialog (role=dialog, aria-modal) whose salary field and publication period (set in a nested popup with its own 'Применить') take effect only through the dialog's 'Показать N вакансий'; the count on that button updates live; results behind the dialog stay unchanged until applied"
   }
 ]

@@ -11,6 +11,7 @@ A check looks only at the final URL, title and visible text that jev observed, n
 """
 
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -155,7 +156,7 @@ def moved(r):
     return (final.path.rstrip("/"), final.query) != (start.path.rstrip("/"), start.query)
 
 
-def fixtures(base="http://127.0.0.1:8765"):
+def fixtures(base=f"http://127.0.0.1:{os.environ.get('LAB_FIXTURE_PORT', '8765')}"):
     manifest = HERE / "fixtures" / "manifest.json"
     if not manifest.exists():
         return {}
