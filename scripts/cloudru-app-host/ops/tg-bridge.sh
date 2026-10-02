@@ -6,8 +6,9 @@
 #   tg-bridge.sh hold                        only deleteWebhook (pending kept): Telegram holds the updates
 #                                            (24 h) until switch-to-bridge, e.g. while the database moves;
 #                                            HOLD marks when, and the watchdog alerts on a hold left too long
-#   tg-bridge.sh switch-to-bridge            tg-egress must answer first; then deleteWebhook (pending kept),
-#                                            enable and start the bridge, wait for its health
+#   tg-bridge.sh switch-to-bridge            tg-egress must answer first, and eve's health (tg_bridge.py,
+#                                            for hold too); then deleteWebhook (pending kept), enable and
+#                                            start the bridge, wait for its health
 #   tg-bridge.sh switch-to-webhook URL       stop and disable the bridge, confirm what it delivered,
 #                                            setWebhook URL with the secret (https://<host>/eve/v1/telegram)
 #

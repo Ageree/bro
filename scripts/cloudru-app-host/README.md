@@ -83,7 +83,8 @@ VM без пересоздания — `host.py update-host bro-app-1`: банд
 едет через Object Storage, serial-консоль сверяет sha256, кладёт его в
 `/opt/bro/app-host` (прежний — в `app-host.old`), запускает
 `install-code.sh` и перезапускает deployd. Релизы, env, сайты, адрес и диск
-остаются; пока deployd выполняет задачу, команда отказывает. `bro-app-1`
+остаются; включённый мост перезапускается, только если его файлы изменились;
+пока deployd выполняет задачу, команда отказывает. `bro-app-1`
 создан бандлом без Telegram — перед переключением ему нужен этот шаг.
 
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
@@ -96,7 +97,8 @@ VM без пересоздания — `host.py update-host bro-app-1`: банд
 ops-хостом `<ip>.sslip.io`, `deployd`, таймер watchdog. `bro-web` и `bro-eve`
 включены, но стартуют только когда есть `current`. Юниты и Telegram ставит
 `host/install-code.sh`: `bro-tg-egress` включён и запущен (`bro-eve`,
-`bro-web`, `bro-watchdog` и `bro-tg-bridge` идут после него: `After=`),
+`bro-web`, `bro-watchdog` и `bro-tg-bridge` стартуют после него, когда
+форвардер уже слушает: `After=` и `Type=notify`),
 `bro-tg-bridge` установлен, но выключен — его включает только
 `tg-bridge.sh switch-to-bridge` (раздел «Telegram»). В конце — одна проверка
 `tg_egress.py --check` (стадия `telegram`; сбой только в лог).
@@ -235,7 +237,7 @@ Telegram до VM в РФ доходит ненадёжно, поэтому на 
 ```sh
 host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo (без токена в env — только юниты)
 host.py ops bro-app-1 tg-bridge.sh hold                # только deleteWebhook: Telegram копит обновления (24 ч), метка tg-hold
-host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check, затем deleteWebhook и мост
+host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check и health eve, затем deleteWebhook и мост
 host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
 host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
 ```

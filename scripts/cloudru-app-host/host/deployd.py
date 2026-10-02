@@ -40,7 +40,7 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
 
 Every restart of eve (release, rollback, env, restart) with tg-bridge enabled: stop the bridge, give eve
 BRIDGE_DRAIN_S to finish what it took, restart, health, start the bridge again whatever happened
-(scripts/cloudru-app-host/tg-bridge/README.md, «Что должен сделать сервер»): an update eve took a moment
+(scripts/cloudru-app-host/tg-bridge/README.md, «Что делает сервер»): an update eve took a moment
 before its restart is not lost, and the bridge, which reads the token and the secret once, gets a new env.
 
 A job's log never holds a request's URL or an env value.

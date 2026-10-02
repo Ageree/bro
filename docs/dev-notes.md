@@ -43,6 +43,9 @@
 - В свежей облачной сессии нет `node_modules` (`pnpm install`), а Node 22 валит
   ~12 наборов `pnpm check` («Unexpected identifier 'r'»). Node 24 без root:
   `npm pack node-linux-x64@24` в scratchpad, `bin` — в начало `PATH`.
+- `TELEGRAM_BOT_USERNAME` облачной сессии начинается с `@`, и проверка env
+  роняет каждый тест, который импортирует `@shared/environment`: гоняйте
+  vitest через `env -u TELEGRAM_BOT_USERNAME`, в env прода — без `@`.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
@@ -176,11 +179,12 @@
 - Любой сбой модели (и переполнение контекста) — `turn.failed`
   `MODEL_CALL_FAILED`; «скоро вернусь» — только при 402/429/5xx в `details`.
 - Telegram на Cloud.ru — не вебхуком: мост `scripts/cloudru-app-host/tg-bridge/`
-  (`getUpdates` → POST в eve на `127.0.0.1:4274`, не через Next: `proxy.ts`
+  (`getUpdates` → POST в локальный endpoint eve, не через Next: `proxy.ts`
   ведёт на `/sign-in`). eve отвечает `200` до хода и `update_id` не проверяет:
   offset и дубли — на мосте. `getUpdates` боевого бота при вебхуке — `409`.
-  Принятое eve (`200`) до рестарта eve может пропасть: deployd сначала
-  останавливает мост (README моста, «Что должен сделать сервер»).
+  Принятое eve (`200`) до рестарта eve может пропасть, поэтому deployd перед
+  рестартом eve останавливает мост (`bridge_paused`, README моста, «Что делает
+  сервер»).
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
 - Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root

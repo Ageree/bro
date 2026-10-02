@@ -23,7 +23,8 @@ systemctl enable bro-tg-egress.service >/dev/null
 # REDIRECT rule.
 systemctl restart bro-tg-egress.service
 
-# Its install.sh: the script, the unit, an empty /etc/bro/tg-bridge.env; a running bridge restarts on it.
+# Its install.sh: the script, the unit, an empty /etc/bro/tg-bridge.env; a running bridge restarts only when
+# one of its files changed (a restart cuts the long poll for nothing otherwise).
 bash "$HOST/tg-bridge/install.sh"
 
 # Last: this code installed whole. host.py update-host moves it to app-host.old only with this mark, so a retry
