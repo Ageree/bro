@@ -1,4 +1,4 @@
-import { and, eq, gte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, or, sql } from "drizzle-orm";
 import {
   db,
   memoryDigestRuns,
@@ -113,4 +113,20 @@ export async function finishMemoryDigestDay(
         eq(memoryDigestRuns.startedAt, startedAt)
       )
     );
+}
+
+/** When the workspace's last digest that went through finished, if one did. */
+export async function lastMemoryDigestFinishedAt(workspaceId: string) {
+  const [last] = await db
+    .select({ finishedAt: memoryDigestRuns.finishedAt })
+    .from(memoryDigestRuns)
+    .where(
+      and(
+        eq(memoryDigestRuns.workspaceId, workspaceId),
+        eq(memoryDigestRuns.status, "done")
+      )
+    )
+    .orderBy(desc(memoryDigestRuns.localDate))
+    .limit(1);
+  return last?.finishedAt ?? null;
 }

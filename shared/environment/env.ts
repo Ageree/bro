@@ -693,6 +693,10 @@ export const env = createEnv({
     // duplicate memories the digest folds together. Unset, it only cuts
     // one-time codes out of memory and trims history, for everyone.
     MEMORY_DIGEST_WORKSPACES: workspaceListSchema.optional(),
+    // The model the pilot's daily memory digest asks which memories are
+    // one-off, duplicates or corrected, through the same direct provider;
+    // unset, the provider's default model — never the workspace's choice.
+    MEMORY_DIGEST_MODEL: trimmedValue.optional(),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report

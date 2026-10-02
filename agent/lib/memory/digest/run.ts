@@ -1,9 +1,11 @@
+import { classifyMemories } from "@agent/lib/memory/digest/classifier";
 import { planDedupe } from "@agent/lib/memory/digest/dedupe";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { redactUnsafeText } from "@agent/lib/memory/digest/redact";
 import {
   claimMemoryDigestDay,
   finishMemoryDigestDay,
+  lastMemoryDigestFinishedAt,
   listMemoryDigestWorkspaces,
 } from "@db/services/memory/digest-runs";
 import {
@@ -25,6 +27,7 @@ import {
 import { localDayKey, localHour } from "@shared/calendar/local-period";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { isSafeMemoryText } from "@shared/memory/schema";
+import { directModelActive } from "@shared/model/provider";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 
 /** The local hour from which a day's digest may run: the night is over. */
@@ -36,10 +39,13 @@ const dayMs = 24 * 60 * 60_000;
 const digest = { actor: "digest" } as const;
 
 type Outcome = Record<
+  | "classifierCalls"
   | "contained"
+  | "corrected"
   | "deduped"
   | "historyTrimmed"
   | "historyWiped"
+  | "oneOff"
   | "purged"
   | "redacted"
   | "skipped"
@@ -107,10 +113,13 @@ export async function runDueMemoryDigests(now = new Date()) {
 /** One workspace's digest; returns what it did, in counts. */
 export async function digestWorkspace(workspaceId: string, localDate: string) {
   const outcome: Outcome = {
+    classifierCalls: 0,
     contained: 0,
+    corrected: 0,
     deduped: 0,
     historyTrimmed: 0,
     historyWiped: 0,
+    oneOff: 0,
     purged: 0,
     redacted: 0,
     skipped: 0,
@@ -119,12 +128,18 @@ export async function digestWorkspace(workspaceId: string, localDate: string) {
   const scope = await readWorkspaceScope(workspaceId);
   if (scope === null) return outcome;
   const merges = await memoryDigestPilot(scope);
+  // The model looks again only at memory that changed since the last digest.
+  const since = merges ? await lastMemoryDigestFinishedAt(workspaceId) : null;
   for (const scopeKey of await listMemoryScopeKeys(workspaceId)) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Scopes one at a time: each write locks the workspace.
     await digestScope(scope, scopeKey, `memory-digest:${localDate}`, {
       merges,
       outcome,
     });
+    if (merges && directModelActive()) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+      await classifyScope(scope, scopeKey, { localDate, outcome, since });
+    }
   }
   await redactWorkstreams(scope, `memory-digest:${localDate}`, outcome);
   outcome.historyWiped = await wipeUnsafeMemoryHistory(workspaceId);
@@ -222,6 +237,96 @@ async function digestScope(
     if (!done) outcome.skipped += 1;
     else if (reason === "duplicate") outcome.deduped += 1;
     else outcome.contained += 1;
+  }
+}
+
+/**
+ * The model's part of the digest, for the pilot: one-off task details,
+ * duplicates in other words and facts a newer one corrects, as
+ * `classifyMemories` checked them. A failed call changes nothing; the code
+ * steps of the day stand.
+ */
+async function classifyScope(
+  scope: AccessScope,
+  scopeKey: string,
+  {
+    localDate,
+    outcome,
+    since,
+  }: {
+    readonly localDate: string;
+    readonly outcome: Outcome;
+    readonly since: Date | null;
+  }
+) {
+  const records = (await listCurrentMemories(scope, scopeKey)).flatMap(
+    ({ content, index, revision, updatedAt }) =>
+      content ? [{ content, index, revision, updatedAt }] : []
+  );
+  const changed = records.some(
+    ({ content, updatedAt }) =>
+      content.category !== "rule" &&
+      (since === null || new Date(updatedAt) > since)
+  );
+  if (!changed) return;
+  let plan: Awaited<ReturnType<typeof classifyMemories>>;
+  try {
+    outcome.classifierCalls += 1;
+    plan = await classifyMemories(records, {
+      localDate,
+      scopeKey,
+      workspaceId: scope.workspaceId,
+    });
+  } catch (error) {
+    console.warn("[memory-digest] classifier failed", {
+      errorCode: error instanceof Error ? error.name : "unknown",
+      workspaceId: scope.workspaceId,
+    });
+    return;
+  }
+  if (!plan) return;
+  const operation = `memory-digest:${localDate}`;
+  const forget = (
+    record: { readonly index: number; readonly revision: number },
+    action: "correct" | "merge" | "one_off"
+  ) =>
+    skipChanged(() =>
+      forgetMemory(
+        scope,
+        scopeKey,
+        { expectedRevision: record.revision, index: record.index },
+        `${operation}:${action}:${String(record.index)}:${String(record.revision)}`,
+        { ...digest, action }
+      )
+    );
+  for (const { newer, older, text } of plan.corrections) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each write locks the memory scope.
+    const updated = await skipChanged(() =>
+      updateMemory(
+        scope,
+        scopeKey,
+        {
+          content: { ...newer.content, text },
+          expectedRevision: newer.revision,
+          index: newer.index,
+        },
+        `${operation}:correct:${String(newer.index)}:${String(newer.revision)}`,
+        { ...digest, action: "correct" }
+      )
+    );
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    if (updated && (await forget(older, "correct"))) outcome.corrected += 1;
+    else outcome.skipped += 1;
+  }
+  for (const { record } of plan.duplicates) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    if (await forget(record, "merge")) outcome.deduped += 1;
+    else outcome.skipped += 1;
+  }
+  for (const record of plan.oneOff) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    if (await forget(record, "one_off")) outcome.oneOff += 1;
+    else outcome.skipped += 1;
   }
 }
 

@@ -6,7 +6,10 @@ import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
-import { directModelProviderName } from "@shared/model/provider";
+import {
+  defaultModelId,
+  directModelProviderName,
+} from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 
 /**
@@ -68,6 +71,11 @@ export function dataProcessors(modelId: string) {
     ...(supermemoryConfigured()
       ? [
           "Записи памяти, кроме помеченных как только локальные, могут индексироваться в Supermemory для поиска по смыслу; забытое оттуда тоже удаляется.",
+        ]
+      : []),
+    ...(direct !== undefined && (env.MEMORY_DIGEST_WORKSPACES ?? []).length > 0
+      ? [
+          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил) модели ${env.MEMORY_DIGEST_MODEL ?? defaultModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
         ]
       : []),
     "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",

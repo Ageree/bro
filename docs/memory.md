@@ -84,8 +84,20 @@ memories that say the same words, or whose words another memory of the same
 category, validity and `localOnly` says in full as a sentence of its own,
 into the one that stays,
 with their aliases; rules are never folded, and what was folded stays
-restorable from history for 30 days. A record the conversation changed since
-the digest read it is left for the next day.
+restorable from history for 30 days. For the pilot, and only with a direct
+model provider, the digest also asks a cheap model (`MEMORY_DIGEST_MODEL`, the
+provider's default otherwise — never the workspace's chosen model, reasoning
+off, 400 output tokens) which non-rule memories are one-off task details,
+duplicates in other words, or facts a newer one corrects — only when memory
+changed since the last digest. The model returns indexes only; code keeps a
+proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
+one-off is a fact, decision or organization without a validity date; a
+duplicate's every word is in the record it folds into; a correction goes from
+an older to a newer fact, person or organization, and code writes its dated
+text («… (с 01.10; раньше: …)»). At most three of each kind and a fifth of the
+memories change in a day; a failed call changes nothing. Its cost is a
+`usage_costs` row with the source `memory`. A record the conversation changed
+since the digest read it is left for the next day.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat
