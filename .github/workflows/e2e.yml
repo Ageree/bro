@@ -4,14 +4,64 @@ name: E2E
 # driven by the e2e runner; Bro and the runner's agent steps both answer
 # through OpenRouter with the OPENROUTER_API_KEY secret.
 on:
+  # Only a change that can alter a page or a reply runs the suite; the
+  # nightly run catches the rest (docs/e2e.md, «CI»).
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "browser-vm/**"
-      - "sandbox/**"
+    paths:
+      # What a person sees in the browser and what Bro answers with.
+      - "app/**"
+      - "web/**"
+      - "agent/**"
+      - "db/**"
+      - "shared/**"
+      - "proxy.ts"
+      - "next.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "patches/**"
+      - "scripts/dev.ts"
+      # The suite itself.
+      - "e2e/**"
+      - "e2e.config.ts"
+      - ".e2e/cache/**"
+      - ".github/workflows/e2e.yml"
+      # Unit tests and the browser and code sandbox hosts reach no page.
+      - "!**/*.test.ts"
+      - "!**/*.test.tsx"
+      - "!**/tests/**"
+      - "!**/_tests/**"
+      - "!agent/lib/browser-pool/**"
+      - "!agent/lib/browser-vm/**"
+      - "!agent/lib/sandbox/**"
   push:
     branches:
       - bro-next
+    paths:
+      # What a person sees in the browser and what Bro answers with.
+      - "app/**"
+      - "web/**"
+      - "agent/**"
+      - "db/**"
+      - "shared/**"
+      - "proxy.ts"
+      - "next.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "patches/**"
+      - "scripts/dev.ts"
+      # The suite itself.
+      - "e2e/**"
+      - "e2e.config.ts"
+      - ".e2e/cache/**"
+      - ".github/workflows/e2e.yml"
+      # Unit tests and the browser and code sandbox hosts reach no page.
+      - "!**/*.test.ts"
+      - "!**/*.test.tsx"
+      - "!**/tests/**"
+      - "!**/_tests/**"
+      - "!agent/lib/browser-pool/**"
+      - "!agent/lib/browser-vm/**"
+      - "!agent/lib/sandbox/**"
   schedule:
     # Nightly on bro-next: the model and its hosts change without a commit.
     - cron: "17 2 * * *"
