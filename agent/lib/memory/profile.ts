@@ -461,13 +461,9 @@ async function recallProfile(
   const [records] = await Promise.all([
     listCurrentMemories(scope, context.memory.scope.key),
     // Only the cabinet reads the mark: a failed one costs no turn.
-    markMemoryScopeRecalled(scope, context.memory.scope.key).catch(
-      (error: unknown) => {
-        console.warn("[memory] recall mark failed", {
-          error: error instanceof Error ? error.name : "unknown",
-        });
-      }
-    ),
+    markMemoryScopeRecalled(scope, context.memory.scope.key).catch(() => {
+      console.warn("[memory] recall mark failed");
+    }),
   ]);
   context.abortSignal.throwIfAborted();
   const forRequest = renderPreferencesForRequest(
