@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import * as schema from "@db/schema";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -416,6 +424,63 @@ describe("capturing the pictures a browser run leaves behind", () => {
         mimeType: "image/png",
       },
     ]);
+  }, 20_000);
+});
+
+describe("downloading a browser VM's saved picture", () => {
+  it("takes the private route to the VM's worker, looked up before the timeout starts", async () => {
+    // One of the project's VMs cannot reach another's public address
+    // (02.10.2026): the report's pictures were lost to a hung connection.
+    const listing = vi.fn<() => Promise<Map<string, string>>>(
+      async () => new Map([["203.0.113.7", "10.0.1.7"]])
+    );
+    // The Compute API client, as private-route uses it.
+    vi.doMock("@agent/lib/browser-vm/cloudru", () => ({
+      listCloudRuPrivateAddresses: listing,
+    }));
+    vi.stubEnv("CLOUDRU_PRIVATE_ROUTING", "on");
+    onTestFinished(() => {
+      vi.doUnmock("@agent/lib/browser-vm/cloudru");
+      vi.stubEnv("CLOUDRU_PRIVATE_ROUTING", "");
+    });
+    const { images } = await loadImages();
+    const route = await import("@agent/lib/browser-vm/private-route");
+    // What browserVmFileUrl hands out for a VM run's file.
+    const url =
+      "https://203-0-113-7.sslip.io/v1/dl/token/vm-session/report/final.png";
+    const dispatchers: unknown[] = [];
+    vi.stubGlobal("fetch", (_url: URL, init: { dispatcher?: unknown }) => {
+      dispatchers.push(init.dispatcher);
+      return Promise.resolve(
+        new Response(Buffer.from(finalPng), {
+          headers: { "content-type": "image/png" },
+        })
+      );
+    });
+    const timeouts = vi.spyOn(AbortSignal, "timeout");
+    listBrowserUseWorkspaceFiles.mockResolvedValue({
+      files: [
+        {
+          lastModified: "2026-09-22T10:05:00.000Z",
+          path: "report/final.png",
+          size: finalPng.byteLength,
+          url,
+        },
+      ],
+    });
+
+    const captured = await images.captureBrowserRunImages(row(), run);
+
+    expect(captured.map((image) => image.label)).toEqual([
+      "скриншот страницы с результатом",
+    ]);
+    expect(route.privateRouteDispatcher()).toBeDefined();
+    expect(dispatchers).toEqual([route.privateRouteDispatcher()]);
+    // A Compute API listing must not eat the download's fifteen seconds.
+    expect(listing).toHaveBeenCalledTimes(1);
+    expect(listing.mock.invocationCallOrder[0]).toBeLessThan(
+      timeouts.mock.invocationCallOrder[0] ?? 0
+    );
   }, 20_000);
 });
 

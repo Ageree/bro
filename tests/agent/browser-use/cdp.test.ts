@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   captureViewportOverCdp,
   typeOneTimeCodeOverCdp,
   visitPageOverCdp,
 } from "@agent/lib/browser-use/cdp";
+import {
+  clearBrowserVmSettings,
+  importWithSettings,
+} from "@tests/helpers/browser-vm";
 import {
   startFakeCdpBrowser,
   type CdpBrowserFixture,
@@ -452,6 +456,49 @@ describe("photographing the viewport over CDP", () => {
 
     await expect(captureViewportOverCdp(fixture.url)).rejects.toThrow(
       "The browser returned no screenshot."
+    );
+  });
+});
+
+describe("reaching a browser VM's debugger", () => {
+  it("looks the VM's private address up before the connect timeout starts", async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    const fixture = await fake({
+      injections: {},
+      screenshot: jpeg.toString("base64"),
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+    // 203.0.113.7 is unroutable here: only the private address answers.
+    const listing = vi.fn<() => Promise<Map<string, string>>>(
+      async () => new Map([["203.0.113.7", "127.0.0.1"]])
+    );
+    // The Compute API client, as private-route uses it.
+    vi.doMock("@agent/lib/browser-vm/cloudru", () => ({
+      listCloudRuPrivateAddresses: listing,
+    }));
+    onTestFinished(() => {
+      clearBrowserVmSettings();
+      vi.doUnmock("@agent/lib/browser-vm/cloudru");
+      vi.restoreAllMocks();
+      vi.resetModules();
+    });
+    const cdp = await importWithSettings(
+      { CLOUDRU_PRIVATE_ROUTING: "on" },
+      async () => import("@agent/lib/browser-use/cdp")
+    );
+    const timeouts = vi.spyOn(AbortSignal, "timeout");
+    const { port } = new URL(fixture.url);
+
+    // The debugger URL a browser VM hands out, on its sslip.io name.
+    const shot = await cdp.captureViewportOverCdp(
+      `ws://203-0-113-7.sslip.io:${port}`
+    );
+
+    expect(Buffer.from(shot)).toEqual(jpeg);
+    // A Compute API listing must not eat the ten seconds to connect in.
+    expect(listing).toHaveBeenCalledTimes(1);
+    expect(listing.mock.invocationCallOrder[0]).toBeLessThan(
+      timeouts.mock.invocationCallOrder[0] ?? 0
     );
   });
 });
