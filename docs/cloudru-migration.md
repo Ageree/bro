@@ -301,7 +301,14 @@ db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и то
 Готово: бэкап за прошлую ночь восстанавливается проверкой, перенос с
 Neon сошёлся по всем таблицам, откат отрепетирован на `bro_stand`.
 
-### 6. Переключение
+### 6. Переключение — сделано 02.10 в 15:55 UTC
+
+Прошло днём с разрешения владельца, после репетиции на стенде: запись в Бро
+не работала около двух минут (Neon только для чтения в 15:51:36, A-записи
+на VM в 15:53:10), перенесено 47 таблиц и 2724 строки. Домены с проекта
+Vercel не снимали: явная A перекрыла системный ALIAS. Cron Vercel выключен
+API (`PATCH /v1/projects/<id>/crons`, `{"enabled": false}`), и на Vercel
+стоит `EVE_SCHEDULES=off`; откат — вернуть оба (раздел «Откат»).
 
 Окно — ночь, 02:00–06:00 МСК (23:00–03:00 UTC). Команды — из облачной сессии
 (`host.py` — `python scripts/cloudru-app-host/host.py`), DNS и проект —
@@ -455,7 +462,9 @@ cloud.brobro.tech=bro-app-1` (ждать `2`): `sandboxd` зовёт `brobro.tec
    повторить оба шага. Скрипты базы идут по одному (`db_lock`): идущий
    ночной бэкап (04:10 МСК) копия ждёт до часа. Записей не было — копию
    пропустить. Затем `host.py ops bro-app-1 db-neon-mode.sh writable`.
-3. Vercel: Cron Jobs → Enable; если домены снимали — вернуть
+3. Vercel: Cron Jobs → Enable (`PATCH /v1/projects/<id>/crons`,
+   `{"enabled": true}`), удалить переменную прода `EVE_SCHEDULES` и
+   передеплоить; если домены снимали — вернуть
    (`POST /v10/projects/bro-next/domains` с `brobro.tech` и `www.brobro.tech`
    c `"redirect":"brobro.tech","redirectStatusCode":308`).
 4. DNS: листинг зоны (шаг 7 окна) и `DELETE

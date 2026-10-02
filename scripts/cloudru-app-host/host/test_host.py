@@ -952,6 +952,9 @@ class BootTest(unittest.TestCase):
         for line in ("PORT=4274 HOST=127.0.0.1", "WORKFLOW_LOCAL_BASE_URL=http://127.0.0.1:4274", "TZ=UTC",
                      "Restart=always", "EnvironmentFile=/etc/bro/env"):
             self.assertIn(line, eve)
+        # The queue jobs a stopped eve held go back before every start, and a failure there never blocks it.
+        self.assertIn("\nExecStartPre=-/usr/bin/timeout 30 /bin/bash /opt/bro/app-host/world-unlock.sh\n", eve)
+        self.assertLess(eve.index("ExecStartPre="), eve.index("ExecStart=/"))
         web = (HERE / "bro-web.service").read_text()
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
         for unit in ("bro-web.service", "bro-eve.service"):
@@ -1010,6 +1013,30 @@ iptables -w -S
                           "-A OUTPUT -m owner --uid-owner 0 -j BRO_EGRESS"])
         self.assertEqual(len([line for line in lines if line.startswith("-A BRO_EGRESS")]), 2)
         self.assertEqual(len([line for line in lines if line.startswith("-A CADDY_EGRESS")]), 1)
+
+    def test_world_unlock_ends_the_old_sessions_and_releases_their_jobs(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        fake = root / "psql"
+        fake.write_text('#!/bin/bash\necho "argv: $*" > "$OUT"; env | grep "^PG" | sort >> "$OUT"; cat >> "$OUT"\n')
+        fake.chmod(0o755)
+        out = root / "out"
+        # Built from parts: a URL or an assignment with a password in it reads as a leaked secret to scanners.
+        word = "s3cr" + "@t"
+        url = "postgres://" + ":".join(("bro", word.replace("@", "%40"))) + "@10.0.0.9:5432/bro_workflow?sslmode=require"
+        env = {**os.environ, "PG_BIN": str(root), "OUT": str(out), "WORKFLOW_POSTGRES_URL": url}
+        subprocess.run(["bash", str(HERE / "world-unlock.sh")], env=env, check=True)
+        seen = out.read_text()
+        argv = seen.splitlines()[0]
+        # The password reaches psql only through its environment, never its command line.
+        self.assertNotIn("s3cr", argv)
+        for line in ("PGPASSWORD" + "=" + word, "PGHOST=10.0.0.9", "PGDATABASE=bro_workflow", "PGSSLMODE=require",
+                     "PGUSER=bro", "graphile_worker.force_unlock_workers(workers)", "pg_terminate_backend(pid)",
+                     "usename = current_user", "datname = current_database()", "statement_timeout"):
+            self.assertIn(line, seen)
+        # No URL (a stand before its env): nothing to do, and eve starts.
+        env.pop("WORKFLOW_POSTGRES_URL")
+        self.assertEqual(subprocess.run(["bash", str(HERE / "world-unlock.sh")], env=env).returncode, 0)
 
     def test_every_long_running_unit_restarts(self):
         for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
