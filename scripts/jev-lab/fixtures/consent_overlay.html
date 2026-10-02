@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Интернет-магазин электроники и бытовой техники</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #222;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        height: 70px;
+        padding: 0 28px;
+        background: #6f2dbd;
+      }
+      header .logo {
+        color: #fff;
+        font-weight: 700;
+        font-size: 22px;
+      }
+      header form {
+        flex: 1;
+        display: flex;
+      }
+      header input {
+        flex: 1;
+        height: 42px;
+        border: 0;
+        border-radius: 10px 0 0 10px;
+        padding: 0 14px;
+        font: inherit;
+        outline: 0;
+      }
+      header button {
+        height: 42px;
+        border: 0;
+        border-radius: 0 10px 10px 0;
+        background: #ffd400;
+        padding: 0 22px;
+        font: 700 15px Arial;
+        cursor: pointer;
+      }
+      header a {
+        color: #fff;
+        text-decoration: none;
+        font-size: 14px;
+      }
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 20px 16px;
+      }
+      .cats {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 10px;
+      }
+      .cats a {
+        display: block;
+        background: #f3effa;
+        border-radius: 12px;
+        padding: 18px 10px;
+        text-align: center;
+        color: #333;
+        text-decoration: none;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin-top: 12px;
+      }
+      .card {
+        border: 1px solid #eee;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .card .img {
+        height: 100px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+      .card b {
+        display: block;
+        margin-top: 6px;
+      }
+      .muted {
+        color: #888;
+      }
+      .cmp-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 9998;
+      }
+      .cmp {
+        position: fixed;
+        z-index: 9999;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        width: 760px;
+        background: #fff;
+        border-radius: 14px;
+        padding: 22px 26px;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .cmp h2 {
+        margin: 0 0 8px;
+        font-size: 19px;
+      }
+      .cmp p {
+        margin: 0 0 14px;
+        color: #444;
+        font-size: 14px;
+      }
+      .cmp .btns {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+      .cmp button {
+        height: 40px;
+        border-radius: 8px;
+        padding: 0 18px;
+        font: 700 14px Arial;
+        cursor: pointer;
+        border: 1px solid #6f2dbd;
+        background: #fff;
+        color: #6f2dbd;
+      }
+      .cmp button.primary {
+        background: #6f2dbd;
+        color: #fff;
+      }
+      .cmp .prefs label {
+        display: flex;
+        gap: 8px;
+        margin: 6px 0;
+        font-size: 14px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">ТехноМаркет</span>
+      <form id="search" role="search" onsubmit="return false;">
+        <input
+          id="q"
+          type="search"
+          aria-label="Поиск по каталогу"
+          placeholder="Искать товары"
+        />
+        <button type="submit" id="go">Найти</button>
+      </form>
+      <a href="#orders">Заказы</a><a href="#cart">Корзина</a>
+    </header>
+    <main id="main">
+      <div class="cats">
+        <a href="#phones">Смартфоны</a><a href="#laptops">Ноутбуки</a
+        ><a href="#tv">Телевизоры</a><a href="#audio">Аудио</a
+        ><a href="#home">Для дома</a><a href="#games">Игры</a>
+      </div>
+      <h2>Хиты продаж</h2>
+      <div class="grid" id="hits"></div>
+    </main>
+    <div id="cmp-root"></div>
+    <script>
+      (() => {
+        const ITEMS = [
+          ["Наушники беспроводные TWS Air Pro", 4990],
+          ["Наушники накладные Studio 3", 7490],
+          ["Наушники проводные Basic", 990],
+          ["Смартфон Nova 12, 256 ГБ", 32990],
+          ["Ноутбук Vector 15", 61990],
+          ['Телевизор 55" 4K', 45990],
+          ["Колонка портативная Go 4", 3490],
+          ["Пылесос робот R5", 18990],
+        ];
+        const card = ([n, p]) =>
+          `<div class="card"><div class="img"></div>${n}<b>${p.toLocaleString("ru-RU")} ₽</b></div>`;
+        document.getElementById("hits").innerHTML = ITEMS.slice(3, 7)
+          .map(card)
+          .join("");
+
+        document.getElementById("search").addEventListener("submit", () => {
+          const q = document.getElementById("q").value.trim();
+          if (!q) return;
+          const ok = /наушник/i.test(q);
+          document.title = ok ? "PASS - поиск: " + q : "Поиск: " + q;
+          history.replaceState(null, "", "?text=" + encodeURIComponent(q));
+          const words = q
+            .toLowerCase()
+            .split(/\s+/)
+            .map((w) => w.slice(0, Math.max(4, w.length - 2)));
+          const found = ITEMS.filter(([n]) =>
+            words.some((w) => n.toLowerCase().includes(w))
+          );
+          document.getElementById("main").innerHTML =
+            `<h2>Результаты по запросу «${q.replace(/</g, "&lt;")}»</h2>` +
+            (found.length
+              ? `<div class="grid">${found.map(card).join("")}</div>`
+              : "<p>Ничего не найдено</p>");
+        });
+        document.getElementById("q").addEventListener("input", () => {
+          if (document.title.startsWith("PASS"))
+            document.title = "Интернет-магазин электроники и бытовой техники";
+        });
+
+        // The consent manager script arrives a moment after the page and blocks it until a choice is made.
+        setTimeout(() => {
+          const root = document.getElementById("cmp-root");
+          root.innerHTML = `
+      <div class="cmp-backdrop"></div>
+      <div class="cmp" role="dialog" aria-modal="true" aria-labelledby="cmp-title">
+        <h2 id="cmp-title">Мы используем файлы cookie</h2>
+        <p>Они помогают сайту работать, а нам — понимать, что вам интересно. Продолжая пользоваться сайтом, вы соглашаетесь
+           с обработкой данных. Подробнее — в политике конфиденциальности.</p>
+        <div class="prefs" id="prefs" hidden>
+          <label><input type="checkbox" checked disabled> Необходимые</label>
+          <label><input type="checkbox" id="c-an"> Аналитические</label>
+          <label><input type="checkbox" id="c-ad"> Рекламные</label>
+        </div>
+        <div class="btns">
+          <button type="button" id="c-set">Настроить</button>
+          <button type="button" id="c-save" hidden>Сохранить выбор</button>
+          <button type="button" id="c-rej">Только необходимые</button>
+          <button type="button" class="primary" id="c-acc">Принять все</button>
+        </div>
+      </div>`;
+          const done = () => {
+            root.innerHTML = "";
+          };
+          document.getElementById("c-acc").addEventListener("click", done);
+          document.getElementById("c-rej").addEventListener("click", done);
+          document.getElementById("c-save").addEventListener("click", done);
+          document.getElementById("c-set").addEventListener("click", () => {
+            document.getElementById("prefs").hidden = false;
+            document.getElementById("c-save").hidden = false;
+            document.getElementById("c-set").hidden = true;
+          });
+        }, 700);
+      })();
+    </script>
+  </body>
+</html>

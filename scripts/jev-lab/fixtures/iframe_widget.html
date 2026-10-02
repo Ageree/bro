@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Поиск отелей — виджет</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #fff;
+        padding: 16px 18px;
+      }
+      .brand {
+        font-weight: 700;
+        color: #0a7;
+        margin-bottom: 10px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .grid input,
+      .grid select {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        font-size: 12px;
+        color: #666;
+        gap: 4px;
+      }
+      input,
+      select {
+        height: 40px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0 10px;
+        font:
+          15px Arial,
+          sans-serif;
+        color: #222;
+      }
+      button {
+        margin-top: 12px;
+        height: 42px;
+        border: 0;
+        border-radius: 6px;
+        background: #0a7;
+        color: #fff;
+        font: 700 15px Arial;
+        padding: 0 22px;
+        cursor: pointer;
+      }
+      .err {
+        color: #c00;
+        margin-top: 8px;
+        min-height: 18px;
+      }
+      .hotel {
+        display: flex;
+        justify-content: space-between;
+        border-top: 1px solid #eee;
+        padding: 6px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="brand">Отели · поиск по 2 млн предложений</div>
+    <form id="f" onsubmit="return false;">
+      <div class="grid">
+        <label
+          >Город или отель<input
+            id="city"
+            autocomplete="off"
+            placeholder="Куда едем?"
+        /></label>
+        <label
+          >Заезд<input id="checkin" autocomplete="off" placeholder="дд.мм.гггг"
+        /></label>
+        <label
+          >Выезд<input
+            id="checkout"
+            autocomplete="off"
+            placeholder="дд.мм.гггг"
+        /></label>
+        <label
+          >Гости<select id="guests">
+            <option value="1">1 взрослый</option>
+            <option value="2">2 взрослых</option>
+            <option value="3">3 взрослых</option>
+            <option value="4">4 взрослых</option>
+          </select></label
+        >
+      </div>
+      <button type="submit" id="go">Найти отели</button>
+    </form>
+    <div class="err" id="err" role="alert"></div>
+    <div id="results"></div>
+    <script>
+      (() => {
+        const MONTHS = {
+          января: 1,
+          февраля: 2,
+          марта: 3,
+          апреля: 4,
+          мая: 5,
+          июня: 6,
+          июля: 7,
+          августа: 8,
+          сентября: 9,
+          октября: 10,
+          ноября: 11,
+          декабря: 12,
+        };
+        function parse(text) {
+          const t = text.trim().toLowerCase();
+          let m = t.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+          if (m)
+            return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+          m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (m) return t;
+          m = t.match(/^(\d{1,2})\s+([а-я]+)\s+(\d{4})/);
+          if (m && MONTHS[m[2]])
+            return `${m[3]}-${String(MONTHS[m[2]]).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+          return null;
+        }
+        const top = window.parent.document;
+        const baseTitle = top.title;
+        let submitted = false;
+        for (const id of ["city", "checkin", "checkout", "guests"]) {
+          document
+            .getElementById(id)
+            .addEventListener(id === "guests" ? "change" : "input", () => {
+              if (submitted) {
+                submitted = false;
+                top.title = baseTitle;
+                document.getElementById("results").innerHTML = "";
+              }
+            });
+        }
+        document.getElementById("f").addEventListener("submit", () => {
+          const err = document.getElementById("err"),
+            results = document.getElementById("results");
+          const city = document.getElementById("city").value.trim();
+          const cin = parse(document.getElementById("checkin").value),
+            cout = parse(document.getElementById("checkout").value);
+          const guests = document.getElementById("guests").value;
+          results.innerHTML = "";
+          if (!city) {
+            err.textContent = "Укажите город";
+            return;
+          }
+          if (!cin || !cout) {
+            err.textContent = "Укажите даты в формате дд.мм.гггг";
+            return;
+          }
+          if (cout <= cin) {
+            err.textContent = "Дата выезда должна быть позже даты заезда";
+            return;
+          }
+          err.textContent = "";
+          submitted = true;
+          const ok =
+            /казан/i.test(city) &&
+            cin === "2026-11-12" &&
+            cout === "2026-11-15" &&
+            guests === "2";
+          top.title = ok
+            ? "PASS - отели в Казани 12-15.11.2026, 2 взрослых"
+            : `${baseTitle} — поиск: ${city}`;
+          results.innerHTML =
+            `<p><b>${city.replace(/</g, "&lt;")}</b>: ${cin} — ${cout}, гостей: ${guests}</p>` +
+            [
+              ["Отель «Кремлёвский»", "18 400 ₽"],
+              ["Апарт-отель на Баумана", "12 900 ₽"],
+              ["Хостел «Слобода»", "4 300 ₽"],
+            ]
+              .map(
+                (h) =>
+                  `<div class="hotel"><span>${h[0]}</span><b>${h[1]}</b></div>`
+              )
+              .join("");
+        });
+      })();
+    </script>
+  </body>
+</html>

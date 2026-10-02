@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ж/д билеты и расписание поездов</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #f3f3f3;
+      }
+      header {
+        background: #fff;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        gap: 24px;
+      }
+      header .logo {
+        font-weight: 700;
+        font-size: 20px;
+        color: #0a8a4a;
+      }
+      header span {
+        color: #555;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 6px 0 18px;
+      }
+      .form {
+        display: flex;
+        gap: 4px;
+        background: #0a8a4a;
+        padding: 4px;
+        border-radius: 12px;
+      }
+      .box {
+        position: relative;
+        flex: 1;
+        background: #fff;
+        border-radius: 8px;
+        padding: 6px 14px;
+        height: 60px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .box .cap {
+        font-size: 12px;
+        color: #888;
+      }
+      .box input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 17px;
+        padding: 0;
+        width: 100%;
+      }
+      .when {
+        flex: 0.7;
+      }
+      .find {
+        border: 0;
+        border-radius: 8px;
+        background: #ffcf2d;
+        padding: 0 30px;
+        font: 700 17px Arial;
+        cursor: pointer;
+      }
+      .suggest {
+        position: absolute;
+        left: 0;
+        top: 64px;
+        width: 360px;
+        background: #fff;
+        border-radius: 10px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+        z-index: 10;
+        padding: 6px 0;
+      }
+      .suggest .item {
+        padding: 7px 14px;
+        cursor: pointer;
+      }
+      .suggest .item:hover,
+      .suggest .item.hl {
+        background: #eef7f1;
+      }
+      .suggest .item .sub {
+        color: #888;
+        font-size: 12px;
+      }
+      .err {
+        color: #d00;
+        margin-top: 10px;
+        min-height: 20px;
+      }
+      .train {
+        background: #fff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 8px;
+        display: grid;
+        grid-template-columns: 1fr 2fr 1fr 1fr;
+      }
+      .muted {
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">ПоездБилет</span><span>Ж/д билеты</span
+      ><span>Электрички</span><span>Автобусы</span>
+    </header>
+    <main>
+      <h1>Расписание поездов</h1>
+      <div class="form">
+        <div class="box">
+          <span class="cap">Откуда</span
+          ><input id="from" placeholder="Откуда" autocomplete="off" />
+          <div class="suggest" id="from-s" hidden></div>
+        </div>
+        <div class="box">
+          <span class="cap">Куда</span
+          ><input id="to" placeholder="Куда" autocomplete="off" />
+          <div class="suggest" id="to-s" hidden></div>
+        </div>
+        <div class="box when">
+          <span class="cap">Когда</span
+          ><input id="when" value="на все дни" readonly aria-label="Когда" />
+        </div>
+        <button class="find" type="button" id="find">Найти</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        const STATIONS = [
+          ["Москва", "все вокзалы", "msk"],
+          ["Москва", "Ленинградский вокзал", "msk"],
+          ["Москва", "Курский вокзал", "msk"],
+          ["Москва", "Казанский вокзал", "msk"],
+          ["Нижний Новгород", "все вокзалы", "nnov"],
+          ["Нижний Новгород", "Московский вокзал", "nnov"],
+          ["Нижний Тагил", "Свердловская обл.", "ntag"],
+          ["Нижнекамск", "Республика Татарстан", "nkam"],
+          ["Нижний Ломов", "Пензенская обл.", "nlom"],
+          ["Санкт-Петербург", "все вокзалы", "spb"],
+          ["Казань", "Казань-Пассажирская", "kzn"],
+          ["Тверь", "Тверь", "tver"],
+          ["Владимир", "Владимир", "vlad"],
+        ];
+        const chosen = { from: null, to: null };
+        let submitted = false;
+        const edited = () => {
+          if (submitted) {
+            submitted = false;
+            document.title = "Ж/д билеты и расписание поездов";
+            document.getElementById("results").innerHTML = "";
+          }
+        };
+        for (const id of ["from", "to"]) {
+          const input = document.getElementById(id),
+            box = document.getElementById(id + "-s");
+          let timer = null;
+          const hide = () => {
+            box.hidden = true;
+            box.innerHTML = "";
+          };
+          input.addEventListener("input", () => {
+            chosen[id] = null;
+            edited();
+            clearTimeout(timer);
+            const q = input.value.trim().toLowerCase();
+            if (q.length < 2) return hide();
+            timer = setTimeout(() => {
+              const found = STATIONS.filter(
+                (s) =>
+                  s[0].toLowerCase().startsWith(q) ||
+                  s[0]
+                    .toLowerCase()
+                    .split(/[\s-]/)
+                    .some((w) => w.startsWith(q))
+              );
+              box.innerHTML = "";
+              for (const s of found.slice(0, 6)) {
+                // Suggestions are plain divs: no role, no tabindex, a mousedown listener does the work.
+                const item = document.createElement("div");
+                item.className = "item";
+                item.innerHTML = `<div>${s[0]}</div><div class="sub">${s[1]}</div>`;
+                item.addEventListener("mousedown", (e) => {
+                  e.preventDefault();
+                  chosen[id] = s;
+                  input.value =
+                    s[1] === "все вокзалы" ? s[0] : `${s[0]}, ${s[1]}`;
+                  hide();
+                  edited();
+                });
+                box.appendChild(item);
+              }
+              box.hidden = !found.length;
+            }, 300);
+          });
+          input.addEventListener("blur", () => setTimeout(hide, 100));
+        }
+        document.getElementById("find").addEventListener("click", () => {
+          const err = document.getElementById("err"),
+            results = document.getElementById("results");
+          if (!chosen.from || !chosen.to) {
+            results.innerHTML = "";
+            err.textContent = !chosen.from
+              ? "Выберите станцию отправления из списка"
+              : "Выберите станцию прибытия из списка";
+            return;
+          }
+          err.textContent = "";
+          submitted = true;
+          const ok = chosen.from[2] === "msk" && chosen.to[2] === "nnov";
+          document.title = ok
+            ? "PASS - поезда Москва — Нижний Новгород"
+            : `Поезда ${chosen.from[0]} — ${chosen.to[0]}`;
+          history.replaceState(
+            null,
+            "",
+            `?from=${chosen.from[2]}&to=${chosen.to[2]}`
+          );
+          results.innerHTML =
+            `<h2>${chosen.from[0]} — ${chosen.to[0]}, на все дни</h2>` +
+            [
+              ["06:30", "Ласточка 720Г", "3 ч 55 мин", "от 1 250 ₽"],
+              ["12:40", "Стриж 704М", "3 ч 34 мин", "от 1 890 ₽"],
+              ["22:15", "Поезд 060Г", "7 ч 10 мин", "от 1 640 ₽"],
+            ]
+              .map(
+                (r) =>
+                  `<div class="train"><b>${r[0]}</b><span>${r[1]}</span><span>${r[2]}</span><span>${r[3]}</span></div>`
+              )
+              .join("");
+        });
+      })();
+    </script>
+  </body>
+</html>

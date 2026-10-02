@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Бронирование отелей — поиск</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #eef3f8;
+      }
+      header {
+        background: #fff;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+        color: #1565c0;
+      }
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 32px 16px;
+      }
+      h1 {
+        margin: 0 0 18px;
+        font-size: 30px;
+      }
+      .form {
+        display: flex;
+        gap: 6px;
+        background: #fff;
+        padding: 8px;
+        border-radius: 14px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+        position: relative;
+      }
+      .f {
+        flex: 1;
+        border: 1px solid #dde3ea;
+        border-radius: 10px;
+        padding: 6px 12px;
+        height: 60px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .f .cap {
+        font-size: 12px;
+        color: #888;
+      }
+      .f .val {
+        font-size: 16px;
+      }
+      .guests-btn {
+        flex: 1;
+        text-align: left;
+        background: #fff;
+        border: 1px solid #dde3ea;
+        border-radius: 10px;
+        padding: 6px 12px;
+        height: 60px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .go {
+        background: #1565c0;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 0 30px;
+        font: 700 16px Arial;
+        cursor: pointer;
+      }
+      .pop {
+        position: absolute;
+        top: 76px;
+        right: 120px;
+        width: 340px;
+        background: #fff;
+        border-radius: 14px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
+        padding: 16px 18px;
+        z-index: 10;
+      }
+      .pop[hidden] {
+        display: none;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 0;
+      }
+      .row .t small {
+        display: block;
+        color: #888;
+        font-size: 12px;
+      }
+      .ctr {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .ctr button {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 1px solid #1565c0;
+        background: #fff;
+        color: #1565c0;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+      .ctr button:disabled {
+        border-color: #ccc;
+        color: #ccc;
+        cursor: default;
+      }
+      .ctr .n {
+        min-width: 16px;
+        text-align: center;
+        font-weight: 700;
+      }
+      .ages select {
+        width: 100%;
+        height: 36px;
+        margin-top: 6px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font: inherit;
+      }
+      .done {
+        margin-top: 10px;
+        width: 100%;
+        height: 40px;
+        border: 0;
+        border-radius: 10px;
+        background: #1565c0;
+        color: #fff;
+        font: 700 15px Arial;
+        cursor: pointer;
+      }
+      .err {
+        color: #c00;
+        margin-top: 10px;
+        min-height: 20px;
+      }
+      .hotel {
+        background: #fff;
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-top: 8px;
+        display: flex;
+        justify-content: space-between;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Бронирование.Поиск</header>
+    <main>
+      <h1>Найдите отель для поездки</h1>
+      <div class="form">
+        <div class="f">
+          <span class="cap">Направление</span><span class="val">Казань</span>
+        </div>
+        <div class="f">
+          <span class="cap">Заезд — выезд</span
+          ><span class="val">12 ноя — 15 ноя 2026</span>
+        </div>
+        <button
+          type="button"
+          class="guests-btn"
+          id="guests"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span class="cap" style="font-size: 12px; color: #888; display: block"
+            >Гости</span
+          ><span id="summary"></span>
+        </button>
+        <button type="button" class="go" id="go">Найти</button>
+        <div class="pop" id="pop" role="dialog" aria-label="Гости" hidden>
+          <div class="row">
+            <div class="t">Взрослые<small>от 18 лет</small></div>
+            <div class="ctr">
+              <button type="button" id="a-minus">
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <path d="M2 7h10" stroke="currentColor" stroke-width="2" />
+                </svg>
+              </button>
+              <span class="n" id="a-n"></span>
+              <button type="button" id="a-plus">
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <path
+                    d="M2 7h10M7 2v10"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="row">
+            <div class="t">Дети<small>до 17 лет</small></div>
+            <div class="ctr">
+              <button type="button" id="c-minus">
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <path d="M2 7h10" stroke="currentColor" stroke-width="2" />
+                </svg>
+              </button>
+              <span class="n" id="c-n"></span>
+              <button type="button" id="c-plus">
+                <svg width="14" height="14" viewBox="0 0 14 14">
+                  <path
+                    d="M2 7h10M7 2v10"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="ages" id="ages"></div>
+          <button type="button" class="done" id="done">Готово</button>
+        </div>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        const s = { adults: 1, ages: [] }; // ages: "" until chosen
+        let applied = { adults: 1, ages: [] },
+          submitted = false;
+        const plural = (n, one, few, many) =>
+          n % 10 === 1 && n % 100 !== 11
+            ? one
+            : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)
+              ? few
+              : many;
+        const summary = (g) =>
+          `${g.adults} ${plural(g.adults, "взрослый", "взрослых", "взрослых")}` +
+          (g.ages.length
+            ? `, ${g.ages.length} ${plural(g.ages.length, "ребёнок", "ребёнка", "детей")}`
+            : "");
+        function draw() {
+          document.getElementById("a-n").textContent = s.adults;
+          document.getElementById("c-n").textContent = s.ages.length;
+          document.getElementById("a-minus").disabled = s.adults <= 1;
+          document.getElementById("a-plus").disabled = s.adults >= 6;
+          document.getElementById("c-minus").disabled = s.ages.length <= 0;
+          document.getElementById("c-plus").disabled = s.ages.length >= 4;
+          const ages = document.getElementById("ages");
+          ages.innerHTML = "";
+          s.ages.forEach((age, i) => {
+            const sel = document.createElement("select");
+            sel.setAttribute("aria-label", `Возраст ребёнка ${i + 1}`);
+            sel.innerHTML =
+              '<option value="">Возраст ребёнка</option>' +
+              Array.from(
+                { length: 18 },
+                (_, a) =>
+                  `<option value="${a}">${a === 0 ? "до 1 года" : a + " " + plural(a, "год", "года", "лет")}</option>`
+              ).join("");
+            sel.value = age;
+            sel.addEventListener("change", () => {
+              s.ages[i] = sel.value;
+            });
+            ages.appendChild(sel);
+          });
+          document.getElementById("summary").textContent = summary(applied);
+        }
+        const pop = document.getElementById("pop"),
+          btn = document.getElementById("guests");
+        const close = () => {
+          pop.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+        };
+        btn.addEventListener("click", () => {
+          if (!pop.hidden) return close();
+          s.adults = applied.adults;
+          s.ages = applied.ages.slice();
+          draw();
+          pop.hidden = false;
+          btn.setAttribute("aria-expanded", "true");
+        });
+        document.getElementById("a-minus").addEventListener("click", () => {
+          s.adults--;
+          draw();
+        });
+        document.getElementById("a-plus").addEventListener("click", () => {
+          s.adults++;
+          draw();
+        });
+        document.getElementById("c-minus").addEventListener("click", () => {
+          s.ages.pop();
+          draw();
+        });
+        document.getElementById("c-plus").addEventListener("click", () => {
+          s.ages.push("");
+          draw();
+        });
+        document.getElementById("done").addEventListener("click", () => {
+          const err = document.getElementById("err");
+          if (s.ages.some((a) => a === "")) {
+            err.textContent = "Укажите возраст каждого ребёнка";
+            return;
+          }
+          err.textContent = "";
+          if (JSON.stringify(applied) !== JSON.stringify(s) && submitted) {
+            submitted = false;
+            document.title = "Бронирование отелей — поиск";
+            document.getElementById("results").innerHTML = "";
+          }
+          applied = { adults: s.adults, ages: s.ages.slice() };
+          close();
+          draw();
+        });
+        document.addEventListener("mousedown", (e) => {
+          if (!pop.hidden && !pop.contains(e.target) && !btn.contains(e.target))
+            close();
+        });
+        document.getElementById("go").addEventListener("click", () => {
+          submitted = true;
+          const ok =
+            applied.adults === 2 &&
+            applied.ages.length === 1 &&
+            applied.ages[0] === "5";
+          document.title = ok
+            ? "PASS - Казань, 12-15 ноября, 2 взрослых и ребёнок 5 лет"
+            : `Отели в Казани: ${summary(applied)}`;
+          history.replaceState(
+            null,
+            "",
+            `?city=kazan&checkin=2026-11-12&checkout=2026-11-15&adults=${applied.adults}&children=${applied.ages.join(".")}`
+          );
+          document.getElementById("results").innerHTML =
+            `<h2>Казань · 12–15 ноября · ${summary(applied)}</h2>` +
+            [
+              ["Отель «Кремлёвский»", "21 600 ₽"],
+              ["Апарт-отель на Баумана", "15 300 ₽"],
+              ["Гостиница «Волга»", "9 800 ₽"],
+            ]
+              .map(
+                (h) =>
+                  `<div class="hotel"><span>${h[0]}</span><b>${h[1]}</b></div>`
+              )
+              .join("");
+        });
+        draw();
+      })();
+    </script>
+  </body>
+</html>

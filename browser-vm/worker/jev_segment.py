@@ -1,8 +1,10 @@
 """One bounded jev-ultrafast segment for the worker's `jev-then-agent` engine; prints one JSON line.
 
-jev drives its own background tab. The tab is left open and its id printed, so the browser-use agent
-continues on the very page jev stopped on (a half-filled form stays filled) instead of starting over.
-Runs in jev-ultrafast's own venv (commit 1231850) with BU_CDP_URL pointing at the VM's Chrome.
+jev drives its own tab, brought to the front so that popups finish their fade-in animations (Bro's patch;
+JEV_BACKGROUND_TAB=1 would keep upstream's background tab). The tab is left open and its id printed, so the
+browser-use agent continues on the very page jev stopped on (a half-filled form stays filled) instead of
+starting over. Runs in jev-ultrafast's own venv (commit 1231850 + image/jev-ultrafast.patch) with BU_CDP_URL
+pointing at the VM's Chrome.
 """
 
 import argparse

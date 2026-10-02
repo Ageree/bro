@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Билеты на автобус — расписание и цены</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #f4f6fa;
+      }
+      header {
+        background: #12346b;
+        color: #fff;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        gap: 24px;
+      }
+      header .logo {
+        font-weight: 700;
+        font-size: 20px;
+      }
+      header a {
+        color: #cfe0ff;
+        text-decoration: none;
+        font-size: 14px;
+      }
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 28px 16px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 0 0 18px;
+      }
+      .seo {
+        color: #666;
+        font-size: 14px;
+        margin-top: 28px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">АвтобусБилет</span><a href="#routes">Направления</a
+      ><a href="#help">Помощь</a><a href="#return">Возврат билета</a>
+    </header>
+    <main>
+      <h1>Билеты на автобус</h1>
+      <bus-search></bus-search>
+      <p class="seo">
+        Купить билет на междугородний автобус онлайн: более 20 000 рейсов по
+        России и СНГ.
+      </p>
+    </main>
+    <script>
+      // A design-system text field: its own open shadow root with a label and an input.
+      class CityField extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "open" });
+          root.innerHTML = `
+      <style>
+        :host { display: block; flex: 1; }
+        label { display: flex; flex-direction: column; background: #fff; border-radius: 8px; padding: 6px 12px; height: 58px; justify-content: center; }
+        span { font-size: 12px; color: #888; }
+        input { border: 0; outline: 0; font: 17px Arial, sans-serif; padding: 0; width: 100%; }
+      </style>
+      <label><span></span><input autocomplete="off"></label>`;
+          root.querySelector("span").textContent = this.getAttribute("label");
+          root.querySelector("input").placeholder =
+            this.getAttribute("placeholder") || "";
+          root
+            .querySelector("input")
+            .addEventListener("input", () =>
+              this.dispatchEvent(
+                new Event("edit", { bubbles: true, composed: true })
+              )
+            );
+        }
+        get value() {
+          return this.shadowRoot.querySelector("input").value;
+        }
+      }
+      customElements.define("city-field", CityField);
+
+      class BusSearch extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "open" });
+          root.innerHTML = `
+      <style>
+        .form { display: flex; gap: 4px; background: #ffb800; padding: 4px; border-radius: 12px; }
+        button { border: 0; border-radius: 8px; background: #12346b; color: #fff; font: 700 16px Arial; padding: 0 26px; cursor: pointer; }
+        .err { color: #c00; min-height: 20px; margin-top: 8px; }
+        .trip { background: #fff; border-radius: 10px; padding: 12px 16px; margin-top: 8px; display: grid; grid-template-columns: 1fr 2fr 1fr 1fr; }
+      </style>
+      <div class="form">
+        <city-field id="from" label="Откуда" placeholder="Город отправления"></city-field>
+        <city-field id="to" label="Куда" placeholder="Город прибытия"></city-field>
+        <city-field id="date" label="Дата поездки" placeholder="дд.мм.гггг"></city-field>
+        <button type="button" id="go">Найти билеты</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>`;
+          this.submitted = false;
+          root.addEventListener("edit", () => {
+            if (this.submitted) {
+              this.submitted = false;
+              document.title = "Билеты на автобус — расписание и цены";
+              root.getElementById("results").innerHTML = "";
+            }
+          });
+          root
+            .getElementById("go")
+            .addEventListener("click", () => this.search());
+        }
+        search() {
+          const root = this.shadowRoot,
+            err = root.getElementById("err"),
+            results = root.getElementById("results");
+          const from = root.getElementById("from").value.trim(),
+            to = root.getElementById("to").value.trim();
+          const raw = root.getElementById("date").value.trim();
+          const m =
+            raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/) ||
+            raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          const date = !m
+            ? null
+            : m[1].length === 4
+              ? `${m[1]}-${m[2]}-${m[3]}`
+              : `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+          results.innerHTML = "";
+          if (!from || !to) {
+            err.textContent = "Укажите города отправления и прибытия";
+            return;
+          }
+          if (!date) {
+            err.textContent = "Укажите дату в формате дд.мм.гггг";
+            return;
+          }
+          err.textContent = "";
+          this.submitted = true;
+          const ok =
+            /^москв/i.test(from) && /^твер/i.test(to) && date === "2026-11-20";
+          document.title = ok
+            ? "PASS - автобусы Москва — Тверь, 20.11.2026"
+            : `Автобусы ${from} — ${to}, ${date}`;
+          history.replaceState(
+            null,
+            "",
+            `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&date=${date}`
+          );
+          results.innerHTML = [
+            ["07:10", "м. Ховрино", "2 ч 50 мин", "690 ₽"],
+            ["11:40", "м. Ховрино", "2 ч 45 мин", "720 ₽"],
+            ["18:25", "АВ Северные ворота", "3 ч 05 мин", "650 ₽"],
+          ]
+            .map(
+              (r) =>
+                `<div class="trip"><b>${r[0]}</b><span>${r[1]}</span><span>${r[2]}</span><b>${r[3]}</b></div>`
+            )
+            .join("");
+        }
+      }
+      customElements.define("bus-search", BusSearch);
+    </script>
+  </body>
+</html>

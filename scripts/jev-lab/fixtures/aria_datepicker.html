@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flights - Moscow to Kazan</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 Roboto,
+          Arial,
+          sans-serif;
+        color: #202124;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        height: 64px;
+        padding: 0 24px;
+        border-bottom: 1px solid #dadce0;
+        font-size: 22px;
+        color: #5f6368;
+      }
+      main {
+        max-width: 1000px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      .card {
+        box-shadow:
+          0 1px 3px rgba(60, 64, 67, 0.3),
+          0 4px 8px 3px rgba(60, 64, 67, 0.15);
+        border-radius: 8px;
+        padding: 16px 16px 40px;
+        position: relative;
+      }
+      .meta {
+        display: flex;
+        gap: 24px;
+        color: #3c4043;
+        margin: 0 0 12px 8px;
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .field {
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+        font-size: 16px;
+      }
+      .field input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        width: 100%;
+        cursor: pointer;
+        background: transparent;
+      }
+      .search {
+        position: absolute;
+        left: 50%;
+        bottom: -20px;
+        transform: translateX(-50%);
+        background: #1a73e8;
+        color: #fff;
+        border: 0;
+        border-radius: 20px;
+        height: 40px;
+        padding: 0 24px;
+        font:
+          500 14px Roboto,
+          Arial;
+        cursor: pointer;
+      }
+      #results {
+        margin-top: 48px;
+      }
+      .flight {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr;
+        padding: 14px 16px;
+        border: 1px solid #dadce0;
+        margin-top: -1px;
+      }
+      .muted {
+        color: #70757a;
+      }
+      .scrim {
+        position: fixed;
+        inset: 0;
+        background: rgba(32, 33, 36, 0.4);
+        z-index: 50;
+      }
+      .dialog {
+        position: fixed;
+        z-index: 51;
+        left: 50%;
+        top: 40px;
+        transform: translateX(-50%);
+        width: 820px;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      }
+      .dialog[hidden],
+      .scrim[hidden] {
+        display: none;
+      }
+      .dhead {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 16px 24px;
+        border-bottom: 1px solid #dadce0;
+      }
+      .dhead .picked {
+        border: 1px solid #1a73e8;
+        border-radius: 4px;
+        padding: 10px 14px;
+        min-width: 200px;
+      }
+      .dhead .reset {
+        margin-left: auto;
+      }
+      .navs {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 16px 0;
+      }
+      .navs button,
+      .dhead button {
+        background: none;
+        border: 0;
+        border-radius: 50%;
+        width: 36px;
+        height: 36px;
+        cursor: pointer;
+        font-size: 18px;
+        color: #5f6368;
+      }
+      .dhead .reset {
+        width: auto;
+        border-radius: 4px;
+        font-size: 14px;
+        color: #1a73e8;
+      }
+      .navs button:disabled {
+        opacity: 0.3;
+        cursor: default;
+      }
+      .months {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+        padding: 0 32px 16px;
+      }
+      .mtitle {
+        text-align: center;
+        font-weight: 500;
+        margin: 0 0 8px;
+      }
+      .wd {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        text-align: center;
+        color: #70757a;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      [role="grid"] {
+        display: grid;
+        gap: 2px;
+      }
+      [role="row"] {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 2px;
+      }
+      [role="gridcell"] {
+        height: 44px;
+      }
+      [role="gridcell"] button {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: none;
+        border-radius: 22px;
+        cursor: pointer;
+        font: inherit;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+      [role="gridcell"] button:hover {
+        background: #f1f3f4;
+      }
+      [role="gridcell"] button:disabled {
+        color: #bdc1c6;
+        cursor: default;
+        background: none;
+      }
+      [role="gridcell"] button .p {
+        font-size: 10px;
+        color: #188038;
+      }
+      [role="gridcell"][aria-selected="true"] button {
+        background: #1a73e8;
+        color: #fff;
+      }
+      [role="gridcell"][aria-selected="true"] button .p {
+        color: #fff;
+      }
+      .dfoot {
+        display: flex;
+        justify-content: flex-end;
+        padding: 12px 24px;
+        border-top: 1px solid #dadce0;
+      }
+      .done {
+        background: #1a73e8;
+        color: #fff;
+        border: 0;
+        border-radius: 4px;
+        height: 36px;
+        padding: 0 24px;
+        cursor: pointer;
+        font:
+          500 14px Roboto,
+          Arial;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Flights</header>
+    <main>
+      <div class="card">
+        <div class="meta">
+          <span>One way</span><span>1 adult</span><span>Economy</span>
+        </div>
+        <div class="fields">
+          <div class="field">Moscow</div>
+          <div class="field">Kazan</div>
+          <div class="field">
+            <input
+              id="depart"
+              aria-label="Departure"
+              aria-haspopup="dialog"
+              readonly
+            />
+          </div>
+        </div>
+        <button type="button" class="search" id="search">Search</button>
+      </div>
+      <div id="results"></div>
+    </main>
+    <div class="scrim" id="scrim" hidden></div>
+    <div
+      class="dialog"
+      id="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Departure date"
+      hidden
+    >
+      <div class="dhead">
+        <div class="picked" id="picked"></div>
+        <button type="button" class="reset" id="reset">Reset</button>
+      </div>
+      <div class="navs">
+        <button type="button" id="prev" aria-label="Previous month">‹</button>
+        <button type="button" id="next" aria-label="Next month">›</button>
+      </div>
+      <div class="months" id="months"></div>
+      <div class="dfoot">
+        <button type="button" class="done" id="done">Done</button>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const TODAY = new Date(2026, 9, 2); // the fixture's "today": Friday, October 2, 2026
+        const MONTHS = [
+          "January",
+          "February",
+          "March",
+          "April",
+          "May",
+          "June",
+          "July",
+          "August",
+          "September",
+          "October",
+          "November",
+          "December",
+        ];
+        const DAYS = [
+          "Sunday",
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday",
+        ];
+        const SHORT = (d) =>
+          `${DAYS[d.getDay()].slice(0, 3)}, ${MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
+        const iso = (d) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        let committed = new Date(2026, 9, 15),
+          pending = committed,
+          first = new Date(2026, 9, 1),
+          submitted = false;
+        const input = document.getElementById("depart");
+        const dialog = document.getElementById("dialog"),
+          scrim = document.getElementById("scrim");
+
+        function price(d) {
+          return 3900 + ((d.getDate() * 37 + d.getMonth() * 11) % 23) * 120;
+        }
+
+        function month(start) {
+          const wrap = document.createElement("div");
+          const title = `${MONTHS[start.getMonth()]} ${start.getFullYear()}`;
+          wrap.innerHTML = `<div class="mtitle">${title}</div><div class="wd" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>`;
+          const grid = document.createElement("div");
+          grid.setAttribute("role", "grid");
+          grid.setAttribute("aria-label", title);
+          let row = null;
+          const days = new Date(
+            start.getFullYear(),
+            start.getMonth() + 1,
+            0
+          ).getDate();
+          for (let i = 0; i < start.getDay() + days; i++) {
+            if (i % 7 === 0) {
+              row = document.createElement("div");
+              row.setAttribute("role", "row");
+              grid.appendChild(row);
+            }
+            const cell = document.createElement("div");
+            cell.setAttribute("role", "gridcell");
+            if (i >= start.getDay()) {
+              const d = new Date(
+                start.getFullYear(),
+                start.getMonth(),
+                i - start.getDay() + 1
+              );
+              const b = document.createElement("button");
+              b.type = "button";
+              b.setAttribute(
+                "aria-label",
+                `${DAYS[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
+              );
+              b.innerHTML = `<span>${d.getDate()}</span><span class="p">₽${price(d).toLocaleString("en-US")}</span>`;
+              if (d < TODAY) {
+                b.disabled = true;
+                b.setAttribute("aria-disabled", "true");
+                b.querySelector(".p").remove();
+              }
+              cell.setAttribute(
+                "aria-selected",
+                String(iso(d) === iso(pending))
+              );
+              b.addEventListener("click", () => {
+                pending = d;
+                draw();
+              });
+              cell.appendChild(b);
+            }
+            row.appendChild(cell);
+          }
+          wrap.appendChild(grid);
+          return wrap;
+        }
+
+        function draw() {
+          const months = document.getElementById("months");
+          months.innerHTML = "";
+          months.append(
+            month(first),
+            month(new Date(first.getFullYear(), first.getMonth() + 1, 1))
+          );
+          document.getElementById("picked").textContent = SHORT(pending);
+          document.getElementById("prev").disabled =
+            first <= new Date(TODAY.getFullYear(), TODAY.getMonth(), 1);
+        }
+
+        function open() {
+          pending = committed;
+          first = new Date(2026, 9, 1);
+          draw();
+          dialog.hidden = false;
+          scrim.hidden = false;
+        }
+        function close() {
+          dialog.hidden = true;
+          scrim.hidden = true;
+        }
+
+        input.addEventListener("click", open);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            open();
+          }
+        });
+        scrim.addEventListener("click", close); // dismiss without applying
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape" && !dialog.hidden) close();
+        });
+        document.getElementById("prev").addEventListener("click", () => {
+          first = new Date(first.getFullYear(), first.getMonth() - 1, 1);
+          draw();
+        });
+        document.getElementById("next").addEventListener("click", () => {
+          first = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+          draw();
+        });
+        document.getElementById("reset").addEventListener("click", () => {
+          pending = committed;
+          draw();
+        });
+        document.getElementById("done").addEventListener("click", () => {
+          if (iso(committed) !== iso(pending) && submitted) {
+            submitted = false;
+            document.title = "Flights - Moscow to Kazan";
+            document.getElementById("results").innerHTML = "";
+          }
+          committed = pending;
+          input.value = SHORT(committed);
+          close();
+        });
+        document.getElementById("search").addEventListener("click", () => {
+          const results = document.getElementById("results");
+          submitted = true;
+          const ok = iso(committed) === "2026-12-18";
+          document.title = ok
+            ? "PASS - Moscow to Kazan on 2026-12-18"
+            : `Flights - Moscow to Kazan, ${SHORT(committed)}`;
+          history.replaceState(
+            null,
+            "",
+            `?from=MOW&to=KZN&date=${iso(committed)}`
+          );
+          results.innerHTML = '<p class="muted">Searching…</p>';
+          setTimeout(() => {
+            if (!submitted) return;
+            results.innerHTML =
+              `<h2>Moscow → Kazan · ${SHORT(committed)}, ${committed.getFullYear()}</h2>` +
+              [
+                ["06:05 – 07:40", "Aeroflot"],
+                ["09:30 – 11:10", "S7 Airlines"],
+                ["21:50 – 23:25", "UTair"],
+              ]
+                .map(
+                  (r, i) =>
+                    `<div class="flight"><span>${r[0]}<br><span class="muted">${r[1]}</span></span><span>Nonstop</span><span>RUB ${(price(committed) + i * 650).toLocaleString("en-US")}</span></div>`
+                )
+                .join("");
+          }, 300);
+        });
+        input.value = SHORT(committed);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Продукты с доставкой на дом</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #1f1f1f;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        height: 72px;
+        padding: 0 28px;
+        border-bottom: 1px solid #e7e7e7;
+      }
+      .logo {
+        font-weight: 700;
+        font-size: 22px;
+        color: #3a9a3a;
+      }
+      .catalog {
+        background: #3a9a3a;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        height: 44px;
+        padding: 0 18px;
+        font: 700 15px Arial;
+        cursor: pointer;
+      }
+      .searchbar {
+        flex: 1;
+        position: relative;
+      }
+      .searchbar input {
+        width: 100%;
+        height: 44px;
+        border: 2px solid #3a9a3a;
+        border-radius: 10px;
+        padding: 0 16px 0 42px;
+        font: inherit;
+        outline: 0;
+      }
+      .searchbar .icon {
+        position: absolute;
+        left: 14px;
+        top: 11px;
+        color: #888;
+        pointer-events: none;
+      }
+      .hdr-links a {
+        color: #1f1f1f;
+        text-decoration: none;
+        margin-left: 14px;
+      }
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 20px 16px;
+      }
+      .promo {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .promo div {
+        height: 120px;
+        border-radius: 14px;
+        background: #eef7ee;
+        padding: 16px;
+        font-weight: 700;
+      }
+      h2 {
+        margin: 24px 0 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      .card {
+        border: 1px solid #eee;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .card .img {
+        height: 90px;
+        border-radius: 8px;
+        background: #f5f5f5;
+        margin-bottom: 8px;
+      }
+      .card .price {
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      .card button {
+        margin-top: 8px;
+        width: 100%;
+        height: 34px;
+        border: 0;
+        border-radius: 8px;
+        background: #3a9a3a;
+        color: #fff;
+        cursor: pointer;
+      }
+      .muted {
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">ЗелёнаяЛавка</span>
+      <button class="catalog" type="button" id="catalog">Каталог</button>
+      <div class="searchbar">
+        <span class="icon" aria-hidden="true">⌕</span>
+        <input id="q" type="text" autocomplete="off" placeholder="Найти" />
+      </div>
+      <span class="hdr-links"
+        ><a href="#shops">Магазины</a><a href="#delivery">Доставка</a
+        ><a href="#cart">Корзина</a></span
+      >
+    </header>
+    <main id="main">
+      <div class="promo">
+        <div>Скидки недели</div>
+        <div>Новинки</div>
+        <div>Готовая еда</div>
+      </div>
+      <h2>Популярное</h2>
+      <div class="grid" id="popular"></div>
+    </main>
+    <script>
+      (() => {
+        const PRODUCTS = [
+          ["Молоко 3,2% пастеризованное, 1 л", 109],
+          ["Молоко 2,5% ультрапастеризованное, 1 л", 98],
+          ["Молоко 3,2% в бутылке, 0,9 л", 104],
+          ["Молоко 1,5% безлактозное, 1 л", 129],
+          ["Молоко топлёное 4%, 0,5 л", 89],
+          ["Коктейль молочный шоколадный 3,2%, 0,3 л", 79],
+          ["Кефир 3,2%, 0,9 л", 112],
+          ["Творог 5%, 350 г", 189],
+          ["Бананы, 1 кг", 149],
+          ["Хлеб Бородинский, 400 г", 69],
+          ["Сыр Российский 50%, 200 г", 259],
+          ["Йогурт питьевой клубника 2,5%, 0,3 л", 75],
+          ["Сметана 15%, 300 г", 119],
+          ["Яйца С1, 10 шт", 139],
+        ];
+        const card = ([name, price]) =>
+          `<div class="card"><div class="img"></div><div>${name}</div><div class="price">${price} ₽</div><button type="button">В корзину</button></div>`;
+        document.getElementById("popular").innerHTML = PRODUCTS.slice(8, 12)
+          .map(card)
+          .join("");
+
+        // The placeholder "types" product names and changes every 400 ms while the field is empty.
+        const input = document.getElementById("q");
+        const WORDS = [
+          "молоко",
+          "бананы",
+          "творог",
+          "авокадо",
+          "индейка",
+          "сыр",
+          "кофе",
+        ];
+        let w = 0,
+          n = 0;
+        setInterval(() => {
+          if (input.value) return;
+          const word = WORDS[w % WORDS.length];
+          n = Math.min(word.length, n + 2);
+          input.placeholder = "Найти " + word.slice(0, n);
+          if (n >= word.length) {
+            w++;
+            n = 0;
+          }
+        }, 400);
+
+        // Search is submitted with Enter only; there is no search button.
+        input.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter" || e.isComposing) return;
+          e.preventDefault();
+          const q = input.value.trim();
+          if (!q) return;
+          const norm = q.toLowerCase().replace(/\s+/g, " ");
+          const ok = /молок/.test(norm) && /3[,.]2/.test(norm);
+          document.title = ok ? "PASS - поиск: " + q : "Поиск: " + q;
+          history.replaceState(null, "", "?search=" + encodeURIComponent(q));
+          const words = norm
+            .replace(/%/g, "")
+            .split(" ")
+            .filter(Boolean)
+            .map((t) => t.replace(/ко$|ка$|ки$|ы$|а$/, ""));
+          const found = PRODUCTS.filter(([name]) =>
+            words.every((t) => name.toLowerCase().replace(/%/g, "").includes(t))
+          );
+          document.getElementById("main").innerHTML =
+            `<h2>Результаты поиска «${q.replace(/</g, "&lt;")}»</h2>` +
+            (found.length
+              ? `<p class="muted">Найдено товаров: ${found.length}</p><div class="grid">${found.map(card).join("")}</div>`
+              : "<p>Ничего не нашлось. Попробуйте изменить запрос.</p>");
+        });
+        input.addEventListener("input", () => {
+          if (document.title.startsWith("PASS"))
+            document.title = "Продукты с доставкой на дом";
+        });
+      })();
+    </script>
+  </body>
+</html>

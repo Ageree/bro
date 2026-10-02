@@ -1,0 +1,86 @@
+[
+  {
+    "name": "fx_combobox_portal",
+    "path": "combobox_portal.html",
+    "goal": "Find one-way flights from Moscow to Kazan on November 20, 2026 in business class. Stop when flight results are shown.",
+    "widget": "MUI-style custom select (div role=combobox, aria-controls/aria-expanded, opens on mousedown) whose listbox mounts in a portal at the end of <body> behind an invisible backdrop and aria-hides the rest of the page; two of them (ticket type Round trip -> One way, class Economy -> Business), then Search"
+  },
+  {
+    "name": "fx_airport_autocomplete",
+    "path": "airport_autocomplete.html",
+    "goal": "Find one-way flights from Moscow to Kazan on Friday, November 20, 2026, for one adult in economy. Stop when flight options are shown.",
+    "widget": "Google-Flights-style airport autocomplete (input role=combobox, listbox of role=option) with ~440 ms debounce+latency; origin prefilled with Washington; typed text is rejected until a suggestion is chosen; distractors Moscow, Idaho and Kazanlak; the open list covers Search"
+  },
+  {
+    "name": "fx_aria_datepicker",
+    "path": "aria_datepicker.html",
+    "goal": "Find one-way flights from Moscow to Kazan departing on Friday, December 18, 2026. Stop when flight options for that date are shown.",
+    "widget": "ARIA date picker dialog opened from a readonly field: two-month role=grid, gridcell buttons labelled 'Friday, December 18, 2026', Next month needed (Oct/Nov shown first), selection applies only after Done, then Search"
+  },
+  {
+    "name": "fx_div_calendar",
+    "path": "div_calendar.html",
+    "goal": "Найди поезда из Москвы в Санкт-Петербург на пятницу, 20 ноября 2026 года. Остановись, когда видно расписание.",
+    "widget": "Yandex-Rasp-style calendar of plain <div> day cells (cursor:pointer, click listeners, no roles or tabindex), month names as plain text; the readonly date input's accessible name comes from a wrapping <label> that also hosts the popup"
+  },
+  {
+    "name": "fx_animated_search",
+    "path": "animated_search.html",
+    "goal": "Найди в магазине молоко 3,2%. Остановись, когда видны товары с ценами.",
+    "widget": "VkusVill-style search field whose placeholder (its only accessible name) changes every 400 ms; no search button, submitted only by an Enter keydown; results replace the page content without navigation"
+  },
+  {
+    "name": "fx_iframe_form",
+    "path": "iframe_form.html",
+    "goal": "Найди отели в Казани с 12 по 15 ноября 2026 года для двоих взрослых. Остановись, когда видны варианты отелей.",
+    "widget": "Partner hotel-search widget in a same-origin <iframe> inside a blog article (text inputs dd.mm.yyyy + native select + submit); the host page has its own decoy blog search"
+  },
+  {
+    "name": "fx_shadow_form",
+    "path": "shadow_form.html",
+    "goal": "Найди автобусы из Москвы в Тверь на 20 ноября 2026 года. Остановись, когда видны рейсы.",
+    "widget": "Bus-ticket search web component: inputs inside nested open shadow roots (<bus-search> > <city-field>), submit button and results inside the shadow root"
+  },
+  {
+    "name": "fx_scroll_container",
+    "path": "scroll_container.html",
+    "goal": "Открой описание отеля «Шаляпин Палас» из списка отелей.",
+    "widget": "App-shell map view: the page never scrolls; a 400 px overflow:auto hotel list on the left must be scrolled to reach the 22nd hotel; the map on the right swallows wheel events"
+  },
+  {
+    "name": "fx_consent_overlay",
+    "path": "consent_overlay.html",
+    "goal": "Найди в магазине беспроводные наушники. Остановись, когда видны результаты поиска.",
+    "widget": "Cookie-consent manager appearing 700 ms after load with a full-screen backdrop that intercepts all clicks until 'Принять все' / 'Только необходимые' / 'Настроить -> Сохранить'"
+  },
+  {
+    "name": "fx_filters_sort",
+    "path": "filters_sort.html",
+    "goal": "Покажи только ноутбуки Lenovo, которые есть в наличии, и отсортируй их по возрастанию цены. Остановись, когда виден отсортированный список.",
+    "widget": "Marketplace catalogue: brand checkboxes are sr-only native inputs (clip:rect(0,0,0,0)) inside styled labels, an 'in stock' role=switch, and a custom 'Сортировка' button + listbox ('Сначала дешёвые'); results reload asynchronously"
+  },
+  {
+    "name": "fx_route_chips",
+    "path": "route_chips.html",
+    "goal": "Открой расписание поездов из Москвы в Санкт-Петербург через популярные направления. Ничего не вводи с клавиатуры.",
+    "widget": "Two-field route form with 'popular route' chips that only fill From/To; the schedule opens after pressing Найти; reverse-direction chip as a distractor; typing into the fields does not count"
+  },
+  {
+    "name": "fx_guests_stepper",
+    "path": "guests_stepper.html",
+    "goal": "Найди отели в Казани с 12 по 15 ноября 2026 года для двух взрослых и одного ребёнка 5 лет. Остановись, когда видны отели.",
+    "widget": "Guests popover with icon-only +/- stepper buttons (SVG, no accessible name) for adults and children, a native select for the child's age, 'Готово' to apply, then Найти"
+  },
+  {
+    "name": "fx_plain_suggest",
+    "path": "plain_suggest.html",
+    "goal": "Найди расписание поездов из Москвы в Нижний Новгород. Остановись, когда видны поезда.",
+    "widget": "Station suggest without ARIA: plain <div> suggestions (mousedown listener) after a 300 ms debounce; typed text is rejected until a suggestion is chosen; distractors Нижний Тагил / Нижнекамск"
+  },
+  {
+    "name": "fx_label_chips",
+    "path": "label_chips.html",
+    "goal": "Покажи только поезда с купе, которые отправляются вечером. Остановись, когда виден отфильтрованный список.",
+    "widget": "Filter chips made of display:none radio/checkbox inputs with styled <label for> (car type, departure time slots); filters apply instantly"
+  }
+]

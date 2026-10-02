@@ -4,7 +4,9 @@
 directory with a fake curl.
 """
 
+import base64
 import contextlib
+import gzip
 import http.server
 import io
 import os
@@ -460,6 +462,29 @@ class ChromeUnitTest(unittest.TestCase):
         start = next(line for line in PROVISION.splitlines() if line.startswith("ExecStart=/usr/bin/google-chrome"))
         self.assertIn(" --proxy-server=http://127.0.0.1:3128 ", start)
         self.assertIn(" --proxy-bypass-list=<-loopback> ", start)
+
+
+
+class JevPatchTest(unittest.TestCase):
+    PATCH = Path(__file__).parent / "jev-ultrafast.patch"
+
+    def test_cloud_init_carries_the_patch_byte_for_byte(self):
+        # provision.sh applies it from /opt/bro/image; without it in the user data `git apply` stops the build.
+        block = build.cloud_init("test").split("path: /opt/bro/image/jev-ultrafast.patch", 1)[1].split("  - path:")[0]
+        content = re.search(r"content: (\S+)", block).group(1)
+        self.assertEqual(gzip.decompress(base64.b64decode(content)), self.PATCH.read_bytes())
+
+    def test_the_patch_goes_on_the_pinned_commit_before_the_venv_is_built(self):
+        lines = PROVISION.splitlines()
+        checkout = lines.index("git -C /opt/bro/jev-ultrafast checkout -q 1231850")
+        self.assertEqual(lines[checkout + 1], "git -C /opt/bro/jev-ultrafast apply /opt/bro/image/jev-ultrafast.patch")
+        self.assertIn("uv sync", lines[checkout + 2])
+
+    def test_the_patch_touches_only_the_package(self):
+        # The VM imports jev_ultrafast; the fork's tests and docs live with scripts/jev-lab, not in the image.
+        files = re.findall(r"^diff --git a/(\S+) b/", self.PATCH.read_text(), re.M)
+        self.assertTrue(files)
+        self.assertEqual([f for f in files if not f.startswith("jev_ultrafast/")], [])
 
 
 if __name__ == "__main__":

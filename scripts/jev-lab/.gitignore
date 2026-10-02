@@ -1,0 +1,6 @@
+runs/
+shots/
+profiles/
+.jev/
+.jev-base/
+__pycache__/

@@ -6,18 +6,19 @@ Evolution с Chrome (окно в Xvfb, постоянный профиль), а�
 создаёт, включает, гасит и удаляет VM через Compute API и говорит с worker по
 HTTPS. План и итоги замеров — `docs/browser-cloud-migration.md`.
 
-| Путь                    | Что это                                                                                                           |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `worker/worker.py`      | Сервис на VM (`127.0.0.1:8080` за Caddy): поручения агента, сессии, файлы, прямые действия, CDP, прокси-форвардер |
-| `worker/jev_segment.py` | Короткий отрезок jev-ultrafast для движка `jev-then-agent`: вкладку jev дальше ведёт агент                        |
-| `worker/publish.py`     | Публикация `worker.py` для выката Бро: версия, sha256, значение `BROWSER_VM_WORKER`, загрузка по presigned PUT    |
-| `worker/test_worker.py` | Юнит-тесты worker (`python -m unittest`, нужен aiohttp); вектор токена общий с тестами Бро                        |
-| `image/provision.sh`    | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
-| `image/build.py`        | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
-| `image/test_image.py`   | Тесты образа (`python -m unittest`, только stdlib): `build.py` на поддельном Compute API, загрузка `provision.sh` |
-| `image/sandbox/`        | Корень песочницы для пула браузеров: `build_rootfs.sh`, init, заглушка `systemctl`                                |
-| `image/test_sandbox.py` | Тесты init песочницы: юниты из `provision.sh`, старт, перезапуск, `systemctl` через сокет                         |
-| `host/`                 | Хост пула браузеров: `hostd` (песочницы gVisor, парковка в S3), сеть, Caddy, загрузка хоста — `host/README.md`    |
+| Путь                        | Что это                                                                                                           |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `worker/worker.py`          | Сервис на VM (`127.0.0.1:8080` за Caddy): поручения агента, сессии, файлы, прямые действия, CDP, прокси-форвардер |
+| `worker/jev_segment.py`     | Короткий отрезок jev-ultrafast для движка `jev-then-agent`: вкладку jev дальше ведёт агент                        |
+| `worker/publish.py`         | Публикация `worker.py` для выката Бро: версия, sha256, значение `BROWSER_VM_WORKER`, загрузка по presigned PUT    |
+| `worker/test_worker.py`     | Юнит-тесты worker (`python -m unittest`, нужен aiohttp); вектор токена общий с тестами Бро                        |
+| `image/provision.sh`        | Установка образа: Caddy, Chrome с политиками, Xvfb, firewall, uv, browser-use, jev, systemd-юниты                 |
+| `image/jev-ultrafast.patch` | Патч Бро к jev-ultrafast `1231850`: попапы, календари, динамичные страницы; стенд — `scripts/jev-lab`             |
+| `image/build.py`            | Сборка образа: VM-сборщик → запечатывание → образ `bro-browser-<версия>` → удаление сборщика                      |
+| `image/test_image.py`       | Тесты образа (`python -m unittest`, только stdlib): `build.py` на поддельном Compute API, загрузка `provision.sh` |
+| `image/sandbox/`            | Корень песочницы для пула браузеров: `build_rootfs.sh`, init, заглушка `systemctl`                                |
+| `image/test_sandbox.py`     | Тесты init песочницы: юниты из `provision.sh`, старт, перезапуск, `systemctl` через сокет                         |
+| `host/`                     | Хост пула браузеров: `hostd` (песочницы gVisor, парковка в S3), сеть, Caddy, загрузка хоста — `host/README.md`    |
 
 ## Как устроено
 

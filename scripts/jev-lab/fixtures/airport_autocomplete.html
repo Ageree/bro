@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flights - Find cheap flights</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 Roboto,
+          Arial,
+          sans-serif;
+        color: #202124;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        height: 64px;
+        padding: 0 24px;
+        border-bottom: 1px solid #dadce0;
+        font-size: 22px;
+        color: #5f6368;
+      }
+      main {
+        max-width: 1000px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      h1 {
+        font-weight: 400;
+        font-size: 36px;
+        text-align: center;
+        margin: 12px 0 24px;
+      }
+      .card {
+        box-shadow:
+          0 1px 3px rgba(60, 64, 67, 0.3),
+          0 4px 8px 3px rgba(60, 64, 67, 0.15);
+        border-radius: 8px;
+        padding: 16px 16px 40px;
+        position: relative;
+      }
+      .meta {
+        display: flex;
+        gap: 24px;
+        color: #3c4043;
+        margin: 0 0 12px 8px;
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .field {
+        position: relative;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+      }
+      .field:focus-within {
+        border-color: #1a73e8;
+      }
+      .field input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 16px;
+        width: 100%;
+        background: transparent;
+      }
+      .listbox {
+        position: absolute;
+        left: -1px;
+        top: 56px;
+        width: 420px;
+        background: #fff;
+        z-index: 10;
+        list-style: none;
+        margin: 0;
+        padding: 8px 0;
+        box-shadow:
+          0 2px 6px rgba(60, 64, 67, 0.3),
+          0 6px 10px 4px rgba(60, 64, 67, 0.15);
+        border-radius: 0 0 8px 8px;
+      }
+      .listbox[hidden] {
+        display: none;
+      }
+      .listbox li {
+        display: flex;
+        gap: 12px;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      .listbox li.active,
+      .listbox li:hover {
+        background: #f1f3f4;
+      }
+      .listbox .sub {
+        color: #70757a;
+        font-size: 12px;
+      }
+      .listbox .code {
+        margin-left: auto;
+        color: #3c4043;
+        font-weight: 500;
+      }
+      .loading {
+        padding: 10px 16px;
+        color: #70757a;
+      }
+      .search {
+        position: absolute;
+        left: 50%;
+        bottom: -20px;
+        transform: translateX(-50%);
+        background: #1a73e8;
+        color: #fff;
+        border: 0;
+        border-radius: 20px;
+        height: 40px;
+        padding: 0 24px;
+        font:
+          500 14px Roboto,
+          Arial;
+        cursor: pointer;
+      }
+      .error {
+        color: #d93025;
+        margin: 52px 0 0;
+        min-height: 20px;
+      }
+      .flight {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr;
+        padding: 14px 16px;
+        border: 1px solid #dadce0;
+        margin-top: -1px;
+      }
+      .muted {
+        color: #70757a;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Flights</header>
+    <main>
+      <h1>Flights</h1>
+      <div class="card">
+        <div class="meta">
+          <span>One way</span><span>1 adult</span><span>Economy</span>
+        </div>
+        <div class="fields">
+          <div class="field">
+            <input
+              id="from"
+              role="combobox"
+              aria-label="Where from?"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="from-listbox"
+              autocomplete="off"
+              value="Washington"
+            />
+            <ul
+              class="listbox"
+              id="from-listbox"
+              role="listbox"
+              aria-label="Where from? suggestions"
+              hidden
+            ></ul>
+          </div>
+          <div class="field">
+            <input
+              id="to"
+              role="combobox"
+              aria-label="Where to?"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="to-listbox"
+              autocomplete="off"
+              placeholder="Where to?"
+            />
+            <ul
+              class="listbox"
+              id="to-listbox"
+              role="listbox"
+              aria-label="Where to? suggestions"
+              hidden
+            ></ul>
+          </div>
+          <div class="field">
+            <input
+              id="depart"
+              aria-label="Departure"
+              value="Fri, Nov 20, 2026"
+              readonly
+            />
+          </div>
+        </div>
+        <button type="button" class="search" id="search">Search</button>
+      </div>
+      <p class="error" id="error" role="alert"></p>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        // Places the suggestion service knows. City entries cover all airports of the city.
+        const PLACES = [
+          {
+            code: "MOW",
+            name: "Moscow",
+            sub: "City in Russia",
+            city: "Moscow, Russia",
+          },
+          {
+            code: "SVO",
+            name: "Sheremetyevo International Airport",
+            sub: "29 km from Moscow, Russia",
+            city: "Moscow, Russia",
+          },
+          {
+            code: "VKO",
+            name: "Vnukovo International Airport",
+            sub: "28 km from Moscow, Russia",
+            city: "Moscow, Russia",
+          },
+          {
+            code: "DME",
+            name: "Domodedovo International Airport",
+            sub: "42 km from Moscow, Russia",
+            city: "Moscow, Russia",
+          },
+          {
+            code: "PUW",
+            name: "Moscow",
+            sub: "City in Idaho, United States",
+            city: "Moscow, Idaho",
+          },
+          {
+            code: "KZN",
+            name: "Kazan",
+            sub: "City in Russia",
+            city: "Kazan, Russia",
+          },
+          {
+            code: "KZN",
+            name: "Kazan International Airport",
+            sub: "26 km from Kazan, Russia",
+            city: "Kazan, Russia",
+          },
+          {
+            code: "PDV",
+            name: "Kazanlak",
+            sub: "City in Bulgaria",
+            city: "Kazanlak, Bulgaria",
+          },
+          {
+            code: "KZO",
+            name: "Kyzylorda (Kazakhstan)",
+            sub: "Korkyt Ata Airport",
+            city: "Kyzylorda, Kazakhstan",
+          },
+          {
+            code: "LED",
+            name: "Saint Petersburg",
+            sub: "City in Russia",
+            city: "Saint Petersburg, Russia",
+          },
+          {
+            code: "AER",
+            name: "Sochi",
+            sub: "City in Russia",
+            city: "Sochi, Russia",
+          },
+          {
+            code: "WAS",
+            name: "Washington",
+            sub: "City in District of Columbia, United States",
+            city: "Washington, D.C.",
+          },
+          {
+            code: "IAD",
+            name: "Washington Dulles International Airport",
+            sub: "42 km from Washington, D.C.",
+            city: "Washington, D.C.",
+          },
+          {
+            code: "NYC",
+            name: "New York",
+            sub: "City in New York, United States",
+            city: "New York, NY",
+          },
+          {
+            code: "KUF",
+            name: "Samara",
+            sub: "City in Russia",
+            city: "Samara, Russia",
+          },
+        ];
+        const chosen = { from: PLACES.find((p) => p.code === "WAS"), to: null };
+        let submitted = false;
+
+        function edited() {
+          if (submitted) {
+            submitted = false;
+            document.title = "Flights - Find cheap flights";
+            document.getElementById("results").innerHTML = "";
+          }
+        }
+
+        function setup(id) {
+          const input = document.getElementById(id);
+          const list = document.getElementById(id + "-listbox");
+          let timer = null,
+            seq = 0;
+          const hide = () => {
+            list.hidden = true;
+            list.innerHTML = "";
+            input.setAttribute("aria-expanded", "false");
+            input.removeAttribute("aria-activedescendant");
+          };
+          const show = (matches) => {
+            list.innerHTML = "";
+            matches.forEach((p, i) => {
+              const li = document.createElement("li");
+              li.id = `${id}-opt-${i}`;
+              li.setAttribute("role", "option");
+              li.setAttribute("aria-selected", "false");
+              li.innerHTML = `<span><span>${p.name}</span><br><span class="sub">${p.sub}</span></span><span class="code">${p.code}</span>`;
+              // Keep focus in the field while the pointer is down, choose on click (like Google's suggestion list).
+              li.addEventListener("mousedown", (e) => e.preventDefault());
+              li.addEventListener("click", () => {
+                choose(p);
+              });
+              list.appendChild(li);
+            });
+            list.hidden = !matches.length;
+            input.setAttribute("aria-expanded", String(!!matches.length));
+          };
+          const choose = (p) => {
+            chosen[id] = p;
+            input.value = p.name;
+            hide();
+            edited();
+            document.getElementById("error").textContent = "";
+          };
+          input.addEventListener("input", () => {
+            chosen[id] = null; // typed text is only a query until a suggestion is chosen
+            edited();
+            clearTimeout(timer);
+            const query = input.value.trim().toLowerCase();
+            if (query.length < 2) {
+              hide();
+              return;
+            }
+            list.hidden = false;
+            list.innerHTML =
+              '<li class="loading" aria-hidden="true">Loading…</li>';
+            const mine = ++seq;
+            // Debounce, then a simulated network round trip.
+            timer = setTimeout(
+              () =>
+                setTimeout(() => {
+                  if (mine !== seq) return;
+                  const matches = PLACES.filter(
+                    (p) =>
+                      p.name.toLowerCase().startsWith(query) ||
+                      p.code.toLowerCase() === query ||
+                      p.name
+                        .toLowerCase()
+                        .split(/\s+/)
+                        .some((w) => w.startsWith(query))
+                  );
+                  show(matches.slice(0, 6));
+                }, 160),
+              280
+            );
+          });
+          input.addEventListener("blur", () => setTimeout(hide, 150));
+          input.addEventListener("focus", () => input.select());
+        }
+        setup("from");
+        setup("to");
+
+        document.getElementById("search").addEventListener("click", () => {
+          const error = document.getElementById("error");
+          const results = document.getElementById("results");
+          results.innerHTML = "";
+          if (!chosen.from) {
+            error.textContent =
+              "Choose a departure airport or city from the list.";
+            return;
+          }
+          if (!chosen.to) {
+            error.textContent =
+              "Choose a destination airport or city from the list.";
+            return;
+          }
+          error.textContent = "";
+          submitted = true;
+          const ok =
+            chosen.from.city === "Moscow, Russia" &&
+            chosen.to.city === "Kazan, Russia";
+          document.title = ok
+            ? "PASS - flights Moscow to Kazan"
+            : `Flights - ${chosen.from.name} to ${chosen.to.name}`;
+          history.replaceState(
+            null,
+            "",
+            `?from=${chosen.from.code}&to=${chosen.to.code}&date=2026-11-20`
+          );
+          results.innerHTML = '<p class="muted">Searching…</p>';
+          setTimeout(() => {
+            if (!submitted) return;
+            const rows = [
+              ["06:05 – 07:40", "Aeroflot", "RUB 7,450"],
+              ["09:30 – 11:10", "S7 Airlines", "RUB 6,980"],
+              ["21:50 – 23:25", "UTair", "RUB 5,720"],
+            ];
+            results.innerHTML =
+              `<h2>${chosen.from.name} (${chosen.from.code}) → ${chosen.to.name} (${chosen.to.code}) · Fri, Nov 20</h2>` +
+              rows
+                .map(
+                  (r) =>
+                    `<div class="flight"><span>${r[0]}<br><span class="muted">${r[1]}</span></span><span>Nonstop</span><span>1 hr 35 min</span><span>${r[2]}</span></div>`
+                )
+                .join("");
+          }, 300);
+        });
+      })();
+    </script>
+  </body>
+</html>

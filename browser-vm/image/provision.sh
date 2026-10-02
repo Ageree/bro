@@ -174,7 +174,8 @@ visudo -cf /etc/sudoers.d/bro-chrome
 stage chrome
 
 # Python: browser-use 0.13.10 (the agent), aiohttp (the worker), OpenCV (slider puzzles); jev-ultrafast
-# at the pinned commit for the jev-then-agent engine.
+# at the pinned commit plus Bro's patch (popups, calendars, dynamic pages; scripts/jev-lab) for the
+# jev-then-agent engine. A patch that no longer applies fails the build instead of shipping plain upstream.
 # BRO_PYTHON_PREINSTALLED=1: /opt/bro/bu/.venv is already there (a sandbox root built where GitHub and PyPI
 # are out of reach, sandbox/build_rootfs.sh BRO_PYTHON_SETUP); jev is then not installed.
 if [ "${BRO_PYTHON_PREINSTALLED:-0}" != 1 ]; then
@@ -186,6 +187,7 @@ retry uv pip install -q --python /opt/bro/bu/.venv/bin/python browser-use==0.13.
 retry apt-get install -yq git
 retry git clone -q https://github.com/browser-use/jev-ultrafast.git /opt/bro/jev-ultrafast
 git -C /opt/bro/jev-ultrafast checkout -q 1231850
+git -C /opt/bro/jev-ultrafast apply /opt/bro/image/jev-ultrafast.patch
 (cd /opt/bro/jev-ultrafast && retry uv sync -q)
 rm -rf /opt/bro/uv-cache
 fi

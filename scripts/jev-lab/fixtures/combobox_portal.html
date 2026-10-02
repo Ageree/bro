@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flights - Find cheap flights</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 Roboto,
+          Arial,
+          sans-serif;
+        color: #202124;
+        background: #fff;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+        height: 64px;
+        padding: 0 24px;
+        border-bottom: 1px solid #dadce0;
+      }
+      header .logo {
+        font-size: 22px;
+        color: #5f6368;
+      }
+      header nav a {
+        color: #5f6368;
+        text-decoration: none;
+        margin-right: 18px;
+      }
+      main {
+        max-width: 1000px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      h1 {
+        font-weight: 400;
+        font-size: 36px;
+        text-align: center;
+        margin: 12px 0 24px;
+      }
+      .card {
+        box-shadow:
+          0 1px 3px rgba(60, 64, 67, 0.3),
+          0 4px 8px 3px rgba(60, 64, 67, 0.15);
+        border-radius: 8px;
+        padding: 16px 16px 40px;
+        position: relative;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .sel {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        user-select: none;
+        color: #3c4043;
+      }
+      .sel:hover {
+        background: #f1f3f4;
+      }
+      .sel .arrow {
+        font-size: 10px;
+        color: #5f6368;
+      }
+      .pax {
+        padding: 8px 10px;
+        color: #3c4043;
+      }
+      .fields {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .fields.oneway {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+      .field {
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+      }
+      .field input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 16px;
+        width: 100%;
+        background: transparent;
+      }
+      .search {
+        position: absolute;
+        left: 50%;
+        bottom: -20px;
+        transform: translateX(-50%);
+        background: #1a73e8;
+        color: #fff;
+        border: 0;
+        border-radius: 20px;
+        height: 40px;
+        padding: 0 24px;
+        font:
+          500 14px Roboto,
+          Arial;
+        cursor: pointer;
+      }
+      .vh {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      #results {
+        margin-top: 48px;
+      }
+      .flight {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr;
+        padding: 14px 16px;
+        border: 1px solid #dadce0;
+        border-top: 0;
+      }
+      .flight:first-child {
+        border-top: 1px solid #dadce0;
+        border-radius: 8px 8px 0 0;
+      }
+      .muted {
+        color: #70757a;
+      }
+      .note {
+        margin-top: 12px;
+        color: #d93025;
+      }
+      /* MUI-like popover pieces, mounted into a portal at the end of <body> */
+      .popover-root {
+        position: fixed;
+        inset: 0;
+        z-index: 1300;
+      }
+      .backdrop {
+        position: fixed;
+        inset: 0;
+        background: transparent;
+      }
+      .paper {
+        position: absolute;
+        background: #fff;
+        border-radius: 4px;
+        min-width: 160px;
+        box-shadow:
+          0 5px 5px -3px rgba(0, 0, 0, 0.2),
+          0 8px 10px 1px rgba(0, 0, 0, 0.14),
+          0 3px 14px 2px rgba(0, 0, 0, 0.12);
+        opacity: 0;
+        transform: scale(0.75, 0.56);
+        transform-origin: top left;
+        transition:
+          opacity 180ms,
+          transform 120ms;
+      }
+      .paper.in {
+        opacity: 1;
+        transform: none;
+      }
+      .paper ul {
+        list-style: none;
+        margin: 0;
+        padding: 8px 0;
+      }
+      .paper li {
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      .paper li:hover {
+        background: #f1f3f4;
+      }
+      .paper li[aria-selected="true"] {
+        background: #e8f0fe;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <span class="logo">Flights</span>
+        <nav>
+          <a href="#explore">Explore</a><a href="#hotels">Hotels</a
+          ><a href="#rentals">Vacation rentals</a>
+        </nav>
+      </header>
+      <main>
+        <h1>Flights</h1>
+        <form class="card" id="form" onsubmit="return false;">
+          <div class="row">
+            <span class="vh" id="trip-label">Ticket type</span>
+            <div
+              class="sel"
+              id="trip"
+              role="combobox"
+              tabindex="0"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="trip-listbox"
+              aria-labelledby="trip-label trip-value"
+            >
+              <span id="trip-value">Round trip</span
+              ><span class="arrow" aria-hidden="true">▼</span>
+            </div>
+            <span class="pax">1 adult</span>
+            <span class="vh" id="cabin-label">Seating class</span>
+            <div
+              class="sel"
+              id="cabin"
+              role="combobox"
+              tabindex="0"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="cabin-listbox"
+              aria-labelledby="cabin-label cabin-value"
+            >
+              <span id="cabin-value">Economy</span
+              ><span class="arrow" aria-hidden="true">▼</span>
+            </div>
+          </div>
+          <div class="fields" id="fields">
+            <label class="field"
+              ><input id="from" aria-label="Where from?" value="Moscow"
+            /></label>
+            <label class="field"
+              ><input id="to" aria-label="Where to?" value="Kazan"
+            /></label>
+            <label class="field"
+              ><input
+                id="depart"
+                aria-label="Departure"
+                value="Fri, Nov 20"
+                readonly
+            /></label>
+            <label class="field" id="return-field"
+              ><input id="ret" aria-label="Return" value="Tue, Nov 24" readonly
+            /></label>
+          </div>
+          <button type="button" class="search" id="search">Search</button>
+        </form>
+        <div id="results" aria-live="polite"></div>
+      </main>
+    </div>
+    <script>
+      (() => {
+        const OPTIONS = {
+          trip: [
+            ["round", "Round trip"],
+            ["oneway", "One way"],
+            ["multi", "Multi-city"],
+          ],
+          cabin: [
+            ["economy", "Economy"],
+            ["premium", "Premium economy"],
+            ["business", "Business"],
+            ["first", "First"],
+          ],
+        };
+        const state = { trip: "round", cabin: "economy" };
+        let submitted = false;
+        let portal = null;
+
+        function label(kind) {
+          return OPTIONS[kind].find((o) => o[0] === state[kind])[1];
+        }
+
+        function render() {
+          document.getElementById("trip-value").textContent = label("trip");
+          document.getElementById("cabin-value").textContent = label("cabin");
+          const oneway = state.trip === "oneway";
+          document.getElementById("return-field").style.display = oneway
+            ? "none"
+            : "";
+          document.getElementById("fields").classList.toggle("oneway", oneway);
+        }
+
+        function edited() {
+          if (submitted) {
+            submitted = false;
+            document.title = "Flights - Find cheap flights";
+            document.getElementById("results").innerHTML = "";
+          }
+        }
+
+        function close() {
+          if (!portal) return;
+          const trigger = document.getElementById(portal.dataset.kind);
+          trigger.setAttribute("aria-expanded", "false");
+          portal.remove();
+          portal = null;
+          document.getElementById("app").removeAttribute("aria-hidden");
+          trigger.focus();
+        }
+
+        function open(kind) {
+          close();
+          const trigger = document.getElementById(kind);
+          const r = trigger.getBoundingClientRect();
+          portal = document.createElement("div");
+          portal.className = "popover-root";
+          portal.setAttribute("role", "presentation");
+          portal.dataset.kind = kind;
+          const backdrop = document.createElement("div");
+          backdrop.className = "backdrop";
+          backdrop.setAttribute("aria-hidden", "true");
+          backdrop.addEventListener("click", close);
+          const paper = document.createElement("div");
+          paper.className = "paper";
+          paper.style.left = r.left + "px";
+          paper.style.top = r.bottom + 4 + "px";
+          const ul = document.createElement("ul");
+          ul.id = kind + "-listbox";
+          ul.setAttribute("role", "listbox");
+          ul.setAttribute("tabindex", "-1");
+          ul.setAttribute("aria-labelledby", kind + "-label");
+          for (const [value, text] of OPTIONS[kind]) {
+            const li = document.createElement("li");
+            li.setAttribute("role", "option");
+            li.setAttribute("tabindex", value === state[kind] ? "0" : "-1");
+            li.setAttribute("aria-selected", String(value === state[kind]));
+            li.dataset.value = value;
+            li.textContent = text;
+            li.addEventListener("click", () => {
+              if (state[kind] !== value) {
+                state[kind] = value;
+                edited();
+              }
+              render();
+              close();
+            });
+            ul.appendChild(li);
+          }
+          paper.appendChild(ul);
+          portal.append(backdrop, paper);
+          document.body.appendChild(portal);
+          // Like MUI's ModalManager: everything outside the portal is hidden from assistive technology.
+          document.getElementById("app").setAttribute("aria-hidden", "true");
+          trigger.setAttribute("aria-expanded", "true");
+          // Like MUI's Grow: mount transparent, force a reflow, then start the enter transition in the same task.
+          void paper.offsetHeight;
+          paper.classList.add("in");
+          ul.querySelector('[aria-selected="true"]').focus();
+        }
+
+        for (const kind of ["trip", "cabin"]) {
+          const trigger = document.getElementById(kind);
+          // MUI Select opens on mousedown of the primary button, not on click.
+          trigger.addEventListener("mousedown", (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            open(kind);
+          });
+          trigger.addEventListener("keydown", (event) => {
+            if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+              event.preventDefault();
+              open(kind);
+            }
+          });
+        }
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") close();
+        });
+        for (const id of ["from", "to"])
+          document.getElementById(id).addEventListener("input", edited);
+
+        document.getElementById("search").addEventListener("click", () => {
+          const from = document
+            .getElementById("from")
+            .value.trim()
+            .toLowerCase();
+          const to = document.getElementById("to").value.trim().toLowerCase();
+          const results = document.getElementById("results");
+          const ok =
+            state.trip === "oneway" &&
+            state.cabin === "business" &&
+            from.includes("moscow") &&
+            to.includes("kazan");
+          submitted = true;
+          document.title = ok
+            ? "PASS - one way, business, Moscow to Kazan"
+            : "Flights - " + label("trip") + ", " + label("cabin");
+          results.innerHTML = '<p class="muted">Searching…</p>';
+          setTimeout(() => {
+            if (!submitted) return;
+            const price =
+              state.cabin === "business"
+                ? 31
+                : state.cabin === "first"
+                  ? 52
+                  : 7;
+            const rows = [
+              ["06:05 – 07:40", "Aeroflot", "1 hr 35 min", "Nonstop"],
+              ["09:30 – 11:10", "S7 Airlines", "1 hr 40 min", "Nonstop"],
+              ["14:15 – 15:55", "Pobeda", "1 hr 40 min", "Nonstop"],
+              ["21:50 – 23:25", "UTair", "1 hr 35 min", "Nonstop"],
+            ];
+            results.innerHTML =
+              `<h2>${label("trip")} · ${label("cabin")} · ${document.getElementById("from").value} → ${document.getElementById("to").value}</h2>` +
+              "<div>" +
+              rows
+                .map(
+                  (r, i) =>
+                    `<div class="flight"><span>${r[0]}<br><span class="muted">${r[1]}</span></span><span>${r[2]}</span><span>${r[3]}</span><span>RUB ${(price + i) * 1000 + 450}</span></div>`
+                )
+                .join("") +
+              "</div>";
+          }, 300);
+        });
+        render();
+      })();
+    </script>
+  </body>
+</html>

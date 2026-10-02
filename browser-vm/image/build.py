@@ -176,6 +176,7 @@ def gz64(path):
 
 def cloud_init(version):
     files = [("/opt/bro/image/provision.sh", HERE / "provision.sh", "0755"),
+             ("/opt/bro/image/jev-ultrafast.patch", HERE / "jev-ultrafast.patch", "0644"),
              ("/opt/bro/worker/worker.py", WORKER / "worker.py", "0644"),
              ("/opt/bro/worker/jev_segment.py", WORKER / "jev_segment.py", "0644")]
     lines = ["#cloud-config", "write_files:"]

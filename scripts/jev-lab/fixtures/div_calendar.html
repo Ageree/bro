@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Расписание поездов, электричек и автобусов</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #000;
+        background: #f2f2f2;
+      }
+      header {
+        background: #fff;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        padding: 0 32px;
+      }
+      header .logo {
+        font-weight: 700;
+        font-size: 20px;
+      }
+      header .tabs span {
+        margin-right: 18px;
+        color: #555;
+        cursor: pointer;
+      }
+      header .tabs span.on {
+        color: #000;
+        border-bottom: 2px solid #fc0;
+        padding-bottom: 4px;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 24px 16px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 8px 0 18px;
+      }
+      .form {
+        position: relative;
+        display: flex;
+        gap: 2px;
+        align-items: stretch;
+        background: #fc0;
+        padding: 4px;
+        border-radius: 12px;
+      }
+      .box {
+        background: #fff;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 6px 14px;
+        height: 60px;
+        position: relative;
+      }
+      .box .cap {
+        font-size: 12px;
+        color: #888;
+      }
+      .box input {
+        border: 0;
+        outline: 0;
+        font: inherit;
+        font-size: 17px;
+        padding: 0;
+        width: 100%;
+        background: transparent;
+      }
+      .from,
+      .to {
+        flex: 1.3;
+      }
+      .box.date {
+        flex: 1;
+        cursor: pointer;
+        position: static;
+      } /* the popup is placed against the whole form */
+      .date input {
+        cursor: pointer;
+      }
+      .find {
+        background: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 28px;
+        font: 700 17px Arial;
+        cursor: pointer;
+      }
+      .swap {
+        width: 40px;
+        background: #fff;
+        border: 0;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 18px;
+      }
+      .popup {
+        position: absolute;
+        top: 72px;
+        right: 0;
+        width: 720px;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        z-index: 20;
+        display: flex;
+        cursor: default;
+      }
+      .popup .side {
+        width: 140px;
+        border-right: 1px solid #eee;
+        padding: 12px 0;
+      }
+      .popup .side div {
+        padding: 5px 16px;
+        cursor: pointer;
+        color: #444;
+      }
+      .popup .side div.cur {
+        font-weight: 700;
+        color: #000;
+      }
+      .popup .body {
+        flex: 1;
+        padding: 12px 18px;
+      }
+      .quick {
+        display: flex;
+        gap: 16px;
+        margin-bottom: 10px;
+      }
+      .quick span {
+        cursor: pointer;
+        border-bottom: 1px dashed #999;
+      }
+      .twomonths {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+      }
+      .mname {
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .week {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+      }
+      .week div {
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .wday {
+        color: #999;
+        font-size: 12px;
+      }
+      .day {
+        cursor: pointer;
+        border-radius: 6px;
+      }
+      .day:hover {
+        background: #fff3c4;
+      }
+      .day.off {
+        color: #ccc;
+        cursor: default;
+      }
+      .day.off:hover {
+        background: none;
+      }
+      .day.we {
+        color: #d00;
+      }
+      .day.sel {
+        background: #fc0;
+      }
+      #results {
+        margin-top: 24px;
+      }
+      .train {
+        background: #fff;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+        display: grid;
+        grid-template-columns: 1.5fr 1fr 1fr 1fr;
+      }
+      .muted {
+        color: #888;
+      }
+      .err {
+        color: #d00;
+        margin-top: 10px;
+        min-height: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">Расписания</span>
+      <span class="tabs"
+        ><span>Все</span><span>Самолёт</span><span class="on">Поезд</span
+        ><span>Электричка</span><span>Автобус</span></span
+      >
+    </header>
+    <main>
+      <h1>Расписание поездов</h1>
+      <div class="form">
+        <div class="box from">
+          <span class="cap">Откуда</span
+          ><input id="from" aria-label="Откуда" value="Москва" />
+        </div>
+        <button
+          class="swap"
+          id="swap"
+          type="button"
+          aria-label="Поменять местами"
+        >
+          ⇄
+        </button>
+        <div class="box to">
+          <span class="cap">Куда</span
+          ><input id="to" aria-label="Куда" value="Санкт-Петербург" />
+        </div>
+        <!-- The date input has no aria-label: its accessible name comes from the wrapping label, which also hosts the popup. -->
+        <label class="box date" id="dateBox"
+          ><span class="cap">Когда</span
+          ><input id="when" readonly placeholder="дата"
+        /></label>
+        <button class="find" id="find" type="button">Найти</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div id="results"></div>
+    </main>
+    <script>
+      (() => {
+        const TODAY = new Date(2026, 9, 2); // the fixture's "today": пятница, 2 октября 2026
+        const GEN = [
+          "января",
+          "февраля",
+          "марта",
+          "апреля",
+          "мая",
+          "июня",
+          "июля",
+          "августа",
+          "сентября",
+          "октября",
+          "ноября",
+          "декабря",
+        ];
+        const NOM = [
+          "январь",
+          "февраль",
+          "март",
+          "апрель",
+          "май",
+          "июнь",
+          "июль",
+          "август",
+          "сентябрь",
+          "октябрь",
+          "ноябрь",
+          "декабрь",
+        ];
+        const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+        const iso = (d) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const box = document.getElementById("dateBox"),
+          when = document.getElementById("when");
+        let date = null,
+          allDays = false,
+          first = new Date(2026, 9, 1),
+          popup = null,
+          submitted = false;
+
+        function edited() {
+          if (submitted) {
+            submitted = false;
+            document.title = "Расписание поездов, электричек и автобусов";
+            document.getElementById("results").innerHTML = "";
+          }
+        }
+        function pick(d, all) {
+          date = d;
+          allDays = !!all;
+          when.value = all
+            ? "на все дни"
+            : `${d.getDate()} ${GEN[d.getMonth()]}, ${WD[d.getDay()]}`;
+          edited();
+          close();
+        }
+        function month(start) {
+          const m = document.createElement("div");
+          const title = document.createElement("div");
+          title.className = "mname";
+          title.textContent =
+            NOM[start.getMonth()] +
+            (start.getFullYear() !== TODAY.getFullYear()
+              ? " " + start.getFullYear()
+              : "");
+          m.appendChild(title);
+          const head = document.createElement("div");
+          head.className = "week";
+          for (const w of ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]) {
+            const c = document.createElement("div");
+            c.className = "wday";
+            c.textContent = w;
+            head.appendChild(c);
+          }
+          m.appendChild(head);
+          const grid = document.createElement("div");
+          grid.className = "week";
+          const offset = (start.getDay() + 6) % 7;
+          const days = new Date(
+            start.getFullYear(),
+            start.getMonth() + 1,
+            0
+          ).getDate();
+          for (let i = 0; i < offset; i++)
+            grid.appendChild(document.createElement("div"));
+          for (let n = 1; n <= days; n++) {
+            const d = new Date(start.getFullYear(), start.getMonth(), n);
+            const c = document.createElement("div");
+            c.className =
+              "day" +
+              (d.getDay() === 0 || d.getDay() === 6 ? " we" : "") +
+              (date && !allDays && iso(d) === iso(date) ? " sel" : "");
+            c.textContent = n;
+            if (d < TODAY) c.classList.add("off");
+            else
+              c.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                pick(d);
+              });
+            grid.appendChild(c);
+          }
+          m.appendChild(grid);
+          return m;
+        }
+        function draw() {
+          popup.innerHTML = "";
+          const side = document.createElement("div");
+          side.className = "side";
+          for (let i = 0; i < 12; i++) {
+            const s = new Date(2026, 9 + i, 1);
+            const item = document.createElement("div");
+            item.textContent =
+              NOM[s.getMonth()] +
+              (s.getFullYear() !== TODAY.getFullYear()
+                ? " " + s.getFullYear()
+                : "");
+            if (s.getTime() === first.getTime()) item.className = "cur";
+            item.addEventListener("click", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              first = s;
+              draw();
+            });
+            side.appendChild(item);
+          }
+          const body = document.createElement("div");
+          body.className = "body";
+          const quick = document.createElement("div");
+          quick.className = "quick";
+          for (const [text, fn] of [
+            ["сегодня", () => pick(TODAY)],
+            ["завтра", () => pick(new Date(2026, 9, 3))],
+            ["на все дни", () => pick(null, true)],
+          ]) {
+            const q = document.createElement("span");
+            q.textContent = text;
+            q.addEventListener("click", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              fn();
+            });
+            quick.appendChild(q);
+          }
+          const two = document.createElement("div");
+          two.className = "twomonths";
+          two.append(
+            month(first),
+            month(new Date(first.getFullYear(), first.getMonth() + 1, 1))
+          );
+          body.append(quick, two);
+          popup.append(side, body);
+        }
+        function open() {
+          if (popup) return;
+          popup = document.createElement("div");
+          popup.className = "popup";
+          // Clicks inside the popup must not reach the label (which would re-focus the input).
+          popup.addEventListener("click", (e) => e.preventDefault());
+          first = new Date(2026, 9, 1);
+          draw();
+          box.appendChild(popup);
+        }
+        function close() {
+          if (popup) {
+            popup.remove();
+            popup = null;
+          }
+        }
+
+        when.addEventListener("click", (e) => {
+          e.stopPropagation();
+          popup ? close() : open();
+        });
+        document.addEventListener("mousedown", (e) => {
+          if (popup && !box.contains(e.target)) close();
+        });
+        for (const id of ["from", "to"])
+          document.getElementById(id).addEventListener("input", edited);
+        document.getElementById("swap").addEventListener("click", () => {
+          const f = document.getElementById("from"),
+            t = document.getElementById("to");
+          [f.value, t.value] = [t.value, f.value];
+          edited();
+        });
+        document.getElementById("find").addEventListener("click", () => {
+          const err = document.getElementById("err"),
+            results = document.getElementById("results");
+          const from = document
+            .getElementById("from")
+            .value.trim()
+            .toLowerCase();
+          const to = document.getElementById("to").value.trim().toLowerCase();
+          if (!date && !allDays) {
+            err.textContent = "Выберите дату поездки";
+            return;
+          }
+          err.textContent = "";
+          submitted = true;
+          const ok =
+            !allDays &&
+            iso(date) === "2026-11-20" &&
+            from.startsWith("москв") &&
+            to.includes("петербург");
+          document.title = ok
+            ? "PASS - Москва — Санкт-Петербург, 20 ноября 2026"
+            : `Расписание: ${from} — ${to}, ${when.value}`;
+          history.replaceState(
+            null,
+            "",
+            `?fromName=${encodeURIComponent(from)}&toName=${encodeURIComponent(to)}&when=${allDays ? "all-days" : iso(date)}`
+          );
+          results.innerHTML = '<p class="muted">Ищем поезда…</p>';
+          setTimeout(() => {
+            if (!submitted) return;
+            const rows = [
+              ["07:00", "Сапсан 752А", "3 ч 55 мин", "от 4 890 ₽"],
+              ["13:30", "Сапсан 766А", "4 ч 00 мин", "от 5 210 ₽"],
+              ["19:00", "Сапсан 780А", "4 ч 05 мин", "от 6 340 ₽"],
+              ["23:55", "Красная стрела 002А", "8 ч 55 мин", "от 3 120 ₽"],
+            ];
+            results.innerHTML =
+              `<h2>${document.getElementById("from").value} — ${document.getElementById("to").value}, ${when.value}</h2>` +
+              rows
+                .map(
+                  (r) =>
+                    `<div class="train"><span>${r[1]}</span><span>${r[0]}</span><span>${r[2]}</span><span>${r[3]}</span></div>`
+                )
+                .join("");
+          }, 300);
+        });
+      })();
+    </script>
+  </body>
+</html>

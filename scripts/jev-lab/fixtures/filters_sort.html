@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ноутбуки — купить в интернет-магазине</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #f6f6f8;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        height: 64px;
+        padding: 0 28px;
+        background: #fff;
+        border-bottom: 1px solid #e5e5e5;
+      }
+      header .logo {
+        font-weight: 700;
+        font-size: 21px;
+        color: #e3165b;
+      }
+      header input {
+        flex: 1;
+        max-width: 520px;
+        height: 40px;
+        border: 1px solid #ccc;
+        border-radius: 10px;
+        padding: 0 14px;
+        font: inherit;
+      }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      .crumbs {
+        color: #888;
+        font-size: 13px;
+      }
+      h1 {
+        font-size: 26px;
+        margin: 4px 0 14px;
+      }
+      h1 small {
+        font-size: 14px;
+        color: #888;
+        font-weight: 400;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 230px 1fr;
+        gap: 18px;
+      }
+      aside {
+        background: #fff;
+        border-radius: 12px;
+        padding: 14px;
+        align-self: start;
+      }
+      aside h3 {
+        font-size: 15px;
+        margin: 14px 0 8px;
+      }
+      aside h3:first-child {
+        margin-top: 0;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .cb {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 0;
+        cursor: pointer;
+        user-select: none;
+      }
+      .cb .box {
+        width: 18px;
+        height: 18px;
+        border: 2px solid #bbb;
+        border-radius: 4px;
+        flex: none;
+      }
+      .cb input:checked + .box {
+        background: #e3165b;
+        border-color: #e3165b;
+        box-shadow: inset 0 0 0 3px #fff;
+      }
+      .cb .cnt {
+        margin-left: auto;
+        color: #999;
+        font-size: 12px;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .switch {
+        width: 40px;
+        height: 22px;
+        border-radius: 11px;
+        border: 0;
+        background: #ccc;
+        position: relative;
+        cursor: pointer;
+        flex: none;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        transition: left 0.15s;
+      }
+      .switch[aria-checked="true"] {
+        background: #e3165b;
+      }
+      .switch[aria-checked="true"]::after {
+        left: 21px;
+      }
+      .price-row {
+        display: flex;
+        gap: 6px;
+      }
+      .price-row input {
+        width: 50%;
+        height: 32px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0 8px;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        position: relative;
+      }
+      .sort-btn {
+        background: none;
+        border: 0;
+        font: inherit;
+        cursor: pointer;
+        color: #222;
+        padding: 6px 4px;
+      }
+      .sort-btn b {
+        color: #e3165b;
+        font-weight: 400;
+      }
+      .sort-pop {
+        position: absolute;
+        right: 0;
+        top: 36px;
+        background: #fff;
+        border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+        list-style: none;
+        margin: 0;
+        padding: 6px 0;
+        z-index: 5;
+        min-width: 220px;
+      }
+      .sort-pop li {
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+      .sort-pop li:hover {
+        background: #f4f4f4;
+      }
+      .sort-pop li[aria-selected="true"] {
+        color: #e3165b;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        transition: opacity 0.1s;
+      }
+      .grid.loading {
+        opacity: 0.35;
+      }
+      .item {
+        background: #fff;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .item .img {
+        height: 90px;
+        background: #f0f0f3;
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+      .item .price {
+        font-weight: 700;
+        font-size: 17px;
+      }
+      .item .stock {
+        font-size: 12px;
+        color: #2a8a2a;
+      }
+      .item .stock.no {
+        color: #999;
+      }
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+        min-height: 4px;
+      }
+      .chips span {
+        background: #fde7ef;
+        color: #b0104a;
+        border-radius: 12px;
+        padding: 2px 10px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="logo">МаркетПлюс</span
+      ><input
+        type="search"
+        aria-label="Искать на МаркетПлюс"
+        placeholder="Искать на МаркетПлюс"
+      />
+    </header>
+    <main>
+      <div class="crumbs">Каталог / Компьютеры / Ноутбуки</div>
+      <h1>Ноутбуки <small id="total"></small></h1>
+      <div class="layout">
+        <aside aria-label="Фильтры">
+          <h3>Наличие</h3>
+          <div class="toggle">
+            <span id="stock-label">Только в наличии</span
+            ><button
+              type="button"
+              class="switch"
+              id="stock"
+              role="switch"
+              aria-checked="false"
+              aria-labelledby="stock-label"
+            ></button>
+          </div>
+          <h3>Бренд</h3>
+          <div id="brands"></div>
+          <h3>Цена, ₽</h3>
+          <div class="price-row">
+            <input id="pmin" aria-label="Цена от" placeholder="от" /><input
+              id="pmax"
+              aria-label="Цена до"
+              placeholder="до"
+            />
+          </div>
+        </aside>
+        <section>
+          <div class="topbar">
+            <div class="chips" id="chips"></div>
+            <button
+              type="button"
+              class="sort-btn"
+              id="sort"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="sort-list"
+            >
+              Сортировка: <b id="sort-label"></b> ▾
+            </button>
+          </div>
+          <div class="grid" id="grid"></div>
+        </section>
+      </div>
+    </main>
+    <script>
+      (() => {
+        const BRANDS = [
+          ["lenovo", "Lenovo"],
+          ["asus", "ASUS"],
+          ["hp", "HP"],
+          ["acer", "Acer"],
+          ["apple", "Apple"],
+          ["huawei", "HUAWEI"],
+        ];
+        const SORTS = [
+          ["popular", "По популярности"],
+          ["price_asc", "Сначала дешёвые"],
+          ["price_desc", "Сначала дорогие"],
+          ["rating", "По рейтингу"],
+          ["discount", "По размеру скидки"],
+        ];
+        const P = [
+          ["lenovo", 'Lenovo IdeaPad Slim 3 15"', 48990, 1, 4.7],
+          ["lenovo", "Lenovo ThinkPad E14 Gen 5", 79990, 1, 4.8],
+          ["lenovo", "Lenovo Legion 5 Pro", 139990, 0, 4.9],
+          ["lenovo", "Lenovo V15 G4", 36990, 1, 4.4],
+          ["lenovo", "Lenovo Yoga Slim 7", 99990, 1, 4.8],
+          ["lenovo", 'Lenovo IdeaPad 1 14"', 29990, 0, 4.2],
+          ["asus", "ASUS Vivobook 15", 45990, 1, 4.6],
+          ["asus", "ASUS Zenbook 14 OLED", 94990, 1, 4.8],
+          ["asus", "ASUS TUF Gaming F15", 89990, 0, 4.7],
+          ["asus", "ASUS ExpertBook B1", 52990, 1, 4.5],
+          ["asus", "ASUS ROG Strix G16", 159990, 1, 4.9],
+          ["hp", "HP 250 G9", 34990, 1, 4.3],
+          ["hp", "HP Pavilion 15", 58990, 1, 4.6],
+          ["hp", "HP Victus 16", 84990, 0, 4.6],
+          ["hp", "HP ProBook 450 G10", 74990, 1, 4.5],
+          ["acer", "Acer Aspire 3", 32990, 1, 4.3],
+          ["acer", "Acer Swift Go 14", 69990, 1, 4.7],
+          ["acer", "Acer Nitro V 15", 81990, 1, 4.6],
+          ["acer", "Acer Extensa 15", 31990, 0, 4.1],
+          ["apple", "Apple MacBook Air 13 M2", 89990, 1, 4.9],
+          ["apple", "Apple MacBook Air 15 M3", 129990, 1, 4.9],
+          ["apple", "Apple MacBook Pro 14 M3", 179990, 0, 5.0],
+          ["huawei", "HUAWEI MateBook D 16", 59990, 1, 4.6],
+          ["huawei", "HUAWEI MateBook 14", 74990, 1, 4.7],
+        ];
+        const state = { brands: new Set(), stock: false, sort: "popular" };
+        let timer = null;
+
+        const brandBox = document.getElementById("brands");
+        for (const [id, name] of BRANDS) {
+          const label = document.createElement("label");
+          label.className = "cb";
+          label.innerHTML = `<input type="checkbox" class="sr-only" value="${id}"><span class="box" aria-hidden="true"></span><span>${name}</span><span class="cnt">${P.filter((p) => p[0] === id).length}</span>`;
+          label.querySelector("input").addEventListener("change", (e) => {
+            e.target.checked ? state.brands.add(id) : state.brands.delete(id);
+            apply();
+          });
+          brandBox.appendChild(label);
+        }
+        const stock = document.getElementById("stock");
+        stock.addEventListener("click", () => {
+          state.stock = !state.stock;
+          stock.setAttribute("aria-checked", String(state.stock));
+          apply();
+        });
+
+        const sortBtn = document.getElementById("sort");
+        let pop = null;
+        const closeSort = () => {
+          if (pop) {
+            pop.remove();
+            pop = null;
+            sortBtn.setAttribute("aria-expanded", "false");
+          }
+        };
+        sortBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (pop) return closeSort();
+          pop = document.createElement("ul");
+          pop.className = "sort-pop";
+          pop.id = "sort-list";
+          pop.setAttribute("role", "listbox");
+          pop.setAttribute("aria-label", "Сортировка");
+          for (const [id, name] of SORTS) {
+            const li = document.createElement("li");
+            li.setAttribute("role", "option");
+            li.setAttribute("aria-selected", String(id === state.sort));
+            li.textContent = name;
+            li.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              state.sort = id;
+              closeSort();
+              apply();
+            });
+            pop.appendChild(li);
+          }
+          sortBtn.parentElement.appendChild(pop);
+          sortBtn.setAttribute("aria-expanded", "true");
+        });
+        document.addEventListener("click", (e) => {
+          if (pop && !pop.contains(e.target)) closeSort();
+        });
+
+        function apply() {
+          document.getElementById("sort-label").textContent = SORTS.find(
+            (s) => s[0] === state.sort
+          )[1].toLowerCase();
+          const grid = document.getElementById("grid");
+          grid.classList.add("loading");
+          clearTimeout(timer);
+          timer = setTimeout(render, 350); // the catalogue reloads asynchronously
+        }
+        function render() {
+          let items = P.filter(
+            (p) =>
+              (!state.brands.size || state.brands.has(p[0])) &&
+              (!state.stock || p[3])
+          );
+          const sorters = {
+            popular: () => 0,
+            price_asc: (a, b) => a[2] - b[2],
+            price_desc: (a, b) => b[2] - a[2],
+            rating: (a, b) => b[4] - a[4],
+            discount: (a, b) => (b[2] % 7) - (a[2] % 7),
+          };
+          items = items.slice().sort(sorters[state.sort]);
+          const grid = document.getElementById("grid");
+          grid.innerHTML = items
+            .map(
+              (
+                p
+              ) => `<div class="item"><div class="img"></div><div>${p[1]}</div><div class="price">${p[2].toLocaleString("ru-RU")} ₽</div>
+      <div class="stock ${p[3] ? "" : "no"}">${p[3] ? "В наличии" : "Нет в наличии"}</div><div>★ ${p[4]}</div></div>`
+            )
+            .join("");
+          grid.classList.remove("loading");
+          document.getElementById("total").textContent =
+            `${items.length} товаров`;
+          const chips = [...state.brands].map(
+            (b) => BRANDS.find((x) => x[0] === b)[1]
+          );
+          if (state.stock) chips.push("В наличии");
+          document.getElementById("chips").innerHTML = chips
+            .map((c) => `<span>${c}</span>`)
+            .join("");
+          const params = new URLSearchParams();
+          if (state.brands.size)
+            params.set("brand", [...state.brands].join(","));
+          if (state.stock) params.set("available", "1");
+          if (state.sort !== "popular") params.set("sort", state.sort);
+          history.replaceState(null, "", "?" + params);
+          const ok =
+            state.brands.size === 1 &&
+            state.brands.has("lenovo") &&
+            state.stock &&
+            state.sort === "price_asc";
+          document.title = ok
+            ? "PASS - Lenovo, в наличии, сначала дешёвые"
+            : "Ноутбуки — купить в интернет-магазине";
+        }
+        document.getElementById("sort-label").textContent =
+          SORTS[0][1].toLowerCase();
+        render();
+      })();
+    </script>
+  </body>
+</html>

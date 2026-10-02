@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Москва — Казань: поезда на 20 ноября</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.4 Arial,
+          sans-serif;
+        color: #222;
+        background: #f3f3f3;
+      }
+      header {
+        background: #fff;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 32px;
+        font-weight: 700;
+        font-size: 20px;
+        color: #0a8a4a;
+      }
+      main {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 20px 16px;
+      }
+      h1 {
+        font-size: 26px;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: #777;
+        margin-bottom: 16px;
+      }
+      .filters {
+        background: #fff;
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+      }
+      .group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 6px 0;
+        flex-wrap: wrap;
+      }
+      .group .gl {
+        width: 170px;
+        color: #555;
+      }
+      /* Native inputs are display:none; the styled <label for> is what people click. */
+      .group input {
+        display: none;
+      }
+      .group label {
+        border: 1px solid #c9c9c9;
+        border-radius: 18px;
+        padding: 6px 14px;
+        cursor: pointer;
+        user-select: none;
+        background: #fff;
+      }
+      .group input:checked + label {
+        background: #0a8a4a;
+        border-color: #0a8a4a;
+        color: #fff;
+      }
+      .train {
+        background: #fff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 8px;
+        display: grid;
+        grid-template-columns: 90px 1.6fr 1fr 1.4fr;
+        gap: 8px;
+      }
+      .muted {
+        color: #888;
+      }
+      #count {
+        color: #555;
+        margin: 6px 0 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>ПоездБилет</header>
+    <main>
+      <h1>Москва — Казань</h1>
+      <div class="sub">пятница, 20 ноября 2026 · 1 пассажир</div>
+      <div class="filters">
+        <div class="group">
+          <span class="gl">Тип вагона</span>
+          <input
+            type="radio"
+            name="car"
+            id="car-any"
+            value="any"
+            checked
+          /><label for="car-any">Любой</label>
+          <input type="radio" name="car" id="car-plaz" value="plaz" /><label
+            for="car-plaz"
+            >Плацкарт</label
+          >
+          <input type="radio" name="car" id="car-coupe" value="coupe" /><label
+            for="car-coupe"
+            >Купе</label
+          >
+          <input type="radio" name="car" id="car-sv" value="sv" /><label
+            for="car-sv"
+            >СВ</label
+          >
+          <input type="radio" name="car" id="car-seat" value="seat" /><label
+            for="car-seat"
+            >Сидячий</label
+          >
+        </div>
+        <div class="group">
+          <span class="gl">Время отправления</span>
+          <input type="checkbox" id="t-night" value="night" /><label
+            for="t-night"
+            >Ночь 0–6</label
+          >
+          <input type="checkbox" id="t-morning" value="morning" /><label
+            for="t-morning"
+            >Утро 6–12</label
+          >
+          <input type="checkbox" id="t-day" value="day" /><label for="t-day"
+            >День 12–18</label
+          >
+          <input type="checkbox" id="t-evening" value="evening" /><label
+            for="t-evening"
+            >Вечер 18–24</label
+          >
+        </div>
+      </div>
+      <div id="count"></div>
+      <div id="list"></div>
+    </main>
+    <script>
+      (() => {
+        const TRAINS = [
+          ["00:35", "Поезд 112Е", "13 ч 05 мин", { plaz: 2350, coupe: 4100 }],
+          ["05:50", "Ласточка 742Г", "11 ч 50 мин", { seat: 2980 }],
+          [
+            "08:15",
+            "Поезд 024Г",
+            "11 ч 40 мин",
+            { plaz: 2710, coupe: 4560, sv: 9870 },
+          ],
+          ["13:20", "Поезд 054Г", "12 ч 25 мин", { plaz: 2490, coupe: 4320 }],
+          [
+            "18:40",
+            "Поезд 002Ж «Премиум»",
+            "11 ч 35 мин",
+            { coupe: 6120, sv: 12400 },
+          ],
+          ["20:10", "Поезд 028Г", "12 ч 15 мин", { plaz: 2620, coupe: 4480 }],
+          ["21:30", "Поезд 044Е", "13 ч 30 мин", { plaz: 2290 }],
+          [
+            "23:05",
+            "Поезд 080Г",
+            "12 ч 55 мин",
+            { plaz: 2410, coupe: 4250, sv: 10150 },
+          ],
+        ];
+        const NAMES = {
+          plaz: "Плацкарт",
+          coupe: "Купе",
+          sv: "СВ",
+          seat: "Сидячий",
+        };
+        const slot = (t) => {
+          const h = +t.slice(0, 2);
+          return h < 6
+            ? "night"
+            : h < 12
+              ? "morning"
+              : h < 18
+                ? "day"
+                : "evening";
+        };
+        function render() {
+          const car = document.querySelector('input[name="car"]:checked').value;
+          const times = [
+            ...document.querySelectorAll(
+              '.group input[type="checkbox"]:checked'
+            ),
+          ].map((i) => i.value);
+          const rows = TRAINS.filter(
+            (t) =>
+              (car === "any" || t[3][car]) &&
+              (!times.length || times.includes(slot(t[0])))
+          );
+          document.getElementById("count").textContent =
+            `Найдено поездов: ${rows.length}`;
+          document.getElementById("list").innerHTML = rows
+            .map(
+              (t) =>
+                `<div class="train"><b>${t[0]}</b><span>${t[1]}</span><span class="muted">${t[2]}</span><span>` +
+                Object.entries(t[3])
+                  .filter(([k]) => car === "any" || k === car)
+                  .map(
+                    ([k, p]) => `${NAMES[k]} от ${p.toLocaleString("ru-RU")} ₽`
+                  )
+                  .join(" · ") +
+                "</span></div>"
+            )
+            .join("");
+          const ok =
+            car === "coupe" && times.length === 1 && times[0] === "evening";
+          document.title = ok
+            ? "PASS - купе, вечер"
+            : "Москва — Казань: поезда на 20 ноября";
+        }
+        document
+          .querySelectorAll(".group input")
+          .forEach((i) => i.addEventListener("change", render));
+        render();
+      })();
+    </script>
+  </body>
+</html>
