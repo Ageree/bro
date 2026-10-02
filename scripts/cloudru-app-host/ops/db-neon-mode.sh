@@ -18,6 +18,7 @@ case "$1" in
   status) ;;
   read-only | writable)
     [ "${HOST_PROFILE:-}" = prod ] || die "Neon's mode changes only from production's VM (HOST_PROFILE=prod)"
+    db_lock  # not in the middle of a copy into or out of Neon (db-copy.sh)
     ;;
   *) die "usage: db-neon-mode.sh status|read-only|writable" ;;
 esac

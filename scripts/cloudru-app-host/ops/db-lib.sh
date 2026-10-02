@@ -1,9 +1,10 @@
 #!/bin/bash
 # Shared by the db-*.sh ops scripts (scripts/cloudru-app-host/README.md, «База»); sourced, does nothing run
 # on its own. The scripts run on the VM as bro, by bro-backup.service or deployd (POST /ops/v1/ops), with the
-# env of /etc/bro/env (and deployd's /etc/bro/ops-env: NEON_DATABASE_URL, never in the app's env). A dump
-# holds people's data: it lives only in a 0700 work directory that goes away when the script ends (one left by
-# a killed run goes with the next run), and leaves the VM only encrypted (openssl, BACKUP_ENCRYPTION_KEY).
+# env of /etc/bro/env (and deployd's /etc/bro/ops-env: NEON_DATABASE_URL, never in the app's env). One runs at
+# a time on the VM (db_lock). A dump holds people's data: it lives only in a 0700 work directory that goes away
+# when the script ends (one left by a killed run goes with the next run), and leaves the VM only encrypted
+# (openssl, BACKUP_ENCRYPTION_KEY).
 #
 # Databases are named, never written out: app (DATABASE_URL_UNPOOLED, else DATABASE_URL), check
 # (BACKUP_CHECK_DATABASE_URL, the scratch database of db-restore-check.sh), neon (NEON_DATABASE_URL, only
@@ -42,10 +43,24 @@ need_backup_key() {
   [ -n "${BACKUP_ENCRYPTION_KEY:-}" ] || die "no BACKUP_ENCRYPTION_KEY in /etc/bro/env (BACKUPS=off turns backups off)"
 }
 
+# One db-*.sh at a time on this VM, whoever starts it (bro-backup.service, deployd's POST /ops/v1/ops): a
+# backup must not dump while a restore wipes, nor two backups share a key or the success marker. Taken before
+# any check of a database and held until the process ends; bro-backup.service runs its two scripts one after
+# the other, so each takes it in turn. Not in /tmp: bro-backup.service has a private one.
+db_lock() {
+  mkdir -p "$WORK_ROOT"
+  exec 9>> "$WORK_ROOT/.db.lock"
+  if ! flock -n 9; then
+    echo "another db-*.sh is running on this VM: waiting for it (at most an hour)" >&2
+    flock -w 3600 9 || die "another db-*.sh is still running after an hour: nothing done"
+  fi
+  # No other run is going now: a work directory is a killed run's (OOM, reboot, timeout), a dump in plain text.
+  find "$WORK_ROOT" -mindepth 1 -maxdepth 1 -name 'work.*' -exec rm -rf {} + \
+    || echo "could not remove a killed run's work directory in $WORK_ROOT" >&2
+}
+
 workdir() {
   mkdir -p "$WORK_ROOT"
-  # Left by a run that was killed (OOM, reboot, timeout): older than any run may last (deployd: 6 h).
-  find "$WORK_ROOT" -mindepth 1 -maxdepth 1 -name 'work.*' -mmin +420 -exec rm -rf {} + 2>/dev/null || true
   WORK=$(mktemp -d "$WORK_ROOT/work.XXXXXX")
   trap 'rm -rf "$WORK"' EXIT
 }
@@ -259,10 +274,17 @@ require_frozen() {
   [ "$busy" = 0 ] || die "$(which_of "$1") has $busy other sessions inside a transaction: they could still write"
 }
 
-no_bro_connections() {
+# Nobody else in a target: Bro (stopped for a restore), or on Neon a session of Vercel's. read_only is only the
+# default of new sessions, so one opened before Neon went read-only can still write.
+no_other_sessions() {
   local others
   others=$(other_sessions "$1")
-  [ "$others" = 0 ] || die "$others other connections to $(which_of "$1"): host.py stop NAME bro-eve bro-web first"
+  [ "$others" = 0 ] && return 0
+  if [ "$(which_of "$1")" = neon ]; then
+    die "$others other sessions on Neon: one opened before it went read-only could still write" \
+      "(pg_terminate_backend them, with Vercel's crons off)"
+  fi
+  die "$others other connections to $(which_of "$1"): host.py stop NAME bro-eve bro-web first"
 }
 
 # Drops what the connecting user owns outside the system schemas: its schemas (neon_auth aside), and its
@@ -320,8 +342,8 @@ WRITABLE="-c default_transaction_read_only=off"
 
 wipe() { PGOPTIONS="$WRITABLE" psql_on "$1" -c "SET client_min_messages = warning" -c "$WIPE_SQL"; }
 
-# Refuses a database that has tables unless --replace was given; anything Bro may be connected to while
-# Bro is (checked again right before the restore); Neon unless this is production and Neon is read-only
+# Refuses a database that has tables unless --replace was given; any but the scratch one while another session
+# is in it (checked again right before the restore); Neon unless this is production and Neon is read-only
 # for its app (the window of a rollback: before it, Neon is production's live database); the world's.
 guard_target() {  # NAME REPLACE(yes|no)
   local tables which
@@ -336,8 +358,8 @@ guard_target() {  # NAME REPLACE(yes|no)
   if [ "$tables" != "0" ] && [ "$2" != "yes" ]; then
     die "$which has $tables tables: pass --replace to put the dump in their place"
   fi
-  if [ "$which" != check ] && [ "$which" != neon ]; then
-    no_bro_connections "$1"
+  if [ "$which" != check ]; then
+    no_other_sessions "$1"
     printf -v "${1}_LIVE" '%s' yes
   fi
 }
@@ -378,7 +400,7 @@ restore() {
   pg_restore --no-owner --no-privileges --file "$WORK/restore.sql" "$2"
   keep_target "$1"
   local live="${1}_LIVE"
-  if [ "${!live:-}" = yes ]; then no_bro_connections "$1"; fi  # a deploy or restart since the guard
+  if [ "${!live:-}" = yes ]; then no_other_sessions "$1"; fi  # a deploy, restart or reconnect since the guard
   if ! PGOPTIONS="$WRITABLE" psql_on "$1" --single-transaction -c "SET client_min_messages = warning" \
     -c "$WIPE_SQL" -f "$WORK/restore.sql" > /dev/null 2> "$WORK/restore.err"; then
     die "the restore failed, $which is as it was: $(first_error "$WORK/restore.err")"

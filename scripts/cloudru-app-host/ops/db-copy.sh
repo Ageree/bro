@@ -13,11 +13,12 @@
 # encrypted copy of the source goes to <BACKUP_PREFIX>/<time>-<FROM>.dump.enc, and one of the target (when it
 # has tables) to <time>-pre<TO>.dump.enc; never pruned. The restore is db-restore.sh's: one transaction, the
 # target's own tables replaced, every table's count checked. Neon is a target only on production's VM while
-# it is read-only (the rollback window).
+# it is read-only with nobody else connected (the rollback window).
 #
-# --dump-only stops after the checks of the source (a rehearsal: does the VM reach it, how long does the dump
-# take); --live-source copies a source that is in use (a rehearsal into the stand: the dump is one snapshot,
-# but rows written meanwhile are not in it, so never for the move itself).
+# --dump-only stops after the dump (a rehearsal, the source may be live: does the VM reach it, how long does
+# the dump take; whether the source held still is not judged); --live-source copies a source that is in use,
+# only on the stand (HOST_PROFILE=stand: the dump is one snapshot, but rows written meanwhile are not in it,
+# so never for the move itself).
 source "$(dirname "$0")/db-lib.sh"
 [ $# -ge 2 ] || die "usage: db-copy.sh FROM TO [--replace] [--dump-only] [--live-source]"
 REPLACE=no
@@ -31,6 +32,13 @@ for flag in "${@:3}"; do
     *) die "unknown flag $flag" ;;
   esac
 done
+if [ "$LIVE" = yes ] && [ "${HOST_PROFILE:-}" != stand ]; then
+  die "--live-source copies a live database, into the stand only (HOST_PROFILE=stand): here the source must be frozen"
+fi
+# The move needs a source that holds still; a rehearsal takes the dump's one snapshot.
+FROZEN=no
+if [ "$LIVE" = no ] && [ "$DUMP_ONLY" = no ]; then FROZEN=yes; fi
+db_lock
 connection SRC "$1"
 connection DST "$2"
 same_database SRC DST && die "FROM and TO are the same database"
@@ -39,7 +47,7 @@ if [ "$DUMP_ONLY" = no ]; then
   guard_target DST "$REPLACE"
 fi
 refuse_foreign SRC
-if [ "$LIVE" = no ] && [ "$DUMP_ONLY" = no ]; then
+if [ "$FROZEN" = yes ]; then
   require_frozen SRC
 fi
 workdir
@@ -52,7 +60,7 @@ started=$(date +%s)
 dump SRC "$WORK/db.dump"
 echo "dump: $(stat -c %s "$WORK/db.dump") bytes in $(($(date +%s) - started)) s"
 dump_counts "$WORK/db.dump" > "$WORK/counts"
-if [ "$LIVE" = no ]; then
+if [ "$FROZEN" = yes ]; then
   table_counts SRC "$SCHEMAS" > "$WORK/after"
   writes_after=$(write_activity SRC)
   if ! diff "$WORK/before" "$WORK/after" >&2 || [ "$writes_before" != "$writes_after" ]; then
@@ -64,7 +72,7 @@ if [ "$LIVE" = no ]; then
   fi
   echo "source: $(wc -l < "$WORK/counts") tables in $SCHEMAS, $(awk '{s += $2} END {print s + 0}' "$WORK/counts") rows; the dump has them all, nothing was written meanwhile"
 else
-  echo "source in use (--live-source): $(wc -l < "$WORK/counts") tables, $(awk '{s += $2} END {print s + 0}' "$WORK/counts") rows in the dump's snapshot"
+  echo "source not checked for writes (--dump-only, --live-source): $(wc -l < "$WORK/counts") tables, $(awk '{s += $2} END {print s + 0}' "$WORK/counts") rows in the dump's snapshot"
 fi
 [ "$DUMP_ONLY" = yes ] && exit 0
 upload_backup "$WORK/db.dump" "$WORK/counts" "$BACKUP_PREFIX/$(date -u +%Y%m%dT%H%M%SZ)-${1//[^a-z0-9]/}.dump.enc" "$1"

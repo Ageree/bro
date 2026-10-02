@@ -241,7 +241,7 @@ libc `C.UTF-8` (`host.py pg create|users|databases|status`, повторяемы
   `bro_restore_check` со сверкой числа строк каждой таблицы. Манифест подписан
   HMAC ключом бэкапов: подложенный в бакет дамп не восстановится. Сбой —
   сообщение владельцу в Telegram и повтор раз в час, пока не пройдёт; нет
-  удачного бэкапа больше суток или нет ключа — тоже. Выключить — только явно
+  удачного бэкапа больше 26 часов или нет ключа — тоже. Выключить — только явно
   (`BACKUPS=off`). Свои бэкапы
   кластера (ежедневно, 14 дней) — второй слой: они восстанавливают лишь в
   новый кластер.
@@ -282,10 +282,14 @@ default_transaction_read_only` и `pg_terminate_backend` соединений Ve
   беречь, и вместо дампа «новых строк» переносится база целиком: так
   приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
 bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
-bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и
-  только пока он `read_only` и только с VM прода; перед этим кладёт
+bro-app-1 db-neon-mode.sh read-only` (повтор: Neon остаётся только для
+  чтения, а прочие сессии роли завершаются) → `host.py ops bro-app-1
+db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и только пока он
+  `read_only`, только с VM прода и без чужих сессий в Neon: `read_only` —
+  лишь умолчание новых сессий, открытая раньше пишет; перед этим кладёт
   зашифрованные копии `app` и самого Neon в Object Storage) →
-  `db-neon-mode.sh writable` → DNS назад,
+  `db-neon-mode.sh writable` (`RESET default_transaction_read_only` и
+  `pg_terminate_backend`) → DNS назад,
   расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
   нет. VM с базой не удалять, пока Vercel не проработал неделю.
 - Логическая репликация Cloud.ru → Neon не используется: у `bro_app` нет
@@ -383,7 +387,8 @@ bro-app-1 db-copy.sh neon app --replace` (сверка всех таблиц).
    расписаниями (`host.py status`: список `off` пуст). Сразу `host.py ops
 bro-app-1 db-backup.sh` — первый бэкап прода уже перенесённых данных и
    свежий `last-backup.json` (иначе сторож к утру поднимет тревогу по
-   бэкапу стенда прошлой ночи); ночной по таймеру — со следующей ночи.
+   бэкапу стенда прошлой ночи); ночной по таймеру — со следующей ночи, а
+   совпав с ручным, ждёт его: скрипты базы идут по одному (`db_lock`).
 7. DNS на VM. Сначала листинг зоны (POST не идемпотентен — повтор после
    потерянного ответа дал бы вторую A): `curl -sS -H "Authorization: Bearer
 $T" "https://api.vercel.com/v4/domains/brobro.tech/records?$Q&limit=100" |
@@ -428,10 +433,15 @@ https://brobro.tech/` и `https://www.brobro.tech/x` (308 на
 1. `host.py stop bro-app-1 bro-eve bro-web` — запись в Cloud.ru кончилась.
    Мост не трогать: он держит неподтверждённые обновления и ждёт eve.
 2. База: были записи в Cloud.ru (почти всегда — расписания, сообщения) —
-   `host.py ops bro-app-1 db-copy.sh app neon --replace`: Neon получает базу
-   целиком (и изменения, и удаления; пишет сквозь `read_only` и только пока
-   он `read_only`, копии обеих сторон — в Object Storage). Записей не было —
-   шаг пропустить. Затем `host.py ops bro-app-1 db-neon-mode.sh writable`.
+   `host.py ops bro-app-1 db-neon-mode.sh read-only` (повтор: завершает
+   сессии Vercel, открытые после шага 4 окна; копия в Neon идёт только без
+   чужих сессий), затем `host.py ops bro-app-1 db-copy.sh app neon
+--replace`: Neon получает базу целиком (и изменения, и удаления; пишет
+   сквозь `read_only` и только пока он `read_only`, копии обеих сторон — в
+   Object Storage). Отказ «other sessions on Neon» — Vercel переподключился:
+   повторить оба шага. Скрипты базы идут по одному (`db_lock`): идущий
+   ночной бэкап (04:10 МСК) копия ждёт до часа. Записей не было — копию
+   пропустить. Затем `host.py ops bro-app-1 db-neon-mode.sh writable`.
 3. Vercel: Cron Jobs → Enable; если домены снимали — вернуть
    (`POST /v10/projects/bro-next/domains` с `brobro.tech` и `www.brobro.tech`
    c `"redirect":"brobro.tech","redirectStatusCode":308`).
