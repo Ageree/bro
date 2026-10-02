@@ -8,7 +8,10 @@
   кабинетах сервисов:
   - `TELEGRAM_BOT_TOKEN` и `TELEGRAM_BOT_USERNAME` — @BotFather;
   - `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY` — ЮKassa, «Интеграция» → «Ключи API»;
-  - `IMESSAGE_PROJECT_ID`, `IMESSAGE_PROJECT_SECRET` и `IMESSAGE_WEBHOOK_SECRET` — Photon;
+  - `IMESSAGE_PROJECT_ID` и `IMESSAGE_PROJECT_SECRET` — Photon, Settings;
+  - `IMESSAGE_WEBHOOK_SECRET` — Photon показывает его один раз, при создании
+    вебхука: Spectrum → Webhooks → Add webhook на
+    `https://brobro.tech/eve/v1/photon` (домен после переезда тот же);
   - `BROWSER_VM_TWOCAPTCHA_API_KEY` — 2captcha.
 - Запустите сессию в самом свободном режиме разрешений, какой есть.
 
