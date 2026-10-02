@@ -5,7 +5,9 @@ import type {
 } from "@shared/composio/accounts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const createConnectionLink = vi.fn<typeof CreateConnectionLink>();
+const createConnectionLink = vi.hoisted(() =>
+  vi.fn<typeof CreateConnectionLink>()
+);
 
 vi.mock("@shared/composio/accounts", () => ({
   createConnectionLink,
