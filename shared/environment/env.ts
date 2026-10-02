@@ -569,10 +569,11 @@ export const env = createEnv({
     // own, apart from the OPENROUTER_* ones, so switching back is one
     // variable (`agent/lib/model/endpoint.ts`).
     ROUTERAI_API_KEY: pastedKeySchema.optional(),
+    // The key goes to this address with every call: https only.
     ROUTERAI_BASE_URL: requiredValue
       .refine(
-        (value) => URL.canParse(value),
-        "ROUTERAI_BASE_URL must be an absolute URL"
+        (value) => URL.parse(value)?.protocol === "https:",
+        "ROUTERAI_BASE_URL must be an absolute https URL"
       )
       .default("https://routerai.ru/api/v1"),
     // The balance check alerts the owner below this many roubles; RouterAI's

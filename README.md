@@ -428,12 +428,12 @@ settings mirror OpenRouter's under the `ROUTERAI_` prefix: `ROUTERAI_MODEL`
 (default `deepseek/deepseek-v4.1-flash`), `ROUTERAI_MODEL_CONTEXT_TOKENS`,
 `ROUTERAI_REASONING_EFFORT`, `ROUTERAI_MAX_OUTPUT_TOKENS`,
 `ROUTERAI_SEARCH_MODEL` and `ROUTERAI_SEARCH_MAX_RESULTS` (default 5), and
-`ROUTERAI_BASE_URL`. `ROUTERAI_PROVIDER_ORDER` pins upstream hosts (for
-`deepseek/*` the default is `sail-research,morph,deepinfra`: Sail Research was
-the one host that kept the prompt cache) and `ROUTERAI_PROVIDER_IGNORE` skips
-hosts for every model. RouterAI's own DeepSeek endpoint hangs, so `deepseek/*`
-always skips it. Costs come back in roubles and are recorded at
-`USAGE_USD_RUB`.
+`ROUTERAI_BASE_URL` (https only). `ROUTERAI_PROVIDER_ORDER` pins upstream
+hosts (for `deepseek/*` the default is `deepinfra`, which keeps the prompt
+cache; a pinned host that fails an answer is skipped for ten minutes) and
+`ROUTERAI_PROVIDER_IGNORE` skips hosts for every model. RouterAI's own
+DeepSeek endpoint hangs, so `deepseek/*` always skips it. Costs come back in
+roubles and are recorded as roubles, without a dollar price.
 
 `web_search` changes shape with the provider. The framework tool is
 provider-managed: an AI Gateway model searches through Exa, and a direct

@@ -97,7 +97,7 @@ function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
  * hosts above either way, and ROUTERAI_PROVIDER_IGNORE adds hosts to skip
  * for every model; a pinned host stays pinned.
  */
-function providerRouting(modelId: string, endpoint: ModelEndpoint) {
+export function providerRouting(modelId: string, endpoint: ModelEndpoint) {
   const order =
     endpoint.providerOrder ??
     (endpoint.provider === "routerai" && modelId.startsWith("deepseek/")
@@ -894,8 +894,12 @@ function withGatewayCost(
  * at `providerMetadata.openrouter.usage.cost`, so a direct step reached
  * `usage_costs` unpriced. RouterAI's cost is roubles: it goes to eve as
  * dollars at USAGE_USD_RUB, which `agent/hooks/usage-costs.ts` multiplies
- * back, so the step's roubles are RouterAI's bill. The dollars in
- * `chats.cost_usd` are at that rate too, not at RouterAI's own.
+ * back, so the step's roubles are RouterAI's bill; it leaves
+ * `usage_costs.cost_usd` empty, as for any price not given in dollars. The
+ * dollars in `chats.cost_usd` are at that rate, not at RouterAI's own.
+ * A model stream carries its price only on `finish`, which the provider
+ * package sends from `flush` even after an error event (`finish-step` is
+ * AI SDK's own part, above the middleware); a stream that broke off has none.
  */
 function stepCostMiddleware(
   toUsd: (cost: number) => number

@@ -1,6 +1,7 @@
 import { defineHook } from "eve/hooks";
 import { recordCost } from "@agent/lib/costs/record";
 import { turnCostSource, turnWorkspaceId } from "@agent/lib/costs/turns";
+import { modelEndpoint } from "@agent/lib/model/endpoint";
 import { usdToRub } from "@shared/costs/prices";
 
 /**
@@ -11,7 +12,10 @@ import { usdToRub } from "@shared/costs/prices";
  * is the step's own coordinates, which a retried hook computes again, so a
  * step is counted once. OpenRouter prices a step in dollars; a step without
  * a price (a Gateway model) keeps its tokens at zero roubles, marked
- * `unpriced` so the summary tells it from a free one.
+ * `unpriced` so the summary tells it from a free one. RouterAI bills in
+ * roubles, which reach eve as dollars at USAGE_USD_RUB
+ * (`stepCostMiddleware` in `agent/lib/model/direct.ts`): its step keeps the
+ * roubles and no `cost_usd`, which holds only a price given in dollars.
  */
 export default defineHook({
   events: {
@@ -23,7 +27,7 @@ export default defineHook({
       const costUsd = usage?.costUsd;
       await recordCost({
         costRub: costUsd === undefined ? 0 : usdToRub(costUsd),
-        costUsd: costUsd ?? null,
+        costUsd: billedInRoubles() ? null : (costUsd ?? null),
         idempotencyKey: `step:${ctx.session.id}:${turnId}:${String(stepIndex)}`,
         occurredAt: new Date(event.meta.at),
         runId: runId ?? null,
@@ -41,3 +45,8 @@ export default defineHook({
     },
   },
 });
+
+/** Whether the backend that priced the step bills in roubles. */
+function billedInRoubles() {
+  return modelEndpoint()?.costCurrency === "rub";
+}

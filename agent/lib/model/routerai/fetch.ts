@@ -107,8 +107,9 @@ function eventPayload(line: string) {
 /**
  * A whole (non-stream) answer's failure. HTTP 200 with an `error` and no
  * `choices` is a failure the provider package would read as a malformed
- * success, and so is a host that broke off. A failure status whose error is
- * plain text («401 Unauthorized», «Model … not found») keeps its status.
+ * success, and so is a host that broke off. A failure status keeps its
+ * status, whether the error is plain text («401 Unauthorized») or an object
+ * (a 429 or 5xx `{"error":{…}}` naming the upstream host to skip).
  */
 function wholeAnswerFailure(text: string, response: Response) {
   const answer = answerOf(text);
@@ -119,10 +120,7 @@ function wholeAnswerFailure(text: string, response: Response) {
     const answered = (answer.choices ?? []).length > 0 && !brokenOff(answer);
     return answered ? undefined : failure;
   }
-  const textError = parsedText(z.object({ error: z.string() }), text);
-  return textError === undefined
-    ? undefined
-    : { ...failure, status: response.status };
+  return { ...failure, status: response.status };
 }
 
 /** The first event of a stream that failed it, if one did. */
@@ -170,13 +168,13 @@ function readableAnswer(
     status: response.status,
     statusText: response.statusText,
   };
+  if (failure === undefined) return new Response(text, init);
   if (isEventStream(response)) {
     return new Response(
       text.split("\n").map(readableEventLine).join("\n"),
       init
     );
   }
-  if (failure === undefined) return new Response(text, init);
   const { error, status } = failure;
   return new Response(
     JSON.stringify({ error: { ...error, code: error.code ?? status } }),

@@ -211,12 +211,14 @@
   …»), а повтор шага eve шёл на тот же хост, и ход висел до таймаута.
   `agent/lib/model/routerai/` читает ответ целиком, упавший закреплённый хост
   переносит в `ignore` на 10 минут (`hosts.ts`) и сразу повторяет вызов.
+  Поиск (`agent/lib/web-search/search.ts`) идёт тем же fetch и маршрутом.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
   SSE `data:{"error":…}`; без `routerai/fetch.ts` провайдер AI SDK принимал их
   за пустой ответ, и «скоро вернусь» не видел 402/429/5xx.
 - RouterAI: `usage.cost` и `/credits` — в рублях. eve 0.62 берёт цену шага лишь
-  из `gateway.cost`, туда кладётся рубли ÷ `USAGE_USD_RUB` (`direct.ts`); шаги
-  OpenRouter пишутся без цены.
+  из `gateway.cost`, туда кладётся рубли ÷ `USAGE_USD_RUB` (`direct.ts`); в
+  `usage_costs` такой шаг — рубли без `cost_usd` (`agent/hooks/usage-costs.ts`);
+  шаги OpenRouter пишутся без цены.
 - Модель по умолчанию — `deepseek/deepseek-v4.1-flash`
   (`shared/environment/env.ts`); в Vercel она не задана, кабинет её не меняет.
   Подсказки id в кабинете — свои у каждого провайдера (`model-selector.tsx`):

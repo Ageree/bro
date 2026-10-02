@@ -73,6 +73,8 @@ beforeEach(() => {
   for (const [name, value] of Object.entries(requiredEnvironment)) {
     vi.stubEnv(name, value);
   }
+  // The cap below is OpenRouter's, whatever the shell chose.
+  vi.stubEnv("MODEL_PROVIDER", "openrouter");
   for (const name of [
     "OPENROUTER_MAX_OUTPUT_TOKENS",
     "OPENROUTER_PROVIDER_ORDER",

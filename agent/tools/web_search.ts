@@ -12,7 +12,7 @@ import {
 
 export const directWebSearch = defineTool({
   description:
-    "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns up to eight pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough. Search pages show timetables and typical fares, not what is on sale: for tickets, seats or rooms on given dates use browser_task when it is offered.",
+    "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns a handful of pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough. Search pages show timetables and typical fares, not what is on sale: for tickets, seats or rooms on given dates use browser_task when it is offered.",
   inputSchema: webSearchInputSchema,
   async execute(input, ctx) {
     try {

@@ -128,7 +128,7 @@ type ParsedTranscription =
   | {
       readonly kind: "text";
       readonly cost: number | undefined;
-      /** Looks the cost up in `/generation` when the answer carries none. */
+      /** Logged, so a cost the answer lacks can be looked up by hand in `/generation`. */
       readonly generationId: string | undefined;
       readonly seconds: number | undefined;
       readonly text: string;

@@ -259,8 +259,11 @@ describe("RouterAI's errors", () => {
   });
 });
 
-/** RouterAI's next answers, one per call, and the routing each call asked for. */
-function answers(...bodies: readonly string[]) {
+/**
+ * RouterAI's next answers, one per call, and the routing each call asked
+ * for: a stream's text, or a whole answer as RouterAI sent it.
+ */
+function answers(...bodies: readonly (string | Response)[]) {
   const routing: unknown[] = [];
   const pending = [...bodies];
   vi.stubGlobal(
@@ -273,9 +276,11 @@ function answers(...bodies: readonly string[]) {
       const body = pending.shift();
       if (body === undefined) throw new Error("No answer is left.");
       return Promise.resolve(
-        new Response(body, {
-          headers: { "content-type": "text/event-stream" },
-        })
+        body instanceof Response
+          ? body
+          : new Response(body, {
+              headers: { "content-type": "text/event-stream" },
+            })
       );
     })
   );
@@ -426,6 +431,29 @@ describe("a pinned RouterAI host that fails an answer", () => {
     // eve retries the step on a 5xx, and «скоро вернусь» knows it.
     expect(failures(parts)).toMatchObject([
       { message: "StreamLake broke off its answer.", statusCode: 502 },
+    ]);
+  });
+
+  it("is skipped on a failure status with an error object", async () => {
+    const routing = answers(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 429,
+            message: "Upstream error from DeepInfra: Rate limit exceeded",
+          },
+        }),
+        { headers: { "content-type": "application/json" }, status: 429 }
+      ),
+      served("Novita", "Да")
+    );
+
+    const parts = await streamedParts(["deepinfra", "novita"]);
+
+    expect(texts(parts)).toEqual(["Да"]);
+    expect(routing).toEqual([
+      { ignore: ["deepseek"], order: ["deepinfra", "novita"] },
+      { ignore: ["deepseek", "deepinfra"], order: ["novita"] },
     ]);
   });
 

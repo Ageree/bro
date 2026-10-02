@@ -30,10 +30,14 @@ json() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{co
 # The model backend's balance: RouterAI (MODEL_PROVIDER=routerai) reports what
 # is left in roubles with the ordinary key, OpenRouter credits and usage in
 # dollars.
-if [ "${MODEL_PROVIDER:-}" = routerai ]; then
+# Read as env.ts reads them: the provider trimmed and in lower case, the base
+# URL trimmed and without trailing slashes.
+PROVIDER=$(printf '%s' "${MODEL_PROVIDER:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+if [ "$PROVIDER" = routerai ]; then
   # A pasted key may carry spaces and typographic quotes, as env.ts allows.
   RAI_KEY=$(node -e 'console.log((process.env.ROUTERAI_API_KEY??"").replace(/\s+/gu,"").replace(/^[\x27"‘’“”]+|[\x27"‘’“”]+$/gu,""))')
-  LEFT=$(curl -s -m 20 "${ROUTERAI_BASE_URL:-https://routerai.ru/api/v1}/credits" -H "Authorization: Bearer $RAI_KEY" \
+  RAI_BASE=$(printf '%s' "${ROUTERAI_BASE_URL:-}" | tr -d '[:space:]' | sed -E 's#/+$##')
+  LEFT=$(curl -s -m 20 "${RAI_BASE:-https://routerai.ru/api/v1}/credits" -H "Authorization: Bearer $RAI_KEY" \
     | json 'j=>j.data.credits.toFixed(2)')
   BACKEND=RouterAI; LEFT_SHOWN="${LEFT:-unknown} ₽"; LEFT_FLOOR=30
 else

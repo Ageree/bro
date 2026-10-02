@@ -55,9 +55,10 @@ async function completeStep(
     readonly inputTokens?: number;
     readonly outputTokens?: number;
     readonly cacheReadTokens?: number;
-  }
+  },
+  hook: typeof costsHook = costsHook
 ) {
-  const handler = costsHook.events?.["step.completed"];
+  const handler = hook.events?.["step.completed"];
   // SAFETY: the case builds only the fields of the event the hook reads.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a partial event stands in for the runtime's.
   const event = {
@@ -147,6 +148,27 @@ describe("recording a model step", () => {
       },
       workspaceId,
     });
+  });
+
+  it("keeps RouterAI's roubles and writes no dollars for them", async () => {
+    vi.resetModules();
+    vi.stubEnv("MODEL_PROVIDER", "routerai");
+    vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+    const routerAiHook = (await import("@agent/hooks/usage-costs")).default;
+    // The other cases keep the Gateway setup of `tests/setup-env.ts`.
+    vi.stubEnv("MODEL_PROVIDER", "");
+    vi.stubEnv("ROUTERAI_API_KEY", "");
+
+    // 0.31 ₽ reaches eve as dollars at USAGE_USD_RUB.
+    await completeStep(
+      context(caller("authjs")),
+      { costUsd: 0.31 / 84.41, inputTokens: 10 },
+      routerAiHook
+    );
+
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ costRub: 0.31, costUsd: null })
+    );
   });
 
   it("ties a browser report's step to its run and keeps an unpriced step at zero", async () => {

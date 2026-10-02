@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { providerRouting } from "@agent/lib/model/direct";
 import { modelEndpoint } from "@agent/lib/model/endpoint";
 import {
   failureStatus,
   reportedErrorSchema,
 } from "@agent/lib/model/routerai/errors";
+import { routerAiModelFetch } from "@agent/lib/model/routerai/fetch";
 import { env } from "@shared/environment";
 
 /**
@@ -152,7 +154,9 @@ async function searchOnce(
   endpoint: SearchEndpoint,
   signal: AbortSignal
 ) {
-  const response = await fetch(`${endpoint.baseURL}/chat/completions`, {
+  // On RouterAI the model's own fetch skips a pinned host that failed.
+  const send = endpoint.provider === "routerai" ? routerAiModelFetch : fetch;
+  const response = await send(`${endpoint.baseURL}/chat/completions`, {
     body: JSON.stringify(requestBody(input, engine, endpoint)),
     headers: {
       authorization: `Bearer ${endpoint.apiKey}`,
@@ -163,7 +167,7 @@ async function searchOnce(
     signal: AbortSignal.any([signal, AbortSignal.timeout(attemptTimeoutMs)]),
   });
   const text = await response.text();
-  if (!response.ok) failed(endpoint, response.status, text);
+  if (!response.ok) failed(endpoint, response.status, failureDetail(text));
   const completion = parseCompletion(text, endpoint);
   if (completion.error !== undefined && !completion.choices?.length) {
     failed(endpoint, completion.error.status, completion.error.message);
@@ -208,20 +212,15 @@ function maxResults(endpoint: SearchEndpoint) {
 }
 
 /**
- * RouterAI's own DeepSeek endpoint hung for minutes on 01.10 (see
- * `agent/lib/model/direct.ts`), and a search waits 9 s, so a DeepSeek reading
- * model skips it here too, with the hosts ROUTERAI_PROVIDER_IGNORE names.
+ * On RouterAI the reading model is routed as Bro's own model is
+ * (`agent/lib/model/direct.ts`): its own DeepSeek endpoint hung for minutes
+ * on 01.10 and a search waits 9 s, so the same hosts are pinned and skipped.
  * OpenRouter keeps its own routing.
  */
-function providerRouting(model: string, endpoint: SearchEndpoint) {
+function searchRouting(model: string, endpoint: SearchEndpoint) {
   if (endpoint.provider !== "routerai") return {};
-  const ignore = [
-    ...new Set([
-      ...(model.startsWith("deepseek/") ? ["deepseek"] : []),
-      ...endpoint.providerIgnore,
-    ]),
-  ];
-  return ignore.length > 0 ? { provider: { ignore } } : {};
+  const provider = providerRouting(model, endpoint);
+  return provider === undefined ? {} : { provider };
 }
 
 /** The body the chat completions endpoint receives for one search. */
@@ -243,7 +242,7 @@ function requestBody(
     ],
     model,
     plugins: [webPlugin(input, engine, maxResults(endpoint))],
-    ...providerRouting(model, endpoint),
+    ...searchRouting(model, endpoint),
     // DeepSeek spends roughly 1,600 hidden tokens before its first visible
     // character, which buys nothing here.
     reasoning: { enabled: false },
@@ -293,6 +292,15 @@ function readResults(
     if (results.length === limit) break;
   }
   return results;
+}
+
+/** A failure body's error message, or the body as it came. */
+function failureDetail(text: string) {
+  try {
+    return responseSchema.parse(JSON.parse(text)).error?.message ?? text;
+  } catch {
+    return text;
+  }
 }
 
 function parseCompletion(text: string, endpoint: SearchEndpoint) {

@@ -45,7 +45,7 @@ describe("model provider environment", () => {
       await import("@shared/model/provider");
 
     expect(env.OPENROUTER_API_KEY).toBe("sk-or-test");
-    // Unset, MODEL_PROVIDER keeps what the key alone chose before RouterAI.
+    // With MODEL_PROVIDER unset, the OpenRouter key alone selects OpenRouter.
     expect(directModelProvider()).toBe("openrouter");
     expect(directModelProviderName()).toBe("OpenRouter");
     expect(defaultModelId()).toBe("deepseek/deepseek-v4.1-flash");
@@ -113,6 +113,21 @@ describe("model provider environment", () => {
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"
     );
+  });
+
+  it("sends the RouterAI key only over https", async () => {
+    vi.stubEnv("MODEL_PROVIDER", "routerai");
+    vi.stubEnv("ROUTERAI_API_KEY", "sk-rai-test");
+    vi.stubEnv("ROUTERAI_BASE_URL", "http://routerai.ru/api/v1");
+
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith(expect.any(String), [
+      expect.objectContaining({
+        message: "ROUTERAI_BASE_URL must be an absolute https URL",
+      }),
+    ]);
   });
 
   it("rejects an unknown provider", async () => {

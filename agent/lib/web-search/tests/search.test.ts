@@ -22,7 +22,12 @@ const requestBodySchema = z.object({
       max_results: z.number(),
     })
   ),
-  provider: z.strictObject({ ignore: z.array(z.string()) }).optional(),
+  provider: z
+    .strictObject({
+      ignore: z.array(z.string()).optional(),
+      order: z.array(z.string()).optional(),
+    })
+    .optional(),
   reasoning: z.object({ enabled: z.boolean() }),
   temperature: z.number(),
 });
@@ -436,7 +441,7 @@ describe("RouterAI web search", () => {
     expect(request.body.reasoning).toEqual({ enabled: false });
   });
 
-  it("skips RouterAI's own DeepSeek endpoint and the hosts the deployment skips", async () => {
+  it("routes a DeepSeek reading model as Bro's own model, with the hosts the deployment skips", async () => {
     vi.stubEnv("ROUTERAI_PROVIDER_IGNORE", "io-net, DeepSeek");
     vi.stubEnv("ROUTERAI_SEARCH_MAX_RESULTS", "3");
     fetchMock.mockResolvedValue(oneCitation());
@@ -446,8 +451,35 @@ describe("RouterAI web search", () => {
 
     const { body } = requestAt(0);
     expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
-    expect(body.provider).toEqual({ ignore: ["deepseek", "io-net"] });
+    expect(body.provider?.order).toEqual(["deepinfra"]);
+    expect(body.provider?.ignore).toEqual(
+      expect.arrayContaining(["deepseek", "sail-research", "io-net"])
+    );
     expect(body.plugins[0]?.max_results).toBe(3);
+  });
+
+  it("asks the next host when the pinned one failed the search", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 503,
+              message: "Upstream error from DeepInfra: no capacity",
+            },
+          })
+        )
+      )
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    expect(await searchWeb({ query: "rates" }, turnSignal())).toHaveLength(1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retried = requestAt(1).body;
+    expect(retried.provider?.order).toBeUndefined();
+    expect(retried.provider?.ignore).toContain("deepinfra");
+    expect(retried.plugins[0]?.engine).toBe("exa");
   });
 
   it("leaves another reading model to RouterAI's routing", async () => {
@@ -508,7 +540,7 @@ describe("RouterAI web search", () => {
     const searchWeb = await loadSearchWeb();
     expect(
       await failureOf(searchWeb({ query: "rates" }, turnSignal()))
-    ).toContain("RouterAI error: upstream went away");
+    ).toContain("RouterAI 502: upstream went away");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
