@@ -30,6 +30,19 @@ export function isSafeMemoryText(value: string) {
   );
 }
 
+/**
+ * A memory's text as a confirmation card compares it: a call that names the
+ * record with other quotes, case or spacing still names the same record.
+ */
+export function comparableMemoryText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replaceAll(/[«»"“”„]/gu, "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+}
+
 const safeMemoryTextSchema = z
   .string()
   .trim()

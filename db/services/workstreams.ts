@@ -1,4 +1,14 @@
-import { and, count, desc, eq, ilike, isNotNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { z } from "zod";
 import { db, workspaces, workstreams } from "@db";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -8,6 +18,8 @@ import {
   saveWorkstreamSchema,
 } from "@shared/workstreams/schema";
 import { ensureScope } from "./scope";
+
+const maximumWorkstreams = 100;
 
 export async function findWorkstreams(
   scope: AccessScope,
@@ -149,7 +161,7 @@ export async function saveWorkstream(
             isNotNull(workstreams.content)
           )
         );
-      if ((total?.value ?? 0) >= 100)
+      if ((total?.value ?? 0) >= maximumWorkstreams)
         throw new Error(
           "Workstream memory is full (100 records). Ask which obsolete workstream to forget before adding another."
         );
@@ -238,6 +250,139 @@ export async function forgetWorkstream(
     }
     return { forgotten: true };
   });
+}
+
+/**
+ * Moves the saved work of the scopes `fromKeys` into `toKey`: what a slot kept
+ * under other eve scope keys. Work the target already holds word for word is
+ * only retired; an ID the target already uses, even by forgotten work, gets a
+ * numbered suffix, so neither side is overwritten. The newest work moves
+ * first, and whatever does not fit under the cap stays put for a later call;
+ * a full target is not even locked. Each move keeps its conversation and date
+ * and retires the source as forgetting would, so a repeated call finds
+ * nothing to move. The number of workstreams moved.
+ */
+export async function adoptWorkstreams(
+  scope: AccessScope,
+  fromKeys: readonly string[],
+  toKey: string
+) {
+  // Nearly every call ends here: one indexed lookup.
+  const [pending] = await db
+    .select({ id: workstreams.id })
+    .from(workstreams)
+    .where(
+      and(
+        eq(workstreams.workspaceId, scope.workspaceId),
+        inArray(workstreams.scopeKey, [...fromKeys]),
+        isNotNull(workstreams.content)
+      )
+    )
+    .limit(1);
+  if (!pending) return 0;
+  const live = and(
+    eq(workstreams.workspaceId, scope.workspaceId),
+    eq(workstreams.scopeKey, toKey),
+    isNotNull(workstreams.content)
+  );
+  const [total] = await db
+    .select({ value: count() })
+    .from(workstreams)
+    .where(live);
+  if ((total?.value ?? 0) >= maximumWorkstreams) return 0;
+  await ensureScope(scope);
+  return db.transaction(async (transaction) => {
+    // The lock every save and forget takes.
+    await transaction
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, scope.workspaceId))
+      .for("update");
+    const [sources, targets] = await Promise.all([
+      transaction
+        .select()
+        .from(workstreams)
+        .where(
+          and(
+            eq(workstreams.workspaceId, scope.workspaceId),
+            inArray(workstreams.scopeKey, [...fromKeys]),
+            isNotNull(workstreams.content)
+          )
+        )
+        .orderBy(desc(workstreams.updatedAt), workstreams.id),
+      transaction
+        .select()
+        .from(workstreams)
+        .where(
+          and(
+            eq(workstreams.workspaceId, scope.workspaceId),
+            eq(workstreams.scopeKey, toKey)
+          )
+        ),
+    ]);
+    const taken = new Set(targets.map(({ id }) => id));
+    const held = new Set(
+      targets.flatMap(({ content }) =>
+        content ? [JSON.stringify(content)] : []
+      )
+    );
+    let room =
+      maximumWorkstreams - targets.filter(({ content }) => content).length;
+    const now = new Date();
+    let moved = 0;
+    for (const row of sources) {
+      if (!row.content) continue;
+      const same = held.has(JSON.stringify(row.content));
+      if (!same && room <= 0) continue;
+      if (!same) {
+        const id = freeWorkstreamId(row.id, taken);
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One transaction: its statements run one after another anyway.
+        await transaction.insert(workstreams).values({
+          content: row.content,
+          id,
+          lastOperationId: `adopt:${row.scopeKey}:${row.id}`,
+          revision: 1,
+          scopeKey: toKey,
+          sessionId: row.sessionId,
+          updatedAt: row.updatedAt,
+          workspaceId: scope.workspaceId,
+        });
+        taken.add(id);
+        held.add(JSON.stringify(row.content));
+        room -= 1;
+        moved += 1;
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
+      await transaction
+        .update(workstreams)
+        .set({
+          content: null,
+          lastOperationId: `adopted:${toKey}`,
+          revision: row.revision + 1,
+          sessionId: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(workstreams.workspaceId, scope.workspaceId),
+            eq(workstreams.scopeKey, row.scopeKey),
+            eq(workstreams.id, row.id),
+            eq(workstreams.revision, row.revision)
+          )
+        );
+    }
+    return moved;
+  });
+}
+
+/** `id`, or the first `id-2`, `id-3`… that is free and still a valid ID. */
+function freeWorkstreamId(id: string, taken: ReadonlySet<string>) {
+  if (!taken.has(id)) return id;
+  for (let suffix = 2; ; suffix += 1) {
+    const tail = `-${String(suffix)}`;
+    const candidate = `${id.slice(0, 80 - tail.length).replace(/-+$/u, "")}${tail}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 function workstreamResult(row: typeof workstreams.$inferSelect) {
