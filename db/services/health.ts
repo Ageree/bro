@@ -14,6 +14,9 @@ export async function databaseAnswers(timeoutMs: number) {
     query_timeout: timeoutMs,
     statement_timeout: timeoutMs,
   });
+  // A late socket error on a probe that is already over must not crash the
+  // app: without a listener `error` is thrown as an uncaught exception.
+  client.on("error", () => undefined);
   try {
     await client.connect();
     await client.query("select 1");
