@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
-import { get, put } from "@vercel/blob";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
-import { env } from "@shared/environment";
+import {
+  artifactStorageConfigured,
+  openArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 /**
- * The Blob folder for each kind of private image. Browser captures keep the
+ * The folder for each kind of private image. Browser captures keep the
  * folder their existing objects already live in.
  */
 const storageFolders = {
@@ -15,7 +18,6 @@ const storageFolders = {
   generated: "generated-images",
   reference: "reference-photos",
 } as const;
-const storageCacheSeconds = 365 * 24 * 60 * 60;
 
 type PrivateImageKind = keyof typeof storageFolders;
 
@@ -41,16 +43,6 @@ interface StoredImage {
   readonly contentHash: string;
   readonly mediaType: string;
   readonly storagePathname: string;
-}
-
-/**
- * Whether there is a private Blob store to put images in. Without one an
- * artifact row could be written but never served, so nothing is stored.
- */
-export function imageArtifactStorageConfigured() {
-  return (
-    env.BLOB_STORE_ID !== undefined || env.BLOB_READ_WRITE_TOKEN !== undefined
-  );
 }
 
 /**
@@ -101,12 +93,10 @@ export async function storePrivateImage(
   kind: PrivateImageKind
 ) {
   const stored = describePrivateImage(scope, bytes, kind);
-  await put(stored.storagePathname, Buffer.from(bytes), {
-    access: "private",
-    addRandomSuffix: false,
-    allowOverwrite: true,
-    cacheControlMaxAge: storageCacheSeconds,
-    contentType: stored.mediaType,
+  await putArtifactObject({
+    bytes,
+    mediaType: stored.mediaType,
+    pathname: stored.storagePathname,
   });
   return stored;
 }
@@ -146,22 +136,21 @@ export async function readPrivateImage(
   stored: StoredImage,
   signal?: AbortSignal
 ) {
-  if (!imageArtifactStorageConfigured()) return undefined;
-  const result = await get(stored.storagePathname, {
-    abortSignal: signal,
-    access: "private",
-  });
-  if (result?.statusCode !== 200) return undefined;
+  if (!artifactStorageConfigured()) return undefined;
+  const result = await openArtifactObject(stored.storagePathname, { signal });
+  if (result?.status !== 200) return undefined;
   if (
-    result.blob.size !== stored.byteSize ||
-    result.blob.contentType !== stored.mediaType
-  )
+    result.size !== stored.byteSize ||
+    result.contentType !== stored.mediaType
+  ) {
+    await result.stream.cancel();
     return undefined;
+  }
   const reader = result.stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
-    /* oxlint-disable eslint/no-await-in-loop -- Blob response chunks form an ordered stream. */
+    /* oxlint-disable eslint/no-await-in-loop -- Response chunks form an ordered stream. */
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;

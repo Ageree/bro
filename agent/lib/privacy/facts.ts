@@ -5,20 +5,26 @@ import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
+import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 
 /**
  * What Bro keeps about the person and where, as this deployment is built:
  * the app and the agent run on Vercel, the records live in Postgres on Neon,
- * files in private Vercel Blob storage. On 25.09 (RU d14) Bro said only «в
+ * files in Bro's private bucket in Object Storage on Cloud.ru. On 25.09 (RU d14) Bro said only «в
  * облаке сервиса» and «Postgres в облаке».
  */
 export function keptData() {
   return [
     `Память (факты, предпочтения, правила), сохранённые дела, личные данные (имя, телефон, почта, адрес), расписания, сейф, заказы и итоги поручений${yooKassaConfigured() ? ", история оплат подписки" : ""}${browserUseConfigured() ? ", сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом" : ""} — в базе Postgres в Neon.`,
     "Пароли и карты из сейфа лежат там же в зашифрованном виде (AES-256-GCM): языковая модель их не видит.",
-    "Файлы — вложения писем, файлы с Диска, нарисованные картинки и снимки страниц из поручений — в приватном хранилище Vercel Blob.",
+    // Without the bucket nothing is stored (`artifactStorageConfigured`).
+    ...(artifactStorageConfigured()
+      ? [
+          "Файлы — вложения писем, файлы с Диска, нарисованные картинки и снимки страниц из поручений — в приватном хранилище Object Storage облака Cloud.ru.",
+        ]
+      : []),
     "Приложение и сам Бро работают на Vercel; история переписки (сессии Бро) хранится там же, в Vercel Workflow.",
   ];
 }
@@ -45,6 +51,11 @@ export function dataProcessors(modelId: string) {
     ...(customProxy() !== undefined && env.BROWSER_USE_API_KEY !== undefined
       ? [
           "Облачный браузер ходит на сайты через прокси-сервер деплоя: прокси видит, на какие сайты он заходит.",
+        ]
+      : []),
+    ...(artifactStorageConfigured()
+      ? [
+          "Файлы (вложения писем, файлы с Диска, нарисованные картинки, снимки страниц) хранит Cloud.ru в приватном хранилище Object Storage: открыть их можно только через Бро.",
         ]
       : []),
     ...browserVms(),

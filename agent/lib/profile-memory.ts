@@ -1,58 +1,43 @@
+import type { MemoryScopeContext } from "eve/memory";
 import {
-  defineMemoryProvider,
-  type MemoryOperationContext,
-  type MemoryProvider,
-  type MemoryRecallHandler,
-  type MemoryScopeContext,
-} from "eve/memory";
+  MemoryDocumentConflictError,
+  type MemoryDocumentBackend,
+} from "eve/memory/file";
 import { z } from "zod";
-import type { env } from "@shared/environment";
 import { resolveModeValue } from "@agent/lib/mode";
+import {
+  readMemoryDocument,
+  writeMemoryDocument,
+} from "@db/services/memory/documents";
 
-export function resolveProfileMemoryBackend(
-  environment: Pick<
-    typeof env,
-    | "BLOB_READ_WRITE_TOKEN"
-    | "BLOB_STORE_ID"
-    | "EVE_MEMORY_BLOB_READ_WRITE_TOKEN"
-    | "EVE_MEMORY_BLOB_STORE_ID"
-    | "NODE_ENV"
-    | "VERCEL_ENV"
-  >
-) {
-  if (environment.NODE_ENV !== "production") {
-    return { kind: "automatic" as const };
-  }
-
-  if (environment.BLOB_STORE_ID) {
-    return {
-      kind: "vercel-blob" as const,
-      options: { storeId: environment.BLOB_STORE_ID },
-    };
-  }
-
-  if (
-    environment.VERCEL_ENV === undefined &&
-    environment.BLOB_READ_WRITE_TOKEN
-  ) {
-    return {
-      kind: "vercel-blob" as const,
-      options: { token: environment.BLOB_READ_WRITE_TOKEN },
-    };
-  }
-  if (environment.EVE_MEMORY_BLOB_STORE_ID) {
-    return {
-      kind: "vercel-blob" as const,
-      options: { storeId: environment.EVE_MEMORY_BLOB_STORE_ID },
-    };
-  }
-  const token =
-    environment.EVE_MEMORY_BLOB_READ_WRITE_TOKEN ??
-    environment.BLOB_READ_WRITE_TOKEN;
-  return token
-    ? { kind: "vercel-blob" as const, options: { token } }
-    : { kind: "automatic" as const };
-}
+/**
+ * eve's file memory documents kept in Postgres (`memory_documents`), with
+ * the row's version as the compare-and-set token eve's writes carry.
+ */
+export const postgresMemoryDocuments: MemoryDocumentBackend = {
+  async read({ key, signal }) {
+    signal.throwIfAborted();
+    const row = await readMemoryDocument(key);
+    signal.throwIfAborted();
+    return row ? { content: row.content, version: String(row.version) } : null;
+  },
+  async write({ content, expectedVersion, key, signal }) {
+    // An aborted turn saves nothing. A query once started commits: the
+    // driver takes no signal.
+    signal.throwIfAborted();
+    const expected = expectedVersion === null ? null : Number(expectedVersion);
+    const version =
+      expected === null || Number.isSafeInteger(expected)
+        ? await writeMemoryDocument({
+            content,
+            expectedVersion: expected,
+            scopeKey: key,
+          })
+        : undefined;
+    if (version === undefined) throw new MemoryDocumentConflictError(key);
+    return { content, version: String(version) };
+  },
+};
 
 export function resolveProfileMemoryScope(context: MemoryScopeContext) {
   const caller = context.session.auth.current;
@@ -66,32 +51,4 @@ export function resolveProfileMemoryScope(context: MemoryScopeContext) {
     "proactive-worker": scope,
     "scheduled-worker": scope,
   });
-}
-
-export function preserveProfileMemoryCancellation(provider: MemoryProvider) {
-  const compactionRecall = provider.recall["compaction.completed"];
-  return defineMemoryProvider({
-    ...provider,
-    recall: {
-      "turn.started": (context) =>
-        recallWithCancellationReason(provider.recall["turn.started"], context),
-      "compaction.completed": (context) =>
-        compactionRecall
-          ? recallWithCancellationReason(compactionRecall, context)
-          : undefined,
-    },
-  });
-}
-
-async function recallWithCancellationReason<
-  Context extends MemoryOperationContext,
->(handler: MemoryRecallHandler<Context>, context: Context) {
-  try {
-    return await handler(context);
-  } catch (error) {
-    if (context.abortSignal.aborted) {
-      context.abortSignal.throwIfAborted();
-    }
-    throw error;
-  }
 }
