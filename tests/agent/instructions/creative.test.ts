@@ -1,8 +1,23 @@
 import type { DynamicResolveContext } from "eve/instructions";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// A deployment that can keep pictures: the bucket and its key.
+const fileStorage = {
+  BROWSER_STATE_BUCKET: "bro-state-test",
+  CLOUDRU_KEY_ID: "test-key-id",
+  CLOUDRU_KEY_SECRET: "test-key-secret",
+  CLOUDRU_S3_TENANT_ID: "test-tenant",
+};
 
 beforeEach(() => {
   vi.resetModules();
+  for (const [name, value] of Object.entries(fileStorage)) {
+    vi.stubEnv(name, value);
+  }
+});
+
+afterEach(() => {
+  for (const name of Object.keys(fileStorage)) vi.stubEnv(name, "");
 });
 
 describe("creative instructions", () => {
@@ -24,6 +39,15 @@ describe("creative instructions", () => {
     expect(content).toContain("Рисовать картинки на этом сервере нельзя");
     expect(content).not.toContain("generate_image");
     expect(content).toContain("ты ведёшь игру сам");
+  });
+
+  it("says plainly that pictures are unavailable without file storage", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    vi.stubEnv("BROWSER_STATE_BUCKET", "");
+
+    const content = await resolveContent("photon-imessage");
+
+    expect(content).toContain("Рисовать картинки на этом сервере нельзя");
   });
 
   it("does not promise pictures to a caller without a workspace", async () => {

@@ -44,6 +44,9 @@
 - В свежей облачной сессии нет `node_modules` (`pnpm install`), а Node 22 валит
   ~12 наборов `pnpm check` («Unexpected identifier 'r'»). Node 24 без root:
   `npm pack node-linux-x64@24` в scratchpad, `bin` — в начало `PATH`.
+- `TELEGRAM_BOT_USERNAME` облачной сессии начинается с `@`, и проверка env
+  роняет каждый тест, который импортирует `@shared/environment`: гоняйте
+  vitest через `env -u TELEGRAM_BOT_USERNAME`, в env прода — без `@`.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
@@ -68,6 +71,9 @@
 - knip не видит использование модуля в тесте, если его динамический `import()`
   разобран из `Promise.all([...])`: экспорт, нужный только тестам, импортируйте
   отдельным `await import(...)`.
+- Промис, который вернул шпион `vi.fn`, vitest обрабатывает сам: отказ
+  `mockRejectedValue` не станет unhandled. Пропущенный `.catch` ловит только
+  простая функция вместо шпиона (`db/tests/health.test.ts`).
 
 - e2e: `next dev` на `127.0.0.1` грузит скрипты, только пока он в
   `allowedDevOrigins` (`next.config.ts`), иначе форма входа уходит обычным GET
@@ -99,11 +105,43 @@
   песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
   работает (`node_modules/eve/docs/sandbox.mdx`).
 - Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
-  на Vercel (Sandbox, Blob, Workflow, Gateway). eve живёт и вне Vercel:
-  `eve start`, состояние ходов — `@workflow/world-postgres`
-  (ключ `experimental.workflow.world`; в `agent/agent.ts` его пока нет,
-  выставить при переезде), песочница — бэкенд `docker()`
-  (`node_modules/eve/docs/concepts/execution-model-and-durability.mdx`).
+  на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
+  `scripts/cloudru-app-host/README.md`: сборка для VM включается только
+  `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
+  (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
+  поведением по умолчанию, пока Vercel — путь отката.
+- `next start` сам eve не поднимает (запуск зашит в `rewrites()`, их Next 16
+  вызывает только при сборке): eve — свой процесс `node .output/server/index.mjs`,
+  не `eve start` (обёртка копит весь вывод ребёнка в памяти).
+  `/.well-known/workflow/*` наружу не публикуйте: вход очереди мира без
+  авторизации. Без схемы мир Postgres падает на старте: до запуска —
+  `ops/migrate.mjs world`; две среды на одной базе мира исполняют чужие ходы.
+- Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
+  Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
+  `EVE_SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
+- Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
+  VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
+  видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
+  регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
+- В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
+  stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
+  таблицы других ролей, но бэкап и перенос тогда валятся, пока таблицы нет в
+  `ALLOW_FOREIGN_TABLES`: сверка строк смотрит те же таблицы и пропуска не
+  видит. Ошибки psql в ops-скриптах — `VERBOSITY=terse`: `DETAIL`/`CONTEXT`
+  сбойного COPY печатают строку с данными людей в лог job и journald.
+- Ключ S3 приложения лежит в `/etc/bro/env`, то есть у инструментов модели:
+  бэкапу верят только по HMAC манифеста (ключ из `BACKUP_ENCRYPTION_KEY`), а
+  `NEON_DATABASE_URL` живёт в `/etc/bro/ops-env` deployd, не в env приложения.
+- esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
+  `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
+  для `tar -I zstd`: `apt-get install -y zstd`.
+- Сеть Cloud.ru (02.10): `api.telegram.org` по DNS закрыт, отвечает лишь
+  149.154.167.220 и теряет ~1/6 SYN — на VM Бро весь Telegram идёт через
+  `scripts/cloudru-app-host/tg-egress/` (код не трогать). VM проекта не
+  достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
+  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
+  таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
+  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
@@ -136,6 +174,14 @@
   cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
   `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
   (`sandbox/sandboxd/memory.go`): умирает один процесс, код 137.
+- Убийство `exec` (`killScript` в `sandbox/sandboxd/exec.go`) узнаёт процессы
+  по `/proc/<pid>/environ`, а у процесса посреди `execve` оно пусто, пока
+  читается бинарник (на Linux; фейковый runsc гоняет команды на хосте). Так
+  `TestDrainKillsOpenExecs` раз в десятки прогонов CI оставлял `sleep` живым:
+  он первый в пакете запускает `sleep`, и кэш диска раннера, видимо, холодный.
+  Поэтому скрипт добивает и потомков помеченных процессов по родителям.
+  Повтор без CI: холодный бинарник `sleep` в `/usr/local/bin` и
+  `blkio.throttle.read_bps_device` на диск (cgroup v1).
 - `app/` не импортирует `agent/` (правило `no-forbidden-layer-imports`):
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
@@ -144,6 +190,12 @@
   (`claimWorkspaceIntroduction`), а не `chats`: переезд из Convex их не пишет.
 - Любой сбой модели (и переполнение контекста) — `turn.failed`
   `MODEL_CALL_FAILED`; «скоро вернусь» — только при 402/429/5xx в `details`.
+- Telegram на Cloud.ru — не вебхуком: мост `scripts/cloudru-app-host/tg-bridge/`
+  (`getUpdates` → POST в локальный endpoint eve, не через Next: `proxy.ts`
+  ведёт на `/sign-in`). eve отвечает `200` до хода и `update_id` не проверяет:
+  offset и дубли — на мосте. `getUpdates` боевого бота при вебхуке — `409`.
+  Принятое eve (`200`) до рестарта eve может пропасть; серверная интеграция
+  должна сначала останавливать мост (README моста, «Что должен сделать сервер»).
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
 - Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root
@@ -290,8 +342,22 @@
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
 - Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
-  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: они в Blob
-  (`db/services/installation-secrets.ts`) — перед уходом с Vercel достать.
+  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: прод берёт их из Blob
+  (`db/services/installation-secrets.ts`); вне Vercel задавать те же значения
+  (`installation-secrets.json`, сверен с Blob 02.10), новые разлогинят всех и
+  закроют сейф. Пока это чтение есть, `BLOB_*` остаётся в `turbo.json`:
+  без него `pnpm start` не видит ключа Blob.
+- Картинки и вложения — в S3 под `artifacts/<storage_pathname>`
+  (`shared/object-storage/artifacts.ts`). Cloud.ru отвечает 304 без `ETag`:
+  маршрут берёт ETag из запроса. 404 и у пропавшего бакета: отсутствие —
+  лишь `NoSuchKey`. Срок — на ответ и на каждое чтение тела, не на всё тело:
+  медленный клиент тянул бы 10 МБ дольше минуты. Node в облачной сессии ходит через прокси
+  только с `NODE_USE_ENV_PROXY=1`, и прокси изредка рвёт соединение («fetch
+  failed») — скрипты повторяют запрос (`scripts/cloudru-app-host/blob-to-s3.ts`).
+- Ключ песочницы сессии eve без `bootstrap` и файлов workspace не зависит от
+  текста `agent/sandbox.ts` (`sourceHash` входит лишь в план `bootstrap`,
+  `runtime/sandbox/keys.js`), но зависит от имени бэкенда: смена
+  `AGENT_SANDBOX` заводит каждой сессии новую песочницу без старых вложений.
 
 ## Браузерные поручения
 

@@ -51,6 +51,7 @@ import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 import { directModelActive } from "@shared/model/provider";
+import { env } from "@shared/environment";
 
 /** The tool eve makes of the task agent (`agent/subagents/task`). */
 const taskAgentTool = "task";
@@ -71,6 +72,13 @@ const staleReportNote =
 
 export default defineAgent({
   defaultTools: false,
+  // Off Vercel, turn state lives in Postgres: the Cloud.ru VM's build sets
+  // WORKFLOW_WORLD=postgres (scripts/cloudru-app-host). Unset, eve keeps
+  // Vercel Workflow, as every Vercel build does.
+  experimental:
+    env.WORKFLOW_WORLD === "postgres"
+      ? { workflow: { world: "@workflow/world-postgres" } }
+      : undefined,
   model: defineDynamic({
     events: {
       "step.started": async (_event, ctx) => {

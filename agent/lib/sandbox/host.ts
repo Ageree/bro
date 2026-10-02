@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
+import { withPrivateRoute } from "@agent/lib/browser-vm/private-route";
 import { signSandboxHostToken } from "./keys";
 
 /**
@@ -104,7 +105,7 @@ async function send(
     headers.set("content-type", "application/octet-stream");
     request.body = init.body;
   }
-  return await fetch(`${origin}${path}`, request);
+  return await fetch(`${origin}${path}`, withPrivateRoute(request));
 }
 
 const openedSchema = z.object({
@@ -287,15 +288,18 @@ export async function* execInSandbox(
   const deadline = AbortSignal.timeout(
     (request.timeoutMs ?? defaultExecTimeoutMs) + 60_000
   );
-  const response = await fetch(`${origin}${sandboxPath(sandboxId, "/exec")}`, {
-    body: JSON.stringify(request),
-    headers: {
-      authorization: `Bearer ${signSandboxHostToken(id)}`,
-      "content-type": "application/json",
-    },
-    method: "POST",
-    signal: AbortSignal.any([signal, deadline]),
-  });
+  const response = await fetch(
+    `${origin}${sandboxPath(sandboxId, "/exec")}`,
+    withPrivateRoute({
+      body: JSON.stringify(request),
+      headers: {
+        authorization: `Bearer ${signSandboxHostToken(id)}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+      signal: AbortSignal.any([signal, deadline]),
+    })
+  );
   if (!response.ok) throw await failure(response);
   const reader = response.body?.getReader();
   if (!reader)

@@ -1,16 +1,7 @@
-import {
-  defineMemoryProvider,
-  type MemoryScopeContext,
-  type MemoryTurnStartedContext,
-  type MemoryToolsContext,
-} from "eve/memory";
+import type { MemoryScopeContext, MemoryToolsContext } from "eve/memory";
 import { describe, expect, it } from "vitest";
 import personalInfoMemory from "@agent/memory/personal_info";
-import {
-  preserveProfileMemoryCancellation,
-  resolveProfileMemoryBackend,
-  resolveProfileMemoryScope,
-} from "@agent/lib/profile-memory";
+import { resolveProfileMemoryScope } from "@agent/lib/profile-memory";
 import { parseLegacyDocument } from "@agent/lib/memory/profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -29,66 +20,6 @@ describe("profile memory", () => {
     expect(
       parseLegacyDocument("<!-- eve-memory-file-v1 lastAllocatedIndex=12 -->\n")
     ).toEqual({ entries: [], lastAllocatedIndex: 12 });
-  });
-  it("uses an explicit Blob backend for an attached store in production", () => {
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: undefined,
-        BLOB_STORE_ID: "store-id",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({
-      kind: "vercel-blob",
-      options: { storeId: "store-id" },
-    });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        NODE_ENV: "production",
-        VERCEL_ENV: undefined,
-      })
-    ).toEqual({
-      kind: "vercel-blob",
-      options: { token: "blob-token" },
-    });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { token: "blob-token" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: "blob-store",
-        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
-        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { storeId: "blob-store" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
-        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { storeId: "eve-store" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: "store-id",
-        NODE_ENV: "development",
-        VERCEL_ENV: undefined,
-      })
-    ).toEqual({ kind: "automatic" });
   });
 
   it("shares the canonical workspace across verified authenticators", () => {
@@ -156,87 +87,7 @@ describe("profile memory", () => {
     );
     expect(scheduledTools).toBeNull();
   });
-
-  it("preserves the turn cancellation reason when recall loses it", async () => {
-    const blobAbort = new DOMException(
-      "This operation was aborted",
-      "AbortError"
-    );
-    const cancellation = Object.assign(new Error("The turn was cancelled."), {
-      name: "TurnCancelledError",
-    });
-    const controller = new AbortController();
-    controller.abort(cancellation);
-    const provider = preserveProfileMemoryCancellation(
-      defineMemoryProvider({
-        recall: {
-          async "turn.started"() {
-            throw blobAbort;
-          },
-        },
-      })
-    );
-
-    await expect(
-      provider.recall["turn.started"](memoryOperationContext(controller.signal))
-    ).rejects.toBe(cancellation);
-  });
-
-  it("does not hide a recall failure while the turn remains active", async () => {
-    const blobAbort = new DOMException(
-      "This operation was aborted",
-      "AbortError"
-    );
-    const provider = preserveProfileMemoryCancellation(
-      defineMemoryProvider({
-        recall: {
-          async "turn.started"() {
-            throw blobAbort;
-          },
-        },
-      })
-    );
-
-    await expect(
-      provider.recall["turn.started"](
-        memoryOperationContext(new AbortController().signal)
-      )
-    ).rejects.toBe(blobAbort);
-  });
 });
-
-function memoryOperationContext(
-  abortSignal: AbortSignal
-): MemoryTurnStartedContext {
-  return {
-    abortSignal,
-    async getSandbox() {
-      throw new Error("Sandbox access is outside this focused test.");
-    },
-    getSkill() {
-      throw new Error("Skill access is outside this focused test.");
-    },
-    memory: {
-      scope: {
-        key: "personal-info-key",
-        namespace: "openinstinct-profile-memory-v1",
-        value: "personal:workspace",
-      },
-      slot: "profile",
-    },
-    messages: [],
-    operationId: "memory-operation",
-    session: {
-      auth: {
-        current: userPrincipal("authjs", "personal:workspace"),
-        initiator: null,
-      },
-      id: "session",
-      turn: { id: "turn", sequence: 1 },
-    },
-    turn: { id: "turn", input: [], sequence: 1 },
-  };
-}
 
 function memoryToolsContext(
   current: MemoryToolsContext["session"]["auth"]["current"],

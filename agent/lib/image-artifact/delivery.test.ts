@@ -1,16 +1,20 @@
-/* oxlint-disable vitest/require-mock-type-parameters -- The Blob mock implements only the read operation exercised here. */
+/* oxlint-disable vitest/require-mock-type-parameters -- The object storage mock implements only the read operation exercised here. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 const firstId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const secondId = "206c3a7e-c0b8-4317-9e34-552cff646673";
-const mocks = vi.hoisted(() => ({ getBlob: vi.fn(), readArtifact: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  openObject: vi.fn(),
+  readArtifact: vi.fn(),
+}));
 
 vi.mock("@db/services/artifacts", () => ({
   readReadyArtifact: mocks.readArtifact,
 }));
-vi.mock("@vercel/blob", () => ({
-  get: mocks.getBlob,
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => true,
+  openArtifactObject: mocks.openObject,
 }));
 
 import {
@@ -36,9 +40,11 @@ beforeEach(() => {
           }
         : undefined
   );
-  mocks.getBlob.mockResolvedValue({
-    blob: { contentType: "image/png", size: 3 },
-    statusCode: 200,
+  mocks.openObject.mockResolvedValue({
+    contentType: "image/png",
+    etag: '"etag"',
+    size: 3,
+    status: 200,
     stream: new Response(new Uint8Array([1, 2, 3])).body,
   });
 });
@@ -96,9 +102,11 @@ describe("image artifact delivery", () => {
       mediaType: "application/pdf",
       storagePathname: "gmail-attachments/invoice",
     });
-    mocks.getBlob.mockResolvedValue({
-      blob: { contentType: "application/pdf", size: 3 },
-      statusCode: 200,
+    mocks.openObject.mockResolvedValue({
+      contentType: "application/pdf",
+      etag: '"etag"',
+      size: 3,
+      status: 200,
       stream: new Response(new Uint8Array([1, 2, 3])).body,
     });
 
@@ -118,9 +126,11 @@ describe("image artifact delivery", () => {
   });
 
   it("rejects stored bytes that outgrow the recorded size", async () => {
-    mocks.getBlob.mockResolvedValue({
-      blob: { contentType: "image/png", size: 3 },
-      statusCode: 200,
+    mocks.openObject.mockResolvedValue({
+      contentType: "image/png",
+      etag: '"etag"',
+      size: 3,
+      status: 200,
       stream: new Response(new Uint8Array([1, 2, 3, 4])).body,
     });
 
@@ -148,7 +158,7 @@ describe("image artifact delivery", () => {
       { rootSessionId: "root-session", scope }
     );
 
-    expect(mocks.getBlob).not.toHaveBeenCalled();
+    expect(mocks.openObject).not.toHaveBeenCalled();
     expect(result.files).toEqual([]);
     expect(result.failedArtifactIds).toEqual([secondId]);
   });

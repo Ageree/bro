@@ -10,10 +10,13 @@
       records keys and sha256 in ~/.bro-code-host/deliver.json. Prints presigned GET links redacted, whole
       only with --print-urls
   python host.py create NAME [--flavor gen-2-8] [--disk 30] [--no-console] [--wait-minutes 20]
+                         [--hosts-entry brobro.tech=bro-app-1 …]
       the VM in CLOUDRU_ZONE (ru.AZ-1) with a public IP, cloud-init from boot.py (fresh 12-hour links), then
       waits for it to run and then for https://<ip with dashes>.sslip.io/v1/health, each up to --wait-minutes.
       Unless --no-console, root may log in on the serial console with the password in
-      ~/.bro-code-host/NAME.password (the user data holds only its hash)
+      ~/.bro-code-host/NAME.password (the user data holds only its hash). --hosts-entry NAME=TARGET pins NAME
+      in the host's /etc/hosts at TARGET, an IPv4 address or a VM of the project (its private address): Bro's
+      domain at Bro's VM, since one VM of the project cannot reach another's public address
   python host.py status NAME [--stage]      state, address, health; --stage reads the provision stage over
                                             the serial console
   python host.py reboot NAME                set-power reboot (a first boot stuck in initramfs)
@@ -21,6 +24,9 @@
                                             a new sandboxd binary on a live host (Object Storage, then the
                                             serial console): checked, swapped, restarted; sandboxes outlive
                                             the restart. Run deliver too, so new hosts get the same binary
+  python host.py set-hosts NAME --hosts-entry brobro.tech=bro-app-1 …
+                                            the same pins on a live host, over the serial console: in
+                                            /etc/hosts and cloud-init's template, as at first boot
   python host.py delete NAME                the VM and its public IP
 
 Host names must match sbx-[a-z0-9-]+: this script never acts on any other VM of the project. Needs
@@ -36,6 +42,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -232,7 +239,8 @@ def cmd_create(args):
         runsc_release=record["runsc"]["release"],
         runsc_url=s3.presign("GET", record["runsc"]["key"], LINK_SECONDS),
         runsc_sha256=record["runsc"]["sha256"],
-        console_password_hash=None if args.no_console else console_password(name))
+        console_password_hash=None if args.no_console else console_password(name),
+        hosts=hosts_entries(args.hosts_entry))
     interface = {"type": "regular", "subnet_name": cloudru.SUBNET, "new_external_ip": True,
                  "security_group_names": [cloudru.SECURITY_GROUP]}
     vm = {"project_id": cloudru.project_id(), "name": name, "availability_zone_name": cloudru.ZONE,
@@ -272,6 +280,45 @@ def cmd_create(args):
         time.sleep(15)
     sys.exit(f"no health after {args.wait_minutes} minutes: python host.py status {name} --stage "
              f"(a first boot stuck in initramfs: python host.py reboot {name})")
+
+
+def hosts_entries(entries):
+    """[(name, IPv4)] of --hosts-entry NAME=TARGET, a VM's name as TARGET read as its private address. Checked
+    as cloud-init's are (boot.check_hosts): set-hosts puts them in a root shell line."""
+    pinned = []
+    for entry in entries:
+        name, address = boot.hosts_entry(entry)
+        if not boot.HOST_NAME.fullmatch(name):
+            sys.exit(f"--hosts-entry {entry!r}: {name!r} is not a plain host name")
+        if not boot.IPV4.fullmatch(address):
+            vm = cloudru.vm_by_name(address)
+            private = [i.get("ip_address") for i in ((vm or {}).get("interfaces") or []) if i.get("ip_address")]
+            if not private:
+                sys.exit(f"--hosts-entry {entry!r}: no VM {address!r} with a private address in the project")
+            address = private[0]
+        pinned.append((name, address))
+    try:
+        boot.check_hosts(pinned)
+    except ValueError as error:
+        sys.exit(f"--hosts-entry: {error}")
+    return pinned
+
+
+# What provision.sh's hosts stage rewrites at first boot: /etc/hosts, and cloud-init's template, which an image
+# may render /etc/hosts from again at boot.
+HOSTS_FILES = ("/etc/hosts", "/etc/cloud/templates/hosts.debian.tmpl")
+
+
+def set_hosts_command(pinned):
+    """The shell line that pins these (name, IPv4) pairs on a live host as provision.sh does: the marked lines and
+    any other line for the names go, the new ones are added. Checked again and quoted: no value is shell code."""
+    boot.check_hosts(pinned)
+    names = "|".join(name.replace(".", r"\.") for name, _ in pinned) or "^$"
+    script = f"/# bro-private$/d; /^[^#]*[[:space:]]({names})([[:space:]]|$)/d"
+    lines = " ".join(shlex.quote(f"{address} {name} # bro-private") for name, address in pinned)
+    files = " ".join(shlex.quote(path) for path in HOSTS_FILES)
+    return (f"for f in {files}; do [ -f \"$f\" ] || continue; sed -i -E {shlex.quote(script)} \"$f\" && "
+            f"printf '%s\\n' {lines} >> \"$f\" || exit 1; done; grep -c 'bro-private' /etc/hosts")
 
 
 def found_vm(name):
@@ -326,6 +373,16 @@ def cmd_update_sandboxd(args):
         sys.exit(1)
 
 
+def cmd_set_hosts(args):
+    import console  # websocket-client, only here
+    found_vm(args.name)
+    pinned = hosts_entries(args.hosts_entry)
+    output, status = console.run(args.name, set_hosts_command(pinned), 60)
+    print(f"set-hosts: exit {status}; {output.strip().splitlines()[-1][-200:] if output.strip() else ''}")
+    if status != 0:
+        sys.exit(1)
+
+
 def cmd_delete(args):
     vm = found_vm(args.name)
     _, floating_id = public_ip(vm)
@@ -361,6 +418,7 @@ def main():
     create.add_argument("--disk", type=int, default=30)
     create.add_argument("--no-console", action="store_true")
     create.add_argument("--wait-minutes", type=int, default=20)
+    create.add_argument("--hosts-entry", action="append", default=[], metavar="NAME=TARGET")
     create.set_defaults(fn=cmd_create)
     status = sub.add_parser("status")
     status.add_argument("name")
@@ -370,6 +428,10 @@ def main():
     update.add_argument("name")
     update.add_argument("--sandboxd", required=True)
     update.set_defaults(fn=cmd_update_sandboxd)
+    set_hosts = sub.add_parser("set-hosts")
+    set_hosts.add_argument("name")
+    set_hosts.add_argument("--hosts-entry", action="append", required=True, metavar="NAME=TARGET")
+    set_hosts.set_defaults(fn=cmd_set_hosts)
     for name, fn in (("reboot", cmd_reboot), ("delete", cmd_delete)):
         command = sub.add_parser(name)
         command.add_argument("name")

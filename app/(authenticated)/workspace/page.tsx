@@ -40,6 +40,7 @@ import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 import { localMonthKey } from "@shared/calendar/local-period";
+import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { ConnectedAppAction } from "./_components/connected-app-action";
@@ -122,9 +123,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     }
   }
   const directProvider = directModelProviderName();
-  const imageStorageReady = Boolean(
-    env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
-  );
+  const imageStorageReady = artifactStorageConfigured();
   const browserReady = env.BROWSER_USE_API_KEY !== undefined;
   const timeZone = resolveTimeZone(profile.timezone);
   const spendMonth = localMonthKey(new Date(), timeZone);
@@ -236,11 +235,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       <Section headingId="infrastructure-heading" title="Инфраструктура">
         <Rows>
           <Row side={imageStorageReady ? "Подключено" : "Нужна настройка"}>
-            <p>Vercel Blob</p>
+            <p>Хранилище файлов</p>
             <p className="type-status text-muted-foreground">
               {imageStorageReady
-                ? "Картинки хранятся в приватном Vercel Blob."
-                : "Подключи приватный Vercel Blob, чтобы делиться картинками."}
+                ? "Картинки и файлы хранятся в приватном хранилище."
+                : "Подключи приватное хранилище файлов, чтобы делиться картинками."}
             </p>
           </Row>
           <Row side={browserReady ? "Настроен" : "Не настроен"}>

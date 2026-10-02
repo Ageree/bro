@@ -183,3 +183,28 @@ export const memorySync = pgTable(
     check("memory_sync_attempts_check", sql`${table.attempts} >= 0`),
   ]
 );
+
+/**
+ * eve's file memory documents (`MemoryDocumentBackend`), one per eve scope
+ * key. Bro's profile lives in `memory_records`; a document here is only the
+ * old memory file a scope imports once. `version` is the compare-and-set
+ * token a write must match.
+ */
+export const memoryDocuments = pgTable(
+  "memory_documents",
+  {
+    scopeKey: text("scope_key").primaryKey(),
+    content: text("content").notNull(),
+    version: bigint("version", { mode: "number" }).notNull().default(1),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check("memory_documents_version_check", sql`${table.version} > 0`),
+  ]
+);
