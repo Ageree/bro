@@ -105,7 +105,7 @@
 Осталось: живой ход с фото, голосовым и PDF на `AGENT_SANDBOX=bro-cloudru`
 против нового хоста `sbx-code-2`; на VM Бро задать `AGENT_SANDBOX=bro-cloudru`.
 
-### 3. Модели: RouterAI — код готов, прод не переключён
+### 3. Модели: RouterAI — прод Vercel на RouterAI с 02.10
 
 С VM Cloud.ru openrouter.ai, OpenAI и Anthropic отвечают 403
 (`docs/browser-infra-notes.md`). RouterAI (`routerai.ru/api/v1`) работает и
@@ -124,14 +124,15 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 баланс RouterAI упал на 9,62 ₽; кэш — 84% входа. Прогнать рядом OpenRouter
 нельзя: он не пополняется.
 
+Прод Vercel переключён 02.10: `MODEL_PROVIDER=routerai` и `ROUTERAI_API_KEY`
+в env `bro-next`. Откат — снять `MODEL_PROVIDER`, пока у OpenRouter есть
+деньги, дальше — другой `ROUTERAI_PROVIDER_ORDER` или модель.
+
 Осталось:
 
-- превью с `MODEL_PROVIDER=routerai`: ответ, голосовое, картинка, поиск,
-  расписание, отказ на карточке, затем строки `usage_costs` с ценой;
-- переключение прода: ключ и `MODEL_PROVIDER=routerai` в env `bro-next`, новый
-  деплой; воркспейсам с id, которого нет в `/models` RouterAI, сбросить
-  `settings.gateway_model`. Откат — снять `MODEL_PROVIDER`, пока у OpenRouter
-  есть деньги, дальше — другой `ROUTERAI_PROVIDER_ORDER` или модель;
+- живые проверки на аккаунте владельца (ответ, голосовое, картинка, поиск,
+  расписание, отказ на карточке, строки `usage_costs` с ценой в рублях) — вместе
+  с проверками переключения (этап 6), уже на VM;
 - через неделю стабильной работы — убрать ветку и переменные OpenRouter.
 
 Заодно — навыки по нужде и узкое ядро инструкций (роадмап 24–25): на RouterAI
