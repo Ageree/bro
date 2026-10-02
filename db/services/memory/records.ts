@@ -547,8 +547,9 @@ export async function importLegacyMemories(
  * target already holds (same category and text, as `comparableMemoryText`
  * reads it) is merged into it instead: the longer validity, both sets of
  * aliases, and `localOnly` if either copy asked for it. Rules go first, and
- * whatever does not fit under the cap stays put for a later call; a full
- * profile is not even locked. Each move keeps the record's origin and dates,
+ * whatever does not fit under the cap stays put for a later call, while a
+ * copy of what a full profile holds still merges into it. Each move keeps the
+ * record's origin and dates,
  * takes the target's next index (related indexes follow it), joins the
  * semantic index queue, and retires the source as forgetting would, so a
  * repeated call finds nothing to move. The number of records moved.

@@ -257,8 +257,9 @@ export async function forgetWorkstream(
  * under other eve scope keys. Work the target already holds word for word is
  * only retired; an ID the target already uses, even by forgotten work, gets a
  * numbered suffix, so neither side is overwritten. The newest work moves
- * first, and whatever does not fit under the cap stays put for a later call;
- * a full target is not even locked. Each move keeps its conversation and date
+ * first, and whatever does not fit under the cap stays put for a later call,
+ * while a copy of what a full target holds is still retired. Each move keeps
+ * its conversation and date
  * and retires the source as forgetting would, so a repeated call finds
  * nothing to move. The number of workstreams moved.
  */
