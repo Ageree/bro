@@ -92,6 +92,12 @@
   (ключ `experimental.workflow.world`; в `agent/agent.ts` его пока нет,
   выставить при переезде), песочница — бэкенд `docker()`
   (`node_modules/eve/docs/concepts/execution-model-and-durability.mdx`).
+- Сеть Cloud.ru (02.10): `api.telegram.org` по DNS закрыт, отвечает лишь
+  149.154.167.220 и теряет ~1/6 SYN — на VM Бро весь Telegram идёт через
+  `scripts/cloudru-app-host/tg-egress/` (код не трогать). VM проекта не
+  достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
+  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`),
+  хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера

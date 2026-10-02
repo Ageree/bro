@@ -1,0 +1,29 @@
+[Unit]
+Description=Bro tg-egress (api.telegram.org through a forwarder that retries what Cloud.ru drops)
+# cloud-init may rewrite /etc/hosts (update_etc_hosts) in its stages: setup.sh writes its line after them.
+After=network-online.target cloud-init.service cloud-config.service
+Wants=network-online.target
+Before=bro-web.service bro-eve.service bro-watchdog.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=-/etc/bro/tg-egress.env
+# The hosts line and the REDIRECT rule, as root, every start (the rule does not survive a boot). The port
+# is TG_EGRESS_LISTEN's from the EnvironmentFile above: one place for both.
+ExecStartPre=+/bin/bash /opt/bro/tg-egress/setup.sh
+ExecStart=/usr/bin/python3 /opt/bro/tg-egress/tg_egress.py
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryMax=256M
+# Two descriptors per connection, TG_EGRESS_MAX_CONNECTIONS (256) at most.
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

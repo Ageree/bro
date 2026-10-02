@@ -90,6 +90,9 @@ class CloudInitTest(unittest.TestCase):
         for change in bad:
             with self.subTest(change), self.assertRaises(ValueError):
                 boot.cloud_init(**{**ARGS, **change})
+        for hosts in ([("brobro.tech", "10.0.1.7; rm")], [("bro tech", "10.0.1.7")], [("brobro.tech", "999.0.1.7")]):
+            with self.subTest(hosts), self.assertRaises(ValueError):
+                boot.cloud_init(**ARGS, hosts=hosts)
         _mode, settings = written(boot.cloud_init(**{**ARGS, "runsc_release": "20260928.0"}),
                                   "/etc/bro/code-host-boot.json")
         self.assertEqual(json.loads(settings)["runsc"]["release"], "20260928.0")
@@ -242,6 +245,37 @@ class FetchTest(unittest.TestCase):
             fetch.fetch(url, str(out), "00" * 32)
         self.assertNotIn("secret", str(raised.exception))
         self.assertFalse(out.exists() or Path(str(out) + ".part").exists())
+
+
+class HostsTest(unittest.TestCase):
+    """Bro's domain pinned at its private address: in the boot settings, then in /etc/hosts by provision.sh."""
+
+    def test_boot_settings_carry_the_entries(self):
+        _mode, settings = written(boot.cloud_init(**ARGS, hosts=[("brobro.tech", "10.0.1.7")]),
+                                  "/etc/bro/code-host-boot.json")
+        self.assertEqual(json.loads(settings)["hosts"], [{"name": "brobro.tech", "address": "10.0.1.7"}])
+        _mode, settings = written(boot.cloud_init(**ARGS), "/etc/bro/code-host-boot.json")
+        self.assertEqual(json.loads(settings)["hosts"], [])
+        self.assertEqual(boot.hosts_entry(" BroBro.tech = 10.0.1.7"), ("brobro.tech", "10.0.1.7"))
+
+    def run_stage(self, entries, hosts):
+        script = re.search(r"<<'PY'\n(.*?)\nPY\n", PROVISION, re.S).group(1)
+        directory = private_dir(self)
+        (directory / "boot.json").write_text(json.dumps({"hosts": entries}))
+        (directory / "hosts").write_text(hosts)
+        subprocess.run([sys.executable, "-c", script, str(directory / "boot.json"), str(directory / "hosts"),
+                        str(directory / "absent.tmpl")], check=True)
+        return (directory / "hosts").read_text()
+
+    def test_provision_writes_one_marked_line_per_name(self):
+        entries = [{"name": "brobro.tech", "address": "10.0.1.7"}]
+        hosts = self.run_stage(entries, "127.0.0.1 localhost\n1.2.3.4 brobro.tech\n")
+        self.assertEqual(hosts, "127.0.0.1 localhost\n10.0.1.7 brobro.tech # bro-private\n")
+        self.assertEqual(self.run_stage(entries, hosts), hosts)  # run again: the same file
+        self.assertEqual(self.run_stage([], hosts), "127.0.0.1 localhost\n")
+
+    def test_stage_comes_before_sandboxd(self):
+        self.assertLess(PROVISION.index("stage hosts"), PROVISION.index("stage sandboxd"))
 
 
 class ProvisionTest(unittest.TestCase):

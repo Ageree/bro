@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
+import { withPrivateRoute } from "./private-route";
 import { signBrowserVmToken } from "./token";
 
 /**
@@ -644,7 +645,7 @@ async function request(
   }
   // No retry here: every caller knows better whether a repeat is safe, and a
   // start that lost its answer is looked up by its id instead.
-  const response = await fetch(`${origin(vm)}${path}`, init);
+  const response = await fetch(`${origin(vm)}${path}`, withPrivateRoute(init));
   // The query of a run lookup carries a task line: kept out of errors.
   const route = path.split("?")[0] ?? path;
   const text = await response.text();

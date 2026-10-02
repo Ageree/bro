@@ -40,6 +40,7 @@
     "supermemory": "4.25.4",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.3",
+    "undici": "7.29.0",
     "use-stick-to-bottom": "1.1.6",
     "zod": "4.5.4"
   },
