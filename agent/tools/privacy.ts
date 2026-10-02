@@ -1,5 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -56,13 +57,14 @@ export const privacy = defineTool({
       throw new Error("An authenticated user is required.");
     }
     const scope = scopeFromPrincipal(auth);
-    const [modelId, google] = await Promise.all([
+    const [modelId, google, memoryDigest] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
+      memoryDigestPilot(scope),
     ]);
     return {
       kept: keptData(),
-      processors: dataProcessors(modelId),
+      processors: dataProcessors(modelId, { memoryDigest }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
       remove: [

@@ -43,22 +43,16 @@ const model = vi.hoisted(() => ({
     vi.fn<
       (options: {
         readonly maxOutputTokens?: number;
+        readonly onStepEnd?: (step: ModelStep) => Promise<void>;
         readonly prompt?: string;
-      }) => Promise<ModelAnswer>
+      }) => Promise<{ readonly output: ModelProposal }>
     >(),
 }));
 
-/** What the digest reads of a model call. */
-interface ModelAnswer {
-  readonly finalStep: {
-    readonly providerMetadata: {
-      readonly openrouter: { readonly usage: { readonly cost: number } };
-    };
-  };
-  readonly output: {
-    readonly duplicateOf: readonly { index: number; of: number }[] | null;
-    readonly oneOff: readonly number[] | null;
-    readonly supersededBy: readonly { newer: number; older: number }[] | null;
+/** A model step as the digest reads its cost. */
+interface ModelStep {
+  readonly providerMetadata: {
+    readonly openrouter: { readonly usage: { readonly cost: number } };
   };
   readonly usage: {
     readonly inputTokenDetails: { readonly cacheReadTokens: number };
@@ -66,6 +60,22 @@ interface ModelAnswer {
     readonly outputTokens: number;
   };
 }
+
+/** What the model may answer: indexes only. */
+interface ModelProposal {
+  readonly duplicateOf: readonly { index: number; of: number }[] | null;
+  readonly oneOff: readonly number[] | null;
+  readonly supersededBy: readonly { newer: number; older: number }[] | null;
+}
+
+const paidStep: ModelStep = {
+  providerMetadata: { openrouter: { usage: { cost: 0.42 } } },
+  usage: {
+    inputTokenDetails: { cacheReadTokens: 0 },
+    inputTokens: 900,
+    outputTokens: 20,
+  },
+};
 
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
@@ -323,7 +333,7 @@ describe("the daily memory digest", () => {
 
     expect(
       Object.values(await digestWorkspace(alice.workspaceId, "2026-10-03"))
-    ).toEqual(Array(11).fill(0));
+    ).toEqual(Array(12).fill(0));
     expect(renderProfile(await listCurrentMemories(alice, "scope-a"))).toBe(
       before
     );
@@ -425,22 +435,17 @@ describe("the digest's model, for the pilot", () => {
       .where(eq(schema.memoryRecords.index, index));
   }
 
-  function proposes(output: Partial<ModelAnswer["output"]>) {
-    model.generate.mockResolvedValue({
-      finalStep: {
-        providerMetadata: { openrouter: { usage: { cost: 0.42 } } },
-      },
-      output: {
-        duplicateOf: null,
-        oneOff: null,
-        supersededBy: null,
-        ...output,
-      },
-      usage: {
-        inputTokenDetails: { cacheReadTokens: 0 },
-        inputTokens: 900,
-        outputTokens: 20,
-      },
+  function proposes(output: Partial<ModelProposal>) {
+    model.generate.mockImplementation(async (options) => {
+      await options.onStepEnd?.(paidStep);
+      return {
+        output: {
+          duplicateOf: null,
+          oneOff: null,
+          supersededBy: null,
+          ...output,
+        },
+      };
     });
   }
 
@@ -558,6 +563,95 @@ describe("the digest's model, for the pilot", () => {
       await digestWorkspace(alice.workspaceId, "2026-10-03")
     ).toMatchObject({ classifierCalls: 0 });
     expect(model.generate).not.toHaveBeenCalled();
+  });
+
+  it("never sends a preference, and keeps a local-only text out of the index", async () => {
+    await remember(6, { localOnly: true, text: "Живёт в Уфе." }, "2026-09-20");
+    proposes({ supersededBy: [{ newer: 5, older: 6 }] });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ corrected: 0 });
+    const [options] = model.generate.mock.calls[0] ?? [];
+    expect(options?.prompt).not.toContain("свинину");
+    expect(await texts()).toContain("Живёт в Уфе.");
+  });
+
+  it("refuses to merge two things that share no word, or a negation into its opposite", async () => {
+    await remember(
+      6,
+      { category: "person", text: "Маша — сестра." },
+      "2026-09-20"
+    );
+    await remember(
+      7,
+      { category: "person", text: "Петя — брат." },
+      "2026-09-21"
+    );
+    await remember(8, { text: "Не ест острое." }, "2026-09-22");
+    await remember(9, { text: "Ест острое." }, "2026-09-23");
+    proposes({
+      duplicateOf: [{ index: 8, of: 9 }],
+      supersededBy: [{ newer: 7, older: 6 }],
+    });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ corrected: 0, deduped: 0 });
+    expect(await texts()).toHaveLength(10);
+  });
+
+  it("keeps the aliases of a record it folds", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { aliases: ["дом"], text: "Живёт на улице Ленина, дом 5." },
+      "m6",
+      source
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      { aliases: ["адрес"], text: "Ленина, дом 5." },
+      "m7",
+      source
+    );
+    proposes({ duplicateOf: [{ index: 7, of: 6 }] });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ deduped: 1 });
+    const [kept] = await database
+      .select()
+      .from(schema.memoryRecords)
+      .where(eq(schema.memoryRecords.index, 6));
+    expect(kept?.content?.aliases).toEqual(["дом", "адрес"]);
+  });
+
+  it("records the call's cost even when its answer cannot be read, and asks again next day", async () => {
+    model.generate.mockImplementation(async (options) => {
+      await options.onStepEnd?.(paidStep);
+      throw new Error("No object generated");
+    });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ classifierCalls: 1, classifierFailed: 1 });
+    expect(await database.select().from(schema.usageCosts)).toHaveLength(1);
+    await database.insert(schema.memoryDigestRuns).values({
+      finishedAt: new Date("2026-10-03T05:00:00Z"),
+      leaseUntil: new Date("2026-10-03T05:15:00Z"),
+      localDate: "2026-10-03",
+      outcome: { classifierFailed: 1 },
+      startedAt: new Date("2026-10-03T04:59:00Z"),
+      status: "done",
+      workspaceId: alice.workspaceId,
+    });
+    proposes({});
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-04")
+    ).toMatchObject({ classifierCalls: 1 });
   });
 
   it("never asks the model outside the pilot", async () => {

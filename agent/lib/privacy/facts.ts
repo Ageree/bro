@@ -40,7 +40,10 @@ export function keptData() {
  * The judges of RU d14 (25.09) missed the language model's provider and the
  * cloud browser, which Bro never named.
  */
-export function dataProcessors(modelId: string) {
+export function dataProcessors(
+  modelId: string,
+  { memoryDigest = false }: { readonly memoryDigest?: boolean } = {}
+) {
   const direct = directModelProviderName();
   return [
     direct !== undefined
@@ -73,9 +76,9 @@ export function dataProcessors(modelId: string) {
           "Записи памяти, кроме помеченных как только локальные, могут индексироваться в Supermemory для поиска по смыслу; забытое оттуда тоже удаляется.",
         ]
       : []),
-    ...(direct !== undefined && (env.MEMORY_DIGEST_WORKSPACES ?? []).length > 0
+    ...(direct !== undefined && memoryDigest
       ? [
-          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил) модели ${env.MEMORY_DIGEST_MODEL ?? defaultModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
+          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил и предпочтений, включая помеченные как только локальные) модели ${env.MEMORY_DIGEST_MODEL ?? defaultModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
         ]
       : []),
     "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",

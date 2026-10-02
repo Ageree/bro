@@ -113,7 +113,11 @@ function sameWords(a: string, b: string) {
   );
 }
 
-function mergedAliases(kept: DigestRecord, folded: readonly DigestRecord[]) {
+/** The kept record's aliases with those of the folded ones, at most twelve. */
+export function mergedAliases(
+  kept: DigestRecord,
+  folded: readonly DigestRecord[]
+) {
   const aliases = [...kept.content.aliases];
   const seen = new Set(aliases.map(comparableMemoryText));
   for (const alias of folded.flatMap((record) => record.content.aliases)) {

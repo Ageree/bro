@@ -1,5 +1,8 @@
-import { classifyMemories } from "@agent/lib/memory/digest/classifier";
-import { planDedupe } from "@agent/lib/memory/digest/dedupe";
+import {
+  classifierCandidates,
+  classifyMemories,
+} from "@agent/lib/memory/digest/classifier";
+import { mergedAliases, planDedupe } from "@agent/lib/memory/digest/dedupe";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { redactUnsafeText } from "@agent/lib/memory/digest/redact";
 import {
@@ -40,6 +43,7 @@ const digest = { actor: "digest" } as const;
 
 type Outcome = Record<
   | "classifierCalls"
+  | "classifierFailed"
   | "contained"
   | "corrected"
   | "deduped"
@@ -114,6 +118,7 @@ export async function runDueMemoryDigests(now = new Date()) {
 export async function digestWorkspace(workspaceId: string, localDate: string) {
   const outcome: Outcome = {
     classifierCalls: 0,
+    classifierFailed: 0,
     contained: 0,
     corrected: 0,
     deduped: 0,
@@ -259,32 +264,33 @@ async function classifyScope(
     readonly since: Date | null;
   }
 ) {
-  const records = (await listCurrentMemories(scope, scopeKey)).flatMap(
-    ({ content, index, revision, updatedAt }) =>
-      content ? [{ content, index, revision, updatedAt }] : []
+  const candidates = classifierCandidates(
+    (await listCurrentMemories(scope, scopeKey)).flatMap(
+      ({ content, index, revision, updatedAt }) =>
+        content ? [{ content, index, revision, updatedAt }] : []
+    )
   );
-  const changed = records.some(
-    ({ content, updatedAt }) =>
-      content.category !== "rule" &&
-      (since === null || new Date(updatedAt) > since)
+  const changed = candidates.some(
+    ({ updatedAt }) => since === null || new Date(updatedAt) > since
   );
-  if (!changed) return;
+  if (candidates.length < 2 || !changed) return;
   let plan: Awaited<ReturnType<typeof classifyMemories>>;
   try {
     outcome.classifierCalls += 1;
-    plan = await classifyMemories(records, {
+    plan = await classifyMemories(candidates, {
       localDate,
       scopeKey,
       workspaceId: scope.workspaceId,
     });
   } catch (error) {
+    // The day is done but not this step: the next digest asks again.
+    outcome.classifierFailed += 1;
     console.warn("[memory-digest] classifier failed", {
       errorCode: error instanceof Error ? error.name : "unknown",
       workspaceId: scope.workspaceId,
     });
     return;
   }
-  if (!plan) return;
   const operation = `memory-digest:${localDate}`;
   const forget = (
     record: { readonly index: number; readonly revision: number },
@@ -299,26 +305,47 @@ async function classifyScope(
         { ...digest, action }
       )
     );
-  for (const { newer, older, text } of plan.corrections) {
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Each write locks the memory scope.
-    const updated = await skipChanged(() =>
+  const rewrite = (
+    record: (typeof candidates)[number],
+    content: (typeof candidates)[number]["content"],
+    action: "correct" | "merge"
+  ) =>
+    skipChanged(() =>
       updateMemory(
         scope,
         scopeKey,
-        {
-          content: { ...newer.content, text },
-          expectedRevision: newer.revision,
-          index: newer.index,
-        },
-        `${operation}:correct:${String(newer.index)}:${String(newer.revision)}`,
-        { ...digest, action: "correct" }
+        { content, expectedRevision: record.revision, index: record.index },
+        `${operation}:${action}:${String(record.index)}:${String(record.revision)}`,
+        { ...digest, action }
       )
     );
+  for (const { newer, older, text } of plan.corrections) {
+    // The older fact goes first: a newer one rewritten while the older stays
+    // would say the old text twice.
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each write locks the memory scope.
+    if (!(await forget(older, "correct"))) {
+      outcome.skipped += 1;
+      continue;
+    }
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
-    if (updated && (await forget(older, "correct"))) outcome.corrected += 1;
+    const rewritten = await rewrite(
+      newer,
+      { ...newer.content, aliases: mergedAliases(newer, [older]), text },
+      "correct"
+    );
+    if (rewritten) outcome.corrected += 1;
     else outcome.skipped += 1;
   }
-  for (const { record } of plan.duplicates) {
+  for (const { into, record } of plan.duplicates) {
+    const aliases = mergedAliases(into, [record]);
+    if (aliases.length > into.content.aliases.length) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+      const kept = await rewrite(into, { ...into.content, aliases }, "merge");
+      if (!kept) {
+        outcome.skipped += 1;
+        continue;
+      }
+    }
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
     if (await forget(record, "merge")) outcome.deduped += 1;
     else outcome.skipped += 1;

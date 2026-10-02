@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { generateText, Output, type ProviderMetadata } from "ai";
 import { z } from "zod";
 import { recordCost } from "@agent/lib/costs/record";
@@ -37,6 +38,13 @@ const maximumRecords = 120;
 const maximumTextChars = 300;
 const oneOffCategories = new Set(["fact", "decision", "organization"]);
 const correctedCategories = new Set(["fact", "person", "organization"]);
+/** What the model may see: never a rule, never a preference (RU d13). */
+const proposedCategories = new Set([
+  "fact",
+  "person",
+  "organization",
+  "decision",
+]);
 
 const proposalSchema = z.object({
   duplicateOf: z
@@ -62,28 +70,37 @@ const instructions = [
 ].join(" ");
 
 /**
+ * The memories the model may propose changes to: facts, people,
+ * organizations and decisions. Rules and preferences («свинину не ест») are
+ * never sent: a weak model folding or dropping one would change what Bro
+ * does for the person.
+ */
+export function classifierCandidates(records: readonly ClassifiedRecord[]) {
+  return records
+    .filter(({ content }) => proposedCategories.has(content.category))
+    .slice(0, maximumRecords);
+}
+
+/**
  * Asks a cheap model which of a scope's memories are one-off task details,
  * duplicates in other words, or facts a newer one corrects — and keeps only
  * what code can check: indexes that exist, categories each change is for, a
  * duplicate whose every word is in the record it folds into, a correction
- * from older to newer. Rules and preferences are never proposed to it for a
- * change, a record with a validity date never goes as one-off, and each
- * kind is capped. A failure changes nothing. The call is the digest's own
- * (`MEMORY_DIGEST_MODEL`, the provider's default otherwise), not the
- * workspace's chosen model, and its cost goes to `usage_costs` as `memory`.
+ * from older to newer about the same thing. A record with a validity date
+ * never goes as one-off, and each kind is capped. A failure changes
+ * nothing. The call is the digest's own (`MEMORY_DIGEST_MODEL`, the
+ * provider's default otherwise), not the workspace's chosen model, and its
+ * cost goes to `usage_costs` as `memory` as soon as the step ends, before its
+ * answer is parsed.
  */
 export async function classifyMemories(
-  records: readonly ClassifiedRecord[],
+  candidates: readonly ClassifiedRecord[],
   call: {
     readonly localDate: string;
     readonly scopeKey: string;
     readonly workspaceId: string;
   }
-): Promise<ClassifierPlan | undefined> {
-  const candidates = records
-    .filter(({ content }) => content.category !== "rule")
-    .slice(0, maximumRecords);
-  if (candidates.length < 2) return undefined;
+): Promise<ClassifierPlan> {
   const modelId = env.MEMORY_DIGEST_MODEL ?? defaultModelId();
   const selection = directModelSelection(modelId, { toolChoice: "none" });
   const result = await generateText({
@@ -91,6 +108,26 @@ export async function classifyMemories(
     instructions,
     maxOutputTokens: 400,
     model: selection.model,
+    async onStepEnd(step) {
+      const cost = callCost(step.providerMetadata);
+      await recordCost({
+        ...cost,
+        // One row per call: a day retried after a failure pays again.
+        idempotencyKey: `memory-digest:${call.workspaceId}:${call.localDate}:${randomUUID()}`,
+        occurredAt: new Date(),
+        sessionId: null,
+        source: "memory",
+        units: {
+          cachedInputTokens: step.usage.inputTokenDetails.cacheReadTokens ?? 0,
+          inputTokens: step.usage.inputTokens ?? 0,
+          model: modelId,
+          outputTokens: step.usage.outputTokens ?? 0,
+          steps: 1,
+          unpriced: cost.costRub === 0,
+        },
+        workspaceId: call.workspaceId,
+      });
+    },
     output: Output.object({ schema: proposalSchema }),
     prompt: JSON.stringify({
       records: candidates.map(({ content, index, updatedAt }) => ({
@@ -107,23 +144,6 @@ export async function classifyMemories(
       openrouter: { reasoning: { enabled: false } },
     },
   });
-  const cost = callCost(result.finalStep.providerMetadata);
-  await recordCost({
-    ...cost,
-    idempotencyKey: `memory-digest:${call.workspaceId}:${call.localDate}:${call.scopeKey}`,
-    occurredAt: new Date(),
-    sessionId: null,
-    source: "memory",
-    units: {
-      cachedInputTokens: result.usage.inputTokenDetails.cacheReadTokens ?? 0,
-      inputTokens: result.usage.inputTokens ?? 0,
-      model: modelId,
-      outputTokens: result.usage.outputTokens ?? 0,
-      steps: 1,
-      unpriced: cost.costRub === 0,
-    },
-    workspaceId: call.workspaceId,
-  });
   return checkedPlan(candidates, result.output);
 }
 
@@ -137,13 +157,30 @@ function callCost(metadata: ProviderMetadata | undefined) {
     : { costRub: usdToRub(cost), costUsd: cost };
 }
 
-/** A record's words of four letters or more, lower-cased. */
-function contentWords(text: string) {
+/**
+ * A record's words, lower-cased — every one, «не» and «12» included: «не ест
+ * мясо» is no copy of «ест мясо», nor «квартира 12» of «квартира 15».
+ */
+function allWords(text: string) {
   return new Set(
-    [...text.toLocaleLowerCase().matchAll(/[\p{L}\p{N}]{4,}/gu)].map(
+    [...text.toLocaleLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map(
       ([word]) => word
     )
   );
+}
+
+/** Words that may say what a record is about: four letters or more. */
+function subjectWords(text: string) {
+  return [...allWords(text)].filter((word) => word.length >= 4);
+}
+
+/** Whether two records speak of the same thing: an alias or a word in common. */
+function sameSubject(a: MemoryContent, b: MemoryContent) {
+  const aliases = new Set(a.aliases.map((alias) => alias.toLocaleLowerCase()));
+  if (b.aliases.some((alias) => aliases.has(alias.toLocaleLowerCase())))
+    return true;
+  const words = new Set(subjectWords(a.text));
+  return subjectWords(b.text).some((word) => words.has(word));
 }
 
 function shortDate(iso: string) {
@@ -152,18 +189,20 @@ function shortDate(iso: string) {
 }
 
 /** Keeps only the proposals code can stand behind, within the caps. */
-export function checkedPlan(
+function checkedPlan(
   candidates: readonly ClassifiedRecord[],
   proposal: z.infer<typeof proposalSchema>
 ): ClassifierPlan {
   const byIndex = new Map(candidates.map((record) => [record.index, record]));
   const used = new Set<number>();
-  // At most a fifth of the memories change in a day, and never fewer than one.
-  let budget = Math.max(1, Math.floor(candidates.length / 5));
+  // At most a fifth of the memories change in a day — counted in records,
+  // a correction and a fold touching two — and never fewer than two.
+  let budget = Math.max(2, Math.floor(candidates.length / 5));
   const take = (...indexes: number[]) => {
-    if (budget <= 0 || indexes.some((index) => used.has(index))) return false;
+    if (budget < indexes.length || indexes.some((index) => used.has(index)))
+      return false;
     for (const index of indexes) used.add(index);
-    budget -= 1;
+    budget -= indexes.length;
     return true;
   };
 
@@ -183,7 +222,10 @@ export function checkedPlan(
       !correctedCategories.has(older.content.category) ||
       older.content.validUntil !== null ||
       newer.content.validUntil !== null ||
-      newer.updatedAt <= older.updatedAt
+      // A local-only text must not move into a record the index gets.
+      older.content.localOnly !== newer.content.localOnly ||
+      newer.updatedAt <= older.updatedAt ||
+      !sameSubject(older.content, newer.content)
     )
       continue;
     const text = `${newer.content.text} (с ${shortDate(newer.updatedAt)}; раньше: ${older.content.text})`;
@@ -206,8 +248,8 @@ export function checkedPlan(
       record.content.localOnly !== into.content.localOnly
     )
       continue;
-    const kept = contentWords(into.content.text);
-    const words = [...contentWords(record.content.text)];
+    const kept = allWords(into.content.text);
+    const words = [...allWords(record.content.text)];
     // Nothing the folded record says may be lost: every word is in the other.
     if (words.length === 0 || !words.every((word) => kept.has(word))) continue;
     if (take(record.index, into.index)) duplicates.push({ into, record });
