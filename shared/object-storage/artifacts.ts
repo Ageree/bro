@@ -2,6 +2,10 @@ import {
   objectStorageConfigured,
   presignStoredObject,
 } from "@shared/object-storage/s3";
+import {
+  objectRequestTimeoutMs,
+  uploadTimeoutMs,
+} from "@shared/object-storage/upload-timeout";
 
 /**
  * The bytes behind `/artifacts/<id>`: images Bro captured, generated or was
@@ -11,9 +15,6 @@ import {
  * (`scripts/cloudru-app-host/blob-to-s3.ts` copied them under the same key).
  */
 const artifactKeyPrefix = "artifacts/";
-const requestTimeoutMs = 60_000;
-/** The slowest upload a PUT waits out: 10 MB in under four minutes. */
-const slowestUploadBytesPerSecond = 64 * 1024;
 /** A presigned URL here is used at once, by the server that signed it. */
 const presignSeconds = 300;
 
@@ -52,11 +53,7 @@ export async function putArtifactObject(input: {
     headers: { "content-type": input.mediaType },
     method: "PUT",
     // An upload of a 10 MB attachment takes longer than a read's bound.
-    signal: withTimeout(
-      input.signal,
-      requestTimeoutMs +
-        Math.ceil(input.bytes.byteLength / slowestUploadBytesPerSecond) * 1000
-    ),
+    signal: withTimeout(input.signal, uploadTimeoutMs(input.bytes.byteLength)),
   });
   if (!response.ok) {
     throw new ArtifactStorageError(
@@ -72,7 +69,7 @@ export async function putArtifactObject(input: {
 export async function deleteArtifactObject(pathname: string) {
   const response = await fetch(presignArtifact(pathname, "DELETE"), {
     method: "DELETE",
-    signal: AbortSignal.timeout(requestTimeoutMs),
+    signal: AbortSignal.timeout(objectRequestTimeoutMs),
   });
   if (response.ok) {
     await response.body?.cancel();
@@ -172,7 +169,7 @@ async function withinBound<T>(
     stalled.abort(
       new DOMException("Object Storage did not answer in time.", "TimeoutError")
     );
-  }, requestTimeoutMs);
+  }, objectRequestTimeoutMs);
   try {
     return await step();
   } finally {

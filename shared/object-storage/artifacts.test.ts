@@ -60,6 +60,27 @@ describe("artifact objects", () => {
     expect(calls[0]?.headers.get("content-type")).toBe("image/png");
   });
 
+  it("gives an upload a deadline that grows with its body", async () => {
+    stubStorage(new Response(null, { status: 200 }));
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const artifacts = await import("@shared/object-storage/artifacts");
+    const { uploadTimeoutMs } =
+      await import("@shared/object-storage/upload-timeout");
+    const bytes = new Uint8Array(10 * 1024 * 1024);
+
+    await artifacts.putArtifactObject({
+      bytes,
+      mediaType: "application/pdf",
+      pathname: "gmail-attachments/u/big",
+    });
+
+    expect(timeout).toHaveBeenCalledWith(uploadTimeoutMs(bytes.byteLength));
+    expect(uploadTimeoutMs(bytes.byteLength)).toBeGreaterThan(
+      uploadTimeoutMs(1)
+    );
+    timeout.mockRestore();
+  });
+
   it("fails a refused upload, naming the cause Object Storage gave", async () => {
     stubStorage(
       new Response("<Error><Code>SignatureDoesNotMatch</Code></Error>", {

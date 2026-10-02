@@ -37,6 +37,7 @@ import {
   presignS3Url,
   uriEncode,
 } from "../../shared/object-storage/sigv4.ts";
+import { uploadTimeoutMs } from "../../shared/object-storage/upload-timeout.ts";
 
 /** Must match `artifactKeyPrefix` in `shared/object-storage/artifacts.ts`. */
 const keyPrefix = "artifacts/";
@@ -205,11 +206,16 @@ async function copyAll() {
         throw new Error("Blob bytes differ from the hash in their path.");
       }
     }
-    const put = await send(presign("PUT", key), {
-      body: bytes,
-      headers: { "content-type": contentType },
-      method: "PUT",
-    });
+    // The deadline of a read would cut a large upload short.
+    const put = await send(
+      presign("PUT", key),
+      {
+        body: bytes,
+        headers: { "content-type": contentType },
+        method: "PUT",
+      },
+      uploadTimeoutMs(bytes.byteLength)
+    );
     await put.body?.cancel();
     if (!put.ok) throw new Error(`S3 PUT answered ${String(put.status)}.`);
     const landed = await headObject(key);
@@ -310,9 +316,14 @@ function presign(method: "HEAD" | "PUT", key: string) {
 /**
  * `fetch`, again after a dropped connection: the way out of the cloud
  * session sometimes resets one. Every request here is safe to repeat. The
- * deadline covers the answer and the reading of its body.
+ * deadline covers the answer and the reading of its body; a PUT passes its
+ * own, which grows with the body.
  */
-async function send(input: string | URL, init: Omit<RequestInit, "signal">) {
+async function send(
+  input: string | URL,
+  init: Omit<RequestInit, "signal">,
+  timeoutMs = requestTimeoutMs
+) {
   for (let attempt = 1; ; attempt += 1) {
     try {
       // Each attempt gets its own deadline: a spent one would abort every
@@ -320,7 +331,7 @@ async function send(input: string | URL, init: Omit<RequestInit, "signal">) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- A retry waits for the attempt before it.
       return await fetch(input, {
         ...init,
-        signal: AbortSignal.timeout(requestTimeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (attempt >= networkAttempts) {

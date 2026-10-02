@@ -140,6 +140,35 @@ describe("browser image route", () => {
     }
   );
 
+  it("answers 502 when the body of a refused object cannot be cancelled", async () => {
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    // A stream that already failed rejects its cancel with that failure.
+    const dropped = new Error("connection reset");
+    mocks.openObject.mockResolvedValue({
+      contentType: "image/png",
+      etag: '"etag"',
+      size: png.byteLength + 1,
+      status: 200,
+      stream: new ReadableStream({
+        start(controller) {
+          controller.error(dropped);
+        },
+      }),
+    });
+
+    const response = await GET(request(), context());
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(error).toHaveBeenCalledWith(
+      "[artifacts] Object Storage read failed",
+      dropped
+    );
+  });
+
   it("answers 502 with the private headers when storage fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.openObject.mockRejectedValue(new TypeError("fetch failed"));

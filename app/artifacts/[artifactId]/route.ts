@@ -27,8 +27,18 @@ export async function GET(
       ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
       signal: request.signal,
     });
+    if (
+      result?.status === 200 &&
+      (result.size !== artifact.byteSize ||
+        result.contentType !== artifact.mediaType)
+    ) {
+      // Dropping the body of an object that already failed rejects too.
+      await result.stream.cancel();
+      return notFound();
+    }
   } catch (error) {
-    // Object Storage refused, timed out or dropped the connection.
+    // Object Storage refused, timed out or dropped the connection, before or
+    // while its body was let go.
     console.error("[artifacts] Object Storage read failed", error);
     return new Response("Storage unavailable", {
       headers: privateImageHeaders(),
@@ -41,13 +51,6 @@ export async function GET(
   if (result.etag) headers.set("etag", result.etag);
   if (result.status === 304) {
     return new Response(null, { headers, status: 304 });
-  }
-  if (
-    result.size !== artifact.byteSize ||
-    result.contentType !== artifact.mediaType
-  ) {
-    await result.stream.cancel();
-    return notFound();
   }
 
   headers.set("content-length", String(artifact.byteSize));
