@@ -39,6 +39,9 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
                                                 new-secrets.json (no new key while backups exist)
   python host.py pg databases                   bro, bro_workflow, bro_stand, bro_stand_workflow, bro_restore_check
   python host.py pg status                      cluster, disk, databases, users, the provider's backups
+  python host.py state save | restore [--force]  the operator's keys (this directory and ~/.bro-code-host,
+                                                no builds or vendored files), sealed, to and from Object
+                                                Storage: the session's container is the only other copy
 
 VM names must match bro-app-[a-z0-9-]+: this script never acts on another VM of the project (the pool's
 bro-host-*, the code host's sbx-*), and `pg` only on the cluster bro-pg. Needs CLOUDRU_KEY_ID,
@@ -47,8 +50,10 @@ CLOUDRU_KEY_SECRET and CLOUDRU_S3_TENANT_ID.
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -56,6 +61,8 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -907,6 +914,135 @@ def cmd_env(args):
     follow(args.name, job)
 
 
+# --- The operator's keys ------------------------------------------------------------------------------------
+
+# DEPLOY_SIGNING_KEY, the consoles' passwords, BACKUP_ENCRYPTION_KEY and the env files live in this session's
+# container and on the VMs only (BETTER_AUTH_SECRET and SECRET_ENCRYPTION_KEY too, once Vercel Blob is gone).
+# Sealed under a key derived from CLOUDRU_KEY_SECRET, which the environment keeps for every session: whoever
+# has it controls the project anyway. A rotated Cloud.ru key needs `state save` again.
+STATE_KEY = "operator/state.bin"
+STATE_MAGIC = b"BRO-OPERATOR-STATE-1\n"
+CODE_HOST_STATE = Path(os.environ.get("BRO_CODE_HOST_DIR", Path.home() / ".bro-code-host"))
+STATE_SKIPPED = ("build", "vendor")
+
+
+def state_keys(secret):
+    """An openssl passphrase and an HMAC key, both derived from the Cloud.ru key secret."""
+    raw = "".join(secret.split()).strip("‘’“”'\"").encode()
+
+    def derive(label):
+        return hmac.new(raw, f"bro-operator-state:{label}".encode(), hashlib.sha256).hexdigest()
+
+    return derive("encrypt"), bytes.fromhex(derive("mac"))
+
+
+def seal(data, secret):
+    """AES-256-CBC (openssl, PBKDF2) then HMAC-SHA256 over the ciphertext: the stdlib has no AES."""
+    passphrase, mac_key = state_keys(secret)
+    read, write = os.pipe()
+    os.write(write, passphrase.encode() + b"\n")
+    os.close(write)
+    try:
+        cipher = subprocess.run(["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt",
+                                 "-pass", f"fd:{read}"], input=data, capture_output=True, check=True,
+                                pass_fds=(read,)).stdout
+    finally:
+        os.close(read)
+    return STATE_MAGIC + hmac.new(mac_key, cipher, hashlib.sha256).digest() + cipher
+
+
+def unseal(blob, secret):
+    passphrase, mac_key = state_keys(secret)
+    if not blob.startswith(STATE_MAGIC):
+        sys.exit("not a sealed operator state")
+    tag, cipher = blob[len(STATE_MAGIC):len(STATE_MAGIC) + 32], blob[len(STATE_MAGIC) + 32:]
+    if not hmac.compare_digest(tag, hmac.new(mac_key, cipher, hashlib.sha256).digest()):
+        sys.exit("the operator state does not open with this CLOUDRU_KEY_SECRET (rotated since `state save`?)")
+    read, write = os.pipe()
+    os.write(write, passphrase.encode() + b"\n")
+    os.close(write)
+    try:
+        return subprocess.run(["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+                               "-pass", f"fd:{read}"], input=cipher, capture_output=True, check=True,
+                              pass_fds=(read,)).stdout
+    finally:
+        os.close(read)
+
+
+def state_archive(roots):
+    """The given directories as one tar.gz, each under its own name, without builds and vendored files."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, root in roots.items():
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                relative = path.relative_to(root)
+                if path.is_file() and relative.parts[0] not in STATE_SKIPPED:
+                    tar.add(path, arcname=f"{name}/{relative}", recursive=False)
+    return buffer.getvalue()
+
+
+def restore_archive(data, roots, force=False):
+    """Unpack into the given directories (0700, files 0600); a file already there is kept unless `force`.
+    Only a plain relative path inside its root is written, never through a symlink, and each file whole or
+    not at all (a temporary file, fsync, rename): an interrupted restore must not leave a key file empty."""
+    written = kept = 0
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            name, _, relative = member.name.partition("/")
+            path = Path(relative)
+            if not member.isfile() or name not in roots or not relative or path.is_absolute() or ".." in path.parts:
+                continue
+            root = roots[name]
+            target = root / path
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_symlink() or target.parent.resolve() != root.resolve() / path.parent:
+                sys.exit(f"{target}: a symlink on the way, nothing restored past it")
+            if target.exists() and not force:
+                kept += 1
+                continue
+            fd, temporary = tempfile.mkstemp(dir=target.parent, prefix="." + target.name)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(tar.extractfile(member).read())
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, target)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary)
+                raise
+            written += 1
+    return written, kept
+
+
+def state_roots():
+    return {"app-host": STATE, "code-host": CODE_HOST_STATE}
+
+
+def cmd_state(args):
+    secret = os.environ.get("CLOUDRU_KEY_SECRET", "")
+    if not secret.strip():
+        sys.exit("CLOUDRU_KEY_SECRET is required")
+    if args.action == "save":
+        data = state_archive(state_roots())
+        sealed = seal(data, secret)
+        if unseal(sealed, secret) != data:
+            sys.exit("the sealed state does not open again: nothing uploaded")
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            count = len(tar.getmembers())
+        upload(STATE_KEY, data=sealed)
+        print(f"{count} files of {', '.join(str(root) for root in state_roots().values())} sealed in {STATE_KEY}")
+        return
+    code, body = s3.send(urllib.request.Request(s3.presign("GET", STATE_KEY, 600)))
+    if code != 200:
+        sys.exit(f"get {STATE_KEY}: {code}")
+    written, kept = restore_archive(unseal(body, secret), state_roots(), force=args.force)
+    print(f"restored {written} files, kept {kept} already here (--force replaces them)")
+
+
 # --- Managed PostgreSQL ------------------------------------------------------------------------------------
 # One cluster, bro-pg, in the VMs' subnet: it answers only on its internal address, so only the VM reaches it.
 # Every command is safe to repeat: what is there is kept and reported, what is missing is made.
@@ -1183,6 +1319,10 @@ def parser():
     # REMAINDER: the script's own options (db-restore.sh --replace) are its arguments, not host.py's.
     ops.add_argument("args", nargs=argparse.REMAINDER)
     ops.set_defaults(fn=cmd_ops)
+    state = sub.add_parser("state")
+    state.add_argument("action", choices=("save", "restore"))
+    state.add_argument("--force", action="store_true")
+    state.set_defaults(fn=cmd_state)
     pg = sub.add_parser("pg")
     pg_sub = pg.add_subparsers(dest="pg_cmd", required=True)
     create = pg_sub.add_parser("create")

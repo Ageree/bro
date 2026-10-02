@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -1320,6 +1321,65 @@ class HostCliTest(unittest.TestCase):
     def setUpClass(cls):
         cls.host = load_host_py()
         cls.addClassCleanup(shutil.rmtree, os.environ["BRO_APP_HOST_DIR"])
+
+    def test_the_operator_state_seals_and_opens_only_with_its_key(self):
+        sealed = self.host.seal(b"keys", "cloud-ru secret\n")
+        self.assertTrue(sealed.startswith(self.host.STATE_MAGIC))
+        self.assertNotIn(b"keys", sealed)
+        # A pasted key's whitespace does not change the key.
+        self.assertEqual(self.host.unseal(sealed, " cloud-rusecret "), b"keys")
+        with self.assertRaisesRegex(SystemExit, "does not open with this CLOUDRU_KEY_SECRET"):
+            self.host.unseal(sealed, "another secret")
+        tampered = sealed[:-1] + bytes([sealed[-1] ^ 1])
+        with self.assertRaisesRegex(SystemExit, "does not open with this CLOUDRU_KEY_SECRET"):
+            self.host.unseal(tampered, "cloud-ru secret")
+        with self.assertRaisesRegex(SystemExit, "not a sealed operator state"):
+            self.host.unseal(b"plain", "cloud-ru secret")
+
+    def test_the_operator_state_keeps_keys_not_builds_and_restores_without_overwriting(self):
+        source, target = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, source)
+        self.addCleanup(shutil.rmtree, target)
+        for relative, text in {"app/env/new-secrets.json": "{}", "app/bro-app-1.password": "p",
+                               "app/build/last.json": "{}", "app/vendor/caddy": "x", "code/token": "t"}.items():
+            (source / relative).parent.mkdir(parents=True, exist_ok=True)
+            (source / relative).write_text(text)
+        data = self.host.state_archive({"app-host": source / "app", "code-host": source / "code",
+                                        "missing": source / "none"})
+        (target / "app").mkdir()
+        (target / "app" / "bro-app-1.password").write_text("newer")
+        roots = {"app-host": target / "app", "code-host": target / "code"}
+        self.assertEqual(self.host.restore_archive(data, roots), (2, 1))
+        self.assertEqual((target / "app" / "bro-app-1.password").read_text(), "newer")
+        self.assertEqual((target / "app" / "env" / "new-secrets.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((target / "code" / "token").read_text(), "t")
+        self.assertFalse((target / "app" / "build").exists())
+        self.assertFalse((target / "app" / "vendor").exists())
+        self.assertEqual(self.host.restore_archive(data, roots, force=True), (3, 0))
+        self.assertEqual((target / "app" / "bro-app-1.password").read_text(), "p")
+
+    def test_the_operator_state_restores_nothing_outside_its_directories(self):
+        target, outside = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, target)
+        self.addCleanup(shutil.rmtree, outside)
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            for name in (f"app-host/{outside}/absolute", "app-host/../escaped", "app-host/linked/key", "app-host/key"):
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+        roots = {"app-host": target / "app"}
+        (target / "app").mkdir()
+        (target / "app" / "linked").symlink_to(outside)
+        with self.assertRaisesRegex(SystemExit, "a symlink on the way"):
+            self.host.restore_archive(raw.getvalue(), roots, force=True)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((target / "escaped").exists())
+        # Without the symlink, only the plain relative path is written.
+        (target / "app" / "linked").unlink()
+        self.assertEqual(self.host.restore_archive(raw.getvalue(), roots), (2, 0))
+        self.assertEqual(sorted(p.name for p in (target / "app").rglob("*") if p.is_file()), ["key", "key"])
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_the_build_has_the_model_provider_of_the_vm(self):
         # web_search.ts decides at module load: a build without it ships the Gateway's tool, and RouterAI

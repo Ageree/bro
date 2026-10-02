@@ -44,6 +44,13 @@ cloud-init в `/etc/bro/deployd.json`; сам `DEPLOY_SIGNING_KEY` на VM не 
 Токен — формат `sandboxd`/`hostd`: `v1.<payload>.<sig>`, payload
 `{"env": <имя VM>, "exp": …}`, не дальше 15 минут.
 
+Ключи оператора (`~/.bro-app-host` без `build/` и `vendor/`, `~/.bro-code-host`)
+есть только в контейнере сессии и на VM. `host.py state save` после каждой их
+смены кладёт их в Object Storage (`operator/state.bin`): AES-256-CBC `openssl`
+и HMAC-SHA256, ключи — из `CLOUDRU_KEY_SECRET` окружения. Новая сессия
+начинает с `host.py state restore` (файлы, что уже есть, не трогает;
+`--force` — заменить). После смены ключа Cloud.ru — снова `state save`.
+
 `host.py vendor` качает по пинам `vendor.json` Caddy (GitHub), Node
 (nodejs.org) и пакеты `libpq5`, `postgresql-client-common`,
 `postgresql-client-18` для jammy (apt.postgresql.org; sha256 взяты из
