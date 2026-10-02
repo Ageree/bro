@@ -99,3 +99,7 @@ jobs:
       - name: Code host (boot, provision)
         working-directory: sandbox/host
         run: python -m unittest
+
+      - name: Telegram bridge (app host)
+        working-directory: scripts/cloudru-app-host/tg-bridge
+        run: python -m unittest
