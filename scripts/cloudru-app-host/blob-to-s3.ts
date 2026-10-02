@@ -147,7 +147,7 @@ async function copyAll() {
    * counts as already copied.
    */
   async function blobContentType(blob: ListedBlob) {
-    const response = await send(blob.url, {
+    const response = await send(() => blob.url, {
       headers: { authorization: `Bearer ${token}` },
       method: "HEAD",
     });
@@ -165,7 +165,7 @@ async function copyAll() {
       url.searchParams.set("limit", "1000");
       if (cursor !== undefined) url.searchParams.set("cursor", cursor);
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the previous page's cursor.
-      const response = await send(url, {
+      const response = await send(() => url, {
         headers: {
           authorization: `Bearer ${token}`,
           "x-api-version": blobApiVersion,
@@ -188,7 +188,7 @@ async function copyAll() {
   }
 
   async function copy(blob: ListedBlob, key: string) {
-    const response = await send(blob.url, {
+    const response = await send(() => blob.url, {
       headers: { authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
@@ -208,7 +208,7 @@ async function copyAll() {
     }
     // The deadline of a read would cut a large upload short.
     const put = await send(
-      presign("PUT", key),
+      () => presign("PUT", key),
       {
         body: bytes,
         headers: { "content-type": contentType },
@@ -286,7 +286,7 @@ async function storedArtifactRows() {
 }
 
 async function headObject(key: string) {
-  const response = await send(presign("HEAD", key), {
+  const response = await send(() => presign("HEAD", key), {
     method: "HEAD",
   });
   if (response.status === 404) return undefined;
@@ -317,10 +317,11 @@ function presign(method: "HEAD" | "PUT", key: string) {
  * `fetch`, again after a dropped connection: the way out of the cloud
  * session sometimes resets one. Every request here is safe to repeat. The
  * deadline covers the answer and the reading of its body; a PUT passes its
- * own, which grows with the body.
+ * own, which grows with the body. The URL is made again for each attempt: a
+ * presigned one would expire under the retries of a large PUT.
  */
 async function send(
-  input: string | URL,
+  url: () => string | URL,
   init: Omit<RequestInit, "signal">,
   timeoutMs = requestTimeoutMs
 ) {
@@ -329,7 +330,7 @@ async function send(
       // Each attempt gets its own deadline: a spent one would abort every
       // retry at once.
       // oxlint-disable-next-line eslint/no-await-in-loop -- A retry waits for the attempt before it.
-      return await fetch(input, {
+      return await fetch(url(), {
         ...init,
         signal: AbortSignal.timeout(timeoutMs),
       });

@@ -21,6 +21,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const name of Object.keys(storage)) vi.stubEnv(name, "");
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function stubStorage(...answers: readonly Response[]) {
@@ -78,7 +79,6 @@ describe("artifact objects", () => {
     expect(uploadTimeoutMs(bytes.byteLength)).toBeGreaterThan(
       uploadTimeoutMs(1)
     );
-    timeout.mockRestore();
   });
 
   it("fails a refused upload, naming the cause Object Storage gave", async () => {
