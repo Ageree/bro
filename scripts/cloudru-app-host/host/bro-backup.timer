@@ -1,0 +1,11 @@
+[Unit]
+Description=Bro database backup every night (Moscow time)
+
+[Timer]
+# 04:10-04:20 in Moscow: the quietest hour, clear of the cluster's own backup (cron 0 3 * * *).
+OnCalendar=*-*-* 04:10:00 Europe/Moscow
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

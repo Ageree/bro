@@ -1,4 +1,5 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
 import { quietHoursEnd } from "@agent/lib/proactive/quiet-hours";
@@ -52,6 +53,7 @@ type ClaimedWatch = Awaited<
 export default defineSchedule({
   cron: "*/5 * * * *",
   run({ to, waitUntil }) {
+    if (!schedulesEnabled()) return;
     waitUntil(runProactiveChecks(to));
   },
 });

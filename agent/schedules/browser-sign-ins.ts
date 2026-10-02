@@ -1,4 +1,5 @@
 import { defineSchedule } from "eve/schedules";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { refreshDueSignIns } from "@agent/lib/browser-use/sign-ins";
 
@@ -9,6 +10,7 @@ import { refreshDueSignIns } from "@agent/lib/browser-use/sign-ins";
 export default defineSchedule({
   cron: "23 * * * *",
   run({ waitUntil }) {
+    if (!schedulesEnabled()) return;
     if (!browserUseConfigured()) return;
     waitUntil(keepSignInsAlive());
   },

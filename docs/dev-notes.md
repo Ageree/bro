@@ -70,6 +70,9 @@
 - knip не видит использование модуля в тесте, если его динамический `import()`
   разобран из `Promise.all([...])`: экспорт, нужный только тестам, импортируйте
   отдельным `await import(...)`.
+- Промис, который вернул шпион `vi.fn`, vitest обрабатывает сам: отказ
+  `mockRejectedValue` не станет unhandled. Пропущенный `.catch` ловит только
+  простая функция вместо шпиона (`db/tests/health.test.ts`).
 
 ## eve
 
@@ -90,11 +93,36 @@
   песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
   работает (`node_modules/eve/docs/sandbox.mdx`).
 - Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
-  на Vercel (Sandbox, Blob, Workflow, Gateway). eve живёт и вне Vercel:
-  `eve start`, состояние ходов — `@workflow/world-postgres`
-  (ключ `experimental.workflow.world`; в `agent/agent.ts` его пока нет,
-  выставить при переезде), песочница — бэкенд `docker()`
-  (`node_modules/eve/docs/concepts/execution-model-and-durability.mdx`).
+  на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
+  `scripts/cloudru-app-host/README.md`: сборка для VM включается только
+  `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
+  (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
+  поведением по умолчанию, пока Vercel — путь отката.
+- `next start` сам eve не поднимает (запуск зашит в `rewrites()`, их Next 16
+  вызывает только при сборке): eve — свой процесс `node .output/server/index.mjs`,
+  не `eve start` (обёртка копит весь вывод ребёнка в памяти).
+  `/.well-known/workflow/*` наружу не публикуйте: вход очереди мира без
+  авторизации. Без схемы мир Postgres падает на старте: до запуска —
+  `ops/migrate.mjs world`; две среды на одной базе мира исполняют чужие ходы.
+- Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
+  Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
+  `EVE_SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
+- Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
+  VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
+  видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
+  регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
+- В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
+  stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
+  таблицы других ролей, но бэкап и перенос тогда валятся, пока таблицы нет в
+  `ALLOW_FOREIGN_TABLES`: сверка строк смотрит те же таблицы и пропуска не
+  видит. Ошибки psql в ops-скриптах — `VERBOSITY=terse`: `DETAIL`/`CONTEXT`
+  сбойного COPY печатают строку с данными людей в лог job и journald.
+- Ключ S3 приложения лежит в `/etc/bro/env`, то есть у инструментов модели:
+  бэкапу верят только по HMAC манифеста (ключ из `BACKUP_ENCRYPTION_KEY`), а
+  `NEON_DATABASE_URL` живёт в `/etc/bro/ops-env` deployd, не в env приложения.
+- esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
+  `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
+  для `tar -I zstd`: `apt-get install -y zstd`.
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера

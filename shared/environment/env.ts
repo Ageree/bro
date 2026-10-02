@@ -678,6 +678,11 @@ export const env = createEnv({
     // The pilot of the task agent and its sandbox: workspace ids or owners'
     // emails, or `*` for every workspace.
     SANDBOX_WORKSPACES: workspaceListSchema.optional(),
+    // Whether this deployment runs eve's schedules (`agent/schedules`). "off"
+    // on the Cloud.ru rehearsal stand: its ticks would poll errands, check
+    // mail and write to people from a copy of production's data, and only
+    // one scheduler may run per database (docs/cloudru-migration.md).
+    EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report
@@ -729,6 +734,10 @@ export const env = createEnv({
     VERCEL_PROJECT_ID: requiredValue.optional(),
     VERCEL_PROJECT_PRODUCTION_URL: requiredValue.optional(),
     VERCEL_URL: requiredValue.optional(),
+    // Where eve keeps turn state, read by `eve build`: unset on Vercel
+    // (Vercel Workflow), "postgres" for the Cloud.ru VM, whose build bundles
+    // @workflow/world-postgres (scripts/cloudru-app-host).
+    WORKFLOW_WORLD: z.enum(["postgres"]).optional(),
     // Both YooKassa credentials together switch billing on. With either one
     // missing the deployment runs in free mode: free limits, no pay link.
     YOOKASSA_SECRET_KEY: trimmedValue.optional(),
