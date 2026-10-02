@@ -877,6 +877,49 @@ class HostCliTest(unittest.TestCase):
         prod, _ = self.host.compose_env("prod", {})
         self.assertEqual(prod["BACKUPS"], "on")
 
+    def test_production_is_vercel_production_on_the_vm(self):
+        self.host.SECRETS.mkdir(parents=True, exist_ok=True)
+        files = {
+            "vercel-production.json": {"BLOB_READ_WRITE_TOKEN": "b", "SANDBOX_HOST_ID": "sbx-code-1",
+                                       "BETTER_AUTH_URL": "https://bro-next.vercel.app", "FREE_MESSAGES_PER_DAY": "30",
+                                       "PGPASSWORD": "neon", "DATABASE_URL": "neon"},
+            "new-secrets.json": {"SANDBOX_SIGNING_KEY": "ab" * 32, "TELEGRAM_WEBHOOK_SECRET_TOKEN": "new-secret",
+                                 "BROWSER_USE_WEBHOOK_SECRET": "w", "BROWSER_VM_SIGNING_KEY": "cd" * 32},
+        }
+        for name, content in files.items():
+            (self.host.SECRETS / name).write_text(json.dumps(content))
+            self.addCleanup((self.host.SECRETS / name).unlink)
+        user = "geo-type-residential-country-ru-session-{session}-lifetime-30"
+        session = {"TELEGRAM_BOT_USERNAME": "“@bro_bot”\n", "TELEGRAM_WEBHOOK_SECRET_TOKEN": "old",
+                   "ROUTERAI_API_KEY": "rk", "OPENROUTER_API_KEY": "ok", "SUPERMEMORY_API_KEY": "s",
+                   "BLOB_READ_WRITE_TOKEN": "b2", "BROWSER_VM_PROXY": ":".join(["proxy.example", "9000", user, "pw"])}
+        prod, sources = self.host.compose_env("prod", session)
+        self.assertEqual(prod["TELEGRAM_BOT_USERNAME"], "bro_bot")
+        self.assertEqual(prod["BROWSER_VM_PROXY"], ":".join(["proxy.example", "10000", user, "pw"]))
+        self.assertEqual((prod["TELEGRAM_WEBHOOK_SECRET_TOKEN"], sources["TELEGRAM_WEBHOOK_SECRET_TOKEN"]),
+                         ("new-secret", "new-secrets"))
+        self.assertEqual(prod["BROWSER_VM_LLM_API_KEY"], "rk")
+        self.assertEqual({k: prod[k] for k in ("MODEL_PROVIDER", "AGENT_SANDBOX", "CLOUDRU_PRIVATE_ROUTING",
+                                                "SANDBOX_HOST_ID", "EVE_SCHEDULES", "BETTER_AUTH_URL")},
+                         {"MODEL_PROVIDER": "routerai", "AGENT_SANDBOX": "bro-cloudru", "CLOUDRU_PRIVATE_ROUTING": "on",
+                          "SANDBOX_HOST_ID": "sbx-code-2", "EVE_SCHEDULES": "on",
+                          "BETTER_AUTH_URL": "https://brobro.tech"})
+        self.assertEqual(prod["FREE_MESSAGES_PER_DAY"], "30")
+        for absent in ("BLOB_READ_WRITE_TOKEN", "OPENROUTER_API_KEY", "SUPERMEMORY_API_KEY", "PGPASSWORD"):
+            self.assertNotIn(absent, prod)
+        stand, _ = self.host.compose_env("stand", session)
+        self.assertEqual((stand["SANDBOX_SIGNING_KEY"], stand["AGENT_SANDBOX"], stand["MODEL_PROVIDER"]),
+                         ("ab" * 32, "bro-cloudru", "routerai"))
+        for absent in ("TELEGRAM_WEBHOOK_SECRET_TOKEN", "BROWSER_USE_WEBHOOK_SECRET", "BLOB_READ_WRITE_TOKEN"):
+            self.assertNotIn(absent, stand)
+
+    def test_the_proxy_moves_to_the_sticky_port_in_either_shape(self):
+        login = "u-session-{session}"
+        self.assertEqual(self.host.sticky_proxy(f"h.example:9000:{login}:p"), f"h.example:10000:{login}:p")
+        self.assertEqual(self.host.sticky_proxy(f"h.example:10000:{login}:p"), f"h.example:10000:{login}:p")
+        url = "http" + "://" + login + ":" + "p" + "@" + "h.example:9000"
+        self.assertEqual(self.host.sticky_proxy(url), url.replace(":9000", ":10000"))
+
     def test_remember_keeps_the_previous_file(self):
         secrets_file = self.host.SECRETS / "new-secrets.json"
         self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in (secrets_file, secrets_file.with_name(

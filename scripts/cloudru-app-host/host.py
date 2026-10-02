@@ -589,23 +589,54 @@ STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|EVE_MEMORY_BLO
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
 PRODUCTION_STORES = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
                                r"COMPOSIO_API_KEY")
+# Keys of Vercel Blob: on the VM the installation secrets are given outright (installation-secrets.json) and
+# files live in Object Storage, so no profile gets them (they would reach production's Blob store).
+BLOB = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_).*")
+# Production on Vercel keeps these "sensitive": never readable back, so the session brings them (the session's
+# other names, such as SUPERMEMORY_API_KEY, are not production's and stay out). MODEL_PROVIDER and
+# ROUTERAI_API_KEY came to Vercel after vercel-production.json was read; TELEGRAM_OWNER_CHAT_ID is not on
+# Vercel at all (the owner gives it in prod.json).
+SENSITIVE_ON_VERCEL = {
+    "BROWSER_USE_API_KEY", "BROWSER_USE_WEBHOOK_SECRET", "BROWSER_VM_LLM_API_KEY", "BROWSER_VM_PROXY",
+    "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET",
+    "COMPOSIO_API_KEY", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",
+    "OPENROUTER_API_KEY", "SANDBOX_SIGNING_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME",
+    "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET_TOKEN", "YOOKASSA_SECRET_KEY", "YOOKASSA_SHOP_ID",
+    "MODEL_PROVIDER", "ROUTERAI_API_KEY"}
+# Made for the move (new-secrets.json) and ahead of what the session or Vercel has: the code host's signing
+# key (sbx-* hosts derive theirs from it), the browser VMs' signing key, the secrets Telegram and Browser Use
+# send back. The stand drops the last two with their families.
+NEW_APP_SECRETS = ("SANDBOX_SIGNING_KEY", "BROWSER_VM_SIGNING_KEY", "TELEGRAM_WEBHOOK_SECRET_TOKEN",
+                   "BROWSER_USE_WEBHOOK_SECRET")
+# Not on the VM: with MODEL_PROVIDER=routerai, OpenRouter answers nothing of the app.
+NOT_ON_VM = {"OPENROUTER_API_KEY"}
+# The code host both profiles use (scripts/cloudru-code-host): its key derives from SANDBOX_SIGNING_KEY.
+CODE_HOST = {"SANDBOX_HOST_ID": "sbx-code-2", "SANDBOX_HOST_ORIGIN": "https://176-109-106-241.sslip.io"}
+# The same in both: the model through RouterAI (OpenRouter refuses Cloud.ru), the agent's own sandbox on the
+# code host (no Vercel Sandbox here), private addresses to the project's VMs (no hairpin to a public IP).
+ON_THE_VM = {"MODEL_PROVIDER": "routerai", "AGENT_SANDBOX": "bro-cloudru", "CLOUDRU_PRIVATE_ROUTING": "on",
+             **CODE_HOST}
 # EVE_SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
 # Auth reads it too and turns its origin check off.
 # Backups of each go to their own prefix: the stand's never mix with (or prune) production's.
 PROFILES = {
-    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "EVE_SCHEDULES": "off", "HOST_PROFILE": "stand",
-              "BACKUP_PREFIX": "backups/stand/postgres"},
-    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "EVE_SCHEDULES": "on", "HOST_PROFILE": "prod",
+    "stand": {**ON_THE_VM, "BETTER_AUTH_URL": "https://cloud.brobro.tech", "EVE_SCHEDULES": "off",
+              "HOST_PROFILE": "stand", "BACKUP_PREFIX": "backups/stand/postgres"},
+    "prod": {**ON_THE_VM, "BETTER_AUTH_URL": "https://brobro.tech", "EVE_SCHEDULES": "on", "HOST_PROFILE": "prod",
              "BACKUP_PREFIX": "backups/postgres"},
 }
+# Geonode's rotating port 9000 refuses a session in the login (403 on -session-): browser VMs keep one exit
+# per workspace, the sticky port.
+PROXY_PORTS = {"9000": "10000"}
 # graphile wants a pool at least its concurrency + 2. WORKFLOW_WORLD as the build had it: agent.ts reads it
 # again when the bundle loads.
 # Sensitive on Vercel (never readable back): the session or the profile file must bring them.
 EXPECTED = ("MODEL_PROVIDER", "ROUTERAI_API_KEY", "COMPOSIO_API_KEY", "BROWSER_USE_API_KEY", "SANDBOX_SIGNING_KEY",
-            "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_PROXY", "BROWSER_VM_LLM_API_KEY", "SUPERMEMORY_API_KEY")
+            "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_PROXY", "BROWSER_VM_LLM_API_KEY")
 EXPECTED_PROD = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "TELEGRAM_WEBHOOK_SECRET_TOKEN",
                  "TELEGRAM_OWNER_CHAT_ID", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",
-                 "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY")
+                 "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY", "BROWSER_USE_WEBHOOK_SECRET",
+                 "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET")
 WORLD_DEFAULTS = {"WORKFLOW_POSTGRES_WORKER_CONCURRENCY": "20", "WORKFLOW_POSTGRES_MAX_POOL_SIZE": "24",
                   "WORKFLOW_WORLD": "postgres"}
 
@@ -629,9 +660,17 @@ def database_env(profile):
     return env
 
 
+def sticky_proxy(value):
+    """BROWSER_VM_PROXY (host:port:user:pass, or a URL) on the sticky port instead of the rotating one."""
+    parts = value.split(":")
+    if "://" not in value and len(parts) >= 4 and parts[1] in PROXY_PORTS:
+        return ":".join([parts[0], PROXY_PORTS[parts[1]], *parts[2:]])
+    return re.sub(r"(@[^/:@]+:)(\d+)(?=/|$)", lambda m: m.group(1) + PROXY_PORTS.get(m.group(2), m.group(2)), value)
+
+
 def compose_env(profile, session=None):
-    """{name: value} and {name: source}: Vercel production, the vault keys, the session, the databases of
-    new-secrets.json, the profile file."""
+    """{name: value} and {name: source}: Vercel production, the vault keys, the session (production's sensitive
+    names only), the keys made for the move, the databases of new-secrets.json, the profile file."""
     session = os.environ if session is None else session
     values, sources = {}, {}
 
@@ -646,16 +685,25 @@ def compose_env(profile, session=None):
         if value:
             values[name], sources[name] = value, source
 
-    runtime = APP_NAMES - NOT_RUNTIME - FROM_PROFILE_ONLY
+    runtime = APP_NAMES - NOT_RUNTIME - FROM_PROFILE_ONLY - NOT_ON_VM
     for name, value in read_json("vercel-production.json").items():
-        if name in runtime:
+        if name in runtime and not BLOB.fullmatch(name):
             put(name, value, "vercel")
     for name, value in read_json("installation-secrets.json").items():
         if name in ("BETTER_AUTH_SECRET", "SECRET_ENCRYPTION_KEY"):
             put(name, value, "installation-secrets")
-    for name in sorted(runtime):
+    for name in sorted(runtime & SENSITIVE_ON_VERCEL):
         if name not in values and session.get(name):
             put(name, session[name], "session")
+    made = read_json("new-secrets.json")
+    for name in NEW_APP_SECRETS:
+        if made.get(name):
+            put(name, made[name], "new-secrets")
+    if values.get("BROWSER_VM_PROXY"):
+        values["BROWSER_VM_PROXY"] = sticky_proxy(values["BROWSER_VM_PROXY"])
+    # The browser VMs' agent model goes through RouterAI too (BROWSER_VM_LLM_BASE_URL's default), on its key.
+    if not values.get("BROWSER_VM_LLM_API_KEY") and values.get("ROUTERAI_API_KEY"):
+        put("BROWSER_VM_LLM_API_KEY", values["ROUTERAI_API_KEY"], sources["ROUTERAI_API_KEY"] + " (ROUTERAI_API_KEY)")
     for name, value in WORLD_DEFAULTS.items():
         put(name, value, "default")
     for name, value in PROFILES[profile].items():
@@ -703,8 +751,12 @@ def cmd_env(args):
     if args.profile == "stand":
         for name in sorted(n for n in values if PRODUCTION_STORES.fullmatch(n)):
             print(f"warning: the stand keeps {name} ({sources[name]}): it acts on production's store or accounts")
-    if "OPS_ALERT_CHAT_ID" not in values:
-        print(f"note: no OPS_ALERT_CHAT_ID in {args.profile}.json: the watchdog alerts nobody")
+    chat = values.get("OPS_ALERT_CHAT_ID") or values.get("TELEGRAM_OWNER_CHAT_ID")
+    if not chat and "OPS_ALERT_WEBHOOK_URL" not in values:
+        print(f"note: no OPS_ALERT_CHAT_ID or TELEGRAM_OWNER_CHAT_ID, no OPS_ALERT_WEBHOOK_URL in {args.profile}.json: "
+              "the watchdog alerts nobody (journald only)")
+    elif "OPS_ALERT_WEBHOOK_URL" not in values:
+        print("note: no OPS_ALERT_WEBHOOK_URL: alerts about the path to Telegram go only to Telegram and journald")
     if values.get("BACKUPS") != "off":
         if "BACKUP_ENCRYPTION_KEY" not in values:
             sys.exit("no BACKUP_ENCRYPTION_KEY in new-secrets.json: the nightly backup would fail every night "

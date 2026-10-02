@@ -135,13 +135,27 @@ host.py rollback bro-app-1                         # ещё раз — на ре
 источникам. Порядок (позднее перекрывает раннее):
 
 1. `vercel-production.json` — только имена схемы `shared/environment/env.ts`,
-   без `VERCEL_*`, Neon и `DATABASE_URL*`;
+   без `VERCEL_*`, Neon, `DATABASE_URL*`, `BLOB_*` (секреты установки заданы
+   явно, файлы — в Object Storage) и `OPENROUTER_API_KEY` (модель — RouterAI);
 2. `installation-secrets.json` — `BETTER_AUTH_SECRET`, `SECRET_ENCRYPTION_KEY`
    (не менять никогда);
-3. env сессии — имена схемы, которых ещё нет (чувствительные ключи Vercel не
-   отдаёт: Telegram, RouterAI, Composio…);
+3. env сессии — только то, что Vercel прода держит sensitive и не отдаёт
+   (`SENSITIVE_ON_VERCEL`: Telegram, iMessage, ЮKassa, Composio, Browser Use,
+   ключи Cloud.ru, `BROWSER_VM_*`, плюс `MODEL_PROVIDER`, `ROUTERAI_API_KEY` и
+   `TELEGRAM_OWNER_CHAT_ID`), и только если имени ещё нет: прочие ключи сессии
+   (`SUPERMEMORY_API_KEY`…) в прод не попадают. Затем ключи, сделанные для
+   переезда, поверх сессии и Vercel — из `new-secrets.json`:
+   `SANDBOX_SIGNING_KEY` (из него же ключ `sbx-code-2`),
+   `BROWSER_VM_SIGNING_KEY`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+   `BROWSER_USE_WEBHOOK_SECRET`. `BROWSER_VM_PROXY` переезжает с порта 9000
+   (ротация Geonode, на `-session-` отвечает 403) на 10000 (sticky);
+   `BROWSER_VM_LLM_API_KEY`, если его нет, — `ROUTERAI_API_KEY`;
+   `TELEGRAM_BOT_USERNAME` — без `@`;
 4. `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=20`, `…_MAX_POOL_SIZE=24`,
-   `WORKFLOW_WORLD=postgres`; профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
+   `WORKFLOW_WORLD=postgres`; оба профиля — `MODEL_PROVIDER=routerai`,
+   `AGENT_SANDBOX=bro-cloudru`, `CLOUDRU_PRIVATE_ROUTING=on`,
+   `SANDBOX_HOST_ID=sbx-code-2` и его `SANDBOX_HOST_ORIGIN` (`CODE_HOST` в
+   `host.py`); профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
    `EVE_SCHEDULES=off` (тики расписаний ничего не делают; не `TEST=1`: его читает
    и Better Auth и выключает проверку Origin); прод — `https://brobro.tech`,
    `EVE_SCHEDULES=on`;
@@ -167,8 +181,10 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    deployd: его получают только ops-скрипты, приложение и инструменты модели —
    нет; `host.py env` без флага его убирает;
 7. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор):
-   `OPS_ALERT_CHAT_ID` и всё, что надо перекрыть (и базы, если они другие);
-   `null` удаляет имя.
+   `TELEGRAM_OWNER_CHAT_ID` (на Vercel его нет), `YOOKASSA_SHOP_ID` и
+   `YOOKASSA_SECRET_KEY` (их нет и в сессии), `OPS_ALERT_CHAT_ID`,
+   `OPS_ALERT_WEBHOOK_URL` и всё, что надо перекрыть (и базы, если они
+   другие); `null` удаляет имя.
 
 Значения чистятся от переводов строк, пробелов и кавычек по краям. Значение с
 переводом строки deployd не примет. Если после нового env сервисы не поднялись
