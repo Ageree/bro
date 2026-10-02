@@ -25,8 +25,8 @@
                                             serial console): checked, swapped, restarted; sandboxes outlive
                                             the restart. Run deliver too, so new hosts get the same binary
   python host.py set-hosts NAME --hosts-entry brobro.tech=bro-app-1 …
-                                            the same pins on a live host, over the serial console (its
-                                            /etc/hosts and cloud-init's hosts template; repeatable)
+                                            the same pins on a live host, over the serial console: in
+                                            /etc/hosts and cloud-init's template, as at first boot (repeatable)
   python host.py delete NAME                the VM and its public IP
 
 Host names must match sbx-[a-z0-9-]+: this script never acts on any other VM of the project. Needs
@@ -42,6 +42,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -282,18 +283,42 @@ def cmd_create(args):
 
 
 def hosts_entries(entries):
-    """[(name, IPv4)] of --hosts-entry NAME=TARGET, a VM's name as TARGET read as its private address."""
+    """[(name, IPv4)] of --hosts-entry NAME=TARGET, a VM's name as TARGET read as its private address. Checked
+    as cloud-init's are (boot.check_hosts): set-hosts puts them in a root shell line."""
     pinned = []
     for entry in entries:
         name, address = boot.hosts_entry(entry)
+        if not boot.HOST_NAME.fullmatch(name):
+            sys.exit(f"--hosts-entry {entry!r}: {name!r} is not a plain host name")
         if not boot.IPV4.fullmatch(address):
             vm = cloudru.vm_by_name(address)
             private = [i.get("ip_address") for i in ((vm or {}).get("interfaces") or []) if i.get("ip_address")]
             if not private:
-                sys.exit(f"--hosts-entry {entry}: no VM {address} with a private address in the project")
+                sys.exit(f"--hosts-entry {entry!r}: no VM {address!r} with a private address in the project")
             address = private[0]
         pinned.append((name, address))
+    try:
+        boot.check_hosts(pinned)
+    except ValueError as error:
+        sys.exit(f"--hosts-entry: {error}")
     return pinned
+
+
+# What provision.sh's hosts stage rewrites at first boot: /etc/hosts, and cloud-init's template, which an image
+# may render /etc/hosts from again at boot.
+HOSTS_FILES = ("/etc/hosts", "/etc/cloud/templates/hosts.debian.tmpl")
+
+
+def set_hosts_command(pinned):
+    """The shell line that pins these (name, IPv4) pairs on a live host as provision.sh does: the marked lines and
+    any other line for the names go, the new ones are added. Checked again and quoted: no value is shell code."""
+    boot.check_hosts(pinned)
+    names = "|".join(name.replace(".", r"\.") for name, _ in pinned) or "^$"
+    script = f"/# bro-private$/d; /^[^#]*[[:space:]]({names})([[:space:]]|$)/d"
+    lines = " ".join(shlex.quote(f"{address} {name} # bro-private") for name, address in pinned)
+    files = " ".join(shlex.quote(path) for path in HOSTS_FILES)
+    return (f"for f in {files}; do [ -f \"$f\" ] || continue; sed -i -E {shlex.quote(script)} \"$f\" && "
+            f"printf '%s\\n' {lines} >> \"$f\" || exit 1; done; grep -c 'bro-private' /etc/hosts")
 
 
 def found_vm(name):
@@ -348,25 +373,11 @@ def cmd_update_sandboxd(args):
         sys.exit(1)
 
 
-HOSTS_FILES = ("/etc/hosts", "/etc/cloud/templates/hosts.debian.tmpl")
-
-
-def hosts_script(pinned, files=HOSTS_FILES):
-    """The shell that pins [(name, IPv4)] in the hosts files, as provision.sh's `hosts` stage does: lines of
-    earlier pins (`# bro-private`) and any other line naming one of the names go, then one line per pin.
-    Idempotent; cloud-init's template too, in case the image lets it rewrite /etc/hosts at boot."""
-    lines = "".join(f"{address} {name} # bro-private\\n" for name, address in pinned)
-    names = "|".join(re.escape(name) for name, _ in pinned) or "^$"
-    return (f"for f in {' '.join(files)}; do [ -f \"$f\" ] || continue; "
-            f"sed -i -E '/# bro-private$/d; /^[^#]*[[:space:]]({names})([[:space:]]|$)/d' \"$f\" && "
-            f"printf '{lines}' >> \"$f\" || exit 1; done; grep -c 'bro-private' {files[0]}")
-
-
 def cmd_set_hosts(args):
     import console  # websocket-client, only here
     found_vm(args.name)
     pinned = hosts_entries(args.hosts_entry)
-    output, status = console.run(args.name, hosts_script(pinned), 60)
+    output, status = console.run(args.name, set_hosts_command(pinned), 60)
     print(f"set-hosts: exit {status}; {output.strip().splitlines()[-1][-200:] if output.strip() else ''}")
     if status != 0:
         sys.exit(1)

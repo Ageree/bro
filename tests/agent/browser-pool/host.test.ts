@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import {
   browserPoolTestEnvironment,
@@ -190,6 +190,39 @@ describe("browser host client", () => {
     expect(calls[0]?.headers.has("authorization")).toBe(false);
     expect(calls[1]?.headers.get("authorization")).toBe(
       `Bearer ${client.signBrowserHostToken("bro-host-1")}`
+    );
+  });
+
+  it("looks a host's private address up before its call's timeout starts", async () => {
+    const listing = vi.fn<() => Promise<Map<string, string>>>(
+      async () => new Map([[host.address, "10.0.1.8"]])
+    );
+    // The Compute API client, as private-route uses it.
+    vi.doMock("@agent/lib/browser-vm/cloudru", () => ({
+      listCloudRuPrivateAddresses: listing,
+    }));
+    const timeouts = vi.spyOn(AbortSignal, "timeout");
+    onTestFinished(() => {
+      vi.doUnmock("@agent/lib/browser-vm/cloudru");
+      timeouts.mockRestore();
+    });
+    const client = await loadHost({ CLOUDRU_PRIVATE_ROUTING: "on" });
+    stubHost(
+      Response.json({
+        configured: true,
+        hostd: "2026-09-30.1",
+        runsc: null,
+        runtime: "runc",
+        runtimeVersion: "runc version 1.1.12",
+        stage: "rootfs",
+      })
+    );
+
+    await client.readBrowserHostHealth(host);
+
+    expect(listing).toHaveBeenCalledTimes(1);
+    expect(listing.mock.invocationCallOrder[0]).toBeLessThan(
+      timeouts.mock.invocationCallOrder[0] ?? 0
     );
   });
 

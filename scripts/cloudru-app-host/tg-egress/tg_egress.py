@@ -73,6 +73,12 @@ def address(text, default_port=443):
     return text, default_port
 
 
+def authority(host, port):
+    """(host, port) -> 'host:port', an IPv6 address in brackets: what address() reads back, and what CONNECT
+    takes."""
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
 def proxy_from(text):
     """(host, port, authorization header value or None) from either proxy form; None when unset."""
     text = (text or "").strip()
@@ -117,6 +123,9 @@ class Config:
             raise ValueError("TG_EGRESS_UPSTREAMS names no address")
         self.attempt = int(get("TG_EGRESS_ATTEMPT_MS", "2000")) / 1000
         self.stagger = int(get("TG_EGRESS_STAGGER_MS", "300")) / 1000
+        if self.stagger <= 0:
+            # Zero would send a new SYN as fast as the loop turns at an address that refuses them.
+            raise ValueError("TG_EGRESS_STAGGER_MS must be a positive number of milliseconds")
         self.parallel = max(1, int(get("TG_EGRESS_PARALLEL", "3")))
         self.deadline = int(get("TG_EGRESS_DEADLINE_MS", "12000")) / 1000
         self.proxy = proxy_from(get("TG_EGRESS_PROXY", ""))
@@ -140,7 +149,7 @@ class Stats:
         self.active = 0
         self.attempts = 0
         self.recent = deque(maxlen=200)  # True/False per finished upstream search
-        self.paths = {f"{h}:{p}": {"opened": 0, "failed": 0, "won": 0} for h, p in upstreams}
+        self.paths = {authority(h, p): {"opened": 0, "failed": 0, "won": 0} for h, p in upstreams}
         self.paths["proxy"] = {"opened": 0, "failed": 0, "won": 0}
         self.last_failure = None
 
@@ -175,7 +184,7 @@ async def open_direct(host, port, timeout):
 async def open_proxy(config, timeout):
     """A tunnel to TG_EGRESS_TARGET through the HTTP proxy: CONNECT, then the bytes are the target's."""
     host, port, auth = config.proxy
-    target = f"{config.target[0]}:{config.target[1]}"
+    target = authority(*config.target)
 
     async def tunnel():
         reader, writer = await asyncio.open_connection(host, port)
@@ -215,8 +224,10 @@ class Forwarder:
         started = loop.time()
         down = self.stats.down
         deadline = config.down_deadline if down else config.deadline
+        first = self.turn  # order()'s start: another connection may move self.turn meanwhile
         order = self.order()
         pending = {}
+        turns = {}  # path -> its index in config.upstreams, for the winner
         attempts = 0
         next_direct = started
         last_direct = started
@@ -231,7 +242,8 @@ class Forwarder:
                 direct_slots = config.parallel - sum(1 for path in pending.values() if path != "proxy")
                 if now >= next_direct and direct_slots > 0:
                     host, port = order[attempts % len(order)]
-                    path = f"{host}:{port}"
+                    path = authority(host, port)
+                    turns[path] = (first + attempts) % len(order)
                     attempts += 1
                     self.stats.attempts += 1
                     pending[asyncio.ensure_future(open_direct(host, port, config.attempt))] = path
@@ -280,7 +292,7 @@ class Forwarder:
         (reader, writer), path = winner
         self.stats.paths[path]["won"] += 1
         if path != "proxy":
-            self.turn = self.config.upstreams.index(address(path))
+            self.turn = turns[path]
         return reader, writer, path, attempts, loop.time() - started
 
     def searched(self, ok):
@@ -359,11 +371,28 @@ class Forwarder:
     async def serve(self):
         server = await asyncio.start_server(self.handle, *self.config.listen)
         health = await asyncio.start_server(self.health, *self.config.health)
-        ups = ",".join(f"{h}:{p}" for h, p in self.config.upstreams)
-        log(f"listening on {self.config.listen[0]}:{self.config.listen[1]}, upstreams {ups}, "
+        ups = ",".join(authority(h, p) for h, p in self.config.upstreams)
+        log(f"listening on {authority(*self.config.listen)}, upstreams {ups}, "
             f"proxy {'on' if self.config.proxy else 'off'}")
+        notify_ready()
         async with server, health:
             await asyncio.gather(server.serve_forever(), health.serve_forever())
+
+
+def notify_ready():
+    """READY=1 to systemd (Type=notify), once both listeners are bound: the services ordered after this one
+    start only then. Nothing without NOTIFY_SOCKET (run by hand)."""
+    path = os.environ.get("NOTIFY_SOCKET", "")
+    if not path:
+        return
+    if path.startswith("@"):
+        path = "\0" + path[1:]  # an abstract socket
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(path)
+            sock.sendall(b"READY=1")
+    except OSError as error:  # systemd then gives up on the start after TimeoutStartSec and restarts it
+        log(f"could not tell systemd it is ready: {type(error).__name__}")
 
 
 def keepalive(sock):

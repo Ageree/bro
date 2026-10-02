@@ -7,10 +7,11 @@ Object Storage, VM и проверка живого хоста настоящи�
 S3 — из стенда `scripts/cloudru-sandbox-probe/` (`cloudru.py`, `console.py`,
 `s3.py`), их кэши — в `~/.bro-code-host`.
 
-| Файл      | Что делает                                                                                              |
-| --------- | ------------------------------------------------------------------------------------------------------- |
-| `host.py` | `key`, `deliver`, `create`, `status`, `update-sandboxd`, `reboot`, `delete` (справка — `-h`)            |
-| `e2e.py`  | Сквозная проверка живого `sandboxd`: токены, песочница, exec, файлы, офис, сеть, снимок, восстановление |
+| Файл           | Что делает                                                                                                |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| `host.py`      | `key`, `deliver`, `create`, `status`, `update-sandboxd`, `set-hosts`, `reboot`, `delete` (справка — `-h`) |
+| `e2e.py`       | Сквозная проверка живого `sandboxd`: токены, песочница, exec, файлы, офис, сеть, снимок, восстановление   |
+| `test_host.py` | `python3 -m unittest`: `set-hosts` пропускает в строку root только проверенные имена и адреса             |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET`, `CLOUDRU_S3_TENANT_ID` (значения
 чистятся от пробелов и кавычек, как в стенде), для `status --stage` —
@@ -97,10 +98,13 @@ host.py set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry c
 ```
 
 `bro-app-1` скрипт читает как приватный адрес VM из Compute API (можно и
-IPv4). Команда идемпотентна: убирает прежние строки `# bro-private` и любые
-строки с этими именами и дописывает по строке на имя — в `/etc/hosts` и в
-шаблон cloud-init `hosts.debian.tmpl` (если образ перепишет `/etc/hosts` при
-загрузке). Печатает только число строк `bro-private`; ждать `2`. Проверка с
-хоста — `curl -sS https://brobro.tech/eve/v1/health` через `console.py run`.
+IPv4). Имя и адрес проверяются, как в cloud-init (`boot.check_hosts`: простое
+имя без повторов, IPv4 из ASCII-цифр), и каждое значение экранировано: в
+строку root на хосте не попадает ничего, кроме них. Команда идемпотентна:
+убирает прежние строки `# bro-private` и любые строки с этими именами и
+дописывает по строке на имя — в `/etc/hosts` и в шаблон cloud-init
+`hosts.debian.tmpl` (если образ перепишет `/etc/hosts` при загрузке).
+Печатает только число строк `bro-private`; ждать `2`. Проверка с хоста —
+`curl -sS https://brobro.tech/eve/v1/health` через `console.py run`.
 `sbx-code-2` создан до `--hosts-entry`: на нём это шаг выкладки, до
 переключения домена (раздел «Переключение» `docs/cloudru-migration.md`).

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
-import { withPrivateRoute } from "./private-route";
+import { resolvePrivateRoute, withPrivateRoute } from "./private-route";
 import { signBrowserVmToken } from "./token";
 
 /**
@@ -619,6 +619,10 @@ async function request(
     readonly timeoutMs: number;
   }
 ) {
+  const url = `${origin(vm)}${path}`;
+  // The VM's private address is looked up before the timeout starts: a
+  // Compute API listing must not eat a 5-second health check.
+  await resolvePrivateRoute(url);
   const headers = new Headers({ accept: "application/json" });
   if (options.signed !== false) {
     const token = signBrowserVmToken({
@@ -645,7 +649,7 @@ async function request(
   }
   // No retry here: every caller knows better whether a repeat is safe, and a
   // start that lost its answer is looked up by its id instead.
-  const response = await fetch(`${origin(vm)}${path}`, withPrivateRoute(init));
+  const response = await fetch(url, withPrivateRoute(init));
   // The query of a run lookup carries a task line: kept out of errors.
   const route = path.split("?")[0] ?? path;
   const text = await response.text();

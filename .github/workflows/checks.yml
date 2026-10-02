@@ -104,6 +104,10 @@ jobs:
         working-directory: sandbox/host
         run: python -m unittest
 
+      - name: Code host (set-hosts)
+        working-directory: scripts/cloudru-code-host
+        run: python -m unittest
+
       # Releases are tar.zst: deployd's release tests unpack real archives and fail without zstd.
       - name: Install zstd
         run: command -v zstd || (sudo apt-get update && sudo apt-get install -y --no-install-recommends zstd)

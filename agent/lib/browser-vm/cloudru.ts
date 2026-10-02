@@ -351,6 +351,13 @@ export async function listCloudRuPrivateAddresses() {
       }
     }
     if (items.length < vmsPageLimit) break;
+    // VMs past the cap stay unmapped and are dialed at their public address.
+    if (pageIndex === vmsPageCap - 1) {
+      console.warn("[browser-vm] gave up paging through Cloud.ru VMs", {
+        mapped: addresses.size,
+        pages: vmsPageCap,
+      });
+    }
   }
   return addresses;
 }

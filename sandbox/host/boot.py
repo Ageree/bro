@@ -50,7 +50,8 @@ ROOTFS_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 HOST_NAME = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
-IPV4 = re.compile(r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}")
+# ASCII: \d would take any Unicode digit, which provision.sh refuses at first boot.
+IPV4 = re.compile(r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}", re.ASCII)
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 # Fetches the bundle named in the boot settings, checks it and hands over to provision.sh. Written by
 # cloud-init, which runs it once per instance: it waits up to 40 attempts 10 s apart for the network, since in
@@ -164,9 +165,7 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     if console_password_hash and not re.fullmatch(r"\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}",
                                                   console_password_hash):
         raise ValueError("the console password must be a SHA-512 crypt hash ($6$…)")
-    for name, address in hosts:
-        if not HOST_NAME.fullmatch(name) or not IPV4.fullmatch(address):
-            raise ValueError("a hosts entry is a plain host name and an IPv4 address")
+    check_hosts(hosts)
     # sandboxd's own config (unknown keys are an error there): who it is, its key, which rootfs it runs.
     identity = json.dumps({"host": host_id, "key": key.hex(), "rootfs_version": rootfs_version})
     boot = json.dumps({
@@ -201,6 +200,17 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         "",
     ]
     return "\n".join(lines)
+
+
+def check_hosts(hosts):
+    """Each entry a plain host name and an IPv4 address, each name once: two lines for one name would leave
+    the address in use to their order."""
+    names = [name for name, _ in hosts]
+    if len(set(names)) != len(names):
+        raise ValueError("each host name is pinned once")
+    for name, address in hosts:
+        if not HOST_NAME.fullmatch(name) or not IPV4.fullmatch(address):
+            raise ValueError("a hosts entry is a plain host name and an IPv4 address")
 
 
 def hosts_entry(text):
