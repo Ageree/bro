@@ -24,7 +24,8 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
                                       file, then a restart; opsEnv (only OPS_ONLY_ENV names) goes to
                                       /etc/bro/ops-env, which only ops scripts get, and is removed without it
   GET  /ops/v1/sites                  the app's domains
-  PUT  /ops/v1/sites                  {sites: [domain, ...]} the whole list: Caddyfile, reload
+  PUT  /ops/v1/sites                  {sites: [domain, ...]} the whole list: Caddyfile, reload; www.<site>
+                                      next to <site> redirects to it (308)
   GET  /ops/v1/logs?unit=&lines=      the tail of journald for one of the units
   POST /ops/v1/restart                {units: [...]} -> 202 {job}
   POST /ops/v1/stop                   {units: [bro-web, bro-eve]} -> 202 {job} (before a restore)
@@ -266,7 +267,12 @@ def render_caddyfile(ops_domain, sites):
              f"{ops_domain} {{\n\thandle /ops/v1/* {{\n\t\treverse_proxy {LISTEN[0]}:{LISTEN[1]}\n\t}}\n"
              "\timport bro_app\n}\n"]
     for site in sites:
-        parts.append(f"{site} {{\n\timport bro_app\n}}\n")
+        apex = site[4:] if site.startswith("www.") else None
+        if apex in sites:
+            # www is the apex's alias, as on Vercel (308): one origin for Better Auth's cookies and checks.
+            parts.append(f"{site} {{\n\tredir https://{apex}{{uri}} 308\n}}\n")
+        else:
+            parts.append(f"{site} {{\n\timport bro_app\n}}\n")
     return "\n".join(parts)
 
 

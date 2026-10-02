@@ -417,6 +417,14 @@ class CaddyTest(unittest.TestCase):
         self.assertEqual(snippet.count("encode "), 1)
         self.assertIn("\thandle {\n\t\tencode zstd gzip\n\t\treverse_proxy 127.0.0.1:3000", snippet)
 
+    def test_www_next_to_its_apex_redirects_to_it(self):
+        text = deployd.render_caddyfile("1-2-3-4.sslip.io", ["brobro.tech", "www.brobro.tech", "www.other.example"])
+        www = text.split("www.brobro.tech {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(www, "\n\tredir https://brobro.tech{uri} 308")
+        self.assertIn("brobro.tech {\n\timport bro_app", text)
+        # A www without its apex in the list is a site of its own.
+        self.assertIn("www.other.example {\n\timport bro_app", text)
+
     def test_sites_are_plain_domains_and_not_sslip(self):
         self.assertEqual(deployd.checked_sites(["a.example", "a.example"]), ["a.example"])
         for bad in (["x.sslip.io"], ["bad domain"], ["a.example {\n}"], "a.example"):

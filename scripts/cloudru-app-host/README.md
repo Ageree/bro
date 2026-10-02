@@ -194,7 +194,10 @@ host.py rollback bro-app-1                         # ещё раз — на ре
 
 - `host.py sites NAME --set a,b | --add D | --remove D` — сайты приложения в
   Caddy (сертификат Let's Encrypt выпускается при первом запросе, A-запись —
-  заранее). `/ops/v1/*` есть только на ops-хосте `sslip.io`.
+  заранее). `/ops/v1/*` есть только на ops-хосте `sslip.io`. `www.<домен>`
+  рядом со своим `<домен>` в списке — редирект 308 на него, как сейчас на
+  Vercel: у приложения одно происхождение для Better Auth. Прод —
+  `--set brobro.tech,www.brobro.tech`.
 - `host.py logs NAME bro-eve --lines 500` — хвост journald.
 - `host.py restart NAME [bro-web bro-eve caddy]`, `host.py stop NAME bro-eve bro-web`.
 - `host.py ops NAME <скрипт> [аргументы]` — `ops/<скрипт>` текущего релиза
