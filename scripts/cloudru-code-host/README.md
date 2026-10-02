@@ -82,3 +82,25 @@ python scripts/cloudru-code-host/e2e.py sbx-code-1
 `--runsc-url` в `boot.py cloud-init` обязателен: хост ставит `runsc` только из
 Object Storage (`host.py create` всегда даёт ссылку), apt-репозиторий gVisor
 (`storage.googleapis.com`) с Cloud.ru не проверен.
+
+## Адрес Бро на хосте
+
+`sandboxd` зовёт роутер инструментов Бро по имени (`/eve/v1/sandbox-tools` на
+`brobro.tech`), а VM проекта не достаёт до публичного IP другой VM проекта.
+Поэтому домен Бро на хосте закреплён за приватным адресом VM Бро: новый хост
+— `create … --hosts-entry brobro.tech=bro-app-1 --hosts-entry
+cloud.brobro.tech=bro-app-1`, живой хост — та же пара через serial-консоль,
+без пересоздания:
+
+```sh
+host.py set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry cloud.brobro.tech=bro-app-1
+```
+
+`bro-app-1` скрипт читает как приватный адрес VM из Compute API (можно и
+IPv4). Команда идемпотентна: убирает прежние строки `# bro-private` и любые
+строки с этими именами и дописывает по строке на имя — в `/etc/hosts` и в
+шаблон cloud-init `hosts.debian.tmpl` (если образ перепишет `/etc/hosts` при
+загрузке). Печатает только число строк `bro-private`; ждать `2`. Проверка с
+хоста — `curl -sS https://brobro.tech/eve/v1/health` через `console.py run`.
+`sbx-code-2` создан до `--hosts-entry`: на нём это шаг выкладки, до
+переключения домена (раздел «Переключение» `docs/cloudru-migration.md`).

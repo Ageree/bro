@@ -25,7 +25,8 @@
                                             serial console): checked, swapped, restarted; sandboxes outlive
                                             the restart. Run deliver too, so new hosts get the same binary
   python host.py set-hosts NAME --hosts-entry brobro.tech=bro-app-1 …
-                                            the same pins on a live host, over the serial console
+                                            the same pins on a live host, over the serial console (its
+                                            /etc/hosts and cloud-init's hosts template; repeatable)
   python host.py delete NAME                the VM and its public IP
 
 Host names must match sbx-[a-z0-9-]+: this script never acts on any other VM of the project. Needs
@@ -347,15 +348,25 @@ def cmd_update_sandboxd(args):
         sys.exit(1)
 
 
+HOSTS_FILES = ("/etc/hosts", "/etc/cloud/templates/hosts.debian.tmpl")
+
+
+def hosts_script(pinned, files=HOSTS_FILES):
+    """The shell that pins [(name, IPv4)] in the hosts files, as provision.sh's `hosts` stage does: lines of
+    earlier pins (`# bro-private`) and any other line naming one of the names go, then one line per pin.
+    Idempotent; cloud-init's template too, in case the image lets it rewrite /etc/hosts at boot."""
+    lines = "".join(f"{address} {name} # bro-private\\n" for name, address in pinned)
+    names = "|".join(re.escape(name) for name, _ in pinned) or "^$"
+    return (f"for f in {' '.join(files)}; do [ -f \"$f\" ] || continue; "
+            f"sed -i -E '/# bro-private$/d; /^[^#]*[[:space:]]({names})([[:space:]]|$)/d' \"$f\" && "
+            f"printf '{lines}' >> \"$f\" || exit 1; done; grep -c 'bro-private' {files[0]}")
+
+
 def cmd_set_hosts(args):
     import console  # websocket-client, only here
     found_vm(args.name)
     pinned = hosts_entries(args.hosts_entry)
-    lines = "".join(f"{address} {name} # bro-private\\n" for name, address in pinned)
-    names = "|".join(re.escape(name) for name, _ in pinned) or "^$"
-    output, status = console.run(args.name, (
-        f"sed -i -E '/# bro-private$/d; /^[^#]*[[:space:]]({names})([[:space:]]|$)/d' /etc/hosts && "
-        f"printf '{lines}' >> /etc/hosts && grep -c 'bro-private' /etc/hosts"), 60)
+    output, status = console.run(args.name, hosts_script(pinned), 60)
     print(f"set-hosts: exit {status}; {output.strip().splitlines()[-1][-200:] if output.strip() else ''}")
     if status != 0:
         sys.exit(1)
