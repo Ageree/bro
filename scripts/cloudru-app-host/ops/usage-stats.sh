@@ -28,8 +28,8 @@ for value in "$SINCE" "$UNTIL"; do
 done
 connection SRC app
 order=$(PGOPTIONS="-c default_transaction_read_only=on" psql_on SRC -v since="$SINCE" -v until="$UNTIL" \
-  <<<"SELECT :'since'::timestamptz < :'until'::timestamptz;" 2>/dev/null) \
-  || die "not a date or time PostgreSQL reads: $SINCE or $UNTIL"
+  <<<"SELECT :'since'::timestamptz < :'until'::timestamptz;") \
+  || die "PostgreSQL could not compare SINCE ($SINCE) and UNTIL ($UNTIL): its error is above"
 [ "$order" = t ] || die "SINCE ($SINCE) must come before UNTIL ($UNTIL)"
 # Every query reads the steps through this CTE: a read-only transaction may not create even a temporary view.
 # It holds every step up to UNTIL, so a step's place counts the whole session, not just the window; each query
