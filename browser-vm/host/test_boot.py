@@ -227,6 +227,9 @@ class BootScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(tmp), ["curl", "systemctl stop bro-hostd"]
                          + ["dpkg --configure -a noninteractive"] * 6)
+        # Its hostd never starts, so the log is where a failed host says why.
+        self.assertIn("bro-host-boot: dpkg --configure -a failed 6 times, no provisioning\n",
+                      (tmp / "log").read_text())
 
     def test_a_ready_host_is_left_alone_after_a_reboot(self):
         # Its Caddy and hostd start on their own; provision.sh again would rewrite the Caddyfile hostd keeps.

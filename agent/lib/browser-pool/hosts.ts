@@ -150,7 +150,7 @@ if [ -e /srv/bro/stage ]; then
   rm -rf /opt/bro/venv /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
   for i in 1 2 3 4 5 6; do
     DEBIAN_FRONTEND=noninteractive dpkg --configure -a && break
-    [ "$i" = 6 ] && exit 1
+    [ "$i" = 6 ] && { echo "bro-host-boot: dpkg --configure -a failed 6 times, no provisioning"; exit 1; }
     sleep 10
   done
 fi
