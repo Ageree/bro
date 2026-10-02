@@ -139,7 +139,7 @@ class BootScriptTest(unittest.TestCase):
     LEFTOVERS = ("archives/lock", "archives/runc_1.1.12_amd64.deb", "lists/mirror_jammy_main_binary-amd64_Packages",
                  "lists/partial/x", "venv/bin/python")
 
-    def run_boot(self, bundle, sha256, stage=None):
+    def run_boot(self, bundle, sha256, stage=None, dpkg_fails=False):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         served = tmp / "served.tgz"
@@ -156,8 +156,9 @@ class BootScriptTest(unittest.TestCase):
         calls = tmp / "calls"
         stubs = {
             "curl": f'echo curl >> {calls}\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && cp {served} "$2"; shift; done\n',
-            "dpkg": f'echo "dpkg $* $DEBIAN_FRONTEND" >> {calls}\n',
+            "dpkg": f'echo "dpkg $* $DEBIAN_FRONTEND" >> {calls}\n' + ("exit 1\n" if dpkg_fails else ""),
             "systemctl": f'echo "systemctl $*" >> {calls}\n',
+            "sleep": "",  # the retries' pauses, at once
         }
         for name, body in stubs.items():
             (bin_dir / name).write_text("#!/bin/bash\n" + body)
@@ -218,6 +219,14 @@ class BootScriptTest(unittest.TestCase):
                                            "provision"])
         self.assertEqual(self.left(tmp), ["archives/lock"])
         self.assertIn(" stage packages\n", (tmp / "log").read_text())
+
+    def test_a_dpkg_that_stays_broken_stops_the_boot(self):
+        # provision.sh's apt would only fail later, further from the cause.
+        bundle = self.bundle_with_probe()
+        result, tmp = self.run_boot(bundle, hashlib.sha256(bundle).hexdigest(), stage="packages", dpkg_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(tmp), ["curl", "systemctl stop bro-hostd"]
+                         + ["dpkg --configure -a noninteractive"] * 6)
 
     def test_a_ready_host_is_left_alone_after_a_reboot(self):
         # Its Caddy and hostd start on their own; provision.sh again would rewrite the Caddyfile hostd keeps.
@@ -288,6 +297,8 @@ class ProvisionTest(unittest.TestCase):
         self.assertIn('if [ ! -d "$ROOTFS" ]; then', rootfs)
         self.assertLess(rootfs.index('rm -rf "$PARTIAL"'), rootfs.index("tar --numeric-owner"))
         self.assertLess(rootfs.index("  sync\n"), rootfs.index('mv "$PARTIAL" "$ROOTFS"'))
+        # And its name is on disk before `ready` is: a ready host is never set up again.
+        self.assertIn('mv "$PARTIAL" "$ROOTFS"\n  sync\nfi\n', rootfs)
 
     def test_the_stage_is_readable_before_the_slow_steps(self):
         # hostd serves `stage` on /h/v1/health: it must be up before the rootfs download, or a failure

@@ -208,8 +208,10 @@ if [ ! -d "$ROOTFS" ]; then
   tar --numeric-owner -I zstd -xpf "$ARCHIVE" -C "$PARTIAL"
   rm -f "$ARCHIVE"
   # On disk before it takes its name (and with it everything set up so far): a hard reset right after must
-  # not leave a torn root under it, which nothing would set up again.
+  # not leave a torn root under it, which nothing would set up again. The name is on disk before `ready` too:
+  # a ready host whose root's rename was lost would never set it up again either.
   sync
   mv "$PARTIAL" "$ROOTFS"
+  sync
 fi
 stage ready
