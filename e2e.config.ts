@@ -3,6 +3,7 @@ import { web } from "@e2e-dev/web";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { E2EConfig } from "e2e";
 import { e2eEnv } from "./e2e/env.ts";
+import { testSecrets } from "./e2e/secrets.ts";
 
 /**
  * The browser suite: `pnpm test:e2e` locally, the `e2e` job in CI. How to
@@ -14,7 +15,9 @@ const model = e2eEnv.E2E_MODEL;
 /**
  * DeepSeek hosts that answer a forced tool call with `{}` or a broken call
  * block — the runner forces every agent step. Measured for Bro itself;
- * `brokenHosts` in agent/lib/model/direct.ts says when and how.
+ * `brokenHosts` in agent/lib/model/direct.ts says when and how. A copy: that
+ * module validates the whole app environment when imported. Skipped only for
+ * DeepSeek, as there: another model may have one of these hosts alone.
  */
 const brokenDeepSeekHosts = [
   "sail-research",
@@ -101,14 +104,15 @@ export default {
   actionTimeout: 90_000,
   assertionTimeout: 15_000,
   timeout: 240_000,
-  reporters: ["list", "junit", github()],
-  // A fixed test value, not a credential: the runner fills it without the
-  // model seeing it, as it would a real password.
-  secrets: { "vault-password": "e2e-vault-password" },
+  // `junit` and `markdown` feed CI's artifact, `github()` its PR comment.
+  reporters: ["list", "junit", "markdown", github()],
+  secrets: testSecrets,
   agents: {
     default: {
       model: openrouter.chat(model, {
-        provider: { ignore: brokenDeepSeekHosts },
+        provider: {
+          ignore: model.startsWith("deepseek/") ? brokenDeepSeekHosts : [],
+        },
       }),
       // DeepSeek V4 thinks by default and then refuses a forced tool call;
       // a step needs no thinking to tap a link.

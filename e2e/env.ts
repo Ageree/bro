@@ -16,7 +16,14 @@ const optionalValue = z
 export const e2eEnv = createEnv({
   server: {
     // An app already serving elsewhere: the runner starts nothing.
-    E2E_APP_URL: optionalValue.pipe(z.url().optional()),
+    E2E_APP_URL: optionalValue.pipe(
+      z
+        .url()
+        .refine((value) => /^https?:\/\//u.test(value), {
+          message: "E2E_APP_URL must be an http(s) URL.",
+        })
+        .optional()
+    ),
     // A database the run may write to; without it `scripts/dev.ts` brings up
     // the local Docker Postgres. Never a shared or production database: the
     // suite signs up people and writes their chats.

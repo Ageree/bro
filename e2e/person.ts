@@ -3,12 +3,14 @@ import { type Browser, test } from "@e2e-dev/web";
 import { type App, expect, type Screen } from "e2e";
 
 /**
- * A Russian mobile number nobody has used yet: each sign-in is a new person,
- * so runs and retries never meet each other's data.
+ * A phone nobody has used yet: each sign-in is a new person, so runs and
+ * retries never meet each other's data. +999 is a country code no country
+ * holds, so the number is never a real person's; twelve random digits make a
+ * repeat negligible even in a local database that keeps every run's people.
  */
 export function newPhone() {
-  const digits = String(randomInt(0, 10_000_000)).padStart(7, "0");
-  return `+7999${digits}`;
+  const digits = String(randomInt(0, 1_000_000_000_000)).padStart(12, "0");
+  return `+999${digits}`;
 }
 
 /**

@@ -17,11 +17,17 @@ async function replyAfter(browser: Browser, text: string) {
   const log = (await chatLog(browser).textContent()) ?? "";
   const sent = log.lastIndexOf(text);
   if (sent === -1) return "";
-  return log
-    .slice(sent + text.length)
-    .replaceAll(/\d{1,2}:\d{2}(?:\s?[AP]M)?/gu, "")
-    .replaceAll(/\s+/gu, " ")
-    .trim();
+  return (
+    log
+      .slice(sent + text.length)
+      // Only whole timestamp tokens: «в 10:30» inside a reply stays.
+      .replaceAll(
+        /(?<=^|\s)\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?(?=\s|$)/gu,
+        ""
+      )
+      .replaceAll(/\s+/gu, " ")
+      .trim()
+  );
 }
 
 /**
