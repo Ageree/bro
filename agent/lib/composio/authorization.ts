@@ -11,6 +11,7 @@ import {
   listConnectedAccounts,
   pruneConnectedAccounts,
 } from "@shared/composio/accounts";
+import { applicationOrigin } from "@shared/environment/origin";
 
 /** Where the person's accounts for one integration live in Composio. */
 interface ComposioAccounts {
@@ -89,7 +90,7 @@ export function composioAuthorization(options: {
       }
       const link = await createConnectionLink({
         authConfigId,
-        callbackUrl,
+        callbackUrl: publicCallbackUrl(callbackUrl),
         userId: composioUserId(principal),
       });
       return {
@@ -118,6 +119,23 @@ export function composioAuthorization(options: {
       });
     },
   });
+}
+
+const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * Where the person's browser comes back after signing in. eve builds the
+ * callback on its world's base URL, which on the Cloud.ru VM is the loopback
+ * the world delivers its queue to (WORKFLOW_LOCAL_BASE_URL): the browser would
+ * land on its own 127.0.0.1. The site's origin serves the same /eve/ path.
+ */
+function publicCallbackUrl(callbackUrl: string) {
+  const url = new URL(callbackUrl);
+  if (!loopbackHosts.has(url.hostname)) return callbackUrl;
+  return new URL(
+    `${url.pathname}${url.search}`,
+    applicationOrigin()
+  ).toString();
 }
 
 /**

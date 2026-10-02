@@ -240,6 +240,10 @@
 
 ## Composio: Google, Notion, Slack и другие приложения
 
+- Адрес возврата карточки входа eve строит от базы мира, а на VM это loopback
+  (`WORKFLOW_LOCAL_BASE_URL=http://127.0.0.1:4274`): браузер человека попадал
+  на свой 127.0.0.1. В Composio уходит адрес сайта (`publicCallbackUrl` в
+  `agent/lib/composio/authorization.ts`), `/eve/*` Caddy отдаёт eve.
 - Гранты живут в Composio, «токен» инструмента — id аккаунта (`ca_…`). Вход —
   карточка с Connect Link (`agent/lib/composio/authorization.ts`), засчитывается
   лишь аккаунт этой ссылки. Без `COMPOSIO_API_KEY` интеграций нет.
