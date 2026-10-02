@@ -479,3 +479,43 @@ describe("a pinned RouterAI host that fails an answer", () => {
     ]);
   });
 });
+
+describe("a call made once through RouterAI", () => {
+  const body = (order: readonly string[]) =>
+    JSON.stringify({ provider: { ignore: ["deepseek"], order } });
+  const headers = { "content-type": "application/json" };
+
+  it("returns a failed pinned host's failure without a second try, and skips the host from the next call", async () => {
+    const routing = answers(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 503,
+            message: "Upstream error from DeepInfra: no capacity",
+          },
+        }),
+        { headers, status: 503 }
+      ),
+      new Response("{}", { headers })
+    );
+    const { routerAiFetchOnce } =
+      await import("@agent/lib/model/routerai/fetch");
+    const url = "https://routerai.test/api/v1/chat/completions";
+
+    const failed = await routerAiFetchOnce(url, {
+      body: body(["deepinfra"]),
+      method: "POST",
+    });
+    expect(failed.status).toBe(503);
+    expect(routing).toHaveLength(1);
+
+    await routerAiFetchOnce(url, {
+      body: body(["deepinfra"]),
+      method: "POST",
+    });
+    expect(routing).toEqual([
+      { ignore: ["deepseek"], order: ["deepinfra"] },
+      { ignore: ["deepseek", "deepinfra"] },
+    ]);
+  });
+});
