@@ -53,13 +53,20 @@ case "${1:-}" in
     # In a hold nobody takes the updates: a bridge left on by an earlier switch would hand them to eve
     # during the database's pause. It goes off first, whatever the path does, and HOLD with it: from then
     # on nothing takes them.
+    bridge_was_on=
     if [ "$1" = hold ] && { systemctl is-enabled --quiet "$UNIT" || systemctl is-active --quiet "$UNIT"; }; then
       systemctl disable --now "$UNIT"
       [ -f "$HOLD" ] || date +%s > "$HOLD"
+      bridge_was_on=1
     fi
     # The bridge polls through tg-egress: a path that does not answer would leave the bot with neither.
     if [ -f "$EGRESS" ] && ! timeout 40 python3 "$EGRESS" --check; then
-      echo "tg-egress does not reach api.telegram.org: the webhook stays (journalctl -u bro-tg-egress)"
+      if [ -n "$bridge_was_on" ]; then
+        # The switch that turned the bridge on removed the webhook: nothing takes the updates from here.
+        echo "tg-egress does not reach api.telegram.org; the bridge is off and no webhook is set: nobody takes the updates, Telegram holds them (24 h) (journalctl -u bro-tg-egress)"
+      else
+        echo "tg-egress does not reach api.telegram.org: the webhook stays (journalctl -u bro-tg-egress)"
+      fi
       exit 1
     fi
     if [ "$1" = hold ]; then

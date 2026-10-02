@@ -1126,12 +1126,15 @@ class BackupTest(unittest.TestCase):
                           .replace("/var/lib/bro", f"{root}/var/lib/bro"))
         (root / "opt/bro/tg-bridge").mkdir(parents=True)
         (root / "opt/bro/tg-bridge/tg_bridge.py").write_text("")
+        (root / "opt/bro/tg-egress").mkdir(parents=True)
+        (root / "opt/bro/tg-egress/tg_egress.py").write_text("")
         (root / "var/lib/bro").mkdir(parents=True)
         fakes, log, mark = root / "bin", root / "calls", root / "var/lib/bro/tg-hold"
         fakes.mkdir()
         for tool, answer in (
                 ("systemctl", 'case "$1" in is-*) [ -n "${ON:-}" ] ;; disable) [ -z "${NO_STOP:-}" ] ;; esac'),
-                ("python3", '[ -z "${NO_TELEGRAM:-}" ]')):
+                ("timeout", 'shift; exec "$@"'),
+                ("python3", 'if [ "$2" = --check ]; then [ -z "${NO_EGRESS:-}" ]; else [ -z "${NO_TELEGRAM:-}" ]; fi')):
             (fakes / tool).write_text(f'#!/bin/bash\necho "{tool} ${{*##*/}}" >> "{log}"\n{answer}\n')
             (fakes / tool).chmod(0o755)
 
@@ -1140,14 +1143,24 @@ class BackupTest(unittest.TestCase):
             mark.unlink(missing_ok=True)
             result = subprocess.run(["bash", str(script), "hold"], capture_output=True, text=True,
                                     env={**os.environ, "PATH": f"{fakes}:{os.environ['PATH']}", **env})
-            return result.returncode, log.read_text().splitlines(), mark.exists()
+            hold.said = result.stdout
+            return result.returncode, [c for c in log.read_text().splitlines() if not c.startswith("timeout ")], mark.exists()
 
         unit = "bro-tg-bridge.service"
+        egress = "python3 tg_egress.py --check"
         delete = "python3 tg_bridge.py switch-to-bridge --no-start"
         self.assertEqual(hold(ON="1"), (0, [f"systemctl is-enabled --quiet {unit}",
-                                            f"systemctl disable --now {unit}", delete], True))
+                                            f"systemctl disable --now {unit}", egress, delete], True))
         self.assertEqual(hold(), (0, [f"systemctl is-enabled --quiet {unit}", f"systemctl is-active --quiet {unit}",
-                                      delete], True))
+                                      egress, delete], True))
+        # No path to Telegram: the message says who holds the updates now.
+        code, calls, marked = hold(NO_EGRESS="1")
+        self.assertEqual((code, calls[-1], marked), (1, egress, False))
+        self.assertIn("the webhook stays", hold.said)
+        code, calls, marked = hold(ON="1", NO_EGRESS="1")
+        self.assertEqual((code, calls[-1], marked), (1, egress, True))
+        self.assertIn("no webhook is set: nobody takes the updates", hold.said)
+        self.assertNotIn("the webhook stays", hold.said)
         # A bridge that does not stop: no hold, and nothing done about the webhook.
         code, calls, marked = hold(ON="1", NO_STOP="1")
         self.assertNotEqual(code, 0)
