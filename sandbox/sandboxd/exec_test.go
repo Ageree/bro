@@ -99,6 +99,28 @@ func TestDrainKillsOpenExecs(t *testing.T) {
 	h.waitDead("sb-drain", "d.pid")
 }
 
+// A child that does not carry the marker (it dropped its environment, as `env -i` does) dies with the
+// exec all the same, because its parent carries it. A process in the middle of its own execve is in the
+// same position: Linux has no environment to show for it until the new image is loaded, which a cold
+// binary can take long enough for a cancelled exec to miss it.
+func TestExecKillCatchesChildWithoutMarker(t *testing.T) {
+	h := newHarness(t)
+	h.create("sb-bare", sandboxOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	events := h.openExec(ctx, "sb-bare", `env -i "$(command -v sleep)" 30 & echo $! > b.pid; echo ready; wait`)
+	if e := nextEvent(t, events); e.Type != "start" {
+		t.Fatalf("first event %+v", e)
+	}
+	if e := nextEvent(t, events); e.Type != "stdout" || string(e.Data) != "ready\n" {
+		t.Fatalf("second event %+v", e)
+	}
+	if !h.processAlive("sb-bare", "b.pid") {
+		t.Fatal("the child without a marker is not running")
+	}
+	cancel()
+	h.waitDead("sb-bare", "b.pid")
+}
+
 func TestExecTimeout(t *testing.T) {
 	h := newHarness(t)
 	h.create("sb-timeout", sandboxOptions{})
