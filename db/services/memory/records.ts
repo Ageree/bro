@@ -651,7 +651,13 @@ export async function markMemoryScopeRecalled(
           lt(
             memoryScopes.lastRecalledAt,
             new Date(now.getTime() - 60 * 60 * 1_000)
-          )
+          ),
+          // Another scope of the workspace was marked later: this one is
+          // the one recalled last now.
+          sql`${memoryScopes.lastRecalledAt} < (
+            SELECT max(other.last_recalled_at) FROM ${memoryScopes} AS other
+            WHERE other.workspace_id = ${scope.workspaceId}
+          )`
         )
       )
     );
@@ -720,6 +726,31 @@ export async function trimForgottenMemoryHistory(now = new Date()) {
             AND latest.revision = record.revision
         )
       )
+  `);
+}
+
+/**
+ * Starts the history of memories a release without history saved or
+ * changed — during a rollback or a deploy, after the migration that started
+ * everyone's: such a write leaves the record at a revision history has no
+ * row for.
+ */
+export async function recordUntrackedMemories() {
+  await db.execute(sql`
+    INSERT INTO ${memoryRevisions}
+      (workspace_id, scope_key, record_index, revision, content, action, actor, created_at)
+    SELECT record.workspace_id, record.scope_key, record.record_index,
+      record.revision, record.content, 'import', 'system', record.updated_at
+    FROM ${memoryRecords} AS record
+    WHERE record.content IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ${memoryRevisions} AS latest
+        WHERE latest.workspace_id = record.workspace_id
+          AND latest.scope_key = record.scope_key
+          AND latest.record_index = record.record_index
+          AND latest.revision = record.revision
+      )
+    ON CONFLICT DO NOTHING
   `);
 }
 

@@ -21,6 +21,7 @@ import {
   listCurrentMemories,
   markMemoryScopeRecalled,
   readMemory,
+  recordUntrackedMemories,
   trimForgottenMemoryHistory,
   saveMemory,
   updateMemory,
@@ -721,29 +722,42 @@ describe("memory history", () => {
     );
 
     expect(
-      (await history()).map(({ action, index, text, workspaceId }) => ({
-        action,
-        index,
-        text,
-        workspaceId,
-      }))
+      (await history()).map(
+        ({ action, index, sessionId, text, workspaceId }) => ({
+          action,
+          index,
+          sessionId,
+          text,
+          workspaceId,
+        })
+      )
     ).toEqual([
-      { action: "save", index: 0, text: null, workspaceId: alice.workspaceId },
+      // Neither the text nor the conversation that saved it stays.
+      {
+        action: "save",
+        index: 0,
+        sessionId: null,
+        text: null,
+        workspaceId: alice.workspaceId,
+      },
       {
         action: "update",
         index: 0,
+        sessionId: null,
         text: null,
         workspaceId: alice.workspaceId,
       },
       {
         action: "forget",
         index: 0,
+        sessionId: "session",
         text: null,
         workspaceId: alice.workspaceId,
       },
       {
         action: "save",
         index: 1,
+        sessionId: "session",
         text: "Живёт в Казани.",
         workspaceId: alice.workspaceId,
       },
@@ -751,6 +765,7 @@ describe("memory history", () => {
       {
         action: "save",
         index: 0,
+        sessionId: "session",
         text: "Любит суши.",
         workspaceId: bob.workspaceId,
       },
@@ -921,6 +936,70 @@ describe("memory history", () => {
     expect(await texts()).toEqual(["Едет в Казань.", null]);
     await trimForgottenMemoryHistory(new Date("2026-11-06T00:00:00.000Z"));
     expect(await texts()).toEqual([null, null]);
+  });
+
+  // A release from before the history saves without a revision.
+  it("starts the history of a memory an older release saved", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save:sushi", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await database
+      .update(schema.memoryRecords)
+      .set({ content: fact("Любит роллы."), revision: 2 })
+      .where(eq(schema.memoryRecords.index, 0));
+
+    await recordUntrackedMemories();
+    await recordUntrackedMemories();
+
+    expect(
+      (await history()).map(({ action, actor, revision, text }) => ({
+        action,
+        actor,
+        revision,
+        text,
+      }))
+    ).toEqual([
+      { action: "save", actor: "model", revision: 1, text: "Любит суши." },
+      { action: "import", actor: "system", revision: 2, text: "Любит роллы." },
+    ]);
+  });
+
+  it("marks at once the scope recalled after another one", async () => {
+    for (const scopeKey of ["scope-a", "scope-b"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Two scopes.
+      await saveMemory(alice, scopeKey, { text: "Любит суши." }, scopeKey, {
+        sessionId: "session",
+        turnId: "turn",
+      });
+    }
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-a",
+      new Date("2026-10-02T10:01:00Z")
+    );
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-b",
+      new Date("2026-10-02T10:30:00Z")
+    );
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-a",
+      new Date("2026-10-02T10:59:00Z")
+    );
+
+    const marks = await database
+      .select({
+        at: schema.memoryScopes.lastRecalledAt,
+        scopeKey: schema.memoryScopes.scopeKey,
+      })
+      .from(schema.memoryScopes)
+      .orderBy(asc(schema.memoryScopes.scopeKey));
+    expect(marks.map(({ at }) => at?.toISOString())).toEqual([
+      "2026-10-02T10:59:00.000Z",
+      "2026-10-02T10:30:00.000Z",
+    ]);
   });
 
   it("marks the scope recalled at most once an hour", async () => {

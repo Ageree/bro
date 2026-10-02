@@ -55,9 +55,11 @@ back to the old file provider after cutover would hide post-cutover changes.
 Every revision of a profile record is appended to `memory_revisions` in the
 transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 `system`) and what it did (save, update, forget, expire, import, and the
-digest's merge, correction and purge). Existing records start their history
-with one `import` revision. The history is for the person to see and undo
-changes; it never enters the model's context. Forgetting — at the person's
+digest's merge, correction and purge). Existing records with content start
+their history with one `import` revision, and the minute tick gives one to a
+record a release without history saved. The history is for the person to see
+and undo changes on the memory screen in the cabinet (planned: roadmap item
+31, its last PR); it never enters the model's context. Forgetting — at the person's
 word or by the model — wipes the text of every earlier revision of that record
 at once. The text of a record that expired or that the digest merged,
 corrected or found one-off stays readable for 30 days, to be restored, and

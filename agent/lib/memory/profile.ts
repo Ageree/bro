@@ -458,13 +458,11 @@ async function recallProfile(
   const scope = scopeFromPrincipal(current);
   context.abortSignal.throwIfAborted();
   await importLegacyIfNeeded(context, legacyBackend, scope);
-  const [records] = await Promise.all([
-    listCurrentMemories(scope, context.memory.scope.key),
-    // Only the cabinet reads the mark: a failed one costs no turn.
-    markMemoryScopeRecalled(scope, context.memory.scope.key).catch(() => {
-      console.warn("[memory] recall mark failed");
-    }),
-  ]);
+  const records = await listCurrentMemories(scope, context.memory.scope.key);
+  // Only the cabinet reads the mark: a failed one costs no turn.
+  await markMemoryScopeRecalled(scope, context.memory.scope.key).catch(() => {
+    console.warn("[memory] recall mark failed");
+  });
   context.abortSignal.throwIfAborted();
   const forRequest = renderPreferencesForRequest(
     records,
