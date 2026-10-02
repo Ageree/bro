@@ -8,7 +8,7 @@ vi.mock("@agent/lib/sandbox/public-fetch", () => ({
   fetchPublic: network.fetchPublic,
 }));
 
-import { readPricePage } from "@agent/lib/subscriptions/page";
+import { pageKey, readPricePage } from "@agent/lib/subscriptions/page";
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -27,7 +27,12 @@ describe("reading a product page", () => {
     );
     expect(
       await readPricePage(new URL("https://shop.example/p/1"))
-    ).toMatchObject({ amount: 7_490, currency: "RUB", kind: "price" });
+    ).toMatchObject({
+      amount: 7_490,
+      currency: "RUB",
+      kind: "price",
+      landedOn: "shop.example/p/1",
+    });
     const [, init] = network.fetchPublic.mock.calls[0] ?? [];
     expect(new Headers(init?.headers).get("user-agent")).toContain("Mozilla");
   });
@@ -59,5 +64,28 @@ describe("reading a product page", () => {
       kind: "blocked",
       reason: "bot-check",
     });
+  });
+
+  it("names the page a redirect led to", async () => {
+    network.fetchPublic
+      .mockResolvedValueOnce(
+        new Response(null, {
+          headers: { location: "https://shop.example/p/2" },
+          status: 301,
+        })
+      )
+      .mockResolvedValueOnce(new Response(product));
+    expect(
+      await readPricePage(new URL("https://shop.example/p/1"))
+    ).toMatchObject({ landedOn: "shop.example/p/2" });
+  });
+
+  it("keys a page by its link without tracking parameters", () => {
+    expect(
+      pageKey(new URL("https://www.shop.example/item/?utm_source=x&id=2&a=1"))
+    ).toBe("shop.example/item?a=1&id=2");
+    expect(pageKey(new URL("https://shop.example/p/1/#reviews"))).toBe(
+      "shop.example/p/1"
+    );
   });
 });

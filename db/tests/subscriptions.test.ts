@@ -30,6 +30,7 @@ function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
     source: {
       currency: "RUB",
       extractor: "jsonld",
+      landedOn: "shop.example/p/1",
       name: "Чайник",
       sku: "K-1",
       url: "https://shop.example/p/1",

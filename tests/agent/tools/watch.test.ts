@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as pageModule from "@agent/lib/subscriptions/page";
 import type { readPricePage } from "@agent/lib/subscriptions/page";
 import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import type { reportConversations } from "@db/services/scheduled-agent-jobs";
@@ -15,7 +16,8 @@ const services = vi.hoisted(() => ({
   timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
 }));
 
-vi.mock("@agent/lib/subscriptions/page", () => ({
+vi.mock("@agent/lib/subscriptions/page", async (importOriginal) => ({
+  ...(await importOriginal<typeof pageModule>()),
   readPricePage: services.page,
 }));
 vi.mock("@agent/lib/subscriptions/pilot", () => ({
@@ -122,6 +124,7 @@ beforeEach(() => {
     currency: "RUB",
     extractor: "jsonld",
     kind: "price",
+    landedOn: "shop.example/p/kettle?color=black",
     name: "Чайник",
     sku: "K780",
   });
@@ -170,7 +173,7 @@ describe("watch-create", () => {
     expect(watch).toMatchObject({
       condition: { amount: 8_000, kind: "below" },
       conversation: { conversationChannel: "eve", conversationId: "session-1" },
-      dedupeKey: "shop.example/p/kettle",
+      dedupeKey: "shop.example/p/kettle?color=black",
       source: { sku: "K780", url: link },
       state: { baseline: 8_990 },
       template: "price",
@@ -225,6 +228,7 @@ describe("watch-create", () => {
       currency: "RUB",
       extractor: "jsonld",
       kind: "price",
+      landedOn: "shop.example/p/kettle?color=black",
       name: "Чайник",
       sku: "K780",
     });

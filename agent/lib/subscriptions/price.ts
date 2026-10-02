@@ -35,6 +35,9 @@ export type PriceRead =
 
 /** «7 490,00 ₽», «7,490.00», «7.490,00», «1 500»: the amount, if any. */
 export function amountFromText(text: string) {
+  // «7 490 – 9 990» is a range, not one amount: one group of digits only.
+  const groups = text.match(/\d(?:[\d.,\s\u00a0\u202f]*\d)?/gu) ?? [];
+  if (groups.length !== 1) return undefined;
   let digits = text.replaceAll(/[^\d.,]/gu, "");
   const comma = digits.lastIndexOf(",");
   const dot = digits.lastIndexOf(".");
@@ -112,13 +115,14 @@ function listOf<Item extends z.ZodType>(item: Item) {
     .catch(undefined);
 }
 
+const optionalTextSchema = z.string().optional().catch(undefined);
+
 const offerSchema = z.looseObject({
+  availability: optionalTextSchema,
+  itemCondition: optionalTextSchema,
   lowPrice: amountSchema,
   price: amountSchema,
   priceCurrency: currencySchema,
-  priceSpecification: listOf(
-    z.looseObject({ price: amountSchema, priceCurrency: currencySchema })
-  ),
 });
 
 const typeSchema = z
@@ -154,22 +158,34 @@ function isProduct(types: z.output<typeof typeSchema>) {
     .some((type) => type.replace(/^.*[/#]/u, "").toLowerCase() === "product");
 }
 
-/** The lowest price among a product's offers, with its currency. */
+/** Stock and condition that make an offer not the product's own price. */
+const unavailable = /outofstock|soldout|discontinued|preorder|presale/iu;
+const notNew = /used|refurbished|damaged/iu;
+
+/**
+ * A product's one price: of its offers in stock and new, by `price`, else
+ * the lowest of an aggregate offer. Offers at several prices (sellers,
+ * sizes, colours) give none: a new cheap seller or variant would read as a
+ * drop. `undefined` for no price, `several` for offers that disagree.
+ */
 function offerPrice(offers: z.output<typeof productSchema>["offers"]) {
-  let best: { amount: number; currency: string | null } | undefined;
-  for (const offer of offers ?? []) {
-    if (!offer) continue;
-    const specification = offer.priceSpecification?.find(
-      (spec) => spec !== undefined
-    );
-    const amount = offer.price ?? offer.lowPrice ?? specification?.price;
-    if (amount === undefined) continue;
-    const currency = currencyCode(
-      offer.priceCurrency ?? specification?.priceCurrency
-    );
-    if (best === undefined || amount < best.amount) best = { amount, currency };
-  }
-  return best;
+  const priced = (offers ?? []).flatMap((offer) => {
+    if (!offer) return [];
+    if (unavailable.test(offer.availability ?? "")) return [];
+    if (notNew.test(offer.itemCondition ?? "")) return [];
+    const amount = offer.price ?? offer.lowPrice;
+    return amount === undefined
+      ? []
+      : [{ amount, currency: currencyCode(offer.priceCurrency) }];
+  });
+  const [first] = priced;
+  if (!first) return undefined;
+  return priced.every(
+    (offer) =>
+      offer.amount === first.amount && offer.currency === first.currency
+  )
+    ? first
+    : ("several" as const);
 }
 
 function parsedJson(text: string) {
@@ -185,14 +201,16 @@ function jsonLdProducts(html: string) {
   for (const match of html.matchAll(
     /<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script\s*>/giu
   )) {
-    const nodes = blockSchema
-      .parse(parsedJson(match[1] ?? ""))
-      .flatMap((node) => [node].concat(node["@graph"] ?? []));
+    const nodes: unknown[] = [];
+    for (const node of blockSchema.parse(parsedJson(match[1] ?? ""))) {
+      nodes.push(node, ...(node["@graph"] ?? []));
+    }
     for (const node of nodes) {
       const product = productSchema.safeParse(node).data;
       if (!product || !isProduct(product["@type"])) continue;
       const price = offerPrice(product.offers);
       if (!price) continue;
+      if (price === "several") return "several-products" as const;
       products.push({
         ...price,
         extractor: "jsonld",
@@ -245,11 +263,11 @@ function attributes(tag: string) {
   return found;
 }
 
-function metaPrice(html: string): PriceReading | undefined {
+function metaContent(html: string) {
   const tags = [...html.matchAll(/<meta\b[^>]*>/giu)].map((match) =>
     attributes(match[0])
   );
-  const content = (...names: readonly string[]) =>
+  return (...names: readonly string[]) =>
     tags
       .find((tag) =>
         names.includes(
@@ -257,6 +275,15 @@ function metaPrice(html: string): PriceReading | undefined {
         )
       )
       ?.get("content");
+}
+
+/** The product's name a page gives search engines (`og:title`). */
+function pageTitle(html: string) {
+  return plainLabel(metaContent(html)("og:title"), 120);
+}
+
+function metaPrice(html: string): PriceReading | undefined {
+  const content = metaContent(html);
   const amount = amountFromText(
     content("product:price:amount", "og:price:amount") ?? ""
   );
@@ -273,7 +300,7 @@ function metaPrice(html: string): PriceReading | undefined {
   };
 }
 
-function itempropPrices(html: string) {
+function itempropPrices(html: string, name: string | null) {
   const tags = [...html.matchAll(/<[a-z][^>]*\bitemprop\s*=[^>]*>/giu)].map(
     (match) => attributes(match[0])
   );
@@ -290,7 +317,7 @@ function itempropPrices(html: string) {
         currency: currencyCode(currency?.get("content")),
         extractor: "itemprop",
         kind: "price",
-        name: null,
+        name,
         sku: null,
       },
     ];
@@ -317,19 +344,27 @@ function single(readings: readonly PriceReading[]): PriceRead | undefined {
 }
 
 export function readPrice(html: string): PriceRead {
-  const fromJsonLd = single(jsonLdProducts(html));
+  const products = jsonLdProducts(html);
+  if (products === "several-products") return { kind: products };
+  const fromJsonLd = single(products);
   if (fromJsonLd !== undefined) return fromJsonLd;
   const fromMeta = metaPrice(html);
   if (fromMeta) return fromMeta;
-  return single(itempropPrices(html)) ?? { kind: "no-price" };
+  return single(itempropPrices(html, pageTitle(html))) ?? { kind: "no-price" };
 }
 
-/** Whether a reading is of the product the watch is pinned to. */
+/**
+ * Whether a reading is of the product the watch is pinned to: the same
+ * markup, currency, SKU and name wherever the first reading had them. A
+ * shop that renamed the product or sends the link to another page breaks
+ * the watch rather than raising a false alarm.
+ */
 export function sameProduct(source: PriceSource, reading: PriceReading) {
   return (
     reading.extractor === source.extractor &&
     reading.currency === source.currency &&
-    (source.sku === null || reading.sku === source.sku)
+    (source.sku === null || reading.sku === source.sku) &&
+    (source.name === null || reading.name === source.name)
   );
 }
 
@@ -372,6 +407,7 @@ const multipliers = new Map([
   ["к", 1_000],
   ["млн", 1_000_000],
   ["т", 1_000],
+  ["тр", 1_000],
   ["тыс", 1_000],
   ["тысяч", 1_000],
   ["тысячи", 1_000],
@@ -379,18 +415,18 @@ const multipliers = new Map([
 ]);
 
 /**
- * The numbers in the person's words, as amounts: «8к», «8 000», «8,5 тыс»,
- * «10%». A threshold the model passes counts only when it is one of these,
- * so a page or an earlier report cannot plant one.
+ * The numbers in the person's words, as amounts: «8к», «8 000», «8000р»,
+ * «8,5 тыс», «10%». A threshold the model passes counts only when it is one
+ * of these, so a page or an earlier report cannot plant one. Links are left
+ * out: their digits are no amount the person named.
  */
 export function amountsSaid(words: readonly string[]) {
   const found = new Set<number>();
   for (const text of words) {
-    for (const match of text
-      .normalize("NFKC")
-      .matchAll(
-        /(?<![\p{L}\d])(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,](\d+))?\s*(k|к|млн|тысячи|тысяча|тысяч|тыс|т)?(?!\p{L})/giu
-      )) {
+    const plain = text.normalize("NFKC").replaceAll(/https?:\/\/\S+/giu, " ");
+    for (const match of plain.matchAll(
+      /(?<![\p{L}\d])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)|\d+(?!\d))(?:[.,](\d+))?\s*(k|к|млн|тысячи|тысяча|тысяч|тыс|тр|т)?\.?\s*(?:руб\p{L}*|р|₽)?(?!\p{L})/giu
+    )) {
       const whole = (match[1] ?? "").replaceAll(/\s/gu, "");
       const fraction = match[2];
       const base = Number(fraction ? `${whole}.${fraction}` : whole);

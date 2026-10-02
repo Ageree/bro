@@ -58,6 +58,7 @@ function watch(
     source: {
       currency: "RUB",
       extractor: "jsonld",
+      landedOn: url.replace("https://", ""),
       name: "Чайник",
       sku: null,
       url,
@@ -102,6 +103,7 @@ describe("the subscription checks", () => {
         currency: "RUB",
         extractor: "jsonld",
         kind: "price",
+        landedOn: "shop.example/p/1",
         name: "Чайник",
         sku: null,
       })

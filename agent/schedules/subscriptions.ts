@@ -44,8 +44,9 @@ async function runSubscriptionChecks() {
       now,
     });
     if (due.length === 0) return;
+    const stopAt = now.getTime() + tickDeadlineMs;
     const finished = await within(
-      Promise.all(byHost(due).map(checkInTurn)),
+      Promise.all(byHost(due).map(async (group) => checkInTurn(group, stopAt))),
       tickDeadlineMs
     );
     if (finished.timedOut) {
@@ -76,8 +77,17 @@ function hostOf(subscription: ClaimedSubscription) {
   return URL.parse(subscription.source.url)?.hostname ?? subscription.id;
 }
 
-async function checkInTurn(group: readonly ClaimedSubscription[]) {
+/**
+ * One shop's watches, one request at a time. Past the tick's deadline the
+ * rest are left to their lease, so a slow shop is never read by two ticks
+ * at once.
+ */
+async function checkInTurn(
+  group: readonly ClaimedSubscription[],
+  stopAt: number
+) {
   for (const subscription of group) {
+    if (Date.now() >= stopAt) return;
     // oxlint-disable-next-line eslint/no-await-in-loop -- One request at a time to the same shop.
     await checkSubscription(subscription);
   }

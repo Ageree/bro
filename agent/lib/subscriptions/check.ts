@@ -60,7 +60,9 @@ export function judgePriceCheck(
     return failure(`${reading.kind}: ${reading.reason}`);
   }
   if (reading.kind !== "price") return failure(reading.kind);
-  if (!sameProduct(source, reading)) return failure("another-product");
+  if (reading.landedOn !== source.landedOn || !sameProduct(source, reading)) {
+    return failure("another-product");
+  }
   const next = {
     baseline: state.baseline,
     last: reading.amount,

@@ -8,7 +8,7 @@ import {
   scheduleOwner,
   scheduleReplyAnchor,
 } from "@agent/lib/schedules/tools";
-import { readPricePage } from "@agent/lib/subscriptions/page";
+import { pageKey, readPricePage } from "@agent/lib/subscriptions/page";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import {
   amountsSaid,
@@ -53,26 +53,29 @@ const watchInputSchema = z.object({
     .describe("The product page link exactly as the person sent it."),
 });
 
-/** «https://shop.ru/p/1?utm=x#a» and «https://www.shop.ru/p/1/» are one page. */
-function pageKey(url: URL) {
-  return `${url.hostname.replace(/^www\./u, "")}${url.pathname.replace(/\/+$/u, "")}`;
-}
-
 /**
  * The link the person gave, as they wrote it: the model may only point at
  * one of theirs, never bring one from a page, a search or a report. The
  * person's own spelling, query included, is what gets watched.
  */
+/**
+ * A link's host and path: the model may drop the query, so the person's
+ * link is found by these, and their own spelling, query included, is what
+ * gets watched.
+ */
+function linkPath(url: URL) {
+  return `${url.hostname.replace(/^www\./u, "")}${url.pathname.replace(/\/+$/u, "")}`;
+}
+
 function personLink(said: readonly string[], given: string) {
   const wanted = URL.parse(given.replace(/^http:/iu, "https:"));
   if (!wanted) return undefined;
-  const key = pageKey(wanted);
   for (const words of said.toReversed()) {
     for (const match of words.matchAll(/https?:\/\/[^\s<>"'«»]+/giu)) {
       const link = URL.parse(
         match[0].replace(/[).,;:!?]+$/u, "").replace(/^http:/iu, "https:")
       );
-      if (link && pageKey(link) === key) {
+      if (link && linkPath(link) === linkPath(wanted)) {
         link.hash = "";
         return link;
       }
@@ -127,6 +130,14 @@ async function createWatch(
       watching: false,
     };
   }
+  // Without a name or SKU a later reading could be another product's.
+  if (reading.name === null && reading.sku === null) {
+    return {
+      reply:
+        "Say plainly that this price cannot be watched without the browser: the page does not name the product in its markup. Offer a daily schedule (schedules-create) that checks the page with the browser instead, and set it up only on the person's yes.",
+      watching: false,
+    };
+  }
   const current = priceLabel(reading.amount, reading.currency);
   // A drop is counted from this very reading, so only a threshold can
   // already be met.
@@ -161,6 +172,7 @@ async function createWatch(
       source: {
         currency: reading.currency,
         extractor: reading.extractor,
+        landedOn: reading.landedOn,
         name: reading.name,
         sku: reading.sku,
         url: url.href,

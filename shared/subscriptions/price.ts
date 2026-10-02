@@ -17,6 +17,9 @@ export const priceExtractorSchema = z.enum(["jsonld", "meta", "itemprop"]);
 const priceSourceSchema = z.strictObject({
   currency: z.string().nullable(),
   extractor: priceExtractorSchema,
+  // The page the link led to after redirects (`pageKey`): a shop that sends
+  // it to a replacement product later is not this product's price.
+  landedOn: z.string(),
   name: z.string().nullable(),
   sku: z.string().nullable(),
   url: z.url(),

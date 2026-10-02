@@ -137,7 +137,12 @@ export const subscriptions = pgTable(
       .where(sql`${table.status} = 'active'`),
     index("subscriptions_job_idx").on(table.jobId),
     uniqueIndex("subscriptions_live_idx")
-      .on(table.workspaceId, table.template, table.dedupeKey)
+      .on(
+        table.workspaceId,
+        table.createdByUserId,
+        table.template,
+        table.dedupeKey
+      )
       .where(sql`${table.status} IN ('active', 'paused')`),
   ]
 );

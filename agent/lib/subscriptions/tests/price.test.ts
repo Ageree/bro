@@ -22,6 +22,8 @@ describe("reading a price", () => {
     expect(amountFromText("199.99")).toBe(199.99);
     expect(amountFromText("0")).toBeUndefined();
     expect(amountFromText("по запросу")).toBeUndefined();
+    // A range is not one price.
+    expect(amountFromText("7 490 – 9 990 ₽")).toBeUndefined();
   });
 
   it("takes the product's offer from JSON-LD, its graph or its list", () => {
@@ -40,6 +42,7 @@ describe("reading a price", () => {
       amount: 7_490,
       currency: "RUB",
       extractor: "jsonld",
+      kind: "price",
       name: "Чайник Bork K780",
       sku: "K780",
     });
@@ -61,6 +64,20 @@ describe("reading a price", () => {
         ])
       )
     ).toMatchObject({ amount: 6_990, currency: "RUB" });
+    // Sold out or used offers are not the product's price.
+    expect(
+      readPrice(
+        jsonLd({
+          ...product,
+          offers: [
+            { availability: "https://schema.org/InStock", price: "8 100" },
+            { availability: "https://schema.org/OutOfStock", price: "5 000" },
+            { itemCondition: "https://schema.org/UsedCondition", price: 4_000 },
+          ],
+        })
+      )
+    ).toMatchObject({ amount: 8_100 });
+    // Sellers or variants at several prices give none.
     expect(
       readPrice(
         jsonLd({
@@ -71,7 +88,7 @@ describe("reading a price", () => {
           ],
         })
       )
-    ).toMatchObject({ amount: 7_900 });
+    ).toEqual({ kind: "several-products" });
   });
 
   it("does not read the products a page recommends", () => {
@@ -117,9 +134,14 @@ describe("reading a price", () => {
     });
     expect(
       readPrice(
-        '<span itemprop="price" content="1299.00">1 299 ₽</span><meta itemprop="priceCurrency" content="RUB">'
+        '<meta property="og:title" content="Чайник"><span itemprop="price" content="1299.00">1 299 ₽</span><meta itemprop="priceCurrency" content="RUB">'
       )
-    ).toMatchObject({ amount: 1_299, currency: "RUB", extractor: "itemprop" });
+    ).toMatchObject({
+      amount: 1_299,
+      currency: "RUB",
+      extractor: "itemprop",
+      name: "Чайник",
+    });
     expect(
       readPrice(
         '<span itemprop="price" content="100"></span><span itemprop="price" content="200"></span>'
@@ -150,6 +172,7 @@ describe("a watch's product and condition", () => {
   const source = {
     currency: "RUB",
     extractor: "jsonld" as const,
+    landedOn: "shop.example/p/1",
     name: "Чайник",
     sku: "K780",
     url: "https://shop.example/p/1",
@@ -168,6 +191,7 @@ describe("a watch's product and condition", () => {
     expect(sameProduct(source, { ...reading, sku: "K781" })).toBe(false);
     expect(sameProduct(source, { ...reading, currency: "USD" })).toBe(false);
     expect(sameProduct(source, { ...reading, extractor: "meta" })).toBe(false);
+    expect(sameProduct(source, { ...reading, name: "Фильтр" })).toBe(false);
     expect(
       sameProduct({ ...source, sku: null }, { ...reading, sku: null })
     ).toBe(true);
@@ -194,6 +218,14 @@ describe("a watch's product and condition", () => {
 });
 
 describe("amounts in the person's words", () => {
+  it("reads an amount with a rouble sign or word", () => {
+    const said = amountsSaid(["меньше 8000р", "до 7500 руб.", "или 9тр"]);
+    for (const amount of [8_000, 7_500, 9_000]) {
+      expect(said.has(amount)).toBe(true);
+    }
+    expect(said.has(800)).toBe(false);
+  });
+
   it("reads «8к», «8 000», «8,5 тыс» and percents", () => {
     const said = amountsSaid([
       "следи за ценой, напиши когда станет меньше 8к",
@@ -206,8 +238,8 @@ describe("amounts in the person's words", () => {
   });
 
   it("does not take the digits of a link as an amount", () => {
-    const said = amountsSaid(["https://shop.example/p/12345 — меньше 5000"]);
+    const said = amountsSaid(["https://shop.example/p/7000/ — меньше 5000"]);
     expect(said.has(5_000)).toBe(true);
-    expect(said.has(12_345_000)).toBe(false);
+    expect(said.has(7_000)).toBe(false);
   });
 });

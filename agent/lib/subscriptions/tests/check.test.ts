@@ -10,6 +10,7 @@ const watch: Parameters<typeof judgePriceCheck>[0] = {
   source: {
     currency: "RUB",
     extractor: "jsonld",
+    landedOn: "shop.example/p/1",
     name: "Чайник",
     sku: "K780",
     url: "https://shop.example/p/1",
@@ -25,6 +26,7 @@ const reading = {
   currency: "RUB",
   extractor: "jsonld" as const,
   kind: "price" as const,
+  landedOn: "shop.example/p/1",
   name: "Чайник",
   sku: "K780",
 };
@@ -63,6 +65,14 @@ describe("judging a price check", () => {
       now
     );
     expect(other).toMatchObject({ error: "another-product", kind: "failed" });
+    // A link a shop now sends to a replacement product is not this one.
+    expect(
+      judgePriceCheck(
+        watch,
+        { ...reading, amount: 10, landedOn: "shop.example/p/2" },
+        now
+      )
+    ).toMatchObject({ error: "another-product", kind: "failed" });
     const blocked = judgePriceCheck(
       { ...watch, failures: 1 },
       { kind: "blocked", reason: "http 403" },

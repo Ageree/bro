@@ -3,7 +3,7 @@ import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
 import { fetchPublic } from "@agent/lib/sandbox/public-fetch";
 import { botCheckWording } from "@agent/lib/web-page/challenge";
 import { decodePage } from "@agent/lib/web-page/decode";
-import { type PriceRead, readPrice } from "./price";
+import { type PriceRead, type PriceReading, readPrice } from "./price";
 
 /** A product page with its JSON-LD fits; a bigger answer is not a product. */
 const maximumPageBytes = 2 * 1024 * 1024;
@@ -22,9 +22,29 @@ const browserUserAgent =
  * (`blocked`).
  */
 export type PageRead =
-  | PriceRead
+  | Exclude<PriceRead, PriceReading>
+  | (PriceReading & { readonly landedOn: string })
   | { readonly kind: "blocked"; readonly reason: string }
   | { readonly kind: "unreachable"; readonly reason: string };
+
+/** Query parameters that only track where a visitor came from. */
+const trackingParameter =
+  /^(?:utm_\w+|gclid|yclid|fbclid|_openstat|from|ref|referrer|srsltid|clid)$/iu;
+
+/**
+ * The page a link names: host without `www.`, path without the trailing
+ * slash, and the query without tracking parameters, in a fixed order.
+ * «?id=1» and «?id=2» are two products; «?utm_source=…» is the same one.
+ */
+export function pageKey(url: URL) {
+  const query = [...url.searchParams]
+    .filter(([name]) => !trackingParameter.test(name))
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+  const path = url.pathname.replace(/\/+$/u, "");
+  return `${url.hostname.replace(/^www\./u, "")}${path}${query ? `?${query}` : ""}`;
+}
 
 const blockingStatuses = new Set(["http 401", "http 403", "http 429"]);
 
@@ -35,9 +55,14 @@ const blockingStatuses = new Set(["http 401", "http 403", "http 429"]);
  * Nothing about the page is logged.
  */
 export async function readPricePage(url: URL): Promise<PageRead> {
+  let landedOn = url;
   const download = await downloadWithin(url, maximumPageBytes, {
     allowUrl: (next) => !isBlockedHost(next.hostname),
-    fetch: fetchPublic,
+    // Each hop passes here, so the last one is the page that answered.
+    fetch: async (hop, init) => {
+      landedOn = hop;
+      return fetchPublic(hop, init);
+    },
     headers: {
       accept: "text/html,application/xhtml+xml",
       "accept-language": "ru-RU,ru;q=0.9,en;q=0.8",
@@ -54,6 +79,9 @@ export async function readPricePage(url: URL): Promise<PageRead> {
   }
   const html = decodePage(download.bytes, download.mediaType);
   const reading = readPrice(html);
+  if (reading.kind === "price") {
+    return { ...reading, landedOn: pageKey(landedOn) };
+  }
   if (reading.kind !== "no-price") return reading;
   const title = /<title[^>]*>([^<]{0,300})/iu.exec(html)?.[1] ?? "";
   return botCheckWording.test(title)

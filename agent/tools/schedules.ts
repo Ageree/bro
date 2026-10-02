@@ -32,7 +32,6 @@ import {
   setSubscriptionStatus,
 } from "@db/services/subscriptions";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
-import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 
 /**
  * A schedule's prompt is later run by a worker as the person's own task,
@@ -107,7 +106,9 @@ export const listSchedules = defineTool({
     const [jobs, timeZone, watches] = await Promise.all([
       listScheduledAgentJobs(scope),
       readWorkspaceTimeZone(scope),
-      liveWatches(scope),
+      // Only the pilot makes watches, but one made before a workspace left
+      // the pilot is still listed, paused and deleted here.
+      listLiveSubscriptions(scope),
     ]);
     return [
       ...jobs.map((job) => scheduleListSummary(job, timeZone)),
@@ -115,13 +116,6 @@ export const listSchedules = defineTool({
     ];
   },
 });
-
-/** The person's price watches (`watch-create`), for the pilot only. */
-async function liveWatches(scope: ReturnType<typeof scheduleScope>) {
-  return (await subscriptionsPilot(scope))
-    ? await listLiveSubscriptions(scope)
-    : [];
-}
 
 /** A watch as the schedule tools show it: an id that pauses or deletes it. */
 function watchSummary(
@@ -154,7 +148,7 @@ async function updateWatch(
   id: string,
   status: "active" | "deleted" | "paused" | undefined
 ) {
-  const watches = await liveWatches(scope);
+  const watches = await listLiveSubscriptions(scope);
   if (!watches.some((watch) => watch.id === id)) return undefined;
   if (status === undefined) throw new Error(watchChangeRefusal);
   const [watch, timeZone] = await Promise.all([
