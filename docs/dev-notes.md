@@ -276,7 +276,8 @@
   Ошибку фоновой работы расписания eve глотает: ловите сами.
 - Ключи окружения приходили с переводами строк и в типографских кавычках:
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
-  30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
+  30.09 и `OPENROUTER_API_KEY` 02.10 тоже пришли с переводом строки внутри:
+  убирайте пробелы перед вызовом.
 - Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
   `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: они в Blob
   (`db/services/installation-secrets.ts`) — перед уходом с Vercel достать.
@@ -295,6 +296,16 @@
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
   прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
   Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
+- jev в образе — upstream `1231850` плюс `browser-vm/image/jev-ultrafast.patch`
+  (накладывает `provision.sh`); патч доезжает только с новым образом. Новый
+  патч — `git diff 1231850 <ветка> -- jev_ultrafast/`, замер — `scripts/jev-lab`
+  с окном (`LAB_HEADED=1`) и чистым профилем: прогоны наследуют формы прошлых.
+  Набор `fresh` — только для итогового замера, на нём не отлаживать.
+- jev выводит свою вкладку вперёд: в фоновой вкладке CSS-переходы стоят, и
+  всплывающие списки остаются с opacity 0 (`JEV_BACKGROUND_TAB=1` — как upstream).
+- Chrome в облачной сессии Claude: CA прокси нужен в `~/.pki/nssdb` (`certutil`),
+  а пути с `;` прокси Chrome не отдаёт — Google Flights там мёртв
+  (`scripts/jev-lab/README.md`).
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
