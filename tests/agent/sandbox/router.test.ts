@@ -22,11 +22,10 @@ afterEach(() => {
 
 async function router() {
   return await importWithSandbox(async () => {
-    const [{ answerSandboxToolRequest, decodePage, pageText }, keys] =
-      await Promise.all([
-        import("@agent/lib/sandbox/router"),
-        import("@agent/lib/sandbox/keys"),
-      ]);
+    const [{ answerSandboxToolRequest, pageText }, keys] = await Promise.all([
+      import("@agent/lib/sandbox/router"),
+      import("@agent/lib/sandbox/keys"),
+    ]);
     const token = keys.signSandboxToolsToken({
       sandboxId: "sb-1",
       workspaceId: "personal:abc",
@@ -43,7 +42,7 @@ async function router() {
           method: "POST",
         })
       );
-    return { ask, decodePage, pageText };
+    return { ask, pageText };
   });
 }
 
@@ -179,7 +178,7 @@ describe("the sandbox tool router", () => {
   });
 
   it("reads a page in the encoding it names", async () => {
-    const { decodePage } = await router();
+    const { decodePage } = await import("@agent/lib/web-page/decode");
     const cp1251 = new Uint8Array([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]);
     expect(decodePage(cp1251, "text/html; charset=windows-1251")).toBe(
       "Привет"

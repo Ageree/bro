@@ -23,7 +23,10 @@ export const scheduledAgentJobs = pgTable(
     // `task` is a schedule the person asked for. `proactive` is the one hidden
     // job per workspace that carries Bro's own mail and calendar checks, so
     // they reuse the worker and report lifecycle without showing up as a task.
-    kind: text("kind", { enum: ["task", "proactive"] })
+    // `subscription` carries one watch code checks (`subscriptions`): its runs
+    // are the watch's hits, written already finished, and only their reports
+    // reach the model.
+    kind: text("kind", { enum: ["task", "proactive", "subscription"] })
       .notNull()
       .default("task"),
     prompt: text("prompt").notNull(),
@@ -89,7 +92,7 @@ export const scheduledAgentJobs = pgTable(
     ),
     check(
       "scheduled_agent_jobs_kind_check",
-      sql`${table.kind} IN ('task', 'proactive')`
+      sql`${table.kind} IN ('task', 'proactive', 'subscription')`
     ),
     check(
       "scheduled_agent_jobs_missed_run_policy_check",

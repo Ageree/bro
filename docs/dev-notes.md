@@ -50,6 +50,8 @@
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
+- oxlint `anti-slop` запрещает `typeof`-ветвления, параметры `unknown` и
+  `Record<string, unknown>`: внешнее разбирайте схемой zod, варианты — по `kind`.
 - Формат проверяет `oxfmt` (`pnpm format:check`), не Prettier: `npx prettier`
   переформатирует TypeScript иначе, и CI падает. Чините `pnpm exec oxfmt <файлы>`.
 - Перед последовательным `pnpm check --concurrency=1` запустите
@@ -246,6 +248,20 @@
   `agent` здесь — префикс путей: `eve eval agent <id>` гоняет весь набор.
   `eve dev` при старте продолжает незаконченные ходы из `.eve/.workflow-data`
   (и платит за них): прерванный прогон перед следующим уберите оттуда.
+
+## Подписки на события
+
+- Пилот `SUBSCRIPTIONS_WORKSPACES` (п. 27). Проверяет код, без модели
+  (`agent/schedules/subscriptions.ts`, раз в 5 минут, отдельно от `dynamic.ts`):
+  находка, сбой третий раз подряд или конец срока — уже завершённый прогон
+  скрытого задания `kind='subscription'`, отчёт везёт обычный `dynamic.ts`;
+  ночью — по правилу `wake` (`agent/lib/subscriptions/delivery.ts`).
+- Ссылку и порог `watch-create` берёт только из слов человека (`personMessages`
+  в `said.ts`): модель лишь указывает на них. Цену читает JSON-LD, meta и
+  itemprop с публичного адреса (`fetchPublic`), текст страницы в модель не идёт.
+- `usage_costs.run_id` фонового хода — id прогона расписания: «подписка без
+  модели» проверяется суммой по прогонам её задания; сводка поручений
+  (`summarizeUsageCosts`) строки `background` не считает.
 
 ## Composio: Google, Notion, Slack и другие приложения
 

@@ -9,12 +9,18 @@ const workspaceCallerSchema = z.object({
   attributes: z.object({ workspaceId: z.string().min(1) }),
 });
 
+const scheduledCallerSchema = z.object({
+  attributes: z.object({ scheduledRunId: z.string().min(1) }),
+});
+
 /**
  * Whose turn a model step belongs to, as the accounting splits it: the
  * person's own message on any channel, the report of a browser run, or a
  * turn Bro opened for itself (a schedule's worker or its report, a mail
  * check). It is decided by the caller that opened the turn, as
- * `startedByPerson` decides it for permissions.
+ * `startedByPerson` decides it for permissions. A turn of Bro's own carries
+ * its scheduled run as `runId`, so what a schedule or a watch cost the model
+ * is a sum over its job's runs: a watch that found nothing costs none.
  */
 export function turnCostSource(auth: SessionAuth) {
   const runId = reportedBrowserRunId(auth.current);
@@ -24,7 +30,11 @@ export function turnCostSource(auth: SessionAuth) {
   if (startedByPerson({ session: { auth } })) {
     return { runId: undefined, source: "chat" as const };
   }
-  return { runId: undefined, source: "background" as const };
+  return {
+    runId: scheduledCallerSchema.safeParse(auth.current).data?.attributes
+      .scheduledRunId,
+    source: "background" as const,
+  };
 }
 
 /**

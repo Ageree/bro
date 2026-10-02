@@ -5,6 +5,7 @@ import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { checkModelCredits, creditCheckDue } from "@agent/lib/model/credits";
 import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
+import { subscriptionReportDue } from "@agent/lib/subscriptions/delivery";
 import {
   claimAnsweredScheduledAgentRuns,
   claimReadyScheduledAgentRuns,
@@ -235,6 +236,12 @@ async function dispatchRecoverableReport(
   delivery: ReportDelivery,
   report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
 ) {
+  if (report.jobKind === "subscription") {
+    // A watch's news keeps to its wake rule: at night it waits for the
+    // morning unless the watch may wake the person.
+    if (!(await subscriptionReportDue(report))) return;
+    return dispatchScheduledReport(delivery, report.runId);
+  }
   if (report.jobKind !== "proactive") {
     return dispatchScheduledReport(delivery, report.runId);
   }

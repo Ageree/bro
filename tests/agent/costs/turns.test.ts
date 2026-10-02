@@ -115,6 +115,17 @@ describe("whose turn a model step is", () => {
     }
   });
 
+  it("ties Bro's own turn to its scheduled run", () => {
+    expect(
+      turnCostSource(
+        auth(caller("scheduled-result", { scheduledRunId: "run-7" }))
+      )
+    ).toEqual({ runId: "run-7", source: "background" });
+    expect(turnCostSource(auth(caller("scheduled-worker"))).runId).toBe(
+      undefined
+    );
+  });
+
   it("finds the workspace on the caller, or on the one who opened the session", () => {
     expect(turnWorkspaceId(auth(caller("authjs")))).toBe(workspaceId);
     expect(turnWorkspaceId(auth(null, caller("authjs")))).toBe(workspaceId);
