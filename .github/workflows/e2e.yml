@@ -63,6 +63,15 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      - name: Check the model key
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::Repository secret OPENROUTER_API_KEY is not set: Bro and the runner's agent steps need it (docs/e2e.md)."
+            exit 1
+          fi
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
