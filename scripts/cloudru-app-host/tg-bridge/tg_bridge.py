@@ -7,11 +7,14 @@ soon as the secret checks out and runs the turn afterwards, so a 200 means "take
 
 Guarantees:
   - an update is confirmed to Telegram (the next getUpdates' offset) and in the state file only after eve
-    took it: the offset is the lowest update still undelivered, and ids above it already delivered are kept
-    in the state file, so a restart of the bridge neither loses nor repeats one. What eve took (200) is eve's:
-    eve answers before the turn starts, so an update taken just before eve itself restarts can be lost;
-  - one chat's updates go to eve one at a time and in order (TG_BRIDGE_CHAT_GAP_MS between them), different
-    chats in parallel (at most TG_BRIDGE_PARALLEL), so a chat stuck in retries holds no one else up;
+    took it (or after it was dropped as poison, below): the offset is the lowest update still undelivered,
+    and ids above it already delivered are kept in the state file, so a restart of the bridge neither loses
+    nor repeats one. What eve took (200) is eve's: eve answers before the turn starts, so an update taken
+    just before eve itself restarts can be lost. A failed write of the state file does not stop the bridge
+    nor hold the offset back: eve has those updates, and an offset Telegram is not sent only brings them
+    again after a restart. /health is 503 until a write succeeds;
+  - one chat's updates go to eve one at a time and in order, TG_BRIDGE_CHAT_GAP_MS apart (across polls too),
+    different chats in parallel (at most TG_BRIDGE_PARALLEL), so a chat stuck in retries holds no one else up;
   - eve down is retried with a growing pause for as long as it takes. An update is dropped only after
     TG_BRIDGE_ATTEMPTS failures in a row that are its own: an HTTP error from eve while eve's health check
     (TG_BRIDGE_EVE_HEALTH) answers 200. 401/403 is the secret: delivery waits, nothing is dropped. Either
@@ -22,9 +25,10 @@ Guarantees:
 The log has update ids, update types and HTTP statuses. Never the token, the secret or an update's content.
 
   python3 tg_bridge.py run                       poll and deliver (bro-tg-bridge.service)
-  python3 tg_bridge.py check                     the health check: exit 0 when polling and delivering
+  python3 tg_bridge.py check                     the health check: exit 0 when /health answers 200
   python3 tg_bridge.py status                    getWebhookInfo, read only: which way updates go now
-  python3 tg_bridge.py switch-to-bridge          deleteWebhook (pending updates kept), then start the bridge
+  python3 tg_bridge.py switch-to-bridge          deleteWebhook (pending updates kept; only while eve's health
+                                                 check answers 200), then start the bridge
   python3 tg_bridge.py switch-to-webhook URL     stop the bridge, confirm what it delivered, setWebhook URL
                                                  with the secret, verify; the bridge back if Telegram fails
 
@@ -45,8 +49,12 @@ the same files for names not in their environment):
   TG_BRIDGE_PARALLEL         8      chats delivered at once
   TG_BRIDGE_CHAT_GAP_MS      300    pause between two updates of one chat
   TG_BRIDGE_ATTEMPTS         5      failures before an update is dropped (see above)
+  TG_BRIDGE_RETRY_BASE_S     1      the first pause between two attempts; it doubles up to RETRY_MAX_S
   TG_BRIDGE_RETRY_MAX_S      60     the longest pause between two attempts
   TG_BRIDGE_CONFLICT_PAUSE_S 60     after a 409 or with a webhook set
+  TG_BRIDGE_BUSY_POLL_S      2      how often getUpdates looks for new updates while one is in retries
+A number that is not one (or is below its minimum), an unusable TG_BRIDGE_HEALTH or an eve URL that is not
+http://<host>[:<port>]/<path> is a configuration error: exit 2, which the unit does not restart.
 """
 
 import argparse
@@ -56,6 +64,7 @@ import concurrent.futures
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import signal
@@ -139,8 +148,30 @@ def address(text):
     return host or "127.0.0.1", int(port)
 
 
+def http_url_ok(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme == "http" and bool(parsed.hostname) and (parsed.port is None or parsed.port > 0)
+    except ValueError:  # urlsplit and .port refuse a port that is not a number or a broken [address]
+        return False
+
+
 class Settings:
     def __init__(self, env):
+        # Names whose value is unusable: the default stands in so that a Settings always exists, and
+        # problems(service=True) reports them (exit 2, not a traceback that systemd would restart every 5 s).
+        self.invalid = []
+
+        def number(name, default, kind=float, minimum=0):
+            try:
+                value = kind(env.get(name) or default)
+                if not math.isfinite(value) or value < minimum:
+                    raise ValueError(name)
+            except (ValueError, OverflowError):
+                self.invalid.append(f"{name} must be a number, at least {minimum:g}")
+                return kind(default)
+            return value
+
         self.token = env.get("TELEGRAM_BOT_TOKEN", "")
         self.secret = env.get("TELEGRAM_WEBHOOK_SECRET_TOKEN", "")
         self.eve_url = env.get("TG_BRIDGE_EVE_URL") or "http://127.0.0.1:4274/eve/v1/telegram"
@@ -148,22 +179,25 @@ class Settings:
         self.proxy = env.get("TG_BRIDGE_PROXY", "")
         self.state = Path(env.get("TG_BRIDGE_STATE") or "/var/lib/bro/tg-bridge/state.json")
         self.health = env.get("TG_BRIDGE_HEALTH") or "127.0.0.1:7445"
-        self.poll_timeout = int(env.get("TG_BRIDGE_POLL_TIMEOUT") or 50)
-        self.parallel = int(env.get("TG_BRIDGE_PARALLEL") or 8)
-        self.chat_gap = int(env.get("TG_BRIDGE_CHAT_GAP_MS") or 300) / 1000
-        self.attempts = int(env.get("TG_BRIDGE_ATTEMPTS") or 5)
-        self.retry_base = float(env.get("TG_BRIDGE_RETRY_BASE_S") or 1)
-        self.retry_max = float(env.get("TG_BRIDGE_RETRY_MAX_S") or 60)
-        self.conflict_pause = float(env.get("TG_BRIDGE_CONFLICT_PAUSE_S") or 60)
+        self.poll_timeout = number("TG_BRIDGE_POLL_TIMEOUT", 50, int, 1)
+        self.parallel = number("TG_BRIDGE_PARALLEL", 8, int, 1)
+        self.chat_gap = number("TG_BRIDGE_CHAT_GAP_MS", 300, int) / 1000
+        self.attempts = number("TG_BRIDGE_ATTEMPTS", 5, int, 1)
+        self.retry_base = number("TG_BRIDGE_RETRY_BASE_S", 1)
+        self.retry_max = number("TG_BRIDGE_RETRY_MAX_S", 60)
+        self.conflict_pause = number("TG_BRIDGE_CONFLICT_PAUSE_S", 60)
         # While an update is in retries, getUpdates from the lowest undelivered id answers at once: poll that
         # often instead of long-polling, so other chats' new messages still come in.
-        self.busy_poll = float(env.get("TG_BRIDGE_BUSY_POLL_S") or 2)
+        self.busy_poll = number("TG_BRIDGE_BUSY_POLL_S", 2)
         # eve's own health check, asked before an update is blamed for a failure: the eve URL's origin.
         self.eve_health = env.get("TG_BRIDGE_EVE_HEALTH") or urllib.parse.urljoin(self.eve_url, "/eve/v1/health")
         # An update waiting longer than this makes /health 503: eve down, a broken release, a stuck chat.
-        self.stuck_after = float(env.get("TG_BRIDGE_STUCK_S") or 120)
+        self.stuck_after = number("TG_BRIDGE_STUCK_S", 120)
 
-    def problems(self, *, eve=True):
+    def problems(self, *, eve=True, service=False):
+        """What stops the commands. `service`: what the running bridge itself needs (run, and switch-to-bridge
+        before it takes the webhook down); switch-to-webhook and status use none of it and must not be blocked
+        by it when a rollback is needed."""
         found = []
         if not TOKEN.fullmatch(self.token):
             found.append("TELEGRAM_BOT_TOKEN is missing or not a bot token")
@@ -173,6 +207,17 @@ class Settings:
             proxy_from(self.proxy)
         except ValueError as error:
             found.append(str(error))
+        if service:
+            found += self.invalid
+            try:
+                if not 0 <= address(self.health)[1] <= 65535:
+                    raise ValueError(self.health)
+            except ValueError:
+                found.append("TG_BRIDGE_HEALTH must be <host>:<port>")
+            for name, url in (("TG_BRIDGE_EVE_URL", self.eve_url), ("TG_BRIDGE_EVE_HEALTH", self.eve_health)):
+                if not http_url_ok(url):  # the health URL is derived from the eve URL: one message is enough
+                    found.append(f"{name} must be http://<host>[:<port>]/<path>")
+                    break
         return found
 
 
@@ -312,6 +357,21 @@ def post_to_eve(url, secret, body, timeout=30):
         connection.close()
 
 
+def eve_healthy(url):
+    """eve's own health check answers 200: eve is up."""
+    parsed = urllib.parse.urlsplit(url)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=5)
+    try:
+        connection.request("GET", parsed.path or "/")
+        response = connection.getresponse()
+        response.read()
+        return response.status == 200
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
 def update_kind(update):
     return next((key for key in update if key != "update_id"), "empty")
 
@@ -415,12 +475,16 @@ class Bridge:
         # Update id -> when it was queued (monotonic): the health check's "how long has the oldest waited".
         self.pending = {}
         self.queues = {}
+        # Chat key -> when eve last took one of its updates (monotonic): the gap between two of a chat's
+        # updates runs from there, across polls and drains (entries older than the gap are dropped on accept).
+        self.chat_done = {}
         self.max_seen = max([self.state.offset - 1, *self.state.done])
         self.pool = concurrent.futures.ThreadPoolExecutor(settings.parallel, thread_name_prefix="deliver")
         self.status = "starting"
         self.last_poll_ok = None
         self.completions = 0
         self.eve_refused = None
+        self.state_failing = False
         self.counters = collections.Counter()
         self.telegram_failures = 0
         self.telegram_logged = 0.0
@@ -440,7 +504,8 @@ class Bridge:
             counters = dict(self.counters)
         fresh = self.last_poll_ok is not None and now - self.last_poll_ok < self.settings.poll_timeout + 60
         stuck = oldest is not None and oldest > self.settings.stuck_after
-        healthy = self.status == "polling" and fresh and self.eve_refused is None and not stuck
+        healthy = (self.status == "polling" and fresh and self.eve_refused is None and not stuck
+                   and not self.state_failing)
         return healthy, {
             "status": self.status,
             "healthy": healthy,
@@ -448,6 +513,7 @@ class Bridge:
             "pending": pending,
             "oldestPendingAgeS": None if oldest is None else round(oldest, 1),
             "eveRefused": self.eve_refused,
+            "stateWriteFailing": self.state_failing,
             "offset": self.state.offset,
             **counters,
         }
@@ -544,6 +610,8 @@ class Bridge:
         fresh = 0
         now = time.monotonic()
         with self.lock:
+            if self.chat_done:
+                self.chat_done = {key: t for key, t in self.chat_done.items() if now - t < self.settings.chat_gap}
             for update in updates:
                 update_id = update.get("update_id") if isinstance(update, dict) else None
                 if not isinstance(update_id, int):
@@ -579,29 +647,24 @@ class Bridge:
                 if not queue or self.stop.is_set():
                     del self.queues[key]
                     return
-                update = queue.popleft()
+                last = self.chat_done.get(key)
+                pause = 0 if last is None else last + self.settings.chat_gap - time.monotonic()
+                update = queue.popleft() if pause <= 0 else None
+            if update is None:
+                # eve answers 200 before it works on an update: the chat's next one waits a moment, also when
+                # it came with a later poll and this drain is a new one.
+                self.stop.wait(pause)
+                continue
             if not self.deliver_one(update):
                 with self.lock:
                     del self.queues[key]
                 return
             with self.lock:
-                more = bool(self.queues[key])
-            if more:
-                self.stop.wait(self.settings.chat_gap)
+                self.chat_done[key] = time.monotonic()
 
     def eve_alive(self):
-        """eve's own health check answers 200: eve is up, so a failure to take an update is the update's."""
-        parsed = urllib.parse.urlsplit(self.settings.eve_health)
-        connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=5)
-        try:
-            connection.request("GET", parsed.path or "/")
-            response = connection.getresponse()
-            response.read()
-            return response.status == 200
-        except (OSError, http.client.HTTPException):
-            return False
-        finally:
-            connection.close()
+        """eve is up, so a failure to take an update is the update's."""
+        return eve_healthy(self.settings.eve_health)
 
     def deliver_one(self, update):
         """Until eve takes it or it is dropped (True), or the bridge stops (False: it stays undelivered).
@@ -635,6 +698,7 @@ class Bridge:
                     log(f"tg-bridge: eve answered {status} to update {update_id}: TELEGRAM_WEBHOOK_SECRET_TOKEN "
                         f"differs; delivery waits (restart both after fixing /etc/bro/env)")
                 self.eve_refused = status
+                blamed = 0  # the streak of the update's own failures is broken: it is not "in a row" any more
                 self.stop.wait(self.settings.retry_max)
                 continue
             failures += 1
@@ -658,7 +722,11 @@ class Bridge:
             self.state.done.add(update_id)
             self.state.offset = min(self.pending) if self.pending else self.max_seen + 1
             self.state.done = {i for i in self.state.done if i >= self.state.offset}
-            if not self.state.save():
+            # A failed write does not hold polling back: the offset still goes to Telegram. eve has these
+            # updates; not confirming them would only have Telegram send them again after a restart. /health is
+            # 503 meanwhile, and the next write catches the file up.
+            self.state_failing = not self.state.save()
+            if self.state_failing:
                 self.counters["stateWriteErrors"] += 1
             self.counters["delivered" if delivered else "dropped"] += 1
             self.completions += 1
@@ -692,7 +760,7 @@ def serve_health(bridge, listen):
 
 
 def command_run(settings):
-    problems = settings.problems()
+    problems = settings.problems(service=True)
     if problems:
         for problem in problems:
             log(f"tg-bridge: {problem}")
@@ -722,7 +790,7 @@ def command_check(settings):
         response = connection.getresponse()
         print(response.read().decode())
         return 0 if response.status == 200 else 1
-    except OSError as error:
+    except (OSError, http.client.HTTPException) as error:  # a health server that hangs up mid-answer is not an OSError
         print(f"tg-bridge is not answering on {settings.health}: {type(error).__name__}")
         return 1
 
@@ -746,29 +814,41 @@ def command_status(settings, telegram):
 
 
 def command_switch_to_bridge(settings, telegram, *, start=True, wait_s=120):
-    problems = settings.problems()
+    problems = settings.problems(service=True)
     if problems:
         print("\n".join(problems))
         return CONFIG_EXIT
     info = telegram.call("getWebhookInfo")
     print(f"before: {describe(info)}")
+    verified = True
     if info.get("url"):
+        # The webhook serves the bot until it is deleted: take it down only for an eve that can take over.
+        if not eve_healthy(settings.eve_health):
+            print(f"eve does not answer 200 on {settings.eve_health}: the webhook stays")
+            return 1
         # drop_pending_updates=false: what Telegram holds for the webhook is the bridge's first batch.
         telegram.call("deleteWebhook", {"drop_pending_updates": False})
-        info = telegram.call("getWebhookInfo")
-        print(f"after:  {describe(info)}")
-        if info.get("url"):
-            print("the webhook is still set: not starting the bridge")
-            return 1
+        try:
+            info = telegram.call("getWebhookInfo")
+        except (NetworkError, TelegramError) as error:
+            # deleteWebhook went through: stopping here would leave the bot with no consumer. The bridge looks
+            # at the webhook itself and waits on a 409, so starting it is right whatever this check would say.
+            verified = False
+            print(f"after:  cannot check ({error})" + ("; starting the bridge anyway" if start else ""))
+        else:
+            print(f"after:  {describe(info)}")
+            if info.get("url"):
+                print("the webhook is still set: not starting the bridge")
+                return 1
     if not start:
-        return 0
+        return 0 if verified else 1
     if systemctl("enable", "--now", SERVICE) != 0:
         print(f"systemctl enable --now {SERVICE} failed")
         return 1
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         if command_check(settings) == 0:
-            print("the bridge polls and delivers")
+            print("the bridge polls (eve's secret is checked by the first delivery)")
             return 0
         time.sleep(3)
     print(f"the bridge is not healthy after {wait_s} s: journalctl -u {SERVICE}")

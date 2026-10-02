@@ -80,10 +80,14 @@ class FakeTelegram:
             return 200, {"ok": True, "result": {"url": self.webhook, "pending_update_count": len(self.pending())}}
         if method == "deleteWebhook":
             self.webhook = ""
+            if body.get("drop_pending_updates"):
+                self.drop_pending()
             return 200, {"ok": True, "result": True}
         if method == "setWebhook":
             self.webhook = body["url"]
             self.set_body = body
+            if body.get("drop_pending_updates"):
+                self.drop_pending()
             return 200, {"ok": True, "result": True}
         if method == "getUpdates":
             if self.webhook:
@@ -105,6 +109,11 @@ class FakeTelegram:
 
     def pending(self):
         return [u for u in self.updates if u["update_id"] >= self.confirmed]
+
+    def drop_pending(self):
+        """What Telegram does with drop_pending_updates=true."""
+        with self.cond:
+            self.updates.clear()
 
     def close(self):
         self.server.shutdown()
@@ -352,6 +361,35 @@ class Delivery(BridgeCase):
         self.assertIsNone(bridge.fatal)
         self.assertFalse(bridge.stop.is_set())
 
+    def test_a_chat_waits_its_gap_across_polls(self):
+        # The second message comes with a later poll, after the first one's drain is over: still 400 ms apart.
+        taken = {}
+
+        def deliver(body):
+            taken[json.loads(body)["update_id"]] = time.monotonic()
+            return 200
+
+        bridge = self.start(self.settings(TG_BRIDGE_CHAT_GAP_MS="400"), deliver=deliver)
+        self.telegram.add(message(1, 1))
+        self.assertTrue(wait_for(lambda: bridge.counters["delivered"] == 1 and not bridge.queues))
+        self.telegram.add(message(2, 1), message(3, 2))
+        self.assertTrue(wait_for(lambda: 2 in taken and 3 in taken))
+        self.assertGreaterEqual(taken[2] - taken[1], 0.38)
+        # Another chat is not held by it.
+        self.assertLess(taken[3], taken[2])
+
+    def test_a_secret_mismatch_breaks_the_streak_of_own_failures(self):
+        bridge = tg_bridge.Bridge(self.settings())  # three attempts
+        self.addCleanup(bridge.pool.shutdown)
+        answers = iter([400, 400, 401, 400, 200])
+        bridge.deliver = lambda body: next(answers)
+        bridge.eve_alive = lambda: True
+        with bridge.lock:
+            bridge.pending[1] = time.monotonic()
+        self.assertTrue(bridge.deliver_one(message(1, 1)))
+        self.assertEqual(bridge.counters["dropped"], 0)
+        self.assertEqual(bridge.counters["delivered"], 1)
+
     def test_the_next_message_after_a_delivery_is_not_delayed(self):
         # A long busy pause must not hold the next message once the queue is empty again.
         bridge = self.start(self.settings(TG_BRIDGE_BUSY_POLL_S="2", TG_BRIDGE_POLL_TIMEOUT="5"))
@@ -372,11 +410,20 @@ class Delivery(BridgeCase):
             self.assertTrue(wait_for(lambda: sorted(self.eve.taken_ids()) == [1, 2]))
             self.assertTrue(wait_for(lambda: bridge.counters["stateWriteErrors"] >= 2))
             time.sleep(0.3)
+            # Unhealthy while the file is behind, but polling goes on: eve has both updates, so Telegram is
+            # told (a restart then would not bring them again), and nothing is held back or restarted.
+            healthy, body = bridge.health()
+            self.assertFalse(healthy)
+            self.assertTrue(body["stateWriteFailing"])
+            self.assertTrue(wait_for(lambda: self.telegram.confirmed == 3))
+            self.assertFalse(bridge.stop.is_set())
         self.assertEqual(self.logged().count("cannot write"), 1)
         self.assertIsNone(bridge.fatal)
-        # Nothing went to eve twice, and the next write catches the file up.
+        # Nothing went to eve twice, and the next write catches the file up and the health check with it.
         self.telegram.add(message(3, 3))
         self.assertTrue(wait_for(lambda: self.saved() == {"offset": 4, "done": []}))
+        self.assertTrue(wait_for(lambda: bridge.health()[0]))
+        self.assertFalse(bridge.health()[1]["stateWriteFailing"])
         self.assertEqual(sorted(self.eve.taken_ids()), [1, 2, 3])
 
     def test_wrong_secret_waits_and_drops_nothing(self):
@@ -474,6 +521,14 @@ class Health(BridgeCase):
         self.assertTrue(wait_for(lambda: not bridge.health()[0] and bridge.health()[1]["oldestPendingAgeS"] > 0.5))
         self.assertEqual(bridge.health()[1]["status"], "polling")
 
+    def test_check_survives_an_answer_cut_short(self):
+        # The health server hangs up mid-answer: an HTTPException, which is not an OSError.
+        settings = self.settings(TG_BRIDGE_HEALTH=f"127.0.0.1:{self.eve.server.server_address[1]}")
+        for error in (http.client.BadStatusLine("x"), http.client.IncompleteRead(b"")):
+            with mock.patch.object(http.client.HTTPConnection, "getresponse", side_effect=error), \
+                    mock.patch("builtins.print"):
+                self.assertEqual(tg_bridge.command_check(settings), 1)
+
     def test_backoff_never_overflows(self):
         bridge = tg_bridge.Bridge(self.settings())
         self.addCleanup(bridge.pool.shutdown)
@@ -501,18 +556,71 @@ class Health(BridgeCase):
 
 
 class Switch(BridgeCase):
-    def test_switch_to_bridge_keeps_pending_and_starts(self):
-        self.telegram.webhook = "https://bro-next.vercel.app/eve/v1/telegram"
-        settings = self.settings()
+    WEBHOOK = "https://bro-next.vercel.app/eve/v1/telegram"
+
+    def telegram_client(self):
         telegram = tg_bridge.Telegram(TOKEN, self.telegram.url)
         self.addCleanup(telegram.close)
+        return telegram
+
+    def test_switch_to_bridge_keeps_pending_and_starts(self):
+        # What Telegram holds for the webhook survives (the fake drops it only for drop_pending_updates=true)
+        # and is the bridge's first batch.
+        self.telegram.webhook = self.WEBHOOK
+        self.telegram.add(message(5, 1), message(6, 2))
+        settings = self.settings()
         with mock.patch.object(tg_bridge, "systemctl", return_value=0) as systemctl, \
                 mock.patch.object(tg_bridge, "command_check", return_value=0), \
                 mock.patch("builtins.print"):
-            self.assertEqual(tg_bridge.command_switch_to_bridge(settings, telegram), 0)
+            self.assertEqual(tg_bridge.command_switch_to_bridge(settings, self.telegram_client()), 0)
         systemctl.assert_called_once_with("enable", "--now", "bro-tg-bridge.service")
         self.assertEqual(self.telegram.webhook, "")
         self.assertIn("deleteWebhook", self.telegram.calls)
+        self.assertEqual([u["update_id"] for u in self.telegram.pending()], [5, 6])
+        self.start(settings)
+        self.assertTrue(wait_for(lambda: sorted(self.eve.taken_ids()) == [5, 6]))
+
+    def test_switch_to_bridge_starts_even_when_the_check_after_the_delete_fails(self):
+        # deleteWebhook went through; stopping on the failed check would leave the bot with no consumer.
+        self.telegram.webhook = self.WEBHOOK
+        telegram = self.telegram_client()
+        real = telegram.call
+
+        def call(method, params=None, timeout=30):
+            if method == "getWebhookInfo" and "deleteWebhook" in self.telegram.calls:
+                raise tg_bridge.NetworkError("down")
+            return real(method, params, timeout)
+
+        with mock.patch.object(telegram, "call", side_effect=call), \
+                mock.patch.object(tg_bridge, "systemctl", return_value=0) as systemctl, \
+                mock.patch.object(tg_bridge, "command_check", return_value=0), \
+                mock.patch("builtins.print"):
+            self.assertEqual(tg_bridge.command_switch_to_bridge(self.settings(), telegram), 0)
+            self.assertEqual(self.telegram.webhook, "")
+            systemctl.assert_called_once_with("enable", "--now", "bro-tg-bridge.service")
+            # --no-start: nothing to start, and an unchecked removal is not reported as done.
+            self.telegram.webhook = self.WEBHOOK
+            self.telegram.calls.clear()
+            self.assertEqual(tg_bridge.command_switch_to_bridge(self.settings(), telegram, start=False), 1)
+            systemctl.assert_called_once()
+
+    def test_switch_to_bridge_leaves_the_webhook_while_eve_is_down(self):
+        self.telegram.webhook = self.WEBHOOK
+        self.eve.healthy = False
+        with mock.patch.object(tg_bridge, "systemctl") as systemctl, mock.patch("builtins.print"):
+            self.assertEqual(tg_bridge.command_switch_to_bridge(self.settings(), self.telegram_client()), 1)
+        self.assertEqual(self.telegram.webhook, self.WEBHOOK)
+        self.assertNotIn("deleteWebhook", self.telegram.calls)
+        systemctl.assert_not_called()
+
+    def test_switch_to_bridge_refuses_a_broken_configuration_before_touching_telegram(self):
+        self.telegram.webhook = self.WEBHOOK
+        with mock.patch.object(tg_bridge, "systemctl") as systemctl, mock.patch("builtins.print"):
+            code = tg_bridge.command_switch_to_bridge(
+                self.settings(TG_BRIDGE_PARALLEL="abc"), self.telegram_client())
+        self.assertEqual(code, tg_bridge.CONFIG_EXIT)
+        self.assertEqual(self.telegram.calls, [])
+        systemctl.assert_not_called()
 
     def test_switch_to_webhook_stops_bridge_and_confirms_first(self):
         settings = self.settings()
@@ -548,6 +656,14 @@ class Switch(BridgeCase):
         self.assertEqual(calls, [("disable", "--now", "bro-tg-bridge.service"),
                                  ("enable", "--now", "bro-tg-bridge.service")])
 
+    def test_switch_to_webhook_ignores_settings_only_the_service_uses(self):
+        telegram = tg_bridge.Telegram(TOKEN, self.telegram.url)
+        self.addCleanup(telegram.close)
+        with mock.patch.object(tg_bridge, "systemctl", return_value=0), mock.patch("builtins.print"):
+            code = tg_bridge.command_switch_to_webhook(
+                self.settings(TG_BRIDGE_PARALLEL="abc"), telegram, "https://bro-next.vercel.app/eve/v1/telegram")
+        self.assertEqual(code, 0)
+
     def test_switch_to_webhook_refuses_other_paths(self):
         telegram = tg_bridge.Telegram(TOKEN, self.telegram.url)
         self.addCleanup(telegram.close)
@@ -563,6 +679,32 @@ class Pieces(unittest.TestCase):
         settings = tg_bridge.Settings({"TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_WEBHOOK_SECRET_TOKEN": "a b\n"})
         self.assertEqual(len(settings.problems()), 1)
         self.assertEqual(settings.problems(eve=False), [])
+
+    def test_malformed_numbers_are_a_configuration_error_not_a_crash(self):
+        base = {"TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_WEBHOOK_SECRET_TOKEN": SECRET}
+        broken = {
+            "TG_BRIDGE_PARALLEL": ["abc", "0", "1.5", "9" * 400],
+            "TG_BRIDGE_POLL_TIMEOUT": ["0", "-3"],
+            "TG_BRIDGE_ATTEMPTS": ["0", "x"],
+            "TG_BRIDGE_CHAT_GAP_MS": ["0.5", "-1"],
+            "TG_BRIDGE_RETRY_MAX_S": ["nan", "inf", "1e999", "-1", "soon"],
+            "TG_BRIDGE_HEALTH": ["127.0.0.1:abc", "127.0.0.1:99999"],
+            "TG_BRIDGE_EVE_URL": ["http://127.0.0.1:abc/eve/v1/telegram", "https://127.0.0.1/x", "eve"],
+        }
+        for name, values in broken.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    settings = tg_bridge.Settings({**base, name: value})  # builds: the defaults stand in
+                    found = settings.problems(service=True)
+                    self.assertEqual(len(found), 1, found)
+                    self.assertIn(name, found[0])
+                    self.assertEqual(settings.problems(), [])  # a rollback or status is not held up by it
+                    with mock.patch.dict("os.environ", {**base, name: value}, clear=True), \
+                            mock.patch.object(tg_bridge, "log"), \
+                            mock.patch.object(tg_bridge, "Bridge") as bridge:
+                        self.assertEqual(tg_bridge.main(["run"]), tg_bridge.CONFIG_EXIT)
+                    bridge.assert_not_called()
+        self.assertEqual(tg_bridge.Settings(base).problems(service=True), [])
 
     def test_run_refuses_without_a_usable_secret(self):
         settings = tg_bridge.Settings({"TELEGRAM_BOT_TOKEN": TOKEN})
