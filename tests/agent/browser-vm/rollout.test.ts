@@ -60,7 +60,10 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
   ...(await importOriginal<typeof workerModule>()),
   ...worker,
 }));
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner,
+  clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 vi.mock("node:timers/promises", async (importOriginal) => ({
   ...(await importOriginal<typeof timersModule>()),
   setTimeout: sleep,

@@ -71,6 +71,9 @@ const worker = vi.hoisted(() => ({
     vi.fn<typeof workerModule.updateBrowserVmWorkerCode>(),
 }));
 
+const clearOwnerAlert = vi.hoisted(() =>
+  vi.fn<(key: string, now?: Date) => Promise<void>>(() => Promise.resolve())
+);
 const alertOwner = vi.hoisted(() =>
   vi.fn<
     (
@@ -101,7 +104,7 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
   ...(await importOriginal<typeof workerModule>()),
   ...worker,
 }));
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({ alertOwner, clearOwnerAlert }));
 // The reconcile also asks the pool, which has no host here.
 vi.mock("@db/services/browser-hosts", () => ({
   listBrowserHosts: vi.fn<() => Promise<unknown[]>>(async () => []),
@@ -2094,6 +2097,46 @@ describe("routing the VM's browser through a Russian exit", () => {
       ),
       { repeatAfterMs: 6 * 60 * 60_000 }
     );
+  });
+
+  it("keeps the proxy's whole message for the owner, however it is quoted", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue({
+      ...proxySetup({ country: "RU", ip: "95.24.1.8" }),
+      exit: {
+        error:
+          "ClientHttpProxyError: 402, message=\"user's traffic, it ran out\", url='http://127.0.0.1:3128'",
+      },
+    });
+
+    await lifecycle.prepareBrowserVmSession(vm, now).catch(() => undefined);
+
+    const text = alertOwner.mock.calls[0]?.[1] ?? "";
+    expect(text).toContain(
+      'ClientHttpProxyError: 402, message="user\'s traffic, it ran out"'
+    );
+    expect(text).not.toContain("127.0.0.1");
+  });
+
+  it("re-arms the proxy alert once the proxy takes the login again", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.9" })
+    );
+
+    await lifecycle.prepareBrowserVmSession(vm, now);
+
+    expect(clearOwnerAlert).toHaveBeenCalledWith("browser-vm-proxy", now);
   });
 
   it("goes on rotating when the worker could not reach the proxy", async () => {

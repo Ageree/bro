@@ -64,7 +64,10 @@ vi.mock("@agent/lib/browser-vm/cloudru", async (importOriginal) => ({
   ...(await importOriginal<typeof cloudRuModule>()),
   ...cloud,
 }));
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner,
+  clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 
 /** The pool's bucket as the stubbed Object Storage keeps it. */
 const bucket = new Set<string>();

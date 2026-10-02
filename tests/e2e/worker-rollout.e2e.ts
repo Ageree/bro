@@ -71,6 +71,9 @@ vi.mock("@agent/lib/owner-alert", () => ({
     console.log(`[e2e] owner alert ${key}: ${text.slice(0, 300)}`);
     return true;
   }),
+  clearOwnerAlert: vi.fn<typeof ownerAlert.clearOwnerAlert>(() =>
+    Promise.resolve()
+  ),
 }));
 
 vi.mock("@agent/lib/browser-vm/cloudru", async (importOriginal) => {

@@ -76,7 +76,10 @@ const alertOwner = vi.hoisted(() =>
   vi.fn<typeof ownerAlert.alertOwner>(() => Promise.resolve(true))
 );
 
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner,
+  clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 const recordUsageCost = vi.hoisted(() =>
   vi.fn<typeof usageCostRecords.recordUsageCost>()
 );
