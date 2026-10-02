@@ -6,22 +6,29 @@
 # eve derives a memory slot's scope key from its namespace, and without one from where it runs: on Vercel the
 # project, on the VM the path the release was built from. So profile and workstreams memory moved to new keys
 # when production left Vercel on 02.10, and again with every release built from another checkout. This prints,
-# for each workspace (its id cut to 12 characters) and each key (cut to 10), how many profile records and
-# workstreams are live, how many were forgotten (not expired) and expired since SINCE (default 2026-10-02),
+# for each workspace (its id cut to 12 characters) and each key (12 characters after eve's common prefix
+# memscope1_), how many profile records and workstreams are live, how many were forgotten (not expired) and
+# expired since SINCE (default 2026-10-02),
 # when the key was first and last written, and how many forget operations it saw since SINCE: enough to tell
 # the Vercel key from the VM ones and to find what someone forgot on a key that is about to be left behind.
 # Never a record's text.
 source "$(dirname "$0")/db-lib.sh"
 SINCE=${1:-2026-10-02}
 [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "SINCE is a date: YYYY-MM-DD"
+SINCE="$SINCE" python3 -c 'import datetime, os; datetime.date.fromisoformat(os.environ["SINCE"])' 2>/dev/null \
+  || die "SINCE is not a real date: $SINCE"
+# In turn with the other db-*.sh: a restore holds the app's tables for its whole transaction.
+db_lock
 connection SRC app
+# One snapshot for both tables; a key is shown by the part after eve's common prefix (memscope1_).
 PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=120s" psql_on SRC -v since="$SINCE" <<'SQL'
 \pset tuples_only off
 \pset format aligned
 \pset footer off
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
 \echo Profile records by workspace and scope key
 SELECT left(r.workspace_id, 12) AS workspace,
-       left(r.scope_key, 10) AS key,
+       substr(r.scope_key, 11, 12) AS key,
        count(*) FILTER (WHERE r.content IS NOT NULL) AS live,
        count(*) FILTER (WHERE r.content IS NOT NULL AND r.content->>'category' = 'rule') AS live_rules,
        count(*) FILTER (WHERE r.content IS NULL AND r.last_operation_id NOT LIKE 'expiry:%'
@@ -40,11 +47,12 @@ ORDER BY 1, min(r.created_at);
 \echo
 \echo Workstreams by workspace and scope key
 SELECT left(workspace_id, 12) AS workspace,
-       left(scope_key, 10) AS key,
+       substr(scope_key, 11, 12) AS key,
        count(*) FILTER (WHERE content IS NOT NULL) AS live,
        count(*) FILTER (WHERE content IS NULL AND updated_at >= :'since'::date) AS forgotten_since,
        max(updated_at) AS last_written
 FROM workstreams
 GROUP BY workspace_id, scope_key
 ORDER BY 1, max(updated_at);
+COMMIT;
 SQL
