@@ -30,7 +30,8 @@
   хосты пула, worker) — `docs/browser-infra-notes.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
   `docs/instinct.md`; план переезда с Vercel на Cloud.ru по этапам —
-  `docs/cloudru-migration.md`; песочница для кода и task-агент —
+  `docs/cloudru-migration.md`, промпт сессии, которая доводит его до конца, —
+  `docs/cloudru-full-migration-prompt.md`; песочница для кода и task-агент —
   `sandbox/README.md`.
 
 ## Процесс
