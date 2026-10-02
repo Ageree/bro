@@ -1,4 +1,5 @@
 import { defineSchedule } from "eve/schedules";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
@@ -16,6 +17,7 @@ import {
 export default defineSchedule({
   cron: "* * * * *",
   run({ waitUntil }) {
+    if (!schedulesEnabled()) return;
     waitUntil(maintainMemory());
   },
 });

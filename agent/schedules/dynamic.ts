@@ -1,4 +1,5 @@
 import { parseInputResponses } from "eve/client";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { checkModelCredits, creditCheckDue } from "@agent/lib/model/credits";
@@ -30,6 +31,7 @@ type ReportDelivery = Pick<ScheduleHandlerArgs, "attachSession" | "to">;
 export default defineSchedule({
   cron: "* * * * *",
   run({ attachSession, to, waitUntil }) {
+    if (!schedulesEnabled()) return;
     waitUntil(dispatchDueWork({ attachSession, to }));
     // A run out of model credit fails every turn, so the owner hears about a
     // low balance from this tick before people hear silence.

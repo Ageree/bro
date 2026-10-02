@@ -14,7 +14,7 @@
 | Инструменты | 59 схем в каждом шаге                                 | узкое ядро в главном агенте; остальное — CLI `tools` в песочнице через GraphQL-маршрутизатор |
 | Модели      | OpenRouter (из РФ — 403), Gateway                     | RouterAI (OpenAI-совместимый, работает из РФ); OpenRouter — пока бэкенд вне РФ               |
 | Хранилище   | Vercel Blob, Neon                                     | Object Storage Cloud.ru (`bucket-ac164a`), Managed PostgreSQL Cloud.ru                       |
-| Расписания  | Vercel Cron из Build Output                           | планировщик Nitro в `eve start` (один на весь кластер)                                       |
+| Расписания  | Vercel Cron из Build Output                           | планировщик Nitro в процессе eve на VM (один на всю базу)                                    |
 
 ## Этапы
 
@@ -137,19 +137,49 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 Готово: эвалы `reply` и `schedules` на RouterAI не хуже OpenRouter; шаг
 дешевле при той же доле кэша.
 
-### 4. Цикл агента: `eve start` на Cloud.ru
+### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM не создана
 
-- `experimental.workflow.world` — `@workflow/world-postgres` (линия
-  `5.0.0-beta`, как у eve 0.62); `pnpm build:eve`, `eve start` за Caddy,
-  `next start` с прокси `withEve` на тот же сервер.
-- Проксировать `/eve/` и `/.well-known/workflow/` без переписывания путей.
+Сделано (`scripts/cloudru-app-host/README.md`): инструментарий разворачивает
+одну VM `bro-app-1` (gen-2-8, SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с
+Caddy, Next (standalone,
+`127.0.0.1:3000`) и eve (`node .output/server/index.mjs`, `127.0.0.1:4274`,
+`TZ=UTC`) под systemd. Сборка — в сессии (`host.py build`): мир
+`@workflow/world-postgres@5.0.0-beta.44` и `output: "standalone"` включаются
+только переменными сборки `WORKFLOW_WORLD=postgres` и `NEXT_OUTPUT=standalone`,
+без них сборка Vercel прежняя. Релиз — один `tar.zst` в Object Storage;
+`deployd` на VM скачивает, сверяет sha256, применяет миграции Бро и схему мира
+(`ops/migrate.mjs`, без pnpm и drizzle-kit), переключает `current` и за
+120 с ждёт `/api/health` (Next + `select 1`) и `/eve/v1/health`, иначе
+возвращает прошлый релиз. Расписания выключает `EVE_SCHEDULES=off` (стенд);
+watchdog раз в минуту пишет владельцу в Telegram, если сервис лежит дольше
+5 минут. Стенд работает на копии данных прода и открыт в интернет, поэтому
+без ключей, которые пишут людям, в Blob, Supermemory и Composio прода или
+тратят деньги на Browser Use; ни процессы `bro`, ни Caddy не видят metadata VM
+(в user data — ключ deployd).
+
+- Caddy: `/eve/*` — прямо в eve (`flush_interval -1`: прокси Next рвёт
+  потоки через 30 с), остальное — в Next. `/.well-known/workflow/*` наружу
+  **не** публикуется (404): вход очереди мира без авторизации, мир ходит в него
+  по loopback.
+- База мира — отдельная (`bro_workflow`, на стенде `bro_stand_workflow`): мир
+  на старте перезапускает все незаконченные прогоны своей базы, две среды на
+  одной базе исполняли бы чужие ходы.
 - Планировщик Nitro запускает расписания сам: на время переключения
-  расписания Vercel выключить, двух планировщиков не держать.
+  расписания Vercel выключить, двух планировщиков на одной базе не держать.
 - Состояние на инстанс (`pg.Pool`, троттлинг Telegram, ограничитель
   Nominatim) остаётся корректным на одной VM; на нескольких — вынести в
   Postgres.
 - Старые сессии Vercel Workflow не переносятся: новые ходы идут в новый мир,
   старые доживают на Vercel до отключения.
+
+Осталось: создать `bro-app-1`, env стенда
+(`host.py env --profile stand`), сайт `cloud.brobro.tech` и прогнать стенд;
+проверить ход через мир Postgres, переживание `systemctl restart bro-eve`,
+поток SSE через Caddy и доступность `api.telegram.org` с VM. Квота
+публичных IP проекта — 2, и 02.10 обе заняты (`sbx-code-1` и пробная VM
+другой сессии): для `bro-app-1` освободить адрес или попросить поддержку
+поднять квоту. Watchdog живёт на той же VM: до переключения прода завести
+внешнюю проверку `https://brobro.tech/eve/v1/health`.
 
 Готово: перезапуск сервера не теряет ходов и карточек, расписания не
 дублируются.
@@ -190,17 +220,88 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 соединения форвардера 170 открылись с первой попытки, 51 — со второй–четвёртой,
 ни одно не потеряно.
 
-### 5. База: Neon → PostgreSQL Cloud.ru
+### 5. База: Neon → PostgreSQL Cloud.ru — кластер и бэкапы готовы, данные не перенесены
 
-`pg_dump`/`pg_restore` в окно обслуживания, `DATABASE_URL` на новую базу,
-миграции — `pnpm db:migrate`. Превью больше не делят базу с продом.
+Сделано (`scripts/cloudru-app-host/README.md`, раздел «База»): кластер
+Managed PostgreSQL 18 `bro-pg` (Standard 1 vCPU/2 ГБ, SSD 20 ГБ, один узел,
+подсеть `Default_ru.AZ-1`), пользователь `bro_app`, базы `bro`,
+`bro_workflow`, `bro_stand`, `bro_stand_workflow` и `bro_restore_check`, все
+libc `C.UTF-8` (`host.py pg create|users|databases|status`, повторяемы;
+пароль и ключ бэкапов — в `new-secrets.json`, `host.py env` сам собирает из
+них `DATABASE_URL` и `WORKFLOW_POSTGRES_URL` профиля). Кластер виден только из
+подсети VM: Vercel до него не достанет, поэтому база переезжает в одно окно с
+приложением (этап 6), а все операции с ней — ops-скрипты на VM.
 
-Откат: на время окна Бро только читает (запись в Neon остановлена), и до
-первой записи в новую базу откат — вернуть `DATABASE_URL`. После неё вернуть
-переменную значит потерять записи, сделанные в Cloud.ru: на неделю наблюдения
-держать логическую репликацию Cloud.ru → Neon (публикация на всех таблицах), а
-если её нет — откатываться только с обратным `pg_dump` новых записей в новое
-окно только для чтения.
+- Бэкап каждую ночь (`bro-backup.timer`, 04:10 МСК): `pg_dump -Fc` → AES-256
+  (`BACKUP_ENCRYPTION_KEY`) → `backups/postgres/<время>.dump.enc` в
+  `bucket-ac164a` с манифестом, 14 дней; сразу за ним — восстановление в
+  `bro_restore_check` со сверкой числа строк каждой таблицы. Манифест подписан
+  HMAC ключом бэкапов: подложенный в бакет дамп не восстановится. Сбой —
+  сообщение владельцу в Telegram и повтор раз в час, пока не пройдёт; нет
+  удачного бэкапа больше 26 часов или нет ключа — тоже. Выключить — только явно
+  (`BACKUPS=off`). Свои бэкапы
+  кластера (ежедневно, 14 дней) — второй слой: они восстанавливают лишь в
+  новый кластер.
+- Перенос — `db-copy.sh neon app --replace`: дамп Neon (`pg_dump` 18, без
+  `neon_auth`, со схемой `drizzle` и её шестью «осиротевшими» строками — они
+  безвредны: drizzle смотрит только на последний `created_at`), число строк
+  источника до и после дампа и в дампе совпадает, счётчики записи не сдвинулись,
+  а до дампа источник обязан стоять только на чтение без открытых транзакций;
+  копия источника — зашифрованной в `backups/postgres/<время>-neon.dump.enc`,
+  копия цели — в `<время>-preapp.dump.enc`, восстановление одной транзакцией и
+  сверка каждой таблицы. Таблица чужой роли валит перенос, а не теряется молча.
+
+Осталось: на VM проверить, что `pg_dump` достаёт Neon по 5432 (`host.py ops
+bro-app-1 db-copy.sh neon app --dump-only` с `host.py env … --with-neon`;
+из облачной сессии 5432 закрыт), репетиция переноса в `bro_stand`
+(`db-copy.sh neon app --replace --live-source` на стенде: Neon ещё живой) и
+первый ночной бэкап с проверкой.
+
+**Ворота перед этапом 6 (действие владельца):** копия `BACKUP_ENCRYPTION_KEY`
+из `~/.bro-app-host/env/new-secrets.json` лежит в менеджере паролей владельца.
+Ключ есть только там и в `/etc/bro/env` VM (deployd его не отдаёт): потеря VM
+и сессии без этой копии — потеря всех бэкапов.
+
+Окно переноса (вместе с этапом 6):
+
+1. Расписания Vercel выключить. Neon — только чтение для приложения:
+   `ALTER DATABASE neondb SET default_transaction_read_only = on` и
+   `pg_terminate_backend` прочих соединений роли (Vercel переподключится
+   уже в режиме чтения; запись у Бро на Vercel падает, чтение работает).
+2. `host.py env bro-app-1 --profile prod --with-neon` (адрес Neon — только в
+   `/etc/bro/ops-env` для ops-скриптов, не в env приложения), затем
+   `host.py stop bro-app-1 bro-eve bro-web`.
+3. `host.py ops bro-app-1 db-copy.sh neon app --replace`.
+4. `host.py restart bro-app-1`, проверки, DNS `brobro.tech` на VM (этап 6).
+   `NEON_DATABASE_URL` остаётся в `/etc/bro/ops-env` на неделю наблюдения —
+   для отката; после недели — `host.py env bro-app-1 --profile prod` без
+   `--with-neon`, это его убирает.
+
+Откат базы:
+
+- **До первой записи в Cloud.ru** (DNS ещё не переключали или переключили и
+  сразу вернули): DNS назад, в Neon `ALTER DATABASE neondb RESET
+default_transaction_read_only` и `pg_terminate_backend` соединений Vercel,
+  расписания Vercel включить. Neon всё это время не менялся.
+- **После записей в Cloud.ru** — обратный перенос в новое окно только для
+  чтения. Neon с момента переноса стоит только на чтение, поэтому в нём нечего
+  беречь, и вместо дампа «новых строк» переносится база целиком: так
+  приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
+bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
+bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и
+  только пока он `read_only`, только с VM прода и без чужих сессий в Neon:
+  открытая до `read_only` пишет — сначала `pg_terminate_backend`; перед этим
+  кладёт зашифрованные копии `app` и самого Neon в Object Storage) → в Neon
+  `RESET default_transaction_read_only` и `pg_terminate_backend` → DNS назад,
+  расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
+  нет. VM с базой не удалять, пока Vercel не проработал неделю.
+- Логическая репликация Cloud.ru → Neon не используется: у `bro_app` нет
+  права `REPLICATION` (роли кластера — `pg_monitor`, `pg_read_all_data`,
+  `pg_write_all_data`, `pg_signal_backend`), а `wal_level` Neon — `replica`;
+  не проверена — не полагаться.
+
+Готово: бэкап за прошлую ночь восстанавливается проверкой, перенос с
+Neon сошёлся по всем таблицам, откат отрепетирован на `bro_stand`.
 
 ### 6. Переключение
 

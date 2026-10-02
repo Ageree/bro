@@ -1,4 +1,5 @@
 import { defineSchedule } from "eve/schedules";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import {
   BrowserUseError,
   browserUseConfigured,
@@ -101,6 +102,7 @@ const vmStageWaitMs = 20_000;
 export default defineSchedule({
   cron: "* * * * *",
   run({ attachSession, to, waitUntil }) {
+    if (!schedulesEnabled()) return;
     // VMs already made are looked after even once new errands can no longer
     // start on them: they bill until they are stopped.
     if (!browserUseConfigured() && !browserVmReconcileConfigured()) return;
