@@ -1,23 +1,20 @@
-import { createHash, createHmac } from "node:crypto";
-import { env } from "@shared/environment";
+import { objectStore, presignStoredObject } from "@shared/object-storage/s3";
+import {
+  objectStorageEndpoint,
+  objectStorageRegion,
+  presignS3Url,
+  uriEncode,
+} from "@shared/object-storage/sigv4";
 
 /**
- * Object Storage of the browser pool (Cloud.ru S3, `ru-central-1`): parked
- * sandboxes, the host code bundle and the sandbox root file system, all in
- * BROWSER_STATE_BUCKET. The key stays in Bro. A host gets presigned URLs
- * (AWS Signature Version 4 in the query string), each good for one method
- * on one object for a while, so nothing on a VM can reach another object.
- * Bro's own listing and deletion go through the same presigned URLs.
+ * Bro's own reads, listings and deletions in the bucket of
+ * `@shared/object-storage/s3`, through the same presigned URLs a host gets.
  */
-const endpoint = "https://s3.cloud.ru";
-const region = "ru-central-1";
 const requestTimeoutMs = 30_000;
-/** SigV4 refuses a presigned URL meant to live longer than a week. */
-const maximumExpirySeconds = 7 * 24 * 60 * 60;
 /** Deletions sent at once when a prefix goes. */
 const parallelDeletes = 8;
 
-type S3Method = "DELETE" | "GET" | "PUT";
+type S3Method = "DELETE" | "GET";
 
 /** A reply of Object Storage that was not a 2xx. */
 export class BrowserStateStoreError extends Error {
@@ -32,118 +29,15 @@ export class BrowserStateStoreError extends Error {
   }
 }
 
-/**
- * A presigned URL: `url` with `X-Amz-*` query parameters that let whoever
- * holds it send `method` to that very URL until `expiresSeconds` after
- * `now`. Only the `host` header is signed and the payload is not
- * (`UNSIGNED-PAYLOAD`), so a host can stream a chunk with any client. The
- * path of `url` must already be encoded as it will be sent; query
- * parameters it carries are signed too.
- */
-export function presignS3Url(input: {
-  readonly accessKeyId: string;
-  readonly expiresSeconds: number;
-  readonly method: S3Method;
-  readonly now: Date;
-  readonly region: string;
-  readonly secretAccessKey: string;
-  readonly url: string;
-}) {
-  if (
-    !Number.isInteger(input.expiresSeconds) ||
-    input.expiresSeconds < 1 ||
-    input.expiresSeconds > maximumExpirySeconds
-  ) {
-    throw new Error("A presigned URL lives 1 second to 7 days.");
-  }
-  const url = new URL(input.url);
-  const amzDate = input.now
-    .toISOString()
-    .replaceAll(/[-:]/gu, "")
-    .replace(/\.\d{3}/u, "");
-  const day = amzDate.slice(0, 8);
-  const scope = `${day}/${input.region}/s3/aws4_request`;
-  const parameters: [string, string][] = [
-    ...url.searchParams.entries(),
-    ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
-    ["X-Amz-Credential", `${input.accessKeyId}/${scope}`],
-    ["X-Amz-Date", amzDate],
-    ["X-Amz-Expires", String(input.expiresSeconds)],
-    ["X-Amz-SignedHeaders", "host"],
-  ];
-  const query = parameters
-    .map(([name, value]) => [uriEncode(name), uriEncode(value)] as const)
-    .toSorted(([nameA, valueA], [nameB, valueB]) =>
-      nameA === nameB ? compare(valueA, valueB) : compare(nameA, nameB)
-    )
-    .map(([name, value]) => `${name}=${value}`)
-    .join("&");
-  const canonicalRequest = [
-    input.method,
-    url.pathname,
-    query,
-    `host:${url.host}\n`,
-    "host",
-    "UNSIGNED-PAYLOAD",
-  ].join("\n");
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    amzDate,
-    scope,
-    createHash("sha256").update(canonicalRequest).digest("hex"),
-  ].join("\n");
-  let key = hmac(`AWS4${input.secretAccessKey}`, day);
-  for (const part of [input.region, "s3", "aws4_request"]) {
-    key = hmac(key, part);
-  }
-  const signature = createHmac("sha256", key)
-    .update(stringToSign)
-    .digest("hex");
-  return `${url.origin}${url.pathname}?${query}&X-Amz-Signature=${signature}`;
-}
-
-/**
- * A presigned URL for one object of the pool's bucket, by its key
- * (`sets/<sandbox>/<generation>/chunk-0000`, say).
- */
-export function presignBrowserStateObject(input: {
-  readonly expiresSeconds: number;
-  readonly key: string;
-  readonly method: S3Method;
-  readonly now?: Date;
-  /** The `Content-Disposition` a GET answers with, signed into the URL. */
-  readonly responseContentDisposition?: string;
-}) {
-  const store = stateStore();
-  const url = new URL(
-    `${endpoint}/${uriEncode(store.bucket)}/${input.key
-      .split("/")
-      .map((segment) => uriEncode(segment))
-      .join("/")}`
-  );
-  if (input.responseContentDisposition !== undefined) {
-    url.searchParams.set(
-      "response-content-disposition",
-      input.responseContentDisposition
-    );
-  }
-  return presignS3Url({
-    ...store.credentials,
-    expiresSeconds: input.expiresSeconds,
-    method: input.method,
-    now: input.now ?? new Date(),
-    region,
-    url: url.href,
-  });
-}
-
 /** The keys of the bucket's objects under `prefix`, every page of them. */
 export async function listBrowserStateObjects(prefix: string) {
-  const store = stateStore();
+  const store = objectStore();
   const keys: string[] = [];
   let continuation: string | undefined;
   do {
-    const listing = new URL(`${endpoint}/${uriEncode(store.bucket)}`);
+    const listing = new URL(
+      `${objectStorageEndpoint}/${uriEncode(store.bucket)}`
+    );
     listing.searchParams.set("list-type", "2");
     listing.searchParams.set("prefix", prefix);
     if (continuation !== undefined) {
@@ -157,7 +51,7 @@ export async function listBrowserStateObjects(prefix: string) {
         expiresSeconds: 300,
         method: "GET",
         now: new Date(),
-        region,
+        region: objectStorageRegion,
         url: listing.toString(),
       })
     );
@@ -175,7 +69,7 @@ export async function readBrowserStateObject(key: string) {
   try {
     return await send(
       "GET",
-      presignBrowserStateObject({ expiresSeconds: 300, key, method: "GET" })
+      presignStoredObject({ expiresSeconds: 300, key, method: "GET" })
     );
   } catch (error) {
     if (error instanceof BrowserStateStoreError && error.status === 404) {
@@ -195,7 +89,7 @@ export async function readBrowserStateObjectBytes(
   timeoutMs = requestTimeoutMs
 ) {
   const response = await fetch(
-    presignBrowserStateObject({ expiresSeconds: 300, key, method: "GET" }),
+    presignStoredObject({ expiresSeconds: 300, key, method: "GET" }),
     { signal: AbortSignal.timeout(timeoutMs) }
   );
   if (!response.ok) {
@@ -225,7 +119,7 @@ export async function deleteBrowserStateObjects(prefix: string) {
         try {
           await send(
             "DELETE",
-            presignBrowserStateObject({
+            presignStoredObject({
               expiresSeconds: 300,
               key,
               method: "DELETE",
@@ -243,38 +137,6 @@ export async function deleteBrowserStateObjects(prefix: string) {
   return keys.length;
 }
 
-/** Whether the bucket and the key to sign for it are configured. */
-export function browserStateStoreConfigured() {
-  return (
-    env.CLOUDRU_S3_TENANT_ID !== undefined &&
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
-    env.BROWSER_STATE_BUCKET !== undefined
-  );
-}
-
-function stateStore() {
-  const tenant = env.CLOUDRU_S3_TENANT_ID;
-  const keyId = env.CLOUDRU_KEY_ID;
-  const secret = env.CLOUDRU_KEY_SECRET;
-  const bucket = env.BROWSER_STATE_BUCKET;
-  if (
-    tenant === undefined ||
-    keyId === undefined ||
-    secret === undefined ||
-    bucket === undefined
-  ) {
-    throw new Error(
-      "CLOUDRU_S3_TENANT_ID, CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and BROWSER_STATE_BUCKET are not configured."
-    );
-  }
-  // Cloud.ru's S3 key is the tenant and the access key id together.
-  return {
-    bucket,
-    credentials: { accessKeyId: `${tenant}:${keyId}`, secretAccessKey: secret },
-  };
-}
-
 async function send(method: S3Method, url: string) {
   const response = await fetch(url, {
     method,
@@ -284,27 +146,6 @@ async function send(method: S3Method, url: string) {
   if (!response.ok)
     throw new BrowserStateStoreError(response.status, method, text);
   return text;
-}
-
-/**
- * RFC 3986 encoding as SigV4 wants it: everything but letters, digits and
- * `-._~` percent-encoded, spaces too.
- */
-function uriEncode(value: string) {
-  return encodeURIComponent(value).replaceAll(
-    /[!'()*]/gu,
-    (character) =>
-      `%${character.codePointAt(0)?.toString(16).toUpperCase() ?? ""}`
-  );
-}
-
-function compare(a: string, b: string) {
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
-}
-
-function hmac(key: Buffer | string, data: string) {
-  return createHmac("sha256", key).update(data).digest();
 }
 
 /** The text of every `<name>` element: the listing is flat and small. */

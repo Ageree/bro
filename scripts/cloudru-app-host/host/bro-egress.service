@@ -1,0 +1,12 @@
+[Unit]
+Description=Bro egress rules (bro reaches neither the metadata service nor deployd; caddy not the metadata service)
+Before=bro-web.service bro-eve.service caddy.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/bro/app-host/egress.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,7 @@ import type {
 } from "eve/channels/telegram";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type * as Blob from "@vercel/blob";
+import type * as ArtifactObjects from "@shared/object-storage/artifacts";
 import type * as EnvModule from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { formatRub } from "@shared/spending/limit";
@@ -96,21 +96,22 @@ vi.mock("@db/services/artifacts", () => ({
     };
   },
 }));
-vi.mock("@vercel/blob", async (importOriginal) => {
-  const blob = await importOriginal<typeof Blob>();
-  return {
-    ...blob,
-    async get(pathname: string) {
-      const image = telegramChannelCapture.images.get(pathname);
-      if (!image) return null;
-      return {
-        blob: { contentType: image.mediaType, size: image.bytes.byteLength },
-        statusCode: 200,
-        stream: new Response(Buffer.from(image.bytes)).body,
-      };
-    },
-  };
-});
+vi.mock("@shared/object-storage/artifacts", async (importOriginal) => ({
+  ...(await importOriginal<typeof ArtifactObjects>()),
+  artifactStorageConfigured: () => true,
+  async openArtifactObject(pathname: string) {
+    const image = telegramChannelCapture.images.get(pathname);
+    if (!image) return undefined;
+    return {
+      contentType: image.mediaType,
+      etag: '"etag"',
+      size: image.bytes.byteLength,
+      status: 200 as const,
+      stream:
+        new Response(Buffer.from(image.bytes)).body ?? new ReadableStream(),
+    };
+  },
+}));
 
 const handleActionResult =
   telegramChannelCapture.config?.events?.["action.result"];

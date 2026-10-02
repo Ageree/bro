@@ -16,10 +16,12 @@ Needs CLOUDRU_KEY_ID and CLOUDRU_KEY_SECRET.
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import secrets
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -43,9 +45,27 @@ def clean(value):
 
 
 def write_private(path, text):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
+    """0600, whole or not at all: a temporary file of its own in the same directory (mkstemp: two writers never
+    share one), fsync, rename over the old one, then fsync of the directory so the rename survives a power cut
+    (a crash midway used to leave a truncated key file)."""
+    path = os.fspath(path)
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix="." + os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def http(method, url, body=None, headers=None, timeout=60):

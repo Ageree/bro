@@ -7,7 +7,7 @@
  *
  * The resolver reads the photos from the turn's history, where a tool cannot
  * see them, and keeps only small references in the durable closure: eve's
- * sandbox path when it staged the attachment, otherwise a private Blob copy
+ * sandbox path when it staged the attachment, otherwise a private stored copy
  * made once, on the turn the photo arrived. Each drawn picture counts against
  * the workspace's monthly image quota before the paid call.
  * Nothing here logs a prompt or a picture: both can be personal.
@@ -215,7 +215,7 @@ function inlinePhoto(base64: string) {
 /**
  * The newest photos in the person's own messages. A photo eve staged in the
  * sandbox is kept by its path, with no call to any store. A photo still
- * inline is copied into private Blob once, on the turn it arrives; on later
+ * inline is copied into private storage once, on the turn it arrives; on later
  * turns only its content hash is recomputed to name that copy, so a turn
  * that draws nothing makes no storage calls. A photo that cannot be kept is
  * left out rather than failing the turn.
