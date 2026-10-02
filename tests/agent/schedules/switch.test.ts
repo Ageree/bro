@@ -37,7 +37,7 @@ function tickArguments() {
   return { args, waitUntil };
 }
 
-describe("SCHEDULES=off", () => {
+describe("EVE_SCHEDULES=off", () => {
   it.each(Object.entries(schedules))(
     "%s does nothing in its tick",
     async (_name, schedule) => {

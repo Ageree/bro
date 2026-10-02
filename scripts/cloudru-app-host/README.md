@@ -21,7 +21,7 @@ bro-eve ── мир @workflow/world-postgres (graphile-worker в процес�
 | `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
 | `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
 | `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
-| `host/egress.sh`        | iptables для `bro`: без metadata `169.254/16` и без порта deployd                    |
+| `host/egress.sh`        | iptables: `bro` и `caddy` без metadata `169.254/16`, `bro` и без порта deployd       |
 | `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
 | `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
 | `ops/db-*.sh`           | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
@@ -47,13 +47,13 @@ cloud-init в `/etc/bro/deployd.json`; сам `DEPLOY_SIGNING_KEY` на VM не 
 подписанного ключом PGDG `InRelease`) и кладёт Node и пакеты в Object Storage;
 Caddy едет в бандле хоста.
 
-| Ключ в `bucket-ac164a`           | Что                                              |
-| -------------------------------- | ------------------------------------------------ |
-| `app/vendor/<файл>`              | Node `tar.xz` и три `.deb` клиента PostgreSQL    |
-| `app/host/app-host-<sha256>.tgz` | бандл: `host/*` и Caddy                          |
-| `app/releases/<версия>.tar.zst`  | релиз и рядом `.sha256`                          |
-| `backups/postgres/…`             | зашифрованные бэкапы прода и манифесты (14 дней) |
-| `backups/stand/postgres/…`       | то же для стенда                                 |
+| Ключ в `bucket-ac164a`                | Что                                                     |
+| ------------------------------------- | ------------------------------------------------------- |
+| `app/vendor/<файл>`                   | Node `tar.xz` и три `.deb` клиента PostgreSQL           |
+| `app/host/app-host-<sha256[:16]>.tgz` | бандл: `host/*` и Caddy; ключ — первые 16 знаков sha256 |
+| `app/releases/<версия>.tar.zst`       | релиз и рядом `.sha256`                                 |
+| `backups/postgres/…`                  | зашифрованные бэкапы прода и манифесты (14 дней)        |
+| `backups/stand/postgres/…`            | то же для стенда                                        |
 
 ## VM
 
@@ -70,8 +70,9 @@ host.py status bro-app-1 --stage  # стадия установки через s
 видно в консоли Cloud.ru и любому процессу VM через metadata
 `169.254.169.254`. Поэтому процессам `bro` (приложение, инструменты модели,
 ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
-`--uid-owner bro`) закрывает `169.254.0.0/16` и порт deployd `8095`; без этих
-правил `bro-web` и `bro-eve` не стартуют.
+`--uid-owner bro`) закрывает `169.254.0.0/16` и порт deployd `8095`, а Caddy,
+который смотрит в интернет, — `169.254.0.0/16` (к deployd он ходит: проксирует
+`/ops/v1/*`); без этих правил `caddy`, `bro-web` и `bro-eve` не стартуют.
 Первая загрузка иногда встаёт в `(initramfs)` — `host.py reboot bro-app-1`.
 
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
@@ -133,9 +134,9 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    отдаёт: Telegram, RouterAI, Composio…);
 4. `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=20`, `…_MAX_POOL_SIZE=24`,
    `WORKFLOW_WORLD=postgres`; профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
-   `SCHEDULES=off` (тики расписаний ничего не делают; не `TEST=1`: его читает
+   `EVE_SCHEDULES=off` (тики расписаний ничего не делают; не `TEST=1`: его читает
    и Better Auth и выключает проверку Origin); прод — `https://brobro.tech`,
-   `SCHEDULES=on`;
+   `EVE_SCHEDULES=on`;
 5. стенд работает на копии данных прода и открыт в интернет, поэтому
    теряет ключи, которые пишут людям, в хранилища и аккаунты прода или
    тратят деньги без планировщика: `TELEGRAM_*`, `IMESSAGE_*`, `YOOKASSA_*`,

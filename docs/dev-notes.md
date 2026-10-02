@@ -100,7 +100,7 @@
   `ops/migrate.mjs world`; две среды на одной базе мира исполняют чужие ходы.
 - Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
   Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
-  `SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
+  `EVE_SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
 - Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
   VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
   видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает

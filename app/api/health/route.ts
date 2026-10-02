@@ -1,4 +1,5 @@
 import { databaseAnswers } from "@db/services/health";
+import { env } from "@shared/environment";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ async function probeDatabase() {
     }, databaseTimeoutMs);
   });
   try {
-    await Promise.race([databaseAnswers(), timeout]);
+    await Promise.race([databaseAnswers(databaseTimeoutMs), timeout]);
     return true;
   } catch (error) {
     console.error("[health] the database does not answer", { cause: error });
@@ -49,8 +50,17 @@ function databaseHealthy() {
  * (scripts/cloudru-app-host): 200 when Next serves and Postgres answers, 503
  * otherwise. It names no host, error or version. Caddy keeps it from the
  * internet on the VM; concurrent and repeated requests share one probe.
+ * Elsewhere (Vercel) nothing keeps it from the internet, so there it is a
+ * 404 that asks the database nothing: only the VM's runtime env sets
+ * WORKFLOW_WORLD.
  */
 export async function GET() {
+  if (env.WORKFLOW_WORLD !== "postgres") {
+    return new Response(null, {
+      headers: { "cache-control": "no-store" },
+      status: 404,
+    });
+  }
   const ok = await databaseHealthy();
   return Response.json(
     { ok },

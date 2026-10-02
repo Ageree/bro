@@ -33,7 +33,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deployd import EVE_HEALTH, WEB_HEALTH, Paths, read_env  # noqa: E402
+from deployd import EVE_HEALTH, WEB_HEALTH, Paths, read_env, write_private  # noqa: E402
 
 DOWN_BEFORE_ALERT_S = 5 * 60
 REPEAT_S = 60 * 60
@@ -189,13 +189,19 @@ def main(argv=None):
     checks = probe(paths, env, now, state)
     print(" ".join(f"{name}={'ok' if ok else 'DOWN'}" for name, ok in checks.items()), flush=True)
     host = host_name(paths)
+
+    def save():
+        # Atomic (temporary file, fsync, rename): a power cut mid-write must not reset every countdown and
+        # the hour since the last alert. Pending alerts are left out: unsent, they are due on the next tick.
+        kept = {name: {k: v for k, v in entry.items() if k != "pendingAlert"} if isinstance(entry, dict) else entry
+                for name, entry in state.items()}
+        write_private(state_file, json.dumps(kept) + "\n")
+
     for name, text in step(state, checks, now, host):
         if send(env, text):
             sent(state, name)
-    for entry in state.values():
-        entry.pop("pendingAlert", None)  # unsent: due again on the next tick
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state) + "\n")
+            save()  # each sent alert at once: a stop mid-run must not send it again
+    save()
 
 
 if __name__ == "__main__":

@@ -145,6 +145,17 @@ def stored(key):
     return next((size for found, size in s3.listing(key) if found == key), None)
 
 
+def stored_sha256(key):
+    """The sha256 of the object, None when there is none: a same-size but damaged object must not pass for
+    the pinned one (the VM would refuse it mid-provisioning)."""
+    if stored(key) is None:
+        return None
+    code, body = s3.send(urllib.request.Request(s3.presign("GET", key, 600)))
+    if code != 200:
+        sys.exit(f"get {key}: {code} {body[:200]!r}")
+    return hashlib.sha256(body).hexdigest()
+
+
 def upload(key, path=None, data=None):
     data = Path(path).read_bytes() if data is None else data
     code, body = s3.send(urllib.request.Request(s3.presign("PUT", key, 3600), data, method="PUT"))
@@ -171,7 +182,7 @@ def cmd_vendor(_args):
         path = VENDOR / name
         if file_sha256(path) != pin:
             sys.exit(f"{path} is not the pinned file")
-        if stored(vendor_key(name)) != path.stat().st_size:
+        if stored_sha256(vendor_key(name)) != pin:
             upload(vendor_key(name), path)
         else:
             print(f"{vendor_key(name)} is there")
@@ -317,7 +328,7 @@ def deliver_bundle():
     data = boot.bundle(VENDOR)
     digest = boot.sha256(data)
     key = f"app/host/app-host-{digest[:16]}.tgz"
-    if stored(key) != len(data):
+    if stored_sha256(key) != digest:
         upload(key, data=data)
     return key, digest
 
@@ -328,8 +339,8 @@ def cmd_create(args):
         sys.exit(f"{name} exists already")
     objects = {}
     for file_name, pin in boot.vendor_objects():
-        if stored(vendor_key(file_name)) is None:
-            sys.exit(f"no {vendor_key(file_name)} in Object Storage: python host.py vendor")
+        if stored_sha256(vendor_key(file_name)) != pin:
+            sys.exit(f"no {vendor_key(file_name)} matching its pin in Object Storage: python host.py vendor")
         objects[file_name] = {"url": s3.presign("GET", vendor_key(file_name), LINK_SECONDS), "sha256": pin}
     bundle_key, bundle_sha = deliver_bundle()
     user_data = boot.cloud_init(
@@ -389,7 +400,11 @@ def cmd_status(args):
         if code == 200:
             print(json.dumps(checked(call(args.name, "GET", "status"), (200,)), indent=1, ensure_ascii=False))
     if args.stage:
-        import console  # websocket-client, only here
+        try:
+            import console  # websocket-client, only here
+        except ImportError:
+            sys.exit("--stage needs the websocket-client package (pip install websocket-client); "
+                     "the status above stands")
         output, _ = console.run(args.name, "cat /var/lib/bro/stage; cat /var/lib/bro/timeline; "
                                            "tail -n 15 /var/log/bro-provision.log", 60)
         print(output)
@@ -398,7 +413,9 @@ def cmd_status(args):
 def cmd_reboot(args):
     vm = found_vm(args.name)
     code, body = cloudru.api("POST", f"/v1/vms/{vm['id']}/set-power", {"state": "reboot"})
-    print("set-power reboot", code, body if code >= 300 else "")
+    if code >= 300:
+        sys.exit(f"reboot {code}: {body}")
+    print("set-power reboot", code)
 
 
 def cmd_delete(args):
@@ -409,7 +426,11 @@ def cmd_delete(args):
     if code >= 300:
         sys.exit(f"delete vm {code}: {body}")
     print("delete vm", code)
+    deadline = time.time() + 300
     while cloudru.vm_by_name(args.name) is not None:
+        if time.time() > deadline:
+            sys.exit(f"{args.name} is still listed 5 minutes after the delete: check the Cloud.ru console, "
+                     "then run delete again (it frees the address and the local state)")
         time.sleep(10)
     if floating_id and any(ip["id"] == floating_id for ip in cloudru.floating_ips()):
         print("delete ip", cloudru.api("DELETE", f"/v1/floating-ips/{floating_id}")[0])
@@ -470,7 +491,19 @@ def local_env_files():
     return sorted(p.name for p in REPO.glob(".env*") if p.is_file() and p.name != ".env.example")
 
 
+def node_matches_the_vm():
+    """The VM runs the Node of vendor.json: an artifact built on another major would run there untested."""
+    local = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout.strip()
+    pinned = "v" + boot.VENDOR["node"]["version"]
+    if local.split(".")[0] != pinned.split(".")[0]:
+        sys.exit(f"node {local} here, {pinned} on the VM: build with Node {pinned} (npm pack node-linux-x64@"
+                 f"{pinned[1:]}, its bin first in PATH)")
+    if local != pinned:
+        print(f"warning: node {local} here, {pinned} on the VM", flush=True)
+
+
 def cmd_build(args):
+    node_matches_the_vm()
     if local_env_files():
         sys.exit(f"move {', '.join(local_env_files())} out of {REPO}: Next and eve read them during the build")
     status = git("status", "--porcelain", "--untracked-files=no")
@@ -480,7 +513,9 @@ def cmd_build(args):
     version = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + "-" + commit[:8] + ("-dirty" if status else "")
     BUILDS.mkdir(parents=True, exist_ok=True)
     env = build_env()
-    run(["pnpm", "install", "--frozen-lockfile"], env)
+    # Without NODE_ENV=production: with it pnpm leaves out devDependencies, and the build needs them (eve,
+    # next's types, esbuild below).
+    run(["pnpm", "install", "--frozen-lockfile"], {k: v for k, v in env.items() if k != "NODE_ENV"})
     run(["pnpm", "build:eve"], build_env(WORKFLOW_WORLD="postgres"))
     # next directly, not turbo: a cached Vercel-shaped build must never stand in for the standalone one.
     run(["pnpm", "exec", "next", "build"], build_env(NEXT_OUTPUT="standalone", EVE_NEXT_PRODUCTION_PORT="4274"))
@@ -550,13 +585,13 @@ STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|EVE_MEMORY_BLO
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
 PRODUCTION_STORES = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
                                r"COMPOSIO_API_KEY")
-# SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
+# EVE_SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
 # Auth reads it too and turns its origin check off.
 # Backups of each go to their own prefix: the stand's never mix with (or prune) production's.
 PROFILES = {
-    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "SCHEDULES": "off", "HOST_PROFILE": "stand",
+    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "EVE_SCHEDULES": "off", "HOST_PROFILE": "stand",
               "BACKUP_PREFIX": "backups/stand/postgres"},
-    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "SCHEDULES": "on", "HOST_PROFILE": "prod",
+    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "EVE_SCHEDULES": "on", "HOST_PROFILE": "prod",
              "BACKUP_PREFIX": "backups/postgres"},
 }
 # graphile wants a pool at least its concurrency + 2. WORKFLOW_WORLD as the build had it: agent.ts reads it

@@ -5,6 +5,12 @@ const mocks = vi.hoisted(() => ({
   databaseAnswers: vi.fn<typeof databaseAnswers>(),
 }));
 vi.mock("@db/services/health", () => mocks);
+const deployment = vi.hoisted(() => ({ onVm: true }));
+vi.mock("@shared/environment", () => ({
+  get env() {
+    return { WORKFLOW_WORLD: deployment.onVm ? "postgres" : undefined };
+  },
+}));
 
 async function freshGet() {
   vi.resetModules();
@@ -13,7 +19,9 @@ async function freshGet() {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
+  deployment.onVm = true;
   vi.useRealTimers();
 });
 
@@ -25,6 +33,15 @@ describe("the app's health", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(mocks.databaseAnswers).toHaveBeenCalledWith(3_000);
+  });
+
+  it("is not there off the VM and asks the database nothing", async () => {
+    const GET = await freshGet();
+    deployment.onVm = false;
+    const response = await GET();
+    expect(response.status).toBe(404);
+    expect(mocks.databaseAnswers).not.toHaveBeenCalled();
   });
 
   it("is down without naming why when the database fails", async () => {

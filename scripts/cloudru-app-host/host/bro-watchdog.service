@@ -4,4 +4,5 @@ Description=Bro watchdog (Next, eve and Caddy health; Telegram to the owner)
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/bro/app-host/watchdog.py
-TimeoutStartSec=60
+# Probes take up to 25 s and each alert up to 15 s (four checks): 60 s could cut a tick short.
+TimeoutStartSec=120

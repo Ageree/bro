@@ -1,4 +1,5 @@
-"""App VM tests: cd scripts/cloudru-app-host/host && python3 -m unittest (stdlib only).
+"""App VM tests: cd scripts/cloudru-app-host/host && python3 -m unittest (stdlib, and the zstd binary for the
+release tests: they fail without it rather than skip; CI installs it).
 
 deployd's tokens, env file, Caddyfile and jobs (a release that comes up, one that does not and goes back,
 a failed migration, an env that breaks the app) against a temporary root with a fake runner, its HTTP
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -83,8 +85,12 @@ def release_archive(version, files=None):
         return data
 
 
-@unittest.skipUnless(shutil.which("zstd"), "zstd is not installed")
 class ReleaseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("zstd"):
+            raise RuntimeError("the release tests need the zstd binary (apt install zstd)")
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
@@ -131,6 +137,33 @@ class ReleaseTest(unittest.TestCase):
             self.release("v2")
         self.assertEqual(os.readlink(self.paths.current), "releases/v1")
         self.assertEqual(self.deployd.history(), ["v1"])
+
+    def test_an_unhealthy_first_release_leaves_nothing_current_and_nothing_running(self):
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "current is cleared"):
+            self.release("v1")
+        self.assertFalse(os.path.lexists(self.paths.current))
+        stops = [c["argv"][2] for c in self.runner.calls if c["argv"][:2] == ["systemctl", "stop"]]
+        self.assertEqual(stops, list(deployd.STOPPABLE))
+        self.assertEqual(self.deployd.history(), [])
+        self.runner.health["v2"] = True
+        self.assertEqual(self.release("v2"), {"version": "v2", "previous": None})
+
+    def test_a_release_that_bro_cannot_own_is_not_unpacked(self):
+        run = self.runner.run
+
+        def failing_chown(argv, **kwargs):
+            if argv[0] == "chown":
+                self.runner.calls.append({"argv": argv})
+                return 1, "chown: invalid user: 'bro:bro'"
+            return run(argv, **kwargs)
+
+        self.runner.run = failing_chown
+        with self.assertRaisesRegex(deployd.Refused, "chown"):
+            self.release("v1")
+        self.assertEqual(self.deployd.releases(), [])
+        self.assertEqual(list(self.paths.releases.iterdir()), [])
+        self.assertFalse(self.paths.current.exists())
 
     def test_a_failed_migration_leaves_current_alone(self):
         self.release("v1")
@@ -225,6 +258,51 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(self.runner.calls[-1]["env"]["NEON_DATABASE_URL"], "postgres://n")
         self.deployd.do_env({"env": {"A": "1"}}, self.log.append)  # without it: gone
         self.assertFalse(self.paths.ops_env.exists())
+
+
+class DownloadTest(unittest.TestCase):
+    """The real Runner.download against a local server: a release past the limit never fills the disk."""
+
+    def serve(self, data, length=True):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                if length:
+                    self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/r.tar.zst"
+
+    def setUp(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        self.out = directory / "r.tar.zst"
+
+    def test_a_release_within_the_limit_downloads(self):
+        data = b"x" * 100
+        deployd.Runner().download(self.serve(data), self.out, hashlib.sha256(data).hexdigest(), limit=100)
+        self.assertEqual(self.out.read_bytes(), data)
+
+    def test_a_release_past_the_limit_is_cut_off_and_removed(self):
+        data = b"x" * 100
+        for length in (True, False):  # declared, and only counted
+            with self.assertRaisesRegex(deployd.Refused, "more than 99"):
+                deployd.Runner().download(self.serve(data, length), self.out, hashlib.sha256(data).hexdigest(),
+                                          limit=99)
+            self.assertFalse(self.out.exists())
+
+    def test_a_wrong_sha256_leaves_no_file(self):
+        with self.assertRaisesRegex(deployd.Refused, "sha256"):
+            deployd.Runner().download(self.serve(b"x"), self.out, "0" * 64)
+        self.assertFalse(self.out.exists())
 
 
 class EnvFileTest(unittest.TestCase):
@@ -324,6 +402,30 @@ class TokenAndHttpTest(unittest.TestCase):
 
 
 class WatchdogTest(unittest.TestCase):
+    def test_each_sent_alert_is_saved_at_once_and_atomically(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        state_file = deployd.Paths(root).domain.with_name("watchdog.json")
+        state_file.parent.mkdir(parents=True)
+        now = int(time.time())
+        state_file.write_text(json.dumps({"web": {"downSince": now - 600}, "eve": {"downSince": now - 600}}))
+        saved = []
+
+        def send(env, text):
+            if "eve" in text:  # the second alert: the run is cut short while it is being sent
+                saved.append(json.loads(state_file.read_text()))
+                raise KeyboardInterrupt
+            return True
+
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(root)}), \
+                mock.patch.object(watchdog, "probe", return_value={"web": False, "eve": False}), \
+                mock.patch.object(watchdog, "send", side_effect=send), self.assertRaises(KeyboardInterrupt):
+            watchdog.main([])
+        self.assertIn("alertedAt", saved[0]["web"])
+        self.assertNotIn("pendingAlert", json.dumps(saved[0]))
+        self.assertEqual(state_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in state_file.parent.iterdir() if p.name.startswith(".")], [])
+
     def test_alert_after_five_minutes_hourly_and_on_recovery(self):
         state, t0 = {}, 1_000_000
         self.assertEqual(watchdog.step(state, {"eve": False}, t0, "bro-app-1"), [])
@@ -455,7 +557,17 @@ class BootTest(unittest.TestCase):
         self.assertIn("-d 169.254.0.0/16 -j REJECT", rules)
         self.assertIn(f"--dport {deployd.LISTEN[1]} -j REJECT", rules)
         self.assertIn("--uid-owner bro -j BRO_EGRESS", rules)
+        # Caddy faces the internet: no metadata service for it either, and it starts only after the rules.
+        caddy_chain = [line for line in rules.splitlines() if "-A CADDY_EGRESS" in line]
+        self.assertEqual(caddy_chain, ["iptables -w -A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
+        self.assertIn("--uid-owner caddy -j CADDY_EGRESS", rules)
+        caddy = (HERE / "caddy.service").read_text()
+        self.assertIn("Requires=bro-egress.service", caddy)
+        self.assertIn("After=bro-egress.service", caddy)
+        self.assertIn("caddy.service", (HERE / "bro-egress.service").read_text())
         provision = (HERE / "provision.sh").read_text()
+        self.assertLess(provision.index("enable --now bro-egress"), provision.index("systemctl restart caddy"))
+        self.assertIn("--uid-owner caddy -j CADDY_EGRESS || fail", provision)
         self.assertIn("chown root:root /srv/bro /srv/bro/releases /srv/bro/downloads", provision)
         self.assertNotRegex(provision, r"chown bro:bro [^\n]*/srv/bro")
 
@@ -619,7 +731,7 @@ class HostCliTest(unittest.TestCase):
             "BROWSER_USE_API_KEY", "BROWSER_USE_PROXY_PASSWORD", "BROWSER_HOST_MAX", "SANDBOX_WORKSPACES",
             "BROWSER_POOL_WORKSPACES", "BROWSER_VM_WORKSPACES", "ROUTERAI_API_KEY")}
         values, _ = self.host.compose_env("stand", session)
-        self.assertEqual(values["SCHEDULES"], "off")
+        self.assertEqual(values["EVE_SCHEDULES"], "off")
         self.assertNotIn("TEST", values)  # Better Auth would drop its origin check
         self.assertIn("ROUTERAI_API_KEY", values)
         kept = [n for n in session if n in values and n != "ROUTERAI_API_KEY"]

@@ -103,8 +103,9 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 
 ### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM не создана
 
-Сделано (`scripts/cloudru-app-host/README.md`): одна VM `bro-app-1` (gen-2-8,
-SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с Caddy, Next (standalone,
+Сделано (`scripts/cloudru-app-host/README.md`): инструментарий разворачивает
+одну VM `bro-app-1` (gen-2-8, SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с
+Caddy, Next (standalone,
 `127.0.0.1:3000`) и eve (`node .output/server/index.mjs`, `127.0.0.1:4274`,
 `TZ=UTC`) под systemd. Сборка — в сессии (`host.py build`): мир
 `@workflow/world-postgres@5.0.0-beta.44` и `output: "standalone"` включаются
@@ -113,12 +114,12 @@ SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с Caddy, Next (standalo
 `deployd` на VM скачивает, сверяет sha256, применяет миграции Бро и схему мира
 (`ops/migrate.mjs`, без pnpm и drizzle-kit), переключает `current` и за
 120 с ждёт `/api/health` (Next + `select 1`) и `/eve/v1/health`, иначе
-возвращает прошлый релиз. Расписания выключает `SCHEDULES=off` (стенд);
+возвращает прошлый релиз. Расписания выключает `EVE_SCHEDULES=off` (стенд);
 watchdog раз в минуту пишет владельцу в Telegram, если сервис лежит дольше
 5 минут. Стенд работает на копии данных прода и открыт в интернет, поэтому
 без ключей, которые пишут людям, в Blob, Supermemory и Composio прода или
-тратят деньги на Browser Use; процессы `bro` не видят metadata VM (в user
-data — ключ deployd).
+тратят деньги на Browser Use; ни процессы `bro`, ни Caddy не видят metadata VM
+(в user data — ключ deployd).
 
 - Caddy: `/eve/*` — прямо в eve (`flush_interval -1`: прокси Next рвёт
   потоки через 30 с), остальное — в Next. `/.well-known/workflow/*` наружу

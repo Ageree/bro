@@ -126,7 +126,13 @@ if [ -z "$DOMAIN" ]; then
   DOMAIN="${IP//./-}.sslip.io"
 fi
 echo "$DOMAIN" > "$STATE/domain"
-install -m 644 "$HOST/caddy.service" /etc/systemd/system/caddy.service
+install -m 644 "$HOST/caddy.service" "$HOST/bro-egress.service" /etc/systemd/system/
+systemctl daemon-reload
+# Neither caddy (facing the internet) nor bro's processes reach the metadata service (the user data holds
+# deployd's host key), and bro does not reach deployd: the rules come before Caddy starts.
+systemctl enable --now bro-egress >/dev/null
+iptables -w -C OUTPUT -m owner --uid-owner bro -j BRO_EGRESS || fail "no egress rules for bro"
+iptables -w -C OUTPUT -m owner --uid-owner caddy -j CADDY_EGRESS || fail "no egress rules for caddy"
 # The ops host and the sites of /etc/bro/sites.json (none yet): deployd renders the file.
 python3 "$HOST/deployd.py" caddyfile
 systemctl daemon-reload
@@ -134,14 +140,11 @@ systemctl enable caddy >/dev/null
 systemctl restart caddy
 
 stage services
-for unit in bro-egress.service bro-web.service bro-eve.service deployd.service bro-watchdog.service \
+for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service \
   bro-watchdog.timer bro-backup.service bro-backup.timer bro-backup-alert.service; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
-# bro's processes never reach the metadata service (the user data holds deployd's host key) nor deployd.
-systemctl enable --now bro-egress >/dev/null
-iptables -w -C OUTPUT -m owner --uid-owner bro -j BRO_EGRESS || fail "no egress rules for bro"
 systemctl enable bro-web bro-eve >/dev/null
 # The nightly backup runs once there is a release and BACKUP_ENCRYPTION_KEY in /etc/bro/env.
 systemctl enable --now deployd bro-watchdog.timer bro-backup.timer >/dev/null

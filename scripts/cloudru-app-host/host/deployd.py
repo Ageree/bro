@@ -55,7 +55,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.3"
+VERSION = "2026-10-02.4"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -71,6 +71,8 @@ RESTARTABLE = ("bro-web", "bro-eve", "caddy")
 # Stopped for a restore (ops/db-restore.sh); a restart or the next release starts them again.
 STOPPABLE = ("bro-web", "bro-eve")
 KEEP_RELEASES = 5
+# A release is a few hundred MB; a bigger download is cut off before it can fill the disk.
+MAX_RELEASE_BYTES = 2 << 30
 HEALTH_WAIT_S = 120
 
 
@@ -131,7 +133,7 @@ def verify_token(token, identity, now=None):
 
 
 def sign_token(key, host, ttl=300, now=None):
-    """The session's side (host.py); here for the tests and `deployd.py token` on the VM."""
+    """The session's side (host.py); here for the tests."""
     payload = base64.urlsafe_b64encode(json.dumps({"env": host, "exp": int((now or time.time()) + ttl)})
                                        .encode()).rstrip(b"=").decode()
     signed = f"v1.{payload}"
@@ -291,18 +293,29 @@ class Runner:
         except (OSError, urllib.error.URLError, ValueError):
             return False
 
-    def download(self, url, out, sha256, timeout=60):
-        digest = hashlib.sha256()
-        with urllib.request.urlopen(url, timeout=timeout) as response, open(out, "wb") as f:
-            while True:
-                block = response.read(1 << 20)
-                if not block:
-                    break
-                digest.update(block)
-                f.write(block)
-        if digest.hexdigest() != sha256:
-            os.unlink(out)
-            raise Refused("the release does not match its sha256")
+    def download(self, url, out, sha256, timeout=60, limit=None):
+        limit = MAX_RELEASE_BYTES if limit is None else limit
+        digest, size = hashlib.sha256(), 0
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response, open(out, "wb") as f:
+                declared = response.headers.get("Content-Length")
+                if declared and declared.isdigit() and int(declared) > limit:
+                    raise Refused(f"the release is {declared} bytes, more than {limit}")
+                while True:
+                    block = response.read(1 << 20)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > limit:
+                        raise Refused(f"the release is more than {limit} bytes")
+                    digest.update(block)
+                    f.write(block)
+            if digest.hexdigest() != sha256:
+                raise Refused("the release does not match its sha256")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(out)
+            raise
 
 
 WEB_HEALTH = "http://127.0.0.1:3000/api/health"
@@ -369,6 +382,17 @@ class Deployd:
             if code != 0:
                 log(output[-500:])
 
+    def stop(self, log, units):
+        """Stop the units; False when one does not stop (its output is in the log)."""
+        stopped = True
+        for unit in units:
+            code, output = self.runner.run(["systemctl", "stop", unit], timeout=120)
+            log(f"stop {unit}: {'ok' if code == 0 else 'exit ' + str(code)}")
+            if code != 0:
+                log(output[-300:])
+                stopped = False
+        return stopped
+
     def wait_healthy(self, log, seconds=None):
         seconds = HEALTH_WAIT_S if seconds is None else seconds
         deadline = time.monotonic() + seconds
@@ -424,8 +448,11 @@ class Deployd:
             raise Refused(f"the archive is release {packed.get('version')!r}, not {version!r}")
         packed["sha256"] = sha256
         (partial / "release.json").write_text(json.dumps(packed, indent=1) + "\n")
-        # Next writes its cache under .next; the services run as bro.
-        self.runner.run(["chown", "-R", "bro:bro", str(partial)], timeout=300)
+        # Next writes its cache under .next; the services run as bro, who could not read a root-owned tree.
+        code, output = self.runner.run(["chown", "-R", "bro:bro", str(partial)], timeout=300)
+        if code != 0:
+            shutil.rmtree(partial, ignore_errors=True)
+            raise Refused(f"chown of the release failed: {output[-300:]}")
         os.rename(partial, release)
         log(f"unpacked {version}")
 
@@ -439,7 +466,14 @@ class Deployd:
         if self.wait_healthy(log):
             (went_live or self.remember)(version)
             return {"version": version, "previous": previous}
-        if previous is None or previous == version:
+        if previous is None:
+            # The first release: no `current` and nothing running is a clearer state than an unhealthy one,
+            # and the next release starts from it the same way.
+            self.paths.current.unlink()
+            self.stop(log, STOPPABLE)
+            raise Refused(f"{version} is not healthy and there is no release to go back to: current is cleared "
+                          "and the services are stopped")
+        if previous == version:
             raise Refused(f"{version} is not healthy and there is no release to go back to")
         self.switch(previous)
         log(f"rolled back to {previous}")
@@ -593,11 +627,8 @@ class Deployd:
         units = body.get("units")
         if not isinstance(units, list) or not units or not all(u in STOPPABLE for u in units):
             raise Refused(f"units: some of {', '.join(STOPPABLE)}")
-        for unit in units:
-            code, output = self.runner.run(["systemctl", "stop", unit], timeout=120)
-            log(f"stop {unit}: {'ok' if code == 0 else 'exit ' + str(code)}")
-            if code != 0:
-                raise Refused(output[-300:])
+        if not self.stop(log, units):
+            raise Refused("a unit did not stop: see the log")
         return {"stopped": units}
 
     # -- read-only

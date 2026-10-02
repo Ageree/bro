@@ -677,7 +677,7 @@ export const env = createEnv({
     // on the Cloud.ru rehearsal stand: its ticks would poll errands, check
     // mail and write to people from a copy of production's data, and only
     // one scheduler may run per database (docs/cloudru-migration.md).
-    SCHEDULES: z.enum(["on", "off"]).default("on"),
+    EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report
