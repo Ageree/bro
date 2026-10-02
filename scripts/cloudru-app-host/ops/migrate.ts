@@ -26,10 +26,34 @@ const release = join(dirname(fileURLToPath(import.meta.url)), "..");
 // A connection to Cloud.ru's managed PostgreSQL once hung for two minutes and
 // dropped ("Connection terminated unexpectedly"); the same step a moment later
 // took half a second. Both steps are idempotent, so one that lost its
-// connection runs once more, and a connect that does not answer counts as lost.
-const connectTimeoutMs = 20_000;
-const lostConnection =
-  /Connection terminated|timeout exceeded when trying to connect|ECONNRESET|ETIMEDOUT/u;
+// connection runs once more; a connect or a query that does not answer counts
+// as lost. Bro's database is small: no migration query comes near the limit.
+const pooled = {
+  connectionTimeoutMillis: 20_000,
+  query_timeout: 120_000,
+  max: 1,
+};
+const lostConnectionMessage =
+  /Connection terminated|timeout exceeded when trying to connect|Query read timeout|ECONNRESET|ETIMEDOUT/u;
+
+// drizzle wraps a failed query (DrizzleQueryError) with the driver's error as
+// its cause.
+function lostConnection(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    lostConnectionMessage.test(error.message) || lostConnection(error.cause)
+  );
+}
+
+function openPool(connectionString: string) {
+  const pool = new Pool({ connectionString, ...pooled });
+  // A connection dropped between queries is an `error` event of the pool:
+  // unhandled, it would end the process before the step's retry.
+  pool.on("error", (error) => {
+    console.log(`migrate: idle connection lost (${error.message})`);
+  });
+  return pool;
+}
 
 function connection(...names: string[]) {
   // oxlint-disable-next-line eslint/no-restricted-properties -- a one-shot CLI on the VM with the env of /etc/bro/env, not the app: env.ts would demand every app setting
@@ -42,11 +66,7 @@ function connection(...names: string[]) {
 }
 
 async function migrateApp() {
-  const pool = new Pool({
-    connectionString: connection("DATABASE_URL_UNPOOLED", "DATABASE_URL"),
-    connectionTimeoutMillis: connectTimeoutMs,
-    max: 1,
-  });
+  const pool = openPool(connection("DATABASE_URL_UNPOOLED", "DATABASE_URL"));
   try {
     // drizzle-kit's defaults: schema `drizzle`, table `__drizzle_migrations`.
     await migrate(drizzle(pool), {
@@ -58,11 +78,7 @@ async function migrateApp() {
 }
 
 async function migrateWorld() {
-  const pool = new Pool({
-    connectionString: connection("WORKFLOW_POSTGRES_URL"),
-    connectionTimeoutMillis: connectTimeoutMs,
-    max: 1,
-  });
+  const pool = openPool(connection("WORKFLOW_POSTGRES_URL"));
   try {
     // The tables the world's `bootstrap` CLI keeps its journal in
     // (node_modules/@workflow/world-postgres/dist/cli.js).
@@ -89,9 +105,7 @@ async function timed(name: string, step: () => Promise<void>) {
   try {
     await step();
   } catch (error) {
-    if (!(error instanceof Error) || !lostConnection.test(error.message)) {
-      throw error;
-    }
+    if (!lostConnection(error)) throw error;
     console.log(`migrate ${name}: lost the connection, once more`);
     await step();
   }

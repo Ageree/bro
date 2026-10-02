@@ -975,6 +975,42 @@ class BootTest(unittest.TestCase):
             self.assertIn("After=bro-tg-egress.service", (HERE / unit).read_text(), unit)
         self.assertIn("bro-tg-egress.service", (HERE.parent / "tg-bridge/bro-tg-bridge.service").read_text())
 
+    def test_egress_rules_are_replaced_in_one_commit(self):
+        # Run for real in a network namespace of its own, with root and nobody for bro and caddy.
+        if not shutil.which("iptables-restore") or not shutil.which("unshare"):
+            self.skipTest("no iptables-restore or unshare")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        script = root / "egress.sh"
+        script.write_text((HERE / "egress.sh").read_text()
+                          .replace("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS",
+                                   "for owner in root:BRO_EGRESS nobody:CADDY_EGRESS"))
+        (root / "run.sh").write_text(f"""set -e
+iptables -w -N BRO_EGRESS
+iptables -w -A BRO_EGRESS -d 169.254.0.0/16 -j REJECT
+iptables -w -I OUTPUT -m owner --uid-owner root -j BRO_EGRESS
+bash {script}
+( for i in $(seq 20); do bash {script}; done ) & runs=$!
+while kill -0 $runs 2>/dev/null; do
+  [ "$(iptables -w -S BRO_EGRESS | grep -c REJECT || true)" = 2 ] || echo gap
+done
+wait $runs
+iptables -w -S
+""")
+        namespace = ["unshare", "-n"] if os.geteuid() == 0 else ["unshare", "-rn"]
+        probe = subprocess.run([*namespace, "iptables", "-w", "-S"], capture_output=True, text=True)
+        if probe.returncode != 0:
+            self.skipTest(f"no network namespace here: {probe.stderr.strip()[:100]}")
+        result = subprocess.run([*namespace, "bash", str(root / "run.sh")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertNotIn("gap", lines)
+        self.assertEqual([line for line in lines if "OUTPUT" in line and "EGRESS" in line],
+                         ["-A OUTPUT -m owner --uid-owner 65534 -j CADDY_EGRESS",
+                          "-A OUTPUT -m owner --uid-owner 0 -j BRO_EGRESS"])
+        self.assertEqual(len([line for line in lines if line.startswith("-A BRO_EGRESS")]), 2)
+        self.assertEqual(len([line for line in lines if line.startswith("-A CADDY_EGRESS")]), 1)
+
     def test_every_long_running_unit_restarts(self):
         for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
             text = (HERE / unit).read_text()
@@ -988,11 +1024,13 @@ class BootTest(unittest.TestCase):
         rules = (HERE / "egress.sh").read_text()
         self.assertIn("-d 169.254.0.0/16 -j REJECT", rules)
         self.assertIn(f"--dport {deployd.LISTEN[1]} -j REJECT", rules)
-        self.assertIn("--uid-owner bro -j BRO_EGRESS", rules)
+        self.assertIn("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS", rules)
         # Caddy faces the internet: no metadata service for it either, and it starts only after the rules.
         caddy_chain = [line for line in rules.splitlines() if "-A CADDY_EGRESS" in line]
-        self.assertEqual(caddy_chain, ["iptables -w -A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
-        self.assertIn("--uid-owner caddy -j CADDY_EGRESS", rules)
+        self.assertEqual(caddy_chain, ["-A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
+        # One commit: a live VM (install-code.sh) never runs a moment between the flush and the rules.
+        self.assertIn("iptables-restore -w --noflush", rules)
+        self.assertNotRegex(rules, r"iptables -w -(F|A|N) ")
         caddy = (HERE / "caddy.service").read_text()
         self.assertIn("Requires=bro-egress.service", caddy)
         self.assertIn("After=bro-egress.service", caddy)
