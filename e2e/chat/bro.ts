@@ -12,11 +12,30 @@ export function chatLog(browser: Browser) {
   return browser.locator('[role="log"]');
 }
 
-/** What the log shows after the last copy of `text`, timestamps dropped. */
-async function replyAfter(browser: Browser, text: string) {
-  const log = (await chatLog(browser).textContent()) ?? "";
-  const sent = log.lastIndexOf(text);
-  if (sent === -1) return "";
+/** The log's text; empty before the chat has one. */
+async function logText(browser: Browser) {
+  const log = chatLog(browser);
+  if ((await log.count()) === 0) return "";
+  return (await log.textContent()) ?? "";
+}
+
+/** How many times `text` occurs in the log. */
+async function copiesOf(browser: Browser, text: string) {
+  return (await logText(browser)).split(text).length - 1;
+}
+
+/**
+ * What the log shows after copy number `copy` (from 0) of `text`, timestamps
+ * dropped. The copy is the person's message; not the last copy, as Bro's
+ * reply may repeat the text («Привет!» to «Привет!»).
+ */
+async function replyAfter(browser: Browser, text: string, copy: number) {
+  const log = await logText(browser);
+  let sent = -1;
+  for (let found = 0; found <= copy; found += 1) {
+    sent = log.indexOf(text, sent === -1 ? 0 : sent + text.length);
+    if (sent === -1) return "";
+  }
   return (
     log
       .slice(sent + text.length)
@@ -46,6 +65,7 @@ export async function sendToBro(
 ) {
   const stop = screen.getByRole("button", "Stop");
   await expect(stop).toHaveCount(0, { timeout: turnTimeout });
+  const copy = await copiesOf(browser, text);
 
   await screen.getByRole("textbox", "Напиши Bro…").fill(text);
   await screen.getByRole("button", "Submit").tap();
@@ -54,7 +74,7 @@ export async function sendToBro(
   await expect
     .poll(
       async () => {
-        const reply = await replyAfter(browser, text);
+        const reply = await replyAfter(browser, text, copy);
         if (reply === "" || (await stop.isVisible())) {
           lastReply = "";
           return false;
