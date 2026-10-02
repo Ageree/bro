@@ -46,8 +46,9 @@ use a durable outbox reconciled by `agent/schedules/memory.ts`.
 
 Records marked `localOnly` never enter the hosted index. Legacy Eve file-memory
 entries are copied into the local store on the first authenticated recall and
-marked local-only. The original Blob document is intentionally retained during
-the rollback window; the import marker is in Postgres, so an emptied scope is
+marked local-only. The old file document is read from the `memory_documents`
+table (it was never in Blob on the production store, so there is nothing left
+to import there); the import marker is in Postgres, so an emptied scope is
 not re-imported. New writes are authoritative in Postgres, which means rolling
 back to the old file provider after cutover would hide post-cutover changes.
 
@@ -68,7 +69,8 @@ and the interactive instructions (`agent/instructions/content/role/interactive.m
 - Postgres on Neon holds the workspace, memory, schedules, orders, and the
   vault. Vault secrets are AES-256-GCM ciphertext under
   `SECRET_ENCRYPTION_KEY` (`db/services/vault.ts`); no model reads them.
-- Files and generated pictures go to a private Vercel Blob store.
+- Files and generated pictures go to a private bucket of Object Storage on
+  Cloud.ru, under `artifacts/` (`shared/object-storage/artifacts.ts`).
 - Google, Notion, Slack and other connected apps' grants live in Composio,
   not in Bro's database; Bro keeps no provider token.
 - Model providers see the conversation they answer, Browser Use sees the
@@ -82,8 +84,8 @@ and the interactive instructions (`agent/instructions/content/role/interactive.m
    non-local profile facts.
 3. Deploy without changing the profile slot filename, implicit Eve namespace,
    or workspace scope. Those values derive the existing memory key.
-4. Keep the previous Blob store during the rollback window. Do not overwrite or
-   delete its `MEMORY.md` files during the initial cutover.
+4. Keep the previous Blob store during the rollback window: the installation
+   secrets still live there (`db/services/installation-secrets.ts`).
 5. Monitor outbox failures by error code and lag, never by logging fact text or
    search queries.
 
