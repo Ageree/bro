@@ -78,6 +78,14 @@ ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
 `/ops/v1/*`); без этих правил `caddy`, `bro-web` и `bro-eve` не стартуют.
 Первая загрузка иногда встаёт в `(initramfs)` — `host.py reboot bro-app-1`.
 
+Код хоста (deployd, watchdog, юниты, tg-egress, tg-bridge, Caddyfile) на живой
+VM без пересоздания — `host.py update-host bro-app-1`: бандл этого checkout
+едет через Object Storage, serial-консоль сверяет sha256, кладёт его в
+`/opt/bro/app-host` (прежний — в `app-host.old`), запускает
+`install-code.sh` и перезапускает deployd. Релизы, env, сайты, адрес и диск
+остаются; пока deployd выполняет задачу, команда отказывает. `bro-app-1`
+создан бандлом без Telegram — перед переключением ему нужен этот шаг.
+
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
 клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro` (дом —
 `/var/lib/bro-home`), `/srv/bro/releases/<версия>` и симлинк

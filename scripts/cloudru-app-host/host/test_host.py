@@ -928,6 +928,13 @@ class HostCliTest(unittest.TestCase):
         url = "http" + "://" + login + ":" + "p" + "@" + "h.example:9000"
         self.assertEqual(self.host.sticky_proxy(url), url.replace(":9000", ":10000"))
 
+    def test_update_host_installs_then_restarts_deployd(self):
+        self.assertEqual(self.host.parser().parse_args(["update-host", "bro-app-1"]).fn, self.host.cmd_update_host)
+        steps = self.host.UPDATE_HOST.split(" && ")
+        self.assertLess(steps.index("bash /opt/bro/app-host/install-code.sh"), steps.index("systemctl restart deployd"))
+        self.assertEqual(steps[-1], "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health")
+        self.assertLess(len(self.host.UPDATE_HOST), 900)  # one serial line
+
     def test_remember_keeps_the_previous_file(self):
         secrets_file = self.host.SECRETS / "new-secrets.json"
         self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in (secrets_file, secrets_file.with_name(

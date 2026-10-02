@@ -12,6 +12,9 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
                                                 waits for https://<ip with dashes>.sslip.io/ops/v1/health
   python host.py status NAME [--stage]          state, address, deployd's status; --stage over the console
   python host.py reboot NAME | delete NAME      set-power reboot | the VM and its public IP
+  python host.py update-host NAME               the host bundle of this checkout on a live VM, over the serial
+                                                console: deployd, the watchdog, the units, tg-egress, tg-bridge
+                                                (install-code.sh), the Caddyfile; releases and env stay
   python host.py build [--allow-dirty]          pnpm install, eve (Postgres world) and Next (standalone)
                                                 builds, ops/migrate.mjs, one tar.zst in app/releases/
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
@@ -410,6 +413,49 @@ def cmd_status(args):
         output, _ = console.run(args.name, "cat /var/lib/bro/stage; cat /var/lib/bro/timeline; "
                                            "tail -n 15 /var/log/bro-provision.log", 60)
         print(output)
+
+
+# One console line, each step only after the one before it succeeded.
+UPDATE_HOST = " && ".join((
+    "rm -rf /opt/bro/app-host.new", "mkdir -p /opt/bro/app-host.new",
+    "tar -xzf /root/app-host.tgz -C /opt/bro/app-host.new", "rm -f /root/app-host.tgz",
+    "rm -rf /opt/bro/app-host.old", "mv /opt/bro/app-host /opt/bro/app-host.old",
+    "mv /opt/bro/app-host.new /opt/bro/app-host", "bash /opt/bro/app-host/install-code.sh",
+    "systemctl daemon-reload", "systemctl restart deployd",
+    "python3 /opt/bro/app-host/deployd.py caddyfile", "systemctl reload caddy",
+    "sleep 2", "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health"))
+
+
+def cmd_update_host(args):
+    """A VM made by an older bundle gets this one without being made again (its address, disk, releases and
+    env stay): the bundle goes through Object Storage, the console checks its sha256, swaps /opt/bro/app-host
+    (the old one stays in app-host.old), runs install-code.sh and restarts deployd. Not while deployd runs a
+    job: the restart would cut it."""
+    name = host_name(args.name)
+    status = checked(call(name, "GET", "status"), (200,))
+    if status.get("job"):
+        sys.exit(f"deployd runs job {status['job']}: wait for it (python host.py status {name})")
+    try:
+        import console  # websocket-client, only here
+    except ImportError:
+        sys.exit("update-host needs the websocket-client package (pip install websocket-client)")
+    key, digest = deliver_bundle()
+    session = console.Console(name)
+    session.login()
+    # Two commands: the serial line takes about a kilobyte per line reliably, and the link is half of that.
+    output, code = session.run(
+        f"curl -fsS --connect-timeout 10 -m 300 -o /root/app-host.tgz '{s3.presign('GET', key, 900)}' && "
+        f"echo '{digest}  /root/app-host.tgz' | sha256sum -c --quiet - && echo fetched", 360)
+    # Only the last line: the console may echo the command, and the command holds the presigned link.
+    print(f"fetch {digest[:16]}: exit {code}; {output.strip().splitlines()[-1][-200:] if output.strip() else ''}")
+    if code != 0:
+        sys.exit(1)
+    output, code = session.run(UPDATE_HOST, 600)
+    print(f"install: exit {code}; {output.strip().splitlines()[-1][-300:] if output.strip() else ''}")
+    if code != 0:
+        sys.exit(f"the install failed: python host.py status {name} --stage; the previous code is in "
+                 "/opt/bro/app-host.old")
+    print(json.dumps(checked(call(name, "GET", "status"), (200,)).get("deployd")))
 
 
 def cmd_reboot(args):
@@ -1004,7 +1050,7 @@ def parser():
     status.add_argument("name")
     status.add_argument("--stage", action="store_true")
     status.set_defaults(fn=cmd_status)
-    for name, fn in (("reboot", cmd_reboot), ("delete", cmd_delete)):
+    for name, fn in (("reboot", cmd_reboot), ("delete", cmd_delete), ("update-host", cmd_update_host)):
         command = sub.add_parser(name)
         command.add_argument("name")
         command.set_defaults(fn=fn)
