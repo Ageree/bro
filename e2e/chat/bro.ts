@@ -38,7 +38,7 @@ async function replyAfter(browser: Browser, text: string) {
  * a reply follows the message, «Stop» is gone and the reply holds still for
  * one poll. Waiting for one bubble is not enough — Bro answers in several,
  * and a message sent mid-turn steers the running turn instead of starting
- * the next one.
+ * the next one. Returns the reply: what the log shows after the message.
  */
 export async function sendToBro(
   { browser, screen }: { browser: Browser; screen: Screen },
@@ -70,4 +70,5 @@ export async function sendToBro(
       }
     )
     .toBe(true);
+  return lastReply;
 }
