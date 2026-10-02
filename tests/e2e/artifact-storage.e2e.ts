@@ -9,7 +9,7 @@
  *   pnpm exec vitest run --config vitest.e2e.config.ts tests/e2e/artifact-storage.e2e.ts
  */
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const artifactId = randomUUID();
 // A real PNG header and a random tail: a new object every run.
@@ -45,6 +45,18 @@ vi.mock("@db/services/artifacts", () => ({
 const objects = await import("@shared/object-storage/artifacts");
 const { GET } = await import("@app/artifacts/[artifactId]/route");
 
+// Every case reads the object on its own, so each runs alone (`-t`) too.
+beforeAll(async () => {
+  if (!objects.artifactStorageConfigured()) {
+    throw new Error("The bucket and its key are not configured.");
+  }
+  await objects.putArtifactObject({
+    bytes: png,
+    mediaType: "image/png",
+    pathname: storagePathname,
+  });
+});
+
 afterAll(async () => {
   // Gone even when a check failed half way.
   await objects.deleteArtifactObject(storagePathname);
@@ -59,13 +71,6 @@ function open(headers?: HeadersInit) {
 
 describe("artifacts in Object Storage", () => {
   it("serves what was stored, then answers 304 to its ETag", async () => {
-    expect(objects.artifactStorageConfigured()).toBe(true);
-    await objects.putArtifactObject({
-      bytes: png,
-      mediaType: "image/png",
-      pathname: storagePathname,
-    });
-
     const response = await open();
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");

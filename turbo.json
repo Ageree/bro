@@ -6,6 +6,7 @@
       "env": [
         "ACCESS_*",
         "BETTER_AUTH_*",
+        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -38,6 +39,7 @@
       "env": [
         "ACCESS_*",
         "BETTER_AUTH_*",
+        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -79,6 +81,7 @@
       "passThroughEnv": [
         "ACCESS_*",
         "BETTER_AUTH_*",
+        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -122,6 +125,7 @@
       "passThroughEnv": [
         "ACCESS_*",
         "BETTER_AUTH_*",
+        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",

@@ -18,9 +18,12 @@ export async function GET(
   if (!session || !parsedId.success) return notFound();
 
   const scope = accessScopeForUser(`better-auth:${session.user.id}`);
-  let opened: Awaited<ReturnType<typeof openArtifact>>;
+  const artifact = await readReadyArtifact(scope, parsedId.data);
+  if (!artifact || !artifactStorageConfigured()) return notFound();
+
+  let result: Awaited<ReturnType<typeof openArtifactObject>>;
   try {
-    opened = await openArtifact(scope, parsedId.data, {
+    result = await openArtifactObject(artifact.storagePathname, {
       ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
       signal: request.signal,
     });
@@ -32,42 +35,28 @@ export async function GET(
       status: 502,
     });
   }
-  if (!opened) return notFound();
+  if (!result) return notFound();
 
   const headers = privateImageHeaders();
-  if (opened.result.etag) headers.set("etag", opened.result.etag);
-  if (opened.result.status === 304) {
+  if (result.etag) headers.set("etag", result.etag);
+  if (result.status === 304) {
     return new Response(null, { headers, status: 304 });
   }
-
-  headers.set("content-length", String(opened.artifact.byteSize));
-  headers.set("content-type", opened.artifact.mediaType);
-  headers.set(
-    "content-disposition",
-    contentDisposition(opened.artifact.filename, opened.artifact.mediaType)
-  );
-  return new Response(opened.result.stream, { headers, status: 200 });
-}
-
-async function openArtifact(
-  scope: ReturnType<typeof accessScopeForUser>,
-  artifactId: string,
-  options: { readonly ifNoneMatch?: string; readonly signal?: AbortSignal }
-) {
-  const artifact = await readReadyArtifact(scope, artifactId);
-  if (!artifact) return undefined;
-  if (!artifactStorageConfigured()) return undefined;
-  const result = await openArtifactObject(artifact.storagePathname, options);
-  if (!result) return undefined;
   if (
-    result.status === 200 &&
-    (result.size !== artifact.byteSize ||
-      result.contentType !== artifact.mediaType)
+    result.size !== artifact.byteSize ||
+    result.contentType !== artifact.mediaType
   ) {
     await result.stream.cancel();
-    return undefined;
+    return notFound();
   }
-  return { artifact, result };
+
+  headers.set("content-length", String(artifact.byteSize));
+  headers.set("content-type", artifact.mediaType);
+  headers.set(
+    "content-disposition",
+    contentDisposition(artifact.filename, artifact.mediaType)
+  );
+  return new Response(result.stream, { headers, status: 200 });
 }
 
 function notFound() {

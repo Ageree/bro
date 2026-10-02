@@ -281,10 +281,13 @@
   `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: прод берёт их из Blob
   (`db/services/installation-secrets.ts`); вне Vercel задавать те же значения
   (`installation-secrets.json`, сверен с Blob 02.10), новые разлогинят всех и
-  закроют сейф.
+  закроют сейф. Пока это чтение есть, `BLOB_*` остаётся в `turbo.json`:
+  без него `pnpm start` не видит ключа Blob.
 - Картинки и вложения — в S3 под `artifacts/<storage_pathname>`
   (`shared/object-storage/artifacts.ts`). Cloud.ru отвечает 304 без `ETag`:
-  маршрут берёт ETag из запроса. Node в облачной сессии ходит через прокси
+  маршрут берёт ETag из запроса. 404 и у пропавшего бакета: отсутствие —
+  лишь `NoSuchKey`. Срок — на ответ и на каждое чтение тела, не на всё тело:
+  медленный клиент тянул бы 10 МБ дольше минуты. Node в облачной сессии ходит через прокси
   только с `NODE_USE_ENV_PROXY=1`, и прокси изредка рвёт соединение («fetch
   failed») — скрипты повторяют запрос (`scripts/cloudru-app-host/blob-to-s3.ts`).
 - Ключ песочницы сессии eve без `bootstrap` и файлов workspace не зависит от

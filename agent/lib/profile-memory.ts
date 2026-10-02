@@ -1,10 +1,4 @@
-import {
-  defineMemoryProvider,
-  type MemoryOperationContext,
-  type MemoryProvider,
-  type MemoryRecallHandler,
-  type MemoryScopeContext,
-} from "eve/memory";
+import type { MemoryScopeContext } from "eve/memory";
 import {
   MemoryDocumentConflictError,
   type MemoryDocumentBackend,
@@ -21,11 +15,16 @@ import {
  * the row's version as the compare-and-set token eve's writes carry.
  */
 export const postgresMemoryDocuments: MemoryDocumentBackend = {
-  async read({ key }) {
+  async read({ key, signal }) {
+    signal.throwIfAborted();
     const row = await readMemoryDocument(key);
+    signal.throwIfAborted();
     return row ? { content: row.content, version: String(row.version) } : null;
   },
-  async write({ content, expectedVersion, key }) {
+  async write({ content, expectedVersion, key, signal }) {
+    // An aborted turn saves nothing. A query once started commits: the
+    // driver takes no signal.
+    signal.throwIfAborted();
     const expected = expectedVersion === null ? null : Number(expectedVersion);
     const version =
       expected === null || Number.isSafeInteger(expected)
@@ -52,32 +51,4 @@ export function resolveProfileMemoryScope(context: MemoryScopeContext) {
     "proactive-worker": scope,
     "scheduled-worker": scope,
   });
-}
-
-export function preserveProfileMemoryCancellation(provider: MemoryProvider) {
-  const compactionRecall = provider.recall["compaction.completed"];
-  return defineMemoryProvider({
-    ...provider,
-    recall: {
-      "turn.started": (context) =>
-        recallWithCancellationReason(provider.recall["turn.started"], context),
-      "compaction.completed": (context) =>
-        compactionRecall
-          ? recallWithCancellationReason(compactionRecall, context)
-          : undefined,
-    },
-  });
-}
-
-async function recallWithCancellationReason<
-  Context extends MemoryOperationContext,
->(handler: MemoryRecallHandler<Context>, context: Context) {
-  try {
-    return await handler(context);
-  } catch (error) {
-    if (context.abortSignal.aborted) {
-      context.abortSignal.throwIfAborted();
-    }
-    throw error;
-  }
 }

@@ -18,10 +18,12 @@
  *
  * `--verify` checks the real acceptance: every artifact row in the database
  * that names a stored object (browser, generated and reference images, Gmail
- * and Drive files) has it in the bucket with the row's size and media type.
- * Run it after the last copy and before the switch.
- * Each copy is checked by size, by sha256 where the last path segment is
- * the hash of the bytes, and by a HEAD of what landed. The installation
+ * and Drive files) has it in the bucket with the row's size and media type,
+ * and in the hashed folders under the key of the row's content hash. It
+ * reads no bytes. Run it after the last copy and before the switch.
+ * Each copy is checked by size, by sha256 only where the last path segment
+ * is the hash of the bytes (browser, generated and reference images; Gmail
+ * and Drive files only by size and type), and by a HEAD of what landed. The installation
  * secrets under `openinstinct/system/` stay behind: they live in the
  * environment now. Prints only a summary, never a path or a key.
  */
@@ -147,7 +149,6 @@ async function copyAll() {
     const response = await send(blob.url, {
       headers: { authorization: `Bearer ${token}` },
       method: "HEAD",
-      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!response.ok) {
       throw new Error(`Blob HEAD answered ${String(response.status)}.`);
@@ -169,7 +170,6 @@ async function copyAll() {
           "x-api-version": blobApiVersion,
           "x-vercel-blob-store-id": storeId,
         },
-        signal: AbortSignal.timeout(requestTimeoutMs),
       });
       if (!response.ok) {
         throw new Error(`Blob list answered ${String(response.status)}.`);
@@ -177,6 +177,10 @@ async function copyAll() {
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       const page = listingSchema.parse(await response.json());
       blobs.push(...page.blobs);
+      if (page.hasMore && page.cursor === undefined) {
+        // Stopping here would report a copy with later objects left out.
+        throw new Error("Blob list has more pages but no cursor.");
+      }
       cursor = page.hasMore ? page.cursor : undefined;
     } while (cursor !== undefined);
     return blobs;
@@ -185,7 +189,6 @@ async function copyAll() {
   async function copy(blob: ListedBlob, key: string) {
     const response = await send(blob.url, {
       headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!response.ok) {
       throw new Error(`Blob GET answered ${String(response.status)}.`);
@@ -206,7 +209,6 @@ async function copyAll() {
       body: bytes,
       headers: { "content-type": contentType },
       method: "PUT",
-      signal: AbortSignal.timeout(requestTimeoutMs),
     });
     await put.body?.cancel();
     if (!put.ok) throw new Error(`S3 PUT answered ${String(put.status)}.`);
@@ -225,10 +227,20 @@ async function verifyRows() {
     matching: 0,
     missing: 0,
     rows: rows.length,
+    wrongHash: 0,
     wrongSize: 0,
     wrongType: 0,
   };
   for (const row of rows) {
+    // Where the key is the hash of the bytes, the key the row names must be
+    // the hash the row records; a HEAD alone sees only size and type.
+    if (
+      hashedFolders.some((folder) => row.storage_pathname.startsWith(folder)) &&
+      row.storage_pathname.split("/").at(-1) !== row.content_hash
+    ) {
+      counts.wrongHash += 1;
+      continue;
+    }
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- One object at a time: a few hundred at most.
       const stored = await headObject(`${keyPrefix}${row.storage_pathname}`);
@@ -252,13 +264,14 @@ async function storedArtifactRows() {
     await client.query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
     const result = await client.query<{
       byte_size: number;
+      content_hash: string;
       media_type: string;
       storage_pathname: string;
     }>(
-      `SELECT storage_pathname, byte_size, media_type FROM browser_image_artifacts WHERE status = 'ready'
-       UNION ALL SELECT storage_pathname, byte_size, media_type FROM generated_image_artifacts
-       UNION ALL SELECT storage_pathname, byte_size, media_type FROM gmail_attachment_artifacts
-       UNION ALL SELECT storage_pathname, byte_size, media_type FROM drive_file_artifacts`
+      `SELECT storage_pathname, byte_size, media_type, content_hash FROM browser_image_artifacts WHERE status = 'ready'
+       UNION ALL SELECT storage_pathname, byte_size, media_type, content_hash FROM generated_image_artifacts
+       UNION ALL SELECT storage_pathname, byte_size, media_type, content_hash FROM gmail_attachment_artifacts
+       UNION ALL SELECT storage_pathname, byte_size, media_type, content_hash FROM drive_file_artifacts`
     );
     return result.rows;
   } finally {
@@ -269,7 +282,6 @@ async function storedArtifactRows() {
 async function headObject(key: string) {
   const response = await send(presign("HEAD", key), {
     method: "HEAD",
-    signal: AbortSignal.timeout(requestTimeoutMs),
   });
   if (response.status === 404) return undefined;
   if (!response.ok) {
@@ -297,13 +309,19 @@ function presign(method: "HEAD" | "PUT", key: string) {
 
 /**
  * `fetch`, again after a dropped connection: the way out of the cloud
- * session sometimes resets one. Every request here is safe to repeat.
+ * session sometimes resets one. Every request here is safe to repeat. The
+ * deadline covers the answer and the reading of its body.
  */
-async function send(input: string | URL, init: RequestInit) {
+async function send(input: string | URL, init: Omit<RequestInit, "signal">) {
   for (let attempt = 1; ; attempt += 1) {
     try {
+      // Each attempt gets its own deadline: a spent one would abort every
+      // retry at once.
       // oxlint-disable-next-line eslint/no-await-in-loop -- A retry waits for the attempt before it.
-      return await fetch(input, init);
+      return await fetch(input, {
+        ...init,
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
     } catch (error) {
       if (attempt >= networkAttempts) {
         const cause =

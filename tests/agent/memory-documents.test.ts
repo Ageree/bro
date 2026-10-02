@@ -73,6 +73,24 @@ describe("memory documents in Postgres", () => {
     expect(await documents.read({ key: "scope-b", signal })).toBeNull();
   }, 30_000);
 
+  it("reads and saves nothing once the turn is aborted", async () => {
+    const documents = await loadDocuments();
+    const aborted = AbortSignal.abort(new Error("The turn was cancelled."));
+
+    await expect(
+      documents.write({
+        content: "late",
+        expectedVersion: null,
+        key: "scope-a",
+        signal: aborted,
+      })
+    ).rejects.toThrow("The turn was cancelled.");
+    await expect(
+      documents.read({ key: "scope-a", signal: aborted })
+    ).rejects.toThrow("The turn was cancelled.");
+    expect(await documents.read({ key: "scope-a", signal })).toBeNull();
+  }, 30_000);
+
   it("treats a version it never issued as a conflict", async () => {
     const documents = await loadDocuments();
 

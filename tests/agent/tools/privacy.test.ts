@@ -113,7 +113,6 @@ describe("privacy", () => {
     const result = await overview(tool);
 
     expect(result.kept.join("\n")).toMatch(/Postgres в Neon/u);
-    expect(result.kept.join("\n")).toMatch(/Object Storage облака Cloud\.ru/u);
     expect(result.kept.join("\n")).toMatch(/AES-256-GCM/u);
     const processors = result.processors.join("\n");
     expect(processors).toContain("deepseek/deepseek-v4.1-flash");
@@ -172,6 +171,9 @@ describe("privacy", () => {
     expect(
       facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
     ).toContain("хранит Cloud.ru в приватном хранилище Object Storage");
+    expect(facts.keptData().join("\n")).toMatch(
+      /Object Storage облака Cloud\.ru/u
+    );
   });
 
   it("says nothing of visits the deployment does not make", async () => {
@@ -277,6 +279,8 @@ describe("privacy", () => {
     expect(
       facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
     ).not.toContain("Cloud.ru");
+    // Without the bucket nothing is stored, so no place of files is named.
+    expect(facts.keptData().join("\n")).not.toContain("Cloud.ru");
     expect(facts.serverLocation()).not.toContain("Cloud.ru");
     expect(facts.serverLocation()).toContain(
       "регион нигде в его настройках не записан"

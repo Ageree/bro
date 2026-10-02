@@ -1,5 +1,5 @@
 /* oxlint-disable vitest/require-mock-type-parameters -- The auth and object storage mocks implement only the route boundaries exercised here. */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -38,6 +38,10 @@ beforeEach(() => {
     status: 200,
     stream: new Response(png).body,
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("browser image route", () => {
@@ -114,21 +118,27 @@ describe("browser image route", () => {
     }
   );
 
-  it("refuses bytes whose size or type differs from the row", async () => {
-    const cancel = vi.fn();
-    mocks.openObject.mockResolvedValue({
-      contentType: "text/html",
-      etag: '"etag"',
-      size: png.byteLength,
-      status: 200,
-      stream: new ReadableStream({ cancel }),
-    });
+  it.each([
+    ["type", "text/html", png.byteLength],
+    ["size", "image/png", png.byteLength + 1],
+  ])(
+    "refuses bytes whose %s differs from the row",
+    async (_name, contentType, size) => {
+      const cancel = vi.fn();
+      mocks.openObject.mockResolvedValue({
+        contentType,
+        etag: '"etag"',
+        size,
+        status: 200,
+        stream: new ReadableStream({ cancel }),
+      });
 
-    const response = await GET(request(), context());
+      const response = await GET(request(), context());
 
-    expect(response.status).toBe(404);
-    expect(cancel).toHaveBeenCalledOnce();
-  });
+      expect(response.status).toBe(404);
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+  );
 
   it("answers 502 with the private headers when storage fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -139,6 +149,17 @@ describe("browser image route", () => {
     expect(response.status).toBe(502);
     expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("leaves a database failure to the server, not to a storage 502", async () => {
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.readArtifact.mockRejectedValue(new Error("database is down"));
+
+    await expect(GET(request(), context())).rejects.toThrow("database is down");
+    expect(mocks.openObject).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("does not reveal an unavailable or cross-workspace artifact", async () => {

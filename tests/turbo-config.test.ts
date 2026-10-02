@@ -5,6 +5,9 @@ import { z } from "zod";
 const applicationEnvironment = [
   "ACCESS_*",
   "BETTER_AUTH_*",
+  // Login and vault keys still fall back to Blob on Vercel
+  // (db/services/installation-secrets.ts).
+  "BLOB_*",
   "BROWSER_BACKEND",
   "BROWSER_HOST_*",
   "BROWSER_POOL_*",

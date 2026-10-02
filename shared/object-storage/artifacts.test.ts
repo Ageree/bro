@@ -60,17 +60,38 @@ describe("artifact objects", () => {
     expect(calls[0]?.headers.get("content-type")).toBe("image/png");
   });
 
-  it("fails a refused upload", async () => {
-    stubStorage(new Response("<Error/>", { status: 403 }));
+  it("fails a refused upload, naming the cause Object Storage gave", async () => {
+    stubStorage(
+      new Response("<Error><Code>SignatureDoesNotMatch</Code></Error>", {
+        status: 403,
+      })
+    );
     const artifacts = await import("@shared/object-storage/artifacts");
 
-    await expect(
-      artifacts.putArtifactObject({
-        bytes: new Uint8Array([1]),
-        mediaType: "image/png",
-        pathname: "generated-images/u/x",
-      })
-    ).rejects.toThrow(artifacts.ArtifactStorageError);
+    const upload = artifacts.putArtifactObject({
+      bytes: new Uint8Array([1]),
+      mediaType: "image/png",
+      pathname: "generated-images/u/x",
+    });
+    await expect(upload).rejects.toThrow(artifacts.ArtifactStorageError);
+    await expect(upload).rejects.toThrow(/SignatureDoesNotMatch/u);
+  });
+
+  it("refuses a path with a . or .. segment before any request", async () => {
+    const calls = stubStorage();
+    const artifacts = await import("@shared/object-storage/artifacts");
+
+    for (const pathname of ["generated-images/../x", "./x", "a/./b"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each path is checked on its own.
+      await expect(
+        artifacts.putArtifactObject({
+          bytes: new Uint8Array([1]),
+          mediaType: "image/png",
+          pathname,
+        })
+      ).rejects.toThrow(/\.\. segment/u);
+    }
+    expect(calls).toHaveLength(0);
   });
 
   it("streams an object with its size, type and ETag", async () => {
@@ -138,17 +159,94 @@ describe("artifact objects", () => {
     );
   });
 
+  it("reads a missing bucket as an outage, not a missing object", async () => {
+    stubStorage(
+      new Response("<Error><Code>NoSuchBucket</Code></Error>", { status: 404 })
+    );
+    const artifacts = await import("@shared/object-storage/artifacts");
+
+    await expect(artifacts.openArtifactObject("a/b")).rejects.toThrow(
+      /NoSuchBucket/u
+    );
+  });
+
+  it("bounds each read of the body, not the whole of a slow download", async () => {
+    vi.useFakeTimers();
+    try {
+      let sent = 0;
+      let aborted = false;
+      vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+        init.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                sent += 1;
+                if (sent > 3) {
+                  // Object Storage stops answering mid-body.
+                  await new Promise<never>((_resolve, reject) => {
+                    init.signal?.addEventListener("abort", () => {
+                      reject(new Error("aborted"));
+                    });
+                  });
+                }
+                controller.enqueue(new Uint8Array([sent]));
+              },
+            }),
+            {
+              headers: { "content-length": "4", "content-type": "image/png" },
+              status: 200,
+            }
+          )
+        );
+      });
+      const artifacts = await import("@shared/object-storage/artifacts");
+
+      const opened = await artifacts.openArtifactObject("a/b");
+      if (opened?.status !== 200) throw new Error("Expected a body.");
+      const reader = opened.stream.getReader();
+      // A slow reader: minutes between reads do not cut the download.
+      for (let read = 1; read <= 3; read += 1) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are ordered.
+        expect((await reader.read()).value).toEqual(new Uint8Array([read]));
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await vi.advanceTimersByTimeAsync(120_000);
+      }
+      expect(aborted).toBe(false);
+      // A read Object Storage never answers errors the stream, not ends it.
+      const stalled = reader.read().then(
+        () => "ended",
+        () => "errored"
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await stalled).toBe("errored");
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("deletes, counting an object already gone as deleted", async () => {
     const calls = stubStorage(
       new Response(null, { status: 204 }),
-      new Response(null, { status: 404 })
+      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }),
+      new Response("<Error><Code>NoSuchBucket</Code></Error>", { status: 404 })
     );
     const artifacts = await import("@shared/object-storage/artifacts");
 
     await artifacts.deleteArtifactObject("gmail-attachments/w/1");
     await artifacts.deleteArtifactObject("gmail-attachments/w/1");
+    await expect(
+      artifacts.deleteArtifactObject("gmail-attachments/w/1")
+    ).rejects.toThrow(/NoSuchBucket/u);
 
-    expect(calls.map((call) => call.method)).toEqual(["DELETE", "DELETE"]);
+    expect(calls.map((call) => call.method)).toEqual([
+      "DELETE",
+      "DELETE",
+      "DELETE",
+    ]);
   });
 
   it("is configured only with the bucket and its key", async () => {

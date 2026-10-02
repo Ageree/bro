@@ -26,9 +26,14 @@ export function presignStoredObject(input: {
   readonly responseContentDisposition?: string;
 }) {
   const store = objectStore();
+  const segments = input.key.split("/");
+  // URL parsing folds `.` and `..` away (`a/../b` signs `/b`), so such a key
+  // would reach another object. Bro never writes one.
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("An object key must not have a . or .. segment.");
+  }
   const url = new URL(
-    `${objectStorageEndpoint}/${uriEncode(store.bucket)}/${input.key
-      .split("/")
+    `${objectStorageEndpoint}/${uriEncode(store.bucket)}/${segments
       .map((segment) => uriEncode(segment))
       .join("/")}`
   );

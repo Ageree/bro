@@ -266,9 +266,9 @@ halving, and re-arms once the balance recovers; its state lives in
 
 ### Pictures and chat games
 
-With a direct model provider and private Blob storage, the agent gets a
-`generate_image` tool that draws through the provider's image API (OpenRouter's
-`/images`, RouterAI's `/images/generations`). The model is
+With a direct model provider and the private Object Storage bucket on Cloud.ru
+(see File storage), the agent gets a `generate_image` tool that draws through
+the provider's image API (OpenRouter's `/images`, RouterAI's `/images/generations`). The model is
 `OPENROUTER_IMAGE_MODEL` or `ROUTERAI_IMAGE_MODEL` (default
 `google/gemini-3.1-flash-lite-image`) and must accept
 reference images: the person's photos from the conversation (up to the four
