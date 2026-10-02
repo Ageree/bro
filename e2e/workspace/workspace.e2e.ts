@@ -46,7 +46,12 @@ describe("dashboard", { tags: ["smoke"] }, () => {
       await expect(browser).toHaveURL("/chat/history");
       await expect(screen.getByRole("heading", "Все чаты")).toBeVisible();
 
-      await agent.act("go back to «Кабинет» from the main navigation");
+      // An exact tap: the dashboard shows the person's phone, which differs
+      // every run, so a recorded step ending there could never replay.
+      await screen
+        .getByRole("navigation", "Основная навигация")
+        .getByRole("link", "Кабинет")
+        .tap();
       await expect(browser).toHaveURL("/workspace");
     }
   );

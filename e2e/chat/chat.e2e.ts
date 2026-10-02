@@ -20,7 +20,7 @@ describe(
 
       await expect(browser).toHaveURL(/\/chat\/[\w-]+$/u);
       await agent.assert(
-        "below the person's «Привет!» the chat log shows at least one reply from Bro, in Russian"
+        "the chat log continues after the person's «Привет!» with at least one message written in Russian"
       );
     });
 
