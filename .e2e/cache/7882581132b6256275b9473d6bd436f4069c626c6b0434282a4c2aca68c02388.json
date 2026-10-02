@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-02T08:15:51.451Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap link \"Все чаты\"",
+        "target": {
+          "role": "link",
+          "name": "Все чаты"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/workspace/workspace.e2e.ts::dashboard::the%20main%20navigation%20reaches%20every%20section",
+      "targetId": "web",
+      "instructionDigest": "6502ae4283ae181a0c5a9ceae583574bbf57572c5df92282a9916fbdad326c42"
+    },
+    "summary": "Тап по «Все чаты» в основной навигации привёл на /chat/history. Страница показывает заголовок «Все чаты», «История», «1 разговор» (ссылка «Привет!» → /chat/wrun_01M3XTWCDC8F6ZT4G1TDSFTY2D) и ссылку «Новый чат».",
+    "startPath": "/vault",
+    "endPath": "/chat/history",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Все чаты"
+      },
+      {
+        "text": "Все разговоры с Bro — в браузере, в iMessage и в Telegram."
+      },
+      {
+        "text": "Расход — 317 тыс. токенов"
+      },
+      {
+        "role": "link",
+        "name": "Новый чат"
+      },
+      {
+        "role": "heading",
+        "name": "История"
+      },
+      {
+        "text": "1 разговор"
+      },
+      {
+        "role": "link",
+        "name": "Привет!"
+      },
+      {
+        "text": "317 тыс. токенов"
+      }
+    ],
+    "endWaitMs": 11715
+  }
+}

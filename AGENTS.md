@@ -54,6 +54,8 @@ A setup may report `eve link` as a prerequisite; run it, then retry the continua
 
 Run the validation the task requests. When it does not establish the behavior you changed, run the narrowest relevant check.
 
+A change a person can see — a page, form, navigation, or how Bro behaves in the chat — comes with a browser test in `e2e/` in the same PR, and a bug fix with a test that failed before it. Run the affected files with `pnpm test:e2e <path>` and commit the new `.e2e/cache/` entries; `docs/e2e.md` covers how to write and run them.
+
 ## Repository contract
 
 - The repository root owns the single Next.js application, Eve agent, and shared UI contract.
@@ -63,7 +65,7 @@ Run the validation the task requests. When it does not establish the behavior yo
 - Keep each tool's schema and implementation together. Group a shared agent domain under `agent/lib` in a lower-case folder, such as `schedules/report.ts`; do not use it as a holding area for a tool's one-off logic.
 - Validate runtime environment variables through `shared/environment/env.ts`.
 - `package.json` `name` is the eve agent identity, not a cosmetic label. eve derives the Vercel Workflow queue namespace from it (`__eve<hex(name)>_wkf_workflow_*`), used both for the flow function's `experimentalTriggers` consumer and for the runtime `WORKFLOW_QUEUE_NAMESPACE`. Renaming it moves every agent turn onto a brand-new queue topic and strands in-flight runs. Keep it `local-vault-assistant`; do product branding in instructions, UI, and user-facing copy.
-- Run `pnpm check` and `pnpm build` before handing off changes.
+- Run `pnpm check` and `pnpm build` before handing off changes; for a user-visible change, also the affected `pnpm test:e2e` files.
 
 ## Session notes
 

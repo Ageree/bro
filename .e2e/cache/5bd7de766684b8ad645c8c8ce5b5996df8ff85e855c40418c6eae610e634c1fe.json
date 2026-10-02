@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-02T08:15:51.451Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap link \"Кабинет\"",
+        "target": {
+          "role": "link",
+          "name": "Кабинет"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/workspace/workspace.e2e.ts::dashboard::the%20main%20navigation%20reaches%20every%20section",
+      "targetId": "web",
+      "instructionDigest": "79ee02398a0ea68e94f599a9604068d5bc35e0ff311f5940074256d9cb39aad2"
+    },
+    "summary": "Тап по «Кабинет» в основной навигации с /chat/history привёл на /workspace; заголовок «Кабинет» виден, страница загрузилась (лимиты, сейф, часовой пояс Europe/Moscow, подключения).",
+    "startPath": "/chat/history",
+    "endPath": "/workspace",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Кабинет"
+      },
+      {
+        "text": "Бесплатный режим · Телефон …1617"
+      },
+      {
+        "text": "Оплата ещё не оформлена"
+      },
+      {
+        "role": "button",
+        "name": "Написать Bro"
+      },
+      {
+        "role": "button",
+        "name": "Открыть чат"
+      },
+      {
+        "text": "Чат в браузере готов. Подключи Photon, чтобы включить iMessage."
+      },
+      {
+        "role": "heading",
+        "name": "Лимиты"
+      },
+      {
+        "text": "Бесплатный режим"
+      }
+    ],
+    "endWaitMs": 12590
+  }
+}

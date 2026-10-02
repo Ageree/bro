@@ -13,3 +13,6 @@ dist
 .DS_Store
 *.tsbuildinfo
 __pycache__/
+# e2e runs: results, traces, app log. The replay cache is shared (docs/e2e.md).
+.e2e/*
+!.e2e/cache/

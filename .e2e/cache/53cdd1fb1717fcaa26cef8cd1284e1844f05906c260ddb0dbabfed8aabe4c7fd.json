@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-02T08:15:51.450Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap link \"Сейф\"",
+        "target": {
+          "role": "link",
+          "name": "Сейф"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/workspace/workspace.e2e.ts::dashboard::the%20main%20navigation%20reaches%20every%20section",
+      "targetId": "web",
+      "instructionDigest": "45914469a31ef9e1925284fb310ec841f7341ee54f4342c20aef2e3fd8db39e2"
+    },
+    "summary": "Открыл «Сейф» из основной навигации: тап по ссылке «Сейф» привёл на /vault. Страница загрузилась — заголовок «Сейф», разделы «Сохранённые» (Входы, Карты, Адреса, Контакты) и «Добавить или изменить».",
+    "startPath": "/personal-info",
+    "endPath": "/vault",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Сейф"
+      },
+      {
+        "text": "Пароль в чат не пиши. Bro берёт вход из сейфа сам. Добавь или измени логин здесь."
+      },
+      {
+        "role": "heading",
+        "name": "Сохранённые"
+      },
+      {
+        "text": "Входы"
+      },
+      {
+        "text": "Пока пусто"
+      },
+      {
+        "text": "Карты"
+      },
+      {
+        "text": "Адреса"
+      },
+      {
+        "text": "Контакты"
+      }
+    ],
+    "endWaitMs": 14113
+  }
+}
