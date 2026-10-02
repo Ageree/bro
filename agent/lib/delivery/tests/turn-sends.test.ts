@@ -151,6 +151,39 @@ describe("sendRefusal", () => {
     expect(refusal(history, "Париж")).toEqual({ skipped: "stale" });
     expect(refusal(history, "Париж, столица Франции.")).toBeUndefined();
   });
+
+  it("keeps the first-contact answer the introduction only mentioned", () => {
+    const history = [
+      firstContactInstruction(),
+      userMessage("Куда мне лететь на выходные? Одним словом."),
+      ...sendMessage("intro", "Привет! Могу подобрать билеты в Париж и отель."),
+    ];
+
+    expect(refusal(history, "Париж")).toBeUndefined();
+  });
+
+  it("answers like any other turn once the introduction could be over", () => {
+    const history = [
+      firstContactInstruction(),
+      userMessage("Как называется столица Франции?"),
+      ...Array.from({ length: 3 }, (_, index) =>
+        sendMessage(`intro-${String(index)}`, `Я Бро, пузырь ${String(index)}.`)
+      ).flat(),
+      ...sendMessage("answer", "Париж."),
+    ];
+
+    expect(turnSends(history).introducing).toBe(false);
+    expect(refusal(history, "Это Париж.")).toEqual({ skipped: "stale" });
+  });
+
+  it("leaves a browser report's turn out of first contact", () => {
+    const history = [
+      firstContactInstruction(),
+      userMessage(`${backgroundTurnMarker}\n\nBrowser run run-1 finished.`),
+    ];
+
+    expect(turnSends(history).firstContact).toBe(false);
+  });
 });
 
 /**
@@ -2773,6 +2806,13 @@ function sent(text: string) {
 
 function textOutput(value: string): ToolResultPart["output"] {
   return { type: "text", value };
+}
+
+function firstContactInstruction(): ModelMessage {
+  return Object.assign(
+    { content: firstContactMarker, role: "user" as const },
+    { kind: "context.instruction" }
+  );
 }
 
 function userMessage(text: string): ModelMessage {

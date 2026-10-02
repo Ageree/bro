@@ -237,16 +237,17 @@ function heldBack(message: SentMessage, turn: ReturnType<typeof turnSends>) {
   const { delivered } = turn;
   // The first-contact turn opens with the introduction, which is not the
   // answer: a plain «Париж.» after it named nothing new and was dropped as
-  // stale (e2e/chat/first-contact.e2e.ts). Only an answer said again is.
+  // stale (e2e/chat/first-contact.e2e.ts). While it may still be
+  // introducing, only an answer said again is.
   if (
-    turn.firstContact
-      ? resaysDelivered(message, delivered)
-      : addsNothingNew(message, delivered, {
-          afterWork: turn.workSinceDelivery,
-          distinct: turn.distinct,
-          foldable: turn.foldable,
-          request: turn.request,
-        })
+    (turn.firstContact && resaysDelivered(message, delivered)) ||
+    (!turn.introducing &&
+      addsNothingNew(message, delivered, {
+        afterWork: turn.workSinceDelivery,
+        distinct: turn.distinct,
+        foldable: turn.foldable,
+        request: turn.request,
+      }))
   ) {
     return "stale";
   }
@@ -603,10 +604,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   const turn = start === -1 ? messages : messages.slice(start + 1);
   const earlier = start === -1 ? [] : messages.slice(0, start);
-  const firstContact = firstContactTurn(messages);
   const opening = openingText(messages[start]);
   const reportedRun = reportedRunOf(opening);
   const requestText = personRequestText(messages[start]);
+  // Only the person's own first message: a browser report that arrives
+  // before they write again opens a turn of its own.
+  const firstContact = requestText !== undefined && firstContactTurn(messages);
   const request =
     requestText === undefined
       ? undefined
@@ -769,6 +772,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
     ],
     /** Whether the turn answers the person's very first message. */
     firstContact,
+    /**
+     * Whether the first-contact turn may still be introducing Bro: no more
+     * messages went out than an introduction takes. Past them the turn
+     * answers like any other.
+     */
+    introducing: firstContact && delivered.length <= introductionMessages,
     /** Messages this turn may deliver, the introduction's included. */
     messageLimit: firstContact
       ? turnMessageLimit + introductionMessages

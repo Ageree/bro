@@ -643,11 +643,13 @@ export function addsNothingNew(
 }
 
 /**
- * Whether a message only says again, word for word, part of a delivered
- * one. The first-contact turn has no `stale` rule, as its introduction names
- * nothing the answer could add to; this keeps it from saying the answer
- * twice: on 02.10 «Париж» closed the last introduction bubble and then went
- * out again alone (e2e/chat/first-contact.e2e.ts).
+ * Whether a message only says again, word for word, how a delivered one
+ * ends. While the first-contact turn introduces Bro it has no `stale` rule,
+ * as the introduction names nothing the answer could add to; this keeps it
+ * from saying the answer twice: on 02.10 «Париж» closed the last
+ * introduction bubble and then went out again alone
+ * (e2e/chat/first-contact.e2e.ts). Only the ending: «могу подобрать билеты
+ * в Париж» inside the introduction is no answer to «Куда мне лететь?».
  */
 export function resaysDelivered(
   message: SentMessage,
@@ -656,7 +658,7 @@ export function resaysDelivered(
   return (
     message.text !== "" &&
     message.attachments.length === 0 &&
-    delivered.some((sent) => ` ${sent.text} `.includes(` ${message.text} `))
+    delivered.some((sent) => ` ${sent.text}`.endsWith(` ${message.text}`))
   );
 }
 

@@ -34,9 +34,15 @@ export function firstContactTurn(messages: readonly ModelMessage[]) {
   let personMessages = 0;
   for (const message of messages) {
     if (message.role !== "user") continue;
-    if (messageText(message).includes(markerOpening)) marked = true;
     const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
     if (kind === "user") personMessages += 1;
+    // Only the instruction eve keeps: a person may type the marker too.
+    else if (
+      kind === "context.instruction" &&
+      messageText(message).includes(markerOpening)
+    ) {
+      marked = true;
+    }
   }
   return marked && personMessages <= 1;
 }

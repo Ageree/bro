@@ -29,8 +29,6 @@ ownPersonTest(
     // The introduction comes first: a few sentences before the answer. Not
     // a judge: the log does not say whose message is whose, and the model
     // read the bubbles out of order.
-    expect(reply.slice(0, reply.indexOf("Париж")).length).toBeGreaterThan(
-      introductionLength
-    );
+    expect(reply.indexOf("Париж")).toBeGreaterThan(introductionLength);
   }
 );

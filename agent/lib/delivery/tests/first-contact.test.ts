@@ -39,6 +39,10 @@ describe("firstContactTurn", () => {
     ).toBe(false);
   });
 
+  it("does not take the marker from the person's own words", () => {
+    expect(firstContactTurn([tagged("user", firstContactMarker)])).toBe(false);
+  });
+
   it("does not hold without the marker", () => {
     expect(firstContactTurn([question, introduction])).toBe(false);
   });
