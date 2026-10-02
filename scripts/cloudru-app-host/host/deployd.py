@@ -406,14 +406,15 @@ class Deployd:
 
     @contextlib.contextmanager
     def bridge_paused(self, log):
-        """With tg-bridge enabled, stopped around the restart of eve and started again however it went."""
+        """With tg-bridge enabled, stopped around the restart of eve and started again however it went. Yields
+        whether it paused the bridge."""
         if not self.bridge_enabled():
-            yield
+            yield False
             return
         self.stop(log, [BRIDGE])
         time.sleep(BRIDGE_DRAIN_S)
         try:
-            yield
+            yield True
         finally:
             code, output = self.runner.run(["systemctl", "start", BRIDGE], timeout=120)
             log(f"start {BRIDGE}: {'ok' if code == 0 else 'exit ' + str(code)}")
@@ -725,9 +726,9 @@ class Deployd:
             if "bro-web" in units and self.current_version():
                 return {"healthy": self.wait_healthy(log)}
             return {}
-        with self.bridge_paused(log):
-            # The bridge comes back after this anyway: restarting it here too would only start it early.
-            self.restart(log, [u for u in units if u != BRIDGE])
+        with self.bridge_paused(log) as paused:
+            # A paused bridge comes back after this anyway: restarting it here too would only start it early.
+            self.restart(log, [u for u in units if not (paused and u == BRIDGE)])
             healthy = self.wait_healthy(log) if self.current_version() else None
         return {} if healthy is None else {"healthy": healthy}
 
