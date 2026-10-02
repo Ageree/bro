@@ -199,6 +199,11 @@
   настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
   `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
   из apt-репозитория gVisor со сверкой подписи и sha256.
+- `set-power reboot` Cloud.ru — жёсткий сброс (теряются последние секунды
+  записи), а `runcmd` cloud-init идёт раз на инстанс: установку, которую
+  может оборвать перезагрузка, кладите в `/var/lib/cloud/scripts/per-boot/`
+  и делайте повторяемой (`browser-vm/host/boot.py`,
+  `docs/browser-infra-notes.md`).
 - Хост песочниц для кода — VM Cloud.ru (`scripts/cloudru-code-host/`,
   только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
   из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в

@@ -217,6 +217,18 @@ SHA-256 бандла и корня песочницы) и `bro-host-boot`, ко�
 байт (`browserHostCloudInit` в `agent/lib/browser-pool/hosts.ts`; тест Бро
 сверяет его с выводом `boot.py cloud-init`): меняйте оба разом.
 
+`bro-host-boot` лежит в `/var/lib/cloud/scripts/per-boot/`: cloud-init
+запускает его на каждой загрузке, первой тоже, а не раз на VM, как `runcmd`.
+Перезагрузка посреди установки (Бро перезагружает молчащий хост: первая
+загрузка порой встаёт в `(initramfs)`) запускает установку заново, а не
+оставляет мёртвый хост. Перезагрузка Cloud.ru — жёсткий сброс, и оборванный
+прогон оставляет рваные файлы (02.10 — пустые списки apt, которые
+`apt-get update` не перекачивал), поэтому перед повтором скрипт останавливает
+`hostd`, стирает списки и кэш apt и venv и чинит dpkg
+(`dpkg --configure -a`); остальные шаги `provision.sh` повторяемы с любого
+места. Хост на `ready` скрипт не трогает: Caddy и `hostd` поднимаются сами.
+Журнал всех загрузок — `/var/log/bro-provision.log`.
+
 С Cloud.ru GitHub, PyPI и репозиторий Caddy молчат, `archive.ubuntu.com` не
 отвечает (30.09), поэтому хост ходит только на зеркало apt (`aptMirror`, по
 умолчанию `http://mirror.yandex.ru/ubuntu`: оттуда `runc`, `nftables`, `zstd`,

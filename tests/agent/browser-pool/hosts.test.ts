@@ -281,8 +281,10 @@ describe("browser host cloud-init", () => {
     // Only presigned URLs go to the host, never the Cloud.ru secret.
     expect(document).not.toContain("test-key-secret");
 
+    // A per-boot script, not runcmd: cloud-init runs runcmd once per
+    // instance, and a reboot mid-provision left the host dead (02.10).
     expect(lines.slice(8, 11)).toEqual([
-      "  - path: /usr/local/sbin/bro-host-boot",
+      "  - path: /var/lib/cloud/scripts/per-boot/bro-host-boot",
       '    permissions: "0700"',
       "    content: |",
     ]);
@@ -298,11 +300,8 @@ describe("browser host cloud-init", () => {
       .split("\n")
       .map((line) => (line ? `      ${line}` : ""));
     expect(lines.slice(11, 11 + indented.length)).toEqual(indented);
-    expect(lines.slice(11 + indented.length)).toEqual([
-      "runcmd:",
-      '  - [bash, -c, "/usr/local/sbin/bro-host-boot > /var/log/bro-provision.log 2>&1"]',
-      "",
-    ]);
+    expect(lines.slice(11 + indented.length)).toEqual([""]);
+    expect(document).not.toContain("runcmd");
   });
 
   it("is byte for byte what boot.py writes, under runc and under runsc", async () => {
@@ -356,7 +355,20 @@ describe("browser host cloud-init", () => {
         `echo x >> "${directory}/curls"
 [ "$(wc -l < "${directory}/curls")" -ge "\${CURL_OK_AT:-0}" ] && [ "\${CURL_OK_AT:-0}" -gt 0 ]`
       );
-      await writeFile(join(directory, "boot"), script);
+      // Never the machine's own log, stage, venv or apt lists: a run cut
+      // short deletes the last two.
+      const moved = [
+        "/var/log/bro-provision.log",
+        "/srv/bro/stage",
+        "/opt/bro/venv",
+        "/var/lib/apt/lists",
+        "/var/cache/apt/archives",
+      ].reduce(
+        (text, path) =>
+          text.replaceAll(path, join(directory, path.replaceAll("/", "_"))),
+        script
+      );
+      await writeFile(join(directory, "boot"), moved);
       const run = (curlOkAt: number) =>
         spawnSync("env", [
           "-i",
@@ -379,6 +391,24 @@ describe("browser host cloud-init", () => {
       // file then fails the checksum, before anything is unpacked).
       expect(run(25)).not.toBe(0);
       expect(await lines("curls")).toHaveLength(25);
+
+      // A host that is ready, rebooted: its Caddy and hostd start on their
+      // own, and it fetches and sets up nothing.
+      await rm(join(directory, "curls"));
+      await writeFile(join(directory, "_srv_bro_stage"), "ready\n");
+      expect(run(1)).toBe(0);
+      await expect(readFile(join(directory, "curls"))).rejects.toThrow(
+        "ENOENT"
+      );
+      // Each boot appends to the log, errors included.
+      const log = await lines("_var_log_bro-provision.log");
+      expect(
+        log
+          .filter((line) => line.startsWith("bro-host-boot "))
+          .map((line) => line.split(" stage ")[1])
+      ).toEqual(["none", "none", "ready"]);
+      expect(log.some((line) => line.startsWith("sha256sum: "))).toBe(true);
+      expect(log.at(-1)).toMatch(/^bro-host-boot \S+Z stage ready$/u);
     } finally {
       await rm(directory, { force: true, recursive: true });
     }
@@ -677,8 +707,8 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
     hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
 
     // Five minutes after the VM ran: maybe a slow mirror, still inside
-    // provision.sh's budget. A reboot would cut it off for good (cloud-init
-    // runs it once per instance), so it is left alone.
+    // provision.sh's budget. A reboot would cost a second run of it
+    // (bro-host-boot starts it again at the next boot), so it is left alone.
     await hosts.reconcileBrowserHosts(minutes(5));
     expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
 
