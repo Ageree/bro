@@ -1321,6 +1321,40 @@ class HostCliTest(unittest.TestCase):
         cls.host = load_host_py()
         cls.addClassCleanup(shutil.rmtree, os.environ["BRO_APP_HOST_DIR"])
 
+    def test_the_operator_state_seals_and_opens_only_with_its_key(self):
+        sealed = self.host.seal(b"keys", "cloud-ru secret\n")
+        self.assertTrue(sealed.startswith(self.host.STATE_MAGIC))
+        self.assertNotIn(b"keys", sealed)
+        # A pasted key's whitespace does not change the key.
+        self.assertEqual(self.host.unseal(sealed, " cloud-rusecret "), b"keys")
+        with self.assertRaises(SystemExit):
+            self.host.unseal(sealed, "another secret")
+        tampered = sealed[:-1] + bytes([sealed[-1] ^ 1])
+        with self.assertRaises(SystemExit):
+            self.host.unseal(tampered, "cloud-ru secret")
+
+    def test_the_operator_state_keeps_keys_not_builds_and_restores_without_overwriting(self):
+        source, target = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, source)
+        self.addCleanup(shutil.rmtree, target)
+        for relative, text in {"app/env/new-secrets.json": "{}", "app/bro-app-1.password": "p",
+                               "app/build/last.json": "{}", "app/vendor/caddy": "x", "code/token": "t"}.items():
+            (source / relative).parent.mkdir(parents=True, exist_ok=True)
+            (source / relative).write_text(text)
+        data = self.host.state_archive({"app-host": source / "app", "code-host": source / "code",
+                                        "missing": source / "none"})
+        (target / "app").mkdir()
+        (target / "app" / "bro-app-1.password").write_text("newer")
+        roots = {"app-host": target / "app", "code-host": target / "code"}
+        self.assertEqual(self.host.restore_archive(data, roots), (2, 1))
+        self.assertEqual((target / "app" / "bro-app-1.password").read_text(), "newer")
+        self.assertEqual((target / "app" / "env" / "new-secrets.json").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((target / "code" / "token").read_text(), "t")
+        self.assertFalse((target / "app" / "build").exists())
+        self.assertFalse((target / "app" / "vendor").exists())
+        self.assertEqual(self.host.restore_archive(data, roots, force=True), (3, 0))
+        self.assertEqual((target / "app" / "bro-app-1.password").read_text(), "p")
+
     def test_the_build_has_the_model_provider_of_the_vm(self):
         # web_search.ts decides at module load: a build without it ships the Gateway's tool, and RouterAI
         # answers 400 to every turn that carries it.

@@ -169,6 +169,10 @@
   `host.py update-host`, а не пересоздание. Oneshot-юниты (`bro-egress`) он
   сам не перезапускает: что хосту нужно сразу, зовёт `install-code.sh`
   (`egress.sh`), а рестарт `bro-egress` перезапустил бы Caddy, web и eve.
+- Свежая облачная сессия без `~/.bro-app-host` не выкатит на VM
+  (`DEPLOY_SIGNING_KEY`, пароли консолей, env-файлы): сначала
+  `host.py state restore`, после смены ключей — `host.py state save`
+  (`scripts/cloudru-app-host/README.md`, «Ключ и артефакты»).
 - Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
   `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
   Telegram на Vercel и живые хосты пула работают, только если значения
