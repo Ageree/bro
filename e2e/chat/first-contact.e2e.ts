@@ -2,6 +2,9 @@ import { expect } from "e2e";
 import { ownPersonTest } from "../person.ts";
 import { chatLog, sendToBro } from "./bro.ts";
 
+/** Shorter than any introduction: who Bro is and what it can do. */
+const introductionLength = 60;
+
 /**
  * agent/instructions/content/role/interactive.md, «Первый контакт»: a first
  * message that carries a task gets a short introduction and then the task,
@@ -15,16 +18,19 @@ ownPersonTest(
     tags: ["agent"],
     timeout: 300_000,
   },
-  async ({ agent, app, browser, screen }) => {
+  async ({ app, browser, screen }) => {
     await app.open("/chat");
-    await sendToBro(
+    const reply = await sendToBro(
       { browser, screen },
       "Как называется столица Франции? Ответь одним словом."
     );
 
     await expect(chatLog(browser)).toContainText("Париж");
-    await agent.assert(
-      "before its answer Bro introduced itself in the chat log: who it is or what it can do for the person"
+    // The introduction comes first: a few sentences before the answer. Not
+    // a judge: the log does not say whose message is whose, and the model
+    // read the bubbles out of order.
+    expect(reply.slice(0, reply.indexOf("Париж")).length).toBeGreaterThan(
+      introductionLength
     );
   }
 );

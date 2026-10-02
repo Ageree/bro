@@ -643,6 +643,24 @@ export function addsNothingNew(
 }
 
 /**
+ * Whether a message only says again, word for word, part of a delivered
+ * one. The first-contact turn has no `stale` rule, as its introduction names
+ * nothing the answer could add to; this keeps it from saying the answer
+ * twice: on 02.10 «Париж» closed the last introduction bubble and then went
+ * out again alone (e2e/chat/first-contact.e2e.ts).
+ */
+export function resaysDelivered(
+  message: SentMessage,
+  delivered: readonly SentMessage[]
+) {
+  return (
+    message.text !== "" &&
+    message.attachments.length === 0 &&
+    delivered.some((sent) => ` ${sent.text} `.includes(` ${message.text} `))
+  );
+}
+
+/**
  * The sentences of a message that tell rather than ask: neither a question
  * nor a request to the person.
  */

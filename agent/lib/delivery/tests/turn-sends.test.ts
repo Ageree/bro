@@ -137,6 +137,20 @@ describe("sendRefusal", () => {
     expect(turnMustEnd(history)).toBe(false);
     expect(refusal(history, "Париж.")).toBeUndefined();
   });
+
+  it("drops the first-contact answer said again on its own", () => {
+    const history = [
+      Object.assign(
+        { content: firstContactMarker, role: "user" as const },
+        { kind: "context.instruction" }
+      ),
+      userMessage("Как называется столица Франции? Ответь одним словом."),
+      ...sendMessage("intro", "Привет! Я Бро, личный агент.\n\nПариж"),
+    ];
+
+    expect(refusal(history, "Париж")).toEqual({ skipped: "stale" });
+    expect(refusal(history, "Париж, столица Франции.")).toBeUndefined();
+  });
 });
 
 /**

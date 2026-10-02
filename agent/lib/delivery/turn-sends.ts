@@ -32,6 +32,7 @@ import {
   properNamesOf,
   questionsOf,
   requestsOf,
+  resaysDelivered,
   retellsAroundQuestion,
   type SentMessage,
   similarity,
@@ -236,15 +237,16 @@ function heldBack(message: SentMessage, turn: ReturnType<typeof turnSends>) {
   const { delivered } = turn;
   // The first-contact turn opens with the introduction, which is not the
   // answer: a plain «Париж.» after it named nothing new and was dropped as
-  // stale (e2e/chat/first-contact.e2e.ts). Repeats and the limit still hold.
+  // stale (e2e/chat/first-contact.e2e.ts). Only an answer said again is.
   if (
-    !turn.firstContact &&
-    addsNothingNew(message, delivered, {
-      afterWork: turn.workSinceDelivery,
-      distinct: turn.distinct,
-      foldable: turn.foldable,
-      request: turn.request,
-    })
+    turn.firstContact
+      ? resaysDelivered(message, delivered)
+      : addsNothingNew(message, delivered, {
+          afterWork: turn.workSinceDelivery,
+          distinct: turn.distinct,
+          foldable: turn.foldable,
+          request: turn.request,
+        })
   ) {
     return "stale";
   }
