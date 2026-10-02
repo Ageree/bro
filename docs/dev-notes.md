@@ -129,10 +129,13 @@
   достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
   (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
   таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
-  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
+  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`), и
+  `brobro.tech` — только когда домен уже на VM: иначе вызовы task-агента прода
+  уходят с Vercel на VM.
 - deployd запускает ops-скрипты релиза от `bro` (файлы релиза — его); от root —
   только `ROOT_OPS` из бандла хоста (`ops/tg-bridge.sh`). Файл релиза от root
-  не запускайте: это root для инструментов модели. Код хоста на живой VM —
+  не запускайте: его может переписать `bro`, а с ним инструменты модели, —
+  такой запуск дал бы им root. Код хоста на живой VM —
   `host.py update-host`, а не пересоздание.
 - Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
   `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат

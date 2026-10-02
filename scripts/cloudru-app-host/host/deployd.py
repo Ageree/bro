@@ -36,12 +36,18 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
                                       units, so the watchdog stays quiet about them (watchdog.py)
   POST /ops/v1/ops                    {script, args?} -> 202 {job}: ops/<script> of the current release, as
                                       bro; ROOT_OPS (tg-bridge.sh) from the host bundle, as root
+  POST /ops/v1/host-update            -> 202 {job}: holds the job slot for host.py update-host, whose restart
+                                      of deployd would cut a job started meanwhile; that restart ends it,
+                                      so does DELETE, and it lapses after HOST_UPDATE_S
+  DELETE /ops/v1/host-update          ends that hold (an update that failed before the restart):
+                                      {"ended": its job id, or null when none was held}
   GET  /ops/v1/jobs/<id>              {kind, state: running|done|failed, log, result}
 
 Every restart of eve (release, rollback, env, restart) with tg-bridge enabled: stop the bridge, give eve
 BRIDGE_DRAIN_S to finish what it took, restart, health, start the bridge again whatever happened
 (scripts/cloudru-app-host/tg-bridge/README.md, «Что делает сервер»): an update eve took a moment
 before its restart is not lost, and the bridge, which reads the token and the secret once, gets a new env.
+A bridge that does not stop is started again and eve is not restarted: the job fails, nothing changed.
 
 A job's log never holds a request's URL or an env value.
 
@@ -69,7 +75,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.6"
+VERSION = "2026-10-02.7"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -94,6 +100,9 @@ KEEP_RELEASES = 5
 # A release is a few hundred MB; a bigger download is cut off before it can fill the disk.
 MAX_RELEASE_BYTES = 2 << 30
 HEALTH_WAIT_S = 120
+# The longest host.py update-host holds the job slot: the fetch (6 min) and the install (10 min) over the
+# serial console, and its logins.
+HOST_UPDATE_S = 20 * 60
 
 
 class Paths:
@@ -365,6 +374,7 @@ class Deployd:
         self.identity = identity
         self.jobs = {}
         self.busy = threading.Lock()  # one job that changes the host at a time
+        self.host_update_over = threading.Event()  # DELETE /host-update: the update gives the slot back
 
     # -- releases
 
@@ -418,15 +428,21 @@ class Deployd:
         if not self.bridge_enabled():
             yield False
             return
-        self.stop(log, [BRIDGE])
+        if not self.stop(log, [BRIDGE]):
+            # It may still poll and hand eve an update mid-restart: eve is left alone, the bridge as it was.
+            self.start_bridge(log)
+            raise Refused(f"{BRIDGE} did not stop (its output is in the log): eve is not restarted")
         time.sleep(BRIDGE_DRAIN_S)
         try:
             yield True
         finally:
-            code, output = self.runner.run(["systemctl", "start", BRIDGE], timeout=120)
-            log(f"start {BRIDGE}: {'ok' if code == 0 else 'exit ' + str(code)}")
-            if code != 0:
-                log(output[-300:])
+            self.start_bridge(log)
+
+    def start_bridge(self, log):
+        code, output = self.runner.run(["systemctl", "start", BRIDGE], timeout=120)
+        log(f"start {BRIDGE}: {'ok' if code == 0 else 'exit ' + str(code)}")
+        if code != 0:
+            log(output[-300:])
 
     def telegram_path(self, log):
         """tg_egress.py --check once eve and web are up: "ok", "down" (after one restart of tg-egress), or None
@@ -647,11 +663,14 @@ class Deployd:
         if self.current_version() is None:
             log("no release yet: nothing to restart")
             return {"names": sorted(values), "healthy": None}
-        if body.get("migrate") is True:
+        with contextlib.ExitStack() as stack:
             try:
-                self.migrate(self.current_version(), log)
-            except Refused:
-                # Nothing restarted yet: the services still run on the previous env, so it goes back as it was.
+                if body.get("migrate") is True:
+                    self.migrate(self.current_version(), log)
+                stack.enter_context(self.bridge_paused(log))
+            except Exception:
+                # Failed migrations (or their timeout), or a bridge that did not stop: nothing restarted yet,
+                # the services still run on the previous env, so it goes back as it was.
                 if had_env:
                     os.replace(previous, self.paths.env)
                 else:
@@ -659,7 +678,6 @@ class Deployd:
                 self.restore_ops_env(ops_before)
                 log("the previous env is back (and the ops scripts' own names)")
                 raise
-        with self.bridge_paused(log):
             return self.restart_with_env(values, previous, had_env, ops_before, log)
 
     def restore_ops_env(self, ops_before):
@@ -770,8 +788,30 @@ class Deployd:
         write_private(self.paths.maintenance, json.dumps(
             {"since": planned.get("since", int(time.time())), "units": sorted({*planned.get("units", []), *units})}))
         if not self.stop(log, units):
-            raise Refused("a unit did not stop: see the log")
+            # Not the planned state: the watchdog watches these units again rather than stay quiet for hours.
+            if planned:
+                write_private(self.paths.maintenance, json.dumps(planned))
+            else:
+                self.paths.maintenance.unlink(missing_ok=True)
+            raise Refused("a unit did not stop: see the log; the watchdog watches it as before")
         return {"stopped": units}
+
+    def do_host_update(self, body, log):
+        """The job slot, held while host.py update-host replaces the host code: its restart of deployd would cut
+        a release, env or ops job started meanwhile. That restart ends this job with the process; an update that
+        fails before it ends it (DELETE /host-update), and it lapses after HOST_UPDATE_S."""
+        log(f"held for a host update: no other job for up to {HOST_UPDATE_S // 60} min")
+        ended = self.host_update_over.wait(HOST_UPDATE_S)
+        self.host_update_over.clear()
+        log("the host update gave it back" if ended else f"lapsed after {HOST_UPDATE_S // 60} min")
+        return {"ended": "host.py" if ended else "timeout"}
+
+    def end_host_update(self):
+        job = self.running_job()
+        if job is None or self.jobs[job]["kind"] != "host-update":
+            return {"ended": None}
+        self.host_update_over.set()
+        return {"ended": job}
 
     def planned_stop(self):
         try:
@@ -842,7 +882,8 @@ class Deployd:
 
     def start_job(self, kind, work, body):
         if not self.busy.acquire(blocking=False):
-            raise Refused(f"busy with job {self.running_job()}")
+            running = self.running_job()
+            raise Refused(f"busy with job {running} ({self.jobs[running]['kind'] if running else '-'})")
         job_id = uuid.uuid4().hex[:12]
         job = {"id": job_id, "kind": kind, "state": "running", "log": [], "result": None,
                "started": int(time.time())}
@@ -937,6 +978,9 @@ def make_handler(deployd):
                     ("POST", "restart"): lambda: (202, deployd.start_job("restart", deployd.do_restart, self.body())),
                     ("POST", "stop"): lambda: (202, deployd.start_job("stop", deployd.do_stop, self.body())),
                     ("POST", "ops"): lambda: (202, deployd.start_job("ops", deployd.do_ops, self.body())),
+                    ("POST", "host-update"): lambda: (202, deployd.start_job("host-update", deployd.do_host_update,
+                                                                             self.body())),
+                    ("DELETE", "host-update"): lambda: (200, deployd.end_host_update()),
                 }
                 if self.command == "GET" and name.startswith("jobs/"):
                     job = deployd.jobs.get(name[5:])
@@ -952,7 +996,7 @@ def make_handler(deployd):
                 print(f"error: {type(error).__name__}: {error}", flush=True)
                 return self.answer(500, {"error": type(error).__name__})
 
-        do_GET = do_POST = do_PUT = route
+        do_GET = do_POST = do_PUT = do_DELETE = route
 
     return Handler
 

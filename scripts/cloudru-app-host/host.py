@@ -14,7 +14,8 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
   python host.py reboot NAME | delete NAME      set-power reboot | the VM and its public IP
   python host.py update-host NAME               the host bundle of this checkout on a live VM, over the serial
                                                 console: deployd, the watchdog, the units, tg-egress, tg-bridge
-                                                (install-code.sh), the Caddyfile; releases and env stay
+                                                (install-code.sh), the Caddyfile; releases and env stay, and
+                                                deployd starts no job meanwhile (POST /host-update)
   python host.py build [--allow-dirty]          pnpm install, eve (Postgres world) and Next (standalone)
                                                 builds, ops/migrate.mjs, one tar.zst in app/releases/
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
@@ -431,33 +432,79 @@ UPDATE_HOST = " && ".join((
     "sleep 2", "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health"))
 
 
+def hold_jobs(name):
+    """deployd's job slot for the update (POST /host-update): a release, env or ops job started during the
+    transfer would be cut by the restart of deployd. That restart gives the slot back, free_jobs does on a
+    failure before it, and it lapses by itself after deployd.HOST_UPDATE_S. True when held; a deployd from
+    before the hold has no such route (404): then only no job may run now, and False."""
+    try:
+        code, body = call(name, "POST", "host-update", {})
+    except LostAnswer as error:
+        sys.exit(f"{error}: deployd may hold its jobs for an update now (python host.py status {name}); "
+                 f"it gives them back within {deployd.HOST_UPDATE_S // 60} min")
+    if code == 404:
+        status = checked(call(name, "GET", "status"), (200,))
+        if status.get("job"):
+            sys.exit(f"deployd runs job {status['job']}: wait for it (python host.py status {name})")
+        print(f"deployd {status.get('deployd')} cannot hold its jobs: start none until this update is done",
+              flush=True)
+        return False
+    job = checked((code, body), (202,))
+    print(f"deployd holds its jobs for the update (job {job['id']})", flush=True)
+    return True
+
+
+def free_jobs(name, held):
+    """Ends the hold of an update that stopped before restarting deployd (after the restart there is none)."""
+    if not held:
+        return
+    try:
+        code, body = call(name, "DELETE", "host-update")
+    except LostAnswer as error:
+        code, body = None, {"error": str(error)}
+    if code != 200:
+        print(f"deployd did not take its jobs back ({code}: {body.get('error', body)}): they come back within "
+              f"{deployd.HOST_UPDATE_S // 60} min", flush=True)
+
+
 def cmd_update_host(args):
     """A VM made by an older bundle gets this one without being made again (its address, disk, releases and
     env stay): the bundle goes through Object Storage, the console checks its sha256, swaps /opt/bro/app-host
-    (the old one stays in app-host.old, unless its own install failed: then app-host.old keeps the good one), runs install-code.sh and restarts deployd. Not while deployd runs a
-    job: the restart would cut it."""
+    (the old one stays in app-host.old, unless its own install failed: then app-host.old keeps the good one),
+    runs install-code.sh and restarts deployd. deployd starts no job meanwhile (hold_jobs): the restart would
+    cut it."""
     name = host_name(args.name)
-    status = checked(call(name, "GET", "status"), (200,))
-    if status.get("job"):
-        sys.exit(f"deployd runs job {status['job']}: wait for it (python host.py status {name})")
     try:
         import console  # websocket-client, only here
     except ImportError:
         sys.exit("update-host needs the websocket-client package (pip install websocket-client)")
-    key, digest = deliver_bundle()
-    session = console.Console(name)
-    session.login()
-    # Two commands: the serial line takes about a kilobyte per line reliably, and the link is half of that.
-    output, code = session.run(
-        f"curl -fsS --connect-timeout 10 -m 300 -o /root/app-host.tgz '{s3.presign('GET', key, 900)}' && "
-        f"echo '{digest}  /root/app-host.tgz' | sha256sum -c --quiet - && echo fetched", 360)
-    # Only the last line: the console may echo the command, and the command holds the presigned link.
-    print(f"fetch {digest[:16]}: exit {code}; {output.strip().splitlines()[-1][-200:] if output.strip() else ''}")
-    if code != 0:
-        sys.exit(1)
+    held = hold_jobs(name)
+    try:
+        key, digest = deliver_bundle()
+        session = console.Console(name)
+        session.login()
+        # Two commands: the serial line takes about a kilobyte per line reliably, and the link is half of that.
+        output, code = session.run(
+            f"curl -fsS --connect-timeout 10 -m 300 -o /root/app-host.tgz '{s3.presign('GET', key, 900)}' && "
+            f"echo '{digest}  /root/app-host.tgz' | sha256sum -c --quiet - && echo fetched", 360)
+        # Only the last line: the console may echo the command, and the command holds the presigned link.
+        last = output.strip().splitlines()[-1][-200:] if output.strip() else ""
+        print(f"fetch {digest[:16]}: exit {code}; {last}")
+        if code != 0:
+            sys.exit(1)
+    except BaseException:
+        free_jobs(name, held)  # nothing restarted deployd yet
+        raise
     output, code = session.run(UPDATE_HOST, 600)
     print(f"install: exit {code}; {output.strip().splitlines()[-1][-300:] if output.strip() else ''}")
+    if code is None:
+        # The end marker was lost: the install may still run, or be done. deployd keeps its jobs held until
+        # its restart (or HOST_UPDATE_S): freeing them now could let a job start just before that restart.
+        sys.exit(f"no answer from the console in 600 s: the install may still run or be done. Check before "
+                 f"going on: python host.py status {name} --stage (deployd's version and job; a hold ends with "
+                 f"its restart, at most {deployd.HOST_UPDATE_S // 60} min)")
     if code != 0:
+        free_jobs(name, held)
         sys.exit(f"the install failed: python host.py status {name} --stage; the previous code is in "
                  "/opt/bro/app-host.old")
     print(json.dumps(checked(call(name, "GET", "status"), (200,)).get("deployd")))

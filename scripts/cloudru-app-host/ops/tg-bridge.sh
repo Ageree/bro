@@ -3,9 +3,10 @@
 # (scripts/cloudru-app-host/tg-bridge/README.md, «Переключение»):
 #
 #   tg-bridge.sh status                      the units, the bridge's health and getWebhookInfo
-#   tg-bridge.sh hold                        only deleteWebhook (pending kept): Telegram holds the updates
-#                                            (24 h) until switch-to-bridge, e.g. while the database moves;
-#                                            HOLD marks when, and the watchdog alerts on a hold left too long
+#   tg-bridge.sh hold                        a bridge that is on goes off (disable --now), then deleteWebhook
+#                                            (pending kept): Telegram holds the updates (24 h) until
+#                                            switch-to-bridge, e.g. while the database moves; HOLD marks
+#                                            when, and the watchdog alerts on a hold left too long
 #   tg-bridge.sh switch-to-bridge            tg-egress must answer first, and eve's health (tg_bridge.py,
 #                                            for hold too); then deleteWebhook (pending kept), enable and
 #                                            start the bridge, wait for its health
@@ -49,6 +50,13 @@ case "${1:-}" in
     ;;
   hold | switch-to-bridge)
     [ $# = 1 ] || exit 2
+    # In a hold nobody takes the updates: a bridge left on by an earlier switch would hand them to eve
+    # during the database's pause. It goes off first, whatever the path does, and HOLD with it: from then
+    # on nothing takes them.
+    if [ "$1" = hold ] && { systemctl is-enabled --quiet "$UNIT" || systemctl is-active --quiet "$UNIT"; }; then
+      systemctl disable --now "$UNIT"
+      [ -f "$HOLD" ] || date +%s > "$HOLD"
+    fi
     # The bridge polls through tg-egress: a path that does not answer would leave the bot with neither.
     if [ -f "$EGRESS" ] && ! timeout 40 python3 "$EGRESS" --check; then
       echo "tg-egress does not reach api.telegram.org: the webhook stays (journalctl -u bro-tg-egress)"

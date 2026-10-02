@@ -83,9 +83,13 @@ VM без пересоздания — `host.py update-host bro-app-1`: банд
 едет через Object Storage, serial-консоль сверяет sha256, кладёт его в
 `/opt/bro/app-host` (прежний — в `app-host.old`), запускает
 `install-code.sh` и перезапускает deployd. Релизы, env, сайты, адрес и диск
-остаются; включённый мост перезапускается, только если его файлы изменились;
-пока deployd выполняет задачу, команда отказывает. `bro-app-1`
-создан бандлом без Telegram — перед переключением ему нужен этот шаг.
+остаются; включённый мост перезапускается, только если его файлы изменились.
+Пока deployd выполняет задачу, команда отказывает, а на время обновления он
+сам держит слот задач (`POST /ops/v1/host-update`): релиз, env или ops в это
+время получают «busy», и рестарт deployd их не обрывает. Слот освобождает
+рестарт, обновление, упавшее до него, или 20 минут. `bro-app-1` создан
+бандлом без Telegram и без этого слота — перед переключением ему нужен этот
+шаг (первый раз — с проверкой, что задач нет).
 
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
 клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro` (дом —
@@ -236,7 +240,7 @@ Telegram до VM в РФ доходит ненадёжно, поэтому на 
 
 ```sh
 host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo (без токена в env — только юниты)
-host.py ops bro-app-1 tg-bridge.sh hold                # только deleteWebhook: Telegram копит обновления (24 ч), метка tg-hold
+host.py ops bro-app-1 tg-bridge.sh hold                # мост выключить, deleteWebhook: Telegram копит обновления (24 ч), метка tg-hold
 host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check и health eve, затем deleteWebhook и мост
 host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
 host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
@@ -246,7 +250,8 @@ host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
 eve у deployd — релиз, откат, `PUT env`, `restart bro-eve` — идёт так: стоп
 моста → 15 с, чтобы eve доделал принятое → перезапуск eve и Next → health →
 старт моста (в любом исходе). Так выкатка не теряет обновление, принятое eve
-за миг до рестарта, а мост читает новый токен и секрет. После релиза и отката
+за миг до рестарта, а мост читает новый токен и секрет. Мост не остановился —
+его снова запускают, eve не трогают, задача падает (env — прежний). После релиза и отката
 deployd проверяет путь `tg_egress.py --check` (если форвардер установлен):
 сбой — один `restart bro-tg-egress`, затем `"telegram": "down"` в итоге задачи
 и `WARNING` в логе; релиз при этом не откатывается — путь принадлежит хосту, а
@@ -364,12 +369,13 @@ host.py pg status      # кластер, диск, базы, пользоват�
 status` (`watchdog.undelivered`, там же лежащие проверки `watchdog.down`).
 
 Плановая остановка (`host.py stop`) снимает проверки web и eve (с eve — и
-моста) на три часа, дольше — тревога как обычно. `tg-bridge.sh hold` пишет
+моста) на три часа, дольше — тревога как обычно; не остановившийся юнит
+отметку не оставляет. `tg-bridge.sh hold` пишет
 `/var/lib/bro/tg-hold`, оба `switch-to-*` её убирают: hold старше трёх часов
 при выключенном мосте — тревога (Telegram держит обновления лишь сутки).
 Проверка, которую больше не запускают (мост выключен, `BACKUPS=off`),
 уходит из состояния; если о ней тревожили — одно сообщение, что она больше
-не проверяется.
+не проверяется (не ушедшее повторяется, как тревога).
 
 Watchdog живёт на той же VM: падение VM, сети, DNS, истёкший сертификат он
 не заметит. Внешней проверки `https://<домен>/eve/v1/health` пока нет — её

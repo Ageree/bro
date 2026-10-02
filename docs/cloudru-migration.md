@@ -141,7 +141,7 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 Готово: эвалы `reply` и `schedules` на RouterAI не хуже OpenRouter; шаг
 дешевле при той же доле кэша.
 
-### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM не создана
+### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM `bro-app-1` создана
 
 Сделано (`scripts/cloudru-app-host/README.md`): инструментарий разворачивает
 одну VM `bro-app-1` (gen-2-8, SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с
@@ -176,14 +176,13 @@ watchdog раз в минуту пишет владельцу в Telegram, ес�
 - Старые сессии Vercel Workflow не переносятся: новые ходы идут в новый мир,
   старые доживают на Vercel до отключения.
 
-Осталось: создать `bro-app-1`, env стенда
-(`host.py env --profile stand`), сайт `cloud.brobro.tech` и прогнать стенд;
-проверить ход через мир Postgres, переживание `systemctl restart bro-eve`,
-поток SSE через Caddy и доступность `api.telegram.org` с VM. Квота
-публичных IP проекта — 2, и 02.10 обе заняты (`sbx-code-1` и пробная VM
-другой сессии): для `bro-app-1` освободить адрес или попросить поддержку
-поднять квоту. Watchdog живёт на той же VM: до переключения прода завести
-внешнюю проверку `https://brobro.tech/eve/v1/health`.
+`bro-app-1` создан бандлом хоста без Telegram (код хоста на нём обновляет
+`host.py update-host`). Осталось: env стенда (`host.py env --profile stand`),
+сайт `cloud.brobro.tech` и прогнать стенд на `bro-app-1`; проверить ход через
+мир Postgres, переживание `systemctl restart bro-eve`, поток SSE через Caddy
+и доступность `api.telegram.org` с VM. Watchdog живёт на той же VM: до
+переключения прода завести внешнюю проверку
+`https://brobro.tech/eve/v1/health`.
 
 Готово: перезапуск сервера не теряет ходов и карточек, расписания не
 дублируются.
@@ -212,7 +211,8 @@ watchdog раз в минуту пишет владельцу в Telegram, ес�
   найденный в Compute API (`agent/lib/browser-vm/private-route.ts`). Обратно
   в Бро ходит только `sandboxd` (`/eve/v1/sandbox-tools`): хосту песочниц —
   `host.py create … --hosts-entry brobro.tech=bro-app-1` или на живом хосте
-  `host.py set-hosts`. Хосты пула и worker в Бро не звонят.
+  `host.py set-hosts`, причём `brobro.tech` — только когда домен уже на VM
+  (до того — лишь `cloud.brobro.tech`). Хосты пула и worker в Бро не звонят.
 - Новая VM, открывшая 3–8 соединений разом в первые минуты, теряла TCP и UDP
   насовсем: установка — последовательно и после 60 с стабильной сети.
 
@@ -322,8 +322,10 @@ Vercel API с `VERCEL_TOKEN` (`$T` ниже — токен без пробело
 iMessage — не проверено: входящие iMessage этих минут считать потерянными.
 Шаги 4–7 идут подряд, без пауз (запрос DNS из шага 7 подготовить заранее).
 
-1. Ворота этапа 5 пройдены: копия `BACKUP_ENCRYPTION_KEY` у владельца,
-   репетиция `db-copy.sh` на стенде, ночной бэкап с проверкой.
+1. Ворота этапов 4 и 5 пройдены: стенд на `bro-app-1` проверен (этап 4: ход
+   через мир Postgres, рестарт eve, поток SSE через Caddy), копия
+   `BACKUP_ENCRYPTION_KEY` у владельца, репетиция `db-copy.sh` на стенде,
+   ночной бэкап с проверкой. Без них шаги ниже не начинать.
 2. `~/.bro-app-host/env/prod.json` (`0600`): `TELEGRAM_OWNER_CHAT_ID` (на
    Vercel его нет), `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY` (sensitive на
    Vercel, в сессии нет) и `OPS_ALERT_WEBHOOK_URL` (https, push-канал
@@ -349,9 +351,11 @@ ok` и `no TELEGRAM_BOT_TOKEN in /etc/bro/env (stand env)`: в стендово�
 "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"` — `url`
    на `bro-next.vercel.app`. Релиз с `ops/db-neon-mode.sh`: `host.py deploy
 bro-app-1` (пока со стендовым env).
-5. Хосту песочниц — адрес Бро: `python scripts/cloudru-code-host/host.py
-set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry
-cloud.brobro.tech=bro-app-1` (ждать `2`).
+5. Хосту песочниц — адрес стенда: `python scripts/cloudru-code-host/host.py
+set-hosts sbx-code-2 --hosts-entry cloud.brobro.tech=bro-app-1` (ждать
+   `1`). Только его: `sandboxd` зовёт роутер инструментов прода на
+   `brobro.tech`, и закреплённый до окна `brobro.tech` увёл бы вызовы
+   task-агента прода с Vercel на VM, где сайта `brobro.tech` ещё нет.
 6. TTL: записи зоны `brobro.tech` (DNS Vercel, `ns1/ns2.vercel-dns.com`) — 60
    с (02.10: `@` ALIAS, `*` ALIAS, CAA с `letsencrypt.org`); новые A — тоже 60. Проверка: `dig +noall +answer brobro.tech @ns1.vercel-dns.com`.
 7. Внешняя проверка `https://brobro.tech/eve/v1/health` (мониторинг Cloud.ru
@@ -410,15 +414,20 @@ A brobro.tech @ns1.vercel-dns.com` и `www.brobro.tech`: только
    берёт сразу, раз A уже на VM; проверка — `curl -sSI
 https://brobro.tech/` и `https://www.brobro.tech/x` (308 на
    `https://brobro.tech/x`).
-9. `host.py ops bro-app-1 tg-bridge.sh switch-to-bridge` — проверка
-   tg-egress, мост забирает накопленное.
-10. Внешние адреса — только сверить: Photon — вебхук
+9. Хосту песочниц — и домен прода: `python scripts/cloudru-code-host/host.py
+set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry
+cloud.brobro.tech=bro-app-1` (ждать `2`): `sandboxd` зовёт `brobro.tech`, а
+   публичный адрес VM изнутри проекта недостижим. После шага 8: Caddy уже
+   отдаёт `brobro.tech`.
+10. `host.py ops bro-app-1 tg-bridge.sh switch-to-bridge` — проверка
+    tg-egress, мост забирает накопленное.
+11. Внешние адреса — только сверить: Photon — вебхук
     `https://brobro.tech/eve/v1/photon`, ЮKassa — HTTP-уведомления
     `https://brobro.tech/api/yookassa`, Browser Use (если вебхук задан) —
     `https://brobro.tech/eve/v1/browser-use`, Composio — возврат собирается из
     `BETTER_AUTH_URL`. Адрес на `bro-next.vercel.app` в кабинете — заменить на
     `brobro.tech`.
-11. Проверки: `host.py status bro-app-1` (health web/eve, `telegram`,
+12. Проверки: `host.py status bro-app-1` (health web/eve, `telegram`,
     `watchdog.down` пуст); `curl https://brobro.tech/eve/v1/health`; вход
     по телефону (код iMessage), веб-чат с ответом, сообщение и кнопка
     карточки в Telegram (`host.py ops bro-app-1 tg-bridge.sh status`:
@@ -451,20 +460,25 @@ https://brobro.tech/` и `https://www.brobro.tech/x` (308 на
 /v2/domains/brobro.tech/records/<id>` для каждой A со значением
    `176.109.111.216`, не только сохранённых id; повторный листинг — таких
    нет, `dig` снова отдаёт ALIAS Vercel.
-5. Telegram: `host.py ops bro-app-1 tg-bridge.sh switch-to-webhook
+5. Хосту песочниц — `brobro.tech` снова по DNS: `python
+scripts/cloudru-code-host/host.py set-hosts sbx-code-2 --hosts-entry
+cloud.brobro.tech=bro-app-1` (ждать `1`). `set-hosts` заменяет все строки
+   `# bro-private` теми, что названы, поэтому закрепление `brobro.tech`
+   уходит, и task-агент прода снова идёт на Vercel.
+6. Telegram: `host.py ops bro-app-1 tg-bridge.sh switch-to-webhook
 https://bro-next.vercel.app/eve/v1/telegram` (мост выключается,
    доставленное подтверждается, `setWebhook` с тем же секретом). VM или её
    выход к Telegram лежит — `setWebhook` с любой машины с доступом к
    Telegram (README моста, «Откат без VM»), а когда путь VM к Telegram
    вернётся — та же `switch-to-webhook` с тем же адресом: мост выключится.
-6. Записи: всё, что Бро записал в Cloud.ru, приехало в Neon шагом 2;
+7. Записи: всё, что Бро записал в Cloud.ru, приехало в Neon шагом 2;
    записи Vercel в окне не случились (Neon был только для чтения — эти
    запросы упали, а не потерялись молча; входящие iMessage этого времени
    могли пропасть — см. начало раздела). Файлы, загруженные на VM, лежат в
    Object Storage, и сборка Vercel с PR хранилища читает их оттуда же; на
    сборке до него они не откроются (раздел 2). Ходы, шедшие в мире
    `bro_workflow`, не переносятся. VM и базу не удалять неделю.
-7. Браузер: если по пункту 3 «До окна» хосты пула и VM пилота пересоздавали с новым
+8. Браузер: если по пункту 3 «До окна» хосты пула и VM пилота пересоздавали с новым
    `BROWSER_VM_SIGNING_KEY`, Vercel со своим ключом до них не достучится —
    на откате их пересоздать снова (или положить ключ VM на Vercel и
    передеплоить), до того браузерные поручения пилота падают.

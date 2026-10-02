@@ -34,7 +34,8 @@ A Telegram hold (ops/tg-bridge.sh hold: no webhook, the bridge off) leaves /var/
 the updates 24 hours and nobody takes them, so a hold left over TG_HOLD_S with the bridge still off is down.
 
 A check that is no longer run (the bridge switched off, tg-egress removed, BACKUPS=off) leaves the state: its
-entry and its undelivered alert go, and an owner who heard it was down hears it is no longer watched.
+entry and its undelivered alert go, and an owner who heard it was down hears it is no longer watched. That
+notice keeps the entry ({"unwatched": since}) until a channel takes it, as an alert does.
 
 State: /var/lib/bro/watchdog.json (when each check went down, when the owner last heard, an unsent recovery).
 
@@ -203,9 +204,10 @@ def send_webhook(env, text):
     if not url.startswith("https://"):
         print("OPS_ALERT_WEBHOOK_URL: not https, not sent", flush=True)
         return False
-    request = urllib.request.Request(url, text.encode(), {"Content-Type": "text/plain; charset=utf-8"},
-                                     method="POST")
     try:
+        # Inside: a malformed URL (https://[::1) fails already here, and the alert must still be saved as due.
+        request = urllib.request.Request(url, text.encode(), {"Content-Type": "text/plain; charset=utf-8"},
+                                         method="POST")
         with urllib.request.urlopen(request, timeout=15) as response:
             return 200 <= response.status < 300
     except (OSError, urllib.error.URLError, ValueError) as error:
@@ -237,20 +239,27 @@ def clock(seconds):
 def step(state, checks, now, host, skip=frozenset()):
     """The messages due for these results, as (check, text); updates state in place. A message goes on the
     record only once it is sent (sent()), so an unsent alert or recovery is due again on the next tick.
-    A check neither run nor paused (skip) is dropped from the state; the owner hears once if it was alerted."""
+    A check neither run nor paused (skip) is dropped from the state; the owner hears once if it was alerted:
+    until that notice is sent, the entry stays as {"unwatched": since}."""
     messages = []
     for name in [n for n in NAMES if n not in checks and n not in skip]:
-        entry = state.pop(name, None)
+        entry = state.get(name)
+        if isinstance(entry, dict) and ("alertedAt" in entry or "unwatched" in entry):
+            state[name] = {"unwatched": entry.get("unwatched", now)}
+            messages.append((name, f"Бро на {host}: {NAMES[name]} больше не проверяется (выключено или снято); "
+                                   f"последняя тревога была о нём."))
+            continue
+        state.pop(name, None)
         undelivered = state.get("undelivered")
         if isinstance(undelivered, dict):
             undelivered.pop(name, None)
             if not undelivered:
                 state.pop("undelivered")
-        if isinstance(entry, dict) and "alertedAt" in entry:
-            messages.append((name, f"Бро на {host}: {NAMES[name]} больше не проверяется (выключено или снято); "
-                                   f"последняя тревога была о нём."))
     for name, ok in checks.items():
         entry = state.setdefault(name, {})
+        if "unwatched" in entry:  # run again: the notice that it is not is moot
+            entry = state[name] = {}
+            sent(state, name)
         if ok:
             if "alertedAt" in entry or "recovered" in entry:
                 since = entry["recovered"] if "recovered" in entry else entry["downSince"]
@@ -290,7 +299,9 @@ def sent(state, name):
         if not undelivered:
             state.pop("undelivered")
     entry = state.get(name, {})
-    if "recovered" in entry:
+    if "unwatched" in entry:
+        del state[name]
+    elif "recovered" in entry:
         state[name] = {}
     elif "pendingAlert" in entry:
         entry["alertedAt"] = entry.pop("pendingAlert")

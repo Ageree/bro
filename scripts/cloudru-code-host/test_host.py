@@ -64,6 +64,16 @@ class SetHostsTest(unittest.TestCase):
         hosts, _ = self.run_line(line, hosts)
         self.assertEqual(hosts, "127.0.0.1 localhost\n10.0.1.8 brobro.tech # bro-private\n")
 
+    def test_a_name_left_out_loses_its_pin(self):
+        # The rollback: production's name goes back to DNS (Vercel), the stand's stays on the VM.
+        both = host.set_hosts_command([("brobro.tech", "10.0.1.7"), ("cloud.brobro.tech", "10.0.1.7")])
+        hosts, template = self.run_line(both, "127.0.0.1 localhost\n", "127.0.1.1 {{fqdn}} {{hostname}}\n")
+        self.assertEqual(hosts.count("# bro-private"), 2)
+        stand = host.set_hosts_command([("cloud.brobro.tech", "10.0.1.7")])
+        hosts, template = self.run_line(stand, hosts, template)
+        self.assertEqual(hosts, "127.0.0.1 localhost\n10.0.1.7 cloud.brobro.tech # bro-private\n")
+        self.assertEqual(template, "127.0.1.1 {{fqdn}} {{hostname}}\n10.0.1.7 cloud.brobro.tech # bro-private\n")
+
     def test_an_image_without_the_template_gets_none(self):
         hosts, template = self.run_line(host.set_hosts_command([("brobro.tech", "10.0.1.7")]), "127.0.0.1 localhost\n")
         self.assertEqual(hosts, "127.0.0.1 localhost\n10.0.1.7 brobro.tech # bro-private\n")

@@ -35,15 +35,21 @@ case "$1" in
     PGOPTIONS="$WRITABLE" psql_on NEON <<'SQL'
 SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database()) \gexec
 SQL
-    echo "ended $(end_other_sessions) other sessions"
+    # An assignment of its own: inside echo's arguments a failed termination would not stop the script.
+    ended=$(end_other_sessions)
+    echo "ended $ended other sessions"
     ;;
   writable)
     PGOPTIONS="$WRITABLE" psql_on NEON <<'SQL'
 SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \gexec
 SQL
-    echo "ended $(end_other_sessions) other sessions"
+    ended=$(end_other_sessions)
+    echo "ended $ended other sessions"
     ;;
 esac
-# A new session reads the database's default: what Vercel's next connection gets.
-echo "neon: default_transaction_read_only=$(read_only_default NEON), other sessions $(other_sessions NEON)" \
-  "($(other_sessions NEON busy) in a transaction)"
+# A new session reads the database's default: what Vercel's next connection gets. Read first, so that a
+# failed query fails the script rather than print an empty value.
+ro=$(read_only_default NEON)
+others=$(other_sessions NEON)
+busy=$(other_sessions NEON busy)
+echo "neon: default_transaction_read_only=$ro, other sessions $others ($busy in a transaction)"
