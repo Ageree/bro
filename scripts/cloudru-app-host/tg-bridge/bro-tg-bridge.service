@@ -1,0 +1,32 @@
+[Unit]
+Description=Bro tg-bridge (Telegram updates by getUpdates, delivered to eve as the webhook would)
+After=network-online.target bro-tg-egress.service bro-eve.service
+Wants=network-online.target
+# Not enabled by provisioning: `tg_bridge.py switch-to-bridge` removes the webhook, then enables this.
+
+[Service]
+Type=simple
+User=bro
+Group=bro
+EnvironmentFile=/etc/bro/env
+EnvironmentFile=-/etc/bro/tg-bridge.env
+# The offset and the delivered ids: /var/lib/bro/tg-bridge/state.json.
+StateDirectory=bro/tg-bridge
+Environment=TG_BRIDGE_STATE=/var/lib/bro/tg-bridge/state.json
+ExecStart=/usr/bin/python3 /opt/bro/tg-bridge/tg_bridge.py run
+Restart=always
+RestartSec=5
+# 2: no token or a secret Telegram would not take; restarting does not fix /etc/bro/env.
+RestartPreventExitStatus=2
+# A delivery in flight finishes (eve answers in milliseconds); a long poll is cut at once.
+TimeoutStopSec=45
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
