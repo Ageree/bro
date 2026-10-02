@@ -1,5 +1,9 @@
 [Unit]
 Description=Bro watchdog (Next, eve and Caddy health; Telegram to the owner)
+# api.telegram.org answers from Cloud.ru only through tg-egress (its /etc/hosts line and REDIRECT rule):
+# start after it. Wants, not Requires: the app serves the web without Telegram.
+After=bro-tg-egress.service
+Wants=bro-tg-egress.service
 
 [Service]
 Type=oneshot

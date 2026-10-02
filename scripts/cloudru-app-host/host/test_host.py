@@ -525,7 +525,7 @@ class BootTest(unittest.TestCase):
             import tarfile
             with tarfile.open(fileobj=io.BytesIO(gzip.decompress(first))) as tar:
                 names = tar.getnames()
-            self.assertEqual(sorted(names), sorted([*boot.FILES, "vendor/caddy"]))
+            self.assertEqual(sorted(names), sorted([*boot.FILES, *boot.SIBLING_FILES, "vendor/caddy"]))
             with self.assertRaises(ValueError):
                 boot.bundle(vendor)
 
@@ -545,6 +545,22 @@ class BootTest(unittest.TestCase):
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
         for unit in ("bro-web.service", "bro-eve.service"):
             self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
+
+    def test_telegram_comes_with_the_host(self):
+        subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)
+        install = (HERE / "install-code.sh").read_text()
+        self.assertIn("systemctl enable bro-tg-egress.service", install)
+        self.assertIn('bash "$HOST/tg-bridge/install.sh"', install)
+        # The bridge is switched on only by switch-to-bridge, which removes the webhook first.
+        self.assertNotRegex(install, r"enable[^\n]*bro-tg-bridge")
+        self.assertNotRegex((HERE.parent / "tg-bridge/install.sh").read_text(), r"systemctl enable")
+        provision = (HERE / "provision.sh").read_text()
+        self.assertIn('bash "$HOST/install-code.sh"', provision)
+        for name in boot.SIBLING_FILES:
+            self.assertIn(name, provision)
+        for unit in ("bro-eve.service", "bro-web.service", "bro-watchdog.service"):
+            self.assertIn("After=bro-tg-egress.service", (HERE / unit).read_text(), unit)
+        self.assertIn("bro-tg-egress.service", (HERE.parent / "tg-bridge/bro-tg-bridge.service").read_text())
 
     def test_every_long_running_unit_restarts(self):
         for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
@@ -578,7 +594,7 @@ class BackupTest(unittest.TestCase):
     def test_scripts_parse_and_share_the_library(self):
         for script in sorted(self.OPS.glob("*.sh")):
             subprocess.run(["bash", "-n", str(script)], check=True)
-            if script.name != "db-lib.sh":
+            if script.name.startswith("db-") and script.name != "db-lib.sh":
                 self.assertIn('source "$(dirname "$0")/db-lib.sh"', script.read_text(), script.name)
         lib = (self.OPS / "db-lib.sh").read_text()
         # A password never reaches a command line; a restore is one transaction.

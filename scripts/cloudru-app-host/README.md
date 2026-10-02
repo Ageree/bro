@@ -13,19 +13,22 @@ Caddy :443 ─ /eve/* ───────────────▶ bro-eve  
 bro-eve ── мир @workflow/world-postgres (graphile-worker в процессе) ──▶ PostgreSQL Cloud.ru
 ```
 
-| Файл                    | Что делает                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `host.py`               | команды из сессии (справка — `-h`)                                                   |
-| `host/boot.py`          | `vendor`, бандл хоста и cloud-init                                                   |
-| `host/provision.sh`     | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                           |
-| `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
-| `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
-| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
-| `host/egress.sh`        | iptables: `bro` и `caddy` без metadata `169.254/16`, `bro` и без порта deployd       |
-| `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
-| `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
-| `ops/db-*.sh`           | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
-| `ops/store.py`          | Object Storage и манифесты бэкапов (подпись — `s3.py` стенда, едет в релиз)          |
+| Файл                       | Что делает                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `host.py`                  | команды из сессии (справка — `-h`)                                                   |
+| `host/boot.py`             | `vendor`, бандл хоста и cloud-init                                                   |
+| `host/provision.sh`        | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                           |
+| `host/install-code.sh`     | юниты, tg-egress (включён) и tg-bridge (выключен) из бандла; provision и update-host |
+| `host/deployd.py`          | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
+| `host/watchdog.py`         | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
+| `host/*.service, timer`    | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
+| `host/egress.sh`           | iptables: `bro` и `caddy` без metadata `169.254/16`, `bro` и без порта deployd       |
+| `host/vendor.json`         | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
+| `ops/migrate.ts`           | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
+| `ops/db-*.sh`              | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
+| `ops/store.py`             | Object Storage и манифесты бэкапов (подпись — `s3.py` стенда, едет в релиз)          |
+| `ops/tg-bridge.sh`         | вебхук ⇄ мост Telegram; едет в бандле хоста, deployd зовёт его от root               |
+| `tg-egress/`, `tg-bridge/` | выход к `api.telegram.org` и long polling вместо вебхука (их README)                 |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET`, `CLOUDRU_S3_TENANT_ID`; Compute
 API, serial-консоль и подпись S3 — из стенда `scripts/cloudru-sandbox-probe/`,
@@ -83,7 +86,12 @@ ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
 релизами), `/etc/bro/env`
 (`0600`, пустой до первого `host.py env`), журнал не больше 1 ГБ, Caddy с
 ops-хостом `<ip>.sslip.io`, `deployd`, таймер watchdog. `bro-web` и `bro-eve`
-включены, но стартуют только когда есть `current`.
+включены, но стартуют только когда есть `current`. Юниты и Telegram ставит
+`host/install-code.sh`: `bro-tg-egress` включён и запущен (`bro-eve`,
+`bro-web`, `bro-watchdog` и `bro-tg-bridge` идут после него: `After=`),
+`bro-tg-bridge` установлен, но выключен — его включает только
+`tg-bridge.sh switch-to-bridge` (раздел «Telegram»). В конце — одна проверка
+`tg_egress.py --check` (стадия `telegram`; сбой только в лог).
 
 ## Выкладка
 

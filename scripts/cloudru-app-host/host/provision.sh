@@ -6,7 +6,8 @@
 #
 # What it leaves: the user bro (home /var/lib/bro-home), /srv/bro/{releases,current} owned by root, /etc/bro/env (0600, empty until PUT
 # /ops/v1/env), the units bro-web and bro-eve (they start with the first release), deployd behind Caddy on
-# the ops host <public IP with dashes>.sslip.io, the watchdog and backup timers, journald capped at 1 GB. Stages go to
+# the ops host <public IP with dashes>.sslip.io, the watchdog and backup timers, tg-egress running and
+# tg-bridge installed but off (install-code.sh), journald capped at 1 GB. Stages go to
 # /var/lib/bro/stage and timeline; a failure leaves `failed:<stage>:line N`.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -29,8 +30,11 @@ print(value)' "$1" "$2"; }
 APT=(apt-get -q -o DPkg::Lock::Timeout=600)
 stage start
 
-for file in deployd.py watchdog.py egress.sh bro-egress.service bro-web.service bro-eve.service deployd.service bro-watchdog.service \
-  bro-watchdog.timer bro-backup.service bro-backup.timer bro-backup-alert.service caddy.service vendor/caddy; do
+for file in install-code.sh deployd.py watchdog.py egress.sh bro-egress.service bro-web.service bro-eve.service \
+  deployd.service bro-watchdog.service bro-watchdog.timer bro-backup.service bro-backup.timer \
+  bro-backup-alert.service caddy.service vendor/caddy tg-egress/tg_egress.py tg-egress/setup.sh \
+  tg-egress/bro-tg-egress.service tg-bridge/tg_bridge.py tg-bridge/install.sh tg-bridge/bro-tg-bridge.service \
+  ops/tg-bridge.sh; do
   [ -f "$HOST/$file" ] || fail "the bundle has no $file"
 done
 [ -f /etc/bro/deployd.json ] || fail "no /etc/bro/deployd.json"
@@ -140,11 +144,9 @@ systemctl enable caddy >/dev/null
 systemctl restart caddy
 
 stage services
-for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service \
-  bro-watchdog.timer bro-backup.service bro-backup.timer bro-backup-alert.service; do
-  install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
-done
-systemctl daemon-reload
+# The units, tg-egress (enabled and started: api.telegram.org answers from Cloud.ru only through it) and
+# tg-bridge (installed, not enabled: `host.py ops NAME tg-bridge.sh switch-to-bridge` turns it on).
+bash "$HOST/install-code.sh"
 systemctl enable bro-web bro-eve >/dev/null
 # The nightly backup runs once there is a release and BACKUP_ENCRYPTION_KEY in /etc/bro/env.
 systemctl enable --now deployd bro-watchdog.timer bro-backup.timer >/dev/null
@@ -153,4 +155,8 @@ for i in $(seq 1 30); do
   [ "$i" = 30 ] && fail "deployd does not answer"
   sleep 2
 done
+# The path to Telegram, once: a failure is logged, not fatal (the watchdog checks it every minute, and a new
+# VM's network is shaky in its first minutes).
+stage telegram
+timeout 60 python3 /opt/bro/tg-egress/tg_egress.py --check || echo "tg-egress: no answer yet (watchdog retries)"
 stage ready
