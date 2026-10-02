@@ -185,6 +185,32 @@ host.py rollback bro-app-1                         # ещё раз — на ре
   от `bro` с env сервисов (базы — раздел «База»); аргумент `s3get:`/`s3put:`
   превращается в presigned-ссылку.
 
+## Telegram
+
+С VM Cloud.ru `api.telegram.org` отвечает только через `tg-egress/`, а вебхук
+Telegram до VM в РФ доходит ненадёжно, поэтому на проде обновления забирает
+мост `tg-bridge/` (long polling). Переключение — через deployd от root
+(`ops/tg-bridge.sh` из бандла хоста, не из релиза: файлы релиза принадлежат
+`bro`):
+
+```sh
+host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo
+host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check, затем deleteWebhook и мост
+host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
+host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
+```
+
+Пока мост включён (`systemctl is-enabled bro-tg-bridge`), каждый перезапуск
+eve у deployd — релиз, откат, `PUT env`, `restart bro-eve` — идёт так: стоп
+моста → 15 с, чтобы eve доделал принятое → перезапуск eve и Next → health →
+старт моста (в любом исходе). Так выкатка не теряет обновление, принятое eve
+за миг до рестарта, а мост читает новый токен и секрет. После релиза и отката
+deployd проверяет путь `tg_egress.py --check` (если форвардер установлен):
+сбой — один `restart bro-tg-egress`, затем `"telegram": "down"` в итоге задачи
+и `WARNING` в логе; релиз при этом не откатывается — путь принадлежит хосту, а
+не релизу. `host.py status` показывает `telegram` (форвардер, мост) и
+`watchdog` — лежащие проверки и тревоги, которые не удалось доставить.
+
 ## База
 
 Managed PostgreSQL Cloud.ru 18, кластер `bro-pg` в подсети VM

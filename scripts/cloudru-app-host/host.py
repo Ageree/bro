@@ -21,11 +21,13 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
                                                 compose /etc/bro/env and PUT it (names only are printed);
                                                 --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only
   python host.py sites NAME [--set D,D | --add D | --remove D]
-  python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog
+  python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog, bro-backup,
+                                                bro-tg-egress, bro-tg-bridge
   python host.py restart NAME [UNIT ...] | stop NAME UNIT ...
   python host.py ops NAME SCRIPT [ARG ...]      ops/SCRIPT of the current release (db-backup.sh, db-restore.sh,
                                                 db-restore-check.sh, db-copy.sh); an ARG s3get:KEY or s3put:KEY
-                                                becomes a presigned link
+                                                becomes a presigned link. tg-bridge.sh status | switch-to-bridge
+                                                | switch-to-webhook URL runs as root from the host bundle
   python host.py pg create [--spec S] [--disk 20]   the Managed PostgreSQL cluster bro-pg (when there is none)
   python host.py pg users [--reset-password] [--new-backup-key]
                                                 its user bro_app, the password and BACKUP_ENCRYPTION_KEY in
@@ -474,6 +476,8 @@ def assemble(stage, version, commit):
     world = REPO / "node_modules/@workflow/world-postgres"
     shutil.copytree(world / "src/drizzle/migrations", stage / "ops/world-migrations")
     for script in sorted([*(HERE / "ops").glob("*.sh"), *(HERE / "ops").glob("*.py")]):
+        if script.name in deployd.ROOT_OPS:
+            continue  # deployd runs the host bundle's copy as root, never a release's (bro owns it)
         shutil.copy2(script, stage / "ops" / script.name)
     # ops/store.py signs Object Storage requests the way the session does.
     shutil.copy2(REPO / "scripts/cloudru-sandbox-probe/s3.py", stage / "ops/s3.py")

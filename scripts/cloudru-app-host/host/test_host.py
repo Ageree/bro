@@ -47,6 +47,8 @@ class FakeRunner(deployd.Runner):
         self.calls = []
         self.health = {}
         self.migrate_exit = 0
+        self.enabled = set()  # units `systemctl is-enabled` says yes to
+        self.egress_exits = []  # exit codes of the next tg_egress.py --check calls, then 0
 
     def run(self, argv, *, env=None, cwd=None, user=None, timeout=600):
         self.calls.append({"argv": argv, "env": env, "cwd": cwd, "user": user})
@@ -57,6 +59,10 @@ class FakeRunner(deployd.Runner):
             return self.migrate_exit, "migrate app: done\nmigrate world: done\n"
         if argv[:2] == ["systemctl", "is-active"]:
             return 0, "active\n"
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            return (0, "") if argv[-1] in self.enabled else (1, "")
+        if argv[:1] == ["python3"] and argv[-1] == "--check":
+            return (self.egress_exits.pop(0) if self.egress_exits else 0), "no answer: TimeoutError\n"
         return 0, ""
 
     def healthy(self, url, timeout=5):
@@ -104,6 +110,7 @@ class ReleaseTest(unittest.TestCase):
         self.deployd = deployd.Deployd(self.paths, self.runner, IDENTITY)
         self.log = []
         deployd.HEALTH_WAIT_S = 0
+        deployd.BRIDGE_DRAIN_S = 0
 
     def body(self, version):
         data = release_archive(version)
@@ -242,6 +249,82 @@ class ReleaseTest(unittest.TestCase):
         call = self.runner.calls[-1]
         self.assertEqual(call["argv"][0], "/bin/bash")
         self.assertEqual(call["user"], "bro")
+
+    def systemctl(self):
+        return [" ".join(c["argv"][1:3]) for c in self.runner.calls
+                if c["argv"][0] == "systemctl" and c["argv"][1] in ("restart", "stop", "start")]
+
+    def test_an_enabled_bridge_is_stopped_around_every_restart_of_eve(self):
+        self.release("v1")
+        self.assertNotIn("stop bro-tg-bridge", self.systemctl())  # not enabled: left alone
+        self.runner.enabled.add("bro-tg-bridge")
+        both = ["stop bro-tg-bridge", "restart bro-eve", "restart bro-web", "start bro-tg-bridge"]
+        for work, expected in (
+                (lambda: self.release("v2"), both),
+                (lambda: self.deployd.do_rollback({}, self.log.append), both),
+                (lambda: self.deployd.do_env({"env": {"A": "1"}}, self.log.append), both),
+                (lambda: self.deployd.do_restart({"units": ["bro-eve", "bro-tg-bridge"]}, self.log.append),
+                 ["stop bro-tg-bridge", "restart bro-eve", "start bro-tg-bridge"])):
+            self.runner.calls.clear()
+            work()
+            self.assertEqual(self.systemctl(), expected)
+        # Web alone does not touch the bridge.
+        self.runner.calls.clear()
+        self.deployd.do_restart({"units": ["bro-web"]}, self.log.append)
+        self.assertEqual(self.systemctl(), ["restart bro-web"])
+
+    def test_the_bridge_comes_back_even_when_the_release_does_not(self):
+        self.release("v1")
+        self.runner.enabled.add("bro-tg-bridge")
+        self.runner.health["v2"] = False
+        self.runner.calls.clear()
+        with self.assertRaisesRegex(deployd.Refused, "back on v1"):
+            self.release("v2")
+        calls = self.systemctl()
+        self.assertEqual((calls[0], calls[-1]), ("stop bro-tg-bridge", "start bro-tg-bridge"))
+        self.runner.calls.clear()
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "previous one is back"):
+            self.deployd.do_env({"env": {"A": "2"}}, self.log.append)
+        self.assertEqual(self.systemctl()[-1], "start bro-tg-bridge")
+
+    def test_the_path_to_telegram_is_checked_after_a_release_when_tg_egress_is_installed(self):
+        self.assertNotIn("telegram", self.release("v1"))
+        self.paths.tg_egress.parent.mkdir(parents=True)
+        self.paths.tg_egress.write_text("")
+        self.assertEqual(self.release("v2")["telegram"], "ok")
+        self.runner.egress_exits = [1]  # a restart of tg-egress brings it back
+        self.runner.calls.clear()
+        self.assertEqual(self.release("v3")["telegram"], "ok")
+        self.assertIn("restart bro-tg-egress", self.systemctl())
+        self.runner.egress_exits = [1, 1]  # still down: said, and the release stays
+        result = self.release("v4")
+        self.assertEqual((result["telegram"], os.readlink(self.paths.current)), ("down", "releases/v4"))
+        self.assertTrue(any("WARNING" in line for line in self.log))
+
+    def test_tg_bridge_sh_runs_as_root_from_the_host_bundle(self):
+        (self.paths.host_ops).mkdir(parents=True)
+        (self.paths.host_ops / "tg-bridge.sh").write_text("")
+        for args in (["switch-to-bridge"], ["switch-to-webhook", "https://bro-next.vercel.app/eve/v1/telegram"],
+                     ["status"]):
+            self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)  # no release needed
+            call = self.runner.calls[-1]
+            self.assertEqual(call["argv"], ["/bin/bash", str(self.paths.host_ops / "tg-bridge.sh"), *args])
+            self.assertIsNone(call["user"])
+            self.assertNotIn("DATABASE_URL", call["env"])
+        for args in (["switch-to-webhook", "http://x.example/eve/v1/telegram"], ["switch-to-webhook"],
+                     ["status", "--now"], ["rm"]):
+            with self.assertRaisesRegex(deployd.Refused, "tg-bridge.sh"):
+                self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)
+
+    def test_status_shows_what_the_watchdog_could_not_tell(self):
+        self.paths.watchdog_state.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.watchdog_state.write_text(json.dumps({"tg-egress": {"downSince": 100, "pendingAlert": 1},
+                                                         "web": {}, "undelivered": {"tg-egress": 400}}))
+        status = self.deployd.status()
+        self.assertEqual(status["watchdog"], {"down": {"tg-egress": 100}, "undelivered": {"tg-egress": 400}})
+        self.assertIn("bro-tg-bridge", status["units"])
+        self.assertEqual(status["telegram"], {"egressInstalled": False, "bridgeEnabled": False})
 
     def test_neon_goes_to_the_ops_scripts_only(self):
         self.release("v1")

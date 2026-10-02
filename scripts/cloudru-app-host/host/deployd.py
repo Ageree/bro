@@ -12,10 +12,12 @@ DEPLOY_SIGNING_KEY itself.
 
 Routes (all but /ops/v1/health need a token; long work runs as a job, one at a time):
   GET  /ops/v1/health                 {"ok": true, "version"}
-  GET  /ops/v1/status                 release, releases, units, health of web and eve, sites, disk
+  GET  /ops/v1/status                 release, releases, units, health of web and eve, sites, disk, the
+                                      Telegram path and the watchdog's checks that are down
   POST /ops/v1/release                {version, url, sha256} -> 202 {job}: download from Object Storage,
                                       check, unpack, migrate (ops/migrate.mjs app world), switch `current`,
-                                      restart, wait up to 120 s for health, or switch back
+                                      restart, wait up to 120 s for health, or switch back; then the
+                                      path to Telegram (tg_egress.py --check, when tg-egress is installed)
   POST /ops/v1/rollback               {version?} -> 202 {job}: the previous (or named) release
   GET  /ops/v1/env                    the names in /etc/bro/env and the file's sha256, never values
   PUT  /ops/v1/env                    {env: {NAME: value}, opsEnv?: {NAME: value}} -> 202 {job}: the whole
@@ -26,7 +28,13 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
   GET  /ops/v1/logs?unit=&lines=      the tail of journald for one of the units
   POST /ops/v1/restart                {units: [...]} -> 202 {job}
   POST /ops/v1/stop                   {units: [bro-web, bro-eve]} -> 202 {job} (before a restore)
-  POST /ops/v1/ops                    {script, args?} -> 202 {job}: ops/<script> of the current release
+  POST /ops/v1/ops                    {script, args?} -> 202 {job}: ops/<script> of the current release, as
+                                      bro; ROOT_OPS (tg-bridge.sh) from the host bundle, as root
+
+Every restart of eve (release, rollback, env, restart) with tg-bridge enabled: stop the bridge, give eve
+BRIDGE_DRAIN_S to finish what it took, restart, health, start the bridge again whatever happened
+(scripts/cloudru-app-host/tg-bridge/README.md, «Что должен сделать сервер»): an update eve took a moment
+before its restart is not lost, and the bridge, which reads the token and the secret once, gets a new env.
   GET  /ops/v1/jobs/<id>              {kind, state: running|done|failed, log, result}
 
 A job's log never holds a request's URL or an env value.
@@ -55,7 +63,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.4"
+VERSION = "2026-10-02.5"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -66,8 +74,14 @@ SCRIPT = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.(sh|mjs)")
 ARGUMENT = re.compile(r"[A-Za-z0-9._:/=@%?&+-]{1,2048}")
 # Releases come only from the project's Object Storage (host.py build): a presigned GET.
 RELEASE_HOSTS = ("s3.cloud.ru",)
-UNITS = ("bro-web", "bro-eve", "caddy", "deployd", "bro-watchdog", "bro-backup")
-RESTARTABLE = ("bro-web", "bro-eve", "caddy")
+UNITS = ("bro-web", "bro-eve", "caddy", "deployd", "bro-watchdog", "bro-backup", "bro-tg-egress", "bro-tg-bridge")
+RESTARTABLE = ("bro-web", "bro-eve", "caddy", "bro-tg-egress", "bro-tg-bridge")
+BRIDGE = "bro-tg-bridge"
+# What eve still does for an update it took (waitUntil: download, transcription) before it is restarted.
+BRIDGE_DRAIN_S = 15
+# Scripts of the host bundle that deployd runs as root, never a release's copy: bro owns a release's files.
+ROOT_OPS = ("tg-bridge.sh",)
+OPS_ACTION = {"tg-bridge.sh": re.compile(r"status|switch-to-bridge|switch-to-webhook https://[a-z0-9.-]+/eve/v1/telegram")}
 # Stopped for a restore (ops/db-restore.sh); a restart or the next release starts them again.
 STOPPABLE = ("bro-web", "bro-eve")
 KEEP_RELEASES = 5
@@ -93,6 +107,9 @@ class Paths:
         self.downloads = self.srv / "downloads"
         self.history = self.srv / "history.json"
         self.backups = root / "var/backups/bro"
+        self.host_ops = root / "opt/bro/app-host/ops"
+        self.tg_egress = root / "opt/bro/tg-egress/tg_egress.py"
+        self.watchdog_state = root / "var/lib/bro/watchdog.json"
 
 
 class Unauthorized(Exception):
@@ -375,6 +392,44 @@ class Deployd:
         os.symlink(f"releases/{version}", temporary)
         os.replace(temporary, link)
 
+    def bridge_enabled(self):
+        code, _ = self.runner.run(["systemctl", "is-enabled", "--quiet", BRIDGE], timeout=10)
+        return code == 0
+
+    @contextlib.contextmanager
+    def bridge_paused(self, log):
+        """With tg-bridge enabled, stopped around the restart of eve and started again however it went."""
+        if not self.bridge_enabled():
+            yield
+            return
+        self.stop(log, [BRIDGE])
+        time.sleep(BRIDGE_DRAIN_S)
+        try:
+            yield
+        finally:
+            code, output = self.runner.run(["systemctl", "start", BRIDGE], timeout=120)
+            log(f"start {BRIDGE}: {'ok' if code == 0 else 'exit ' + str(code)}")
+            if code != 0:
+                log(output[-300:])
+
+    def telegram_path(self, log):
+        """tg_egress.py --check once eve and web are up: "ok", "down" (after one restart of tg-egress), or None
+        without tg-egress. Reported, not a reason to go back: the path is the host's, not the release's."""
+        if not self.paths.tg_egress.exists():
+            return None
+        for attempt in (1, 2):
+            code, output = self.runner.run(["python3", str(self.paths.tg_egress), "--check"], timeout=60)
+            if code == 0:
+                log("api.telegram.org answers through tg-egress")
+                return "ok"
+            log(f"tg_egress.py --check: {(output.strip().splitlines() or ['exit ' + str(code)])[-1][:200]}")
+            if attempt == 1:
+                self.restart(log, ["bro-tg-egress"])
+                time.sleep(3)
+        log("WARNING: api.telegram.org does not answer through tg-egress: the bot neither hears nor answers "
+            "(scripts/cloudru-app-host/tg-egress/README.md, «Если адрес закрыли»)")
+        return "down"
+
     def restart(self, log, units=("bro-eve", "bro-web")):
         for unit in units:
             code, output = self.runner.run(["systemctl", "restart", unit], timeout=120)
@@ -460,6 +515,12 @@ class Deployd:
         """Switch to the release; back to the one before if it does not come up healthy. `went_live` records
         it in the history (remember by default)."""
         previous = self.current_version()
+        with self.bridge_paused(log):
+            result = self.switch_and_restart(version, previous, log, went_live)
+        telegram = self.telegram_path(log)
+        return result if telegram is None else {**result, "telegram": telegram}
+
+    def switch_and_restart(self, version, previous, log, went_live):
         self.switch(version)
         log(f"current: {previous or '-'} -> {version}")
         self.restart(log)
@@ -556,6 +617,10 @@ class Deployd:
         if self.current_version() is None:
             log("no release yet: nothing to restart")
             return {"names": sorted(values), "healthy": None}
+        with self.bridge_paused(log):
+            return self.restart_with_env(values, previous, had_env, log)
+
+    def restart_with_env(self, values, previous, had_env, log):
         self.restart(log)
         if self.wait_healthy(log):
             return {"names": sorted(values), "healthy": True}
@@ -596,6 +661,8 @@ class Deployd:
         if not isinstance(args, list) or len(args) > 16 or \
                 not all(isinstance(a, str) and ARGUMENT.fullmatch(a) for a in args):
             raise Refused("args: at most 16 plain arguments")
+        if script in ROOT_OPS:
+            return self.root_ops(script, args, log)
         version = self.current_version()
         if version is None:
             raise Refused("no current release")
@@ -614,14 +681,36 @@ class Deployd:
             raise Refused(f"ops/{script} exited {code}")
         return {"script": script, "version": version}
 
+    def root_ops(self, script, args, log):
+        """A script of the host bundle as root, with no env of the app: tg-bridge.sh reads /etc/bro/env itself."""
+        if not OPS_ACTION[script].fullmatch(" ".join(args)):
+            raise Refused(f"{script}: status, switch-to-bridge or switch-to-webhook https://<host>/eve/v1/telegram")
+        path = self.paths.host_ops / script
+        if not path.is_file():
+            raise Refused(f"the host bundle has no ops/{script}: host.py update-host first")
+        log(f"run ops/{script} of the host bundle as root: {args[0]}")
+        code, output = self.runner.run(["/bin/bash", str(path), *args],
+                                       env={"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}, timeout=600)
+        for line in output.strip().splitlines()[-100:]:
+            log(line[:1000])
+        if code != 0:
+            raise Refused(f"ops/{script} exited {code}")
+        return {"script": script, "action": args[0]}
+
     def do_restart(self, body, log):
         units = body.get("units") or ["bro-eve", "bro-web"]
         if not isinstance(units, list) or not all(u in RESTARTABLE for u in units):
             raise Refused(f"units: some of {', '.join(RESTARTABLE)}")
-        self.restart(log, units)
-        if {"bro-eve", "bro-web"} & set(units) and self.current_version():
-            return {"healthy": self.wait_healthy(log)}
-        return {}
+        if "bro-eve" not in units:
+            self.restart(log, units)
+            if "bro-web" in units and self.current_version():
+                return {"healthy": self.wait_healthy(log)}
+            return {}
+        with self.bridge_paused(log):
+            # The bridge comes back after this anyway: restarting it here too would only start it early.
+            self.restart(log, [u for u in units if u != BRIDGE])
+            healthy = self.wait_healthy(log) if self.current_version() else None
+        return {} if healthy is None else {"healthy": healthy}
 
     def do_stop(self, body, log):
         units = body.get("units")
@@ -645,8 +734,22 @@ class Deployd:
             "releaseInfo": self.release_info(version) if version else None, "releases": self.releases(),
             "units": units, "health": {"web": self.runner.healthy(WEB_HEALTH), "eve": self.runner.healthy(EVE_HEALTH)},
             "opsDomain": self.ops_domain(), "sites": read_sites(self.paths),
+            "telegram": {"egressInstalled": self.paths.tg_egress.exists(), "bridgeEnabled": self.bridge_enabled()},
+            "watchdog": self.watchdog_alarms(),
             "diskFreeGb": round(disk.free / 1e9, 1), "busy": self.busy.locked(), "job": self.running_job(),
         }
+
+    def watchdog_alarms(self):
+        """The watchdog's checks that are down now, and alerts it could not deliver (watchdog.json): the one
+        place an operator sees that the owner may not have heard, when Telegram itself is the trouble."""
+        try:
+            state = json.loads(self.paths.watchdog_state.read_text())
+        except (OSError, ValueError):
+            return {}
+        down = {name: entry["downSince"] for name, entry in state.items()
+                if isinstance(entry, dict) and isinstance(entry.get("downSince"), int)}
+        undelivered = state.get("undelivered") if isinstance(state.get("undelivered"), dict) else {}
+        return {"down": down, "undelivered": undelivered}
 
     def env_names(self):
         text = self.paths.env.read_text() if self.paths.env.exists() else ""
