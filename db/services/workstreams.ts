@@ -190,6 +190,23 @@ export async function saveWorkstream(
   });
 }
 
+/** Every live workstream of a workspace, under any scope key. */
+export async function listWorkspaceWorkstreams(workspaceId: string) {
+  const rows = await db
+    .select()
+    .from(workstreams)
+    .where(
+      and(
+        eq(workstreams.workspaceId, workspaceId),
+        isNotNull(workstreams.content)
+      )
+    )
+    .orderBy(workstreams.scopeKey, workstreams.id);
+  return rows.flatMap(({ content, id, revision, scopeKey, sessionId }) =>
+    content ? [{ content, id, revision, scopeKey, sessionId }] : []
+  );
+}
+
 export async function forgetWorkstream(
   scope: AccessScope,
   scopeKey: string,

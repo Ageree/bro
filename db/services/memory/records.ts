@@ -96,6 +96,16 @@ export async function listCurrentMemories(
   return rows.map(memoryResult);
 }
 
+/** The eve scope keys a workspace keeps profile memory under. */
+export async function listMemoryScopeKeys(workspaceId: string) {
+  const rows = await db
+    .select({ scopeKey: memoryScopes.scopeKey })
+    .from(memoryScopes)
+    .where(eq(memoryScopes.workspaceId, workspaceId))
+    .orderBy(asc(memoryScopes.scopeKey));
+  return rows.map(({ scopeKey }) => scopeKey);
+}
+
 export async function listCurrentRules(scope: AccessScope) {
   const rows = await db
     .select({ index: memoryRecords.index, content: memoryRecords.content })
