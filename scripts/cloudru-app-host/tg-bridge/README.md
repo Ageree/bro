@@ -87,14 +87,14 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
 настроек: `deployd` переписывает `/etc/bro/env` целиком при каждом `PUT`.
 Полный список с умолчаниями — в начале `tg_bridge.py`; главное:
 
-| Переменная                      | По умолчанию                                    |
-| ------------------------------- | ----------------------------------------------- |
-| `TELEGRAM_BOT_TOKEN`            | — (обязательна)                                 |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | — (обязательна, `A-Za-z0-9_-`)                  |
-| `TG_BRIDGE_EVE_URL`             | `http://127.0.0.1:4274/eve/v1/telegram`         |
+| Переменная                      | По умолчанию                                                          |
+| ------------------------------- | --------------------------------------------------------------------- |
+| `TELEGRAM_BOT_TOKEN`            | — (обязательна)                                                       |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | — (обязательна, `A-Za-z0-9_-`)                                        |
+| `TG_BRIDGE_EVE_URL`             | `http://127.0.0.1:4274/eve/v1/telegram`                               |
 | `TG_BRIDGE_PROXY`               | не задан (`http://<login>:<password>@<host>:<port>` или `h:port:u:p`) |
-| `TG_BRIDGE_HEALTH`              | `127.0.0.1:7445`                                |
-| `TG_BRIDGE_POLL_TIMEOUT`        | `50` с                                          |
+| `TG_BRIDGE_HEALTH`              | `127.0.0.1:7445`                                                      |
+| `TG_BRIDGE_POLL_TIMEOUT`        | `50` с                                                                |
 
 Мост бьёт прямо в eve, не в Next: `proxy.ts` отправляет `/eve/v1/telegram`
 без cookie на `/sign-in`. Без токена или с секретом, который Telegram не
