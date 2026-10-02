@@ -14,8 +14,9 @@ S3 — из стенда `scripts/cloudru-sandbox-probe/` (`cloudru.py`, `consol
 | `test_host.py` | `python3 -m unittest`: `set-hosts` пропускает в строку root только проверенные имена и адреса             |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET`, `CLOUDRU_S3_TENANT_ID` (значения
-чистятся от пробелов и кавычек, как в стенде), для `status --stage` —
-`pip install websocket-client`. Бакет — `bucket-ac164a` (`PROBE_BUCKET`), зона,
+чистятся от пробелов и кавычек, как в стенде), для serial-консоли
+(`status --stage`, `update-sandboxd`, `set-hosts`) — `pip install
+websocket-client`. Бакет — `bucket-ac164a` (`PROBE_BUCKET`), зона,
 подсеть и группа — `CLOUDRU_ZONE`, `CLOUDRU_SUBNET`, `CLOUDRU_SECURITY_GROUP`
 (по умолчанию `ru.AZ-1`, `Default_ru.AZ-1`, `bro-browser-az1`: вход tcp 80/443).
 Скрипт трогает только VM с именами `sbx-…`: в проекте живут хосты пула
@@ -83,3 +84,34 @@ python scripts/cloudru-code-host/e2e.py sbx-code-1
 `--runsc-url` в `boot.py cloud-init` обязателен: хост ставит `runsc` только из
 Object Storage (`host.py create` всегда даёт ссылку), apt-репозиторий gVisor
 (`storage.googleapis.com`) с Cloud.ru не проверен.
+
+## Адрес Бро на хосте
+
+`sandboxd` зовёт роутер инструментов Бро по имени (`/eve/v1/sandbox-tools` на
+`brobro.tech`), а VM проекта не достаёт до публичного IP другой VM проекта.
+Поэтому домен Бро на хосте закреплён за приватным адресом VM Бро: новый хост
+— `create … --hosts-entry brobro.tech=bro-app-1 --hosts-entry
+cloud.brobro.tech=bro-app-1`, живой хост — та же пара через serial-консоль
+(нужен `websocket-client`), без пересоздания:
+
+```sh
+host.py set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry cloud.brobro.tech=bro-app-1
+```
+
+`brobro.tech` закрепляют только после переключения домена на VM: пока прод на
+Vercel, такой хост слал бы вызовы task-агента прода на VM без сайта
+`brobro.tech`. До переключения и на откате — одно имя стенда
+(`--hosts-entry cloud.brobro.tech=bro-app-1`, ждать `1`).
+
+`bro-app-1` скрипт читает как приватный адрес VM из Compute API (можно и
+IPv4). Имя и адрес проверяются, как в cloud-init (`boot.check_hosts`: простое
+имя без повторов, IPv4 из ASCII-цифр), и каждое значение экранировано: в
+строку root на хосте не попадает ничего, кроме них. Команда идемпотентна:
+убирает прежние строки `# bro-private` и любые строки с этими именами и
+дописывает по строке на имя — в `/etc/hosts` и в шаблон cloud-init
+`hosts.debian.tmpl` (если образ перепишет `/etc/hosts` при загрузке).
+Строки `# bro-private` команда заменяет целиком: имя, которого нет в вызове,
+теряет закрепление. Печатает только число строк `bro-private` (ждать столько,
+сколько имён). Проверка с хоста — `curl -sS https://brobro.tech/eve/v1/health`
+через `console.py run`. `sbx-code-2` создан до `--hosts-entry`: на нём это
+шаги выкладки и окна (раздел «Переключение» `docs/cloudru-migration.md`).

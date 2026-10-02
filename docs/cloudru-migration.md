@@ -87,11 +87,14 @@
   песочницу заводит только смена `AGENT_SANDBOX` (меняется имя бэкенда):
   вложения старых сессий на VM не переедут. Переменную модуль читает при
   загрузке — задавать и для `eve build`, и при запуске.
-- Откат на Vercel в неделю после слияния: картинки и вложения, записанные
-  после деплоя, лежат только в S3, а сборка до PR читает лишь Blob — они
-  пропадут. Перед откатом на сборку до этого PR скопировать `artifacts/` из S3
-  обратно в Blob или принять потерю; `BLOB_READ_WRITE_TOKEN` и сам Blob не
-  трогать до конца недели отката.
+- PR слит в `bro-next` (02.10): сборка Vercel с ним пишет и читает S3, как
+  VM, поэтому откат прода с VM на такую сборку вложения не теряет. Теряет
+  только откат на сборку до PR: она читает лишь Blob, и картинки и вложения,
+  записанные после деплоя PR, пропадут — перед таким откатом скопировать
+  `artifacts/` из S3 обратно в Blob или принять потерю. Какая сборка в проде
+  Vercel — сверить перед окном (коммит текущего прод-деплоя `bro-next` не
+  старше слияния PR). `BLOB_READ_WRITE_TOKEN` и сам
+  Blob не трогать до конца недели отката.
 - Перед переключением: `blob-to-s3.ts` (копия; повтор берёт и объекты с
   неверным типом), затем `blob-to-s3.ts --verify` с `DATABASE_URL` прода
   (только чтение) — каждая строка артефакта есть в S3 с её размером и типом;
@@ -102,7 +105,7 @@
 Осталось: живой ход с фото, голосовым и PDF на `AGENT_SANDBOX=bro-cloudru`
 против нового хоста `sbx-code-2`; на VM Бро задать `AGENT_SANDBOX=bro-cloudru`.
 
-### 3. Модели: RouterAI — код готов, прод не переключён
+### 3. Модели: RouterAI — прод Vercel на RouterAI с 02.10
 
 С VM Cloud.ru openrouter.ai, OpenAI и Anthropic отвечают 403
 (`docs/browser-infra-notes.md`). RouterAI (`routerai.ru/api/v1`) работает и
@@ -121,14 +124,15 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 баланс RouterAI упал на 9,62 ₽; кэш — 84% входа. Прогнать рядом OpenRouter
 нельзя: он не пополняется.
 
+Прод Vercel переключён 02.10: `MODEL_PROVIDER=routerai` и `ROUTERAI_API_KEY`
+в env `bro-next`. Откат — снять `MODEL_PROVIDER`, пока у OpenRouter есть
+деньги, дальше — другой `ROUTERAI_PROVIDER_ORDER` или модель.
+
 Осталось:
 
-- превью с `MODEL_PROVIDER=routerai`: ответ, голосовое, картинка, поиск,
-  расписание, отказ на карточке, затем строки `usage_costs` с ценой;
-- переключение прода: ключ и `MODEL_PROVIDER=routerai` в env `bro-next`, новый
-  деплой; воркспейсам с id, которого нет в `/models` RouterAI, сбросить
-  `settings.gateway_model`. Откат — снять `MODEL_PROVIDER`, пока у OpenRouter
-  есть деньги, дальше — другой `ROUTERAI_PROVIDER_ORDER` или модель;
+- живые проверки на аккаунте владельца (ответ, голосовое, картинка, поиск,
+  расписание, отказ на карточке, строки `usage_costs` с ценой в рублях) — вместе
+  с проверками переключения (этап 6), уже на VM;
 - через неделю стабильной работы — убрать ветку и переменные OpenRouter.
 
 Заодно — навыки по нужде и узкое ядро инструкций (роадмап 24–25): на RouterAI
@@ -137,7 +141,7 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 Готово: эвалы `reply` и `schedules` на RouterAI не хуже OpenRouter; шаг
 дешевле при той же доле кэша.
 
-### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM не создана
+### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM `bro-app-1` создана
 
 Сделано (`scripts/cloudru-app-host/README.md`): инструментарий разворачивает
 одну VM `bro-app-1` (gen-2-8, SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с
@@ -172,14 +176,13 @@ watchdog раз в минуту пишет владельцу в Telegram, ес�
 - Старые сессии Vercel Workflow не переносятся: новые ходы идут в новый мир,
   старые доживают на Vercel до отключения.
 
-Осталось: создать `bro-app-1`, env стенда
-(`host.py env --profile stand`), сайт `cloud.brobro.tech` и прогнать стенд;
-проверить ход через мир Postgres, переживание `systemctl restart bro-eve`,
-поток SSE через Caddy и доступность `api.telegram.org` с VM. Квота
-публичных IP проекта — 2, и 02.10 обе заняты (`sbx-code-1` и пробная VM
-другой сессии): для `bro-app-1` освободить адрес или попросить поддержку
-поднять квоту. Watchdog живёт на той же VM: до переключения прода завести
-внешнюю проверку `https://brobro.tech/eve/v1/health`.
+`bro-app-1` создан бандлом хоста без Telegram (код хоста на нём обновляет
+`host.py update-host`). Осталось: env стенда (`host.py env --profile stand`),
+сайт `cloud.brobro.tech` и прогнать стенд на `bro-app-1`; проверить ход через
+мир Postgres, переживание `systemctl restart bro-eve`, поток SSE через Caddy
+и доступность `api.telegram.org` с VM. Watchdog живёт на той же VM: до
+переключения прода завести внешнюю проверку
+`https://brobro.tech/eve/v1/health`.
 
 Готово: перезапуск сервера не теряет ходов и карточек, расписания не
 дублируются.
@@ -208,7 +211,8 @@ watchdog раз в минуту пишет владельцу в Telegram, ес�
   найденный в Compute API (`agent/lib/browser-vm/private-route.ts`). Обратно
   в Бро ходит только `sandboxd` (`/eve/v1/sandbox-tools`): хосту песочниц —
   `host.py create … --hosts-entry brobro.tech=bro-app-1` или на живом хосте
-  `host.py set-hosts`. Хосты пула и worker в Бро не звонят.
+  `host.py set-hosts`, причём `brobro.tech` — только когда домен уже на VM
+  (до того — лишь `cloud.brobro.tech`). Хосты пула и worker в Бро не звонят.
 - Новая VM, открывшая 3–8 соединений разом в первые минуты, теряла TCP и UDP
   насовсем: установка — последовательно и после 60 с стабильной сети.
 
@@ -262,37 +266,31 @@ bro-app-1 db-copy.sh neon app --dump-only` с `host.py env … --with-neon`;
 Ключ есть только там и в `/etc/bro/env` VM (deployd его не отдаёт): потеря VM
 и сессии без этой копии — потеря всех бэкапов.
 
-Окно переноса (вместе с этапом 6):
-
-1. Расписания Vercel выключить. Neon — только чтение для приложения:
-   `ALTER DATABASE neondb SET default_transaction_read_only = on` и
-   `pg_terminate_backend` прочих соединений роли (Vercel переподключится
-   уже в режиме чтения; запись у Бро на Vercel падает, чтение работает).
-2. `host.py env bro-app-1 --profile prod --with-neon` (адрес Neon — только в
-   `/etc/bro/ops-env` для ops-скриптов, не в env приложения), затем
-   `host.py stop bro-app-1 bro-eve bro-web`.
-3. `host.py ops bro-app-1 db-copy.sh neon app --replace`.
-4. `host.py restart bro-app-1`, проверки, DNS `brobro.tech` на VM (этап 6).
-   `NEON_DATABASE_URL` остаётся в `/etc/bro/ops-env` на неделю наблюдения —
-   для отката; после недели — `host.py env bro-app-1 --profile prod` без
-   `--with-neon`, это его убирает.
+Окно переноса — вместе с этапом 6, по шагам — раздел «Переключение» ниже:
+Neon только для чтения (`ops/db-neon-mode.sh read-only`), `db-copy.sh neon
+app --replace`, env прода. `NEON_DATABASE_URL` остаётся в `/etc/bro/ops-env`
+на неделю наблюдения — для отката; после недели — `host.py env bro-app-1
+--profile prod` без `--with-neon`, это его убирает.
 
 Откат базы:
 
 - **До первой записи в Cloud.ru** (DNS ещё не переключали или переключили и
-  сразу вернули): DNS назад, в Neon `ALTER DATABASE neondb RESET
-default_transaction_read_only` и `pg_terminate_backend` соединений Vercel,
+  сразу вернули): DNS назад, `db-neon-mode.sh writable` (`RESET
+default_transaction_read_only` и `pg_terminate_backend` соединений Vercel),
   расписания Vercel включить. Neon всё это время не менялся.
 - **После записей в Cloud.ru** — обратный перенос в новое окно только для
   чтения. Neon с момента переноса стоит только на чтение, поэтому в нём нечего
   беречь, и вместо дампа «новых строк» переносится база целиком: так
   приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
 bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
-bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и
-  только пока он `read_only`, только с VM прода и без чужих сессий в Neon:
-  открытая до `read_only` пишет — сначала `pg_terminate_backend`; перед этим
-  кладёт зашифрованные копии `app` и самого Neon в Object Storage) → в Neon
-  `RESET default_transaction_read_only` и `pg_terminate_backend` → DNS назад,
+bro-app-1 db-neon-mode.sh read-only` (повтор: Neon остаётся только для
+  чтения, а прочие сессии роли завершаются) → `host.py ops bro-app-1
+db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и только пока он
+  `read_only`, только с VM прода и без чужих сессий в Neon: `read_only` —
+  лишь умолчание новых сессий, открытая раньше пишет; перед этим кладёт
+  зашифрованные копии `app` и самого Neon в Object Storage) →
+  `db-neon-mode.sh writable` (`RESET default_transaction_read_only` и
+  `pg_terminate_backend`) → DNS назад,
   расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
   нет. VM с базой не удалять, пока Vercel не проработал неделю.
 - Логическая репликация Cloud.ru → Neon не используется: у `bro_app` нет
@@ -305,16 +303,211 @@ Neon сошёлся по всем таблицам, откат отрепети�
 
 ### 6. Переключение
 
-DNS `brobro.tech` на Cloud.ru; вебхуки Photon, YooKassa и возвраты Composio
-остаются на том же домене. Telegram — не вебхуком (раздел ниже): SSH на VM
-нет, владелец переключает через deployd (`POST /ops/v1/ops`):
-`host.py ops <VM> tg-bridge.sh switch-to-bridge`. Откат — DNS обратно и
-`host.py ops <VM> tg-bridge.sh switch-to-webhook <url>` с адресом
-`https://bro-next.vercel.app/eve/v1/telegram`; она работает, пока VM достаёт
-Telegram, иначе — `setWebhook` с любой машины, которая его достаёт (README
-моста, «Откат без VM»). Обёртка `tg-bridge.sh` и её запуск от root — шаг
-сервера (README моста, «Что должен сделать сервер»). После недели без
-отката — убрать `vercel.json`, Gateway-строки моделей и зависимость `vercel`.
+Окно — ночь, 02:00–06:00 МСК (23:00–03:00 UTC). Команды — из облачной сессии
+(`host.py` — `python scripts/cloudru-app-host/host.py`), DNS и проект —
+Vercel API с `VERCEL_TOKEN` (`$T` ниже — токен без пробелов и кавычек,
+`$Q` — `slug=nikto256-6851s-projects`). Вебхуки Photon, ЮKassa, Browser Use
+и возвраты Composio остаются на том же домене `brobro.tech`; Telegram —
+мостом, без вебхука (раздел ниже), поэтому `setWebhook` не нужен.
+
+**До окна (днём, не в окно):**
+
+Окно накрывает ночной бэкап VM (`bro-backup.timer`, 04:10–04:20 МСК,
+`Persistent=true`): с env прода он снял бы пустую `bro` в прод-префикс как
+«последний» и мог бы уронить `db-copy.sh` (`no_bro_connections`), поэтому
+шаг 2 выключает его вместе с расписаниями, а после шага 6 бэкап снимается
+вручную. И с шага 4 до шага 7 запись Бро на Vercel падает, а VM ещё не
+принимает: Telegram копит (`hold`), ЮKassa по своей документации повторяет
+уведомление до ответа `200` (до суток), а повторяет ли Photon вебхук
+iMessage — не проверено: входящие iMessage этих минут считать потерянными.
+Шаги 4–9 идут подряд, без пауз (запрос DNS из шага 7 подготовить заранее): с
+шага 7 до шага 9 хост песочниц по DNS идёт на публичный адрес VM, изнутри
+проекта недостижимый, и task-агент прода эти минуты не работает.
+
+1. Ворота этапов 4 и 5 пройдены: стенд на `bro-app-1` проверен (этап 4: ход
+   через мир Postgres, рестарт eve, поток SSE через Caddy), копия
+   `BACKUP_ENCRYPTION_KEY` у владельца, репетиция `db-copy.sh` на стенде,
+   ночной бэкап с проверкой. Без них шаги ниже не начинать.
+2. `~/.bro-app-host/env/prod.json` (`0600`): `TELEGRAM_OWNER_CHAT_ID` (на
+   Vercel его нет), `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY` (sensitive на
+   Vercel, в сессии нет) и `OPS_ALERT_WEBHOOK_URL` (https, push-канал
+   владельца не через Telegram: тревога о пути к Telegram иначе никуда не
+   дойдёт). Канал проверить тестовой отправкой (`curl -sS -o /dev/null -w
+'%{http_code}' -d test "$URL"` — `2xx`, у владельца пришло). `host.py env
+bro-app-1 --profile prod --dry-run` не должен печатать «not found» и
+   «would refuse»: без `--dry-run` прод с таким env не уходит.
+3. Секреты, сделанные для переезда (`new-secrets.json`), — те же на Vercel,
+   иначе откат ломается: `TELEGRAM_WEBHOOK_SECRET_TOKEN` (мост и
+   `switch-to-webhook` шлют его; eve на Vercel со старым ответит 401) —
+   записать на Vercel прод (sensitive), передеплоить прод и сразу
+   `setWebhook` на `https://bro-next.vercel.app/eve/v1/telegram` с новым
+   секретом (curl из README моста, «Откат без VM»; Telegram повторяет
+   отвергнутые обновления). `BROWSER_VM_SIGNING_KEY`: из него выведены ключи
+   живых хостов пула `bro-host-*` и VM пилота — либо на VM идёт значение
+   Vercel (владелец кладёт его в `prod.json`), либо после переключения хосты
+   пула и VM пилота пересоздаются.
+4. Код хоста на `bro-app-1`: `host.py update-host bro-app-1`, затем
+   `host.py ops bro-app-1 tg-bridge.sh status` — `tg-egress: active, check:
+ok` и `no TELEGRAM_BOT_TOKEN in /etc/bro/env (stand env)`: в стендовом env
+   токена нет, вебхук отсюда не виден. Вебхук — из сессии: `curl -sS
+"https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"` — `url`
+   на `bro-next.vercel.app`. Релиз с `ops/db-neon-mode.sh`: `host.py deploy
+bro-app-1` (пока со стендовым env).
+5. Хосту песочниц — адрес стенда: `python scripts/cloudru-code-host/host.py
+set-hosts sbx-code-2 --hosts-entry cloud.brobro.tech=bro-app-1` (ждать
+   `1`). Только его: `sandboxd` зовёт роутер инструментов прода на
+   `brobro.tech`, и закреплённый до окна `brobro.tech` увёл бы вызовы
+   task-агента прода с Vercel на VM, где сайта `brobro.tech` ещё нет.
+6. TTL: записи зоны `brobro.tech` (DNS Vercel, `ns1/ns2.vercel-dns.com`) — 60
+   с (02.10: `@` ALIAS, `*` ALIAS, CAA с `letsencrypt.org`); новые A — тоже 60. Проверка: `dig +noall +answer brobro.tech @ns1.vercel-dns.com`.
+7. Внешняя проверка `https://brobro.tech/eve/v1/health` (мониторинг Cloud.ru
+   или внешний пинг): сторож VM не видит падения самой VM и сети.
+8. В день окна — дельта Blob → S3 (раздел 2): `blob-to-s3.ts`, затем
+   `blob-to-s3.ts --verify` с `DATABASE_URL` прода (только чтение, печатает
+   счётчики; нужно разрешение владельца на чтение продовой базы). VM читает
+   вложения только из S3: ненайденных быть не должно.
+
+**Окно:**
+
+1. 02:00 — расписания Vercel выключить: проект `bro-next` → Settings → Cron
+   Jobs → Disable Cron Jobs. Проверка: `curl -sS -H "Authorization: Bearer
+$T" "https://api.vercel.com/v9/projects/bro-next?$Q"` — `crons.disabledAt`
+   не `null`. Иначе стадия `vms` поллера Vercel по базе только для чтения
+   всё равно гасила бы VM Cloud.ru, а с VM их было бы два.
+2. Env прода на VM с выключенными расписаниями и бэкапами (база `bro` ещё
+   не та): в `prod.json` временно `"EVE_SCHEDULES": "off"` и `"BACKUPS":
+"off"`, затем `host.py env bro-app-1 --profile prod --with-neon` (до
+   рестарта deployd накатывает миграции релиза на `bro` и схему мира на
+   `bro_workflow`; `WARNING` о двух `off` — ожидаемо).
+3. Telegram копит обновления (до 24 ч): `host.py ops bro-app-1 tg-bridge.sh
+hold` — `deleteWebhook` без потери ожидающих; Vercel больше их не получает.
+   Вебхук команда снимает, только если health eve на VM отвечает `200` (после
+   шага 2 — да). Hold без моста дольше трёх часов сторож считает тревогой.
+4. Neon только для чтения: `host.py ops bro-app-1 db-neon-mode.sh read-only`
+   (`ALTER DATABASE … SET default_transaction_read_only = on` и
+   `pg_terminate_backend` прочих сессий роли; ждать `default_transaction_read_only=on`).
+   С этой минуты запись Бро на Vercel падает, чтение работает.
+5. `host.py stop bro-app-1 bro-eve bro-web` (плановая: сторож молчит о них
+   до трёх часов, `plannedStop` в `host.py status`), затем `host.py ops
+bro-app-1 db-copy.sh neon app --replace` (сверка всех таблиц).
+6. Из `prod.json` убрать `EVE_SCHEDULES` и `BACKUPS`, `host.py env bro-app-1
+--profile prod --with-neon` — eve и Next поднимаются на перенесённой базе с
+   расписаниями (`host.py status`: список `off` пуст). Сразу `host.py ops
+bro-app-1 db-backup.sh` — первый бэкап прода уже перенесённых данных и
+   свежий `last-backup.json` (иначе сторож к утру поднимет тревогу по
+   бэкапу стенда прошлой ночи); ночной по таймеру — со следующей ночи, а
+   совпав с ручным, ждёт его: скрипты базы идут по одному (`db_lock`).
+7. DNS на VM. Сначала листинг зоны (POST не идемпотентен — повтор после
+   потерянного ответа дал бы вторую A): `curl -sS -H "Authorization: Bearer
+$T" "https://api.vercel.com/v4/domains/brobro.tech/records?$Q&limit=100" |
+python3 -c 'import json,sys; [print(r["id"], r["name"] or "@", r["type"],
+r["value"]) for r in json.load(sys.stdin)["records"]]'`. Для имени, у
+   которого A с `176.109.111.216` ещё нет: `curl -sS -X POST -H
+"Authorization: Bearer $T" -H "Content-Type: application/json"
+"https://api.vercel.com/v2/domains/brobro.tech/records?$Q" -d
+'{"name":"","type":"A","value":"176.109.111.216","ttl":60}'` и то же с
+   `"name":"www"`; после — снова листинг: ровно одна такая A на имя. Проверка — `dig +short
+A brobro.tech @ns1.vercel-dns.com` и `www.brobro.tech`: только
+   `176.109.111.216`. Если отвечает и ALIAS Vercel, снять домены с проекта
+   (`DELETE /v9/projects/bro-next/domains/www.brobro.tech`, затем
+   `…/brobro.tech`): зона остаётся в аккаунте, `bro-next.vercel.app` — тоже.
+8. `host.py sites bro-app-1 --set brobro.tech,www.brobro.tech` (`www` — 308
+   на апекс; `cloud.brobro.tech` уходит). Сертификаты Let's Encrypt Caddy
+   берёт сразу, раз A уже на VM; проверка — `curl -sSI
+https://brobro.tech/` и `https://www.brobro.tech/x` (308 на
+   `https://brobro.tech/x`).
+9. Хосту песочниц — и домен прода: `python scripts/cloudru-code-host/host.py
+set-hosts sbx-code-2 --hosts-entry brobro.tech=bro-app-1 --hosts-entry
+cloud.brobro.tech=bro-app-1` (ждать `2`): `sandboxd` зовёт `brobro.tech`, а
+   публичный адрес VM изнутри проекта недостижим. После шага 8: Caddy уже
+   отдаёт `brobro.tech`.
+10. `host.py ops bro-app-1 tg-bridge.sh switch-to-bridge` — проверка
+    tg-egress, мост забирает накопленное.
+11. Внешние адреса — только сверить: Photon — вебхук
+    `https://brobro.tech/eve/v1/photon`, ЮKassa — HTTP-уведомления
+    `https://brobro.tech/api/yookassa`, Browser Use (если вебхук задан) —
+    `https://brobro.tech/eve/v1/browser-use`, Composio — возврат собирается из
+    `BETTER_AUTH_URL`. Адрес на `bro-next.vercel.app` в кабинете — заменить на
+    `brobro.tech`.
+12. Проверки: `host.py status bro-app-1` (health web/eve, `telegram`,
+    `watchdog.down` пуст); `curl https://brobro.tech/eve/v1/health`; вход
+    по телефону (код iMessage), веб-чат с ответом, сообщение и кнопка
+    карточки в Telegram (`host.py ops bro-app-1 tg-bridge.sh status`:
+    `delivered` растёт, `dropped` 0), iMessage туда и обратно, фото в чат
+    (Object Storage), поручение task-агенту в песочнице (`sandboxd` → Бро по
+    приватному адресу), браузерное поручение пилота — только если на VM
+    значение `BROWSER_VM_SIGNING_KEY` Vercel (пункт 3 «До окна», первый вариант); при
+    втором — после пересоздания хостов пула и VM пилота, до того поручения
+    пилота падают; `host.py logs bro-app-1 bro-eve` без ошибок; на Vercel
+    runtime-логи `bro-next` затихли.
+
+**Откат** (решение — до 06:00; первым делом записать время):
+
+1. `host.py stop bro-app-1 bro-eve bro-web` — запись в Cloud.ru кончилась.
+   Мост не трогать: он держит неподтверждённые обновления и ждёт eve.
+2. База: были записи в Cloud.ru (почти всегда — расписания, сообщения) —
+   `host.py ops bro-app-1 db-neon-mode.sh read-only` (повтор: завершает
+   сессии Vercel, открытые после шага 4 окна; копия в Neon идёт только без
+   чужих сессий), затем `host.py ops bro-app-1 db-copy.sh app neon
+--replace`: Neon получает базу целиком (и изменения, и удаления; пишет
+   сквозь `read_only` и только пока он `read_only`, копии обеих сторон — в
+   Object Storage). Отказ «other sessions on Neon» — Vercel переподключился:
+   повторить оба шага. Скрипты базы идут по одному (`db_lock`): идущий
+   ночной бэкап (04:10 МСК) копия ждёт до часа. Записей не было — копию
+   пропустить. Затем `host.py ops bro-app-1 db-neon-mode.sh writable`.
+3. Vercel: Cron Jobs → Enable; если домены снимали — вернуть
+   (`POST /v10/projects/bro-next/domains` с `brobro.tech` и `www.brobro.tech`
+   c `"redirect":"brobro.tech","redirectStatusCode":308`).
+4. DNS: листинг зоны (шаг 7 окна) и `DELETE
+/v2/domains/brobro.tech/records/<id>` для каждой A со значением
+   `176.109.111.216`, не только сохранённых id; повторный листинг — таких
+   нет, `dig` снова отдаёт ALIAS Vercel.
+5. Хосту песочниц — `brobro.tech` снова по DNS: `python
+scripts/cloudru-code-host/host.py set-hosts sbx-code-2 --hosts-entry
+cloud.brobro.tech=bro-app-1` (ждать `1`). `set-hosts` заменяет все строки
+   `# bro-private` теми, что названы, поэтому закрепление `brobro.tech`
+   уходит, и task-агент прода снова идёт на Vercel.
+6. Telegram: `host.py ops bro-app-1 tg-bridge.sh switch-to-webhook
+https://bro-next.vercel.app/eve/v1/telegram` (мост выключается,
+   доставленное подтверждается, `setWebhook` с тем же секретом). VM или её
+   выход к Telegram лежит — `setWebhook` с любой машины с доступом к
+   Telegram (README моста, «Откат без VM»), а когда путь VM к Telegram
+   вернётся — та же `switch-to-webhook` с тем же адресом: мост выключится.
+7. Записи: всё, что Бро записал в Cloud.ru, приехало в Neon шагом 2;
+   записи Vercel в окне не случились (Neon был только для чтения — эти
+   запросы упали, а не потерялись молча; входящие iMessage этого времени
+   могли пропасть — см. начало раздела). Файлы, загруженные на VM, лежат в
+   Object Storage, и сборка Vercel с PR хранилища читает их оттуда же; на
+   сборке до него они не откроются (раздел 2). Ходы, шедшие в мире
+   `bro_workflow`, не переносятся. VM и базу не удалять неделю.
+8. Браузер: если по пункту 3 «До окна» хосты пула и VM пилота пересоздавали с новым
+   `BROWSER_VM_SIGNING_KEY`, Vercel со своим ключом до них не достучится —
+   на откате их пересоздать снова (или положить ключ VM на Vercel и
+   передеплоить), до того браузерные поручения пилота падают.
+
+### Наблюдение 24 ч
+
+- Каждый час первые 6 часов, потом утром и вечером: `host.py status
+bro-app-1` — health, `watchdog.down` и `watchdog.undelivered` пусты,
+  `telegram.bridgeEnabled`; внешняя проверка зелёная.
+- Telegram: `tg-bridge.sh status` — `status: polling`, `pending` 0,
+  `dropped` 0, `eveRefused` false; `journalctl` форвардера — нет `upstream
+down`, доля успехов `/health` tg-egress не ниже 90%.
+- Расписания идут один раз: на VM тики в `host.py logs bro-app-1 bro-eve`
+  (`[proactive] check`, поллер браузеров), на Vercel `crons.disabledAt`
+  стоит, runtime-логов нет. Neon остаётся `read_only` (`db-neon-mode.sh
+status`) — до решения об откате.
+- Первая ночь после переезда (окно сняло бэкап вручную, шаг 6):
+  `bro-backup.timer` в 04:10 МСК — бэкап и проверка восстановления прошли (`host.py logs bro-app-1 bro-backup`, без тревоги).
+- Ошибки: `host.py logs bro-app-1 bro-eve` и `bro-web` — `turn.failed`,
+  `MODEL_CALL_FAILED` (баланс RouterAI, алерт кредитов), 5xx Caddy;
+  диск (`diskFreeGb`) и память VM.
+- Каналы: iMessage (Photon) доставляет в обе стороны, вход по коду,
+  оплата ЮKassa (уведомление дошло, подписка продлилась), подключение
+  Composio возвращает на `brobro.tech`, поручения браузера и task-агента.
+- Через неделю без отката: `host.py env bro-app-1 --profile prod` без
+  `--with-neon` (убирает адрес Neon), Neon — в архив, затем уборка Vercel
+  (`vercel.json`, Gateway-строки моделей, зависимость `vercel`, Blob).
 
 ### Telegram из РФ
 
@@ -344,8 +537,8 @@ Telegram, иначе — `setWebhook` с любой машины, которая
 — только при падении ровно между `200` от eve и записью файла состояния),
 рестарт eve не теряет то, что eve ещё не принял (принятое за миг до рестарта
 — на совести eve, как и с вебхуком, поэтому deployd перед рестартом eve
-останавливает мост); упавший или застрявший мост виден watchdog (шаги
-сервера — README моста, «Что должен сделать сервер»).
+останавливает мост); упавший или застрявший мост виден watchdog (что для
+этого делает сервер — README моста, «Что делает сервер»).
 
 ## Параллельно: Instinct-подобные улучшения
 

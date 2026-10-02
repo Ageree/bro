@@ -26,7 +26,7 @@
                                             the restart. Run deliver too, so new hosts get the same binary
   python host.py set-hosts NAME --hosts-entry brobro.tech=bro-app-1 …
                                             the same pins on a live host, over the serial console: in
-                                            /etc/hosts and cloud-init's template, as at first boot
+                                            /etc/hosts and cloud-init's template, as at first boot (repeatable)
   python host.py delete NAME                the VM and its public IP
 
 Host names must match sbx-[a-z0-9-]+: this script never acts on any other VM of the project. Needs

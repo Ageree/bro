@@ -12,20 +12,27 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
                                                 waits for https://<ip with dashes>.sslip.io/ops/v1/health
   python host.py status NAME [--stage]          state, address, deployd's status; --stage over the console
   python host.py reboot NAME | delete NAME      set-power reboot | the VM and its public IP
+  python host.py update-host NAME               the host bundle of this checkout on a live VM, over the serial
+                                                console: deployd, the watchdog, the units, tg-egress, tg-bridge
+                                                (install-code.sh), the Caddyfile; releases and env stay, and
+                                                deployd starts no job meanwhile (POST /host-update)
   python host.py build [--allow-dirty]          pnpm install, eve (Postgres world) and Next (standalone)
                                                 builds, ops/migrate.mjs, one tar.zst in app/releases/
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
                                                 switch, health within 120 s or back to the previous release
   python host.py rollback NAME [--version V]    the release before the current one (or V)
-  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon]
+  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon] [--allow-missing] [--no-alert-webhook]
                                                 compose /etc/bro/env and PUT it (names only are printed);
-                                                --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only
+                                                --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only;
+                                                prod refuses a missing expected name or no https alert webhook
   python host.py sites NAME [--set D,D | --add D | --remove D]
-  python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog
+  python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog, bro-backup,
+                                                bro-tg-egress, bro-tg-bridge
   python host.py restart NAME [UNIT ...] | stop NAME UNIT ...
   python host.py ops NAME SCRIPT [ARG ...]      ops/SCRIPT of the current release (db-backup.sh, db-restore.sh,
                                                 db-restore-check.sh, db-copy.sh); an ARG s3get:KEY or s3put:KEY
-                                                becomes a presigned link
+                                                becomes a presigned link. tg-bridge.sh status | switch-to-bridge
+                                                | switch-to-webhook URL runs as root from the host bundle
   python host.py pg create [--spec S] [--disk 20]   the Managed PostgreSQL cluster bro-pg (when there is none)
   python host.py pg users [--reset-password] [--new-backup-key]
                                                 its user bro_app, the password and BACKUP_ENCRYPTION_KEY in
@@ -410,6 +417,99 @@ def cmd_status(args):
         print(output)
 
 
+# The running code becomes app-host.old only when its install finished (install-code.sh's .installed) or there
+# is no app-host.old yet: a retry after a failed install keeps the last good code there.
+ROTATE_HOST_CODE = ("{ if [ -f /opt/bro/app-host/.installed ] || [ ! -d /opt/bro/app-host.old ]; then "
+                    "rm -rf /opt/bro/app-host.old && mv /opt/bro/app-host /opt/bro/app-host.old; "
+                    "else rm -rf /opt/bro/app-host; fi; }")
+# One console line, each step only after the one before it succeeded.
+UPDATE_HOST = " && ".join((
+    "rm -rf /opt/bro/app-host.new", "mkdir -p /opt/bro/app-host.new",
+    "tar -xzf /root/app-host.tgz -C /opt/bro/app-host.new", "rm -f /root/app-host.tgz", ROTATE_HOST_CODE,
+    "mv /opt/bro/app-host.new /opt/bro/app-host", "bash /opt/bro/app-host/install-code.sh",
+    "systemctl daemon-reload", "systemctl restart deployd",
+    "python3 /opt/bro/app-host/deployd.py caddyfile", "systemctl reload caddy",
+    "sleep 2", "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health"))
+
+
+def hold_jobs(name):
+    """deployd's job slot for the update (POST /host-update): a release, env or ops job started during the
+    transfer would be cut by the restart of deployd. That restart gives the slot back, free_jobs does on a
+    failure before it, and it lapses by itself after deployd.HOST_UPDATE_S. True when held; a deployd from
+    before the hold has no such route (404): then only no job may run now, and False."""
+    try:
+        code, body = call(name, "POST", "host-update", {})
+    except LostAnswer as error:
+        sys.exit(f"{error}: deployd may hold its jobs for an update now (python host.py status {name}); "
+                 f"it gives them back within {deployd.HOST_UPDATE_S // 60} min")
+    if code == 404:
+        status = checked(call(name, "GET", "status"), (200,))
+        if status.get("job"):
+            sys.exit(f"deployd runs job {status['job']}: wait for it (python host.py status {name})")
+        print(f"deployd {status.get('deployd')} cannot hold its jobs: start none until this update is done",
+              flush=True)
+        return False
+    job = checked((code, body), (202,))
+    print(f"deployd holds its jobs for the update (job {job['id']})", flush=True)
+    return True
+
+
+def free_jobs(name, held):
+    """Ends the hold of an update that stopped before restarting deployd (after the restart there is none)."""
+    if not held:
+        return
+    try:
+        code, body = call(name, "DELETE", "host-update")
+    except LostAnswer as error:
+        code, body = None, {"error": str(error)}
+    if code != 200:
+        print(f"deployd did not take its jobs back ({code}: {body.get('error', body)}): they come back within "
+              f"{deployd.HOST_UPDATE_S // 60} min", flush=True)
+
+
+def cmd_update_host(args):
+    """A VM made by an older bundle gets this one without being made again (its address, disk, releases and
+    env stay): the bundle goes through Object Storage, the console checks its sha256, swaps /opt/bro/app-host
+    (the old one stays in app-host.old, unless its own install failed: then app-host.old keeps the good one),
+    runs install-code.sh and restarts deployd. deployd starts no job meanwhile (hold_jobs): the restart would
+    cut it."""
+    name = host_name(args.name)
+    try:
+        import console  # websocket-client, only here
+    except ImportError:
+        sys.exit("update-host needs the websocket-client package (pip install websocket-client)")
+    held = hold_jobs(name)
+    try:
+        key, digest = deliver_bundle()
+        session = console.Console(name)
+        session.login()
+        # Two commands: the serial line takes about a kilobyte per line reliably, and the link is half of that.
+        output, code = session.run(
+            f"curl -fsS --connect-timeout 10 -m 300 -o /root/app-host.tgz '{s3.presign('GET', key, 900)}' && "
+            f"echo '{digest}  /root/app-host.tgz' | sha256sum -c --quiet - && echo fetched", 360)
+        # Only the last line: the console may echo the command, and the command holds the presigned link.
+        last = output.strip().splitlines()[-1][-200:] if output.strip() else ""
+        print(f"fetch {digest[:16]}: exit {code}; {last}")
+        if code != 0:
+            sys.exit(1)
+    except BaseException:
+        free_jobs(name, held)  # nothing restarted deployd yet
+        raise
+    output, code = session.run(UPDATE_HOST, 600)
+    print(f"install: exit {code}; {output.strip().splitlines()[-1][-300:] if output.strip() else ''}")
+    if code is None:
+        # The end marker was lost: the install may still run, or be done. deployd keeps its jobs held until
+        # its restart (or HOST_UPDATE_S): freeing them now could let a job start just before that restart.
+        sys.exit(f"no answer from the console in 600 s: the install may still run or be done. Check before "
+                 f"going on: python host.py status {name} --stage (deployd's version and job; a hold ends with "
+                 f"its restart, at most {deployd.HOST_UPDATE_S // 60} min)")
+    if code != 0:
+        free_jobs(name, held)
+        sys.exit(f"the install failed: python host.py status {name} --stage; the previous code is in "
+                 "/opt/bro/app-host.old")
+    print(json.dumps(checked(call(name, "GET", "status"), (200,)).get("deployd")))
+
+
 def cmd_reboot(args):
     vm = found_vm(args.name)
     code, body = cloudru.api("POST", f"/v1/vms/{vm['id']}/set-power", {"state": "reboot"})
@@ -447,9 +547,11 @@ def run(argv, env, cwd=REPO):
 
 
 def build_env(**extra):
-    """A clean env: the session's secrets break env.ts (TELEGRAM_BOT_USERNAME with an @, real keys)."""
+    """A clean env: the session's secrets break env.ts (TELEGRAM_BOT_USERNAME with an @, real keys). The model
+    provider is the VM's all the same: agent/tools/web_search.ts picks its tool once, when the module loads, so
+    the build bakes the choice in, and the Gateway's tool (no MODEL_PROVIDER) makes RouterAI refuse every turn."""
     env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/root"), "NODE_ENV": "production",
-           **STUB_ENV, **extra}
+           **STUB_ENV, "MODEL_PROVIDER": ON_THE_VM["MODEL_PROVIDER"], "ROUTERAI_API_KEY": "build-only", **extra}
     for name in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
                  "https_proxy", "http_proxy", "no_proxy"):
         if os.environ.get(name):
@@ -474,6 +576,8 @@ def assemble(stage, version, commit):
     world = REPO / "node_modules/@workflow/world-postgres"
     shutil.copytree(world / "src/drizzle/migrations", stage / "ops/world-migrations")
     for script in sorted([*(HERE / "ops").glob("*.sh"), *(HERE / "ops").glob("*.py")]):
+        if script.name in deployd.ROOT_OPS:
+            continue  # deployd runs the host bundle's copy as root, never a release's (bro owns it)
         shutil.copy2(script, stage / "ops" / script.name)
     # ops/store.py signs Object Storage requests the way the session does.
     shutil.copy2(REPO / "scripts/cloudru-sandbox-probe/s3.py", stage / "ops/s3.py")
@@ -585,23 +689,55 @@ STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|BROWSER_USE_|B
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
 PRODUCTION_STORES = re.compile(r"(BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
                                r"COMPOSIO_API_KEY")
+# Keys of Vercel Blob: on the VM the installation secrets are given outright (installation-secrets.json) and
+# files live in Object Storage, so no profile gets them (they would reach production's Blob store).
+# EVE_MEMORY_BLOB_* may still sit on Vercel from before eve's memory moved to Postgres: dropped all the same.
+BLOB = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_).*")
+# Production on Vercel keeps these "sensitive": never readable back, so the session brings them (the session's
+# other names, such as SUPERMEMORY_API_KEY, are not production's and stay out). MODEL_PROVIDER and
+# ROUTERAI_API_KEY came to Vercel after vercel-production.json was read; TELEGRAM_OWNER_CHAT_ID is not on
+# Vercel at all (the owner gives it in prod.json).
+SENSITIVE_ON_VERCEL = {
+    "BROWSER_USE_API_KEY", "BROWSER_USE_WEBHOOK_SECRET", "BROWSER_VM_LLM_API_KEY", "BROWSER_VM_PROXY",
+    "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET",
+    "COMPOSIO_API_KEY", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",
+    "OPENROUTER_API_KEY", "SANDBOX_SIGNING_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME",
+    "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET_TOKEN", "YOOKASSA_SECRET_KEY", "YOOKASSA_SHOP_ID",
+    "MODEL_PROVIDER", "ROUTERAI_API_KEY"}
+# Made for the move (new-secrets.json) and ahead of what the session or Vercel has: the code host's signing
+# key (sbx-* hosts derive theirs from it), the browser VMs' signing key, the secrets Telegram and Browser Use
+# send back. The stand drops the last two with their families.
+NEW_APP_SECRETS = ("SANDBOX_SIGNING_KEY", "BROWSER_VM_SIGNING_KEY", "TELEGRAM_WEBHOOK_SECRET_TOKEN",
+                   "BROWSER_USE_WEBHOOK_SECRET")
+# Not on the VM: with MODEL_PROVIDER=routerai, OpenRouter answers nothing of the app.
+NOT_ON_VM = {"OPENROUTER_API_KEY"}
+# The code host both profiles use (scripts/cloudru-code-host): its key derives from SANDBOX_SIGNING_KEY.
+CODE_HOST = {"SANDBOX_HOST_ID": "sbx-code-2", "SANDBOX_HOST_ORIGIN": "https://176-109-106-241.sslip.io"}
+# The same in both: the model through RouterAI (OpenRouter refuses Cloud.ru), the agent's own sandbox on the
+# code host (no Vercel Sandbox here), private addresses to the project's VMs (no hairpin to a public IP).
+ON_THE_VM = {"MODEL_PROVIDER": "routerai", "AGENT_SANDBOX": "bro-cloudru", "CLOUDRU_PRIVATE_ROUTING": "on",
+             **CODE_HOST}
 # EVE_SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
 # Auth reads it too and turns its origin check off.
 # Backups of each go to their own prefix: the stand's never mix with (or prune) production's.
 PROFILES = {
-    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "EVE_SCHEDULES": "off", "HOST_PROFILE": "stand",
-              "BACKUP_PREFIX": "backups/stand/postgres"},
-    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "EVE_SCHEDULES": "on", "HOST_PROFILE": "prod",
+    "stand": {**ON_THE_VM, "BETTER_AUTH_URL": "https://cloud.brobro.tech", "EVE_SCHEDULES": "off",
+              "HOST_PROFILE": "stand", "BACKUP_PREFIX": "backups/stand/postgres"},
+    "prod": {**ON_THE_VM, "BETTER_AUTH_URL": "https://brobro.tech", "EVE_SCHEDULES": "on", "HOST_PROFILE": "prod",
              "BACKUP_PREFIX": "backups/postgres"},
 }
+# Geonode's rotating port 9000 refuses a session in the login (403 on -session-): browser VMs keep one exit
+# per workspace, the sticky port.
+PROXY_PORTS = {"9000": "10000"}
 # graphile wants a pool at least its concurrency + 2. WORKFLOW_WORLD as the build had it: agent.ts reads it
 # again when the bundle loads.
 # Sensitive on Vercel (never readable back): the session or the profile file must bring them.
 EXPECTED = ("MODEL_PROVIDER", "ROUTERAI_API_KEY", "COMPOSIO_API_KEY", "BROWSER_USE_API_KEY", "SANDBOX_SIGNING_KEY",
-            "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_PROXY", "BROWSER_VM_LLM_API_KEY", "SUPERMEMORY_API_KEY")
+            "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_PROXY", "BROWSER_VM_LLM_API_KEY")
 EXPECTED_PROD = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "TELEGRAM_WEBHOOK_SECRET_TOKEN",
                  "TELEGRAM_OWNER_CHAT_ID", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",
-                 "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY")
+                 "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET_KEY", "BROWSER_USE_WEBHOOK_SECRET",
+                 "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET")
 WORLD_DEFAULTS = {"WORKFLOW_POSTGRES_WORKER_CONCURRENCY": "20", "WORKFLOW_POSTGRES_MAX_POOL_SIZE": "24",
                   "WORKFLOW_WORLD": "postgres"}
 
@@ -625,9 +761,17 @@ def database_env(profile):
     return env
 
 
+def sticky_proxy(value):
+    """BROWSER_VM_PROXY (host:port:user:pass, or a URL) on the sticky port instead of the rotating one."""
+    parts = value.split(":")
+    if "://" not in value and len(parts) >= 4 and parts[1] in PROXY_PORTS:
+        return ":".join([parts[0], PROXY_PORTS[parts[1]], *parts[2:]])
+    return re.sub(r"(@[^/:@]+:)(\d+)(?=/|$)", lambda m: m.group(1) + PROXY_PORTS.get(m.group(2), m.group(2)), value)
+
+
 def compose_env(profile, session=None):
-    """{name: value} and {name: source}: Vercel production, the vault keys, the session, the databases of
-    new-secrets.json, the profile file."""
+    """{name: value} and {name: source}: Vercel production, the vault keys, the session (production's sensitive
+    names only), the keys made for the move, the databases of new-secrets.json, the profile file."""
     session = os.environ if session is None else session
     values, sources = {}, {}
 
@@ -642,16 +786,25 @@ def compose_env(profile, session=None):
         if value:
             values[name], sources[name] = value, source
 
-    runtime = APP_NAMES - NOT_RUNTIME - FROM_PROFILE_ONLY
+    runtime = APP_NAMES - NOT_RUNTIME - FROM_PROFILE_ONLY - NOT_ON_VM
     for name, value in read_json("vercel-production.json").items():
-        if name in runtime:
+        if name in runtime and not BLOB.fullmatch(name):
             put(name, value, "vercel")
     for name, value in read_json("installation-secrets.json").items():
         if name in ("BETTER_AUTH_SECRET", "SECRET_ENCRYPTION_KEY"):
             put(name, value, "installation-secrets")
-    for name in sorted(runtime):
+    for name in sorted(runtime & SENSITIVE_ON_VERCEL):
         if name not in values and session.get(name):
             put(name, session[name], "session")
+    made = read_json("new-secrets.json")
+    for name in NEW_APP_SECRETS:
+        if made.get(name):
+            put(name, made[name], "new-secrets")
+    if values.get("BROWSER_VM_PROXY"):
+        values["BROWSER_VM_PROXY"] = sticky_proxy(values["BROWSER_VM_PROXY"])
+    # The browser VMs' agent model goes through RouterAI too (BROWSER_VM_LLM_BASE_URL's default), on its key.
+    if not values.get("BROWSER_VM_LLM_API_KEY") and values.get("ROUTERAI_API_KEY"):
+        put("BROWSER_VM_LLM_API_KEY", values["ROUTERAI_API_KEY"], sources["ROUTERAI_API_KEY"] + " (ROUTERAI_API_KEY)")
     for name, value in WORLD_DEFAULTS.items():
         put(name, value, "default")
     for name, value in PROFILES[profile].items():
@@ -696,11 +849,32 @@ def cmd_env(args):
               and not (args.profile == "stand" and STAND_DROPPED.fullmatch(n))]
     if absent:
         print(f"not found anywhere (Vercel keeps them sensitive): {' '.join(absent)}")
+    prod = args.profile == "prod"
+    # The window's step 2 runs without --dry-run: a production env without payments or owner alerts must not
+    # go out because nobody read the line above.
+    refusals = []
+    if prod and absent and not args.allow_missing:
+        refusals.append(f"production lacks {' '.join(absent)}: put them in {SECRETS / 'prod.json'} "
+                        "(or --allow-missing on purpose)")
+    webhook = values.get("OPS_ALERT_WEBHOOK_URL")
+    if webhook and not webhook.startswith("https://"):
+        print("WARNING: OPS_ALERT_WEBHOOK_URL is not https: the watchdog never uses it")
+    if prod and not (webhook or "").startswith("https://") and not args.no_alert_webhook:
+        refusals.append("production has no https OPS_ALERT_WEBHOOK_URL: an alert about the path to Telegram would "
+                        "reach nobody (or --no-alert-webhook on purpose)")
+    for name in ("EVE_SCHEDULES", "BACKUPS"):
+        if prod and values.get(name) == "off":
+            print(f"WARNING: {name}=off on production ({sources.get(name)}): only for the move's window; "
+                  f"remove it from prod.json and run host.py env again after it")
     if args.profile == "stand":
         for name in sorted(n for n in values if PRODUCTION_STORES.fullmatch(n)):
             print(f"warning: the stand keeps {name} ({sources[name]}): it acts on production's store or accounts")
-    if "OPS_ALERT_CHAT_ID" not in values:
-        print(f"note: no OPS_ALERT_CHAT_ID in {args.profile}.json: the watchdog alerts nobody")
+    chat = values.get("OPS_ALERT_CHAT_ID") or values.get("TELEGRAM_OWNER_CHAT_ID")
+    if not chat and "OPS_ALERT_WEBHOOK_URL" not in values:
+        print(f"note: no OPS_ALERT_CHAT_ID or TELEGRAM_OWNER_CHAT_ID, no OPS_ALERT_WEBHOOK_URL in {args.profile}.json: "
+              "the watchdog alerts nobody (journald only)")
+    elif "OPS_ALERT_WEBHOOK_URL" not in values:
+        print("note: no OPS_ALERT_WEBHOOK_URL: alerts about the path to Telegram go only to Telegram and journald")
     if values.get("BACKUPS") != "off":
         if "BACKUP_ENCRYPTION_KEY" not in values:
             sys.exit("no BACKUP_ENCRYPTION_KEY in new-secrets.json: the nightly backup would fail every night "
@@ -722,8 +896,14 @@ def cmd_env(args):
     if missing:
         sys.exit(f"missing {', '.join(missing)}: put them in {SECRETS / (args.profile + '.json')} (0600)")
     if args.dry_run:
+        for refusal in refusals:
+            print(f"would refuse: {refusal}")
         return
-    job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env})
+    if refusals:
+        sys.exit("\n".join(refusals))
+    # migrate: the release's schema on the env's databases before the app starts on them (the prod env's are
+    # new on the first PUT; the Postgres world does not start without its schema).
+    job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env, "migrate": True})
     follow(args.name, job)
 
 
@@ -949,7 +1129,7 @@ def parser():
     status.add_argument("name")
     status.add_argument("--stage", action="store_true")
     status.set_defaults(fn=cmd_status)
-    for name, fn in (("reboot", cmd_reboot), ("delete", cmd_delete)):
+    for name, fn in (("reboot", cmd_reboot), ("delete", cmd_delete), ("update-host", cmd_update_host)):
         command = sub.add_parser(name)
         command.add_argument("name")
         command.set_defaults(fn=fn)
@@ -969,6 +1149,10 @@ def parser():
     env.add_argument("name")
     env.add_argument("--profile", choices=sorted(PROFILES), required=True)
     env.add_argument("--dry-run", action="store_true")
+    env.add_argument("--allow-missing", action="store_true",
+                     help="prod: go on without names of EXPECTED/EXPECTED_PROD (refused otherwise)")
+    env.add_argument("--no-alert-webhook", action="store_true",
+                     help="prod: go on without an https OPS_ALERT_WEBHOOK_URL (refused otherwise)")
     env.add_argument("--with-neon", action="store_true",
                      help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
                           "in /etc/bro/ops-env for the ops scripts only")

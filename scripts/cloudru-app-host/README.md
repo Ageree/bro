@@ -13,19 +13,22 @@ Caddy :443 ─ /eve/* ───────────────▶ bro-eve  
 bro-eve ── мир @workflow/world-postgres (graphile-worker в процессе) ──▶ PostgreSQL Cloud.ru
 ```
 
-| Файл                    | Что делает                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `host.py`               | команды из сессии (справка — `-h`)                                                   |
-| `host/boot.py`          | `vendor`, бандл хоста и cloud-init                                                   |
-| `host/provision.sh`     | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                           |
-| `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
-| `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
-| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
-| `host/egress.sh`        | iptables: `bro` и `caddy` без metadata `169.254/16`, `bro` и без порта deployd       |
-| `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
-| `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
-| `ops/db-*.sh`           | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
-| `ops/store.py`          | Object Storage и манифесты бэкапов (подпись — `s3.py` стенда, едет в релиз)          |
+| Файл                       | Что делает                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `host.py`                  | команды из сессии (справка — `-h`)                                                   |
+| `host/boot.py`             | `vendor`, бандл хоста и cloud-init                                                   |
+| `host/provision.sh`        | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                           |
+| `host/install-code.sh`     | юниты, tg-egress (включён) и tg-bridge (выключен) из бандла; provision и update-host |
+| `host/deployd.py`          | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                          |
+| `host/watchdog.py`         | раз в минуту: здоровье Next, eve, Caddy, свежесть бэкапа; Telegram владельцу         |
+| `host/*.service, timer`    | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`, `bro-backup` |
+| `host/egress.sh`           | iptables: `bro` и `caddy` без metadata `169.254/16`, `bro` и без порта deployd       |
+| `host/vendor.json`         | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)             |
+| `ops/migrate.ts`           | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs`      |
+| `ops/db-*.sh`              | бэкап, восстановление, проверка восстановления, перенос с Neon (раздел «База»)       |
+| `ops/store.py`             | Object Storage и манифесты бэкапов (подпись — `s3.py` стенда, едет в релиз)          |
+| `ops/tg-bridge.sh`         | вебхук ⇄ мост Telegram; едет в бандле хоста, deployd зовёт его от root               |
+| `tg-egress/`, `tg-bridge/` | выход к `api.telegram.org` и long polling вместо вебхука (их README)                 |
 
 Нужны `CLOUDRU_KEY_ID`, `CLOUDRU_KEY_SECRET`, `CLOUDRU_S3_TENANT_ID`; Compute
 API, serial-консоль и подпись S3 — из стенда `scripts/cloudru-sandbox-probe/`,
@@ -75,6 +78,19 @@ ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
 `/ops/v1/*`); без этих правил `caddy`, `bro-web` и `bro-eve` не стартуют.
 Первая загрузка иногда встаёт в `(initramfs)` — `host.py reboot bro-app-1`.
 
+Код хоста (deployd, watchdog, юниты, tg-egress, tg-bridge, Caddyfile) на живой
+VM без пересоздания — `host.py update-host bro-app-1`: бандл этого checkout
+едет через Object Storage, serial-консоль сверяет sha256, кладёт его в
+`/opt/bro/app-host` (прежний — в `app-host.old`), запускает
+`install-code.sh` и перезапускает deployd. Релизы, env, сайты, адрес и диск
+остаются; включённый мост перезапускается, только если его файлы изменились.
+Пока deployd выполняет задачу, команда отказывает, а на время обновления он
+сам держит слот задач (`POST /ops/v1/host-update`): релиз, env или ops в это
+время получают «busy», и рестарт deployd их не обрывает. Слот освобождает
+рестарт, обновление, упавшее до него, или 20 минут. `bro-app-1` создан
+бандлом без Telegram и без этого слота — перед переключением ему нужен этот
+шаг (первый раз — с проверкой, что задач нет).
+
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
 клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro` (дом —
 `/var/lib/bro-home`), `/srv/bro/releases/<версия>` и симлинк
@@ -83,7 +99,13 @@ ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
 релизами), `/etc/bro/env`
 (`0600`, пустой до первого `host.py env`), журнал не больше 1 ГБ, Caddy с
 ops-хостом `<ip>.sslip.io`, `deployd`, таймер watchdog. `bro-web` и `bro-eve`
-включены, но стартуют только когда есть `current`.
+включены, но стартуют только когда есть `current`. Юниты и Telegram ставит
+`host/install-code.sh`: `bro-tg-egress` включён и запущен (`bro-eve`,
+`bro-web`, `bro-watchdog` и `bro-tg-bridge` стартуют после него, когда
+форвардер уже слушает: `After=` и `Type=notify`),
+`bro-tg-bridge` установлен, но выключен — его включает только
+`tg-bridge.sh switch-to-bridge` (раздел «Telegram»). В конце — одна проверка
+`tg_egress.py --check` (стадия `telegram`; сбой только в лог).
 
 ## Выкладка
 
@@ -127,13 +149,27 @@ host.py rollback bro-app-1                         # ещё раз — на ре
 источникам. Порядок (позднее перекрывает раннее):
 
 1. `vercel-production.json` — только имена схемы `shared/environment/env.ts`,
-   без `VERCEL_*`, Neon и `DATABASE_URL*`;
+   без `VERCEL_*`, Neon, `DATABASE_URL*`, `BLOB_*` (секреты установки заданы
+   явно, файлы — в Object Storage) и `OPENROUTER_API_KEY` (модель — RouterAI);
 2. `installation-secrets.json` — `BETTER_AUTH_SECRET`, `SECRET_ENCRYPTION_KEY`
    (не менять никогда);
-3. env сессии — имена схемы, которых ещё нет (чувствительные ключи Vercel не
-   отдаёт: Telegram, RouterAI, Composio…);
+3. env сессии — только то, что Vercel прода держит sensitive и не отдаёт
+   (`SENSITIVE_ON_VERCEL`: Telegram, iMessage, ЮKassa, Composio, Browser Use,
+   ключи Cloud.ru, `BROWSER_VM_*`, плюс `MODEL_PROVIDER`, `ROUTERAI_API_KEY` и
+   `TELEGRAM_OWNER_CHAT_ID`), и только если имени ещё нет: прочие ключи сессии
+   (`SUPERMEMORY_API_KEY`…) в прод не попадают. Затем ключи, сделанные для
+   переезда, поверх сессии и Vercel — из `new-secrets.json`:
+   `SANDBOX_SIGNING_KEY` (из него же ключ `sbx-code-2`),
+   `BROWSER_VM_SIGNING_KEY`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+   `BROWSER_USE_WEBHOOK_SECRET`. `BROWSER_VM_PROXY` переезжает с порта 9000
+   (ротация Geonode, на `-session-` отвечает 403) на 10000 (sticky);
+   `BROWSER_VM_LLM_API_KEY`, если его нет, — `ROUTERAI_API_KEY`;
+   `TELEGRAM_BOT_USERNAME` — без `@`;
 4. `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=20`, `…_MAX_POOL_SIZE=24`,
-   `WORKFLOW_WORLD=postgres`; профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
+   `WORKFLOW_WORLD=postgres`; оба профиля — `MODEL_PROVIDER=routerai`,
+   `AGENT_SANDBOX=bro-cloudru`, `CLOUDRU_PRIVATE_ROUTING=on`,
+   `SANDBOX_HOST_ID=sbx-code-2` и его `SANDBOX_HOST_ORIGIN` (`CODE_HOST` в
+   `host.py`); профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
    `EVE_SCHEDULES=off` (тики расписаний ничего не делают; не `TEST=1`: его читает
    и Better Auth и выключает проверку Origin); прод — `https://brobro.tech`,
    `EVE_SCHEDULES=on`;
@@ -159,23 +195,68 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    deployd: его получают только ops-скрипты, приложение и инструменты модели —
    нет; `host.py env` без флага его убирает;
 7. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор):
-   `OPS_ALERT_CHAT_ID` и всё, что надо перекрыть (и базы, если они другие);
-   `null` удаляет имя.
+   `TELEGRAM_OWNER_CHAT_ID` (на Vercel его нет), `YOOKASSA_SHOP_ID` и
+   `YOOKASSA_SECRET_KEY` (их нет и в сессии), `OPS_ALERT_CHAT_ID`,
+   `OPS_ALERT_WEBHOOK_URL` и всё, что надо перекрыть (и базы, если они
+   другие); `null` удаляет имя.
+
+Прод (`--profile prod`, не `--dry-run`) не уходит, если не найдено имя из
+`EXPECTED`/`EXPECTED_PROD` (`--allow-missing` — сознательно) или нет https
+`OPS_ALERT_WEBHOOK_URL` (`--no-alert-webhook` — сознательно); `--dry-run`
+печатает, от чего откажет. `EVE_SCHEDULES=off` или `BACKUPS=off` на проде —
+`WARNING` в `env` и список `off` в `host.py status`: только на окно переезда.
 
 Значения чистятся от переводов строк, пробелов и кавычек по краям. Значение с
-переводом строки deployd не примет. Если после нового env сервисы не поднялись
+переводом строки deployd не примет. Перед рестартом deployd накатывает
+миграции текущего релиза (`ops/migrate.mjs app world`) на базы нового env:
+новая база (первый `env` прода) иначе без схемы, а мир Postgres без неё не
+стартует; сбой миграций возвращает прежний файл, сервисы не трогаются. Если после нового env сервисы не поднялись
 за 120 с, deployd возвращает прежний файл.
 
 ## Сайты, логи, ops
 
 - `host.py sites NAME --set a,b | --add D | --remove D` — сайты приложения в
   Caddy (сертификат Let's Encrypt выпускается при первом запросе, A-запись —
-  заранее). `/ops/v1/*` есть только на ops-хосте `sslip.io`.
+  заранее). `/ops/v1/*` есть только на ops-хосте `sslip.io`. `www.<домен>`
+  рядом со своим `<домен>` в списке — редирект 308 на него, как сейчас на
+  Vercel: у приложения одно происхождение для Better Auth. Прод —
+  `--set brobro.tech,www.brobro.tech`.
 - `host.py logs NAME bro-eve --lines 500` — хвост journald.
 - `host.py restart NAME [bro-web bro-eve caddy]`, `host.py stop NAME bro-eve bro-web`.
+  `stop` помечает остановку плановой (`/var/lib/bro/maintenance`, в `host.py
+status` — `plannedStop`), пока юниты не перезапустит `restart`, релиз или
+  `env`: сторож три часа не считает их упавшими.
 - `host.py ops NAME <скрипт> [аргументы]` — `ops/<скрипт>` текущего релиза
   от `bro` с env сервисов (базы — раздел «База»); аргумент `s3get:`/`s3put:`
   превращается в presigned-ссылку.
+
+## Telegram
+
+С VM Cloud.ru `api.telegram.org` отвечает только через `tg-egress/`, а вебхук
+Telegram до VM в РФ доходит ненадёжно, поэтому на проде обновления забирает
+мост `tg-bridge/` (long polling). Переключение — через deployd от root
+(`ops/tg-bridge.sh` из бандла хоста, не из релиза: файлы релиза принадлежат
+`bro`):
+
+```sh
+host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo (без токена в env — только юниты)
+host.py ops bro-app-1 tg-bridge.sh hold                # мост выключить, deleteWebhook: Telegram копит обновления (24 ч), метка tg-hold
+host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check и health eve, затем deleteWebhook и мост
+host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
+host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
+```
+
+Пока мост включён (`systemctl is-enabled bro-tg-bridge`), каждый перезапуск
+eve у deployd — релиз, откат, `PUT env`, `restart bro-eve` — идёт так: стоп
+моста → 15 с, чтобы eve доделал принятое → перезапуск eve и Next → health →
+старт моста (в любом исходе). Так выкатка не теряет обновление, принятое eve
+за миг до рестарта, а мост читает новый токен и секрет. Мост не остановился —
+его снова запускают, eve не трогают, задача падает (env — прежний). После релиза и отката
+deployd проверяет путь `tg_egress.py --check` (если форвардер установлен):
+сбой — один `restart bro-tg-egress`, затем `"telegram": "down"` в итоге задачи
+и `WARNING` в логе; релиз при этом не откатывается — путь принадлежит хосту, а
+не релизу. `host.py status` показывает `telegram` (форвардер, мост) и
+`watchdog` — лежащие проверки и тревоги, которые не удалось доставить.
 
 ## База
 
@@ -201,12 +282,13 @@ host.py pg status      # кластер, диск, базы, пользоват�
 `neon`, `db:<имя>` — только `bro_stand` и `bro_restore_check`; пароль в
 командную строку не попадает, только в env команды):
 
-| Скрипт                                                         | Что делает                                                                                                                                                                 |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `db-backup.sh`                                                 | `pg_dump -Fc` базы `app` → `openssl` AES-256 (`BACKUP_ENCRYPTION_KEY`) → `<BACKUP_PREFIX>/<UTC>.dump.enc` и манифест `.json`; старше 14 дней — удалить, три новых остаются |
-| `db-restore.sh KEY\|latest app\|check\|db:<имя> [--replace]`   | сверить с манифестом, расшифровать, в одной транзакции снести свои таблицы цели и восстановить, сверить число строк каждой таблицы                                         |
-| `db-restore-check.sh [KEY\|latest]`                            | восстановить в `bro_restore_check`, сверить с дампом (строго) и с живой базой (печатает разницу), очистить                                                                 |
-| `db-copy.sh FROM TO [--replace] [--dump-only] [--live-source]` | перенос базы целиком с проверкой: `neon app` — переезд, `app neon` — откат (`docs/cloudru-migration.md`, этап 5)                                                           |
+| Скрипт                                                         | Что делает                                                                                                                                                                   |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db-backup.sh`                                                 | `pg_dump -Fc` базы `app` → `openssl` AES-256 (`BACKUP_ENCRYPTION_KEY`) → `<BACKUP_PREFIX>/<UTC>.dump.enc` и манифест `.json`; старше 14 дней — удалить, три новых остаются   |
+| `db-restore.sh KEY\|latest app\|check\|db:<имя> [--replace]`   | сверить с манифестом, расшифровать, в одной транзакции снести свои таблицы цели и восстановить, сверить число строк каждой таблицы                                           |
+| `db-restore-check.sh [KEY\|latest]`                            | восстановить в `bro_restore_check`, сверить с дампом (строго) и с живой базой (печатает разницу), очистить                                                                   |
+| `db-neon-mode.sh status\|read-only\|writable`                  | Neon только для чтения приложению на время переезда и окна отката (`ALTER DATABASE … default_transaction_read_only`, завершение прочих сессий роли); менять — только с прода |
+| `db-copy.sh FROM TO [--replace] [--dump-only] [--live-source]` | перенос базы целиком с проверкой: `neon app` — переезд, `app neon` — откат (`docs/cloudru-migration.md`, этап 5)                                                             |
 
 - Скрипты идут по одному (`flock` на `/var/backups/bro/.db.lock`): ночной
   бэкап не снимет дамп посреди восстановления, второй запуск ждёт первого до
@@ -272,6 +354,28 @@ host.py pg status      # кластер, диск, базы, пользоват�
 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_OWNER_CHAT_ID` приложения. Состояние —
 `/var/lib/bro/watchdog.json`; несданное сообщение (и о восстановлении)
 уходит на следующем тике.
+
+Путь к Telegram: с установленным tg-egress — `tg_egress.py --check` (по имени,
+как все клиенты); сбой сначала перезапускает `bro-tg-egress` (не чаще раза в
+10 минут) и считается, только если и после этого проверка падает. С
+включённым мостом — юнит `active` и `127.0.0.1:7445/health` 200. Тревога про
+этот путь в Telegram идёт тем же путём и до владельца чаще не дойдёт, поэтому
+каждая тревога — всегда строка `alert: …` в журнале, а второй канал, не
+зависящий от Telegram, — `OPS_ALERT_WEBHOOK_URL` (https, текст тревоги
+уходит `POST` `text/plain`, как ждут ntfy и похожие push-сервисы; задать в
+`prod.json`). Письмо через Composio требует карточки, iMessage (Photon) ходит
+через адаптер канала eve — сторожу на stdlib они недоступны. Тревога, не
+ушедшая ни в один канал, повторяется на следующем тике и видна в `host.py
+status` (`watchdog.undelivered`, там же лежащие проверки `watchdog.down`).
+
+Плановая остановка (`host.py stop`) снимает проверки web и eve (с eve — и
+моста) на три часа, дольше — тревога как обычно; не остановившийся юнит
+отметку не оставляет. `tg-bridge.sh hold` пишет
+`/var/lib/bro/tg-hold`, оба `switch-to-*` её убирают: hold старше трёх часов
+при выключенном мосте — тревога (Telegram держит обновления лишь сутки).
+Проверка, которую больше не запускают (мост выключен, `BACKUPS=off`),
+уходит из состояния; если о ней тревожили — одно сообщение, что она больше
+не проверяется (не ушедшее повторяется, как тревога).
 
 Watchdog живёт на той же VM: падение VM, сети, DNS, истёкший сертификат он
 не заметит. Внешней проверки `https://<домен>/eve/v1/health` пока нет — её

@@ -42,7 +42,7 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
   фото, расшифровка голоса и разбор `/start link_…` идут уже после ответа.
   Обновление, принятое за секунды до остановки eve (выкатка, `restart`),
   может потеряться — с вебхуком было так же. Поэтому перед рестартом eve мост
-  останавливают (см. «Что должен сделать сервер»).
+  останавливают (см. «Что делает сервер»).
 - **Не дублирует.** eve и Бро не проверяют `update_id` (дубль — второй ответ
   Бро и ложное «Ссылка не подходит» на `/start link_…`), поэтому дубли
   отсекает мост: в памяти — всё, что в работе, на диске — доставленное.
@@ -138,50 +138,60 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
 `python3 /opt/bro/tg-bridge/tg_bridge.py check` — то же для человека и
 watchdog (код 0 или 1).
 
-## Что должен сделать сервер
+## Что делает сервер
 
-Сервер приложения (`scripts/cloudru-app-host/`, `host/` и `ops/`) — не
-часть этого каталога, но без этих шагов мост включать нельзя: SSH на VM нет,
-root — только у `deployd`, а упавший мост без сторожа делает бота немым
-молча (у вебхука Telegram хотя бы виден `last_error`).
+Сервер приложения (`scripts/cloudru-app-host/`: `host/` и `ops/`, раздел
+«Telegram» его README) — не часть этого каталога, но без него мост включать
+нельзя: SSH на VM нет, root — только у `deployd`, а упавший мост без сторожа
+делает бота немым молча (у вебхука Telegram хотя бы виден `last_error`).
 
-1. **Установка.** `boot.py` (`FILES`) кладёт в бандл `tg_bridge.py`,
-   `bro-tg-bridge.service` и `install.sh`; `provision.sh` зовёт
-   `install.sh`. Юнит не включается: включает `switch-to-bridge`.
+1. **Установка.** `boot.py` (`FILES`) кладёт в бандл хоста `tg_bridge.py`,
+   `bro-tg-bridge.service`, `install.sh` и `ops/tg-bridge.sh`;
+   `host/install-code.sh` (из `provision.sh` при первом старте и из
+   `host.py update-host` на живой VM) зовёт `install.sh`. Юнит не
+   включается: включает `switch-to-bridge`.
 2. **deployd.** `bro-tg-bridge` — в `UNITS` (логи через `host.py logs`) и в
    `RESTARTABLE`. Мост читает токен и секрет один раз при старте, а
-   `/etc/bro/env` пользователю `bro` не читаем, поэтому `PUT /ops/v1/env` и
-   любой рестарт eve делают так, если юнит включён
-   (`systemctl is-enabled bro-tg-bridge`): `stop bro-tg-bridge` → ~15 с (eve
+   `/etc/bro/env` пользователю `bro` не читаем, поэтому релиз, откат,
+   `PUT /ops/v1/env` и любой рестарт eve при включённом юните
+   (`systemctl is-enabled bro-tg-bridge`) идут так (`bridge_paused` в
+   `deployd.py`): `stop bro-tg-bridge` → 15 с (`BRIDGE_DRAIN_S`: eve
    дорабатывает принятое в `waitUntil`) → `restart bro-eve` (и `bro-web`) →
-   health eve → `start bro-tg-bridge`. Так выкатка не теряет обновление,
-   принятое eve за миг до рестарта.
-3. **Команды.** Обёртка `ops/tg-bridge.sh {status|switch-to-bridge|switch-to-webhook URL}`,
-   которую запускает `POST /ops/v1/ops` (`host.py ops NAME tg-bridge.sh …`):
-   другого пути к root на VM нет. Но `do_ops` в `deployd.py` запускает
-   ops-скрипты от `bro`, а `systemctl` и `/etc/bro/env` требуют root:
-   для этого скрипта нужен отдельный запуск от root. Обёртка зовёт
-   `python3 /opt/bro/tg-bridge/tg_bridge.py …`.
-4. **watchdog.** Проверка `tg` в `watchdog.py` — только когда
-   `systemctl is-enabled bro-tg-bridge`: `GET 127.0.0.1:7445/health` (или
-   `tg_bridge.py check`) не `200` либо юнит не `active` — по тем же правилам,
-   что `web` и `eve` (5 минут до алерта, повтор раз в час, сообщение о
-   восстановлении). Алерт идёт тем же `api.telegram.org`, что и мост: при
-   недоступном Telegram он не дойдёт, а внешний пробник это и так видит.
+   health eve → `start bro-tg-bridge` в любом исходе. Так выкатка не теряет
+   обновление, принятое eve за миг до рестарта. Если мост не остановился,
+   deployd запускает его снова и eve не перезапускает: задача падает, env
+   остаётся прежним.
+3. **Команды.** `ops/tg-bridge.sh {status|hold|switch-to-bridge|switch-to-webhook URL}`
+   запускает `POST /ops/v1/ops` (`host.py ops NAME tg-bridge.sh …`): другого
+   пути к root на VM нет. Ops-скрипты релиза deployd запускает от `bro`, а
+   `systemctl` и `/etc/bro/env` требуют root, поэтому эту обёртку он берёт из
+   бандла хоста и запускает от root (`ROOT_OPS`). Перед снятием вебхука она
+   проверяет путь `tg_egress.py --check` и зовёт
+   `python3 /opt/bro/tg-bridge/tg_bridge.py …`; `hold` — выключить мост, если он
+   включён (`disable --now`), и снять вебхук (`switch-to-bridge --no-start`,
+   тоже лишь при живом eve): в паузе обновления не берёт никто. Метка
+   `/var/lib/bro/tg-hold` ставится, как только их никто не берёт.
+4. **watchdog.** Проверка `tg-bridge` в `watchdog.py` — только когда
+   `systemctl is-enabled bro-tg-bridge`: юнит не `active` либо
+   `GET 127.0.0.1:7445/health` не `200` — по тем же правилам, что `web` и
+   `eve` (5 минут до алерта, повтор раз в час, сообщение о восстановлении).
+   Рядом — `tg-egress` (путь к Telegram) и `tg-hold` (hold дольше трёх часов
+   без моста). Алерт в Telegram идёт тем же путём, что и мост, поэтому есть
+   второй канал — `OPS_ALERT_WEBHOOK_URL` (README сервера, «Watchdog»).
 
 ## Переключение
 
 Команды ниже — на VM от root (через обёртку deployd из п. 3: с рабочего
 места `host.py ops NAME tg-bridge.sh switch-to-bridge`, так же `status` и
-`switch-to-webhook URL`); они читают `/etc/bro/env` сами.
+`switch-to-webhook URL`); они читают `/etc/bro/env` сами. Ставит мост
+`install-code.sh` сервера.
 
 ```sh
 bash scripts/cloudru-app-host/tg-bridge/install.sh     # из распакованного бандла; не включает мост
 python3 /opt/bro/tg-bridge/tg_bridge.py status          # только getWebhookInfo: куда идут обновления
 ```
 
-**На мост** (eve на VM уже работает, tg-egress включён, шаги сервера
-сделаны):
+**На мост** (eve на VM уже работает, tg-egress включён):
 
 ```sh
 python3 /opt/bro/tg-bridge/tg_bridge.py switch-to-bridge
@@ -235,9 +245,18 @@ Telegram (в РФ — с VPN). Мост, увидев вебхук, сам пе�
    (Токен в URL виден в `ps` этой машины; на общей машине — `curl -K` с
    конфигом из файла.)
 
-2. Когда VM снова доступна — `systemctl disable --now bro-tg-bridge` (через
-   deployd), чтобы мост не включился после перезагрузки. Обновления, которые
-   мост успел доставить, но не подтвердить, вебхук пришлёт повторно.
+2. Когда VM и её путь к Telegram снова работают — через deployd тот же
+   адрес, что в п. 1:
+
+   ```sh
+   host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
+   ```
+
+   Мост выключается (`disable --now`, после перезагрузки не включится),
+   вебхук ставится повторно. Пока Telegram с VM недоступен, команда
+   возвращает мост: вебхук он не снимает, а увидев его, не опрашивает.
+   Обновления, которые мост успел доставить, но не подтвердить, вебхук
+   пришлёт повторно.
 
 ## Проверка
 

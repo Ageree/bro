@@ -7,7 +7,8 @@ Caddy, Node and the PostgreSQL client travel there from the session, pinned by s
   vendor(dir)        Caddy's static binary (GitHub release), Node's linux-x64 tarball (nodejs.org) and the
                      PostgreSQL 18 client packages for jammy (apt.postgresql.org: libpq5,
                      postgresql-client-common, postgresql-client-18), each checked against its pin
-  bundle(vendor)     provision.sh, deployd.py, watchdog.py, the units and Caddy as a reproducible tarball
+  bundle(vendor)     provision.sh, install-code.sh, deployd.py, watchdog.py, the units, tg-egress, tg-bridge,
+                     the root ops wrapper and Caddy as a reproducible tarball
   cloud_init(...)    the user data for one VM: the boot settings, deployd's identity and the boot script
 
 On the VM, /usr/local/sbin/bro-app-host-boot fetches the bundle, checks its SHA-256 and runs provision.sh.
@@ -23,9 +24,14 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "deployd.py", "watchdog.py", "egress.sh", "bro-egress.service", "bro-web.service", "bro-eve.service", "deployd.service",
-         "bro-watchdog.service", "bro-watchdog.timer", "bro-backup.service", "bro-backup.timer",
-         "bro-backup-alert.service", "caddy.service")
+FILES = ("provision.sh", "install-code.sh", "deployd.py", "watchdog.py", "egress.sh", "bro-egress.service",
+         "bro-web.service", "bro-eve.service", "deployd.service", "bro-watchdog.service", "bro-watchdog.timer",
+         "bro-backup.service", "bro-backup.timer", "bro-backup-alert.service", "caddy.service")
+# From the sibling directories, at the same relative path in the bundle: the way out to Telegram, the bridge
+# that polls it, and the wrapper deployd runs as root (never the release's copy, which bro owns).
+SIBLING_FILES = ("tg-egress/tg_egress.py", "tg-egress/setup.sh", "tg-egress/bro-tg-egress.service",
+                 "tg-bridge/tg_bridge.py", "tg-bridge/install.sh", "tg-bridge/bro-tg-bridge.service",
+                 "ops/tg-bridge.sh")
 VENDOR = json.loads((HERE / "vendor.json").read_text())
 HOST_ID = re.compile(r"[a-z0-9-]{1,63}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -99,8 +105,9 @@ def bundle(vendor_dir, *, caddy_sha256=None):
     binary = (Path(vendor_dir) / "caddy").read_bytes()
     if sha256(binary) != (caddy_sha256 or VENDOR["caddy"]["binarySha256"]):
         raise ValueError("vendor/caddy is not the pinned Caddy binary")
-    entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith((".sh", ".py")) else 0o644)
-               for name in FILES]
+    sources = [(name, HERE / name) for name in FILES] + [(name, HERE.parent / name) for name in SIBLING_FILES]
+    entries = [(name, path.read_bytes(), 0o755 if name.endswith((".sh", ".py")) else 0o644)
+               for name, path in sources]
     entries.append(("vendor/caddy", binary, 0o755))
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:

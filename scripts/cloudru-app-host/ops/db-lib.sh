@@ -24,8 +24,9 @@ BACKUP_PREFIX=${BACKUP_PREFIX:-backups/postgres}
 # AES-256-CBC with a PBKDF2 key from BACKUP_ENCRYPTION_KEY; the manifest carries the sha256s and an HMAC of
 # the same key (store.py), so a dump someone else put in the bucket is refused before it is decrypted.
 CIPHER=(-aes-256-cbc -pbkdf2 -iter 600000 -md sha256)
-# Every table of these schemas is counted; neon_auth is Neon's own (its role does not exist elsewhere).
-SKIP_SCHEMAS="'pg_catalog','information_schema','pg_toast','neon_auth'"
+# Every table of these schemas is counted; neon_auth is Neon's own (its role does not exist elsewhere), cloudru
+# Cloud.ru's (in every database of its managed PostgreSQL, with pg_stat_statements and pgaudit in it).
+SKIP_SCHEMAS="'pg_catalog','information_schema','pg_toast','neon_auth','cloudru'"
 # The only databases db:<name> may name: the stand's app database and the scratch one. Never a world
 # (*_workflow) or production's bro.
 DB_NAMES=${DB_NAMES:-bro_stand bro_restore_check}
@@ -175,7 +176,8 @@ refuse_foreign() {
 }
 
 # NAME FILE: the custom-format dump of the connecting user's tables; FILE.excluded lists the tables of other
-# roles it left out (and says so on stderr). Neon's neon_auth is never dumped.
+# roles it left out (and says so on stderr). The providers' own schemas are never dumped: Neon's neon_auth, and
+# Cloud.ru's cloudru with its two extensions, which a restore would recreate over the target's own copy.
 dump() {
   local foreign=() args=() table
   mapfile -t foreign < <(foreign_tables "$1")
@@ -188,7 +190,8 @@ dump() {
   if [ -s "$2.excluded" ]; then
     echo "left out of the dump (another role's): $(paste -sd' ' "$2.excluded")" >&2
   fi
-  as_db "$1" pg_dump --format=custom --no-owner --no-privileges --exclude-schema=neon_auth "${args[@]}" \
+  as_db "$1" pg_dump --format=custom --no-owner --no-privileges --exclude-schema=neon_auth \
+    --exclude-schema=cloudru --exclude-extension=pg_stat_statements --exclude-extension=pgaudit "${args[@]}" \
     --file "$2.partial" --dbname "$(conn "$1")"
   mv "$2.partial" "$2"
 }

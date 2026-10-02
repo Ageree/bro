@@ -47,6 +47,8 @@ class FakeRunner(deployd.Runner):
         self.calls = []
         self.health = {}
         self.migrate_exit = 0
+        self.enabled = set()  # units `systemctl is-enabled` says yes to
+        self.egress_exits = []  # exit codes of the next tg_egress.py --check calls, then 0
 
     def run(self, argv, *, env=None, cwd=None, user=None, timeout=600):
         self.calls.append({"argv": argv, "env": env, "cwd": cwd, "user": user})
@@ -57,6 +59,10 @@ class FakeRunner(deployd.Runner):
             return self.migrate_exit, "migrate app: done\nmigrate world: done\n"
         if argv[:2] == ["systemctl", "is-active"]:
             return 0, "active\n"
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            return (0, "") if argv[-1] in self.enabled else (1, "")
+        if argv[:1] == ["python3"] and argv[-1] == "--check":
+            return (self.egress_exits.pop(0) if self.egress_exits else 0), "no answer: TimeoutError\n"
         return 0, ""
 
     def healthy(self, url, timeout=5):
@@ -68,6 +74,15 @@ class FakeRunner(deployd.Runner):
         if hashlib.sha256(data).hexdigest() != sha256:
             raise deployd.Refused("the release does not match its sha256")
         Path(out).write_bytes(data)
+
+
+def wait_until(condition, seconds=5):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return condition()
 
 
 def release_archive(version, files=None):
@@ -104,6 +119,7 @@ class ReleaseTest(unittest.TestCase):
         self.deployd = deployd.Deployd(self.paths, self.runner, IDENTITY)
         self.log = []
         deployd.HEALTH_WAIT_S = 0
+        deployd.BRIDGE_DRAIN_S = 0
 
     def body(self, version):
         data = release_archive(version)
@@ -245,6 +261,24 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(deployd.read_env(self.paths)["A"], "1")
         self.assertNotEqual(self.paths.env.read_text(), before)
 
+    def test_env_put_can_migrate_the_new_databases_first(self):
+        self.release("v1")
+        self.runner.calls.clear()
+        self.deployd.do_env({"env": {"DATABASE_URL": "postgres://new", "WORKFLOW_POSTGRES_URL": "postgres://w2"},
+                             "migrate": True}, self.log.append)
+        migrate = next(c for c in self.runner.calls if c["argv"][0] == deployd.NODE)
+        self.assertEqual(migrate["env"]["WORKFLOW_POSTGRES_URL"], "postgres://w2")
+        first_restart = next(i for i, c in enumerate(self.runner.calls) if c["argv"][:2] == ["systemctl", "restart"])
+        self.assertLess(self.runner.calls.index(migrate), first_restart)
+        self.runner.migrate_exit = 1
+        self.runner.calls.clear()
+        with self.assertRaisesRegex(deployd.Refused, "migrations failed"):
+            self.deployd.do_env({"env": {"DATABASE_URL": "postgres://other", "WORKFLOW_POSTGRES_URL": "postgres://w3"},
+                                 "opsEnv": {"NEON_DATABASE_URL": "postgres://n"}, "migrate": True}, self.log.append)
+        self.assertEqual(deployd.read_env(self.paths)["WORKFLOW_POSTGRES_URL"], "postgres://w2")
+        self.assertFalse(self.paths.ops_env.exists())  # the ops scripts' names go back with it (none before)
+        self.assertFalse(any(c["argv"][:2] == ["systemctl", "restart"] for c in self.runner.calls))
+
     def test_ops_runs_only_scripts_of_the_current_release(self):
         self.release("v1")
         with self.assertRaisesRegex(deployd.Refused, "no ops/db-backup.sh"):
@@ -258,6 +292,183 @@ class ReleaseTest(unittest.TestCase):
         call = self.runner.calls[-1]
         self.assertEqual(call["argv"][0], "/bin/bash")
         self.assertEqual(call["user"], "bro")
+
+    def systemctl(self):
+        return [" ".join(c["argv"][1:3]) for c in self.runner.calls
+                if c["argv"][0] == "systemctl" and c["argv"][1] in ("restart", "stop", "start")]
+
+    def test_an_enabled_bridge_is_stopped_around_every_restart_of_eve(self):
+        self.release("v1")
+        self.assertNotIn("stop bro-tg-bridge", self.systemctl())  # not enabled: left alone
+        self.runner.enabled.add("bro-tg-bridge")
+        both = ["stop bro-tg-bridge", "restart bro-eve", "restart bro-web", "start bro-tg-bridge"]
+        for work, expected in (
+                (lambda: self.release("v2"), both),
+                (lambda: self.deployd.do_rollback({}, self.log.append), both),
+                (lambda: self.deployd.do_env({"env": {"A": "1"}}, self.log.append), both),
+                (lambda: self.deployd.do_restart({"units": ["bro-eve", "bro-tg-bridge"]}, self.log.append),
+                 ["stop bro-tg-bridge", "restart bro-eve", "start bro-tg-bridge"])):
+            self.runner.calls.clear()
+            work()
+            self.assertEqual(self.systemctl(), expected)
+        # Web alone does not touch the bridge.
+        self.runner.calls.clear()
+        self.deployd.do_restart({"units": ["bro-web"]}, self.log.append)
+        self.assertEqual(self.systemctl(), ["restart bro-web"])
+
+    def test_the_bridge_comes_back_even_when_the_release_does_not(self):
+        self.release("v1")
+        self.runner.enabled.add("bro-tg-bridge")
+        self.runner.health["v2"] = False
+        self.runner.calls.clear()
+        with self.assertRaisesRegex(deployd.Refused, "back on v1"):
+            self.release("v2")
+        calls = self.systemctl()
+        self.assertEqual((calls[0], calls[-1]), ("stop bro-tg-bridge", "start bro-tg-bridge"))
+        self.runner.calls.clear()
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "previous one is back"):
+            self.deployd.do_env({"env": {"A": "2"}}, self.log.append)
+        self.assertEqual(self.systemctl()[-1], "start bro-tg-bridge")
+
+    def fail_stopping(self, unit):
+        run = self.runner.run
+
+        def failing_stop(argv, **kwargs):
+            if argv == ["systemctl", "stop", unit]:
+                self.runner.calls.append({"argv": argv})
+                return 1, f"Job for {unit}.service canceled."
+            return run(argv, **kwargs)
+
+        self.runner.run = failing_stop
+
+    def test_a_bridge_that_does_not_stop_keeps_eve_as_it_runs(self):
+        self.release("v1")
+        env = {"A": "1", "WORKFLOW_POSTGRES_URL": "postgres://w"}
+        self.deployd.do_env({"env": env, "opsEnv": {"NEON_DATABASE_URL": "postgres://n"}}, self.log.append)
+        self.runner.enabled.add("bro-tg-bridge")
+        self.fail_stopping("bro-tg-bridge")
+        self.runner.calls.clear()
+        with self.assertRaisesRegex(deployd.Refused, "did not stop"):
+            self.release("v2")
+        self.assertEqual(os.readlink(self.paths.current), "releases/v1")
+        self.assertEqual(self.systemctl(), ["stop bro-tg-bridge", "start bro-tg-bridge"])
+        for work in (lambda: self.deployd.do_rollback({"version": "v2"}, self.log.append),
+                     lambda: self.deployd.do_restart({"units": ["bro-eve"]}, self.log.append),
+                     lambda: self.deployd.do_env({"env": {**env, "A": "2"}, "migrate": True}, self.log.append)):
+            self.runner.calls.clear()
+            with self.assertRaisesRegex(deployd.Refused, "did not stop"):
+                work()
+            self.assertEqual(self.systemctl(), ["stop bro-tg-bridge", "start bro-tg-bridge"])
+        # The env the services run on is the one on disk, and the ops scripts keep their names.
+        self.assertEqual(deployd.read_env(self.paths), env)
+        self.assertEqual(deployd.read_ops_env(self.paths), {"NEON_DATABASE_URL": "postgres://n"})
+
+    def test_env_put_takes_the_env_back_on_any_failure_of_the_migrations(self):
+        self.release("v1")
+        before = self.paths.env.read_text()
+        run = self.runner.run
+
+        def timing_out(argv, **kwargs):
+            if argv[0] == deployd.NODE:
+                raise subprocess.TimeoutExpired(argv, 900)
+            return run(argv, **kwargs)
+
+        self.runner.run = timing_out
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.deployd.do_env({"env": {"WORKFLOW_POSTGRES_URL": "postgres://w2"},
+                                 "opsEnv": {"NEON_DATABASE_URL": "postgres://n"}, "migrate": True}, self.log.append)
+        self.assertEqual(self.paths.env.read_text(), before)
+        self.assertFalse(self.paths.ops_env.exists())
+
+    def test_a_stop_that_fails_leaves_the_watchdog_watching(self):
+        self.fail_stopping("bro-eve")
+        with self.assertRaisesRegex(deployd.Refused, "did not stop"):
+            self.deployd.do_stop({"units": ["bro-eve", "bro-web"]}, self.log.append)
+        self.assertFalse(self.paths.maintenance.exists())
+        self.paths.maintenance.parent.mkdir(parents=True, exist_ok=True)
+        planned = {"since": 1000, "units": ["bro-web"]}
+        self.paths.maintenance.write_text(json.dumps(planned))
+        with self.assertRaisesRegex(deployd.Refused, "did not stop"):
+            self.deployd.do_stop({"units": ["bro-eve"]}, self.log.append)
+        self.assertEqual(json.loads(self.paths.maintenance.read_text()), planned)
+
+    def test_a_host_update_holds_the_job_slot_until_it_gives_it_back(self):
+        quiet = mock.patch("builtins.print")  # the jobs' log lines
+        quiet.start()
+        self.addCleanup(quiet.stop)
+        self.assertEqual(self.deployd.end_host_update(), {"ended": None})  # none held: nothing to end
+        held = self.deployd.start_job("host-update", self.deployd.do_host_update, {})
+        with self.assertRaisesRegex(deployd.Refused, f"busy with job {held['id']} \\(host-update\\)"):
+            self.deployd.start_job("release", self.deployd.do_release, {})
+        self.assertEqual(self.deployd.status()["job"], held["id"])
+        self.assertEqual(self.deployd.end_host_update(), {"ended": held["id"]})
+        self.assertTrue(wait_until(lambda: held["state"] == "done"))
+        self.assertEqual(held["result"], {"ended": "host.py"})
+        other = self.deployd.start_job("restart", lambda body, log: None, {})
+        self.assertTrue(wait_until(lambda: other["state"] == "done"))
+        self.assertEqual(self.deployd.end_host_update(), {"ended": None})  # another kind of job is not ended
+        with mock.patch.object(deployd, "HOST_UPDATE_S", 0.05):
+            lapsing = self.deployd.start_job("host-update", self.deployd.do_host_update, {})
+            self.assertTrue(wait_until(lambda: lapsing["state"] == "done"))
+        self.assertEqual(lapsing["result"], {"ended": "timeout"})
+        self.assertIsNone(self.deployd.running_job())
+
+    def test_the_path_to_telegram_is_checked_after_a_release_when_tg_egress_is_installed(self):
+        self.assertNotIn("telegram", self.release("v1"))
+        self.paths.tg_egress.parent.mkdir(parents=True)
+        self.paths.tg_egress.write_text("")
+        self.assertEqual(self.release("v2")["telegram"], "ok")
+        self.runner.egress_exits = [1]  # a restart of tg-egress brings it back
+        self.runner.calls.clear()
+        self.assertEqual(self.release("v3")["telegram"], "ok")
+        self.assertIn("restart bro-tg-egress", self.systemctl())
+        self.runner.egress_exits = [1, 1]  # still down: said, and the release stays
+        result = self.release("v4")
+        self.assertEqual((result["telegram"], os.readlink(self.paths.current)), ("down", "releases/v4"))
+        self.assertTrue(any("WARNING" in line for line in self.log))
+
+    def test_tg_bridge_sh_runs_as_root_from_the_host_bundle(self):
+        (self.paths.host_ops).mkdir(parents=True)
+        (self.paths.host_ops / "tg-bridge.sh").write_text("")
+        for args in (["switch-to-bridge"], ["switch-to-webhook", "https://bro-next.vercel.app/eve/v1/telegram"],
+                     ["status"], ["hold"]):
+            self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)  # no release needed
+            call = self.runner.calls[-1]
+            self.assertEqual(call["argv"], ["/bin/bash", str(self.paths.host_ops / "tg-bridge.sh"), *args])
+            self.assertIsNone(call["user"])
+            self.assertNotIn("DATABASE_URL", call["env"])
+        for args in (["switch-to-webhook", "http://x.example/eve/v1/telegram"], ["switch-to-webhook"],
+                     ["status", "--now"], ["rm"]):
+            with self.assertRaisesRegex(deployd.Refused, "tg-bridge.sh"):
+                self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)
+
+    def test_a_stop_is_planned_until_the_units_restart(self):
+        self.deployd.do_stop({"units": ["bro-eve", "bro-web"]}, self.log.append)
+        planned = json.loads(self.paths.maintenance.read_text())
+        self.assertEqual(planned["units"], ["bro-eve", "bro-web"])
+        self.assertEqual(self.deployd.status()["plannedStop"], planned)
+        self.deployd.do_stop({"units": ["bro-eve"]}, self.log.append)  # a second stop keeps the first time
+        self.assertEqual(json.loads(self.paths.maintenance.read_text())["since"], planned["since"])
+        self.deployd.do_restart({"units": ["bro-web"]}, self.log.append)
+        self.assertEqual(json.loads(self.paths.maintenance.read_text())["units"], ["bro-eve"])
+        self.deployd.do_restart({"units": ["bro-eve"]}, self.log.append)
+        self.assertFalse(self.paths.maintenance.exists())
+        self.assertIsNone(self.deployd.status()["plannedStop"])
+
+    def test_status_names_what_the_env_switches_off(self):
+        self.assertEqual(self.deployd.status()["off"], [])
+        self.paths.env.write_text(deployd.render_env({"EVE_SCHEDULES": "off", "BACKUPS": "off", "X": "off"}))
+        self.assertEqual(self.deployd.status()["off"], ["EVE_SCHEDULES", "BACKUPS"])
+
+    def test_status_shows_what_the_watchdog_could_not_tell(self):
+        self.paths.watchdog_state.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.watchdog_state.write_text(json.dumps({"tg-egress": {"downSince": 100, "pendingAlert": 1},
+                                                         "web": {}, "undelivered": {"tg-egress": 400}}))
+        status = self.deployd.status()
+        self.assertEqual(status["watchdog"], {"down": {"tg-egress": 100}, "undelivered": {"tg-egress": 400}})
+        self.assertIn("bro-tg-bridge", status["units"])
+        self.assertEqual(status["telegram"], {"egressInstalled": False, "bridgeEnabled": False})
 
     def test_neon_goes_to_the_ops_scripts_only(self):
         self.release("v1")
@@ -371,6 +582,14 @@ class CaddyTest(unittest.TestCase):
         self.assertEqual(snippet.count("encode "), 1)
         self.assertIn("\thandle {\n\t\tencode zstd gzip\n\t\treverse_proxy 127.0.0.1:3000", snippet)
 
+    def test_www_next_to_its_apex_redirects_to_it(self):
+        text = deployd.render_caddyfile("1-2-3-4.sslip.io", ["brobro.tech", "www.brobro.tech", "www.other.example"])
+        www = text.split("www.brobro.tech {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(www, "\n\tredir https://brobro.tech{uri} 308")
+        self.assertIn("brobro.tech {\n\timport bro_app", text)
+        # A www without its apex in the list is a site of its own.
+        self.assertIn("www.other.example {\n\timport bro_app", text)
+
     def test_sites_are_plain_domains_and_not_sslip(self):
         self.assertEqual(deployd.checked_sites(["a.example", "a.example"]), ["a.example"])
         for bad in (["x.sslip.io"], ["bad domain"], ["a.example {\n}"], "a.example"):
@@ -390,13 +609,26 @@ class TokenAndHttpTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self.base = f"http://127.0.0.1:{server.server_address[1]}/ops/v1/"
 
-    def get(self, path, token=None):
+    def get(self, path, token=None, method="GET"):
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            with urllib.request.urlopen(urllib.request.Request(self.base + path, headers=headers)) as r:
+            with urllib.request.urlopen(urllib.request.Request(self.base + path, headers=headers,
+                                                               method=method)) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def test_a_host_update_takes_and_gives_back_the_job_slot_over_http(self):
+        token = deployd.sign_token(KEY, "bro-app-1")
+        self.assertEqual(self.get("host-update", method="POST")[0], 401)
+        with mock.patch("builtins.print"):
+            code, job = self.get("host-update", token, method="POST")
+            self.assertEqual(code, 202)
+            code, busy = self.get("host-update", token, method="POST")
+            self.assertEqual((code, busy["error"]), (400, f"busy with job {job['id']} (host-update)"))
+            self.assertEqual(self.get("host-update", token, method="DELETE"), (200, {"ended": job["id"]}))
+            self.assertTrue(wait_until(lambda: self.deployd.running_job() is None))
+        self.assertEqual(self.get("host-update", token, method="DELETE"), (200, {"ended": None}))
 
     def test_tokens(self):
         token = deployd.sign_token(KEY, "bro-app-1")
@@ -522,6 +754,131 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
 
+    def test_an_alert_reaches_the_webhook_when_telegram_does_not(self):
+        posted = []
+
+        def urlopen(request, data=None, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            if "api.telegram.org" in url:
+                raise urllib.error.URLError("timed out")
+            posted.append((url, request.data))
+            return mock.MagicMock(status=200, __enter__=lambda self: self, __exit__=lambda *a: None)
+
+        env = {"TELEGRAM_BOT_TOKEN": "1:x", "TELEGRAM_OWNER_CHAT_ID": "5",
+               "OPS_ALERT_WEBHOOK_URL": "https://push.example/topic"}
+        with mock.patch.object(watchdog.urllib.request, "urlopen", urlopen), \
+                mock.patch("builtins.print") as printed:
+            self.assertTrue(watchdog.send(env, "tg down"))
+            self.assertFalse(watchdog.send({**env, "OPS_ALERT_WEBHOOK_URL": "http://push.example/t"}, "x"))
+        self.assertEqual(posted, [("https://push.example/topic", "tg down".encode())])
+        # A malformed URL fails as a channel does, before anything is sent, not as an exception.
+        with mock.patch.object(watchdog.urllib.request, "urlopen") as urlopen, mock.patch("builtins.print"):
+            self.assertFalse(watchdog.send_webhook({"OPS_ALERT_WEBHOOK_URL": "https://[::1/topic"}, "x"))
+        urlopen.assert_not_called()
+        self.assertIn("alert: tg down", " ".join(str(c) for c in printed.call_args_list))
+        self.assertNotIn("1:x", " ".join(str(c) for c in printed.call_args_list))
+
+    def test_undelivered_alerts_are_listed_until_they_go_out(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        paths.config.parent.mkdir(parents=True)
+        paths.config.write_text(json.dumps({"host": "bro-app-1"}))
+        paths.domain.parent.mkdir(parents=True)
+        paths.tg_egress.parent.mkdir(parents=True)
+        paths.tg_egress.write_text("")
+        state_file = paths.domain.with_name("watchdog.json")
+        state_file.write_text(json.dumps({"tg-egress": {"downSince": 0}}))
+        delivered = []
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(root)}), \
+                mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=False), \
+                mock.patch.object(watchdog, "egress_ok", return_value=False), \
+                mock.patch.object(watchdog, "send", side_effect=lambda env, text: bool(delivered)), \
+                mock.patch.object(watchdog.time, "time", return_value=600), mock.patch("builtins.print"):
+            watchdog.main([])
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["undelivered"], {"tg-egress": 600})
+            self.assertNotIn("alertedAt", state["tg-egress"])
+            delivered.append(True)
+            watchdog.main([])
+            state = json.loads(state_file.read_text())
+            self.assertNotIn("undelivered", state)
+            self.assertIn("alertedAt", state["tg-egress"])
+
+    def test_tg_egress_is_restarted_at_most_every_ten_minutes(self):
+        paths = deployd.Paths("/nonexistent")
+        runs = []
+
+        def run(argv, **kwargs):
+            runs.append(argv[:2])
+            return mock.MagicMock(returncode=1)
+
+        state = {}
+        with mock.patch.object(watchdog.subprocess, "run", run), mock.patch.object(watchdog.time, "sleep"), \
+                mock.patch("builtins.print"):
+            self.assertFalse(watchdog.egress_ok(paths, 1000, state))
+            self.assertFalse(watchdog.egress_ok(paths, 1060, state))
+            self.assertFalse(watchdog.egress_ok(paths, 1000 + watchdog.EGRESS_RESTART_EVERY_S, state))
+        self.assertEqual(runs.count(["systemctl", "restart"]), 2)
+
+    def test_a_check_no_longer_run_leaves_the_state(self):
+        state = {"tg-bridge": {"downSince": 0, "alertedAt": 300}, "web": {"downSince": 0},
+                 "undelivered": {"tg-bridge": 900}, "expected": {"backup": 5}, "egressRestartedAt": 7}
+        [(name, text)] = watchdog.step(state, {"caddy": True}, 1000, "h", skip={"web"})
+        self.assertEqual(name, "tg-bridge")
+        self.assertIn("больше не проверяется", text)
+        self.assertEqual(state["web"], {"downSince": 0})  # paused by a planned stop: kept
+        self.assertEqual((state["expected"], state["egressRestartedAt"]), ({"backup": 5}, 7))
+        # Not sent (no channel took it): due again on the next tick, and still listed as undelivered.
+        self.assertEqual(state["tg-bridge"], {"unwatched": 1000})
+        self.assertEqual(watchdog.step(state, {"caddy": True}, 1060, "h"), [(name, text)])
+        self.assertEqual((state["tg-bridge"], state["undelivered"]), ({"unwatched": 1000}, {"tg-bridge": 900}))
+        watchdog.sent(state, name)
+        self.assertNotIn("tg-bridge", state)
+        self.assertNotIn("undelivered", state)
+        self.assertEqual(watchdog.step(state, {"caddy": True}, 1120, "h"), [])  # once
+        self.assertNotIn("web", state)  # not paused any more and not run: gone without a word (never alerted)
+
+    def test_a_check_run_again_drops_its_unsent_notice(self):
+        state = {"tg-bridge": {"unwatched": 1000}, "undelivered": {"tg-bridge": 1000}}
+        self.assertEqual(watchdog.step(state, {"tg-bridge": False}, 1060, "h"), [])
+        self.assertEqual(state, {"tg-bridge": {"downSince": 1060}})
+
+    def test_a_planned_stop_pauses_web_and_eve_for_three_hours(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        self.assertEqual(watchdog.paused(paths, 0), set())
+        paths.maintenance.parent.mkdir(parents=True)
+        paths.maintenance.write_text(json.dumps({"since": 1000, "units": ["bro-eve", "bro-web"]}))
+        self.assertEqual(watchdog.paused(paths, 1000 + 3600), {"web", "eve", "tg-bridge"})
+        self.assertEqual(watchdog.paused(paths, 1000 + watchdog.MAINTENANCE_S), set())
+        paths.maintenance.write_text("{")
+        self.assertEqual(watchdog.paused(paths, 1000), set())
+
+    def test_a_hold_left_without_the_bridge_alerts(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        self.assertIsNone(watchdog.hold_ok(paths, 0))
+        paths.tg_hold.parent.mkdir(parents=True)
+        paths.tg_hold.write_text("1000\n")
+        self.assertTrue(watchdog.hold_ok(paths, 1000 + 3600))
+        late = 1000 + watchdog.TG_HOLD_S
+        self.assertFalse(watchdog.hold_ok(paths, late))
+        with mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=False):
+            self.assertEqual(watchdog.probe(paths, {}, late, {}), {"caddy": True, "tg-hold": False})
+        with mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=True), \
+                mock.patch.object(watchdog, "http_ok", return_value=True):
+            self.assertNotIn("tg-hold", watchdog.probe(paths, {}, late, {}))  # the bridge is on: it is watched
+        state = {}
+        watchdog.step(state, {"tg-hold": False}, late, "bro-app-1")
+        [(_, text)] = watchdog.step(state, {"tg-hold": False}, late + 300, "bro-app-1")
+        self.assertIn("switch-to-bridge", text)
+
     def test_a_backup_unit_systemd_cannot_tell_about_counts_as_failed(self):
         def show(code, stdout):
             return mock.patch.object(watchdog.subprocess, "run", return_value=subprocess.CompletedProcess(
@@ -579,7 +936,7 @@ class BootTest(unittest.TestCase):
             import tarfile
             with tarfile.open(fileobj=io.BytesIO(gzip.decompress(first))) as tar:
                 names = tar.getnames()
-            self.assertEqual(sorted(names), sorted([*boot.FILES, "vendor/caddy"]))
+            self.assertEqual(sorted(names), sorted([*boot.FILES, *boot.SIBLING_FILES, "vendor/caddy"]))
             with self.assertRaises(ValueError):
                 boot.bundle(vendor)
 
@@ -600,21 +957,80 @@ class BootTest(unittest.TestCase):
         for unit in ("bro-web.service", "bro-eve.service"):
             self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
 
+    def test_telegram_comes_with_the_host(self):
+        subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)
+        install = (HERE / "install-code.sh").read_text()
+        self.assertIn("systemctl enable bro-tg-egress.service", install)
+        self.assertIn('bash "$HOST/tg-bridge/install.sh"', install)
+        # update-host applies the bundle's egress rules: bro-egress, a oneshot, never runs again on a live VM.
+        self.assertIn('bash "$HOST/egress.sh"', install)
+        # The bridge is switched on only by switch-to-bridge, which removes the webhook first.
+        self.assertNotRegex(install, r"enable[^\n]*bro-tg-bridge")
+        self.assertNotRegex((HERE.parent / "tg-bridge/install.sh").read_text(), r"systemctl enable")
+        provision = (HERE / "provision.sh").read_text()
+        self.assertIn('bash "$HOST/install-code.sh"', provision)
+        for name in boot.SIBLING_FILES:
+            self.assertIn(name, provision)
+        for unit in ("bro-eve.service", "bro-web.service", "bro-watchdog.service"):
+            self.assertIn("After=bro-tg-egress.service", (HERE / unit).read_text(), unit)
+        self.assertIn("bro-tg-egress.service", (HERE.parent / "tg-bridge/bro-tg-bridge.service").read_text())
+
+    def test_egress_rules_are_replaced_in_one_commit(self):
+        # Run for real in a network namespace of its own, with root and nobody for bro and caddy.
+        if not shutil.which("iptables-restore") or not shutil.which("unshare"):
+            self.skipTest("no iptables-restore or unshare")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        script = root / "egress.sh"
+        script.write_text((HERE / "egress.sh").read_text()
+                          .replace("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS",
+                                   "for owner in root:BRO_EGRESS nobody:CADDY_EGRESS"))
+        (root / "run.sh").write_text(f"""set -e
+iptables -w -N BRO_EGRESS
+iptables -w -A BRO_EGRESS -d 169.254.0.0/16 -j REJECT
+iptables -w -I OUTPUT -m owner --uid-owner root -j BRO_EGRESS
+bash {script}
+( for i in $(seq 20); do bash {script}; done ) & runs=$!
+while kill -0 $runs 2>/dev/null; do
+  [ "$(iptables -w -S BRO_EGRESS | grep -c REJECT || true)" = 2 ] || echo gap
+done
+wait $runs
+iptables -w -S
+""")
+        namespace = ["unshare", "-n"] if os.geteuid() == 0 else ["unshare", "-rn"]
+        probe = subprocess.run([*namespace, "iptables", "-w", "-S"], capture_output=True, text=True)
+        if probe.returncode != 0:
+            self.skipTest(f"no network namespace here: {probe.stderr.strip()[:100]}")
+        result = subprocess.run([*namespace, "bash", str(root / "run.sh")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertNotIn("gap", lines)
+        self.assertEqual([line for line in lines if "OUTPUT" in line and "EGRESS" in line],
+                         ["-A OUTPUT -m owner --uid-owner 65534 -j CADDY_EGRESS",
+                          "-A OUTPUT -m owner --uid-owner 0 -j BRO_EGRESS"])
+        self.assertEqual(len([line for line in lines if line.startswith("-A BRO_EGRESS")]), 2)
+        self.assertEqual(len([line for line in lines if line.startswith("-A CADDY_EGRESS")]), 1)
+
     def test_every_long_running_unit_restarts(self):
         for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
             text = (HERE / unit).read_text()
             self.assertRegex(text, r"\nRestart=(always|on-failure)\n", unit)
+        # Both servers exit with 143 on SIGTERM: a planned restart does not mark the unit failed.
+        for unit in ("bro-web.service", "bro-eve.service"):
+            self.assertIn("\nSuccessExitStatus=143\n", (HERE / unit).read_text(), unit)
 
     def test_bro_reaches_neither_the_metadata_service_nor_deployd(self):
         subprocess.run(["bash", "-n", str(HERE / "egress.sh")], check=True)
         rules = (HERE / "egress.sh").read_text()
         self.assertIn("-d 169.254.0.0/16 -j REJECT", rules)
         self.assertIn(f"--dport {deployd.LISTEN[1]} -j REJECT", rules)
-        self.assertIn("--uid-owner bro -j BRO_EGRESS", rules)
+        self.assertIn("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS", rules)
         # Caddy faces the internet: no metadata service for it either, and it starts only after the rules.
         caddy_chain = [line for line in rules.splitlines() if "-A CADDY_EGRESS" in line]
-        self.assertEqual(caddy_chain, ["iptables -w -A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
-        self.assertIn("--uid-owner caddy -j CADDY_EGRESS", rules)
+        self.assertEqual(caddy_chain, ["-A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
+        # One commit: a live VM (install-code.sh) never runs a moment between the flush and the rules.
+        self.assertIn("iptables-restore -w --noflush", rules)
+        self.assertNotRegex(rules, r"iptables -w -(F|A|N) ")
         caddy = (HERE / "caddy.service").read_text()
         self.assertIn("Requires=bro-egress.service", caddy)
         self.assertIn("After=bro-egress.service", caddy)
@@ -632,14 +1048,18 @@ class BackupTest(unittest.TestCase):
     def test_scripts_parse_and_share_the_library(self):
         for script in sorted(self.OPS.glob("*.sh")):
             subprocess.run(["bash", "-n", str(script)], check=True)
-            if script.name != "db-lib.sh":
+            if script.name.startswith("db-") and script.name != "db-lib.sh":
                 self.assertIn('source "$(dirname "$0")/db-lib.sh"', script.read_text(), script.name)
         lib = (self.OPS / "db-lib.sh").read_text()
         # A password never reaches a command line; a restore is one transaction.
         self.assertIn('PGPASSWORD="${!pass}"', lib)
         self.assertIn("--single-transaction", lib)
         self.assertIn("-pass env:BACKUP_ENCRYPTION_KEY", lib)
-        self.assertIn("--exclude-schema=neon_auth", lib)
+        # The providers' schemas stay where they are: a restore onto Cloud.ru failed on "schema cloudru exists".
+        for flag in ("--exclude-schema=neon_auth", "--exclude-schema=cloudru",
+                     "--exclude-extension=pg_stat_statements", "--exclude-extension=pgaudit"):
+            self.assertIn(flag, lib)
+        self.assertIn("'cloudru'", lib.split("SKIP_SCHEMAS=", 1)[1].splitlines()[0])
 
     def test_pruning_keeps_two_weeks_and_never_the_newest_three(self):
         now = store.datetime.datetime(2026, 10, 30, 1, 10, tzinfo=store.datetime.timezone.utc)
@@ -726,6 +1146,77 @@ class BackupTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, (script, args))
                 self.assertIn(said, result.stderr, (script, args))
 
+    def test_neon_mode_fails_when_the_other_sessions_are_not_ended(self):
+        with tempfile.TemporaryDirectory() as root:
+            psql = Path(root) / "psql"
+            psql.write_text('#!/bin/bash\ncat > /dev/null\n[[ "$*" != *pg_terminate_backend* ]] || exit 3\necho on\n')
+            psql.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "PG_BIN": "/nonexistent",
+                   "HOST_PROFILE": "prod", "BACKUP_WORKDIR": f"{root}/work",
+                   "NEON_DATABASE_URL": "postgres://neon@db.example/neondb"}
+
+            def mode(name):
+                return subprocess.run(["bash", str(self.OPS / "db-neon-mode.sh"), name], capture_output=True,
+                                      text=True, env=env, stdin=subprocess.DEVNULL)
+
+            for name in ("read-only", "writable"):
+                result = mode(name)
+                self.assertNotEqual(result.returncode, 0, name)
+                self.assertNotIn("ended", result.stdout, name)
+            self.assertIn("default_transaction_read_only=on", mode("status").stdout)
+
+    def test_a_hold_turns_off_a_bridge_left_on(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        script = root / "tg-bridge.sh"
+        script.write_text((self.OPS / "tg-bridge.sh").read_text().replace("/opt/bro", f"{root}/opt/bro")
+                          .replace("/var/lib/bro", f"{root}/var/lib/bro"))
+        (root / "opt/bro/tg-bridge").mkdir(parents=True)
+        (root / "opt/bro/tg-bridge/tg_bridge.py").write_text("")
+        (root / "opt/bro/tg-egress").mkdir(parents=True)
+        (root / "opt/bro/tg-egress/tg_egress.py").write_text("")
+        (root / "var/lib/bro").mkdir(parents=True)
+        fakes, log, mark = root / "bin", root / "calls", root / "var/lib/bro/tg-hold"
+        fakes.mkdir()
+        for tool, answer in (
+                ("systemctl", 'case "$1" in is-*) [ -n "${ON:-}" ] ;; disable) [ -z "${NO_STOP:-}" ] ;; esac'),
+                ("timeout", 'shift; exec "$@"'),
+                ("python3", 'if [ "$2" = --check ]; then [ -z "${NO_EGRESS:-}" ]; else [ -z "${NO_TELEGRAM:-}" ]; fi')):
+            (fakes / tool).write_text(f'#!/bin/bash\necho "{tool} ${{*##*/}}" >> "{log}"\n{answer}\n')
+            (fakes / tool).chmod(0o755)
+
+        def hold(**env):
+            log.write_text("")
+            mark.unlink(missing_ok=True)
+            result = subprocess.run(["bash", str(script), "hold"], capture_output=True, text=True,
+                                    env={**os.environ, "PATH": f"{fakes}:{os.environ['PATH']}", **env})
+            hold.said = result.stdout
+            return result.returncode, [c for c in log.read_text().splitlines() if not c.startswith("timeout ")], mark.exists()
+
+        unit = "bro-tg-bridge.service"
+        egress = "python3 tg_egress.py --check"
+        delete = "python3 tg_bridge.py switch-to-bridge --no-start"
+        self.assertEqual(hold(ON="1"), (0, [f"systemctl is-enabled --quiet {unit}",
+                                            f"systemctl disable --now {unit}", egress, delete], True))
+        self.assertEqual(hold(), (0, [f"systemctl is-enabled --quiet {unit}", f"systemctl is-active --quiet {unit}",
+                                      egress, delete], True))
+        # No path to Telegram: the message says who holds the updates now.
+        code, calls, marked = hold(NO_EGRESS="1")
+        self.assertEqual((code, calls[-1], marked), (1, egress, False))
+        self.assertIn("the webhook stays", hold.said)
+        code, calls, marked = hold(ON="1", NO_EGRESS="1")
+        self.assertEqual((code, calls[-1], marked), (1, egress, True))
+        self.assertIn("no webhook is set: nobody takes the updates", hold.said)
+        self.assertNotIn("the webhook stays", hold.said)
+        # A bridge that does not stop: no hold, and nothing done about the webhook.
+        code, calls, marked = hold(ON="1", NO_STOP="1")
+        self.assertNotEqual(code, 0)
+        self.assertEqual((calls[-1], marked), (f"systemctl disable --now {unit}", False))
+        # Stopped, then Telegram out of reach: nobody takes the updates any more, so the mark is down.
+        code, calls, marked = hold(ON="1", NO_TELEGRAM="1")
+        self.assertNotEqual(code, 0)
+        self.assertEqual((calls[-1], marked), (delete, True))
+
     def test_copy_counts_takes_no_row_for_a_header(self):
         # pg_restore --data-only output: a text row that starts with "COPY " stays a row of its table.
         text = ("SET x = 1;\n"
@@ -803,6 +1294,15 @@ class HostCliTest(unittest.TestCase):
         cls.host = load_host_py()
         cls.addClassCleanup(shutil.rmtree, os.environ["BRO_APP_HOST_DIR"])
 
+    def test_the_build_has_the_model_provider_of_the_vm(self):
+        # web_search.ts decides at module load: a build without it ships the Gateway's tool, and RouterAI
+        # answers 400 to every turn that carries it.
+        env = self.host.build_env()
+        for profile in self.host.PROFILES.values():
+            self.assertEqual(env["MODEL_PROVIDER"], profile["MODEL_PROVIDER"])
+        self.assertTrue(env["ROUTERAI_API_KEY"])
+        self.assertEqual(self.host.build_env(WORKFLOW_WORLD="postgres")["MODEL_PROVIDER"], "routerai")
+
     def test_the_readme_restore_command_parses(self):
         args = self.host.parser().parse_args(
             ["ops", "bro-app-1", "db-restore.sh", "latest", "app", "--replace"])
@@ -835,6 +1335,176 @@ class HostCliTest(unittest.TestCase):
         self.assertEqual(stand["BACKUPS"], "off")  # no key: off on the stand, said so; production refuses
         prod, _ = self.host.compose_env("prod", {})
         self.assertEqual(prod["BACKUPS"], "on")
+
+    def test_production_is_vercel_production_on_the_vm(self):
+        self.host.SECRETS.mkdir(parents=True, exist_ok=True)
+        files = {
+            "vercel-production.json": {"BLOB_READ_WRITE_TOKEN": "b", "SANDBOX_HOST_ID": "sbx-code-1",
+                                       "BETTER_AUTH_URL": "https://bro-next.vercel.app", "FREE_MESSAGES_PER_DAY": "30",
+                                       "PGPASSWORD": "neon", "DATABASE_URL": "neon"},
+            "new-secrets.json": {"SANDBOX_SIGNING_KEY": "ab" * 32, "TELEGRAM_WEBHOOK_SECRET_TOKEN": "new-secret",
+                                 "BROWSER_USE_WEBHOOK_SECRET": "w", "BROWSER_VM_SIGNING_KEY": "cd" * 32},
+        }
+        for name, content in files.items():
+            (self.host.SECRETS / name).write_text(json.dumps(content))
+            self.addCleanup((self.host.SECRETS / name).unlink)
+        user = "geo-type-residential-country-ru-session-{session}-lifetime-30"
+        session = {"TELEGRAM_BOT_USERNAME": "“@bro_bot”\n", "TELEGRAM_WEBHOOK_SECRET_TOKEN": "old",
+                   "ROUTERAI_API_KEY": "rk", "OPENROUTER_API_KEY": "ok", "SUPERMEMORY_API_KEY": "s",
+                   "BLOB_READ_WRITE_TOKEN": "b2", "BROWSER_VM_PROXY": ":".join(["proxy.example", "9000", user, "pw"])}
+        prod, sources = self.host.compose_env("prod", session)
+        self.assertEqual(prod["TELEGRAM_BOT_USERNAME"], "bro_bot")
+        self.assertEqual(prod["BROWSER_VM_PROXY"], ":".join(["proxy.example", "10000", user, "pw"]))
+        self.assertEqual((prod["TELEGRAM_WEBHOOK_SECRET_TOKEN"], sources["TELEGRAM_WEBHOOK_SECRET_TOKEN"]),
+                         ("new-secret", "new-secrets"))
+        self.assertEqual(prod["BROWSER_VM_LLM_API_KEY"], "rk")
+        self.assertEqual({k: prod[k] for k in ("MODEL_PROVIDER", "AGENT_SANDBOX", "CLOUDRU_PRIVATE_ROUTING",
+                                                "SANDBOX_HOST_ID", "EVE_SCHEDULES", "BETTER_AUTH_URL")},
+                         {"MODEL_PROVIDER": "routerai", "AGENT_SANDBOX": "bro-cloudru", "CLOUDRU_PRIVATE_ROUTING": "on",
+                          "SANDBOX_HOST_ID": "sbx-code-2", "EVE_SCHEDULES": "on",
+                          "BETTER_AUTH_URL": "https://brobro.tech"})
+        self.assertEqual(prod["FREE_MESSAGES_PER_DAY"], "30")
+        for absent in ("BLOB_READ_WRITE_TOKEN", "OPENROUTER_API_KEY", "SUPERMEMORY_API_KEY", "PGPASSWORD"):
+            self.assertNotIn(absent, prod)
+        stand, _ = self.host.compose_env("stand", session)
+        self.assertEqual((stand["SANDBOX_SIGNING_KEY"], stand["AGENT_SANDBOX"], stand["MODEL_PROVIDER"]),
+                         ("ab" * 32, "bro-cloudru", "routerai"))
+        for absent in ("TELEGRAM_WEBHOOK_SECRET_TOKEN", "BROWSER_USE_WEBHOOK_SECRET", "BLOB_READ_WRITE_TOKEN"):
+            self.assertNotIn(absent, stand)
+
+    def test_the_proxy_moves_to_the_sticky_port_in_either_shape(self):
+        login = "u-session-{session}"
+        self.assertEqual(self.host.sticky_proxy(f"h.example:9000:{login}:p"), f"h.example:10000:{login}:p")
+        self.assertEqual(self.host.sticky_proxy(f"h.example:10000:{login}:p"), f"h.example:10000:{login}:p")
+        url = "http" + "://" + login + ":" + "p" + "@" + "h.example:9000"
+        self.assertEqual(self.host.sticky_proxy(url), url.replace(":9000", ":10000"))
+
+    def test_update_host_installs_then_restarts_deployd(self):
+        self.assertEqual(self.host.parser().parse_args(["update-host", "bro-app-1"]).fn, self.host.cmd_update_host)
+        steps = self.host.UPDATE_HOST.split(" && ")
+        self.assertLess(steps.index("bash /opt/bro/app-host/install-code.sh"), steps.index("systemctl restart deployd"))
+        self.assertEqual(steps[-1], "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health")
+        self.assertLess(len(self.host.UPDATE_HOST), 900)  # one serial line
+
+    def update_host(self, answers, console_codes):
+        """cmd_update_host against fake deployd answers (by method and path) and console exit codes; the calls
+        to deployd and how it ended."""
+        calls = []
+
+        def call(name, method, path, body=None, timeout=60, retry=None):
+            calls.append((method, path))
+            return answers.get((method, path), (200, {"job": None, "deployd": "new"}))
+
+        class Console:
+            def __init__(self, name):
+                pass
+
+            def login(self):
+                pass
+
+            def run(self, command, seconds):
+                return "last line", console_codes.pop(0)
+
+        console = type(sys)("console")
+        console.Console = Console
+        with mock.patch.dict(sys.modules, {"console": console}), \
+                mock.patch.object(self.host, "call", side_effect=call), \
+                mock.patch.object(self.host, "deliver_bundle", return_value=("app/host/x.tgz", "ab" * 32)), \
+                mock.patch.object(self.host.s3, "presign", return_value="https://s3.example/x"), \
+                mock.patch("builtins.print"):
+            try:
+                self.host.cmd_update_host(self.host.parser().parse_args(["update-host", "bro-app-1"]))
+            except SystemExit as stop:
+                return calls, str(stop)
+        return calls, "done"
+
+    def test_update_host_holds_deployds_jobs_and_gives_them_back_only_when_it_is_safe(self):
+        held = {("POST", "host-update"): (202, {"id": "j1"})}
+        calls, outcome = self.update_host(held, [0, 0])
+        self.assertEqual(outcome, "done")
+        self.assertEqual(calls, [("POST", "host-update"), ("GET", "status")])  # the restart gave them back
+        for codes in ([1], [0, 2]):  # the fetch, or the install before the restart, failed
+            calls, outcome = self.update_host(held, codes)
+            self.assertNotEqual(outcome, "done")
+            self.assertEqual(calls[-1], ("DELETE", "host-update"), codes)
+        # No answer from the console: the install may still run, and a job let in now could be cut.
+        calls, outcome = self.update_host(held, [0, None])
+        self.assertIn("no answer from the console", outcome)
+        self.assertIn("status bro-app-1 --stage", outcome)
+        self.assertNotIn("failed", outcome)
+        self.assertNotIn(("DELETE", "host-update"), calls)
+        # Busy: nothing goes over the console.
+        busy = {("POST", "host-update"): (400, {"error": "busy with job j0 (release)"})}
+        calls, outcome = self.update_host(busy, [])
+        self.assertIn("busy with job j0", outcome)
+        self.assertEqual(calls, [("POST", "host-update")])
+
+    def test_update_host_on_a_deployd_without_the_hold_checks_for_a_job(self):
+        old = {("POST", "host-update"): (404, {"error": "not found"})}
+        running = {**old, ("GET", "status"): (200, {"job": "j0", "deployd": "old"})}
+        calls, outcome = self.update_host(running, [])
+        self.assertIn("deployd runs job j0", outcome)
+        calls, outcome = self.update_host(old, [0, 1])
+        self.assertIn("the install failed", outcome)
+        self.assertNotIn(("DELETE", "host-update"), calls)  # nothing held, nothing to give back
+
+    def test_update_host_keeps_the_last_good_code_when_an_install_failed(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        self.assertIn(self.host.ROTATE_HOST_CODE, self.host.UPDATE_HOST)
+        script = f"{self.host.ROTATE_HOST_CODE} && mv /opt/bro/app-host.new /opt/bro/app-host".replace(
+            "/opt/bro", str(root))
+
+        def run(current_installed):
+            (root / "app-host.new").mkdir()
+            (root / "app-host.new" / "code").write_text("new")
+            if current_installed:
+                (root / "app-host" / ".installed").write_text("")
+            subprocess.run(["bash", "-c", script], check=True)
+
+        (root / "app-host").mkdir()
+        (root / "app-host" / "code").write_text("good")
+        run(current_installed=False)  # the first update of an old VM: no .old yet, so it rotates
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "good")
+        run(current_installed=False)  # the new code's install failed; a retry keeps the good one
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "good")
+        run(current_installed=True)  # installed: it becomes the previous code
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "new")
+
+    def test_production_env_refuses_without_the_expected_names_or_an_alert_webhook(self):
+        values = {name: "x" for name in self.host.REQUIRED}
+        values.update(BACKUPS="off", EVE_SCHEDULES="off")
+
+        def env(*flags, extra=None):
+            args = self.host.parser().parse_args(["env", "bro-app-1", "--profile", "prod", *flags])
+            given = {**values, **(extra or {})}
+            sources = {name: "prod.json" for name in given}
+            with mock.patch.object(self.host, "compose_env", return_value=(given, sources)), \
+                    mock.patch.object(self.host, "start_job", side_effect=RuntimeError("sent")), \
+                    mock.patch("builtins.print") as printed:
+                try:
+                    args.fn(args)
+                except SystemExit as stop:
+                    return "refused: " + str(stop), printed
+                except RuntimeError:
+                    return "sent", printed
+            return "dry", printed
+
+        outcome, _ = env()
+        self.assertIn("TELEGRAM_OWNER_CHAT_ID", outcome)
+        self.assertIn("OPS_ALERT_WEBHOOK_URL", outcome)
+        outcome, printed = env("--dry-run")
+        self.assertEqual(outcome, "dry")
+        lines = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("would refuse", lines)
+        self.assertIn("WARNING: EVE_SCHEDULES=off", lines)
+        self.assertIn("WARNING: BACKUPS=off", lines)
+        self.assertEqual(env("--allow-missing", "--no-alert-webhook")[0], "sent")
+        hook = {"OPS_ALERT_WEBHOOK_URL": "https://push.example/t"}
+        self.assertEqual(env("--allow-missing", extra=hook)[0], "sent")
+        outcome, printed = env("--allow-missing", extra={"OPS_ALERT_WEBHOOK_URL": "http://push.example/t"})
+        self.assertIn("refused", outcome)
+        self.assertIn("not https", " ".join(str(c.args[0]) for c in printed.call_args_list))
 
     def test_remember_keeps_the_previous_file(self):
         secrets_file = self.host.SECRETS / "new-secrets.json"

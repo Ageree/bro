@@ -111,6 +111,9 @@
   VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
   видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
   регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
+  В каждой базе есть схема провайдера `cloudru` с `pg_stat_statements` и
+  `pgaudit`: дамп без их исключения не восстанавливается («schema "cloudru"
+  already exists»), исключает `dump()` в `db-lib.sh` (нужен `pg_dump` ≥ 17).
 - В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
   stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
   таблицы других ролей, но бэкап и перенос тогда валятся, пока таблицы нет в
@@ -129,7 +132,24 @@
   достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
   (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
   таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
-  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
+  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`), и
+  `brobro.tech` — только когда домен уже на VM: иначе вызовы task-агента прода
+  уходят с Vercel на VM.
+- Релиз для VM собирается с `MODEL_PROVIDER` VM (`build_env` в
+  `scripts/cloudru-app-host/host.py`): `web_search` выбирается при загрузке
+  модуля, и без него в сборку попадал инструмент Gateway — RouterAI отвечал 400
+  на каждый ход. Такие решения при загрузке модуля проверяйте на стенде ходом.
+- deployd запускает ops-скрипты релиза от `bro` (файлы релиза — его); от root —
+  только `ROOT_OPS` из бандла хоста (`ops/tg-bridge.sh`). Файл релиза от root
+  не запускайте: его может переписать `bro`, а с ним инструменты модели, —
+  такой запуск дал бы им root. Код хоста на живой VM —
+  `host.py update-host`, а не пересоздание. Oneshot-юниты (`bro-egress`) он
+  сам не перезапускает: что хосту нужно сразу, зовёт `install-code.sh`
+  (`egress.sh`), а рестарт `bro-egress` перезапустил бы Caddy, web и eve.
+- Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+  `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
+  Telegram на Vercel и живые хосты пула работают, только если значения
+  сведены до окна (`docs/cloudru-migration.md`, «Переключение»).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
@@ -182,8 +202,9 @@
   (`getUpdates` → POST в локальный endpoint eve, не через Next: `proxy.ts`
   ведёт на `/sign-in`). eve отвечает `200` до хода и `update_id` не проверяет:
   offset и дубли — на мосте. `getUpdates` боевого бота при вебхуке — `409`.
-  Принятое eve (`200`) до рестарта eve может пропасть; серверная интеграция
-  должна сначала останавливать мост (README моста, «Что должен сделать сервер»).
+  Принятое eve (`200`) до рестарта eve может пропасть, поэтому deployd перед
+  рестартом eve останавливает мост (`bridge_paused`, README моста, «Что делает
+  сервер»).
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
 - Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root

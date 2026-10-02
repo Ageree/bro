@@ -2,6 +2,10 @@
 Description=Bro eve (agent, channels, schedules and the Postgres Workflow world on 127.0.0.1:4274)
 After=network-online.target
 Wants=network-online.target
+# api.telegram.org answers from Cloud.ru only through tg-egress (its /etc/hosts line and REDIRECT rule):
+# start after it. Wants, not Requires: the app serves the web without Telegram.
+After=bro-tg-egress.service
+Wants=bro-tg-egress.service
 # Without bro's egress rules (no metadata service, no deployd) the app does not start.
 Requires=bro-egress.service
 After=bro-egress.service
