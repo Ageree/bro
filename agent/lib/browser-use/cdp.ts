@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   openPrivateRouteWebSocket,
+  resolvePrivateRoute,
   withPrivateRoute,
 } from "@agent/lib/browser-vm/private-route";
 
@@ -763,6 +764,9 @@ async function pageSocketUrl(cdpUrl: string) {
     .replace(/\/$/u, "")
     .replace(/^ws:/iu, "http:")
     .replace(/^wss:/iu, "https:");
+  // As for a worker call: a VM's private address is looked up before the
+  // connect timeout starts, and the page's socket then finds it known.
+  await resolvePrivateRoute(httpBase);
   const response = await fetch(
     `${httpBase}/json`,
     withPrivateRoute({ signal: AbortSignal.timeout(connectTimeoutMs) })

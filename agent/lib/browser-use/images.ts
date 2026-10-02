@@ -6,6 +6,10 @@ import {
 import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delivery";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
+import {
+  resolvePrivateRoute,
+  withPrivateRoute,
+} from "@agent/lib/browser-vm/private-route";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { captureViewportOverCdp } from "./cdp";
 import {
@@ -214,9 +218,14 @@ async function settled(
 
 async function captureSavedImage(context: RunImageContext, file: RunImageFile) {
   // The presigned URL is never logged: it is a credential for the file.
+  // A browser VM's file comes from its worker, one of the project's VMs, so
+  // it takes the private route; any other name is dialed as before. The
+  // address is looked up before the download's timeout starts.
+  await resolvePrivateRoute(file.url);
   const download = await downloadWithin(
     new URL(file.url),
-    maximumBrowserImageBytes
+    maximumBrowserImageBytes,
+    withPrivateRoute({})
   );
   if (download.kind !== "bytes") {
     console.warn("[browser-use] run image could not be downloaded", {

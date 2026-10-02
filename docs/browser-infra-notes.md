@@ -66,6 +66,10 @@
   `CLOUDRU_PRIVATE_ROUTING=on` (`agent/lib/browser-vm/private-route.ts`:
   sslip.io-имя VM проекта → её приватный IP из Compute API); хосты пула в
   Бро не звонят, хосту песочниц домен Бро прописывает `--hosts-entry`.
+  Любой запрос Бро к VM проекта — только через `withPrivateRoute`
+  (`resolvePrivateRoute` до таймаута): 02.10 картинки отчёта VM
+  (`/v1/dl/…`, `agent/lib/browser-use/images.ts`) качались голым `fetch` и
+  терялись с `network`.
 - Telegram с Cloud.ru: DNS даёт 149.154.166.110 (0 соединений), вся подсеть
   Telegram закрыта, кроме 149.154.167.220 (настоящий `api.telegram.org`,
   78–85% SYN доходят). Обход — `scripts/cloudru-app-host/tg-egress/`.
