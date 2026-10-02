@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-02T11:06:37.703Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap link \"Личные данные\"",
+        "target": {
+          "role": "link",
+          "name": "Личные данные"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/workspace/workspace.e2e.ts::dashboard::the%20main%20navigation%20reaches%20every%20section",
+      "targetId": "web",
+      "instructionDigest": "5a041c6dbf22bea1fd06e3664f5958b8121b2b51ced7611deb147f561a9e1809"
+    },
+    "summary": "Tapped «Личные данные» in the main navigation; the app navigated to /personal-info showing the «Личные данные» page with profile fields (Имя, Фамилия, Почта, Телефон, Дата рождения, Часовой пояс), postal address section and «Сохранить» button.",
+    "startPath": "/workspace",
+    "endPath": "/personal-info",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Личные данные"
+      },
+      {
+        "text": "Этими данными Bro заполняет формы на сайтах — за тебя и без вопросов. Пароли и карты храни в сейфе."
+      },
+      {
+        "role": "heading",
+        "name": "Кто ты"
+      },
+      {
+        "text": "Имя"
+      },
+      {
+        "role": "textbox",
+        "name": "Имя"
+      },
+      {
+        "text": "Фамилия"
+      },
+      {
+        "role": "textbox",
+        "name": "Фамилия"
+      },
+      {
+        "text": "Почта"
+      }
+    ],
+    "endWaitMs": 24283
+  }
+}

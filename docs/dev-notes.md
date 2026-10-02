@@ -20,6 +20,7 @@
 
 ## С чего начать
 
+- Браузерные e2e-тесты (раннер e2e, `e2e/`, джоба `E2E`) — `docs/e2e.md`.
 - Бэклог с приоритетами и критериями «готово» — `docs/roadmap.md` (сделанное
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
@@ -73,6 +74,17 @@
 - Промис, который вернул шпион `vi.fn`, vitest обрабатывает сам: отказ
   `mockRejectedValue` не станет unhandled. Пропущенный `.catch` ловит только
   простая функция вместо шпиона (`db/tests/health.test.ts`).
+
+- e2e: `next dev` на `127.0.0.1` грузит скрипты, только пока он в
+  `allowedDevOrigins` (`next.config.ts`), иначе форма входа уходит обычным GET
+  без гидратации; значок `devIndicators` закрывал «Выйти» и отнимал клики.
+  Приложению раннер передаёт лишь `PATH`, `HOME` и `command.env`: прокси и CA
+  облачной сессии — тоже через него (`e2e.config.ts`), иначе модель — «self-signed
+  certificate». Playwright 1.63 требует свой Chromium, а в `/opt/pw-browsers`
+  старый: `PLAYWRIGHT_BROWSERS_PATH=<scratchpad>` и `playwright install chromium`.
+- Management-ключ OpenRouter проходит `GET /api/v1/key`, но на вызов модели
+  отвечает «User not found»: в `OPENROUTER_API_KEY` — только обычный ключ.
+  Джоба `E2E` проверяет это первым шагом (`.github/workflows/e2e.yml`).
 
 ## eve
 

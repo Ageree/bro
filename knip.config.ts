@@ -13,6 +13,9 @@ export default {
     // eve discovers each declared subagent's agent, sandbox and tools.
     "agent/subagents/**/*.ts",
     "db/drizzle.config.ts",
+    // The browser suite: the e2e runner loads its config and test files.
+    "e2e.config.ts",
+    "e2e/**/*.e2e.ts",
     // Drizzle consumes every table and relation exported by this schema barrel.
     "db/schema/index.ts",
     "evals/**/*.eval.ts",

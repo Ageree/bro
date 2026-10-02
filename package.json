@@ -47,6 +47,8 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
+    "@e2e-dev/github": "0.3.0",
+    "@e2e-dev/web": "0.11.0",
     "@electric-sql/pglite": "^0.5.8",
     "@next/env": "16.3.3",
     "@oxlint/plugins": "1.80.0",
@@ -55,6 +57,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "drizzle-kit": "^0.31.10",
+    "e2e": "0.15.0",
     "esbuild": "0.27.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-turbo": "2.10.12",
@@ -63,6 +66,7 @@
     "oxlint": "1.80.0",
     "oxlint-tailwindcss": "1.10.0",
     "oxlint-tsgolint": "7.0.2001",
+    "playwright": "1.63.0",
     "shadcn": "4.19.0",
     "taze": "21.1.0",
     "turbo": "2.10.12",
@@ -106,6 +110,7 @@
     "start:app": "next start",
     "test": "turbo run test:app",
     "test:app": "vitest run",
+    "test:e2e": "e2e run",
     "test:e2e:browser-pool": "vitest run --config vitest.e2e.config.ts tests/e2e/browser-pool.e2e.ts",
     "types:check": "turbo run types:check:app",
     "types:generate": "next typegen",

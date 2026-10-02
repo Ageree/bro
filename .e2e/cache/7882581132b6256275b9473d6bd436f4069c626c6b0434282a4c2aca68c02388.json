@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-02T11:06:37.705Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap link \"Все чаты\"",
+        "target": {
+          "role": "link",
+          "name": "Все чаты"
+        }
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "e2e/workspace/workspace.e2e.ts::dashboard::the%20main%20navigation%20reaches%20every%20section",
+      "targetId": "web",
+      "instructionDigest": "6502ae4283ae181a0c5a9ceae583574bbf57572c5df92282a9916fbdad326c42"
+    },
+    "summary": "Tapped «Все чаты» in the main navigation; the app navigated to /chat/history showing the «Все чаты» page (heading «Все чаты», «История» region with «Пока ни одного чата — начни новый.» and a «Новый чат» link).",
+    "startPath": "/vault",
+    "endPath": "/chat/history",
+    "endAnchors": [
+      {
+        "role": "heading",
+        "name": "Все чаты"
+      },
+      {
+        "text": "Все разговоры с Bro — в браузере, в iMessage и в Telegram."
+      },
+      {
+        "role": "link",
+        "name": "Новый чат"
+      },
+      {
+        "role": "heading",
+        "name": "История"
+      },
+      {
+        "text": "Пока ни одного чата — начни новый."
+      },
+      {
+        "role": "document",
+        "name": "bro — Все чаты"
+      },
+      {
+        "role": "region",
+        "name": "История"
+      }
+    ],
+    "endWaitMs": 35218
+  }
+}
