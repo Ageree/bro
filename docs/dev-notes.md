@@ -76,6 +76,9 @@
   облачной сессии — тоже через него (`e2e.config.ts`), иначе модель — «self-signed
   certificate». Playwright 1.63 требует свой Chromium, а в `/opt/pw-browsers`
   старый: `PLAYWRIGHT_BROWSERS_PATH=<scratchpad>` и `playwright install chromium`.
+- Management-ключ OpenRouter проходит `GET /api/v1/key`, но на вызов модели
+  отвечает «User not found»: в `OPENROUTER_API_KEY` — только обычный ключ.
+  Джоба `E2E` проверяет это первым шагом (`.github/workflows/e2e.yml`).
 
 ## eve
 

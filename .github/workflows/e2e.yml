@@ -119,6 +119,17 @@ jobs:
             echo "::error::Repository secret OPENROUTER_API_KEY is not set: Bro and the runner's agent steps need it (docs/e2e.md)."
             exit 1
           fi
+          # A management key passes /key but answers every model call with
+          # «User not found»; the suite then fails mid-run on both sides.
+          key=$(printf %s "$OPENROUTER_API_KEY" | tr -d '[:space:]')
+          if ! info=$(curl -fsS -H "Authorization: Bearer $key" https://openrouter.ai/api/v1/key); then
+            echo "::error::OpenRouter rejected OPENROUTER_API_KEY: replace the secret with a valid API key (docs/e2e.md)."
+            exit 1
+          fi
+          if printf %s "$info" | jq -e '.data.is_management_key == true' > /dev/null; then
+            echo "::error::OPENROUTER_API_KEY is a management key, which cannot call models: put an ordinary API key there (OpenRouter → Settings → Keys → Create Key)."
+            exit 1
+          fi
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
