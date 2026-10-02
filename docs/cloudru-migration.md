@@ -166,7 +166,7 @@ libc `C.UTF-8` (`host.py pg create|users|databases|status`, повторяемы
   `bro_restore_check` со сверкой числа строк каждой таблицы. Манифест подписан
   HMAC ключом бэкапов: подложенный в бакет дамп не восстановится. Сбой —
   сообщение владельцу в Telegram и повтор раз в час, пока не пройдёт; нет
-  удачного бэкапа больше суток или нет ключа — тоже. Выключить — только явно
+  удачного бэкапа больше 26 часов или нет ключа — тоже. Выключить — только явно
   (`BACKUPS=off`). Свои бэкапы
   кластера (ежедневно, 14 дней) — второй слой: они восстанавливают лишь в
   новый кластер.
@@ -217,8 +217,9 @@ default_transaction_read_only` и `pg_terminate_backend` соединений Ve
   приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
 bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
 bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и
-  только пока он `read_only` и только с VM прода; перед этим кладёт
-  зашифрованные копии `app` и самого Neon в Object Storage) → в Neon
+  только пока он `read_only`, только с VM прода и без чужих сессий в Neon:
+  открытая до `read_only` пишет — сначала `pg_terminate_backend`; перед этим
+  кладёт зашифрованные копии `app` и самого Neon в Object Storage) → в Neon
   `RESET default_transaction_read_only` и `pg_terminate_backend` → DNS назад,
   расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
   нет. VM с базой не удалять, пока Vercel не проработал неделю.

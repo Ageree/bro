@@ -7,7 +7,7 @@ backups/ are read, written or deleted.
 
   store.py put KEY FILE | get KEY FILE      one object
   store.py latest PREFIX                    the newest nightly dump under PREFIX that has its manifest
-  store.py prune PREFIX DAYS KEEP           nightly dumps (and manifests) older than DAYS, the newest KEEP stay
+  store.py prune PREFIX DAYS KEEP           nightly backups older than DAYS, the newest KEEP stay; halves go
   store.py manifest --out F --key K ...     the JSON next to a dump: sha256s, size, row counts per table, signed
   store.py verify --manifest F [--key K] [--file F | --dump F | --counts F]
 
@@ -42,6 +42,7 @@ import s3  # noqa: E402
 PREFIX = re.compile(r"backups(/[a-z0-9][a-z0-9-]*)+")
 KEY = re.compile(r"backups(/[a-z0-9][a-z0-9-]*)+/[0-9]{8}T[0-9]{6}Z(-[a-z0-9]+)?\.(dump\.enc|json)")
 NIGHTLY = re.compile(r"([0-9]{8}T[0-9]{6}Z)\.dump\.enc")
+NIGHTLY_OBJECT = re.compile(r"([0-9]{8}T[0-9]{6}Z)\.(dump\.enc|json)")
 SINGLE_PUT_LIMIT = 5 * 1024 ** 3  # S3's limit for one PUT; past it a multipart upload is needed
 
 
@@ -106,16 +107,16 @@ def get(key, path):
     retried(f"get {key}", once)
 
 
-def nightly(prefix, complete=True):
-    """[(time, key)] of the nightly dumps under the prefix, oldest first; complete: only those whose manifest
-    is there too (it is uploaded last)."""
+def nightly(prefix):
+    """[(time, key)] of the nightly dumps under the prefix whose manifest is there too (it is uploaded last),
+    oldest first."""
     keys = {key for key, _ in s3.listing(prefix + "/")}
     found = []
     for key in keys:
         match = NIGHTLY.fullmatch(key[len(prefix) + 1:])
         if not match:
             continue
-        if complete and key[: -len(".dump.enc")] + ".json" not in keys:
+        if key[: -len(".dump.enc")] + ".json" not in keys:
             print(f"skipped {key}: no manifest (an upload cut short)", file=sys.stderr, flush=True)
             continue
         found.append((match.group(1), key))
@@ -128,15 +129,42 @@ def doomed(dumps, days, keep, now):
     return [key for stamp, key in dumps[:max(len(dumps) - keep, 0)] if stamp < cutoff]
 
 
-def prune(prefix, days, keep):
-    keys = doomed(nightly(prefix, complete=False), days, keep, datetime.datetime.now(datetime.timezone.utc))
+def to_prune(keys, prefix, days, keep, now):
+    """The objects to delete, each manifest before its dump (a dump without one is no backup): the nightly
+    backups older than `days` but the newest `keep` whole ones, and halves of one (an upload or a delete cut
+    short) once a day old, when no run can still be uploading the other half. A half never takes one of the
+    `keep` places, so failed nights cannot push out the backups that restore."""
+    found = {}
     for key in keys:
-        for one in (key, key[: -len(".dump.enc")] + ".json"):
-            code, body = s3.signed("DELETE", checked_key(one))
-            if code not in (200, 204):
-                sys.exit(f"delete {one}: {code} {body[:200]!r}")
-        print(f"dropped {key} (older than {days} days)", flush=True)
-    return keys
+        match = NIGHTLY_OBJECT.fullmatch(key[len(prefix) + 1:])
+        if match:
+            found.setdefault(match.group(1), []).append(key)
+    whole = sorted((stamp, f"{prefix}/{stamp}") for stamp, objects in found.items() if len(objects) == 2)
+    stale = (now - datetime.timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+    gone = doomed(whole, days, keep, now) + [
+        f"{prefix}/{stamp}" for stamp, objects in found.items() if len(objects) == 1 and stamp < stale]
+    return [key for base in sorted(gone) for key in (f"{base}.json", f"{base}.dump.enc") if key in keys]
+
+
+def delete(key):
+    """Like a PUT or GET: a 5xx is tried again (a delete of a key that is gone already answers 204)."""
+    def once():
+        code, body = s3.signed("DELETE", checked_key(key))
+        if code >= 500:
+            raise urllib.error.HTTPError(key, code, "", None, None)
+        if code not in (200, 204):
+            sys.exit(f"delete {key}: {code} {body[:200]!r}")
+
+    retried(f"delete {key}", once)
+
+
+def prune(prefix, days, keep):
+    keys = {key for key, _ in s3.listing(prefix + "/")}
+    doomed_keys = to_prune(keys, prefix, days, keep, datetime.datetime.now(datetime.timezone.utc))
+    for key in doomed_keys:
+        delete(key)
+        print(f"dropped {key}", flush=True)
+    return doomed_keys
 
 
 def read_counts(path):

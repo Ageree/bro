@@ -745,9 +745,10 @@ PG_DATABASES = {"prod": ("bro", "bro_workflow"), "stand": ("bro_stand", "bro_sta
 PG_CHECK_DATABASE = "bro_restore_check"  # db-restore-check.sh restores here and empties it again
 
 
-def pg_api(method, path, body=None, expected=(200,)):
+def pg_api(method, path, body=None):
     code, answer = cloudru.api(method, PG_API + path, body)
-    if code not in expected:
+    # Any 2xx: a create may answer 201 or 202 (accepted, made in the background) as well as 200.
+    if not 200 <= code < 300:
         sys.exit(f"{method} {path.split('?')[0]}: {code} {json.dumps(answer, ensure_ascii=False)[:400]}")
     return answer
 

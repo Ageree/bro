@@ -20,7 +20,8 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
   GET  /ops/v1/env                    the names in /etc/bro/env and the file's sha256, never values
   PUT  /ops/v1/env                    {env: {NAME: value}, opsEnv?: {NAME: value}} -> 202 {job}: the whole
                                       file, then a restart; opsEnv (only OPS_ONLY_ENV names) goes to
-                                      /etc/bro/ops-env, which only ops scripts get, and is removed without it
+                                      /etc/bro/ops-env, which only ops scripts get, and is removed without it;
+                                      unhealthy after the restart, both files go back
   GET  /ops/v1/sites                  the app's domains
   PUT  /ops/v1/sites                  {sites: [domain, ...]} the whole list: Caddyfile, reload
   GET  /ops/v1/logs?unit=&lines=      the tail of journald for one of the units
@@ -55,7 +56,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.4"
+VERSION = "2026-10-02.5"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -470,7 +471,9 @@ class Deployd:
             # The first release: no `current` and nothing running is a clearer state than an unhealthy one,
             # and the next release starts from it the same way.
             self.paths.current.unlink()
-            self.stop(log, STOPPABLE)
+            if not self.stop(log, STOPPABLE):
+                raise Refused(f"{version} is not healthy and there is no release to go back to: current is "
+                              "cleared, but a service did not stop (its output is in the log)")
             raise Refused(f"{version} is not healthy and there is no release to go back to: current is cleared "
                           "and the services are stopped")
         if previous == version:
@@ -536,11 +539,15 @@ class Deployd:
         if not isinstance(values, dict) or not values:
             raise Refused("env: an object of NAME: value")
         text = render_env(values)
-        ops_values = body.get("opsEnv") or {}
+        # Absent means none; anything else must be an object (a null or a list is a broken request, not "none").
+        ops_values = body.get("opsEnv", {})
         if not isinstance(ops_values, dict) or any(name not in OPS_ONLY_ENV for name in ops_values):
             raise Refused(f"opsEnv: an object with some of {', '.join(OPS_ONLY_ENV)}")
         if any(name in values for name in OPS_ONLY_ENV):
             raise Refused(f"{', '.join(OPS_ONLY_ENV)} only in opsEnv: the app never gets them")
+        # Goes back with the app's env when the app does not come up: the ops scripts must not keep the
+        # credentials of a configuration that was undone.
+        ops_before = self.paths.ops_env.read_text() if self.paths.ops_env.exists() else None
         if ops_values:
             write_private(self.paths.ops_env, render_env(ops_values))
             log(f"wrote {len(ops_values)} names for ops scripts only")
@@ -562,7 +569,11 @@ class Deployd:
         if not had_env:
             raise Refused("not healthy with the new env, and there was no env before it")
         os.replace(previous, self.paths.env)
-        log("the previous env is back")
+        if ops_before is None:
+            self.paths.ops_env.unlink(missing_ok=True)
+        else:
+            write_private(self.paths.ops_env, ops_before)
+        log("the previous env is back (and the ops scripts' own names)")
         self.restart(log)
         healthy = self.wait_healthy(log)
         raise Refused(f"not healthy with the new env; the previous one is back ({'healthy' if healthy else 'NOT healthy'})")

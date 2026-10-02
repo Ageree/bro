@@ -149,6 +149,22 @@ class ReleaseTest(unittest.TestCase):
         self.runner.health["v2"] = True
         self.assertEqual(self.release("v2"), {"version": "v2", "previous": None})
 
+    def test_a_first_release_whose_services_do_not_stop_says_so(self):
+        run = self.runner.run
+
+        def failing_stop(argv, **kwargs):
+            if argv[:2] == ["systemctl", "stop"]:
+                self.runner.calls.append({"argv": argv})
+                return 1, "Job for bro-eve.service canceled."
+            return run(argv, **kwargs)
+
+        self.runner.run = failing_stop
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "did not stop") as refused:
+            self.release("v1")
+        self.assertNotIn("services are stopped", str(refused.exception))
+        self.assertFalse(os.path.lexists(self.paths.current))
+
     def test_a_release_that_bro_cannot_own_is_not_unpacked(self):
         run = self.runner.run
 
@@ -256,7 +272,28 @@ class ReleaseTest(unittest.TestCase):
         (self.paths.releases / "v1" / "ops" / "db-copy.sh").write_text("")
         self.deployd.do_ops({"script": "db-copy.sh", "args": ["neon", "app"]}, self.log.append)
         self.assertEqual(self.runner.calls[-1]["env"]["NEON_DATABASE_URL"], "postgres://n")
+        for broken in (None, [], "", 0):  # not an object: refused, and the ops scripts keep what they had
+            with self.assertRaisesRegex(deployd.Refused, "opsEnv"):
+                self.deployd.do_env({"env": {"A": "1"}, "opsEnv": broken}, self.log.append)
+            self.assertEqual(deployd.read_ops_env(self.paths), {"NEON_DATABASE_URL": "postgres://n"})
         self.deployd.do_env({"env": {"A": "1"}}, self.log.append)  # without it: gone
+        self.assertFalse(self.paths.ops_env.exists())
+
+    def test_a_failed_env_takes_the_ops_scripts_names_back_too(self):
+        self.release("v1")
+        self.deployd.do_env({"env": {"A": "1"}, "opsEnv": {"NEON_DATABASE_URL": "postgres://old"}}, self.log.append)
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "previous one is back"):
+            self.deployd.do_env({"env": {"A": "2"}, "opsEnv": {"NEON_DATABASE_URL": "postgres://new"}},
+                                self.log.append)
+        self.assertEqual(deployd.read_ops_env(self.paths), {"NEON_DATABASE_URL": "postgres://old"})
+        self.assertEqual(self.paths.ops_env.stat().st_mode & 0o777, 0o600)
+        self.runner.health["v1"] = True
+        self.deployd.do_env({"env": {"A": "1"}}, self.log.append)
+        self.runner.health["v1"] = False
+        with self.assertRaisesRegex(deployd.Refused, "previous one is back"):  # none before: none after
+            self.deployd.do_env({"env": {"A": "2"}, "opsEnv": {"NEON_DATABASE_URL": "postgres://new"}},
+                                self.log.append)
         self.assertFalse(self.paths.ops_env.exists())
 
 
@@ -475,10 +512,27 @@ class WatchdogTest(unittest.TestCase):
             (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": now + 26 * 3600}))
             self.assertTrue(watchdog.backup_fresh(paths, env, now + 27 * 3600, state))
             self.assertFalse(watchdog.backup_fresh(paths, env, now + 53 * 3600, state))
+            # A marker that is no time counts as none: no crash, the 26 hours run from the first expectation.
+            (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": "yesterday"}))
+            self.assertFalse(watchdog.backup_fresh(paths, env, now + 27 * 3600, state))
+            (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": True}))
+            self.assertTrue(watchdog.backup_fresh(paths, env, now + 3600, state))
         state = {"backup": {"downSince": 0}}
         [(_, text)] = watchdog.step(state, {"backup": False}, 300, "bro-app-1")
         self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
+
+    def test_a_backup_unit_systemd_cannot_tell_about_counts_as_failed(self):
+        def show(code, stdout):
+            return mock.patch.object(watchdog.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], code, stdout=stdout, stderr=""))
+
+        with show(0, "LoadState=loaded\nResult=success\n"):
+            self.assertFalse(watchdog.backup_unit_failed())
+        for code, stdout in ((0, "LoadState=loaded\nResult=exit-code\n"), (0, "LoadState=not-found\nResult=success\n"),
+                             (1, ""), (0, "")):
+            with show(code, stdout):
+                self.assertTrue(watchdog.backup_unit_failed(), (code, stdout))
 
     def test_a_blip_says_nothing(self):
         state = {}
@@ -593,8 +647,42 @@ class BackupTest(unittest.TestCase):
         dumps = [((now - n * day).strftime("%Y%m%dT%H%M%SZ"), f"backups/postgres/{n}") for n in range(20, -1, -1)]
         doomed = store.doomed(dumps, 14, 3, now)
         self.assertEqual(doomed, [f"backups/postgres/{n}" for n in range(20, 14, -1)])
-        old = [(stamp, key) for stamp, key in dumps if stamp < "20261010"]
+        cutoff = (now - 14 * day).strftime("%Y%m%dT%H%M%SZ")
+        old = [(stamp, key) for stamp, key in dumps if stamp < cutoff]
+        self.assertEqual(len(old), 6)
         self.assertEqual(store.doomed(old, 14, 3, now), [key for _, key in old[:-3]])
+
+    def test_halves_of_a_backup_never_push_out_whole_ones(self):
+        now = store.datetime.datetime(2026, 10, 30, 1, 10, tzinfo=store.datetime.timezone.utc)
+        day = store.datetime.timedelta(days=1)
+        prefix = "backups/postgres"
+
+        def stamp(n):
+            return (now - n * day).strftime("%Y%m%dT%H%M%SZ")
+
+        whole = [f"{prefix}/{stamp(n)}.{kind}" for n in (20, 19, 18) for kind in ("dump.enc", "json")]
+        # Three failed nights since (uploads cut short), a delete cut short, a copy and a run uploading now.
+        halves = [f"{prefix}/{stamp(n)}.dump.enc" for n in (4, 3, 2)] + [f"{prefix}/{stamp(25)}.json"]
+        others = [f"{prefix}/{stamp(30)}-neon.dump.enc", f"{prefix}/{stamp(0)}.dump.enc"]
+        doomed = store.to_prune({*whole, *halves, *others}, prefix, 14, 3, now)
+        self.assertEqual(doomed, [f"{prefix}/{stamp(25)}.json", *halves[:3]])
+        # Past the newest three whole ones, a whole backup goes manifest first.
+        whole += [f"{prefix}/{stamp(n)}.{kind}" for n in (17, 16, 15) for kind in ("dump.enc", "json")]
+        doomed = store.to_prune({*whole, *halves, *others}, prefix, 14, 3, now)
+        self.assertEqual(doomed[:6], [f"{prefix}/{stamp(25)}.json", f"{prefix}/{stamp(20)}.json",
+                                      f"{prefix}/{stamp(20)}.dump.enc", f"{prefix}/{stamp(19)}.json",
+                                      f"{prefix}/{stamp(19)}.dump.enc", f"{prefix}/{stamp(18)}.json"])
+        self.assertNotIn(f"{prefix}/{stamp(17)}.json", doomed)
+
+    def test_a_delete_is_tried_again_on_a_5xx(self):
+        answers = [(503, b"SlowDown"), (500, b""), (204, b"")]
+        with mock.patch.object(store.s3, "signed", side_effect=lambda *a, **k: answers.pop(0)) as signed, \
+                mock.patch.object(store.time, "sleep"):
+            store.delete("backups/postgres/20261002T011000Z.json")
+        self.assertEqual(signed.call_count, 3)
+        with mock.patch.object(store.s3, "signed", return_value=(403, b"AccessDenied")), \
+                self.assertRaisesRegex(SystemExit, "403"):
+            store.delete("backups/postgres/20261002T011000Z.json")
 
     def test_only_backup_keys(self):
         self.assertTrue(store.KEY.fullmatch("backups/postgres/20261002T011000Z.dump.enc"))
@@ -607,6 +695,36 @@ class BackupTest(unittest.TestCase):
     def run_lib(self, script, stdin=""):
         return subprocess.run(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; {script}'], input=stdin,
                               capture_output=True, text=True, check=True).stdout
+
+    def test_one_db_script_at_a_time_and_a_killed_runs_dump_goes(self):
+        with tempfile.TemporaryDirectory() as root:
+            stale = Path(root) / "work.abc123"
+            stale.mkdir()
+            (stale / "db.dump").write_text("rows")
+            holder = subprocess.Popen(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; db_lock; echo locked; read'],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                      env={**os.environ, "BACKUP_WORKDIR": root})
+            self.addCleanup(holder.kill)
+            self.assertEqual(holder.stdout.readline(), "locked\n")
+            self.assertFalse(stale.exists())
+            lock = f"{root}/.db.lock"
+            self.assertNotEqual(subprocess.run(["flock", "-n", lock, "true"]).returncode, 0)
+            holder.communicate("\n", timeout=10)
+            self.assertEqual(subprocess.run(["flock", "-n", lock, "true"]).returncode, 0)
+
+    def test_restore_and_copy_take_only_the_words_they_know(self):
+        env = {k: v for k, v in os.environ.items() if k != "HOST_PROFILE"}
+        for script, args, said in (
+                ("db-restore.sh", ["latest", "app", "--replace", "--dry-run"], "usage"),
+                ("db-restore.sh", ["latest", "app", "--dry-run"], "usage"),
+                ("db-restore.sh", ["latest"], "usage"),
+                ("db-copy.sh", ["neon", "app", "--replace", "--live-source"], "HOST_PROFILE=stand"),
+                ("db-copy.sh", ["neon", "app", "--dry-run"], "unknown flag")):
+            for profile in ({}, {"HOST_PROFILE": "prod"}):
+                result = subprocess.run(["bash", str(self.OPS / script), *args], capture_output=True, text=True,
+                                        env={**env, **profile, "BACKUP_WORKDIR": "/nonexistent/bro-test"})
+                self.assertEqual(result.returncode, 1, (script, args))
+                self.assertIn(said, result.stderr, (script, args))
 
     def test_copy_counts_takes_no_row_for_a_header(self):
         # pg_restore --data-only output: a text row that starts with "COPY " stays a row of its table.
@@ -659,6 +777,10 @@ class BackupTest(unittest.TestCase):
         for line in ("OnFailure=bro-backup-alert.service", "User=bro", "EnvironmentFile=/etc/bro/env",
                      "Requires=bro-egress.service", "ops/db-backup.sh", "ops/db-restore-check.sh latest"):
             self.assertIn(line, service)
+        # Both scripts of one release: `current` is read once, by one ExecStart.
+        [start] = [line for line in service.splitlines() if line.startswith("ExecStart=")]
+        self.assertEqual(start.count("/srv/bro/current"), 1)
+        self.assertIn("readlink -e /srv/bro/current", start)
         self.assertIn("Europe/Moscow", (HERE / "bro-backup.timer").read_text())
         self.assertIn("watchdog.py alert backup", (HERE / "bro-backup-alert.service").read_text())
         self.assertIn("bro-backup.timer", (HERE / "provision.sh").read_text())

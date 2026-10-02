@@ -11,12 +11,18 @@
 # target but check needs Bro gone from it (host.py stop NAME bro-eve bro-web), checked again right before
 # the restore; the world's database and neon are refused.
 source "$(dirname "$0")/db-lib.sh"
-[ $# -ge 2 ] || die "usage: db-restore.sh KEY|latest app|check|db:<name> [--replace]"
+# Exactly these: a word it does not know (--dry-run) must stop it, not leave a plain restore.
+if [ $# -eq 2 ]; then
+  REPLACE=no
+elif [ $# -eq 3 ] && [ "$3" = --replace ]; then
+  REPLACE=yes
+else
+  die "usage: db-restore.sh KEY|latest app|check|db:<name> [--replace]"
+fi
 [ "$2" != neon ] || die "a backup goes back into Neon only through db-copy.sh app neon (the rollback)"
+db_lock
 KEY=$1
 [ "$KEY" = latest ] && KEY=$(store latest "$BACKUP_PREFIX")
-REPLACE=no
-[ "${3:-}" = "--replace" ] && REPLACE=yes
 connection DST "$2"
 guard_target DST "$REPLACE"
 workdir

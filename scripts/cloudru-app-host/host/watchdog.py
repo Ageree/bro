@@ -75,15 +75,20 @@ def backup_fresh(paths, env, now, state):
         finished = json.loads(paths.backups.joinpath("last-backup.json").read_text())["finishedAt"]
     except (OSError, ValueError, KeyError, TypeError):
         finished = since
+    # A marker that is no time (damaged, written by hand) counts as none, rather than stopping every check.
+    if isinstance(finished, bool) or not isinstance(finished, (int, float)):
+        finished = since
     return now - finished < BACKUP_FRESH_S
 
 
 def backup_unit_failed():
     """The last run of bro-backup.service failed (backup or restore check): systemd keeps that until the next
-    run succeeds."""
-    result = subprocess.run(["systemctl", "show", "--property=Result", "--value", "bro-backup.service"],
+    run succeeds. A unit systemd cannot tell about (not loaded, no answer) counts as failed: silence must not
+    read as a good night."""
+    result = subprocess.run(["systemctl", "show", "--property=LoadState", "--property=Result", "bro-backup.service"],
                             capture_output=True, text=True)
-    return result.returncode == 0 and result.stdout.strip() not in ("", "success")
+    unit = dict(line.partition("=")[::2] for line in result.stdout.splitlines())
+    return result.returncode != 0 or unit.get("LoadState") != "loaded" or unit.get("Result") != "success"
 
 
 def probe(paths, env, now, state):
@@ -139,7 +144,7 @@ def step(state, checks, now, host):
         if down_for >= DOWN_BEFORE_ALERT_S and (alerted is None or now - alerted >= REPEAT_S):
             if name == "backup":
                 text = (f"Бро на {host}: ночной бэкап базы не в порядке с {clock(entry['downSince'])}: "
-                        f"нет удачного за сутки, нет ключа или последний запуск (бэкап или проверка) упал. "
+                        f"нет удачного 26 часов, нет ключа или последний запуск (бэкап или проверка) упал. "
                         f"Логи: host.py logs {host} bro-backup.")
             else:
                 text = (f"Бро на {host}: {NAMES[name]} не отвечает с {clock(entry['downSince'])} "

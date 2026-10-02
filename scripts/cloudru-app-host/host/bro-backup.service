@@ -15,8 +15,9 @@ Group=bro
 WorkingDirectory=/srv/bro/current
 EnvironmentFile=/etc/bro/env
 Environment=HOME=/var/lib/bro-home PATH=/usr/lib/postgresql/18/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash /srv/bro/current/ops/db-backup.sh
-ExecStart=/bin/bash /srv/bro/current/ops/db-restore-check.sh latest
+# Both scripts from one release: `current` is read once, so a deploy meanwhile cannot hand the restore check
+# the next release's scripts. Each takes the db-*.sh lock in turn (ops/db-lib.sh, db_lock).
+ExecStart=/bin/bash -c 'release=$$(readlink -e /srv/bro/current) && cd "$$release" && /bin/bash ops/db-backup.sh && /bin/bash ops/db-restore-check.sh latest'
 TimeoutStartSec=3h
 Nice=10
 NoNewPrivileges=true
