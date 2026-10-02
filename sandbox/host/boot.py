@@ -16,11 +16,13 @@ Storage, and everything else travels there from here.
   SANDBOX_SIGNING_KEY=… python boot.py cloud-init --host-id sbx-code-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
       --runsc-url … --runsc-sha256 … [--runsc-release 20260928] [--apt-mirror …] [--domain …] \\
-      [--console-password-hash '$6$…']
+      [--console-password-hash '$6$…'] [--hosts-entry brobro.tech=10.0.1.7 …]
       the user data for one host (base64 it for the Compute API). Without --domain the host serves
       <its public IP with dashes>.sslip.io. The runsc package comes from Object Storage too (the vendored one):
       gVisor's own apt repository is untested from Cloud.ru. The console password hash, when given, lets
-      root log in on the serial console (there is no SSH)
+      root log in on the serial console (there is no SSH). Each --hosts-entry pins a name in the host's
+      /etc/hosts: Bro's own domain at its VM's private address, since from one VM of the project another's
+      public address cannot be reached (02.10.2026) and sandboxd calls Bro's tool router by that name
 
 On the host, /usr/local/sbin/bro-code-host-boot fetches the bundle, checks its SHA-256 and runs
 provision.sh. The host key in /etc/bro/sandboxd.json is HMAC-SHA256(SANDBOX_SIGNING_KEY,
@@ -47,6 +49,9 @@ HOST_ID = re.compile(r"[a-z0-9-]{1,63}")
 ROOTFS_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+HOST_NAME = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+# ASCII: \d would take any Unicode digit, which provision.sh refuses at first boot.
+IPV4 = re.compile(r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}", re.ASCII)
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 # Fetches the bundle named in the boot settings, checks it and hands over to provision.sh. Written by
 # cloud-init, which runs it once per instance: it waits up to 40 attempts 10 s apart for the network, since in
@@ -137,7 +142,7 @@ def quoted(text):
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
                runsc_url, runsc_sha256, runsc_release=None, apt_mirror=APT_MIRROR, domain=None,
-               console_password_hash=None):
+               console_password_hash=None, hosts=()):
     runsc_release = runsc_release or VENDOR["runsc"]["release"]
     if not HOST_ID.fullmatch(host_id):
         raise ValueError("host id must match [a-z0-9-]{1,63}")
@@ -160,6 +165,7 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     if console_password_hash and not re.fullmatch(r"\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}",
                                                   console_password_hash):
         raise ValueError("the console password must be a SHA-512 crypt hash ($6$…)")
+    check_hosts(hosts)
     # sandboxd's own config (unknown keys are an error there): who it is, its key, which rootfs it runs.
     identity = json.dumps({"host": host_id, "key": key.hex(), "rootfs_version": rootfs_version})
     boot = json.dumps({
@@ -167,6 +173,7 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         "bundle": {"url": bundle_url, "sha256": bundle_sha256},
         "rootfs": {"version": rootfs_version, "url": rootfs_url, "sha256": rootfs_sha256},
         "runsc": {"release": runsc_release, "url": runsc_url, "sha256": runsc_sha256},
+        "hosts": [{"name": name, "address": address} for name, address in hosts],
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     lines = [
@@ -195,6 +202,25 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     return "\n".join(lines)
 
 
+def check_hosts(hosts):
+    """Each entry a plain host name and an IPv4 address, each name once: two lines for one name would leave
+    the address in use to their order."""
+    names = [name for name, _ in hosts]
+    if len(set(names)) != len(names):
+        raise ValueError("each host name is pinned once")
+    for name, address in hosts:
+        if not HOST_NAME.fullmatch(name) or not IPV4.fullmatch(address):
+            raise ValueError("a hosts entry is a plain host name and an IPv4 address")
+
+
+def hosts_entry(text):
+    """'brobro.tech=10.0.1.7' -> ('brobro.tech', '10.0.1.7')."""
+    name, sep, address = text.partition("=")
+    if not sep:
+        raise SystemExit(f"--hosts-entry takes NAME=IPV4, not {text!r}")
+    return name.strip().lower(), address.strip()
+
+
 def signing_key_from_env():
     signing = "".join(os.environ.get("SANDBOX_SIGNING_KEY", "").split()).strip("‘’“”'\"")
     if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){32,}", signing):
@@ -218,6 +244,7 @@ def main(argv=None):
     for name in ("runsc-release", "domain", "console-password-hash"):
         init.add_argument(f"--{name}")
     init.add_argument("--apt-mirror", default=APT_MIRROR)
+    init.add_argument("--hosts-entry", action="append", default=[], metavar="NAME=IPV4")
     args = parser.parse_args(argv)
     if args.command == "vendor":
         vendor(args.dir)
@@ -232,7 +259,8 @@ def main(argv=None):
         bundle_url=args.bundle_url, bundle_sha256=args.bundle_sha256, rootfs_version=args.rootfs_version,
         rootfs_url=args.rootfs_url, rootfs_sha256=args.rootfs_sha256, runsc_release=args.runsc_release,
         runsc_url=args.runsc_url, runsc_sha256=args.runsc_sha256, apt_mirror=args.apt_mirror,
-        domain=args.domain, console_password_hash=args.console_password_hash))
+        domain=args.domain, console_password_hash=args.console_password_hash,
+        hosts=[hosts_entry(entry) for entry in args.hosts_entry]))
 
 
 if __name__ == "__main__":

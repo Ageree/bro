@@ -1,0 +1,33 @@
+[Unit]
+Description=Bro eve (agent, channels, schedules and the Postgres Workflow world on 127.0.0.1:4274)
+After=network-online.target
+Wants=network-online.target
+# Without bro's egress rules (no metadata service, no deployd) the app does not start.
+Requires=bro-egress.service
+After=bro-egress.service
+ConditionPathExists=/srv/bro/current/eve/server/index.mjs
+
+[Service]
+Type=simple
+User=bro
+Group=bro
+WorkingDirectory=/srv/bro/current/eve
+EnvironmentFile=/etc/bro/env
+# The Nitro server itself, not `eve start`: that wrapper keeps every line of its child's output in memory.
+# TZ=UTC: Nitro's scheduler reads cron in the process's zone, Vercel Cron in UTC. The world delivers its
+# queue to this process over loopback: 127.0.0.1, so `localhost` never goes to ::1.
+Environment=NODE_ENV=production TZ=UTC PORT=4274 HOST=127.0.0.1
+Environment=WORKFLOW_LOCAL_BASE_URL=http://127.0.0.1:4274
+ExecStart=/usr/local/bin/node server/index.mjs
+Restart=always
+RestartSec=3
+# eve exits at once on SIGTERM (code 143); open steps are retried by the world.
+SuccessExitStatus=143
+TimeoutStopSec=30
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

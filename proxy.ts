@@ -16,6 +16,9 @@ export async function proxy(request: NextRequest) {
     // The owner's cost report checks its own bearer token.
     pathname === "/api/usage-costs" ||
     pathname.startsWith("/api/auth/") ||
+    // The VM's watchdog and a release's switch ask without a session; off
+    // the VM the route is a 404 that asks the database nothing.
+    pathname === "/api/health" ||
     pathname === "/eve/v1/health" ||
     // Provider webhooks verify their own signatures inside the channel.
     pathname === "/eve/v1/browser-use" ||

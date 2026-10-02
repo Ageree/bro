@@ -178,8 +178,10 @@ export const env = createEnv({
     // Required
     DATABASE_URL: databaseUrlSchema,
 
-    // Optional overrides with local defaults. Vercel deployments provision
-    // installation secrets in their connected private Blob store.
+    // Optional overrides with local defaults. Without them a Vercel
+    // deployment reads the installation secrets from its connected private
+    // Blob store (`db/services/installation-secrets.ts`); off Vercel set both,
+    // with the values from that store.
     BETTER_AUTH_SECRET: installationSecretWithLocalDefault(
       betterAuthSecretSchema,
       "openinstinct-local-auth-development-secret"
@@ -454,6 +456,11 @@ export const env = createEnv({
       .trim()
       .pipe(z.guid("CLOUDRU_PROJECT_ID must be a project UUID"))
       .optional(),
+    // `on` where Bro itself runs on a Cloud.ru VM: its calls to the
+    // project's VMs by their `<public IP>.sslip.io` names dial their private
+    // addresses, since no VM of the project reaches another's public one
+    // (`agent/lib/browser-vm/private-route.ts`). Off on Vercel.
+    CLOUDRU_PRIVATE_ROUTING: z.enum(["on", "off"]).default("off"),
     CLOUDRU_SECURITY_GROUP: trimmedValue.default("bro-browser"),
     CLOUDRU_SUBNET: trimmedValue.default("Default_ru.AZ-3"),
     CLOUDRU_ZONE: trimmedValue.default("ru.AZ-3"),
@@ -473,8 +480,6 @@ export const env = createEnv({
     DATABASE_DRIVER: z
       .enum(["node-postgres", "neon-http"])
       .default("node-postgres"),
-    EVE_MEMORY_BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
-    EVE_MEMORY_BLOB_STORE_ID: requiredValue.optional(),
     // Usage ceilings per workspace: messages on the local day, browser errands
     // and drawn pictures on the local month. A deployment without YooKassa
     // keys never leaves the free column.
@@ -622,6 +627,11 @@ export const env = createEnv({
     ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
     ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
+    // Where Bro's own sandbox runs, the one eve keeps people's photos, voice
+    // messages and documents in (`agent/sandbox.ts`): `default` is eve's
+    // choice (Vercel Sandbox on Vercel), `bro-cloudru` the code sandbox host
+    // below. Changing it starts every session's sandbox afresh.
+    AGENT_SANDBOX: z.enum(["default", "bro-cloudru"]).default("default"),
     // The code sandbox host on Cloud.ru (`sandbox/README.md`): its id, its
     // HTTPS origin (`https://<address with dashes>.sslip.io`), and the key
     // its token key and the sandbox tool router's token key are derived from
@@ -673,6 +683,11 @@ export const env = createEnv({
     // The pilot of the task agent and its sandbox: workspace ids or owners'
     // emails, or `*` for every workspace.
     SANDBOX_WORKSPACES: workspaceListSchema.optional(),
+    // Whether this deployment runs eve's schedules (`agent/schedules`). "off"
+    // on the Cloud.ru rehearsal stand: its ticks would poll errands, check
+    // mail and write to people from a copy of production's data, and only
+    // one scheduler may run per database (docs/cloudru-migration.md).
+    EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report
@@ -724,6 +739,10 @@ export const env = createEnv({
     VERCEL_PROJECT_ID: requiredValue.optional(),
     VERCEL_PROJECT_PRODUCTION_URL: requiredValue.optional(),
     VERCEL_URL: requiredValue.optional(),
+    // Where eve keeps turn state, read by `eve build`: unset on Vercel
+    // (Vercel Workflow), "postgres" for the Cloud.ru VM, whose build bundles
+    // @workflow/world-postgres (scripts/cloudru-app-host).
+    WORKFLOW_WORLD: z.enum(["postgres"]).optional(),
     // Both YooKassa credentials together switch billing on. With either one
     // missing the deployment runs in free mode: free limits, no pay link.
     YOOKASSA_SECRET_KEY: trimmedValue.optional(),

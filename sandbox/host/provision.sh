@@ -47,6 +47,37 @@ done
 SANDBOXD=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$HOST/sandboxd.service" | head -1)
 [[ "$SANDBOXD" == /* ]] || fail "sandboxd.service has no absolute ExecStart"
 
+stage hosts
+# Names pinned at private addresses (boot.py --hosts-entry): Bro's domain at its VM in the project's subnet,
+# since no VM of the project reaches another's public address and sandboxd calls Bro's tool router by name.
+# The lines carry a mark and are rewritten, never added twice; cloud-init's template gets them too, in case
+# the image lets it rewrite /etc/hosts at boot.
+python3 - "$BOOT" /etc/hosts /etc/cloud/templates/hosts.debian.tmpl <<'PY'
+import json, os, re, sys
+from pathlib import Path
+mark = "# bro-private"
+entries = json.load(open(sys.argv[1])).get("hosts", [])
+for entry in entries:
+    if not (re.fullmatch(r"[a-z0-9.-]{1,253}", entry["name"]) and re.fullmatch(r"[0-9.]{7,15}", entry["address"])):
+        sys.exit("bad hosts entry")
+names = {entry["name"] for entry in entries}
+if len(names) != len(entries):
+    sys.exit("a host name is pinned twice")
+for path in map(Path, sys.argv[2:]):
+    if not path.exists():
+        continue
+    kept = [line for line in path.read_text().splitlines()
+            if not line.endswith(mark) and not (names & set(line.split("#")[0].split()[1:]))]
+    # Written aside and renamed over: a boot cut short never leaves the file half written.
+    new = path.with_name(path.name + ".bro-new")
+    with open(new, "w") as out:
+        out.write("\n".join(kept + [f"{e['address']} {e['name']} {mark}" for e in entries]) + "\n")
+        out.flush()
+        os.fsync(out.fileno())
+    os.chmod(new, path.stat().st_mode & 0o7777)
+    os.replace(new, path)
+PY
+
 stage packages
 APT_MIRROR=$(field "$BOOT" aptMirror)
 if [ -n "$APT_MIRROR" ]; then

@@ -19,7 +19,7 @@ interface WorkspaceFile {
   url: string | null;
 }
 
-interface StoredBlob {
+interface StoredObject {
   readonly bytes: Uint8Array;
   readonly contentType: string;
 }
@@ -35,20 +35,21 @@ const findBrowserUseSessionCdpUrl = vi.hoisted(() =>
 const captureViewportOverCdp = vi.hoisted(() =>
   vi.fn<(cdpUrl: string) => Promise<Uint8Array>>()
 );
-const blobs = vi.hoisted(() => new Map<string, StoredBlob>());
+const storedObjects = vi.hoisted(() => new Map<string, StoredObject>());
+const storage = vi.hoisted(() => ({ configured: true }));
 const put = vi.hoisted(() =>
   vi.fn<
-    (
-      pathname: string,
-      body: Buffer,
-      options: { access: string; contentType: string }
-    ) => Promise<{ pathname: string }>
-  >((pathname, body, options) => {
-    blobs.set(pathname, {
-      bytes: new Uint8Array(body),
-      contentType: options.contentType,
+    (input: {
+      bytes: Uint8Array;
+      mediaType: string;
+      pathname: string;
+    }) => Promise<void>
+  >((input) => {
+    storedObjects.set(input.pathname, {
+      bytes: new Uint8Array(input.bytes),
+      contentType: input.mediaType,
     });
-    return Promise.resolve({ pathname });
+    return Promise.resolve();
   })
 );
 
@@ -57,22 +58,22 @@ vi.mock("@agent/lib/browser-use/client", () => ({
   listBrowserUseWorkspaceFiles,
 }));
 vi.mock("@agent/lib/browser-use/cdp", () => ({ captureViewportOverCdp }));
-// A private Blob store held in memory: what `put` wrote is what `get` serves.
-vi.mock("@vercel/blob", () => ({
-  get: (pathname: string) => {
-    const stored = blobs.get(pathname);
-    if (!stored) return Promise.resolve(null);
+// A private object store held in memory: what `put` wrote is what `open`
+// serves.
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => storage.configured,
+  openArtifactObject: (pathname: string) => {
+    const stored = storedObjects.get(pathname);
+    if (!stored) return Promise.resolve(undefined);
     return Promise.resolve({
-      blob: {
-        contentType: stored.contentType,
-        etag: '"etag"',
-        size: stored.bytes.byteLength,
-      },
-      statusCode: 200,
+      contentType: stored.contentType,
+      etag: '"etag"',
+      size: stored.bytes.byteLength,
+      status: 200,
       stream: new Response(Buffer.from(stored.bytes)).body,
     });
   },
-  put,
+  putArtifactObject: put,
 }));
 
 const databases: PGlite[] = [];
@@ -81,7 +82,7 @@ const databases: PGlite[] = [];
 const downloads = new Map<string, () => Response>();
 
 beforeEach(() => {
-  blobs.clear();
+  storedObjects.clear();
   downloads.clear();
   findBrowserUseSessionCdpUrl.mockResolvedValue(undefined);
   listBrowserUseWorkspaceFiles.mockResolvedValue({ files: [] });
@@ -94,8 +95,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  vi.stubEnv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_test");
-  vi.stubEnv("BLOB_STORE_ID", "");
+  storage.configured = true;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -229,8 +229,8 @@ describe("capturing the pictures a browser run leaves behind", () => {
     ]);
     expect(findBrowserUseSessionCdpUrl).not.toHaveBeenCalled();
     expect(put).toHaveBeenCalledTimes(2);
-    expect(put.mock.calls[0]?.[2]).toMatchObject({ access: "private" });
-    expect([...blobs.keys()].toSorted()).toEqual(
+    expect(put.mock.calls[0]?.[0].pathname).toMatch(/^browser-images\//u);
+    expect([...storedObjects.keys()].toSorted()).toEqual(
       [
         `browser-images/better-auth-alice/${sha256(finalPng)}`,
         `browser-images/better-auth-alice/${sha256(bandJpeg)}`,
@@ -384,9 +384,8 @@ describe("capturing the pictures a browser run leaves behind", () => {
     expect(put).not.toHaveBeenCalled();
   }, 20_000);
 
-  it("captures nothing without a private Blob store to keep it in", async () => {
-    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
-    vi.stubEnv("BLOB_STORE_ID", "");
+  it("captures nothing without a private store to keep it in", async () => {
+    storage.configured = false;
     const { images } = await loadImages();
 
     expect(await images.captureBrowserRunImages(row(), run)).toEqual([]);

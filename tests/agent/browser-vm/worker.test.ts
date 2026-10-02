@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import {
   browserVmTestEnvironment,
@@ -154,6 +154,46 @@ describe("browser VM worker client", () => {
     expect(calls[0]?.url).toBe(`${origin}/v1/health`);
     expect(calls[0]?.headers.get("authorization")).toBeNull();
     expect(timeouts).toHaveBeenCalledWith(5_000);
+  });
+
+  it("looks a VM's private address up before its call's timeout starts", async () => {
+    // A Compute API listing may take seconds: a health check's five seconds
+    // are the VM's to answer in, not the listing's.
+    const listing = vi.fn<() => Promise<Map<string, string>>>(
+      async () => new Map([[vm.host, "10.0.1.7"]])
+    );
+    // The Compute API client, as private-route uses it.
+    vi.doMock("@agent/lib/browser-vm/cloudru", () => ({
+      listCloudRuPrivateAddresses: listing,
+    }));
+    onTestFinished(() => {
+      vi.doUnmock("@agent/lib/browser-vm/cloudru");
+    });
+    const worker = await importWithSettings(
+      { ...browserVmTestEnvironment, CLOUDRU_PRIVATE_ROUTING: "on" },
+      async () => import("@agent/lib/browser-vm/worker")
+    );
+    const timeouts = vi.spyOn(AbortSignal, "timeout");
+    stubWorker(
+      Response.json({
+        busy: false,
+        chrome: true,
+        configured: true,
+        generation: 4,
+        image: "bro-browser-2026-09-28-1",
+        proxy: false,
+        stage: "ready",
+        uptimeSeconds: 48.2,
+        worker: "2026-09-28.1",
+      })
+    );
+
+    await worker.readBrowserVmWorkerHealth(vm);
+
+    expect(listing).toHaveBeenCalledTimes(1);
+    expect(listing.mock.invocationCallOrder[0]).toBeLessThan(
+      timeouts.mock.invocationCallOrder[0] ?? 0
+    );
   });
 
   it("signs every other call for this VM and its generation", async () => {

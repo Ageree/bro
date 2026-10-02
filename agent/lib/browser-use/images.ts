@@ -4,7 +4,7 @@ import {
   type ImageArtifactCapture,
 } from "@agent/lib/image-artifact/capture";
 import { maximumDeliveredImageArtifacts } from "@agent/lib/image-artifact/delivery";
-import { imageArtifactStorageConfigured } from "@agent/lib/image-artifact/storage";
+import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { captureViewportOverCdp } from "./cdp";
@@ -143,11 +143,7 @@ export async function captureBrowserRunImages(
 ): Promise<BrowserRunImage[]> {
   const { rootSessionId, sessionId: browserSessionId } = row;
   // Only a queued errand has no browser session, and it never settles here.
-  if (
-    !rootSessionId ||
-    !browserSessionId ||
-    !imageArtifactStorageConfigured()
-  ) {
+  if (!rootSessionId || !browserSessionId || !artifactStorageConfigured()) {
     return [];
   }
   const saved = selectBrowserRunImages(

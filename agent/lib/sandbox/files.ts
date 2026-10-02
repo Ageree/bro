@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { presignBrowserStateObject } from "@agent/lib/browser-pool/s3";
+import { presignStoredObject } from "@shared/object-storage/s3";
 import { applicationOrigin } from "@shared/environment/origin";
 import { sandboxFileLinkSignature, sandboxFileLinkValid } from "./keys";
 
@@ -74,7 +74,7 @@ export async function shareSandboxFile(input: {
   const name = sharedFileName(input.name);
   const key = objectKey(id, name);
   const response = await fetch(
-    presignBrowserStateObject({ expiresSeconds: 300, key, method: "PUT" }),
+    presignStoredObject({ expiresSeconds: 300, key, method: "PUT" }),
     {
       body: Buffer.from(input.bytes),
       headers: { "content-type": input.mediaType },
@@ -119,7 +119,7 @@ export function sharedFileLocation(input: {
   if (!sandboxFileLinkValid(key, input.signature)) return undefined;
   // Downloaded, never rendered on the storage's origin: an SVG or HTML the
   // task agent made must not run as a page.
-  return presignBrowserStateObject({
+  return presignStoredObject({
     expiresSeconds: redirectSeconds,
     key,
     method: "GET",

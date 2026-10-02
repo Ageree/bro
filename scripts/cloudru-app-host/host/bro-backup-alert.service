@@ -1,0 +1,7 @@
+[Unit]
+Description=Tell the owner that the nightly database backup failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/bro/app-host/watchdog.py alert backup
+TimeoutStartSec=60

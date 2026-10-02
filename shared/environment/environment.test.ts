@@ -32,6 +32,28 @@ describe("environment", () => {
     expect(env).toMatchObject(requiredEnvironment);
   });
 
+  it("runs schedules unless EVE_SCHEDULES=off", async () => {
+    // The Cloud.ru VM sets both: the defaults must not depend on the host.
+    vi.stubEnv("EVE_SCHEDULES", undefined);
+    vi.stubEnv("WORKFLOW_WORLD", undefined);
+    const { env } = await import("@shared/environment");
+    expect(env.EVE_SCHEDULES).toBe("on");
+    expect(env.WORKFLOW_WORLD).toBeUndefined();
+
+    vi.resetModules();
+    vi.stubEnv("EVE_SCHEDULES", "off");
+    vi.stubEnv("WORKFLOW_WORLD", "postgres");
+    const switchedOff = await import("@shared/environment");
+    expect(switchedOff.env.EVE_SCHEDULES).toBe("off");
+    expect(switchedOff.env.WORKFLOW_WORLD).toBe("postgres");
+
+    vi.resetModules();
+    vi.stubEnv("EVE_SCHEDULES", "no");
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
+  });
+
   it("leaves Composio and iMessage off when they are not set", async () => {
     vi.stubEnv("COMPOSIO_API_KEY", "");
     vi.stubEnv("COMPOSIO_GOOGLE_AUTH_CONFIG_ID", "");
