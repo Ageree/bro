@@ -1294,6 +1294,15 @@ class HostCliTest(unittest.TestCase):
         cls.host = load_host_py()
         cls.addClassCleanup(shutil.rmtree, os.environ["BRO_APP_HOST_DIR"])
 
+    def test_the_build_has_the_model_provider_of_the_vm(self):
+        # web_search.ts decides at module load: a build without it ships the Gateway's tool, and RouterAI
+        # answers 400 to every turn that carries it.
+        env = self.host.build_env()
+        for profile in self.host.PROFILES.values():
+            self.assertEqual(env["MODEL_PROVIDER"], profile["MODEL_PROVIDER"])
+        self.assertTrue(env["ROUTERAI_API_KEY"])
+        self.assertEqual(self.host.build_env(WORKFLOW_WORLD="postgres")["MODEL_PROVIDER"], "routerai")
+
     def test_the_readme_restore_command_parses(self):
         args = self.host.parser().parse_args(
             ["ops", "bro-app-1", "db-restore.sh", "latest", "app", "--replace"])

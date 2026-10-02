@@ -547,9 +547,11 @@ def run(argv, env, cwd=REPO):
 
 
 def build_env(**extra):
-    """A clean env: the session's secrets break env.ts (TELEGRAM_BOT_USERNAME with an @, real keys)."""
+    """A clean env: the session's secrets break env.ts (TELEGRAM_BOT_USERNAME with an @, real keys). The model
+    provider is the VM's all the same: agent/tools/web_search.ts picks its tool once, when the module loads, so
+    the build bakes the choice in, and the Gateway's tool (no MODEL_PROVIDER) makes RouterAI refuse every turn."""
     env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/root"), "NODE_ENV": "production",
-           **STUB_ENV, **extra}
+           **STUB_ENV, "MODEL_PROVIDER": ON_THE_VM["MODEL_PROVIDER"], "ROUTERAI_API_KEY": "build-only", **extra}
     for name in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
                  "https_proxy", "http_proxy", "no_proxy"):
         if os.environ.get(name):
