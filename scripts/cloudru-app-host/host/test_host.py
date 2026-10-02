@@ -563,6 +563,70 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
 
+    def test_an_alert_reaches_the_webhook_when_telegram_does_not(self):
+        posted = []
+
+        def urlopen(request, data=None, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            if "api.telegram.org" in url:
+                raise urllib.error.URLError("timed out")
+            posted.append((url, request.data))
+            return mock.MagicMock(status=200, __enter__=lambda self: self, __exit__=lambda *a: None)
+
+        env = {"TELEGRAM_BOT_TOKEN": "1:x", "TELEGRAM_OWNER_CHAT_ID": "5",
+               "OPS_ALERT_WEBHOOK_URL": "https://push.example/topic"}
+        with mock.patch.object(watchdog.urllib.request, "urlopen", urlopen), \
+                mock.patch("builtins.print") as printed:
+            self.assertTrue(watchdog.send(env, "tg down"))
+            self.assertFalse(watchdog.send({**env, "OPS_ALERT_WEBHOOK_URL": "http://push.example/t"}, "x"))
+        self.assertEqual(posted, [("https://push.example/topic", "tg down".encode())])
+        self.assertIn("alert: tg down", " ".join(str(c) for c in printed.call_args_list))
+        self.assertNotIn("1:x", " ".join(str(c) for c in printed.call_args_list))
+
+    def test_undelivered_alerts_are_listed_until_they_go_out(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        paths.config.parent.mkdir(parents=True)
+        paths.config.write_text(json.dumps({"host": "bro-app-1"}))
+        paths.domain.parent.mkdir(parents=True)
+        paths.tg_egress.parent.mkdir(parents=True)
+        paths.tg_egress.write_text("")
+        state_file = paths.domain.with_name("watchdog.json")
+        state_file.write_text(json.dumps({"tg-egress": {"downSince": 0}}))
+        delivered = []
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(root)}), \
+                mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=False), \
+                mock.patch.object(watchdog, "egress_ok", return_value=False), \
+                mock.patch.object(watchdog, "send", side_effect=lambda env, text: bool(delivered)), \
+                mock.patch.object(watchdog.time, "time", return_value=600), mock.patch("builtins.print"):
+            watchdog.main([])
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["undelivered"], {"tg-egress": 600})
+            self.assertNotIn("alertedAt", state["tg-egress"])
+            delivered.append(True)
+            watchdog.main([])
+            state = json.loads(state_file.read_text())
+            self.assertNotIn("undelivered", state)
+            self.assertIn("alertedAt", state["tg-egress"])
+
+    def test_tg_egress_is_restarted_at_most_every_ten_minutes(self):
+        paths = deployd.Paths("/nonexistent")
+        runs = []
+
+        def run(argv, **kwargs):
+            runs.append(argv[:2])
+            return mock.MagicMock(returncode=1)
+
+        state = {}
+        with mock.patch.object(watchdog.subprocess, "run", run), mock.patch.object(watchdog.time, "sleep"), \
+                mock.patch("builtins.print"):
+            self.assertFalse(watchdog.egress_ok(paths, 1000, state))
+            self.assertFalse(watchdog.egress_ok(paths, 1060, state))
+            self.assertFalse(watchdog.egress_ok(paths, 1000 + watchdog.EGRESS_RESTART_EVERY_S, state))
+        self.assertEqual(runs.count(["systemctl", "restart"]), 2)
+
     def test_a_blip_says_nothing(self):
         state = {}
         watchdog.step(state, {"web": False}, 0, "h")
