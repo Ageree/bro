@@ -16,7 +16,7 @@ describe(
   () => {
     test("Bro greets a new person", async ({ agent, app, browser, screen }) => {
       await app.open("/chat");
-      await sendToBro(screen, "Привет!");
+      await sendToBro({ browser, screen }, "Привет!");
 
       await expect(browser).toHaveURL(/\/chat\/[\w-]+$/u);
       await agent.assert(
@@ -26,6 +26,7 @@ describe(
 
     test("Bro answers a question in the same conversation", async ({
       app,
+      browser,
       screen,
     }) => {
       await app.open("/chat/history");
@@ -34,15 +35,16 @@ describe(
         .getByRole("link", "Привет!")
         .first()
         .tap();
-      await expect(chatLog(screen)).toContainText("Привет!");
+      await expect(chatLog(browser)).toContainText("Привет!");
 
-      await sendToBro(screen, question);
-      await expect(chatLog(screen)).toContainText("Париж");
+      await sendToBro({ browser, screen }, question);
+      await expect(chatLog(browser)).toContainText("Париж");
     });
 
     test("Bro keeps the thread of the conversation", async ({
       agent,
       app,
+      browser,
       screen,
     }) => {
       await app.open("/chat/history");
@@ -51,13 +53,13 @@ describe(
         .getByRole("link", "Привет!")
         .first()
         .tap();
-      await expect(chatLog(screen)).toContainText("Париж");
+      await expect(chatLog(browser)).toContainText("Париж");
 
       await sendToBro(
-        screen,
+        { browser, screen },
         "А какой самый известный музей в этом городе? Одним словом."
       );
-      await expect(chatLog(screen)).toContainText("Лувр");
+      await expect(chatLog(browser)).toContainText("Лувр");
       await agent.assert(
         "Bro's latest reply names the Louvre and does not ask which city was meant"
       );

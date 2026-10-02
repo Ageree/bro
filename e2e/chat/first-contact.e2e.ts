@@ -15,14 +15,14 @@ ownPersonTest(
     tags: ["agent"],
     timeout: 300_000,
   },
-  async ({ agent, app, screen }) => {
+  async ({ agent, app, browser, screen }) => {
     await app.open("/chat");
     await sendToBro(
-      screen,
+      { browser, screen },
       "Как называется столица Франции? Ответь одним словом."
     );
 
-    await expect(chatLog(screen)).toContainText("Париж");
+    await expect(chatLog(browser)).toContainText("Париж");
     await agent.assert("Bro introduced itself in the chat log");
   }
 );
