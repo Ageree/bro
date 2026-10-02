@@ -111,3 +111,7 @@ jobs:
       - name: App host (deployd, watchdog, boot)
         working-directory: scripts/cloudru-app-host/host
         run: python -m unittest
+
+      - name: Telegram bridge (app host)
+        working-directory: scripts/cloudru-app-host/tg-bridge
+        run: python -m unittest
