@@ -14,7 +14,7 @@
 | Инструменты | 59 схем в каждом шаге                                 | узкое ядро в главном агенте; остальное — CLI `tools` в песочнице через GraphQL-маршрутизатор |
 | Модели      | OpenRouter (из РФ — 403), Gateway                     | RouterAI (OpenAI-совместимый, работает из РФ); OpenRouter — пока бэкенд вне РФ               |
 | Хранилище   | Vercel Blob, Neon                                     | Object Storage Cloud.ru (`bucket-ac164a`), Managed PostgreSQL Cloud.ru                       |
-| Расписания  | Vercel Cron из Build Output                           | планировщик Nitro в `eve start` (один на весь кластер)                                       |
+| Расписания  | Vercel Cron из Build Output                           | планировщик Nitro в процессе eve на VM (один на всю базу)                                    |
 
 ## Этапы
 
@@ -101,27 +101,50 @@ plugin на Exa), алерт о балансе и учёт цены (`usage.cost
 Готово: эвалы `reply` и `schedules` на RouterAI не хуже OpenRouter; шаг
 дешевле при той же доле кэша.
 
-### 4. Цикл агента: `eve start` на Cloud.ru
+### 4. Цикл агента: свой сервер на Cloud.ru — инструменты готовы, VM не создана
 
-- `experimental.workflow.world` — `@workflow/world-postgres` (линия
-  `5.0.0-beta`, как у eve 0.62); `pnpm build:eve`, `eve start` за Caddy,
-  `next start` с прокси `withEve` на тот же сервер.
-- Проксировать `/eve/` и `/.well-known/workflow/` без переписывания путей.
+Сделано (`scripts/cloudru-app-host/README.md`): одна VM `bro-app-1` (gen-2-8,
+SSD 40 ГБ, `ru.AZ-1`, группа `bro-browser-az1`) с Caddy, Next (standalone,
+`127.0.0.1:3000`) и eve (`node .output/server/index.mjs`, `127.0.0.1:4274`,
+`TZ=UTC`) под systemd. Сборка — в сессии (`host.py build`): мир
+`@workflow/world-postgres@5.0.0-beta.44` и `output: "standalone"` включаются
+только переменными сборки `WORKFLOW_WORLD=postgres` и `NEXT_OUTPUT=standalone`,
+без них сборка Vercel прежняя. Релиз — один `tar.zst` в Object Storage;
+`deployd` на VM скачивает, сверяет sha256, применяет миграции Бро и схему мира
+(`ops/migrate.mjs`, без pnpm и drizzle-kit), переключает `current` и за
+120 с ждёт `/api/health` (Next + `select 1`) и `/eve/v1/health`, иначе
+возвращает прошлый релиз. Расписания выключает `SCHEDULES=off` (стенд);
+watchdog раз в минуту пишет владельцу в Telegram, если сервис лежит дольше
+5 минут.
+
+- Caddy: `/eve/*` — прямо в eve (`flush_interval -1`: прокси Next рвёт
+  потоки через 30 с), остальное — в Next. `/.well-known/workflow/*` наружу
+  **не** публикуется (404): вход очереди мира без авторизации, мир ходит в него
+  по loopback.
+- База мира — отдельная (`bro_workflow`, на стенде `bro_stand_workflow`): мир
+  на старте перезапускает все незаконченные прогоны своей базы, две среды на
+  одной базе исполняли бы чужие ходы.
 - Планировщик Nitro запускает расписания сам: на время переключения
-  расписания Vercel выключить, двух планировщиков не держать.
+  расписания Vercel выключить, двух планировщиков на одной базе не держать.
 - Состояние на инстанс (`pg.Pool`, троттлинг Telegram, ограничитель
   Nominatim) остаётся корректным на одной VM; на нескольких — вынести в
   Postgres.
 - Старые сессии Vercel Workflow не переносятся: новые ходы идут в новый мир,
   старые доживают на Vercel до отключения.
 
+Осталось: создать `bro-app-1`, кластер PostgreSQL (этап 5), env стенда
+(`host.py env --profile stand`), сайт `cloud.brobro.tech` и прогнать стенд;
+проверить ход через мир Postgres, переживание `systemctl restart bro-eve`,
+поток SSE через Caddy и доступность `api.telegram.org` с VM.
+
 Готово: перезапуск сервера не теряет ходов и карточек, расписания не
 дублируются.
 
 ### 5. База: Neon → PostgreSQL Cloud.ru
 
-`pg_dump`/`pg_restore` в окно обслуживания, `DATABASE_URL` на новую базу,
-миграции — `pnpm db:migrate`. Превью больше не делят базу с продом.
+`pg_dump`/`pg_restore` в окно обслуживания (`host.py ops <vm> db-restore.sh`:
+кластер доступен только из подсети VM), `DATABASE_URL` на новую базу,
+миграции — `ops/migrate.mjs` при каждой выкладке. Превью больше не делят базу с продом.
 
 Откат: на время окна Бро только читает (запись в Neon остановлена), и до
 первой записи в новую базу откат — вернуть `DATABASE_URL`. После неё вернуть

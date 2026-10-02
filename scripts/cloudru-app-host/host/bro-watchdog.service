@@ -1,0 +1,7 @@
+[Unit]
+Description=Bro watchdog (Next, eve and Caddy health; Telegram to the owner)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/bro/app-host/watchdog.py
+TimeoutStartSec=60

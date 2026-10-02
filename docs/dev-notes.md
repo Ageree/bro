@@ -87,11 +87,20 @@
   песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
   работает (`node_modules/eve/docs/sandbox.mdx`).
 - Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
-  на Vercel (Sandbox, Blob, Workflow, Gateway). eve живёт и вне Vercel:
-  `eve start`, состояние ходов — `@workflow/world-postgres`
-  (ключ `experimental.workflow.world`; в `agent/agent.ts` его пока нет,
-  выставить при переезде), песочница — бэкенд `docker()`
-  (`node_modules/eve/docs/concepts/execution-model-and-durability.mdx`).
+  на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
+  `scripts/cloudru-app-host/README.md`: сборка для VM включается только
+  `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
+  (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
+  поведением по умолчанию, пока Vercel — путь отката.
+- `next start` сам eve не поднимает (запуск зашит в `rewrites()`, их Next 16
+  вызывает только при сборке): eve — свой процесс `node .output/server/index.mjs`,
+  не `eve start` (обёртка копит весь вывод ребёнка в памяти).
+  `/.well-known/workflow/*` наружу не публикуйте: вход очереди мира без
+  авторизации. Без схемы мир Postgres падает на старте: до запуска —
+  `ops/migrate.mjs world`; две среды на одной базе мира исполняют чужие ходы.
+- esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
+  `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
+  для `tar -I zstd`: `apt-get install -y zstd`.
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера

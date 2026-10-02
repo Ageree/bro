@@ -21,6 +21,8 @@ export default {
     "scripts/migrate-from-convex.ts",
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).
     "scripts/costs/step-context.ts",
+    // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
+    "scripts/cloudru-app-host/ops/migrate.ts",
     "taze.config.ts",
     // End-to-end runs against real clouds, by hand (docs/browser-pool.md).
     "tests/e2e/**/*.e2e.ts",
@@ -36,6 +38,11 @@ export default {
     "oxlint-tailwindcss",
     // Invoked as a CLI.
     "vercel",
+    // Bundles ops/migrate.ts for the Cloud.ru VM (scripts/cloudru-app-host/host.py).
+    "esbuild",
+    // Named, not imported: agent/agent.ts gives eve the package name of the
+    // Workflow world, and eve bundles it.
+    "@workflow/world-postgres",
   ],
   ignoreIssues: {
     // Eve AI Elements and shadcn registry primitives intentionally expose

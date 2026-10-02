@@ -25,6 +25,7 @@ const applicationEnvironment = [
   "PAID_*",
   "PRICE_RUB",
   "ROUTERAI_*",
+  "SCHEDULES",
   "SECRET_ENCRYPTION_KEY",
   "SUPERMEMORY_*",
   "TELEGRAM_*",
@@ -53,10 +54,14 @@ describe("Turbo configuration", () => {
 
     expect(turbo).not.toHaveProperty("globalEnv");
     expect(turbo.tasks["build:app"].env).toEqual(
-      expect.arrayContaining([...applicationEnvironment, "EVE_NEXT_*"])
+      expect.arrayContaining([
+        ...applicationEnvironment,
+        "EVE_NEXT_*",
+        "NEXT_OUTPUT",
+      ])
     );
     expect(turbo.tasks["build:app"].env).toHaveLength(
-      applicationEnvironment.length + 1
+      applicationEnvironment.length + 2
     );
     expect(turbo.tasks["build:vercel"].env).toEqual(applicationEnvironment);
     expect(turbo.tasks["dev:app"].passThroughEnv).toEqual(runtimeEnvironment);
