@@ -97,6 +97,27 @@ const vmListSchema = z.object({
   items: z.array(z.object({ id: z.string().min(1), name: z.string() })),
 });
 
+/**
+ * Both addresses of each VM in a listing: the floating IP the world (and
+ * its sslip.io name) knows it by, and the address in the project's subnet.
+ */
+const vmAddressListSchema = z.object({
+  items: z.array(
+    z.object({
+      interfaces: z
+        .array(
+          z.object({
+            floating_ip: z
+              .object({ ip_address: z.string().nullish() })
+              .nullish(),
+            ip_address: z.string().nullish(),
+          })
+        )
+        .nullish(),
+    })
+  ),
+});
+
 const backupListSchema = z.object({
   items: z.array(
     z.object({
@@ -293,6 +314,52 @@ export async function deleteCloudRuFloatingIp(floatingIpId: string) {
   await deleteGone(
     `${computeApi}/v1/floating-ips/${encodeURIComponent(floatingIpId)}`
   );
+}
+
+/** A page of `/v1/vms`, and how many pages a project could plausibly fill. */
+const vmsPageLimit = 100;
+const vmsPageCap = 10;
+
+/**
+ * The project's VMs as public address → private address. A VM of the
+ * project cannot reach another one's public address (no hairpin, 02.10.2026)
+ * but does reach its private one, so `agent/lib/browser-vm/private-route.ts`
+ * dials this instead, under the same name and certificate.
+ */
+export async function listCloudRuPrivateAddresses() {
+  const projectId = await cloudRuProjectId();
+  const addresses = new Map<string, string>();
+  for (let pageIndex = 0; pageIndex < vmsPageCap; pageIndex += 1) {
+    const query = new URLSearchParams({
+      limit: String(vmsPageLimit),
+      offset: String(pageIndex * vmsPageLimit),
+      project_id: projectId,
+    });
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the previous page's offset.
+    const page = await request(
+      "GET",
+      `${computeApi}/v1/vms?${query.toString()}`
+    );
+    const { items } = vmAddressListSchema.parse(page);
+    for (const item of items) {
+      for (const face of item.interfaces ?? []) {
+        const publicAddress = face.floating_ip?.ip_address;
+        const privateAddress = face.ip_address;
+        if (publicAddress && privateAddress) {
+          addresses.set(publicAddress, privateAddress);
+        }
+      }
+    }
+    if (items.length < vmsPageLimit) break;
+    // VMs past the cap stay unmapped and are dialed at their public address.
+    if (pageIndex === vmsPageCap - 1) {
+      console.warn("[browser-vm] gave up paging through Cloud.ru VMs", {
+        mapped: addresses.size,
+        pages: vmsPageCap,
+      });
+    }
+  }
+  return addresses;
 }
 
 /** The API's own maximum page size for `/v1/backups` (its default is only 50). */

@@ -456,6 +456,11 @@ export const env = createEnv({
       .trim()
       .pipe(z.guid("CLOUDRU_PROJECT_ID must be a project UUID"))
       .optional(),
+    // `on` where Bro itself runs on a Cloud.ru VM: its calls to the
+    // project's VMs by their `<public IP>.sslip.io` names dial their private
+    // addresses, since no VM of the project reaches another's public one
+    // (`agent/lib/browser-vm/private-route.ts`). Off on Vercel.
+    CLOUDRU_PRIVATE_ROUTING: z.enum(["on", "off"]).default("off"),
     CLOUDRU_SECURITY_GROUP: trimmedValue.default("bro-browser"),
     CLOUDRU_SUBNET: trimmedValue.default("Default_ru.AZ-3"),
     CLOUDRU_ZONE: trimmedValue.default("ru.AZ-3"),
