@@ -38,10 +38,10 @@ const lostConnectionMessage =
 
 // drizzle wraps a failed query (DrizzleQueryError) with the driver's error as
 // its cause.
-function lostConnection(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
+function lostConnection(error: Error): boolean {
   return (
-    lostConnectionMessage.test(error.message) || lostConnection(error.cause)
+    lostConnectionMessage.test(error.message) ||
+    (error.cause instanceof Error && lostConnection(error.cause))
   );
 }
 
@@ -105,7 +105,7 @@ async function timed(name: string, step: () => Promise<void>) {
   try {
     await step();
   } catch (error) {
-    if (!lostConnection(error)) throw error;
+    if (!(error instanceof Error) || !lostConnection(error)) throw error;
     console.log(`migrate ${name}: lost the connection, once more`);
     await step();
   }
