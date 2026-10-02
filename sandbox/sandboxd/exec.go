@@ -42,9 +42,19 @@ var (
 // (gVisor has it) with bash builtins only, and goes round again until a round finds no marked process: a
 // process may fork while a round runs. Zombies are dead already and skipped; killMarked's timeout bounds
 // the rounds.
+//
+// A round has two passes. The first takes a snapshot: who carries the marker and whose child each process
+// is. The second kills the marked processes and, through the parent links of that same snapshot, all their
+// descendants (one walk down the children lists: a fork-heavy command has thousands of processes, and the
+// rounds share killMarked's timeout). The environment alone is not enough: a process in the middle of its own execve (on Linux
+// this lasts as long as the new image's pages take to read: a `sleep` whose binary is cold on a slow disk
+// is in it for hundreds of milliseconds) has an empty /proc/<pid>/environ, and so has one that dropped the
+// marker (env -i). Its parent link is there all along.
 const killScript = `m="` + markerEnv + `=$1"
 while :; do
   hit=
+  unset children doomed
+  declare -A children doomed
   for d in /proc/[0-9]*; do
     p=${d#/proc/}
     [ "$p" = "$$" ] && continue
@@ -52,9 +62,24 @@ while :; do
     read -r s 2>/dev/null < "$d/stat" || continue
     s=${s##*) }
     [ "${s%% *}" = Z ] && continue
+    s=${s#* }
+    children[${s%% *}]+=" $p"
     while IFS= read -r -d '' e; do
-      if [ "$e" = "$m" ]; then kill -9 "$p" 2>/dev/null && hit=1; break; fi
+      if [ "$e" = "$m" ]; then doomed[$p]=1; break; fi
     done 2>/dev/null < "$d/environ"
+  done
+  queue=("${!doomed[@]}")
+  i=0
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    for c in ${children[${queue[$i]}]}; do
+      [ -n "${doomed[$c]}" ] && continue
+      doomed[$c]=1
+      queue+=("$c")
+    done
+    i=$((i + 1))
+  done
+  for p in "${!doomed[@]}"; do
+    kill -9 "$p" 2>/dev/null && hit=1
   done
   [ -n "$hit" ] || exit 0
 done`
