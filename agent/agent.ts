@@ -43,6 +43,7 @@ import {
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
+import { firstContactTurn } from "@agent/lib/delivery/first-contact";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
@@ -247,6 +248,9 @@ export default defineAgent({
                 // Once the reply is out, the note must not read as a new
                 // request: answering it is how one turn sent six messages.
                 answered: sends.delivered.length > 0,
+                // In the first-contact turn the first messages are the
+                // introduction, not the reply.
+                firstContact: firstContactTurn(ctx.messages),
                 formOfAddress,
                 language: replyLanguage,
                 // Nor while the message about an approved call is owed.

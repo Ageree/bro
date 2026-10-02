@@ -40,6 +40,7 @@ import {
   tellsFacts,
   withoutFound,
 } from "./novelty";
+import { firstContactTurn } from "./first-contact";
 
 /**
  * User-visible messages one turn may deliver. A reply is one message; a
@@ -48,6 +49,14 @@ import {
  * after copy to a chat the person cannot stop.
  */
 export const turnMessageLimit = 3;
+
+/**
+ * Messages the first-contact turn may add for the introduction, which the
+ * instructions ask for as two or three bubbles before the reply. Under the
+ * plain limit three of them used it up, and the turn ended before it
+ * answered a bare first question (e2e/chat/first-contact.e2e.ts).
+ */
+const introductionMessages = 3;
 
 /**
  * Sends a turn may have dropped before it is ended. A dropped send means the
@@ -131,7 +140,7 @@ const unseenDraft =
 
 const skipNotices = {
   duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
-  limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
+  limit: `${skippedPrefix} this turn already delivered as many messages as one reply may take. End the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
   started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. If the person asked in this turn for something else you have not done yet — a calendar entry, a reminder — do it now with its tool, without announcing it first; otherwise end the turn now without calling any tool.`,
@@ -225,7 +234,11 @@ export function repeatsDelivered(
  */
 function heldBack(message: SentMessage, turn: ReturnType<typeof turnSends>) {
   const { delivered } = turn;
+  // The first-contact turn opens with the introduction, which is not the
+  // answer: a plain «Париж.» after it named nothing new and was dropped as
+  // stale (e2e/chat/first-contact.e2e.ts). Repeats and the limit still hold.
   if (
+    !turn.firstContact &&
     addsNothingNew(message, delivered, {
       afterWork: turn.workSinceDelivery,
       distinct: turn.distinct,
@@ -323,7 +336,7 @@ export function sendRefusal(
   turn: ReturnType<typeof turnSends>
 ): z.infer<typeof sendRefusalSchema> | undefined {
   const { delivered } = turn;
-  if (delivered.length >= turnMessageLimit) return { skipped: "limit" };
+  if (delivered.length >= turn.messageLimit) return { skipped: "limit" };
   if (repeatsDelivered(outgoing, delivered, turn)) {
     return { skipped: "duplicate" };
   }
@@ -588,6 +601,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   const turn = start === -1 ? messages : messages.slice(start + 1);
   const earlier = start === -1 ? [] : messages.slice(0, start);
+  const firstContact = firstContactTurn(messages);
   const opening = openingText(messages[start]);
   const reportedRun = reportedRunOf(opening);
   const requestText = personRequestText(messages[start]);
@@ -751,6 +765,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
         normalizedText([requestText ?? "", ...inputTexts].join("\n")).split(" ")
       ),
     ],
+    /** Whether the turn answers the person's very first message. */
+    firstContact,
+    /** Messages this turn may deliver, the introduction's included. */
+    messageLimit: firstContact
+      ? turnMessageLimit + introductionMessages
+      : turnMessageLimit,
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,
@@ -776,10 +796,10 @@ export function turnSends(messages: readonly ModelMessage[]) {
  * more step for what else the person asked for.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {
-  const { delivered, errandSkips, skipped } = turnSends(messages);
+  const { delivered, errandSkips, messageLimit, skipped } = turnSends(messages);
   return (
     skipped - errandSkips >= skipsBeforeEnd ||
     errandSkips >= errandSkipsBeforeEnd ||
-    delivered.length >= turnMessageLimit
+    delivered.length >= messageLimit
   );
 }

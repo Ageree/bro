@@ -13,6 +13,7 @@ import {
   turnOpenedByBackgroundTask,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
+import { firstContactMarker } from "@agent/lib/delivery/first-contact";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 const callRestaurant = "Пришли название ресторана — я позвоню.";
@@ -115,6 +116,26 @@ describe("sendRefusal", () => {
     expect(
       refusal([userMessage("викторину"), ...sends.slice(1).flat()], "Вопрос 9?")
     ).toBeUndefined();
+  });
+
+  it("leaves the first-contact turn room for the reply after the introduction", () => {
+    const introduction = Array.from({ length: turnMessageLimit }, (_, index) =>
+      sendMessage(
+        `intro-${String(index)}`,
+        `Привет, я Бро, пузырь ${String(index)}.`
+      )
+    );
+    const history = [
+      Object.assign(
+        { content: firstContactMarker, role: "user" as const },
+        { kind: "context.instruction" }
+      ),
+      userMessage("Как называется столица Франции?"),
+      ...introduction.flat(),
+    ];
+
+    expect(turnMustEnd(history)).toBe(false);
+    expect(refusal(history, "Париж.")).toBeUndefined();
   });
 });
 
