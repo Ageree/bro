@@ -7,8 +7,9 @@ on:
   # Only a change that can alter a page or a reply runs the suite; the
   # nightly run catches the rest (docs/e2e.md, «CI»).
   pull_request:
+    # One list for both triggers: a new directory goes in once.
     paths:
-      # What a person sees in the browser and what Bro answers with.
+      &e2e-paths # What a person sees in the browser and what Bro answers with.
       - "app/**"
       - "web/**"
       - "agent/**"
@@ -36,39 +37,15 @@ on:
   push:
     branches:
       - bro-next
-    paths:
-      # What a person sees in the browser and what Bro answers with.
-      - "app/**"
-      - "web/**"
-      - "agent/**"
-      - "db/**"
-      - "shared/**"
-      - "proxy.ts"
-      - "next.config.ts"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "patches/**"
-      - "scripts/dev.ts"
-      # The suite itself.
-      - "e2e/**"
-      - "e2e.config.ts"
-      - ".e2e/cache/**"
-      - ".github/workflows/e2e.yml"
-      # Unit tests and the browser and code sandbox hosts reach no page.
-      - "!**/*.test.ts"
-      - "!**/*.test.tsx"
-      - "!**/tests/**"
-      - "!**/_tests/**"
-      - "!agent/lib/browser-pool/**"
-      - "!agent/lib/browser-vm/**"
-      - "!agent/lib/sandbox/**"
+    paths: *e2e-paths
   schedule:
     # Nightly on bro-next: the model and its hosts change without a commit.
     - cron: "17 2 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  # By event too: a push to bro-next must not cancel the nightly run.
+  group: e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -146,7 +123,7 @@ jobs:
           DATABASE_URL_UNPOOLED: ${{ env.E2E_DATABASE_URL }}
 
       - name: Run the suite
-        run: pnpm test:e2e --reporter list,junit,markdown
+        run: pnpm test:e2e
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

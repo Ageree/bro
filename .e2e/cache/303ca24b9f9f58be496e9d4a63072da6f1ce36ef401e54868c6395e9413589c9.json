@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-02T08:15:51.449Z",
+  "createdAt": "2026-10-02T11:06:37.703Z",
   "payload": {
     "actions": [
       {
@@ -21,7 +21,7 @@
       "targetId": "web",
       "instructionDigest": "5a041c6dbf22bea1fd06e3664f5958b8121b2b51ced7611deb147f561a9e1809"
     },
-    "summary": "Tapped «Личные данные» in the main navigation; the app navigated to /personal-info showing the «Личные данные» form (name, email, phone, time zone, address) with a «Сохранить» button.",
+    "summary": "Tapped «Личные данные» in the main navigation; the app navigated to /personal-info showing the «Личные данные» page with profile fields (Имя, Фамилия, Почта, Телефон, Дата рождения, Часовой пояс), postal address section and «Сохранить» button.",
     "startPath": "/workspace",
     "endPath": "/personal-info",
     "endAnchors": [
@@ -54,6 +54,6 @@
         "text": "Почта"
       }
     ],
-    "endWaitMs": 11813
+    "endWaitMs": 24283
   }
 }

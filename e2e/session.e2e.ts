@@ -17,11 +17,19 @@ test.setup(
 
     // `next dev` compiles a route on its first visit; doing it here keeps
     // that wait out of the tests that time their own steps.
-    for (const path of ["/personal-info", "/vault", "/chat", "/chat/history"]) {
+    // Each route's own heading: any heading would pass on the error page.
+    for (const [path, heading] of [
+      ["/personal-info", "Личные данные"],
+      ["/vault", "Сейф"],
+      ["/chat", "Чат"],
+      ["/chat/history", "Все чаты"],
+    ] as const) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- one tab visits the routes in turn.
       await app.open(path);
       // oxlint-disable-next-line eslint/no-await-in-loop -- see above.
-      await expect(screen.getByRole("heading", { level: 1 })).toBeVisible();
+      await expect(
+        screen.getByRole("heading", heading, { level: 1 })
+      ).toBeVisible();
     }
 
     await session.save("person");

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-02T08:15:51.450Z",
+  "createdAt": "2026-10-02T11:06:37.704Z",
   "payload": {
     "actions": [
       {
@@ -21,7 +21,7 @@
       "targetId": "web",
       "instructionDigest": "45914469a31ef9e1925284fb310ec841f7341ee54f4342c20aef2e3fd8db39e2"
     },
-    "summary": "Открыл «Сейф» из основной навигации: тап по ссылке «Сейф» привёл на /vault. Страница загрузилась — заголовок «Сейф», разделы «Сохранённые» (Входы, Карты, Адреса, Контакты) и «Добавить или изменить».",
+    "summary": "Tapped «Сейф» in the main navigation; the app navigated to /vault showing the «Сейф» page with saved lists (Входы, Карты, Адреса, Контакты — all empty) and add/import links.",
     "startPath": "/personal-info",
     "endPath": "/vault",
     "endAnchors": [
@@ -52,6 +52,6 @@
         "text": "Контакты"
       }
     ],
-    "endWaitMs": 14113
+    "endWaitMs": 25765
   }
 }
