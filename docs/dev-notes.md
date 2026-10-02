@@ -139,7 +139,9 @@
   только `ROOT_OPS` из бандла хоста (`ops/tg-bridge.sh`). Файл релиза от root
   не запускайте: его может переписать `bro`, а с ним инструменты модели, —
   такой запуск дал бы им root. Код хоста на живой VM —
-  `host.py update-host`, а не пересоздание.
+  `host.py update-host`, а не пересоздание. Oneshot-юниты (`bro-egress`) он
+  сам не перезапускает: что хосту нужно сразу, зовёт `install-code.sh`
+  (`egress.sh`), а рестарт `bro-egress` перезапустил бы Caddy, web и eve.
 - Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
   `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
   Telegram на Vercel и живые хосты пула работают, только если значения

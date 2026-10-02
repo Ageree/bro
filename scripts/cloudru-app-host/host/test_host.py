@@ -962,6 +962,8 @@ class BootTest(unittest.TestCase):
         install = (HERE / "install-code.sh").read_text()
         self.assertIn("systemctl enable bro-tg-egress.service", install)
         self.assertIn('bash "$HOST/tg-bridge/install.sh"', install)
+        # update-host applies the bundle's egress rules: bro-egress, a oneshot, never runs again on a live VM.
+        self.assertIn('bash "$HOST/egress.sh"', install)
         # The bridge is switched on only by switch-to-bridge, which removes the webhook first.
         self.assertNotRegex(install, r"enable[^\n]*bro-tg-bridge")
         self.assertNotRegex((HERE.parent / "tg-bridge/install.sh").read_text(), r"systemctl enable")
@@ -977,6 +979,9 @@ class BootTest(unittest.TestCase):
         for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
             text = (HERE / unit).read_text()
             self.assertRegex(text, r"\nRestart=(always|on-failure)\n", unit)
+        # Both servers exit with 143 on SIGTERM: a planned restart does not mark the unit failed.
+        for unit in ("bro-web.service", "bro-eve.service"):
+            self.assertIn("\nSuccessExitStatus=143\n", (HERE / unit).read_text(), unit)
 
     def test_bro_reaches_neither_the_metadata_service_nor_deployd(self):
         subprocess.run(["bash", "-n", str(HERE / "egress.sh")], check=True)

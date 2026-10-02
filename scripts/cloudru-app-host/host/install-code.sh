@@ -12,6 +12,9 @@ for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service
   bro-backup.service bro-backup.timer bro-backup-alert.service caddy.service bro-egress.service; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
 done
+# This code's egress rules now, not at the next boot: bro-egress is a oneshot that stays active, so a live VM
+# never runs it again, and restarting it would restart caddy, bro-web and bro-eve (their Requires=). Idempotent.
+bash "$HOST/egress.sh"
 
 install -d -m 755 /opt/bro/tg-egress
 install -m 644 "$HOST/tg-egress/tg_egress.py" /opt/bro/tg-egress/tg_egress.py
