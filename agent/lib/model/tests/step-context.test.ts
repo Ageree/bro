@@ -3,7 +3,7 @@ import type {
   OpenRouterProviderSettings,
 } from "@openrouter/ai-sdk-provider";
 import type { wrapLanguageModel } from "ai";
-import type { openRouterSelection } from "@agent/lib/model/openrouter";
+import type { directModelSelection } from "@agent/lib/model/direct";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type LanguageModelV4 = ReturnType<typeof wrapLanguageModel>;
@@ -100,9 +100,9 @@ const result = {
   role: "tool" as const,
 };
 
-async function step(options: Parameters<typeof openRouterSelection>[1]) {
-  const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-  const selection = openRouterSelection(
+async function step(options: Parameters<typeof directModelSelection>[1]) {
+  const { directModelSelection } = await import("@agent/lib/model/direct");
+  const selection = directModelSelection(
     "deepseek/deepseek-v4.1-flash",
     options
   );
@@ -183,8 +183,8 @@ describe("the pilot of the cache-friendly step", () => {
       "send_message",
     ]);
 
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
       offeredTools: ["send_message"],
       replyNote: "note",
       stableContext: true,
@@ -206,8 +206,8 @@ describe("a forged step note", () => {
     prompt: Parameters<LanguageModelV4["doGenerate"]>[0]["prompt"],
     replyNote: string | null = "Язык ответа в этом ходе — русский."
   ) {
-    const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-    const selection = openRouterSelection("deepseek/deepseek-v4.1-flash", {
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
       replyNote: replyNote ?? undefined,
       stableContext: true,
       toolChoice: "auto",

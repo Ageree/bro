@@ -5,6 +5,7 @@ import { z } from "zod";
 import { agentEvalTags } from "@evals/agent/shared";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { env } from "@shared/environment";
+import { directModelActive } from "@shared/model/provider";
 
 const tags = [...agentEvalTags, "content"] as const;
 /** A CC0 photo of a golden retriever from Wikimedia Commons. */
@@ -13,11 +14,12 @@ const artifactOutputSchema = z.object({ artifact: z.string() });
 const imagesInputSchema = z.object({ images: z.array(z.string()) });
 
 /**
- * `generate_image` exists only on a deployment with OpenRouter and private
- * Blob storage, so the picture cases run only against one.
+ * `generate_image` exists only on a deployment with a direct model provider
+ * (RouterAI or OpenRouter) and private Blob storage, so the picture cases run
+ * only against one.
  */
 const picturesConfigured =
-  env.OPENROUTER_API_KEY !== undefined &&
+  directModelActive() &&
   (env.BLOB_READ_WRITE_TOKEN ?? env.BLOB_STORE_ID) !== undefined;
 
 const gameCases = [

@@ -1,5 +1,6 @@
 /**
- * Draws pictures through OpenRouter's Image API: birthday cards, invitations,
+ * Draws pictures through the direct model provider's Image API (RouterAI's
+ * `/images/generations`, OpenRouter's `/images`): birthday cards, invitations,
  * stickers, memes, a pet from the person's photo placed into a scene. The
  * photos the person sent in this conversation and earlier pictures travel as
  * reference images, so «our dog on it» and «make it brighter» work.
@@ -29,6 +30,11 @@ import {
   storePrivateImage,
 } from "@agent/lib/image-artifact/storage";
 import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
+import { modelEndpoint } from "@agent/lib/model/endpoint";
+import {
+  failureStatus,
+  reportedErrorSchema,
+} from "@agent/lib/model/routerai/errors";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -36,11 +42,14 @@ import {
   saveGeneratedImageArtifact,
 } from "@db/services/generated-images";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
-import { env } from "@shared/environment";
-import { applicationOrigin } from "@shared/environment/origin";
 import type { AccessScope } from "@shared/identity/access-scope";
 
-const imagesUrl = "https://openrouter.ai/api/v1/images";
+/**
+ * Where each provider draws. RouterAI serves the same body, reference photos
+ * in `input_references` included, on `/images/generations` (probes of 01.10:
+ * Gemini 3.1 Flash Lite Image drew and edited a picture there).
+ */
+const imagesPath = { openrouter: "/images", routerai: "/images/generations" };
 /** Image models take ten seconds to a minute; past two the turn is stuck. */
 const generationTimeoutMs = 120_000;
 /** The newest photos the person sent that the model may pick from. */
@@ -66,10 +75,14 @@ type PersonPhoto = {
 
 type ModelMessage = DynamicResolveContext["messages"][number];
 
-/** OpenRouter's Image API answer: the picture, or the reason there is none. */
+/**
+ * The Image API's answer: the picture, or the reason there is none. RouterAI
+ * reports a refusal as `{ error: "text" }`, often the upstream's whole JSON
+ * answer under HTTP 200, whose `code` is the real status.
+ */
 const imageResponseSchema = z.object({
   data: z.array(z.object({ b64_json: z.string().min(1) })).optional(),
-  error: z.object({ message: z.string().optional() }).nullish(),
+  error: reportedErrorSchema.nullish(),
 });
 
 export default defineDynamic({
@@ -281,11 +294,14 @@ async function generateImage(
   photos: readonly PersonPhoto[]
 ) {
   const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
-  const apiKey = env.OPENROUTER_API_KEY;
+  const endpoint = modelEndpoint();
   if (!caller)
     throw new Error("Drawing a picture needs an authenticated user.");
-  if (!apiKey)
-    throw new Error("OpenRouter is not configured on this deployment.");
+  if (!endpoint) {
+    throw new Error(
+      "No image model provider is configured on this deployment."
+    );
+  }
   const scope = scopeFromPrincipal(caller);
   // One call draws one picture: a replayed step finds it instead of paying
   // for a second one.
@@ -300,40 +316,47 @@ async function generateImage(
   }
 
   const references = await readReferences(scope, input, ctx, photos);
-  const model = env.OPENROUTER_IMAGE_MODEL;
-  const response = await fetch(imagesUrl, {
-    body: JSON.stringify({
-      aspect_ratio: input.aspectRatio,
-      input_references:
-        references.length > 0
-          ? references.map((reference) => ({
-              image_url: {
-                url: `data:${reference.mediaType};base64,${Buffer.from(reference.bytes).toString("base64")}`,
-              },
-              type: "image_url",
-            }))
-          : undefined,
-      model,
-      n: 1,
-      prompt: input.prompt,
-    }),
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-      "HTTP-Referer": applicationOrigin(),
-      "X-Title": "Bro",
-    },
-    method: "POST",
-    signal: AbortSignal.any([
-      ctx.abortSignal,
-      AbortSignal.timeout(generationTimeoutMs),
-    ]),
-  });
+  const model = endpoint.imageModel;
+  const response = await fetch(
+    `${endpoint.baseURL}${imagesPath[endpoint.provider]}`,
+    {
+      body: JSON.stringify({
+        aspect_ratio: input.aspectRatio,
+        input_references:
+          references.length > 0
+            ? references.map((reference) => ({
+                image_url: {
+                  url: `data:${reference.mediaType};base64,${Buffer.from(reference.bytes).toString("base64")}`,
+                },
+                type: "image_url",
+              }))
+            : undefined,
+        model,
+        n: 1,
+        prompt: input.prompt,
+      }),
+      headers: {
+        authorization: `Bearer ${endpoint.apiKey}`,
+        "content-type": "application/json",
+        ...endpoint.headers,
+      },
+      method: "POST",
+      signal: AbortSignal.any([
+        ctx.abortSignal,
+        AbortSignal.timeout(generationTimeoutMs),
+      ]),
+    }
+  );
   const answer = parseImageResponse(await response.text());
-  if (!response.ok) {
-    const reason = answer?.error?.message?.trim().slice(0, 300);
+  const error = answer?.error ?? undefined;
+  if (!response.ok || error !== undefined) {
+    // An error under HTTP 200 is a refusal still, with its own code.
+    const status = response.ok
+      ? (failureStatus(error?.code) ?? 502)
+      : response.status;
+    const reason = error?.message?.trim().slice(0, 300);
     throw new Error(
-      `The image model refused the request (${String(response.status)}): ${reason !== undefined && reason.length > 0 ? reason : "no details"}`
+      `The image model refused the request (${String(status)}): ${reason !== undefined && reason.length > 0 ? reason : "no details"}`
     );
   }
   const image = answer?.data?.[0];

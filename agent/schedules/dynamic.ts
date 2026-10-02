@@ -1,10 +1,7 @@
 import { parseInputResponses } from "eve/client";
 import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
-import {
-  checkOpenRouterCredits,
-  creditCheckDue,
-} from "@agent/lib/model/credits";
+import { checkModelCredits, creditCheckDue } from "@agent/lib/model/credits";
 import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import {
@@ -36,7 +33,7 @@ export default defineSchedule({
     waitUntil(dispatchDueWork({ attachSession, to }));
     // A run out of model credit fails every turn, so the owner hears about a
     // low balance from this tick before people hear silence.
-    if (creditCheckDue(new Date())) waitUntil(checkOpenRouterCredits());
+    if (creditCheckDue(new Date())) waitUntil(checkModelCredits());
   },
 });
 

@@ -9,7 +9,7 @@ const requiredEnvironment = {
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
 };
 
-/** The OpenRouter request shape this client is expected to send. */
+/** The request shape this client is expected to send to either backend. */
 const requestBodySchema = z.object({
   max_tokens: z.number(),
   messages: z.array(z.object({ content: z.string(), role: z.string() })),
@@ -22,6 +22,12 @@ const requestBodySchema = z.object({
       max_results: z.number(),
     })
   ),
+  provider: z
+    .strictObject({
+      ignore: z.array(z.string()).optional(),
+      order: z.array(z.string()).optional(),
+    })
+    .optional(),
   reasoning: z.object({ enabled: z.boolean() }),
   temperature: z.number(),
 });
@@ -67,8 +73,8 @@ function namedError(name: string) {
 }
 
 async function loadSearchWeb() {
-  const openrouter = await import("@agent/lib/web-search/openrouter");
-  return openrouter.searchWeb;
+  const search = await import("@agent/lib/web-search/search");
+  return search.searchWeb;
 }
 
 const fetchMock =
@@ -76,7 +82,7 @@ const fetchMock =
 
 function requestAt(index: number) {
   const call = fetchMock.mock.calls[index];
-  if (!call) throw new Error("The search did not reach OpenRouter.");
+  if (!call) throw new Error("The search did not reach the backend.");
   const [url, init] = call;
   return { body: requestBodySchema.parse(JSON.parse(init.body)), init, url };
 }
@@ -129,6 +135,8 @@ describe("OpenRouter web search", () => {
       "X-Title": "Bro",
     });
     expect(request.body.model).toBe("deepseek/deepseek-v4.1-flash");
+    // OpenRouter keeps its own routing.
+    expect(request.body.provider).toBeUndefined();
     // Left unset, OpenRouter picks the model's native search, slow on OpenAI.
     expect(request.body.plugins).toEqual([
       { engine: "exa", id: "web", max_results: 8 },
@@ -218,6 +226,35 @@ describe("OpenRouter web search", () => {
       },
       { snippet: "", title: "Second", url: "https://news.example/two" },
     ]);
+  });
+
+  it("reads an answer that carries `error: null` as a success", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                annotations: [
+                  {
+                    type: "url_citation",
+                    url_citation: { title: "A", url: "https://a.example/one" },
+                  },
+                ],
+              },
+            },
+          ],
+          error: null,
+        })
+      )
+    );
+
+    const searchWeb = await loadSearchWeb();
+
+    expect(await searchWeb({ query: "кафе" }, turnSignal())).toEqual([
+      { snippet: "", title: "A", url: "https://a.example/one" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("keeps up to 500 characters of each excerpt and at most eight results", async () => {
@@ -357,14 +394,158 @@ describe("OpenRouter web search", () => {
     ).toContain("unusable body");
   });
 
-  it("refuses to search without a key", async () => {
+  it("refuses to search without a direct backend", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
 
     const searchWeb = await loadSearchWeb();
 
     await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
-      "OPENROUTER_API_KEY is not configured."
+      "Web search needs a direct model backend"
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/** RouterAI's failure under HTTP 200: the upstream's answer as text. */
+function routerAiFailure(code: number) {
+  return new Response(
+    `\n   \n${JSON.stringify({
+      error: JSON.stringify({ error: { code, message: "upstream said no" } }),
+    })}`
+  );
+}
+
+describe("RouterAI web search", () => {
+  beforeEach(() => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    vi.stubEnv("MODEL_PROVIDER", "routerai");
+    vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+  });
+
+  it("searches through RouterAI with its key and no attribution headers", async () => {
+    fetchMock.mockResolvedValue(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    await searchWeb({ query: "курс доллара ЦБ" }, turnSignal());
+
+    const request = requestAt(0);
+    expect(request.url).toBe("https://routerai.ru/api/v1/chat/completions");
+    expect(request.init.headers).toEqual({
+      authorization: "Bearer routerai-test-key",
+      "content-type": "application/json",
+    });
+    // Exa is billed by the page, so RouterAI asks for fewer.
+    expect(request.body.plugins).toEqual([
+      { engine: "exa", id: "web", max_results: 5 },
+    ]);
+    expect(request.body.reasoning).toEqual({ enabled: false });
+  });
+
+  it("routes a DeepSeek reading model as Bro's own model, with the hosts the deployment skips", async () => {
+    vi.stubEnv("ROUTERAI_PROVIDER_IGNORE", "io-net, DeepSeek");
+    vi.stubEnv("ROUTERAI_SEARCH_MAX_RESULTS", "3");
+    fetchMock.mockResolvedValue(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    await searchWeb({ query: "anything" }, turnSignal());
+
+    const { body } = requestAt(0);
+    expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(body.provider?.order).toEqual(["deepinfra"]);
+    expect(body.provider?.ignore).toEqual(
+      expect.arrayContaining(["deepseek", "sail-research", "io-net"])
+    );
+    expect(body.plugins[0]?.max_results).toBe(3);
+  });
+
+  it("pays for one search when the pinned host fails and asks the next host through the other engine", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 503,
+              message: "Upstream error from DeepInfra: no capacity",
+            },
+          })
+        )
+      )
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
+    expect(await pending).toHaveLength(1);
+
+    // No second Exa search inside the model's fetch: the failed host is
+    // skipped by the one fallback call.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(0).body.plugins[0]?.engine).toBe("exa");
+    const retried = requestAt(1).body;
+    expect(retried.provider?.order).toBeUndefined();
+    expect(retried.provider?.ignore).toContain("deepinfra");
+    expect(retried.plugins[0]?.engine).toBe("perplexity");
+  });
+
+  it("leaves another reading model to RouterAI's routing", async () => {
+    vi.stubEnv("ROUTERAI_SEARCH_MODEL", "openai/gpt-6-luna");
+    fetchMock.mockResolvedValue(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    await searchWeb({ query: "anything" }, turnSignal());
+
+    expect(requestAt(0).body.model).toBe("openai/gpt-6-luna");
+    expect(requestAt(0).body.provider).toBeUndefined();
+  });
+
+  it("reads a throttle RouterAI reports under HTTP 200 and asks the other engine", async () => {
+    fetchMock
+      .mockResolvedValueOnce(routerAiFailure(429))
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    const pending = searchWeb({ query: "rates" }, turnSignal());
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toHaveLength(1);
+    expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
+  });
+
+  it("does not retry a refusal RouterAI reports under HTTP 200", async () => {
+    fetchMock.mockResolvedValue(routerAiFailure(402));
+
+    const searchWeb = await loadSearchWeb();
+
+    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
+      "RouterAI 402: upstream said no"
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the status of a refusal written as plain text", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: "401 Unauthorized" }), {
+        status: 401,
+      })
+    );
+
+    const searchWeb = await loadSearchWeb();
+
+    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
+      "RouterAI 401"
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("retries an error that names no status", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ error: "upstream went away" }))
+    );
+
+    const searchWeb = await loadSearchWeb();
+    expect(
+      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
+    ).toContain("RouterAI 502: upstream went away");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

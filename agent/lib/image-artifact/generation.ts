@@ -2,15 +2,16 @@ import type { ModelMessage } from "ai";
 import type { DynamicResolveContext } from "eve";
 import { z } from "zod";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
+import { modelEndpoint } from "@agent/lib/model/endpoint";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { env } from "@shared/environment";
 import { imageArtifactStorageConfigured } from "./storage";
 
 /**
  * The workspace user a picture would be drawn for this turn, or nothing when
  * it cannot be drawn: a scheduled turn, a caller without a workspace, or a
- * deployment without OpenRouter or private Blob storage. `generate_image` and
+ * deployment without a direct model provider (RouterAI or OpenRouter) or
+ * private Blob storage. `generate_image` and
  * the instructions both ask this one question, so the instructions never
  * promise a picture the tool is not there to draw.
  */
@@ -21,7 +22,7 @@ export function imageGenerationScope(context: {
 }) {
   if (
     resolveModeValue(context, { interactive: true }) !== true ||
-    env.OPENROUTER_API_KEY === undefined ||
+    modelEndpoint() === undefined ||
     !imageArtifactStorageConfigured()
   ) {
     return undefined;

@@ -33,6 +33,7 @@ import {
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
 import { modelIdSchema } from "@shared/model/id";
+import type { directModelProviderName } from "@shared/model/provider";
 import { api } from "@web/trpc/client";
 import type { RouterOutputs } from "@web/trpc/types";
 
@@ -45,31 +46,51 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
   currency: "USD",
 });
 
-// OpenRouter publishes thousands of ids, so the workspace takes one as text
-// rather than mirroring a catalogue the deployment cannot filter by entitlement.
-const openRouterSuggestions = [
-  "deepseek/deepseek-v4.1-flash",
-  "openai/gpt-6-luna",
-  "anthropic/claude-sonnet-4.5",
-  "openai/gpt-5.6-mini",
-  "google/gemini-3-flash",
-];
+type DirectProvider = NonNullable<ReturnType<typeof directModelProviderName>>;
+
+// A direct provider publishes hundreds of ids, so the workspace takes one as
+// text rather than mirroring a catalogue the deployment cannot filter by
+// entitlement. Each list holds only ids that provider's `/models` lists: on
+// RouterAI 01.10 there was no `openai/gpt-5.6-mini` or `google/gemini-3-flash`.
+const suggestions = {
+  OpenRouter: [
+    "deepseek/deepseek-v4.1-flash",
+    "openai/gpt-6-luna",
+    "anthropic/claude-sonnet-4.5",
+    "openai/gpt-5.6-mini",
+    "google/gemini-3-flash",
+  ],
+  RouterAI: [
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-6-luna",
+    "anthropic/claude-sonnet-4.5",
+    "google/gemini-3.1-flash-lite",
+  ],
+} as const satisfies Record<DirectProvider, readonly string[]>;
 
 export function ModelSelector({
   modelId,
-  openRouter,
+  provider,
 }: {
   readonly modelId: string;
-  readonly openRouter: boolean;
+  /** The direct provider serving the model, or `undefined` on the Gateway. */
+  readonly provider: DirectProvider | undefined;
 }) {
-  return openRouter ? (
-    <OpenRouterModelField modelId={modelId} />
-  ) : (
+  return provider === undefined ? (
     <GatewayModelSelector modelId={modelId} />
+  ) : (
+    <DirectModelField modelId={modelId} provider={provider} />
   );
 }
 
-function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
+function DirectModelField({
+  modelId,
+  provider,
+}: {
+  readonly modelId: string;
+  readonly provider: DirectProvider;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(modelId);
@@ -102,18 +123,18 @@ function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
       </DialogTrigger>
       <DialogContent className="rounded-none sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Model (OpenRouter)</DialogTitle>
+          <DialogTitle>Model ({provider})</DialogTitle>
           <DialogDescription>
-            Every turn runs through OpenRouter with the deployment&apos;s API
+            Every turn runs through {provider} with the deployment&apos;s API
             key.
           </DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={submit}>
           <Field>
-            <FieldLabel htmlFor="openrouter-model">Model id</FieldLabel>
+            <FieldLabel htmlFor="direct-model">Model id</FieldLabel>
             <Input
               autoComplete="off"
-              id="openrouter-model"
+              id="direct-model"
               name="modelId"
               onChange={(event) => {
                 setDraft(event.target.value);
@@ -123,7 +144,7 @@ function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
               value={draft}
             />
             <FieldDescription>
-              Any OpenRouter id, written as provider/model.
+              Any {provider} id, written as provider/model.
             </FieldDescription>
             {parsed.success ? null : (
               <FieldError>Use a provider/model id.</FieldError>
@@ -135,7 +156,7 @@ function OpenRouterModelField({ modelId }: { readonly modelId: string }) {
             ) : null}
           </Field>
           <div className="flex flex-wrap gap-2">
-            {openRouterSuggestions.map((suggestion) => (
+            {suggestions[provider].map((suggestion) => (
               <Button
                 key={suggestion}
                 onClick={() => {

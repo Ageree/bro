@@ -1,15 +1,16 @@
-import { openRouterActive } from "@shared/model/provider";
-import { openRouterSelection, type StepToolChoice } from "./openrouter";
+import { directModelActive } from "@shared/model/provider";
+import { directModelSelection, type StepToolChoice } from "./direct";
 
 /**
  * Resolves a workspace's stored model id into what eve accepts from a
  * `step.started` resolver: a gateway model id string, or a live
- * `LanguageModel` selection when OpenRouter is the active provider. Session and
+ * `LanguageModel` selection when a direct provider (RouterAI or OpenRouter,
+ * `shared/model/provider.ts`) is active. Session and
  * turn scopes must stay serializable, so the direct-provider handle can only be
  * returned per step.
  *
  * `toolChoice` makes the step call some tool (`required`) or end the turn in
- * text (`none`). Only the direct OpenRouter model can carry that, so a Gateway
+ * text (`none`). Only the direct model can carry that, so a Gateway
  * id string ignores it and relies on the instructions, the channel fallback,
  * and `send_message` dropping repeats. `replyNote` likewise travels only
  * with the direct model; a Gateway id relies on the instructions, which carry
@@ -32,8 +33,8 @@ export function modelSelection(
     readonly withheldTools?: readonly string[];
   } = {}
 ) {
-  return openRouterActive()
-    ? openRouterSelection(modelId, {
+  return directModelActive()
+    ? directModelSelection(modelId, {
         delivered: options.delivered,
         offeredTools: options.offeredTools,
         replyNote: options.replyNote,

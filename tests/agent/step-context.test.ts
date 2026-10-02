@@ -59,28 +59,36 @@ beforeEach(() => {
   services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
 });
 
+/** The provider settings a case may set; the rest stay unset. */
+const providerSettings = [
+  "MODEL_PROVIDER",
+  "OPENROUTER_API_KEY",
+  "ROUTERAI_API_KEY",
+] as const;
+
+type ProviderSettings = Partial<
+  Record<(typeof providerSettings)[number], string>
+>;
+
 afterEach(() => {
-  vi.stubEnv("OPENROUTER_API_KEY", "");
+  for (const name of providerSettings) vi.stubEnv(name, "");
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
 });
 
 /** Loads `load` against a fresh environment with these settings. */
 async function withSettings<T>(
-  settings: { OPENROUTER_API_KEY?: string; STEP_CONTEXT_WORKSPACES?: string },
+  settings: ProviderSettings & { STEP_CONTEXT_WORKSPACES?: string },
   load: () => Promise<T>
 ) {
   vi.resetModules();
-  vi.stubEnv("OPENROUTER_API_KEY", settings.OPENROUTER_API_KEY ?? "");
+  for (const name of providerSettings) vi.stubEnv(name, settings[name] ?? "");
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", settings.STEP_CONTEXT_WORKSPACES ?? "");
   return load();
 }
 
 const openRouter = { OPENROUTER_API_KEY: "openrouter-test-key" };
 
-async function pilot(
-  list?: string,
-  settings: { OPENROUTER_API_KEY?: string } = openRouter
-) {
+async function pilot(list?: string, settings: ProviderSettings = openRouter) {
   const { stepContextPilot } = await withSettings(
     { ...settings, STEP_CONTEXT_WORKSPACES: list },
     async () => import("@agent/lib/step-context/pilot")
@@ -98,6 +106,12 @@ describe("the pilot list of the cache-friendly step", () => {
 
   it("names a workspace by id or by its owner's email, or everyone by *", async () => {
     expect(await pilot("*")).toBe(true);
+    expect(
+      await pilot("*", {
+        MODEL_PROVIDER: "routerai",
+        ROUTERAI_API_KEY: "routerai-test-key",
+      })
+    ).toBe(true);
     expect(await pilot(` other , ${workspaceId} `)).toBe(true);
     expect(await pilot("someone@example.com, alice@example.COM")).toBe(true);
     expect(await pilot("someone@example.com, other")).toBe(false);

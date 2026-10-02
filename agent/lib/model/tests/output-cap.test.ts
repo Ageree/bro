@@ -55,8 +55,8 @@ async function runStep(
   modelId: string,
   options: { readonly maxOutputTokens?: number } = {}
 ) {
-  const { openRouterSelection } = await import("@agent/lib/model/openrouter");
-  const selection = openRouterSelection(modelId, { toolChoice: "auto" });
+  const { directModelSelection } = await import("@agent/lib/model/direct");
+  const selection = directModelSelection(modelId, { toolChoice: "auto" });
   await generateText({
     maxOutputTokens: options.maxOutputTokens,
     model: selection.model,
@@ -73,6 +73,8 @@ beforeEach(() => {
   for (const [name, value] of Object.entries(requiredEnvironment)) {
     vi.stubEnv(name, value);
   }
+  // The cap below is OpenRouter's, whatever the shell chose.
+  vi.stubEnv("MODEL_PROVIDER", "openrouter");
   for (const name of [
     "OPENROUTER_MAX_OUTPUT_TOKENS",
     "OPENROUTER_PROVIDER_ORDER",

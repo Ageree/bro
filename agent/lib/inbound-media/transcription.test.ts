@@ -9,6 +9,8 @@ const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://openinstinct.example",
   DATABASE_URL: "postgresql://user:password@example.com/database",
+  // OpenRouter unless a case selects RouterAI, whatever the shell says.
+  MODEL_PROVIDER: "",
   OPENROUTER_API_KEY: "openrouter-test-key",
   OPENROUTER_STT_FALLBACK_MODEL: "fallback-stt",
   OPENROUTER_STT_MODEL: "primary-stt",
@@ -24,8 +26,8 @@ const requestBodySchema = z.object({
 });
 
 interface TranscriptionRequest {
-  readonly body: string;
-  readonly headers: Record<string, string>;
+  readonly body: FormData | string;
+  readonly headers: Headers;
   readonly method: string;
 }
 
@@ -36,7 +38,34 @@ function requestAt(index: number) {
   const call = fetchMock.mock.calls[index];
   if (!call) throw new Error("The clip did not reach OpenRouter.");
   const [url, init] = call;
+  if (init.body instanceof FormData) {
+    throw new Error("OpenRouter takes the clip as JSON.");
+  }
   return { body: requestBodySchema.parse(JSON.parse(init.body)), init, url };
+}
+
+/** The multipart form RouterAI received in the call at `index`. */
+function formAt(index: number) {
+  const [url, init] = fetchMock.mock.calls[index] ?? [];
+  if (!(init?.body instanceof FormData)) {
+    throw new Error("RouterAI takes the clip as a multipart form.");
+  }
+  return { form: init.body, init, url };
+}
+
+function useRouterAi() {
+  vi.stubEnv("OPENROUTER_API_KEY", "");
+  vi.stubEnv("MODEL_PROVIDER", "routerai");
+  vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+  vi.stubEnv("ROUTERAI_STT_MODEL", "routerai-primary-stt");
+  vi.stubEnv("ROUTERAI_STT_FALLBACK_MODEL", "routerai-fallback-stt");
+}
+
+/** RouterAI's failure under HTTP 200: the upstream's JSON answer as text. */
+function wrappedFailure(code: number, message: string) {
+  return new Response(
+    JSON.stringify({ error: JSON.stringify({ error: { code, message } }) })
+  );
 }
 
 function transcript(text: string) {
@@ -160,15 +189,41 @@ describe("transcription response parsing", () => {
     [JSON.stringify({ foo: 1 }), "missing transcript"],
     ["null", "invalid stt response"],
     ["not json", "invalid stt response"],
-    [JSON.stringify({ error: { code: 400, message: "nope" } }), "nope"],
+    [JSON.stringify({ error: { message: "nope" } }), "nope"],
     [JSON.stringify({ error: "boom" }), "boom"],
-    [JSON.stringify({ error: { code: 500 } }), "stt error"],
   ])("rejects %s as %s", async (body, message) => {
     const { parseTranscriptionResponse } = await loadTranscription();
 
     expect(parseTranscriptionResponse(body)).toEqual({
       kind: "error",
       message,
+    });
+  });
+
+  it("takes the status from the error's own code", async () => {
+    const { parseTranscriptionResponse } = await loadTranscription();
+
+    expect(
+      parseTranscriptionResponse(JSON.stringify({ error: { code: 500 } }))
+    ).toEqual({ kind: "error", message: "stt error", status: 500 });
+    expect(
+      parseTranscriptionResponse(
+        JSON.stringify({ error: { code: 400, message: "nope" } })
+      )
+    ).toEqual({ kind: "error", message: "nope", status: 400 });
+    expect(
+      parseTranscriptionResponse(
+        JSON.stringify({
+          error: JSON.stringify({
+            error: { code: 429, message: "Provider returned error" },
+            user_id: "user_1",
+          }),
+        })
+      )
+    ).toEqual({
+      kind: "error",
+      message: "Provider returned error",
+      status: 429,
     });
   });
 });
@@ -213,11 +268,11 @@ describe("transcribeAudio", () => {
       "https://openrouter.ai/api/v1/audio/transcriptions"
     );
     expect(request.init.method).toBe("POST");
-    expect(request.init.headers).toEqual({
+    expect(Object.fromEntries(request.init.headers)).toEqual({
       authorization: "Bearer openrouter-test-key",
       "content-type": "application/json",
-      "HTTP-Referer": "https://openinstinct.example",
-      "X-Title": "Bro",
+      "http-referer": "https://openinstinct.example",
+      "x-title": "Bro",
     });
     expect(request.body).toEqual({
       input_audio: { data: Buffer.from(mp3).toString("base64"), format: "mp3" },
@@ -378,7 +433,7 @@ describe("transcribeAudio", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("reports the missing key instead of calling OpenRouter", async () => {
+  it("calls out to no one on the AI Gateway", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
     const { transcribeAudio, transcriptionAvailable } =
       await loadTranscription();
@@ -388,8 +443,117 @@ describe("transcribeAudio", () => {
       await transcribeAudio({ bytes: mp3, mediaType: "audio/mpeg" })
     ).toEqual({
       kind: "failed",
-      reason: "missing OPENROUTER_API_KEY",
+      reason: "no direct model provider",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("transcribeAudio on RouterAI", () => {
+  beforeEach(useRouterAi);
+
+  it("uploads the clip as a multipart file with the model and language", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "rai-stt-1",
+          text: "ок",
+          usage: { input_tokens: 102, output_tokens: 32, seconds: 4 },
+        })
+      )
+    );
+    const { transcribeAudio, transcriptionAvailable } =
+      await loadTranscription();
+
+    expect(transcriptionAvailable()).toBe(true);
+    const result = await transcribeAudio({
+      bytes: mp3,
+      mediaType: "audio/mpeg",
+    });
+
+    expect(result).toEqual({
+      kind: "transcript",
+      model: "routerai-primary-stt",
+      text: "ок",
+    });
+    const { form, init, url } = formAt(0);
+    expect(url).toBe("https://routerai.ru/api/v1/audio/transcriptions");
+    expect(init.method).toBe("POST");
+    // No JSON content type: fetch writes the multipart boundary itself.
+    expect(Object.fromEntries(init.headers)).toEqual({
+      authorization: "Bearer routerai-test-key",
+    });
+    expect(form.get("model")).toBe("routerai-primary-stt");
+    expect(form.get("language")).toBe("ru");
+    expect(form.get("temperature")).toBe("0");
+    const file = form.get("file");
+    if (!(file instanceof File)) throw new Error("The clip is not a file.");
+    expect(file.name).toBe("voice.mp3");
+    expect(file.type).toBe("audio/mpeg");
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(mp3);
+  });
+
+  it("sends an iMessage CAF Opus note as an Ogg file and leaves out an auto language", async () => {
+    vi.stubEnv("ROUTERAI_STT_LANGUAGE", "auto");
+    fetchMock.mockResolvedValueOnce(transcript("привет"));
+    const { transcribeAudio } = await loadTranscription();
+
+    await transcribeAudio({
+      bytes: syntheticCafOpus(),
+      mediaType: "audio/x-caf",
+    });
+
+    const { form } = formAt(0);
+    expect(form.has("language")).toBe(false);
+    const file = form.get("file");
+    if (!(file instanceof File)) throw new Error("The clip is not a file.");
+    expect(file.name).toBe("voice.ogg");
+    expect(file.type).toBe("audio/ogg");
+    expect(
+      Buffer.from(await file.arrayBuffer())
+        .subarray(0, 4)
+        .toString()
+    ).toBe("OggS");
+  });
+
+  it("hands the clip to the fallback model after an upstream failure reported under HTTP 200", async () => {
+    fetchMock
+      .mockResolvedValueOnce(wrappedFailure(503, "Provider returned error"))
+      .mockResolvedValueOnce(transcript("ок"));
+    const { transcribeAudio } = await loadTranscription();
+
+    const result = await transcribeAudio({
+      bytes: mp3,
+      mediaType: "audio/mpeg",
+    });
+
+    expect(result).toEqual({
+      kind: "transcript",
+      model: "routerai-fallback-stt",
+      text: "ок",
+    });
+    expect(formAt(1).form.get("model")).toBe("routerai-fallback-stt");
+  });
+
+  it("does not retry a refused key, however it is reported", async () => {
+    fetchMock.mockResolvedValueOnce(
+      wrappedFailure(402, "Insufficient credits")
+    );
+    const { transcribeAudio } = await loadTranscription();
+
+    expect(
+      await transcribeAudio({ bytes: mp3, mediaType: "audio/mpeg" })
+    ).toEqual({ kind: "failed", reason: "Insufficient credits" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "401 Unauthorized" }), {
+        status: 401,
+      })
+    );
+    expect(
+      await transcribeAudio({ bytes: mp3, mediaType: "audio/mpeg" })
+    ).toEqual({ kind: "failed", reason: "401 Unauthorized" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

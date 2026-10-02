@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { env } from "@shared/environment";
+import { modelEndpoint } from "./endpoint";
 
 /**
- * OpenRouter calls that go silent are cut short. Nothing bounded a model call
+ * Direct model calls (OpenRouter or RouterAI) that go silent are cut short. Nothing bounded a model call
  * before: on 25.09 two turns sat on one step for 6 and 8.5 minutes after
  * `browser_task start`, and each went on only when the step ran again in a
  * fresh process — the shape of a connection that stopped sending anything
@@ -12,21 +12,29 @@ import { env } from "@shared/environment";
  *
  * - Idle: no byte at all for `idleTimeoutMs`. OpenRouter keeps a live call
  *   talking with `: OPENROUTER PROCESSING` comments while the model prefills
- *   or thinks, so silence means the connection is gone. Before the first
+ *   or thinks, RouterAI with `: PROCESSING` about once a second, and any byte
+ *   counts, so silence means the connection is gone. Before the first
  *   `data:` event nothing has reached eve, so the call is sent again once.
  * - Slow: no `data:` event for `dataCeilingMs()` although comments keep
  *   coming. The model is working; a second call would be as slow and billed
  *   twice, so the call fails instead, and only long past any healthy answer.
  *
  * Mid-answer the same two limits fail the stream, and eve's step fails with
- * it instead of hanging.
+ * it instead of hanging. RouterAI's own DeepSeek endpoint sends nothing but
+ * comments for minutes (01.10): the ceiling is what ends such a call when
+ * provider routing did not skip it.
  */
 const idleTimeoutMs = 90_000;
 const maximumAttempts = 2;
 
 /** Hidden reasoning streams nothing but comments, for minutes at high effort. */
 function dataCeilingMs() {
-  return env.OPENROUTER_REASONING_EFFORT === "off" ? 240_000 : 480_000;
+  return modelEndpoint()?.reasoningEffort === "off" ? 240_000 : 480_000;
+}
+
+/** The backend the error texts and logs name. */
+function backendName() {
+  return modelEndpoint()?.name ?? "The model provider";
 }
 
 class ModelStreamStalledError extends Error {
@@ -36,14 +44,14 @@ class ModelStreamStalledError extends Error {
   constructor(idle: boolean, waitedMs: number) {
     super(
       idle
-        ? `OpenRouter sent nothing for ${String(waitedMs / 1000)} s.`
-        : `OpenRouter sent no answer for ${String(waitedMs / 1000)} s.`
+        ? `${backendName()} sent nothing for ${String(waitedMs / 1000)} s.`
+        : `${backendName()} sent no answer for ${String(waitedMs / 1000)} s.`
     );
     this.idle = idle;
   }
 }
 
-/** A `fetch` for the OpenRouter provider that bounds every silence. */
+/** A `fetch` for the direct model provider that bounds every silence. */
 export async function watchedModelFetch(
   input: string | URL | Request,
   init?: RequestInit
@@ -99,8 +107,9 @@ async function attemptModelFetch(
     release();
     const stalled = stallOf(controller);
     if (!stalled || caller?.aborted) throw error;
-    console.warn("[model] OpenRouter call stalled before its answer", {
+    console.warn("[model] direct model call stalled before its answer", {
       attempt,
+      backend: backendName(),
       idle: stalled.idle,
       model: request?.model,
     });
@@ -248,7 +257,8 @@ function watchedBody(options: {
         finish();
         const stalled = stallOf(controller);
         if (stalled) {
-          console.warn("[model] OpenRouter stream stalled mid-answer", {
+          console.warn("[model] direct model stream stalled mid-answer", {
+            backend: backendName(),
             idle: stalled.idle,
           });
           stream.error(stalled);

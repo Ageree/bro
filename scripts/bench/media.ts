@@ -47,8 +47,8 @@ async function filePart(file: OutgoingFile) {
 
 /**
  * The voice notes as the messenger channels hand them to the model. This
- * loads the application's environment (the transcription reads its OpenRouter
- * key and models there), so it runs only when a voice note is attached.
+ * loads the application's environment (the transcription reads its model
+ * provider's key and models there), so it runs only when a voice note is attached.
  */
 async function voiceLines(paths: readonly string[]) {
   let modules;
@@ -59,7 +59,7 @@ async function voiceLines(paths: readonly string[]) {
     ]);
   } catch (error) {
     throw new Error(
-      "--voice transcribes with the application's own settings: set OPENROUTER_API_KEY, BETTER_AUTH_URL and DATABASE_URL (any valid URL; no database is opened).",
+      "--voice transcribes with the application's own settings: set OPENROUTER_API_KEY (or MODEL_PROVIDER=routerai with ROUTERAI_API_KEY), BETTER_AUTH_URL and DATABASE_URL (any valid URL; no database is opened).",
       { cause: error }
     );
   }

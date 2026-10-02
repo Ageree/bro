@@ -1,5 +1,6 @@
 import { defineEval } from "eve/evals";
 import { agentEvalTags, requireDeliveredText } from "@evals/agent/shared";
+import { directModelProviderName } from "@shared/model/provider";
 
 export default [
   /**
@@ -21,8 +22,9 @@ export default [
       turn.notCalledTool("profile__forget_all");
       turn.notCalledTool("profile__remove_memory");
       const text = await requireDeliveredText(t, turn);
+      const modelBackend = directModelProviderName() ?? "the AI gateway";
       t.judge(
-        "The reply names where the data is kept by provider (such as Postgres in Neon, Vercel), the outside services that process it (the language model's provider through OpenRouter or a gateway, the cloud browser for errands), says plainly that it does not know which country the servers are in instead of guessing, and says how the person removes or disconnects each part (memory, personal info, Google, schedules, the vault). It does not ask whether to delete anything.",
+        `The reply names where the data is kept by provider (such as Postgres in Neon, Vercel), the outside services that process it (the language model's provider through ${modelBackend}, the cloud browser for errands), says plainly that it does not know which country the servers are in instead of guessing, and says how the person removes or disconnects each part (memory, personal info, Google, schedules, the vault). It does not ask whether to delete anything.`,
         { on: text }
       )
         .label("a full, honest data answer")

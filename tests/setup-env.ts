@@ -16,7 +16,8 @@ const testEnvironment = {
 };
 
 // Optional provider configuration must not leak in from the host shell: tests
-// opt into OpenRouter explicitly and otherwise exercise the AI Gateway path.
+// opt into RouterAI or OpenRouter explicitly and otherwise exercise the AI
+// Gateway path.
 // A Browser Use key in the shell would let a test that forgot a mock stop or
 // delete a real browser or profile, so tests stub their own. The same goes
 // for a Cloud.ru key and a real VM, and agent sessions do carry one.
@@ -40,6 +41,7 @@ const unsetEnvironment = [
   "CLOUDRU_KEY_SECRET",
   "CLOUDRU_PROJECT_ID",
   "CLOUDRU_S3_TENANT_ID",
+  "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
   "OPENROUTER_CREDITS_ALERT_USD",
   "OPENROUTER_IMAGE_MODEL",
@@ -53,6 +55,21 @@ const unsetEnvironment = [
   "OPENROUTER_STT_FALLBACK_MODEL",
   "OPENROUTER_STT_LANGUAGE",
   "OPENROUTER_STT_MODEL",
+  "ROUTERAI_API_KEY",
+  "ROUTERAI_BASE_URL",
+  "ROUTERAI_CREDITS_ALERT_RUB",
+  "ROUTERAI_IMAGE_MODEL",
+  "ROUTERAI_MAX_OUTPUT_TOKENS",
+  "ROUTERAI_MODEL",
+  "ROUTERAI_MODEL_CONTEXT_TOKENS",
+  "ROUTERAI_PROVIDER_IGNORE",
+  "ROUTERAI_PROVIDER_ORDER",
+  "ROUTERAI_REASONING_EFFORT",
+  "ROUTERAI_SEARCH_MAX_RESULTS",
+  "ROUTERAI_SEARCH_MODEL",
+  "ROUTERAI_STT_FALLBACK_MODEL",
+  "ROUTERAI_STT_LANGUAGE",
+  "ROUTERAI_STT_MODEL",
   "SANDBOX_HOST_ID",
   "SANDBOX_HOST_ORIGIN",
   "SANDBOX_SIGNING_KEY",

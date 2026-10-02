@@ -14,7 +14,7 @@ const services = vi.hoisted(() => ({
   getModel: vi.fn<typeof getWorkspaceModelId>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
-  openRouterActive: vi.fn<() => boolean>(),
+  directModelActive: vi.fn<() => boolean>(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
 }));
 
@@ -30,7 +30,7 @@ vi.mock("@db/services/settings", () => ({
 }));
 vi.mock("@shared/model/provider", async (importOriginal) => ({
   ...(await importOriginal<typeof Provider>()),
-  openRouterActive: services.openRouterActive,
+  directModelActive: services.directModelActive,
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
@@ -70,7 +70,7 @@ beforeEach(() => {
   services.getModel.mockResolvedValue("openai/gpt-5.6-sol-fast");
   services.getFormOfAddress.mockResolvedValue(defaultFormOfAddress);
   services.browserRunReportDelivered.mockResolvedValue(false);
-  services.openRouterActive.mockReturnValue(false);
+  services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
 });
 
@@ -789,8 +789,8 @@ describe("interactive delivery enforcement", () => {
       { kind: "execution.background_task" }
     );
 
-    // The turn is the task agent's pilot's, on the direct OpenRouter model.
-    services.openRouterActive.mockReturnValue(true);
+    // The turn is the task agent's pilot's, on the direct model.
+    services.directModelActive.mockReturnValue(true);
     services.taskAgentPilot.mockResolvedValue(true);
     services.modelSelection.mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
 
@@ -828,7 +828,7 @@ describe("interactive delivery enforcement", () => {
 
     await expect(
       agent.model.events["step.started"]?.({}, interactiveContext([taskReport]))
-    ).rejects.toThrow("needs the OpenRouter model");
+    ).rejects.toThrow("needs the direct model");
     expect(services.modelSelection).not.toHaveBeenCalled();
   });
 

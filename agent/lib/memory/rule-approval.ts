@@ -2,11 +2,11 @@ import { generateText, Output } from "ai";
 import type { ApprovalContext, ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { startedByPerson } from "@agent/lib/mode";
-import { openRouterSelection } from "@agent/lib/model/openrouter";
+import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { listCurrentRules } from "@db/services/memory/records";
 import { getWorkspaceModelId } from "@db/services/settings";
-import { openRouterActive } from "@shared/model/provider";
+import { directModelActive } from "@shared/model/provider";
 
 const refusal = {
   reason:
@@ -34,8 +34,8 @@ export async function outboundRuleApproval(
     if (actionJson === undefined) return refusal;
     const action = z.json().parse(JSON.parse(actionJson));
     const modelId = await getWorkspaceModelId(scope);
-    const selection = openRouterActive()
-      ? openRouterSelection(modelId, { toolChoice: "none" })
+    const selection = directModelActive()
+      ? directModelSelection(modelId, { toolChoice: "none" })
       : null;
     const { output } = await generateText({
       abortSignal: AbortSignal.any([
