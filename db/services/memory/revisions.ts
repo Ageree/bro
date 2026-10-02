@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db, memoryRevisions } from "@db";
 import { isSafeMemoryText } from "@shared/memory/schema";
 
@@ -72,4 +72,56 @@ export async function trimMemoryHistory(workspaceId: string) {
     )
     .returning({ revision: memoryRevisions.revision });
   return trimmed.length;
+}
+
+function historyEntry(row: typeof memoryRevisions.$inferSelect) {
+  return {
+    action: row.action,
+    actor: row.actor,
+    at: row.createdAt.toISOString(),
+    category: row.content?.category ?? null,
+    index: row.recordIndex,
+    revision: row.revision,
+    text: row.content?.text ?? null,
+  };
+}
+
+/** One memory's revisions, newest first, as the cabinet shows them. */
+export async function listMemoryRecordHistory(
+  workspaceId: string,
+  scopeKey: string,
+  index: number
+) {
+  const rows = await db
+    .select()
+    .from(memoryRevisions)
+    .where(
+      and(
+        eq(memoryRevisions.workspaceId, workspaceId),
+        eq(memoryRevisions.scopeKey, scopeKey),
+        eq(memoryRevisions.recordIndex, index)
+      )
+    )
+    .orderBy(desc(memoryRevisions.revision));
+  return rows.map(historyEntry);
+}
+
+/** The latest changes to a scope's memory, newest first. */
+export async function listMemoryTimeline(
+  workspaceId: string,
+  scopeKey: string,
+  limit = 30
+) {
+  const rows = await db
+    .select()
+    .from(memoryRevisions)
+    .where(
+      and(
+        eq(memoryRevisions.workspaceId, workspaceId),
+        eq(memoryRevisions.scopeKey, scopeKey)
+      )
+    )
+    .orderBy(desc(memoryRevisions.createdAt), desc(memoryRevisions.revision))
+    .limit(limit);
+  return rows.map(historyEntry);
 }

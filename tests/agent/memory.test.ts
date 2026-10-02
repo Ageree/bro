@@ -22,6 +22,7 @@ import {
   markMemoryScopeRecalled,
   readMemory,
   recordUntrackedMemories,
+  restoreMemory,
   trimForgottenMemoryHistory,
   saveMemory,
   updateMemory,
@@ -999,6 +1000,60 @@ describe("memory history", () => {
     expect(marks.map(({ at }) => at?.toISOString())).toEqual([
       "2026-10-02T10:59:00.000Z",
       "2026-10-02T10:30:00.000Z",
+    ]);
+  });
+
+  it("brings back an earlier text, and what the digest folded, but never a rule", async () => {
+    await saveMemory(alice, "scope-a", { text: "Живёт в Казани." }, "s0", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Живёт в Самаре."), expectedRevision: 1, index: 0 },
+      "u0"
+    );
+    await restoreMemory(alice, "scope-a", { index: 0, revision: 1 }, "r0");
+    expect((await readMemory(alice, "scope-a", 0))?.content?.text).toBe(
+      "Живёт в Казани."
+    );
+
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s1", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await forgetMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 1, index: 1 },
+      "digest:merge",
+      { action: "merge", actor: "digest" }
+    );
+    await restoreMemory(alice, "scope-a", { index: 1, revision: 1 }, "r1");
+    expect((await readMemory(alice, "scope-a", 1))?.content?.text).toBe(
+      "Любит суши."
+    );
+
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "rule", text: "Не платить без моего ок." },
+      "s2",
+      { sessionId: "session", turnId: "turn" }
+    );
+    await forgetMemory(alice, "scope-a", { index: 2 }, "f2", {
+      action: "merge",
+      actor: "digest",
+    });
+    await expect(
+      restoreMemory(alice, "scope-a", { index: 2, revision: 1 }, "r2")
+    ).rejects.toThrow("only in a conversation");
+    expect(
+      (await history()).filter(({ action }) => action === "restore")
+    ).toMatchObject([
+      { actor: "person", index: 0, text: "Живёт в Казани." },
+      { actor: "person", index: 1, text: "Любит суши." },
     ]);
   });
 

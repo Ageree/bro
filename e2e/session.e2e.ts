@@ -21,6 +21,7 @@ test.setup(
     for (const [path, heading] of [
       ["/personal-info", "Личные данные"],
       ["/vault", "Сейф"],
+      ["/workspace/memory", "Память"],
       ["/chat", "Чат"],
       ["/chat/history", "Все чаты"],
     ] as const) {

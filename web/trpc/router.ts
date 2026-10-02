@@ -10,6 +10,16 @@ import {
   selectWorkspaceModel,
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
+import {
+  forgetMemory,
+  listCurrentMemories,
+  readCabinetMemoryScopeKey,
+  restoreMemory,
+  updateMemory,
+  wipeForgottenMemoryHistory,
+} from "@db/services/memory/records";
+import { listMemoryRecordHistory } from "@db/services/memory/revisions";
+import { memoryIndexSchema, memoryTextSchema } from "@shared/memory/schema";
 import { saveChatSchema } from "@shared/chat/schema";
 import { cabinetAppSchema } from "@shared/composio/catalog";
 import {
@@ -149,7 +159,136 @@ export const appRouter = createTRPCRouter({
   models: {
     list: protectedProcedure.query(readModelCatalog),
   },
+  /**
+   * Profile memory in the cabinet. The person reads, corrects and forgets
+   * any memory and brings back an earlier text; a rule is set or changed
+   * only in their own conversation with Bro — stating one there also
+   * narrows the spend limit and standing permissions — so here a rule can
+   * only be read and forgotten.
+   */
+  memory: {
+    history: protectedProcedure
+      .input(z.object({ index: memoryIndexSchema }))
+      .query(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        return listMemoryRecordHistory(
+          ctx.scope.workspaceId,
+          scopeKey,
+          input.index
+        );
+      }),
+    remove: protectedProcedure
+      .input(
+        z.object({
+          expectedRevision: z.number().int().positive(),
+          index: memoryIndexSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        await memoryWrite(() =>
+          forgetMemory(
+            ctx.scope,
+            scopeKey,
+            input,
+            `cabinet:${crypto.randomUUID()}`,
+            { actor: "person" }
+          )
+        );
+        // The last memory gone leaves no text in history either.
+        if ((await listCurrentMemories(ctx.scope, scopeKey)).length === 0) {
+          await wipeForgottenMemoryHistory(ctx.scope, scopeKey);
+        }
+      }),
+    restore: protectedProcedure
+      .input(
+        z.object({
+          index: memoryIndexSchema,
+          revision: z.number().int().positive(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        await memoryWrite(() =>
+          restoreMemory(
+            ctx.scope,
+            scopeKey,
+            input,
+            `cabinet:${crypto.randomUUID()}`
+          )
+        );
+      }),
+    update: protectedProcedure
+      .input(
+        z.object({
+          expectedRevision: z.number().int().positive(),
+          index: memoryIndexSchema,
+          text: memoryTextSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        const current = (await listCurrentMemories(ctx.scope, scopeKey)).find(
+          ({ index }) => index === input.index
+        );
+        if (!current?.content || current.revision !== input.expectedRevision) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Memory changed. Open the page again.",
+          });
+        }
+        if (current.content.category === "rule") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "A rule is changed only in a conversation with Bro.",
+          });
+        }
+        const content = { ...current.content, text: input.text };
+        await memoryWrite(() =>
+          updateMemory(
+            ctx.scope,
+            scopeKey,
+            {
+              content,
+              expectedRevision: input.expectedRevision,
+              index: input.index,
+            },
+            `cabinet:${crypto.randomUUID()}`,
+            { action: "update", actor: "person" }
+          )
+        );
+      }),
+  },
 });
+
+/** The scope the cabinet shows, or NOT_FOUND before the first conversation. */
+async function cabinetScopeKey(workspaceId: string) {
+  const scopeKey = await readCabinetMemoryScopeKey(workspaceId);
+  if (scopeKey === null) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "No memory yet." });
+  }
+  return scopeKey;
+}
+
+/**
+ * Runs a memory write the page may have raced: a memory changed since the
+ * page read it, or a text the filter refuses, comes back as a TRPC error
+ * the page shows, not a crash.
+ */
+async function memoryWrite<Result>(write: () => Promise<Result>) {
+  try {
+    return await write();
+  } catch (error) {
+    if (!(error instanceof Error) || error.message === "") throw error;
+    throw new TRPCError({
+      cause: error,
+      code: /changed|forgotten/u.test(error.message)
+        ? "CONFLICT"
+        : "BAD_REQUEST",
+      message: error.message,
+    });
+  }
+}
 
 export type AppRouter = typeof appRouter;
 

@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ConnectedAppAction } from "@app/(authenticated)/workspace/_components/connected-app-action";
+import { ConnectedAppAction } from "@app/(authenticated)/workspace/(overview)/_components/connected-app-action";
 import type { api } from "@web/trpc/client";
 
 type UpdateInput = Parameters<

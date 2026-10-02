@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { GoogleWorkspaceAction } from "@app/(authenticated)/workspace/_components/google-workspace-action";
+import { GoogleWorkspaceAction } from "@app/(authenticated)/workspace/(overview)/_components/google-workspace-action";
 import type { api } from "@web/trpc/client";
 
 type UpdateInput = Parameters<

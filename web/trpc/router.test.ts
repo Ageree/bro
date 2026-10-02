@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Chats from "@db/services/chats";
+import * as MemoryRecords from "@db/services/memory/records";
 import * as Settings from "@db/services/settings";
 import * as ConnectedApps from "@shared/composio/connected-apps";
 import * as GoogleWorkspace from "@shared/google-workspace/connection";
@@ -29,6 +30,11 @@ const revokeGoogleMock = vi.spyOn(
 const readAppMock = vi.spyOn(ConnectedApps, "readConnectedApp");
 const startAppMock = vi.spyOn(ConnectedApps, "startConnectedAppAuthorization");
 const disconnectAppMock = vi.spyOn(ConnectedApps, "disconnectConnectedApp");
+
+const cabinetScopeMock = vi.spyOn(MemoryRecords, "readCabinetMemoryScopeKey");
+const listMemoriesMock = vi.spyOn(MemoryRecords, "listCurrentMemories");
+const updateMemoryMock = vi.spyOn(MemoryRecords, "updateMemory");
+const restoreMemoryMock = vi.spyOn(MemoryRecords, "restoreMemory");
 
 const scope = {
   userId: "user-1",
@@ -188,5 +194,95 @@ describe("appRouter", () => {
         // @ts-expect-error -- Todoist connects in chat, not from the cabinet.
         .connectedApps.update({ action: "connect", app: "todoist" })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  describe("memory in the cabinet", () => {
+    const caller = () =>
+      appRouter.createCaller({ origin: "https://example.com", scope });
+    const memory = (category: "fact" | "rule", revision = 2) => ({
+      content: {
+        aliases: [],
+        category,
+        localOnly: false,
+        relatedIndexes: [],
+        text:
+          category === "rule" ? "Не платить без моего ок." : "Живёт в Казани.",
+        validUntil: null,
+      },
+      index: 3,
+      revision,
+      updatedAt: "2026-10-02T10:00:00.000Z",
+    });
+
+    beforeEach(() => {
+      cabinetScopeMock.mockResolvedValue("scope-key");
+    });
+
+    it("corrects a fact as the person, in the scope Bro reads", async () => {
+      listMemoriesMock.mockResolvedValue([memory("fact")]);
+      updateMemoryMock.mockResolvedValue({ index: 3, revision: 3 });
+
+      await caller().memory.update({
+        expectedRevision: 2,
+        index: 3,
+        text: "Живёт в Самаре.",
+      });
+
+      expect(updateMemoryMock).toHaveBeenCalledWith(
+        scope,
+        "scope-key",
+        expect.objectContaining({
+          content: expect.objectContaining({
+            category: "fact",
+            text: "Живёт в Самаре.",
+          }),
+          expectedRevision: 2,
+        }),
+        expect.stringMatching(/^cabinet:/u),
+        { action: "update", actor: "person" }
+      );
+    });
+
+    it("never edits a rule: it is changed only in a conversation", async () => {
+      listMemoriesMock.mockResolvedValue([memory("rule")]);
+
+      await expect(
+        caller().memory.update({
+          expectedRevision: 2,
+          index: 3,
+          text: "Платить без ок.",
+        })
+      ).rejects.toThrow("only in a conversation");
+      expect(updateMemoryMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses a one-time code and a stale page", async () => {
+      listMemoriesMock.mockResolvedValue([memory("fact", 5)]);
+
+      await expect(
+        caller().memory.update({
+          expectedRevision: 5,
+          index: 3,
+          text: "Код из смс 482193",
+        })
+      ).rejects.toThrow();
+      await expect(
+        caller().memory.update({
+          expectedRevision: 2,
+          index: 3,
+          text: "Живёт в Самаре.",
+        })
+      ).rejects.toThrow("Memory changed");
+      expect(updateMemoryMock).not.toHaveBeenCalled();
+    });
+
+    it("has nothing to change before the first conversation", async () => {
+      cabinetScopeMock.mockResolvedValue(null);
+
+      await expect(
+        caller().memory.restore({ index: 3, revision: 1 })
+      ).rejects.toThrow("No memory yet");
+      expect(restoreMemoryMock).not.toHaveBeenCalled();
+    });
   });
 });
