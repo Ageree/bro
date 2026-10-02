@@ -11,21 +11,30 @@
 #     roubles per step (mean, median) and in all; `interactive` is chat and browser-report together, the
 #     steps that carry the full instructions (scripts/costs/step-context.ts);
 #   - the same for interactive steps by day (Moscow), to compare before and after a release;
-#   - steps by their place in a long session (Telegram's is one session for good): whether a step grows with
-#     the conversation (roadmap item 28);
+#   - steps by their place in the whole session, counted from its first step (Telegram's is one session for
+#     good): whether a step grows with the conversation (roadmap item 28);
 #   - errands: roubles per run_id over every source that carries it (model in the browser, its VM and proxy,
-#     the report turns).
+#     the report turns), for the runs whose first cost was recorded in the window — usage_costs has no start
+#     of a run, and a run's costs land within minutes of each other.
 #
 # A step without a price (units.unpriced) counts in tokens, not in roubles.
 source "$(dirname "$0")/db-lib.sh"
 SINCE=${1:-$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)}
 UNTIL=${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+# The shape only keeps psql's quoting simple; PostgreSQL itself says whether the date exists.
+shape='^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+(Z|[+-][0-9:]+)?)?$'
 for value in "$SINCE" "$UNTIL"; do
-  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([T\ ][0-9:.]+(Z|[+-][0-9:]+)?)?$ ]] || die "not a date or time: $value"
+  [[ "$value" =~ $shape ]] || die "not a date or time: $value"
 done
 connection SRC app
+order=$(PGOPTIONS="-c default_transaction_read_only=on" psql_on SRC -v since="$SINCE" -v until="$UNTIL" \
+  <<<"SELECT :'since'::timestamptz < :'until'::timestamptz;" 2>/dev/null) \
+  || die "not a date or time PostgreSQL reads: $SINCE or $UNTIL"
+[ "$order" = t ] || die "SINCE ($SINCE) must come before UNTIL ($UNTIL)"
 # Every query reads the steps through this CTE: a read-only transaction may not create even a temporary view.
-STEPS="WITH steps AS (
+# It holds every step up to UNTIL, so a step's place counts the whole session, not just the window; each query
+# keeps those from SINCE on.
+STEPS="WITH all_steps AS (
   SELECT u.source,
          CASE WHEN u.source IN ('chat', 'browser-report') THEN 'interactive' ELSE u.source END AS kind,
          COALESCE(c.channel, 'none') AS channel,
@@ -40,8 +49,12 @@ STEPS="WITH steps AS (
   LEFT JOIN chats c ON c.session_id = u.session_id AND c.workspace_id = u.workspace_id
   WHERE u.source IN ('chat', 'background', 'browser-report')
     AND u.units ? 'inputTokens'
-    AND u.occurred_at >= :'since'::timestamptz
     AND u.occurred_at < :'until'::timestamptz
+), placed_steps AS (
+  SELECT *, row_number() OVER (PARTITION BY session_id, kind ORDER BY occurred_at) AS place
+  FROM all_steps
+), steps AS (
+  SELECT * FROM placed_steps WHERE occurred_at >= :'since'::timestamptz
 )"
 echo "usage_costs from $SINCE to $UNTIL"
 PGOPTIONS="-c default_transaction_read_only=on" psql_on SRC -v since="$SINCE" -v until="$UNTIL" <<SQL
@@ -83,10 +96,9 @@ GROUP BY 1
 ORDER BY 1;
 
 \echo
-\echo Interactive steps by their place in the session (does a step grow with the conversation?)
+\echo Interactive steps by their place in the whole session (does a step grow with the conversation?)
 $STEPS, placed AS (
-  SELECT channel, input, cached,
-         row_number() OVER (PARTITION BY session_id ORDER BY occurred_at) AS place
+  SELECT channel, input, cached, place
   FROM steps
   WHERE kind = 'interactive' AND session_id IS NOT NULL
 )
@@ -106,10 +118,10 @@ GROUP BY 1, 2
 ORDER BY 1, 2;
 
 \echo
-\echo Errands: roubles per run over every source that carries its run_id (runs that started in the window)
+\echo Errands: roubles per run over every source that carries its run_id (runs whose first cost falls in the window)
 WITH runs AS (
   SELECT run_id,
-         min(occurred_at) AS started,
+         min(occurred_at) AS first_cost,
          sum(cost_rub) AS rub,
          sum(cost_rub) FILTER (WHERE source = 'browser-run') AS browser_model,
          sum(cost_rub) FILTER (WHERE source = 'browser-vm') AS vm,
@@ -128,5 +140,5 @@ SELECT count(*) AS errands,
        round(avg(COALESCE(proxy, 0)), 2) AS proxy_avg,
        round(avg(COALESCE(report_turns, 0)), 2) AS report_turns_avg
 FROM runs
-WHERE started >= :'since'::timestamptz AND started < :'until'::timestamptz;
+WHERE first_cost >= :'since'::timestamptz AND first_cost < :'until'::timestamptz;
 SQL
