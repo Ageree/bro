@@ -72,6 +72,7 @@ e2e.config.ts             раннер: приложение, модель, та
 e2e/env.ts                переменные раннера
 e2e/session.e2e.ts        вход нового человека → сессия "person"
 e2e/person.ts             newPhone, signIn, ownPersonTest
+e2e/secrets.ts            значения, которые модель не должна видеть
 e2e/<раздел>/*.e2e.ts     тесты раздела
 e2e/chat/bro.ts           sendToBro — отправить и дождаться конца хода
 .e2e/cache/               записанные шаги agent.act, коммитятся
