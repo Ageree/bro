@@ -280,3 +280,39 @@ function tagged(kind: string, text: string): ModelMessage {
 function assistant(text: string): ModelMessage {
   return { content: text, role: "assistant" };
 }
+
+describe("replyDirective in the first-contact turn", () => {
+  it("does not call the delivered introduction the reply", () => {
+    for (const language of ["ru", "en"] as const) {
+      const ordinary = replyDirective({
+        answered: true,
+        formOfAddress: defaultFormOfAddress,
+        language,
+      });
+      const introduced = replyDirective({
+        answered: true,
+        firstContact: true,
+        formOfAddress: defaultFormOfAddress,
+        language,
+      });
+      expect(introduced).not.toBe(ordinary);
+      expect(introduced).toMatch(
+        language === "ru"
+          ? /^Знакомство в этом ходе уже доставлено, но оно не ответ/u
+          : /^Your introduction has already been delivered in this turn, but it is not the reply/u
+      );
+    }
+  });
+
+  it("changes nothing before the first delivery", () => {
+    expect(
+      replyDirective({
+        firstContact: true,
+        formOfAddress: defaultFormOfAddress,
+        language: "ru",
+      })
+    ).toBe(
+      replyDirective({ formOfAddress: defaultFormOfAddress, language: "ru" })
+    );
+  });
+});

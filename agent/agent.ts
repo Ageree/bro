@@ -255,6 +255,9 @@ export default defineAgent({
                 // Once the reply is out, the note must not read as a new
                 // request: answering it is how one turn sent six messages.
                 answered: sends.delivered.length > 0,
+                // While the first-contact turn may still be introducing Bro,
+                // its messages are the introduction, not the reply.
+                firstContact: sends.introducing,
                 formOfAddress,
                 language: replyLanguage,
                 // Nor while the message about an approved call is owed.

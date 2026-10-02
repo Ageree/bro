@@ -221,6 +221,31 @@ function answeredNote(language: ReplyLanguage, stepOwed: boolean) {
 }
 
 /**
+ * The same note in the turn that answers a person's very first message
+ * (`firstContactTurn`): its first messages are the introduction, which the
+ * note above called the reply, and a bare first question went unanswered in
+ * 3 of 4 runs (e2e/chat/first-contact.e2e.ts).
+ */
+const introducedNotes = {
+  en: "Your introduction has already been delivered in this turn, but it is not the reply to the person's message. This note is not a new message: do not answer it or repeat the introduction. If their message asks a question or for something you have not yet answered in a message of its own, answer it now",
+  ru: "Знакомство в этом ходе уже доставлено, но оно не ответ на сообщение человека. Эта пометка — не новое сообщение: не отвечай на неё и не повторяй знакомство. Если в его сообщении есть вопрос или дело, на которые ты ещё не ответил отдельным сообщением, ответь сейчас",
+} as const satisfies Record<ReplyLanguage, string>;
+
+function introducedNote(language: ReplyLanguage, stepOwed: boolean) {
+  return `${introducedNotes[language]}${stepOwed ? "." : answeredEnds[language]}`;
+}
+
+function deliveredNote(
+  language: ReplyLanguage,
+  stepOwed: boolean,
+  firstContact: boolean
+) {
+  return firstContact
+    ? introducedNote(language, stepOwed)
+    : answeredNote(language, stepOwed);
+}
+
+/**
  * The note the model reads last on every step that may write to the person.
  * Standing rules sit in the middle of a long Russian prompt, and a small
  * model ignored them: it answered English in Russian, spoke of itself in
@@ -235,6 +260,7 @@ function answeredNote(language: ReplyLanguage, stepOwed: boolean) {
  */
 export function replyDirective({
   answered = false,
+  firstContact = false,
   formOfAddress,
   language,
   stepOwed = false,
@@ -242,6 +268,8 @@ export function replyDirective({
 }: {
   /** Whether this turn already delivered a message to the person. */
   readonly answered?: boolean;
+  /** Whether this turn answers the person's very first message. */
+  readonly firstContact?: boolean;
   readonly formOfAddress: FormOfAddress;
   readonly language: ReplyLanguage | undefined;
   /** Whether the turn still owes a tool step after its message. */
@@ -251,7 +279,7 @@ export function replyDirective({
 }) {
   if (language === "en") {
     return [
-      ...(answered ? [answeredNote("en", stepOwed)] : []),
+      ...(answered ? [deliveredNote("en", stepOwed, firstContact)] : []),
       languageDirective("en", wordlessLatest),
       ...(formOfAddress.name
         ? [`Call the person «${formOfAddress.name}», as they asked.`]
@@ -264,7 +292,7 @@ export function replyDirective({
     ownWordsOnly,
   ];
   return [
-    ...(answered ? [answeredNote("ru", stepOwed)] : []),
+    ...(answered ? [deliveredNote("ru", stepOwed, firstContact)] : []),
     ...(language === "ru"
       ? [languageDirective("ru", wordlessLatest)]
       : ["Когда пишешь человеку по-русски:"]),
