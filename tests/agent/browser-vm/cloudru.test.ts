@@ -74,6 +74,17 @@ async function loadCloudRu(settings = {}) {
   );
 }
 
+function listedVm(index: number) {
+  return {
+    interfaces: [
+      {
+        floating_ip: { ip_address: `176.109.0.${String(index)}` },
+        ip_address: `10.0.1.${String(index)}`,
+      },
+    ],
+  };
+}
+
 const noContent = () => new Response(null, { status: 204 });
 
 async function createTestVm(cloudRu: Awaited<ReturnType<typeof loadCloudRu>>) {
@@ -266,6 +277,33 @@ describe("Cloud.ru VMs", () => {
       state: "creating",
     });
     expect(await cloudRu.readCloudRuVm(vmId)).toBeUndefined();
+  });
+
+  it("maps each VM's public address to its private one, page by page", async () => {
+    const cloudRu = await loadCloudRu({ CLOUDRU_PROJECT_ID: projectId });
+    const calls = stubCloudRu(
+      () =>
+        Response.json({
+          items: [
+            ...Array.from({ length: 98 }, (_, index) => listedVm(index + 1)),
+            // No public address yet, and no interface at all: nothing to map.
+            { interfaces: [{ floating_ip: null, ip_address: "10.0.1.200" }] },
+            { interfaces: null },
+          ],
+        }),
+      () => Response.json({ items: [listedVm(150)] })
+    );
+
+    const addresses = await cloudRu.listCloudRuPrivateAddresses();
+    expect(addresses.size).toBe(99);
+    expect(addresses.get("176.109.0.7")).toBe("10.0.1.7");
+    expect(addresses.get("176.109.0.150")).toBe("10.0.1.150");
+    expect(
+      calls.filter((call) => call.url !== iam).map((call) => call.url)
+    ).toEqual([
+      `${compute}/v1/vms?limit=100&offset=0&project_id=${projectId}`,
+      `${compute}/v1/vms?limit=100&offset=100&project_id=${projectId}`,
+    ]);
   });
 
   it("finds a VM by its exact name in the project, and nothing for a name no VM has", async () => {

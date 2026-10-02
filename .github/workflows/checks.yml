@@ -96,6 +96,10 @@ jobs:
           # The code host runs Ubuntu 22.04's Python 3.10.
           python-version: "3.10"
 
+      - name: Telegram egress of the app host (tg-egress)
+        working-directory: scripts/cloudru-app-host/tg-egress
+        run: python -m unittest
+
       - name: Code host (boot, provision)
         working-directory: sandbox/host
         run: python -m unittest
