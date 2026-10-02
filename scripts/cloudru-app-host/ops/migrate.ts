@@ -23,6 +23,14 @@ import { Pool } from "pg";
 
 const release = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+// A connection to Cloud.ru's managed PostgreSQL once hung for two minutes and
+// dropped ("Connection terminated unexpectedly"); the same step a moment later
+// took half a second. Both steps are idempotent, so one that lost its
+// connection runs once more, and a connect that does not answer counts as lost.
+const connectTimeoutMs = 20_000;
+const lostConnection =
+  /Connection terminated|timeout exceeded when trying to connect|ECONNRESET|ETIMEDOUT/u;
+
 function connection(...names: string[]) {
   // oxlint-disable-next-line eslint/no-restricted-properties -- a one-shot CLI on the VM with the env of /etc/bro/env, not the app: env.ts would demand every app setting
   const environment = process.env;
@@ -36,6 +44,7 @@ function connection(...names: string[]) {
 async function migrateApp() {
   const pool = new Pool({
     connectionString: connection("DATABASE_URL_UNPOOLED", "DATABASE_URL"),
+    connectionTimeoutMillis: connectTimeoutMs,
     max: 1,
   });
   try {
@@ -51,6 +60,7 @@ async function migrateApp() {
 async function migrateWorld() {
   const pool = new Pool({
     connectionString: connection("WORKFLOW_POSTGRES_URL"),
+    connectionTimeoutMillis: connectTimeoutMs,
     max: 1,
   });
   try {
@@ -76,7 +86,15 @@ async function migrateWorld() {
 
 async function timed(name: string, step: () => Promise<void>) {
   const started = Date.now();
-  await step();
+  try {
+    await step();
+  } catch (error) {
+    if (!(error instanceof Error) || !lostConnection.test(error.message)) {
+      throw error;
+    }
+    console.log(`migrate ${name}: lost the connection, once more`);
+    await step();
+  }
   console.log(`migrate ${name}: done in ${String(Date.now() - started)} ms`);
 }
 

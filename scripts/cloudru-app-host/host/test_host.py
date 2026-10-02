@@ -1012,7 +1012,11 @@ class BackupTest(unittest.TestCase):
         self.assertIn('PGPASSWORD="${!pass}"', lib)
         self.assertIn("--single-transaction", lib)
         self.assertIn("-pass env:BACKUP_ENCRYPTION_KEY", lib)
-        self.assertIn("--exclude-schema=neon_auth", lib)
+        # The providers' schemas stay where they are: a restore onto Cloud.ru failed on "schema cloudru exists".
+        for flag in ("--exclude-schema=neon_auth", "--exclude-schema=cloudru",
+                     "--exclude-extension=pg_stat_statements", "--exclude-extension=pgaudit"):
+            self.assertIn(flag, lib)
+        self.assertIn("'cloudru'", lib.split("SKIP_SCHEMAS=", 1)[1].splitlines()[0])
 
     def test_pruning_keeps_two_weeks_and_never_the_newest_three(self):
         now = store.datetime.datetime(2026, 10, 30, 1, 10, tzinfo=store.datetime.timezone.utc)
