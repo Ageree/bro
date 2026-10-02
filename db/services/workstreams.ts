@@ -280,16 +280,8 @@ export async function adoptWorkstreams(
     )
     .limit(1);
   if (!pending) return 0;
-  const live = and(
-    eq(workstreams.workspaceId, scope.workspaceId),
-    eq(workstreams.scopeKey, toKey),
-    isNotNull(workstreams.content)
-  );
-  const [total] = await db
-    .select({ value: count() })
-    .from(workstreams)
-    .where(live);
-  if ((total?.value ?? 0) >= maximumWorkstreams) return 0;
+  // Even a full target takes the transaction: an identical entry is still
+  // retired, only new work waits for room.
   await ensureScope(scope);
   return db.transaction(async (transaction) => {
     // The lock every save and forget takes.

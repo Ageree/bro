@@ -572,11 +572,9 @@ export async function adoptMemoryRecords(
     .where(currentIn(fromKeys))
     .limit(1);
   if (!pending) return 0;
-  const [total] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(memoryRecords)
-    .where(currentIn([toKey]));
-  if ((total?.count ?? 0) >= maximumRecords) return 0;
+  // Even a full target takes the transaction: a duplicate still merges into
+  // the record the target holds, `localOnly` included; only new records wait
+  // for room.
   await ensureMemoryScope(scope, toKey);
   return db.transaction(async (transaction) => {
     await lockScope(transaction, scope, toKey);
@@ -791,10 +789,7 @@ function sameAs(content: MemoryContent) {
  * keep it out of the semantic index. `base` itself when nothing changes.
  */
 function mergedContent(base: MemoryContent, copy: MemoryContent) {
-  const aliases = [
-    ...base.aliases,
-    ...copy.aliases.filter((alias) => !base.aliases.includes(alias)),
-  ].slice(0, 12);
+  const aliases = [...new Set([...base.aliases, ...copy.aliases])].slice(0, 12);
   const validUntil =
     base.validUntil === null || copy.validUntil === null
       ? null

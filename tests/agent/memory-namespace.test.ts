@@ -493,6 +493,28 @@ describe("adopting the profile saved after the move", () => {
       await adoptMemoryRecords(alice, vmProfileKeys, pinnedProfileKey)
     ).toBe(0);
 
+    // A full profile still merges a copy of what it holds; nothing moves.
+    await saveMemory(
+      alice,
+      lastVmProfileKey,
+      { aliases: ["три", "три"], localOnly: true, text: "Факт 3." },
+      "vm:2",
+      vm
+    );
+    expect(
+      await adoptMemoryRecords(alice, vmProfileKeys, pinnedProfileKey)
+    ).toBe(0);
+    expect(
+      (await listCurrentMemories(alice, pinnedProfileKey)).find(
+        ({ content }) => content?.text === "Факт 3."
+      )?.content
+    ).toMatchObject({ aliases: ["три"], localOnly: true });
+    expect(
+      (await listCurrentMemories(alice, lastVmProfileKey)).map(
+        ({ content }) => content?.text
+      )
+    ).toEqual(["Живёт в Москве."]);
+
     await forgetMemory(alice, pinnedProfileKey, { index: 0 }, "forget");
     expect(
       await adoptMemoryRecords(alice, vmProfileKeys, pinnedProfileKey)
