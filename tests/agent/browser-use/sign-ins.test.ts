@@ -140,7 +140,10 @@ const alertOwner = vi.hoisted(() =>
   >(() => Promise.resolve(true))
 );
 
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner,
+  clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 vi.mock("@db/services/browser-sign-ins", () => ({
   claimBrowserSignInRefresh,
   forgetBrowserSignIns,

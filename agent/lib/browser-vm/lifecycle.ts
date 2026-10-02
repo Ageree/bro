@@ -8,7 +8,7 @@ import {
 } from "@agent/lib/browser-pool/sandbox";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
-import { alertOwner } from "@agent/lib/owner-alert";
+import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import type { browserVms } from "@db/schema/browser-vms";
 import {
   listWorkspacesHoldingBrowsers,
@@ -138,6 +138,8 @@ const reconcileLimit = 20;
  */
 const openRunWindowMs = 60 * 60_000;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
+/** The owner's alert that the residential proxy refuses Bro's login. */
+const proxyAlertKey = "browser-vm-proxy";
 /**
  * A deletion waits this long for an errand's or the reconcile's step on the
  * VM to end: each holds the lease for one step, seconds as a rule.
@@ -1487,6 +1489,9 @@ async function routeThroughRussia(
 ): Promise<BrowserVm> {
   const session = browserVmProxySession(vm.workspaceId, rotation);
   const { exit } = await setBrowserVmWorkerProxy(vm, browserVmProxy(session));
+  // An exit address means the proxy took the login: its next refusal is a
+  // new incident, and the owner hears of it at once.
+  if (exit.ip) await proxyAccepted(now);
   const slow =
     (exit.mbps ?? Number.POSITIVE_INFINITY) < slowExitMbps ||
     (exit.latencyMs ?? 0) > slowExitLatencyMs;
@@ -1509,10 +1514,29 @@ async function routeThroughRussia(
   }
   console.warn("[browser-vm] the proxy exit is not in Russia or too slow", {
     country: exit.country ?? null,
+    error: exit.error ?? null,
     latencyMs: exit.latencyMs ?? null,
     mbps: exit.mbps ?? null,
     rotation,
   });
+  // The proxy turned the login away: every sticky session of that login
+  // meets the same answer, so only the owner's account can change it.
+  const refusal = proxyRefusal(exit.error);
+  if (refusal !== undefined) {
+    await alert(
+      proxyAlertKey,
+      [
+        `Резидентный прокси (BROWSER_VM_PROXY) отказывает Бро: ${refusal}.`,
+        "Поручения в браузере ждут в очереди. Проверь баланс, тариф и пароль аккаунта прокси; если выдан новый логин — обнови BROWSER_VM_PROXY (порт sticky-сессий).",
+      ].join("\n")
+    );
+    await updateBrowserVm(
+      vm.workspaceId,
+      { proxyExit: null, proxySession: session },
+      now
+    );
+    throw new BrowserUseError(429, "proxy", "proxy refused", noExitRetryMs);
+  }
   if (rotationsLeft > 0) {
     return routeThroughRussia(vm, now, rotation + 1, rotationsLeft - 1);
   }
@@ -1524,6 +1548,30 @@ async function routeThroughRussia(
     now
   );
   throw new BrowserUseError(429, "proxy", "no Russian exit", noExitRetryMs);
+}
+
+/**
+ * The proxy's own refusal of the login, as the worker reports its CONNECT
+ * (`ClientHttpProxyError: 407, message=…`): payment, a forbidden use or a
+ * wrong password. A 502 is the worker's forwarder not reaching the proxy, and
+ * a dead exit is a timeout: another rotation can fix those.
+ */
+function proxyRefusal(error: string | null | undefined) {
+  // The whole message, however it is quoted, up to the worker's own address.
+  return /^ClientHttpProxyError: (?:402|403|407)\b.*?(?=, url=|$)/su.exec(
+    error ?? ""
+  )?.[0];
+}
+
+/** Never throws: an errand must not fail because an alert was not re-armed. */
+async function proxyAccepted(now: Date) {
+  try {
+    await clearOwnerAlert(proxyAlertKey, now);
+  } catch (error) {
+    console.warn("[browser-vm] the proxy alert could not be re-armed", {
+      cause: error,
+    });
+  }
 }
 
 /** The rotation the workspace's stored sticky session is on. */

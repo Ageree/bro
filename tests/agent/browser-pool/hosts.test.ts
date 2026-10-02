@@ -54,7 +54,10 @@ vi.mock("@agent/lib/browser-pool/host", async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   ...hostClient,
 }));
-vi.mock("@agent/lib/owner-alert", () => ({ alertOwner }));
+vi.mock("@agent/lib/owner-alert", () => ({
+  alertOwner,
+  clearOwnerAlert: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}));
 
 const databases: PGlite[] = [];
 
