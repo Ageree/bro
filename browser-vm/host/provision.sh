@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sets up a Bro browser host on a stock ubuntu-22.04 VM: run once as root by bro-host-boot (cloud-init, see
+# Sets up a Bro browser host on a stock ubuntu-22.04 VM: run as root by bro-host-boot (cloud-init, see
 # boot.py) from the unpacked bundle in /opt/bro/host. From Cloud.ru, GitHub and PyPI accept connections and
 # send nothing and archive.ubuntu.com does not answer (30.09.2026): apt goes to the mirror boot.json names
 # (mirror.yandex.ru), Caddy's binary and hostd's wheels come in the bundle (hash-pinned, see boot.py), and the
@@ -7,7 +7,9 @@
 # Nothing here is per person. The host key is in /etc/bro/host.json (cloud-init, 0600); hostd reads it.
 # Stages go to /srv/bro/stage. Caddy and hostd come up right after the packages, so from then on Bro reads
 # the stage (and a `failed:<stage>:line N`) on https://<domain>/h/v1/health; the slow rootfs download comes
-# after that. Only `ready` means the host takes sandboxes.
+# after that. Only `ready` means the host takes sandboxes. Until then bro-host-boot runs this at every boot:
+# a reboot (a hard reset on Cloud.ru) may cut a run short anywhere, so every step is safe to repeat, once
+# bro-host-boot has thrown away the apt lists and cache and the venv a torn run may have left.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 BOOT=/etc/bro/boot.json
@@ -69,13 +71,15 @@ if [ "$RUNTIME" = runsc ]; then
     > /etc/apt/sources.list.d/gvisor.list
   retry apt-get update -q
   retry apt-get install -yq runsc
-  if ! runsc --version | head -1 | grep -q "release-${RUNSC_RELEASE}"; then
+  # `sed -n 1p`, not `head -1`: head leaves before the rest of the output, and a Go binary writes it line by
+  # line, so it may die of SIGPIPE, which pipefail turns into a failure (runc on a host, 02.10.2026).
+  if ! runsc --version | sed -n 1p | grep -q "release-${RUNSC_RELEASE}"; then
     stage "failed:runsc is not release ${RUNSC_RELEASE}"
     exit 1
   fi
   apt-mark hold runsc >/dev/null
 else
-  runc --version | head -1
+  runc --version | sed -n 1p
   # hostd never runs anything inside a sandbox (`runc exec` is where runc's escapes start), but create and
   # kill still go through runc: not older than the fix of CVE-2024-21626 (the security pocket has newer).
   if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' runc)" ge 1.1.12; then
@@ -203,6 +207,9 @@ if [ ! -d "$ROOTFS" ]; then
   # The rootfs's own uids and gids, not the host's accounts of the same names.
   tar --numeric-owner -I zstd -xpf "$ARCHIVE" -C "$PARTIAL"
   rm -f "$ARCHIVE"
+  # On disk before it takes its name (and with it everything set up so far): a hard reset right after must
+  # not leave a torn root under it, which nothing would set up again.
+  sync
   mv "$PARTIAL" "$ROOTFS"
 fi
 stage ready

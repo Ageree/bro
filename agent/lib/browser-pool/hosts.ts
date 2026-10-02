@@ -67,9 +67,10 @@ const createFailAfterMs = 15 * 60_000;
  * does; a reboot cures it (134 s to `ready` after it). A booting host that
  * has not answered at all this long after its VM ran is rebooted, once. Not
  * sooner: `hostd` and Caddy start only after apt and the venv, so a slow
- * mirror is silent too, and a reboot mid-provision is final, as cloud-init
- * runs `bro-host-boot` once per instance. `provision.sh`'s whole budget is
- * 6 minutes at worst (boot.py), and `hostd` answers before its end.
+ * mirror is silent too, and a reboot mid-provision costs a second run of
+ * `provision.sh` (`bro-host-boot` starts it again at the next boot, see
+ * `bootScript`). Its whole budget is 6 minutes at worst (boot.py), and
+ * `hostd` answers before its end.
  */
 const silentBootRebootMs = 6 * 60_000;
 /** `provision.sh`'s budget is 6 minutes; a host not ready by this is failed. */
@@ -103,16 +104,31 @@ const ownerAlertRepeatMs = 6 * 60 * 60_000;
  */
 const hostAptMirror = "http://mirror.yandex.ru/ubuntu";
 
+/** Where cloud-init writes `bootScript`: `BOOT_SCRIPT_PATH` of boot.py. */
+const bootScriptPath = "/var/lib/cloud/scripts/per-boot/bro-host-boot";
+
 /**
- * Written by cloud-init: fetches the bundle named in boot.json, checks it
- * and hands over to provision.sh. Byte for byte `BOOT_SCRIPT` of
- * `browser-vm/host/boot.py` (a test compares them). The fetch waits 7–13
- * minutes for the network: in `ru.AZ-1` a new VM runs this while its public
- * address is still being attached, without DNS or egress for 3+ minutes,
- * and cloud-init runs it only once per instance.
+ * Fetches the bundle named in boot.json, checks it and hands over to
+ * provision.sh. Byte for byte `BOOT_SCRIPT` of `browser-vm/host/boot.py`
+ * (a test compares them). A cloud-init per-boot script: it runs at every
+ * boot, the first one included, and does nothing once the host is ready.
+ * So a reboot that lands mid-provision (`silentBootRebootMs`) sets the host
+ * up again: `runcmd`, which cloud-init marks done before it runs it, left
+ * such a host dead on 02.10. Cloud.ru's reboot is a hard reset, and the run
+ * it cut short may have left torn files: the apt lists and cache and the
+ * venv go before provision.sh runs again, and dpkg is repaired. The fetch
+ * waits 7–13 minutes for the network: in `ru.AZ-1` a new VM runs this while
+ * its public address is still being attached, without DNS or egress for 3+
+ * minutes.
  */
 const bootScript = String.raw`#!/bin/bash
 set -euo pipefail
+exec >>/var/log/bro-provision.log 2>&1
+STAGE=$(cat /srv/bro/stage 2>/dev/null || echo none)
+echo "bro-host-boot $(date -u +%FT%TZ) stage $STAGE"
+if [ "$STAGE" = ready ]; then
+  exit 0
+fi
 field() { python3 -c 'import json, sys
 value = json.load(open("/etc/bro/boot.json"))
 for key in sys.argv[1].split("."):
@@ -129,6 +145,14 @@ echo "$SHA  /root/bro-host.tgz" | sha256sum -c --quiet -
 mkdir -p /opt/bro/host
 tar -xzf /root/bro-host.tgz -C /opt/bro/host
 rm -f /root/bro-host.tgz
+if [ -e /srv/bro/stage ]; then
+  systemctl stop bro-hostd 2>/dev/null || true
+  rm -rf /opt/bro/venv /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+  for i in 1 2 3 4 5 6; do
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a && break
+    sleep 10
+  done
+fi
 exec bash /opt/bro/host/provision.sh
 `;
 
@@ -211,12 +235,10 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
     "  - path: /etc/bro/boot.json",
     '    permissions: "0600"',
     `    content: ${quoted(boot)}`,
-    "  - path: /usr/local/sbin/bro-host-boot",
+    `  - path: ${bootScriptPath}`,
     '    permissions: "0700"',
     "    content: |",
     script,
-    "runcmd:",
-    '  - [bash, -c, "/usr/local/sbin/bro-host-boot > /var/log/bro-provision.log 2>&1"]',
     "",
   ].join("\n");
 }

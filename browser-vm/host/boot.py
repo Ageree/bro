@@ -18,11 +18,12 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
       [--runtime runc|runsc --runsc-release 20260914] [--apt-mirror …] [--domain …]
       the user data for one host (base64 it for the Compute API)
 
-On the host, /usr/local/sbin/bro-host-boot fetches the bundle, checks its SHA-256 and runs provision.sh,
-which points apt at the mirror, installs runc (or a pinned runsc), nftables and zstd, Caddy and the hostd
-venv from the bundle, their systemd units, and unpacks the rootfs. Bro's own host creation
-(`browserHostCloudInit` in agent/lib/browser-pool/hosts.ts) writes the same user data byte for byte, and
-tests/agent/browser-pool/hosts.test.ts runs this script to hold it to that: change both together.
+On the host, bro-host-boot (a cloud-init per-boot script: every boot until the host is ready) fetches the
+bundle, checks its SHA-256 and runs provision.sh, which points apt at the mirror, installs runc (or a pinned
+runsc), nftables and zstd, Caddy and the hostd venv from the bundle, their systemd units, and unpacks the
+rootfs. Bro's own host creation (`browserHostCloudInit` in agent/lib/browser-pool/hosts.ts) writes the same
+user data byte for byte, and tests/agent/browser-pool/hosts.test.ts runs this script to hold it to that:
+change both together.
 
 Boot budget (estimated; measure on the first real host): stock boot ≈ 45 s, apt ≈ 40–60 s, venv ≈ 10 s,
 rootfs (≈ 0.5 GB zstd, inside Cloud.ru, 17 s on the stage 1 stand) ≈ 20–60 s, certificate ≈ 10 s — about
@@ -51,12 +52,27 @@ VENDOR = json.loads((HERE / "vendor.json").read_text())
 RUNTIMES = ("runc", "runsc")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
-# Fetches the bundle named in boot.json, checks it and hands over to provision.sh. Written by cloud-init.
+BOOT_SCRIPT_PATH = "/var/lib/cloud/scripts/per-boot/bro-host-boot"
+# Fetches the bundle named in boot.json, checks it and hands over to provision.sh. A cloud-init per-boot
+# script: cloud-init runs it at every boot, the first one included, and it does nothing once the host is
+# ready (its Caddy and hostd start on their own). Bro reboots a host that stays silent (a first boot may
+# hang in initramfs), and on 02.10.2026 such a reboot landed mid-provision: runcmd, which cloud-init marks
+# done before it runs it, never ran again and the host stayed dead. Cloud.ru's reboot is a hard reset, so
+# a run it cut short may have left torn files behind (02.10: every apt Packages list empty, while the
+# InRelease files that apt-get update checks were whole): before provision.sh runs again, the apt lists
+# and cache and hostd's venv go (provision.sh makes them anew; hostd may run from the venv) and dpkg is
+# repaired. The rest of provision.sh is safe to repeat from any stage.
 # It waits up to 40 attempts 10 s apart (7-13 minutes) for the network: in ru.AZ-1 (30.09.2026) a new VM
 # boots and runs this while its public address is still being attached, with no DNS or egress for 3+
-# minutes, and cloud-init runs it only once per instance, so a script that gave up left a dead host.
+# minutes.
 BOOT_SCRIPT = r"""#!/bin/bash
 set -euo pipefail
+exec >>/var/log/bro-provision.log 2>&1
+STAGE=$(cat /srv/bro/stage 2>/dev/null || echo none)
+echo "bro-host-boot $(date -u +%FT%TZ) stage $STAGE"
+if [ "$STAGE" = ready ]; then
+  exit 0
+fi
 field() { python3 -c 'import json, sys
 value = json.load(open("/etc/bro/boot.json"))
 for key in sys.argv[1].split("."):
@@ -73,6 +89,14 @@ echo "$SHA  /root/bro-host.tgz" | sha256sum -c --quiet -
 mkdir -p /opt/bro/host
 tar -xzf /root/bro-host.tgz -C /opt/bro/host
 rm -f /root/bro-host.tgz
+if [ -e /srv/bro/stage ]; then
+  systemctl stop bro-hostd 2>/dev/null || true
+  rm -rf /opt/bro/venv /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+  for i in 1 2 3 4 5 6; do
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a && break
+    sleep 10
+  done
+fi
 exec bash /opt/bro/host/provision.sh
 """
 
@@ -187,12 +211,10 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         "  - path: /etc/bro/boot.json",
         '    permissions: "0600"',
         f"    content: {quoted(boot)}",
-        "  - path: /usr/local/sbin/bro-host-boot",
+        f"  - path: {BOOT_SCRIPT_PATH}",
         '    permissions: "0700"',
         "    content: |",
         script.rstrip("\n"),
-        "runcmd:",
-        "  - [bash, -c, \"/usr/local/sbin/bro-host-boot > /var/log/bro-provision.log 2>&1\"]",
         "",
     ])
 

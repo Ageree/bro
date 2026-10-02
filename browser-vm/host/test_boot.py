@@ -1,9 +1,9 @@
 """Host boot tests: cd browser-vm/host && python -m unittest (stdlib only).
 
 The user data `boot.py` renders, the bundle it packs (with a fake vendor directory and pins made for it),
-and its boot script run in a temp directory with a fake curl; `provision.sh` is checked for syntax and for
-what must never drift (runc by default and a pinned runsc, nothing fetched from GitHub or PyPI, no flushed
-nftables, sandboxes that outlive hostd).
+and its boot script run in a temp directory with fake curl, dpkg and systemctl; `provision.sh` is checked for
+syntax and for what must never drift (runc by default and a pinned runsc, nothing fetched from GitHub or PyPI,
+no flushed nftables, sandboxes that outlive hostd, every step safe to repeat).
 """
 
 import gzip
@@ -54,7 +54,20 @@ class CloudInitTest(unittest.TestCase):
         self.assertEqual(settings["aptMirror"], "http://mirror.yandex.ru/ubuntu")
         self.assertEqual(settings["rootfs"], {"version": "2026-09-30.1", "url": ARGS["rootfs_url"],
                                               "sha256": "cd" * 32})
-        self.assertIn("/usr/local/sbin/bro-host-boot > /var/log/bro-provision.log", user_data)
+
+    def test_the_boot_script_runs_at_every_boot_and_logs_itself(self):
+        # runcmd runs once per instance, marked done before it starts: a reboot mid-provision (02.10.2026)
+        # left the host dead. A per-boot script runs again, the first boot included.
+        user_data = boot.cloud_init(**ARGS)
+        head = "  - path: /var/lib/cloud/scripts/per-boot/bro-host-boot\n    permissions: \"0700\"\n    content: |\n"
+        self.assertIn(head, user_data)
+        self.assertEqual(boot.BOOT_SCRIPT_PATH, "/var/lib/cloud/scripts/per-boot/bro-host-boot")
+        self.assertNotIn("runcmd", user_data)
+        self.assertNotIn("/usr/local/sbin/", user_data)
+        script = user_data.split(head, 1)[1]
+        self.assertEqual(script, "".join(f"      {line}\n" if line else "\n" for line in boot.BOOT_SCRIPT.splitlines()))
+        self.assertTrue(boot.BOOT_SCRIPT.startswith(
+            "#!/bin/bash\nset -euo pipefail\nexec >>/var/log/bro-provision.log 2>&1\n"))
 
     def test_runsc_needs_a_dated_release_and_runc_none(self):
         for release in ("release", "latest", "2026-09-14", "", None):
@@ -116,47 +129,105 @@ class BundleTest(unittest.TestCase):
 
 
 class BootScriptTest(unittest.TestCase):
-    """bro-host-boot with its paths moved into a temp directory and curl answering from a local file."""
+    """bro-host-boot with every path it touches moved into a temp directory (it deletes a host's apt lists),
+    curl answering from a local file, dpkg and systemctl stubbed; every call lands in `calls`, in order. The
+    temp directory holds what a run a hard reset cut short leaves behind: a venv, apt lists and debs."""
 
-    def run_boot(self, bundle, sha256):
+    PATHS = {"/etc/bro/boot.json": "etc/boot.json", "/var/log/bro-provision.log": "log", "/srv/bro/stage": "stage",
+             "/root/": "", "/opt/bro/host": "host", "/opt/bro/venv": "venv", "/var/lib/apt/lists": "lists",
+             "/var/cache/apt/archives": "archives"}
+    LEFTOVERS = ("archives/lock", "archives/runc_1.1.12_amd64.deb", "lists/mirror_jammy_main_binary-amd64_Packages",
+                 "lists/partial/x", "venv/bin/python")
+
+    def run_boot(self, bundle, sha256, stage=None):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         served = tmp / "served.tgz"
         served.write_bytes(bundle)
         (tmp / "etc").mkdir()
         (tmp / "etc" / "boot.json").write_text(json.dumps({"bundle": {"url": "https://s3/x", "sha256": sha256}}))
+        if stage is not None:
+            (tmp / "stage").write_text(stage + "\n")
+        for leftover in self.LEFTOVERS:
+            (tmp / leftover).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / leftover).write_text("")
         bin_dir = tmp / "bin"
         bin_dir.mkdir()
-        curl = bin_dir / "curl"
-        curl.write_text(f'#!/bin/bash\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && cp {served} "$2"; shift; done\n')
-        curl.chmod(0o755)
+        calls = tmp / "calls"
+        stubs = {
+            "curl": f'echo curl >> {calls}\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && cp {served} "$2"; shift; done\n',
+            "dpkg": f'echo "dpkg $* $DEBIAN_FRONTEND" >> {calls}\n',
+            "systemctl": f'echo "systemctl $*" >> {calls}\n',
+        }
+        for name, body in stubs.items():
+            (bin_dir / name).write_text("#!/bin/bash\n" + body)
+            (bin_dir / name).chmod(0o755)
         user_data = boot.cloud_init(**ARGS)
-        script = "\n".join(line[6:] for line in user_data.split("    content: |\n", 1)[1].split("\nruncmd:")[0].splitlines())
-        script = (script.replace("/etc/bro/boot.json", str(tmp / "etc" / "boot.json"))
-                  .replace("/root/", f"{tmp}/").replace("/opt/bro/host", str(tmp / "host")))
+        head = f"  - path: {boot.BOOT_SCRIPT_PATH}\n    permissions: \"0700\"\n    content: |\n"
+        script = "\n".join(line[6:] for line in user_data.split(head, 1)[1].splitlines())
+        for path, moved in self.PATHS.items():
+            script = script.replace(path, f"{tmp}/{moved}")
+        self.assertNotRegex(script, r"(?<![\w.-])/(etc|var|srv|opt|root)/")  # never the machine's own
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
         return result, tmp
 
+    def left(self, tmp):
+        return sorted(str(path.relative_to(tmp)) for name in ("venv", "lists", "archives")
+                      for path in (tmp / name).rglob("*") if path.is_file())
+
     def bundle_with_probe(self):
         raw = io.BytesIO()
         with tarfile.open(fileobj=raw, mode="w") as tar:
-            data = b'echo provisioned > "$(dirname "$0")/ran"\n'
+            data = b'echo provisioning\necho provision >> "$(dirname "$0")/../calls"\n'
             info = tarfile.TarInfo("provision.sh")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         return gzip.compress(raw.getvalue())
 
+    def calls(self, tmp):
+        path = tmp / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
     def test_runs_provision_from_a_bundle_that_matches(self):
         bundle = self.bundle_with_probe()
         result, tmp = self.run_boot(bundle, hashlib.sha256(bundle).hexdigest())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((tmp / "host" / "ran").read_text(), "provisioned\n")
+        self.assertEqual(result.returncode, 0, (tmp / "log").read_text())
+        # A first boot: nothing to repair, nothing thrown away.
+        self.assertEqual(self.calls(tmp), ["curl", "provision"])
+        self.assertEqual(self.left(tmp), list(self.LEFTOVERS))
+        # Everything, provision.sh's output too, goes to the log.
+        self.assertEqual((result.stdout, result.stderr), ("", ""))
+        log = (tmp / "log").read_text().splitlines()
+        self.assertRegex(log[0], r"^bro-host-boot \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ stage none$")
+        self.assertEqual(log[1:], ["provisioning"])
 
     def test_a_bundle_that_does_not_match_never_runs(self):
         result, tmp = self.run_boot(self.bundle_with_probe(), "00" * 32)
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((tmp / "host" / "ran").exists())
+        self.assertNotIn("provision", self.calls(tmp))
+
+    def test_a_run_a_reboot_cut_short_is_cleaned_up_and_provisions_again(self):
+        # Cloud.ru's reboot is a hard reset: on 02.10 every apt Packages list came back empty, and
+        # apt-get update, which found the InRelease files whole, kept them. The venv may be torn too, and
+        # hostd may run from it.
+        bundle = self.bundle_with_probe()
+        result, tmp = self.run_boot(bundle, hashlib.sha256(bundle).hexdigest(), stage="packages")
+        self.assertEqual(result.returncode, 0, (tmp / "log").read_text())
+        self.assertEqual(self.calls(tmp), ["curl", "systemctl stop bro-hostd", "dpkg --configure -a noninteractive",
+                                           "provision"])
+        self.assertEqual(self.left(tmp), ["archives/lock"])
+        self.assertIn(" stage packages\n", (tmp / "log").read_text())
+
+    def test_a_ready_host_is_left_alone_after_a_reboot(self):
+        # Its Caddy and hostd start on their own; provision.sh again would rewrite the Caddyfile hostd keeps.
+        bundle = self.bundle_with_probe()
+        result, tmp = self.run_boot(bundle, hashlib.sha256(bundle).hexdigest(), stage="ready")
+        self.assertEqual(result.returncode, 0, (tmp / "log").read_text())
+        self.assertEqual(self.calls(tmp), [])
+        self.assertRegex((tmp / "log").read_text(), r"^bro-host-boot \S+ stage ready\n$")
+        self.assertFalse((tmp / "host").exists())
+        self.assertEqual(self.left(tmp), list(self.LEFTOVERS))
 
 
 class ProvisionTest(unittest.TestCase):
@@ -196,7 +267,27 @@ class ProvisionTest(unittest.TestCase):
         # The host's own public address is refused to sandboxes like every other blocked destination.
         self.assertIn('settings["egress_blocked"] = [sys.argv[3] + "/32"]', PROVISION)
         self.assertNotIn("set -x", PROVISION)  # the log must not echo presigned URLs
+        # pipefail: `head` leaves early, and runc, writing the rest, died of SIGPIPE (a host, 02.10.2026).
+        self.assertNotRegex(PROVISION, r"\| *head\b")
+        self.assertIn("runc --version | sed -n 1p\n", PROVISION)
         self.assertIn("tar --numeric-owner -I zstd -xpf", PROVISION)  # the rootfs keeps its own ids
+
+    def test_every_step_is_safe_to_repeat(self):
+        # bro-host-boot runs this again after a reboot that cut it short, at any line, once it has thrown away
+        # what such a run may leave torn and provision.sh would not make anew.
+        self.assertIn("rm -rf /opt/bro/venv /var/lib/apt/lists/* /var/cache/apt/archives/*.deb", boot.BOOT_SCRIPT)
+        self.assertIn("python3 -m venv /opt/bro/venv\n", PROVISION)
+        self.assertIn("retry apt-get update -q\n", PROVISION)
+        self.assertIn("getent group caddy >/dev/null || groupadd --system caddy", PROVISION)
+        self.assertIn("id -u caddy >/dev/null 2>&1 || useradd", PROVISION)
+        # Unguarded, these fail the second time.
+        self.assertNotRegex(PROVISION, r"(?m)^\s*(useradd|groupadd|mkdir [^-])")
+        # The rootfs: a partial download is fetched again and checked, a partial unpack thrown away, and the
+        # root takes its name only once it is on disk.
+        rootfs = PROVISION[PROVISION.index("stage rootfs"):PROVISION.index("stage ready")]
+        self.assertIn('if [ ! -d "$ROOTFS" ]; then', rootfs)
+        self.assertLess(rootfs.index('rm -rf "$PARTIAL"'), rootfs.index("tar --numeric-owner"))
+        self.assertLess(rootfs.index("  sync\n"), rootfs.index('mv "$PARTIAL" "$ROOTFS"'))
 
     def test_the_stage_is_readable_before_the_slow_steps(self):
         # hostd serves `stage` on /h/v1/health: it must be up before the rootfs download, or a failure
