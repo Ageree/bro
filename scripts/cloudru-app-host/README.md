@@ -194,6 +194,12 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    `OPS_ALERT_WEBHOOK_URL` и всё, что надо перекрыть (и базы, если они
    другие); `null` удаляет имя.
 
+Прод (`--profile prod`, не `--dry-run`) не уходит, если не найдено имя из
+`EXPECTED`/`EXPECTED_PROD` (`--allow-missing` — сознательно) или нет https
+`OPS_ALERT_WEBHOOK_URL` (`--no-alert-webhook` — сознательно); `--dry-run`
+печатает, от чего откажет. `EVE_SCHEDULES=off` или `BACKUPS=off` на проде —
+`WARNING` в `env` и список `off` в `host.py status`: только на окно переезда.
+
 Значения чистятся от переводов строк, пробелов и кавычек по краям. Значение с
 переводом строки deployd не примет. Перед рестартом deployd накатывает
 миграции текущего релиза (`ops/migrate.mjs app world`) на базы нового env:
@@ -211,6 +217,9 @@ host.py rollback bro-app-1                         # ещё раз — на ре
   `--set brobro.tech,www.brobro.tech`.
 - `host.py logs NAME bro-eve --lines 500` — хвост journald.
 - `host.py restart NAME [bro-web bro-eve caddy]`, `host.py stop NAME bro-eve bro-web`.
+  `stop` помечает остановку плановой (`/var/lib/bro/maintenance`, в `host.py
+status` — `plannedStop`), пока юниты не перезапустит `restart`, релиз или
+  `env`: сторож три часа не считает их упавшими.
 - `host.py ops NAME <скрипт> [аргументы]` — `ops/<скрипт>` текущего релиза
   от `bro` с env сервисов (базы — раздел «База»); аргумент `s3get:`/`s3put:`
   превращается в presigned-ссылку.
@@ -224,8 +233,8 @@ Telegram до VM в РФ доходит ненадёжно, поэтому на 
 `bro`):
 
 ```sh
-host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo
-host.py ops bro-app-1 tg-bridge.sh hold                # только deleteWebhook: Telegram копит обновления (24 ч)
+host.py ops bro-app-1 tg-bridge.sh status              # юниты, /health моста, getWebhookInfo (без токена в env — только юниты)
+host.py ops bro-app-1 tg-bridge.sh hold                # только deleteWebhook: Telegram копит обновления (24 ч), метка tg-hold
 host.py ops bro-app-1 tg-bridge.sh switch-to-bridge    # сначала tg_egress.py --check, затем deleteWebhook и мост
 host.py ops bro-app-1 tg-bridge.sh switch-to-webhook https://bro-next.vercel.app/eve/v1/telegram
 host.py logs bro-app-1 bro-tg-bridge                   # и bro-tg-egress
@@ -345,6 +354,14 @@ host.py pg status      # кластер, диск, базы, пользоват�
 через адаптер канала eve — сторожу на stdlib они недоступны. Тревога, не
 ушедшая ни в один канал, повторяется на следующем тике и видна в `host.py
 status` (`watchdog.undelivered`, там же лежащие проверки `watchdog.down`).
+
+Плановая остановка (`host.py stop`) снимает проверки web и eve (с eve — и
+моста) на три часа, дольше — тревога как обычно. `tg-bridge.sh hold` пишет
+`/var/lib/bro/tg-hold`, оба `switch-to-*` её убирают: hold старше трёх часов
+при выключенном мосте — тревога (Telegram держит обновления лишь сутки).
+Проверка, которую больше не запускают (мост выключен, `BACKUPS=off`),
+уходит из состояния; если о ней тревожили — одно сообщение, что она больше
+не проверяется.
 
 Watchdog живёт на той же VM: падение VM, сети, DNS, истёкший сертификат он
 не заметит. Внешней проверки `https://<домен>/eve/v1/health` пока нет — её

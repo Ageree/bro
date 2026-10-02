@@ -30,7 +30,9 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
                                       next to <site> redirects to it (308)
   GET  /ops/v1/logs?unit=&lines=      the tail of journald for one of the units
   POST /ops/v1/restart                {units: [...]} -> 202 {job}
-  POST /ops/v1/stop                   {units: [bro-web, bro-eve]} -> 202 {job} (before a restore)
+  POST /ops/v1/stop                   {units: [bro-web, bro-eve]} -> 202 {job} (before a restore); marks
+                                      the stop planned (/var/lib/bro/maintenance) until a restart of the
+                                      units, so the watchdog stays quiet about them (watchdog.py)
   POST /ops/v1/ops                    {script, args?} -> 202 {job}: ops/<script> of the current release, as
                                       bro; ROOT_OPS (tg-bridge.sh) from the host bundle, as root
 
@@ -113,6 +115,10 @@ class Paths:
         self.host_ops = root / "opt/bro/app-host/ops"
         self.tg_egress = root / "opt/bro/tg-egress/tg_egress.py"
         self.watchdog_state = root / "var/lib/bro/watchdog.json"
+        # {"since", "units"}: a planned stop (POST /stop) until a restart; the watchdog does not count them down.
+        self.maintenance = root / "var/lib/bro/maintenance"
+        # Unix seconds of ops/tg-bridge.sh hold: Telegram keeps the updates 24 hours, nobody takes them.
+        self.tg_hold = root / "var/lib/bro/tg-hold"
 
 
 class Unauthorized(Exception):
@@ -440,6 +446,14 @@ class Deployd:
         return "down"
 
     def restart(self, log, units=("bro-eve", "bro-web")):
+        planned = self.planned_stop()
+        if set(planned.get("units", [])) & set(units):
+            left = sorted(set(planned["units"]) - set(units))
+            if left:
+                write_private(self.paths.maintenance, json.dumps({**planned, "units": left}))
+            else:
+                self.paths.maintenance.unlink()
+            log(f"planned stop over for {', '.join(u for u in units if u in planned['units'])}: watched again")
         for unit in units:
             code, output = self.runner.run(["systemctl", "restart", unit], timeout=120)
             log(f"restart {unit}: {'ok' if code == 0 else 'exit ' + str(code)}")
@@ -736,9 +750,20 @@ class Deployd:
         units = body.get("units")
         if not isinstance(units, list) or not units or not all(u in STOPPABLE for u in units):
             raise Refused(f"units: some of {', '.join(STOPPABLE)}")
+        # Before the stop: the watchdog must not take a planned stop for a fall (window, rollback, restore).
+        planned = self.planned_stop()
+        write_private(self.paths.maintenance, json.dumps(
+            {"since": planned.get("since", int(time.time())), "units": sorted({*planned.get("units", []), *units})}))
         if not self.stop(log, units):
             raise Refused("a unit did not stop: see the log")
         return {"stopped": units}
+
+    def planned_stop(self):
+        try:
+            planned = json.loads(self.paths.maintenance.read_text())
+        except (OSError, ValueError):
+            return {}
+        return planned if isinstance(planned, dict) else {}
 
     # -- read-only
 
@@ -755,7 +780,8 @@ class Deployd:
             "units": units, "health": {"web": self.runner.healthy(WEB_HEALTH), "eve": self.runner.healthy(EVE_HEALTH)},
             "opsDomain": self.ops_domain(), "sites": read_sites(self.paths),
             "telegram": {"egressInstalled": self.paths.tg_egress.exists(), "bridgeEnabled": self.bridge_enabled()},
-            "watchdog": self.watchdog_alarms(),
+            "watchdog": self.watchdog_alarms(), "plannedStop": self.planned_stop() or None,
+            "off": self.switched_off(),
             "diskFreeGb": round(disk.free / 1e9, 1), "busy": self.busy.locked(), "job": self.running_job(),
         }
 
@@ -770,6 +796,11 @@ class Deployd:
                 if isinstance(entry, dict) and isinstance(entry.get("downSince"), int)}
         undelivered = state.get("undelivered") if isinstance(state.get("undelivered"), dict) else {}
         return {"down": down, "undelivered": undelivered}
+
+    def switched_off(self):
+        """EVE_SCHEDULES and BACKUPS that /etc/bro/env turns off: on production only for the move's window."""
+        values = parse_env(self.paths.env.read_text()) if self.paths.env.exists() else {}
+        return [name for name in ("EVE_SCHEDULES", "BACKUPS") if values.get(name) == "off"]
 
     def env_names(self):
         text = self.paths.env.read_text() if self.paths.env.exists() else ""

@@ -26,6 +26,16 @@ mail needs a card a person confirms, and iMessage (Photon) goes through eve's ch
 way out for a stdlib script. An alert that reached no channel stays due (the next tick tries again) and is
 listed under "undelivered" in watchdog.json, which deployd's status shows (`host.py status`).
 
+Planned stops: `host.py stop` (deployd's POST /stop) leaves /var/lib/bro/maintenance until the units restart;
+for MAINTENANCE_S from it web and eve (and tg-bridge with eve) are not checked, so a move's window or a
+rollback does not wake the owner; a stop left longer than that is checked again, and alerts as usual.
+
+A Telegram hold (ops/tg-bridge.sh hold: no webhook, the bridge off) leaves /var/lib/bro/tg-hold: Telegram keeps
+the updates 24 hours and nobody takes them, so a hold left over TG_HOLD_S with the bridge still off is down.
+
+A check that is no longer run (the bridge switched off, tg-egress removed, BACKUPS=off) leaves the state: its
+entry and its undelivered alert go, and an owner who heard it was down hears it is no longer watched.
+
 State: /var/lib/bro/watchdog.json (when each check went down, when the owner last heard, an unsent recovery).
 
 It runs on the VM it watches: the VM down, its network, DNS or certificate fail without a word from it. The
@@ -51,10 +61,15 @@ EGRESS_RESTART_EVERY_S = 10 * 60
 BRIDGE_UNIT = "bro-tg-bridge"
 BRIDGE_HEALTH = "http://127.0.0.1:7445/health"
 REPEAT_S = 60 * 60
+MAINTENANCE_S = 3 * 3600
+TG_HOLD_S = 3 * 3600
 BACKUP_FRESH_S = 26 * 3600
 NAMES = {"web": "Next (сайт и вход)", "eve": "eve (агент, каналы)", "caddy": "Caddy (HTTPS)",
          "backup": "ночной бэкап базы", "tg-egress": "путь к api.telegram.org (tg-egress)",
-         "tg-bridge": "мост Telegram (входящие сообщения бота)"}
+         "tg-bridge": "мост Telegram (входящие сообщения бота)",
+         "tg-hold": "приём сообщений Telegram (ни вебхука, ни моста после hold)"}
+# A planned stop of these units pauses these checks: eve stopped, the bridge cannot hand anything over.
+PAUSED_BY = {"bro-web": ("web",), "bro-eve": ("eve", "tg-bridge")}
 ALERTS = {"backup": "Бро на {host}: ночной бэкап базы или его проверка не прошли. Логи: host.py logs {host} bro-backup."}
 
 
@@ -127,16 +142,42 @@ def unit_is(state, unit):
     return subprocess.run(["systemctl", state, "--quiet", unit]).returncode == 0
 
 
-def probe(paths, env, now, state):
+def paused(paths, now):
+    """The checks a planned stop (deployd's POST /stop) pauses, while it is younger than MAINTENANCE_S."""
+    try:
+        planned = json.loads(paths.maintenance.read_text())
+        since, units = int(planned["since"]), list(planned["units"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+    if now - since >= MAINTENANCE_S:
+        return set()
+    return {check for unit in units for check in PAUSED_BY.get(unit, ())}
+
+
+def hold_ok(paths, now):
+    """None without a hold; else whether it is still young enough (Telegram drops updates after 24 hours)."""
+    try:
+        since = int(paths.tg_hold.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return now - since < TG_HOLD_S
+
+
+def probe(paths, env, now, state, skip=frozenset()):
     # No release yet: nothing of the app to watch, only Caddy.
     checks = {"caddy": caddy_ok()}
     if paths.current.exists():
-        checks["web"] = http_ok(WEB_HEALTH)
-        checks["eve"] = http_ok(EVE_HEALTH)
+        for name, url in (("web", WEB_HEALTH), ("eve", EVE_HEALTH)):
+            if name not in skip:
+                checks[name] = http_ok(url)
     if paths.tg_egress.exists():
         checks["tg-egress"] = egress_ok(paths, now, state)
-    if unit_is("is-enabled", BRIDGE_UNIT):
+    bridge = unit_is("is-enabled", BRIDGE_UNIT)
+    if bridge and "tg-bridge" not in skip:
         checks["tg-bridge"] = unit_is("is-active", BRIDGE_UNIT) and http_ok(BRIDGE_HEALTH)
+    hold = None if bridge else hold_ok(paths, now)
+    if hold is not None:
+        checks["tg-hold"] = hold
     fresh = backup_fresh(paths, env, now, state)
     if fresh is not None:
         checks["backup"] = fresh and not backup_unit_failed()
@@ -188,10 +229,21 @@ def clock(seconds):
     return time.strftime("%H:%M UTC", time.gmtime(seconds))
 
 
-def step(state, checks, now, host):
+def step(state, checks, now, host, skip=frozenset()):
     """The messages due for these results, as (check, text); updates state in place. A message goes on the
-    record only once it is sent (sent()), so an unsent alert or recovery is due again on the next tick."""
+    record only once it is sent (sent()), so an unsent alert or recovery is due again on the next tick.
+    A check neither run nor paused (skip) is dropped from the state; the owner hears once if it was alerted."""
     messages = []
+    for name in [n for n in NAMES if n not in checks and n not in skip]:
+        entry = state.pop(name, None)
+        undelivered = state.get("undelivered")
+        if isinstance(undelivered, dict):
+            undelivered.pop(name, None)
+            if not undelivered:
+                state.pop("undelivered")
+        if isinstance(entry, dict) and "alertedAt" in entry:
+            messages.append((name, f"Бро на {host}: {NAMES[name]} больше не проверяется (выключено или снято); "
+                                   f"последняя тревога была о нём."))
     for name, ok in checks.items():
         entry = state.setdefault(name, {})
         if ok:
@@ -208,7 +260,12 @@ def step(state, checks, now, host):
         down_for = now - entry["downSince"]
         alerted = entry.get("alertedAt")
         if down_for >= DOWN_BEFORE_ALERT_S and (alerted is None or now - alerted >= REPEAT_S):
-            if name == "backup":
+            if name == "tg-hold":
+                text = (f"Бро на {host}: вебхук Telegram снят (tg-bridge.sh hold), а мост не включён уже "
+                        f"{int((now - entry['downSince']) // 60) + TG_HOLD_S // 60} мин; через 24 ч от hold "
+                        f"Telegram выбросит накопленное. Включить: host.py ops {host} tg-bridge.sh "
+                        f"switch-to-bridge (или switch-to-webhook).")
+            elif name == "backup":
                 text = (f"Бро на {host}: ночной бэкап базы не в порядке с {clock(entry['downSince'])}: "
                         f"нет удачного за сутки, нет ключа или последний запуск (бэкап или проверка) упал. "
                         f"Логи: host.py logs {host} bro-backup.")
@@ -262,8 +319,10 @@ def main(argv=None):
         state = {}
     now = int(time.time())
     env = read_env(paths)
-    checks = probe(paths, env, now, state)
-    print(" ".join(f"{name}={'ok' if ok else 'DOWN'}" for name, ok in checks.items()), flush=True)
+    skip = paused(paths, now)
+    checks = probe(paths, env, now, state, skip)
+    print(" ".join([f"{name}={'ok' if ok else 'DOWN'}" for name, ok in checks.items()]
+                   + [f"{name}=planned-stop" for name in sorted(skip)]), flush=True)
     host = host_name(paths)
 
     def save():
@@ -273,7 +332,7 @@ def main(argv=None):
                 for name, entry in state.items()}
         write_private(state_file, json.dumps(kept) + "\n")
 
-    for name, text in step(state, checks, now, host):
+    for name, text in step(state, checks, now, host, skip):
         if send(env, text):
             sent(state, name)
             save()  # each sent alert at once: a stop mid-run must not send it again

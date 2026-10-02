@@ -20,9 +20,10 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
                                                 switch, health within 120 s or back to the previous release
   python host.py rollback NAME [--version V]    the release before the current one (or V)
-  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon]
+  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon] [--allow-missing] [--no-alert-webhook]
                                                 compose /etc/bro/env and PUT it (names only are printed);
-                                                --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only
+                                                --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only;
+                                                prod refuses a missing expected name or no https alert webhook
   python host.py sites NAME [--set D,D | --add D | --remove D]
   python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog, bro-backup,
                                                 bro-tg-egress, bro-tg-bridge
@@ -415,11 +416,15 @@ def cmd_status(args):
         print(output)
 
 
+# The running code becomes app-host.old only when its install finished (install-code.sh's .installed) or there
+# is no app-host.old yet: a retry after a failed install keeps the last good code there.
+ROTATE_HOST_CODE = ("{ if [ -f /opt/bro/app-host/.installed ] || [ ! -d /opt/bro/app-host.old ]; then "
+                    "rm -rf /opt/bro/app-host.old && mv /opt/bro/app-host /opt/bro/app-host.old; "
+                    "else rm -rf /opt/bro/app-host; fi; }")
 # One console line, each step only after the one before it succeeded.
 UPDATE_HOST = " && ".join((
     "rm -rf /opt/bro/app-host.new", "mkdir -p /opt/bro/app-host.new",
-    "tar -xzf /root/app-host.tgz -C /opt/bro/app-host.new", "rm -f /root/app-host.tgz",
-    "rm -rf /opt/bro/app-host.old", "mv /opt/bro/app-host /opt/bro/app-host.old",
+    "tar -xzf /root/app-host.tgz -C /opt/bro/app-host.new", "rm -f /root/app-host.tgz", ROTATE_HOST_CODE,
     "mv /opt/bro/app-host.new /opt/bro/app-host", "bash /opt/bro/app-host/install-code.sh",
     "systemctl daemon-reload", "systemctl restart deployd",
     "python3 /opt/bro/app-host/deployd.py caddyfile", "systemctl reload caddy",
@@ -429,7 +434,7 @@ UPDATE_HOST = " && ".join((
 def cmd_update_host(args):
     """A VM made by an older bundle gets this one without being made again (its address, disk, releases and
     env stay): the bundle goes through Object Storage, the console checks its sha256, swaps /opt/bro/app-host
-    (the old one stays in app-host.old), runs install-code.sh and restarts deployd. Not while deployd runs a
+    (the old one stays in app-host.old, unless its own install failed: then app-host.old keeps the good one), runs install-code.sh and restarts deployd. Not while deployd runs a
     job: the restart would cut it."""
     name = host_name(args.name)
     status = checked(call(name, "GET", "status"), (200,))
@@ -794,6 +799,23 @@ def cmd_env(args):
               and not (args.profile == "stand" and STAND_DROPPED.fullmatch(n))]
     if absent:
         print(f"not found anywhere (Vercel keeps them sensitive): {' '.join(absent)}")
+    prod = args.profile == "prod"
+    # The window's step 2 runs without --dry-run: a production env without payments or owner alerts must not
+    # go out because nobody read the line above.
+    refusals = []
+    if prod and absent and not args.allow_missing:
+        refusals.append(f"production lacks {' '.join(absent)}: put them in {SECRETS / 'prod.json'} "
+                        "(or --allow-missing on purpose)")
+    webhook = values.get("OPS_ALERT_WEBHOOK_URL")
+    if webhook and not webhook.startswith("https://"):
+        print("WARNING: OPS_ALERT_WEBHOOK_URL is not https: the watchdog never uses it")
+    if prod and not (webhook or "").startswith("https://") and not args.no_alert_webhook:
+        refusals.append("production has no https OPS_ALERT_WEBHOOK_URL: an alert about the path to Telegram would "
+                        "reach nobody (or --no-alert-webhook on purpose)")
+    for name in ("EVE_SCHEDULES", "BACKUPS"):
+        if prod and values.get(name) == "off":
+            print(f"WARNING: {name}=off on production ({sources.get(name)}): only for the move's window; "
+                  f"remove it from prod.json and run host.py env again after it")
     if args.profile == "stand":
         for name in sorted(n for n in values if PRODUCTION_STORES.fullmatch(n)):
             print(f"warning: the stand keeps {name} ({sources[name]}): it acts on production's store or accounts")
@@ -824,7 +846,11 @@ def cmd_env(args):
     if missing:
         sys.exit(f"missing {', '.join(missing)}: put them in {SECRETS / (args.profile + '.json')} (0600)")
     if args.dry_run:
+        for refusal in refusals:
+            print(f"would refuse: {refusal}")
         return
+    if refusals:
+        sys.exit("\n".join(refusals))
     # migrate: the release's schema on the env's databases before the app starts on them (the prod env's are
     # new on the first PUT; the Postgres world does not start without its schema).
     job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env, "migrate": True})
@@ -1072,6 +1098,10 @@ def parser():
     env.add_argument("name")
     env.add_argument("--profile", choices=sorted(PROFILES), required=True)
     env.add_argument("--dry-run", action="store_true")
+    env.add_argument("--allow-missing", action="store_true",
+                     help="prod: go on without names of EXPECTED/EXPECTED_PROD (refused otherwise)")
+    env.add_argument("--no-alert-webhook", action="store_true",
+                     help="prod: go on without an https OPS_ALERT_WEBHOOK_URL (refused otherwise)")
     env.add_argument("--with-neon", action="store_true",
                      help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
                           "in /etc/bro/ops-env for the ops scripts only")

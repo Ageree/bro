@@ -334,6 +334,24 @@ class ReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(deployd.Refused, "tg-bridge.sh"):
                 self.deployd.do_ops({"script": "tg-bridge.sh", "args": args}, self.log.append)
 
+    def test_a_stop_is_planned_until_the_units_restart(self):
+        self.deployd.do_stop({"units": ["bro-eve", "bro-web"]}, self.log.append)
+        planned = json.loads(self.paths.maintenance.read_text())
+        self.assertEqual(planned["units"], ["bro-eve", "bro-web"])
+        self.assertEqual(self.deployd.status()["plannedStop"], planned)
+        self.deployd.do_stop({"units": ["bro-eve"]}, self.log.append)  # a second stop keeps the first time
+        self.assertEqual(json.loads(self.paths.maintenance.read_text())["since"], planned["since"])
+        self.deployd.do_restart({"units": ["bro-web"]}, self.log.append)
+        self.assertEqual(json.loads(self.paths.maintenance.read_text())["units"], ["bro-eve"])
+        self.deployd.do_restart({"units": ["bro-eve"]}, self.log.append)
+        self.assertFalse(self.paths.maintenance.exists())
+        self.assertIsNone(self.deployd.status()["plannedStop"])
+
+    def test_status_names_what_the_env_switches_off(self):
+        self.assertEqual(self.deployd.status()["off"], [])
+        self.paths.env.write_text(deployd.render_env({"EVE_SCHEDULES": "off", "BACKUPS": "off", "X": "off"}))
+        self.assertEqual(self.deployd.status()["off"], ["EVE_SCHEDULES", "BACKUPS"])
+
     def test_status_shows_what_the_watchdog_could_not_tell(self):
         self.paths.watchdog_state.parent.mkdir(parents=True, exist_ok=True)
         self.paths.watchdog_state.write_text(json.dumps({"tg-egress": {"downSince": 100, "pendingAlert": 1},
@@ -652,6 +670,53 @@ class WatchdogTest(unittest.TestCase):
             self.assertFalse(watchdog.egress_ok(paths, 1000 + watchdog.EGRESS_RESTART_EVERY_S, state))
         self.assertEqual(runs.count(["systemctl", "restart"]), 2)
 
+    def test_a_check_no_longer_run_leaves_the_state(self):
+        state = {"tg-bridge": {"downSince": 0, "alertedAt": 300}, "web": {"downSince": 0},
+                 "undelivered": {"tg-bridge": 900}, "expected": {"backup": 5}, "egressRestartedAt": 7}
+        [(name, text)] = watchdog.step(state, {"caddy": True}, 1000, "h", skip={"web"})
+        self.assertEqual(name, "tg-bridge")
+        self.assertIn("больше не проверяется", text)
+        self.assertNotIn("tg-bridge", state)
+        self.assertNotIn("undelivered", state)
+        self.assertEqual(state["web"], {"downSince": 0})  # paused by a planned stop: kept
+        self.assertEqual((state["expected"], state["egressRestartedAt"]), ({"backup": 5}, 7))
+        self.assertEqual(watchdog.step(state, {"caddy": True}, 1060, "h"), [])  # once
+        self.assertNotIn("web", state)  # not paused any more and not run: gone without a word (never alerted)
+
+    def test_a_planned_stop_pauses_web_and_eve_for_three_hours(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        self.assertEqual(watchdog.paused(paths, 0), set())
+        paths.maintenance.parent.mkdir(parents=True)
+        paths.maintenance.write_text(json.dumps({"since": 1000, "units": ["bro-eve", "bro-web"]}))
+        self.assertEqual(watchdog.paused(paths, 1000 + 3600), {"web", "eve", "tg-bridge"})
+        self.assertEqual(watchdog.paused(paths, 1000 + watchdog.MAINTENANCE_S), set())
+        paths.maintenance.write_text("{")
+        self.assertEqual(watchdog.paused(paths, 1000), set())
+
+    def test_a_hold_left_without_the_bridge_alerts(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        paths = deployd.Paths(root)
+        self.assertIsNone(watchdog.hold_ok(paths, 0))
+        paths.tg_hold.parent.mkdir(parents=True)
+        paths.tg_hold.write_text("1000\n")
+        self.assertTrue(watchdog.hold_ok(paths, 1000 + 3600))
+        late = 1000 + watchdog.TG_HOLD_S
+        self.assertFalse(watchdog.hold_ok(paths, late))
+        with mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=False):
+            self.assertEqual(watchdog.probe(paths, {}, late, {}), {"caddy": True, "tg-hold": False})
+        with mock.patch.object(watchdog, "caddy_ok", return_value=True), \
+                mock.patch.object(watchdog, "unit_is", return_value=True), \
+                mock.patch.object(watchdog, "http_ok", return_value=True):
+            self.assertNotIn("tg-hold", watchdog.probe(paths, {}, late, {}))  # the bridge is on: it is watched
+        state = {}
+        watchdog.step(state, {"tg-hold": False}, late, "bro-app-1")
+        [(_, text)] = watchdog.step(state, {"tg-hold": False}, late + 300, "bro-app-1")
+        self.assertIn("switch-to-bridge", text)
+
     def test_a_blip_says_nothing(self):
         state = {}
         watchdog.step(state, {"web": False}, 0, "h")
@@ -951,6 +1016,64 @@ class HostCliTest(unittest.TestCase):
         self.assertLess(steps.index("bash /opt/bro/app-host/install-code.sh"), steps.index("systemctl restart deployd"))
         self.assertEqual(steps[-1], "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health")
         self.assertLess(len(self.host.UPDATE_HOST), 900)  # one serial line
+
+    def test_update_host_keeps_the_last_good_code_when_an_install_failed(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        self.assertIn(self.host.ROTATE_HOST_CODE, self.host.UPDATE_HOST)
+        script = f"{self.host.ROTATE_HOST_CODE} && mv /opt/bro/app-host.new /opt/bro/app-host".replace(
+            "/opt/bro", str(root))
+
+        def run(current_installed):
+            (root / "app-host.new").mkdir()
+            (root / "app-host.new" / "code").write_text("new")
+            if current_installed:
+                (root / "app-host" / ".installed").write_text("")
+            subprocess.run(["bash", "-c", script], check=True)
+
+        (root / "app-host").mkdir()
+        (root / "app-host" / "code").write_text("good")
+        run(current_installed=False)  # the first update of an old VM: no .old yet, so it rotates
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "good")
+        run(current_installed=False)  # the new code's install failed; a retry keeps the good one
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "good")
+        run(current_installed=True)  # installed: it becomes the previous code
+        self.assertEqual((root / "app-host.old" / "code").read_text(), "new")
+
+    def test_production_env_refuses_without_the_expected_names_or_an_alert_webhook(self):
+        values = {name: "x" for name in self.host.REQUIRED}
+        values.update(BACKUPS="off", EVE_SCHEDULES="off")
+
+        def env(*flags, extra=None):
+            args = self.host.parser().parse_args(["env", "bro-app-1", "--profile", "prod", *flags])
+            given = {**values, **(extra or {})}
+            sources = {name: "prod.json" for name in given}
+            with mock.patch.object(self.host, "compose_env", return_value=(given, sources)), \
+                    mock.patch.object(self.host, "start_job", side_effect=RuntimeError("sent")), \
+                    mock.patch("builtins.print") as printed:
+                try:
+                    args.fn(args)
+                except SystemExit as stop:
+                    return "refused: " + str(stop), printed
+                except RuntimeError:
+                    return "sent", printed
+            return "dry", printed
+
+        outcome, _ = env()
+        self.assertIn("TELEGRAM_OWNER_CHAT_ID", outcome)
+        self.assertIn("OPS_ALERT_WEBHOOK_URL", outcome)
+        outcome, printed = env("--dry-run")
+        self.assertEqual(outcome, "dry")
+        lines = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("would refuse", lines)
+        self.assertIn("WARNING: EVE_SCHEDULES=off", lines)
+        self.assertIn("WARNING: BACKUPS=off", lines)
+        self.assertEqual(env("--allow-missing", "--no-alert-webhook")[0], "sent")
+        hook = {"OPS_ALERT_WEBHOOK_URL": "https://push.example/t"}
+        self.assertEqual(env("--allow-missing", extra=hook)[0], "sent")
+        outcome, printed = env("--allow-missing", extra={"OPS_ALERT_WEBHOOK_URL": "http://push.example/t"})
+        self.assertIn("refused", outcome)
+        self.assertIn("not https", " ".join(str(c.args[0]) for c in printed.call_args_list))
 
     def test_remember_keeps_the_previous_file(self):
         secrets_file = self.host.SECRETS / "new-secrets.json"

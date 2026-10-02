@@ -25,3 +25,7 @@ systemctl restart bro-tg-egress.service
 
 # Its install.sh: the script, the unit, an empty /etc/bro/tg-bridge.env; a running bridge restarts on it.
 bash "$HOST/tg-bridge/install.sh"
+
+# Last: this code installed whole. host.py update-host moves it to app-host.old only with this mark, so a retry
+# after a failed install never overwrites the last good code there.
+touch "$HOST/.installed"
