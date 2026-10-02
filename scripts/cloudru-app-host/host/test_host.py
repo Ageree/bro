@@ -210,6 +210,22 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(call["argv"][0], "/bin/bash")
         self.assertEqual(call["user"], "bro")
 
+    def test_neon_goes_to_the_ops_scripts_only(self):
+        self.release("v1")
+        with self.assertRaisesRegex(deployd.Refused, "only in opsEnv"):
+            self.deployd.do_env({"env": {"A": "1", "NEON_DATABASE_URL": "postgres://n"}}, self.log.append)
+        with self.assertRaisesRegex(deployd.Refused, "opsEnv"):
+            self.deployd.do_env({"env": {"A": "1"}, "opsEnv": {"DATABASE_URL": "x"}}, self.log.append)
+        self.deployd.do_env({"env": {"A": "1"}, "opsEnv": {"NEON_DATABASE_URL": "postgres://n"}}, self.log.append)
+        self.assertNotIn("NEON_DATABASE_URL", deployd.read_env(self.paths))
+        self.assertEqual(self.paths.ops_env.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.deployd.env_names()["opsOnly"], ["NEON_DATABASE_URL"])
+        (self.paths.releases / "v1" / "ops" / "db-copy.sh").write_text("")
+        self.deployd.do_ops({"script": "db-copy.sh", "args": ["neon", "app"]}, self.log.append)
+        self.assertEqual(self.runner.calls[-1]["env"]["NEON_DATABASE_URL"], "postgres://n")
+        self.deployd.do_env({"env": {"A": "1"}}, self.log.append)  # without it: gone
+        self.assertFalse(self.paths.ops_env.exists())
+
 
 class EnvFileTest(unittest.TestCase):
     def test_round_trip(self):
@@ -344,16 +360,22 @@ class WatchdogTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             paths = deployd.Paths(root)
             now = 2_000_000
-            self.assertIsNone(watchdog.backup_fresh(paths, {}, now))
-            env = {"BACKUP_ENCRYPTION_KEY": "k"}
-            self.assertIsNone(watchdog.backup_fresh(paths, env, now))  # none has run yet
+            state = {}
+            self.assertIsNone(watchdog.backup_fresh(paths, {}, now, state))  # no database yet
+            self.assertIsNone(watchdog.backup_fresh(paths, {"DATABASE_URL": "x", "BACKUPS": "off"}, now, state))
+            # Expected but the key dropped out of the env: down at once, not quietly off.
+            self.assertFalse(watchdog.backup_fresh(paths, {"DATABASE_URL": "x"}, now, state))
+            env = {"DATABASE_URL": "x", "BACKUP_ENCRYPTION_KEY": "k"}
+            # None has run yet: fine for 26 hours from when the watchdog first expected one, then stale.
+            self.assertTrue(watchdog.backup_fresh(paths, env, now + 3600, state))
+            self.assertFalse(watchdog.backup_fresh(paths, env, now + 27 * 3600, state))
             paths.backups.mkdir(parents=True)
-            (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": now - 3600}))
-            self.assertTrue(watchdog.backup_fresh(paths, env, now))
-            self.assertFalse(watchdog.backup_fresh(paths, env, now + 26 * 3600))
+            (paths.backups / "last-backup.json").write_text(json.dumps({"finishedAt": now + 26 * 3600}))
+            self.assertTrue(watchdog.backup_fresh(paths, env, now + 27 * 3600, state))
+            self.assertFalse(watchdog.backup_fresh(paths, env, now + 53 * 3600, state))
         state = {"backup": {"downSince": 0}}
         [(_, text)] = watchdog.step(state, {"backup": False}, 300, "bro-app-1")
-        self.assertIn("бэкапа базы", text)
+        self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
 
     def test_a_blip_says_nothing(self):
@@ -470,6 +492,56 @@ class BackupTest(unittest.TestCase):
         self.assertTrue(store.NIGHTLY.fullmatch("20261002T011000Z.dump.enc"))
         self.assertIsNone(store.NIGHTLY.fullmatch("20261002T011000Z-neon.dump.enc"))
 
+    def run_lib(self, script, stdin=""):
+        return subprocess.run(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; {script}'], input=stdin,
+                              capture_output=True, text=True, check=True).stdout
+
+    def test_copy_counts_takes_no_row_for_a_header(self):
+        # pg_restore --data-only output: a text row that starts with "COPY " stays a row of its table.
+        text = ("SET x = 1;\n"
+                "COPY public.msgs (body, id) FROM stdin;\nCOPY evil\t1\nhi\t2\n\\.\n"
+                'COPY public."user" (email) FROM stdin;\na@x\n\\.\n'
+                "COPY drizzle.__drizzle_migrations (id) FROM stdin;\n\\.\n")
+        self.assertEqual(self.run_lib("copy_counts", text).splitlines(),
+                         ["drizzle.__drizzle_migrations 0", "public.msgs 2", "public.user 1"])
+
+    def test_a_failed_restore_shows_its_first_error_only(self):
+        stderr = ('psql:/var/backups/bro/work.x/restore.sql:5: ERROR:  duplicate key value violates unique '
+                  'constraint "user_email_key"\nDETAIL:  Key (email)=(person@example.com) already exists.\n'
+                  'CONTEXT:  COPY user, line 2: "person@example.com"\n')
+        with tempfile.NamedTemporaryFile("w", suffix=".err") as f:
+            f.write(stderr)
+            f.flush()
+            shown = self.run_lib(f'first_error "{f.name}"')
+        self.assertTrue(shown.startswith("ERROR:  duplicate key"))
+        self.assertNotIn("person@example.com", shown)
+        lib = (self.OPS / "db-lib.sh").read_text()
+        self.assertIn("-v VERBOSITY=terse -v SHOW_CONTEXT=never", lib)
+
+    def test_db_names_are_an_allowlist(self):
+        for name in ("bro", "bro_workflow", "bro_stand_workflow"):
+            result = subprocess.run(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; database_url db:{name}'],
+                                    capture_output=True, text=True, env={**os.environ, "DATABASE_URL": "postgres://u@h/bro"})
+            self.assertNotEqual(result.returncode, 0, name)
+        out = subprocess.run(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; database_url db:bro_stand'],
+                             capture_output=True, text=True, check=True,
+                             env={**os.environ, "DATABASE_URL": "postgres://u@h/bro"}).stdout
+        self.assertEqual(out.strip(), "postgres://u@h/bro_stand")
+
+    def test_manifests_are_signed_with_the_backup_key(self):
+        key = b"k" * 44
+        manifest = store.sign({"key": "backups/postgres/20261002T011000Z.dump.enc", "size": 1, "tables": {}}, key)
+        store.authenticate(manifest, key, "backups/postgres/20261002T011000Z.dump.enc")
+        with self.assertRaisesRegex(SystemExit, "another BACKUP_ENCRYPTION_KEY"):
+            store.authenticate(manifest, b"x" * 44)
+        with self.assertRaisesRegex(SystemExit, "signature"):
+            store.authenticate({**manifest, "size": 2}, key)
+        with self.assertRaisesRegex(SystemExit, "not of"):  # an older dump under a newer name
+            store.authenticate(manifest, key, "backups/postgres/20261003T011000Z.dump.enc")
+        unsigned = {k: v for k, v in manifest.items() if k != "hmac"}
+        with self.assertRaisesRegex(SystemExit, "not signed"):
+            store.authenticate(unsigned, key)
+
     def test_the_nightly_units(self):
         service = (HERE / "bro-backup.service").read_text()
         for line in ("OnFailure=bro-backup-alert.service", "User=bro", "EnvironmentFile=/etc/bro/env",
@@ -522,7 +594,23 @@ class HostCliTest(unittest.TestCase):
         self.assertTrue(prod["BACKUP_CHECK_DATABASE_URL"].endswith("/bro_restore_check"))
         self.assertNotEqual(prod["BACKUP_PREFIX"], stand["BACKUP_PREFIX"])
         self.assertEqual(prod["BACKUP_ENCRYPTION_KEY"], "k" * 44)
+        self.assertEqual((prod["BACKUPS"], prod["HOST_PROFILE"], stand["HOST_PROFILE"]), ("on", "prod", "stand"))
         self.assertNotIn("NEON_DATABASE_URL", prod)
+        secrets_file.write_text(json.dumps({"PG_HOST": "10.0.0.9", "PG_PORT": "5432", "PG_BRO_APP_PASSWORD": "p"}))
+        stand, _ = self.host.compose_env("stand", {})
+        self.assertEqual(stand["BACKUPS"], "off")  # no key: off on the stand, said so; production refuses
+        prod, _ = self.host.compose_env("prod", {})
+        self.assertEqual(prod["BACKUPS"], "on")
+
+    def test_remember_keeps_the_previous_file(self):
+        secrets_file = self.host.SECRETS / "new-secrets.json"
+        self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in (secrets_file, secrets_file.with_name(
+            "new-secrets.json.bak"))])
+        self.host.remember(A="1")
+        self.host.remember(B="2")
+        self.assertEqual(json.loads(secrets_file.read_text()), {"A": "1", "B": "2"})
+        self.assertEqual(json.loads(secrets_file.with_name("new-secrets.json.bak").read_text()), {"A": "1"})
+        self.assertEqual(secrets_file.stat().st_mode & 0o777, 0o600)
 
     def test_the_stand_gets_no_key_that_reaches_people_or_production(self):
         session = {name: "x" for name in (

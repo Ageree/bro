@@ -6,18 +6,26 @@ CLOUDRU_S3_TENANT_ID from /etc/bro/env, the bucket BACKUP_BUCKET (bucket-ac164a 
 backups/ are read, written or deleted.
 
   store.py put KEY FILE | get KEY FILE      one object
-  store.py latest PREFIX                    the newest nightly dump under PREFIX
+  store.py latest PREFIX                    the newest nightly dump under PREFIX that has its manifest
   store.py prune PREFIX DAYS KEEP           nightly dumps (and manifests) older than DAYS, the newest KEEP stay
-  store.py manifest --out F --key K ...     the JSON next to a dump: sha256s, size, row counts per table
-  store.py verify --manifest F (--file F | --dump F | --counts F)
+  store.py manifest --out F --key K ...     the JSON next to a dump: sha256s, size, row counts per table, signed
+  store.py verify --manifest F [--key K] [--file F | --dump F | --counts F]
 
-A nightly dump is PREFIX/<UTC YYYYMMDDTHHMMSSZ>.dump.enc and its manifest PREFIX/<same>.json; a copy made by
-db-copy.sh carries a suffix (<time>-neon.dump.enc) and is never pruned.
+A nightly dump is PREFIX/<UTC YYYYMMDDTHHMMSSZ>.dump.enc and its manifest PREFIX/<same>.json, uploaded after
+the dump: a dump without one is not a backup. A copy made by db-copy.sh or before a restore carries a suffix
+(<time>-neon.dump.enc, <time>-preapp.dump.enc) and is never pruned.
+
+The manifest is signed: an HMAC-SHA256 of its fields with a key derived from BACKUP_ENCRYPTION_KEY (read from
+the environment, never from a command line), and `keyId` names the key (an HMAC of a constant). Anyone who
+can write to the bucket (the app's S3 key is in /etc/bro/env, which the app and the model's tools run with)
+could put a dump and a manifest there; without BACKUP_ENCRYPTION_KEY they cannot sign one, and a signed
+manifest of another key (an older dump moved to a newer name) is refused, since it names its own key.
 """
 
 import argparse
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -34,6 +42,7 @@ import s3  # noqa: E402
 PREFIX = re.compile(r"backups(/[a-z0-9][a-z0-9-]*)+")
 KEY = re.compile(r"backups(/[a-z0-9][a-z0-9-]*)+/[0-9]{8}T[0-9]{6}Z(-[a-z0-9]+)?\.(dump\.enc|json)")
 NIGHTLY = re.compile(r"([0-9]{8}T[0-9]{6}Z)\.dump\.enc")
+SINGLE_PUT_LIMIT = 5 * 1024 ** 3  # S3's limit for one PUT; past it a multipart upload is needed
 
 
 def checked_key(key):
@@ -49,38 +58,67 @@ def checked_prefix(prefix):
     return prefix
 
 
+def retried(what, attempt_once, attempts=5):
+    """One S3 call, again on a dropped connection or a 5xx (Object Storage answers 503 now and then)."""
+    for attempt in range(attempts):
+        try:
+            return attempt_once()
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == attempts - 1:
+                sys.exit(f"{what}: {error.code}")
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if attempt == attempts - 1:
+                raise
+        time.sleep(2 ** attempt)
+
+
+def stored_size(key):
+    return next((size for found, size in s3.listing(key) if found == key), None)
+
+
 def put(key, path):
-    data = Path(path).read_bytes()
-    code, body = s3.send(urllib.request.Request(s3.presign("PUT", checked_key(key), 3600), data, method="PUT"))
-    if code != 200:
-        sys.exit(f"put {key}: {code} {body[:200]!r}")
-    print(f"uploaded {key} ({len(data)} bytes)", flush=True)
+    """Streamed from the file (a dump may outgrow memory), then its size in the bucket is checked."""
+    size = os.path.getsize(path)
+    if size > SINGLE_PUT_LIMIT:
+        sys.exit(f"put {key}: {size} bytes, past one PUT's 5 GiB: store.py needs a multipart upload now")
+    url = s3.presign("PUT", checked_key(key), 3600)
+
+    def once():
+        with open(path, "rb") as data:
+            request = urllib.request.Request(url, data, {"Content-Length": str(size)}, method="PUT")
+            with urllib.request.urlopen(request, timeout=600) as response:
+                response.read()
+
+    retried(f"put {key}", once)
+    if stored_size(key) != size:
+        sys.exit(f"put {key}: the bucket does not hold {size} bytes under it")
+    print(f"uploaded {key} ({size} bytes)", flush=True)
 
 
 def get(key, path):
     url = s3.presign("GET", checked_key(key), 3600)
-    for attempt in range(5):
-        try:
-            with urllib.request.urlopen(url, timeout=300) as response, open(path, "wb") as out:
-                while block := response.read(1 << 20):
-                    out.write(block)
-            return
-        except urllib.error.HTTPError as error:
-            sys.exit(f"get {key}: {error.code}")
-        except (urllib.error.URLError, ConnectionError, TimeoutError):
-            if attempt == 4:
-                raise
-            time.sleep(2 ** attempt)
+
+    def once():
+        with urllib.request.urlopen(url, timeout=300) as response, open(path, "wb") as out:
+            while block := response.read(1 << 20):
+                out.write(block)
+
+    retried(f"get {key}", once)
 
 
-def nightly(prefix):
-    """[(time, key)] of the nightly dumps under the prefix, oldest first."""
+def nightly(prefix, complete=True):
+    """[(time, key)] of the nightly dumps under the prefix, oldest first; complete: only those whose manifest
+    is there too (it is uploaded last)."""
+    keys = {key for key, _ in s3.listing(prefix + "/")}
     found = []
-    for key, _ in s3.listing(prefix + "/"):
-        name = key[len(prefix) + 1:]
-        match = NIGHTLY.fullmatch(name)
-        if match:
-            found.append((match.group(1), key))
+    for key in keys:
+        match = NIGHTLY.fullmatch(key[len(prefix) + 1:])
+        if not match:
+            continue
+        if complete and key[: -len(".dump.enc")] + ".json" not in keys:
+            print(f"skipped {key}: no manifest (an upload cut short)", file=sys.stderr, flush=True)
+            continue
+        found.append((match.group(1), key))
     return sorted(found)
 
 
@@ -91,7 +129,7 @@ def doomed(dumps, days, keep, now):
 
 
 def prune(prefix, days, keep):
-    keys = doomed(nightly(prefix), days, keep, datetime.datetime.now(datetime.timezone.utc))
+    keys = doomed(nightly(prefix, complete=False), days, keep, datetime.datetime.now(datetime.timezone.utc))
     for key in keys:
         for one in (key, key[: -len(".dump.enc")] + ".json"):
             code, body = s3.signed("DELETE", checked_key(one))
@@ -118,19 +156,56 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def backup_key():
+    key = os.environ.get("BACKUP_ENCRYPTION_KEY", "")
+    if not key:
+        sys.exit("no BACKUP_ENCRYPTION_KEY in the environment")
+    return key.encode()
+
+
+def key_id(key):
+    """Names the key without giving it away: a restore with another key says so before it decrypts."""
+    return hmac.new(key, b"bro backup key id", hashlib.sha256).hexdigest()[:16]
+
+
+def signature(manifest, key):
+    fields = {name: value for name, value in manifest.items() if name != "hmac"}
+    mac_key = hmac.new(key, b"bro backup manifest", hashlib.sha256).digest()
+    return hmac.new(mac_key, json.dumps(fields, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+
+
+def sign(manifest, key):
+    manifest = {**manifest, "keyId": key_id(key)}
+    return {**manifest, "hmac": signature(manifest, key)}
+
+
+def authenticate(manifest, key, wanted=None):
+    """The manifest made with this key and for this object key, or exit."""
+    if "hmac" not in manifest:
+        sys.exit("the manifest is not signed: not a backup this key made")
+    if manifest.get("keyId") != key_id(key):
+        sys.exit("the backup was made with another BACKUP_ENCRYPTION_KEY (keyId differs)")
+    if not hmac.compare_digest(str(manifest["hmac"]), signature(manifest, key)):
+        sys.exit("the manifest's signature is wrong: it was changed, or someone else wrote it")
+    if wanted is not None and manifest.get("key") != wanted:
+        sys.exit(f"the manifest is that of {str(manifest.get('key'))[:120]!r}, not of {wanted[:120]!r}")
+
+
 def cmd_manifest(args):
+    excluded = Path(args.excluded).read_text().split() if args.excluded and Path(args.excluded).exists() else []
     manifest = {
         "key": checked_key(args.key), "source": args.source,
         "createdAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cipher": "openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256",
         "sha256": args.sha256, "size": args.size, "dumpSha256": args.dump_sha256, "pgDump": args.pg_dump,
-        "tables": read_counts(args.counts),
+        "tables": read_counts(args.counts), "excludedTables": excluded,
     }
-    Path(args.out).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    Path(args.out).write_text(json.dumps(sign(manifest, backup_key()), indent=1, sort_keys=True) + "\n")
 
 
 def cmd_verify(args):
     manifest = json.loads(Path(args.manifest).read_text())
+    authenticate(manifest, backup_key(), args.key)
     if args.file:
         size = os.path.getsize(args.file)
         if size != manifest["size"] or sha256(args.file) != manifest["sha256"]:
@@ -159,9 +234,11 @@ def main(argv=None):
     manifest = sub.add_parser("manifest")
     for option in ("--out", "--key", "--source", "--counts", "--sha256", "--dump-sha256", "--pg-dump"):
         manifest.add_argument(option, required=True)
+    manifest.add_argument("--excluded")
     manifest.add_argument("--size", type=int, required=True)
     verify = sub.add_parser("verify")
     verify.add_argument("--manifest", required=True)
+    verify.add_argument("--key")
     verify.add_argument("--file")
     verify.add_argument("--dump")
     verify.add_argument("--counts")

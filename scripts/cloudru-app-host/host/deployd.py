@@ -18,7 +18,9 @@ Routes (all but /ops/v1/health need a token; long work runs as a job, one at a t
                                       restart, wait up to 120 s for health, or switch back
   POST /ops/v1/rollback               {version?} -> 202 {job}: the previous (or named) release
   GET  /ops/v1/env                    the names in /etc/bro/env and the file's sha256, never values
-  PUT  /ops/v1/env                    {env: {NAME: value}} -> 202 {job}: the whole file, then a restart
+  PUT  /ops/v1/env                    {env: {NAME: value}, opsEnv?: {NAME: value}} -> 202 {job}: the whole
+                                      file, then a restart; opsEnv (only OPS_ONLY_ENV names) goes to
+                                      /etc/bro/ops-env, which only ops scripts get, and is removed without it
   GET  /ops/v1/sites                  the app's domains
   PUT  /ops/v1/sites                  {sites: [domain, ...]} the whole list: Caddyfile, reload
   GET  /ops/v1/logs?unit=&lines=      the tail of journald for one of the units
@@ -79,6 +81,7 @@ class Paths:
         root = Path(root)
         self.config = root / "etc/bro/deployd.json"
         self.env = root / "etc/bro/env"
+        self.ops_env = root / "etc/bro/ops-env"
         self.sites = root / "etc/bro/sites.json"
         self.caddyfile = root / "etc/caddy/Caddyfile"
         self.domain = root / "var/lib/bro/domain"
@@ -179,6 +182,18 @@ def parse_env(text):
 def read_env(paths):
     try:
         return parse_env(paths.env.read_text())
+    except FileNotFoundError:
+        return {}
+
+
+# Credentials only the ops scripts need, never the app (whose env the model's tools run with): Neon's owner
+# URL while moving off it and for the week of a possible rollback (db-copy.sh).
+OPS_ONLY_ENV = ("NEON_DATABASE_URL",)
+
+
+def read_ops_env(paths):
+    try:
+        return parse_env(paths.ops_env.read_text())
     except FileNotFoundError:
         return {}
 
@@ -487,6 +502,17 @@ class Deployd:
         if not isinstance(values, dict) or not values:
             raise Refused("env: an object of NAME: value")
         text = render_env(values)
+        ops_values = body.get("opsEnv") or {}
+        if not isinstance(ops_values, dict) or any(name not in OPS_ONLY_ENV for name in ops_values):
+            raise Refused(f"opsEnv: an object with some of {', '.join(OPS_ONLY_ENV)}")
+        if any(name in values for name in OPS_ONLY_ENV):
+            raise Refused(f"{', '.join(OPS_ONLY_ENV)} only in opsEnv: the app never gets them")
+        if ops_values:
+            write_private(self.paths.ops_env, render_env(ops_values))
+            log(f"wrote {len(ops_values)} names for ops scripts only")
+        elif self.paths.ops_env.exists():
+            self.paths.ops_env.unlink()
+            log("removed the ops scripts' own names")
         previous = self.paths.env.with_name("env.previous")
         had_env = self.paths.env.exists()
         if had_env:
@@ -544,7 +570,7 @@ class Deployd:
             raise Refused(f"release {version} has no ops/{script}")
         interpreter = NODE if script.endswith(".mjs") else "/bin/bash"
         env = {"PATH": f"/usr/local/bin:/usr/bin:/bin:{PG_BIN}", "HOME": BRO_HOME, "NODE_ENV": "production",
-               **read_env(self.paths)}
+               **read_env(self.paths), **read_ops_env(self.paths)}
         log(f"run ops/{script} of {version} with {len(args)} arguments")
         code, output = self.runner.run([interpreter, str(path), *args], env=env, cwd=str(path.parent.parent),
                                        user="bro", timeout=6 * 3600)
@@ -593,7 +619,8 @@ class Deployd:
 
     def env_names(self):
         text = self.paths.env.read_text() if self.paths.env.exists() else ""
-        return {"names": sorted(parse_env(text)), "sha256": hashlib.sha256(text.encode()).hexdigest()}
+        return {"names": sorted(parse_env(text)), "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "opsOnly": sorted(read_ops_env(self.paths))}
 
     def logs(self, query):
         unit = (query.get("unit") or [""])[0]

@@ -43,9 +43,21 @@ def clean(value):
 
 
 def write_private(path, text):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
+    """0600, whole or not at all: a temporary file in the same directory, fsync, then rename over the old one
+    (a crash midway used to leave a truncated key file)."""
+    path = os.fspath(path)
+    temporary = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def http(method, url, body=None, headers=None, timeout=60):

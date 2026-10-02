@@ -162,21 +162,32 @@ libc `C.UTF-8` (`host.py pg create|users|databases|status`, повторяемы
 - Бэкап каждую ночь (`bro-backup.timer`, 04:10 МСК): `pg_dump -Fc` → AES-256
   (`BACKUP_ENCRYPTION_KEY`) → `backups/postgres/<время>.dump.enc` в
   `bucket-ac164a` с манифестом, 14 дней; сразу за ним — восстановление в
-  `bro_restore_check` со сверкой числа строк каждой таблицы. Сбой — сообщение
-  владельцу в Telegram, нет удачного бэкапа больше суток — тоже. Свои бэкапы
+  `bro_restore_check` со сверкой числа строк каждой таблицы. Манифест подписан
+  HMAC ключом бэкапов: подложенный в бакет дамп не восстановится. Сбой —
+  сообщение владельцу в Telegram и повтор раз в час, пока не пройдёт; нет
+  удачного бэкапа больше суток или нет ключа — тоже. Выключить — только явно
+  (`BACKUPS=off`). Свои бэкапы
   кластера (ежедневно, 14 дней) — второй слой: они восстанавливают лишь в
   новый кластер.
 - Перенос — `db-copy.sh neon app --replace`: дамп Neon (`pg_dump` 18, без
   `neon_auth`, со схемой `drizzle` и её шестью «осиротевшими» строками — они
   безвредны: drizzle смотрит только на последний `created_at`), число строк
-  источника до и после дампа и в дампе совпадает, копия источника —
-  зашифрованной в `backups/postgres/<время>-neon.dump.enc`, восстановление
-  одной транзакцией и сверка каждой таблицы.
+  источника до и после дампа и в дампе совпадает, счётчики записи не сдвинулись,
+  а до дампа источник обязан стоять только на чтение без открытых транзакций;
+  копия источника — зашифрованной в `backups/postgres/<время>-neon.dump.enc`,
+  копия цели — в `<время>-preapp.dump.enc`, восстановление одной транзакцией и
+  сверка каждой таблицы. Таблица чужой роли валит перенос, а не теряется молча.
 
 Осталось: на VM проверить, что `pg_dump` достаёт Neon по 5432 (`host.py ops
 bro-app-1 db-copy.sh neon app --dump-only` с `host.py env … --with-neon`;
-из облачной сессии 5432 закрыт), репетиция переноса в `bro_stand` и первый
-ночной бэкап с проверкой.
+из облачной сессии 5432 закрыт), репетиция переноса в `bro_stand`
+(`db-copy.sh neon app --replace --live-source` на стенде: Neon ещё живой) и
+первый ночной бэкап с проверкой.
+
+**Ворота перед этапом 6 (действие владельца):** копия `BACKUP_ENCRYPTION_KEY`
+из `~/.bro-app-host/env/new-secrets.json` лежит в менеджере паролей владельца.
+Ключ есть только там и в `/etc/bro/env` VM (deployd его не отдаёт): потеря VM
+и сессии без этой копии — потеря всех бэкапов.
 
 Окно переноса (вместе с этапом 6):
 
@@ -184,11 +195,14 @@ bro-app-1 db-copy.sh neon app --dump-only` с `host.py env … --with-neon`;
    `ALTER DATABASE neondb SET default_transaction_read_only = on` и
    `pg_terminate_backend` прочих соединений роли (Vercel переподключится
    уже в режиме чтения; запись у Бро на Vercel падает, чтение работает).
-2. `host.py env bro-app-1 --profile prod --with-neon`, затем `host.py stop
-bro-app-1 bro-eve bro-web`.
+2. `host.py env bro-app-1 --profile prod --with-neon` (адрес Neon — только в
+   `/etc/bro/ops-env` для ops-скриптов, не в env приложения), затем
+   `host.py stop bro-app-1 bro-eve bro-web`.
 3. `host.py ops bro-app-1 db-copy.sh neon app --replace`.
 4. `host.py restart bro-app-1`, проверки, DNS `brobro.tech` на VM (этап 6).
-   `NEON_DATABASE_URL` остаётся в env на неделю наблюдения — для отката.
+   `NEON_DATABASE_URL` остаётся в `/etc/bro/ops-env` на неделю наблюдения —
+   для отката; после недели — `host.py env bro-app-1 --profile prod` без
+   `--with-neon`, это его убирает.
 
 Откат базы:
 
@@ -201,8 +215,9 @@ default_transaction_read_only` и `pg_terminate_backend` соединений Ve
   беречь, и вместо дампа «новых строк» переносится база целиком: так
   приезжают и изменения, и удаления, и проверка та же. По шагам: `host.py stop
 bro-app-1 bro-eve bro-web` (запись в Cloud.ru кончилась) → `host.py ops
-bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon,
-  перед этим кладёт зашифрованную копию `app` в Object Storage) → в Neon
+bro-app-1 db-copy.sh app neon --replace` (пишет сквозь `read_only` Neon и
+  только пока он `read_only` и только с VM прода; перед этим кладёт
+  зашифрованные копии `app` и самого Neon в Object Storage) → в Neon
   `RESET default_transaction_read_only` и `pg_terminate_backend` → DNS назад,
   расписания Vercel включить. Записи Cloud.ru после `stop` не теряются: их
   нет. VM с базой не удалять, пока Vercel не проработал неделю.

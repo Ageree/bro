@@ -107,7 +107,13 @@
   регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
 - В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
   stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
-  таблицы других ролей.
+  таблицы других ролей, но бэкап и перенос тогда валятся, пока таблицы нет в
+  `ALLOW_FOREIGN_TABLES`: сверка строк смотрит те же таблицы и пропуска не
+  видит. Ошибки psql в ops-скриптах — `VERBOSITY=terse`: `DETAIL`/`CONTEXT`
+  сбойного COPY печатают строку с данными людей в лог job и journald.
+- Ключ S3 приложения лежит в `/etc/bro/env`, то есть у инструментов модели:
+  бэкапу верят только по HMAC манифеста (ключ из `BACKUP_ENCRYPTION_KEY`), а
+  `NEON_DATABASE_URL` живёт в `/etc/bro/ops-env` deployd, не в env приложения.
 - esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
   `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
   для `tar -I zstd`: `apt-get install -y zstd`.

@@ -4,18 +4,20 @@
 #   db-restore.sh KEY|latest app|check|db:<name> [--replace]
 #
 # KEY is backups/…/<time>.dump.enc (db-backup.sh, db-copy.sh); latest is the newest nightly dump under
-# BACKUP_PREFIX. The object must match its manifest (sha256 before and after decryption, the tables), then the
-# target's own tables are dropped and the dump restored in one transaction, and every table must hold the
-# dump's row count. A target with tables needs --replace; app also needs Bro stopped
-# (host.py stop NAME bro-eve bro-web), and the world's database is refused.
+# BACKUP_PREFIX that has its manifest. The manifest must be signed with this BACKUP_ENCRYPTION_KEY and name
+# KEY, the object must match it (sha256 before and after decryption, the tables). Then what the target holds
+# goes to Object Storage (<time>-pre<target>.dump.enc), its own tables are dropped and the dump restored in
+# one transaction, and every table must hold the dump's row count. A target with tables needs --replace; any
+# target but check needs Bro gone from it (host.py stop NAME bro-eve bro-web), checked again right before
+# the restore; the world's database and neon are refused.
 source "$(dirname "$0")/db-lib.sh"
 [ $# -ge 2 ] || die "usage: db-restore.sh KEY|latest app|check|db:<name> [--replace]"
+[ "$2" != neon ] || die "a backup goes back into Neon only through db-copy.sh app neon (the rollback)"
 KEY=$1
 [ "$KEY" = latest ] && KEY=$(store latest "$BACKUP_PREFIX")
 REPLACE=no
 [ "${3:-}" = "--replace" ] && REPLACE=yes
 connection DST "$2"
-refuse_world DST
 guard_target DST "$REPLACE"
 workdir
 fetch_backup "$KEY" "$WORK/db.dump" "$WORK/counts"

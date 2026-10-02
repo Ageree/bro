@@ -2,9 +2,13 @@
 tells the owner in Telegram when one has been down for 5 minutes, again at most once an hour while it stays
 down, and once more when it is back (scripts/cloudru-app-host/README.md). Python stdlib only.
 
-Backups too: with BACKUP_ENCRYPTION_KEY in /etc/bro/env the nightly backup must have succeeded within 26 hours
-(/var/backups/bro/last-backup.json, written by ops/db-backup.sh), the same 5-minute and hourly rules apply.
-A failed run of bro-backup.service tells the owner at once: `watchdog.py alert backup` (bro-backup-alert).
+Backups too, once /etc/bro/env has a DATABASE_URL and no BACKUPS=off: the nightly backup must have succeeded
+within 26 hours (/var/backups/bro/last-backup.json, written by ops/db-backup.sh; with none yet, 26 hours from
+when the watchdog first expected one) and the last run of bro-backup.service (backup, then restore check)
+must not have failed; a missing BACKUP_ENCRYPTION_KEY is down at once. The same 5-minute and hourly rules
+apply, so a backup or restore check that keeps failing is repeated every hour, and an alert Telegram did
+not take is sent again. A failed run also tells the owner at once: `watchdog.py alert backup`
+(bro-backup-alert).
 
 The bot and the chat: OPS_ALERT_BOT_TOKEN and OPS_ALERT_CHAT_ID in /etc/bro/env, else the app's own
 TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_CHAT_ID (agent/lib/owner-alert.ts writes to the same chat). The rehearsal
@@ -36,7 +40,7 @@ REPEAT_S = 60 * 60
 BACKUP_FRESH_S = 26 * 3600
 NAMES = {"web": "Next (сайт и вход)", "eve": "eve (агент, каналы)", "caddy": "Caddy (HTTPS)",
          "backup": "ночной бэкап базы"}
-ALERTS = {"backup": "Бро на {host}: ночной бэкап базы не прошёл. Логи: host.py logs {host} bro-backup."}
+ALERTS = {"backup": "Бро на {host}: ночной бэкап базы или его проверка не прошли. Логи: host.py logs {host} bro-backup."}
 
 
 def http_ok(url, timeout=10):
@@ -56,26 +60,41 @@ def caddy_ok():
     return active
 
 
-def backup_fresh(paths, env, now):
-    """None when backups are off or none has run yet; else whether the last success is recent."""
-    if not env.get("BACKUP_ENCRYPTION_KEY"):
+def backup_fresh(paths, env, now, state):
+    """None when no backup is expected (no database yet, or BACKUPS=off); else whether one succeeded lately.
+    state["expected"]["backup"] is when the watchdog first expected one: with no success at all, 26 hours
+    from then."""
+    expected = state.setdefault("expected", {})
+    if not env.get("DATABASE_URL") or env.get("BACKUPS") == "off":
+        expected.pop("backup", None)
         return None
+    since = expected.setdefault("backup", now)
+    if not env.get("BACKUP_ENCRYPTION_KEY"):
+        return False  # db-backup.sh fails without it
     try:
         finished = json.loads(paths.backups.joinpath("last-backup.json").read_text())["finishedAt"]
     except (OSError, ValueError, KeyError, TypeError):
-        return None  # a new VM: bro-backup.service alerts if its first run fails
+        finished = since
     return now - finished < BACKUP_FRESH_S
 
 
-def probe(paths, env, now):
+def backup_unit_failed():
+    """The last run of bro-backup.service failed (backup or restore check): systemd keeps that until the next
+    run succeeds."""
+    result = subprocess.run(["systemctl", "show", "--property=Result", "--value", "bro-backup.service"],
+                            capture_output=True, text=True)
+    return result.returncode == 0 and result.stdout.strip() not in ("", "success")
+
+
+def probe(paths, env, now, state):
     # No release yet: nothing of the app to watch, only Caddy.
     checks = {"caddy": caddy_ok()}
     if paths.current.exists():
         checks["web"] = http_ok(WEB_HEALTH)
         checks["eve"] = http_ok(EVE_HEALTH)
-    fresh = backup_fresh(paths, env, now)
+    fresh = backup_fresh(paths, env, now, state)
     if fresh is not None:
-        checks["backup"] = fresh
+        checks["backup"] = fresh and not backup_unit_failed()
     return checks
 
 
@@ -119,7 +138,8 @@ def step(state, checks, now, host):
         alerted = entry.get("alertedAt")
         if down_for >= DOWN_BEFORE_ALERT_S and (alerted is None or now - alerted >= REPEAT_S):
             if name == "backup":
-                text = (f"Бро на {host}: больше суток нет удачного ночного бэкапа базы. "
+                text = (f"Бро на {host}: ночной бэкап базы не в порядке с {clock(entry['downSince'])}: "
+                        f"нет удачного за сутки, нет ключа или последний запуск (бэкап или проверка) упал. "
                         f"Логи: host.py logs {host} bro-backup.")
             else:
                 text = (f"Бро на {host}: {NAMES[name]} не отвечает с {clock(entry['downSince'])} "
@@ -166,7 +186,7 @@ def main(argv=None):
         state = {}
     now = int(time.time())
     env = read_env(paths)
-    checks = probe(paths, env, now)
+    checks = probe(paths, env, now, state)
     print(" ".join(f"{name}={'ok' if ok else 'DOWN'}" for name, ok in checks.items()), flush=True)
     host = host_name(paths)
     for name, text in step(state, checks, now, host):

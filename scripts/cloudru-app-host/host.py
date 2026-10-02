@@ -17,8 +17,9 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
                                                 switch, health within 120 s or back to the previous release
   python host.py rollback NAME [--version V]    the release before the current one (or V)
-  python host.py env NAME --profile stand|prod [--dry-run]
-                                                compose /etc/bro/env and PUT it (names only are printed)
+  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon]
+                                                compose /etc/bro/env and PUT it (names only are printed);
+                                                --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only
   python host.py sites NAME [--set D,D | --add D | --remove D]
   python host.py logs NAME UNIT [--lines 200]   bro-web, bro-eve, caddy, deployd, bro-watchdog
   python host.py restart NAME [UNIT ...] | stop NAME UNIT ...
@@ -26,7 +27,9 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
                                                 db-restore-check.sh, db-copy.sh); an ARG s3get:KEY or s3put:KEY
                                                 becomes a presigned link
   python host.py pg create [--spec S] [--disk 20]   the Managed PostgreSQL cluster bro-pg (when there is none)
-  python host.py pg users [--reset-password]    its user bro_app, the password in new-secrets.json
+  python host.py pg users [--reset-password] [--new-backup-key]
+                                                its user bro_app, the password and BACKUP_ENCRYPTION_KEY in
+                                                new-secrets.json (no new key while backups exist)
   python host.py pg databases                   bro, bro_workflow, bro_stand, bro_stand_workflow, bro_restore_check
   python host.py pg status                      cluster, disk, databases, users, the provider's backups
 
@@ -85,8 +88,9 @@ def host_name(name):
 
 
 def write_private(path, text):
-    cloudru.write_private(path, text)
-    os.chmod(path, 0o600)
+    """0600, written whole or not at all (a temporary file, fsync, rename): a crash midway must not lose the
+    keys the file held."""
+    deployd.write_private(Path(path), text)
 
 
 def clean(value):
@@ -103,10 +107,13 @@ def new_secrets():
 
 
 def remember(**values):
-    """Add or replace these keys in new-secrets.json (0600); the other keys of the file stay as they were."""
+    """Add or replace these keys in new-secrets.json (0600); the other keys of the file stay as they were, and
+    the file as it was goes to new-secrets.json.bak first."""
     path, current = new_secrets()
-    current.update(values)
     SECRETS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.exists():
+        write_private(path.with_name(path.name + ".bak"), path.read_text())
+    current.update(values)
     write_private(path, json.dumps(current, indent=1) + "\n")
 
 
@@ -547,9 +554,10 @@ PRODUCTION_STORES = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_API_KEY).*|
 # Auth reads it too and turns its origin check off.
 # Backups of each go to their own prefix: the stand's never mix with (or prune) production's.
 PROFILES = {
-    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "SCHEDULES": "off",
+    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "SCHEDULES": "off", "HOST_PROFILE": "stand",
               "BACKUP_PREFIX": "backups/stand/postgres"},
-    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "SCHEDULES": "on", "BACKUP_PREFIX": "backups/postgres"},
+    "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "SCHEDULES": "on", "HOST_PROFILE": "prod",
+             "BACKUP_PREFIX": "backups/postgres"},
 }
 # graphile wants a pool at least its concurrency + 2. WORKFLOW_WORLD as the build had it: agent.ts reads it
 # again when the bundle loads.
@@ -571,7 +579,8 @@ def read_json(name):
 def database_env(profile):
     """The databases of `pg databases` with bro_app's password (new-secrets.json), and the backup key."""
     found = read_json("new-secrets.json")
-    env = {"BACKUP_ENCRYPTION_KEY": found.get("BACKUP_ENCRYPTION_KEY")}
+    # BACKUPS=on: the db-*.sh scripts fail (and the owner hears) without a key; off only on purpose.
+    env = {"BACKUP_ENCRYPTION_KEY": found.get("BACKUP_ENCRYPTION_KEY"), "BACKUPS": "on"}
     if all(found.get(n) for n in ("PG_HOST", "PG_PORT", PG_PASSWORD)):
         base = (f"postgresql://{PG_USER}:{urllib.parse.quote(clean(found[PG_PASSWORD]), safe='')}"
                 f"@{clean(found['PG_HOST'])}:{clean(str(found['PG_PORT']))}")
@@ -581,7 +590,7 @@ def database_env(profile):
     return env
 
 
-def compose_env(profile, session=None, with_neon=False):
+def compose_env(profile, session=None):
     """{name: value} and {name: source}: Vercel production, the vault keys, the session, the databases of
     new-secrets.json, the profile file."""
     session = os.environ if session is None else session
@@ -620,13 +629,12 @@ def compose_env(profile, session=None, with_neon=False):
             put("OPS_ALERT_BOT_TOKEN", session["TELEGRAM_BOT_TOKEN"], "session")
     for name, value in database_env(profile).items():
         put(name, value, "new-secrets")
-    if with_neon:
-        # Neon's direct endpoint, for db-copy.sh while moving (and back): never left in the env after.
-        put("NEON_DATABASE_URL", read_json("vercel-production.json").get("DATABASE_URL_UNPOOLED"), "vercel")
     for name, value in read_json(f"{profile}.json").items():
         if not deployd.ENV_NAME.fullmatch(name):
             sys.exit(f"{SECRETS / (profile + '.json')}: bad name {name[:40]!r}")
         put(name, value, f"{profile}.json")
+    if values.get("BACKUPS") != "off" and not values.get("BACKUP_ENCRYPTION_KEY") and profile == "stand":
+        put("BACKUPS", "off", "no key")  # production refuses instead (cmd_env)
     if values.get("OPS_ALERT_BOT_TOKEN") and not values.get("OPS_ALERT_CHAT_ID"):
         values.pop("OPS_ALERT_BOT_TOKEN")
         sources.pop("OPS_ALERT_BOT_TOKEN")
@@ -635,9 +643,15 @@ def compose_env(profile, session=None, with_neon=False):
 
 def cmd_env(args):
     host_name(args.name)
-    values, sources = compose_env(args.profile, with_neon=args.with_neon)
-    if args.with_neon and "NEON_DATABASE_URL" not in values:
-        sys.exit("no DATABASE_URL_UNPOOLED in vercel-production.json for NEON_DATABASE_URL")
+    values, sources = compose_env(args.profile)
+    ops_env = {}
+    if args.with_neon:
+        # Neon's direct endpoint for db-copy.sh, in deployd's /etc/bro/ops-env: the ops scripts get it, the app
+        # (and the model's tools, which run with the app's env) never does.
+        neon = read_json("vercel-production.json").get("DATABASE_URL_UNPOOLED")
+        if not neon or not clean(str(neon)):
+            sys.exit("no DATABASE_URL_UNPOOLED in vercel-production.json for NEON_DATABASE_URL")
+        ops_env["NEON_DATABASE_URL"] = clean(str(neon))
     by_source = {}
     for name in sorted(values):
         by_source.setdefault(sources[name], []).append(name)
@@ -652,14 +666,29 @@ def cmd_env(args):
             print(f"warning: the stand keeps {name} ({sources[name]}): it acts on production's store or accounts")
     if "OPS_ALERT_CHAT_ID" not in values:
         print(f"note: no OPS_ALERT_CHAT_ID in {args.profile}.json: the watchdog alerts nobody")
-    if "BACKUP_ENCRYPTION_KEY" not in values:
-        print("note: no BACKUP_ENCRYPTION_KEY in new-secrets.json: no nightly backups (python host.py pg users)")
+    if values.get("BACKUPS") != "off":
+        if "BACKUP_ENCRYPTION_KEY" not in values:
+            sys.exit("no BACKUP_ENCRYPTION_KEY in new-secrets.json: the nightly backup would fail every night "
+                     f"(python host.py pg users), or BACKUPS=off in {SECRETS / (args.profile + '.json')} on purpose")
+        lacking = [n for n in ("CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET", "CLOUDRU_S3_TENANT_ID") if n not in values]
+        if lacking:
+            print(f"warning: no {' '.join(lacking)}: backups cannot reach Object Storage and fail every night")
+    else:
+        print(f"note: BACKUPS=off ({sources.get('BACKUPS')}): no nightly backups on this VM")
+    if ops_env:
+        print(f"ops scripts only (/etc/bro/ops-env, not the app's env): {' '.join(sorted(ops_env))}")
+        if args.profile == "stand":
+            print("WARNING: the stand gets production Neon's owner URL: db-copy.sh may read it (a rehearsal), "
+                  "never write it (neon is a target only with HOST_PROFILE=prod); host.py env without "
+                  "--with-neon takes it away again")
+        else:
+            print("note: run host.py env without --with-neon once the rollback week is over: that removes it")
     missing = [name for name in REQUIRED if name not in values]
     if missing:
         sys.exit(f"missing {', '.join(missing)}: put them in {SECRETS / (args.profile + '.json')} (0600)")
     if args.dry_run:
         return
-    job = start_job(args.name, "PUT", "env", {"env": values})
+    job = start_job(args.name, "PUT", "env", {"env": values, "opsEnv": ops_env})
     follow(args.name, job)
 
 
@@ -766,7 +795,10 @@ def cmd_pg_users(args):
         print(f"made {PG_USER}; its password is {PG_PASSWORD} in {SECRETS / 'new-secrets.json'}")
     elif args.reset_password:
         password = new_password()
-        pg_api("PUT", f"{path}/{PG_USER}", {"cluster_id": cluster["id"], "name": PG_USER, "password": password})
+        # The update takes granted_roles too: send back what the user has, so a new password takes no role away.
+        current = pg_api("GET", f"{path}/{PG_USER}")
+        pg_api("PUT", f"{path}/{PG_USER}", {"cluster_id": cluster["id"], "name": PG_USER, "password": password,
+                                            "granted_roles": current.get("granted_roles") or []})
         remember(**{PG_PASSWORD: password})
         print(f"new password for {PG_USER} in {SECRETS / 'new-secrets.json'}: python host.py env for each VM now")
     elif not stored.get(PG_PASSWORD):
@@ -774,9 +806,16 @@ def cmd_pg_users(args):
     else:
         print(f"{PG_USER} is there, its password in new-secrets.json")
     if not stored.get("BACKUP_ENCRYPTION_KEY"):
+        # A new key never quietly replaces a lost one: the backups already made would stay unreadable with it.
+        made = [key for key, _ in s3.listing("backups/") if key.endswith(".dump.enc")]
+        if made and not args.new_backup_key:
+            sys.exit(f"no BACKUP_ENCRYPTION_KEY in new-secrets.json, but {len(made)} backups are in Object Storage: "
+                     "put the key back (new-secrets.json.bak, the owner's password manager); --new-backup-key "
+                     "makes a new one, and the old backups stay unreadable with it")
         # 32 random bytes; only db-*.sh on the VM and this file ever hold it. Lost, it loses every backup.
         remember(BACKUP_ENCRYPTION_KEY=base64.b64encode(secrets.token_bytes(32)).decode())
-        print(f"made BACKUP_ENCRYPTION_KEY in {SECRETS / 'new-secrets.json'}: keep a copy outside the session")
+        print(f"made BACKUP_ENCRYPTION_KEY in {SECRETS / 'new-secrets.json'}. The owner must keep a copy in a "
+              "password manager now: without it every backup is unreadable once this session is gone")
 
 
 def cmd_pg_databases(_args):
@@ -895,7 +934,8 @@ def parser():
     env.add_argument("--profile", choices=sorted(PROFILES), required=True)
     env.add_argument("--dry-run", action="store_true")
     env.add_argument("--with-neon", action="store_true",
-                     help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json)")
+                     help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
+                          "in /etc/bro/ops-env for the ops scripts only")
     env.set_defaults(fn=cmd_env)
     sites = sub.add_parser("sites")
     sites.add_argument("name")
@@ -933,6 +973,8 @@ def parser():
     users = pg_sub.add_parser("users")
     users.add_argument("--reset-password", action="store_true",
                        help="a new password for bro_app (then host.py env for every VM that uses it)")
+    users.add_argument("--new-backup-key", action="store_true",
+                       help="a new BACKUP_ENCRYPTION_KEY although backups exist (they stay unreadable with it)")
     users.set_defaults(fn=cmd_pg_users)
     pg_sub.add_parser("databases").set_defaults(fn=cmd_pg_databases)
     pg_sub.add_parser("status").set_defaults(fn=cmd_pg_status)

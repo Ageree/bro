@@ -4,16 +4,19 @@
 #   db-backup.sh
 #
 # pg_dump --format=custom of app → openssl with BACKUP_ENCRYPTION_KEY → <BACKUP_PREFIX>/<UTC time>.dump.enc
-# in Object Storage, its manifest (sha256s, row counts per table, no data) next to it as .json; then the
-# nightly dumps older than BACKUP_KEEP_DAYS (14) go, the newest three stay whatever their age. Without
-# BACKUP_ENCRYPTION_KEY backups are off: it says so and exits 0. The last success goes to
+# in Object Storage, its signed manifest (sha256s, row counts per table, no data) next to it as .json; then
+# the nightly dumps older than BACKUP_KEEP_DAYS (14) go, the newest three stay whatever their age. Backups are
+# off only with BACKUPS=off in /etc/bro/env; a missing key otherwise fails (and the owner hears). A table of
+# another role fails it too, unless ALLOW_FOREIGN_TABLES names it. The last success goes to
 # /var/backups/bro/last-backup.json, which the watchdog reads (no fresh backup for a day — the owner hears).
 source "$(dirname "$0")/db-lib.sh"
-if [ -z "${BACKUP_ENCRYPTION_KEY:-}" ]; then
-  echo "backups are off: no BACKUP_ENCRYPTION_KEY in /etc/bro/env"
+if ! backups_on; then
+  echo "backups are off: BACKUPS=off in /etc/bro/env"
   exit 0
 fi
+need_backup_key
 connection SRC app
+refuse_foreign SRC
 workdir
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 KEY="$BACKUP_PREFIX/$STAMP.dump.enc"
@@ -26,4 +29,5 @@ echo "backup $KEY: $(wc -l < "$WORK/counts") tables, $(awk '{s += $2} END {print
   "dump $(stat -c %s "$WORK/db.dump") bytes in $(($(date +%s) - started)) s"
 printf '{"key": "%s", "finishedAt": %s}\n' "$KEY" "$(date +%s)" > "$WORK_ROOT/.last-backup.json"
 mv "$WORK_ROOT/.last-backup.json" "$WORK_ROOT/last-backup.json"
-store prune "$BACKUP_PREFIX" "${BACKUP_KEEP_DAYS:-14}" 3
+# The backup is in; a failed pruning must not read as a failed backup (nor skip the restore check).
+store prune "$BACKUP_PREFIX" "${BACKUP_KEEP_DAYS:-14}" 3 || echo "pruning old backups failed: they stay until the next night" >&2
