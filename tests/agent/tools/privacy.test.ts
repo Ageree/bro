@@ -47,6 +47,7 @@ const optionalServices = [
   "BROWSER_USE_API_KEY",
   "BROWSER_USE_PROXY_HOST",
   "BROWSER_USE_PROXY_PORT",
+  "BROWSER_STATE_BUCKET",
   "BROWSER_USE_SIGN_IN_REFRESH_DAYS",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_PROXY",
@@ -54,6 +55,7 @@ const optionalServices = [
   "CLOUDRU_BROWSER_IMAGE",
   "CLOUDRU_KEY_ID",
   "CLOUDRU_KEY_SECRET",
+  "CLOUDRU_S3_TENANT_ID",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
   "MODEL_PROVIDER",
@@ -111,7 +113,6 @@ describe("privacy", () => {
     const result = await overview(tool);
 
     expect(result.kept.join("\n")).toMatch(/Postgres в Neon/u);
-    expect(result.kept.join("\n")).toMatch(/Vercel Blob/u);
     expect(result.kept.join("\n")).toMatch(/AES-256-GCM/u);
     const processors = result.processors.join("\n");
     expect(processors).toContain("deepseek/deepseek-v4.1-flash");
@@ -159,6 +160,22 @@ describe("privacy", () => {
     expect(processors).not.toContain("Vercel AI Gateway");
   });
 
+  it("names Cloud.ru as the keeper of files once the bucket is configured", async () => {
+    const { facts } = await withServices({
+      BROWSER_STATE_BUCKET: "bucket-test",
+      CLOUDRU_KEY_ID: "key-id",
+      CLOUDRU_KEY_SECRET: "key-secret",
+      CLOUDRU_S3_TENANT_ID: "tenant-id",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).toContain("хранит Cloud.ru в приватном хранилище Object Storage");
+    expect(facts.keptData().join("\n")).toMatch(
+      /Object Storage облака Cloud\.ru/u
+    );
+  });
+
   it("says nothing of visits the deployment does not make", async () => {
     const { facts } = await withServices({
       BROWSER_USE_API_KEY: "browser-use-test-key",
@@ -194,6 +211,7 @@ describe("privacy", () => {
     expect(processors).not.toContain("прокси");
     expect(processors).not.toContain("Photon");
     expect(processors).not.toContain("Telegram");
+    expect(processors).not.toContain("Object Storage");
     expect(facts.keptData().join("\n")).not.toContain("оплат");
     expect(facts.keptData().join("\n")).not.toContain("держит вход");
   });
@@ -261,6 +279,8 @@ describe("privacy", () => {
     expect(
       facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
     ).not.toContain("Cloud.ru");
+    // Without the bucket nothing is stored, so no place of files is named.
+    expect(facts.keptData().join("\n")).not.toContain("Cloud.ru");
     expect(facts.serverLocation()).not.toContain("Cloud.ru");
     expect(facts.serverLocation()).toContain(
       "регион нигде в его настройках не записан"

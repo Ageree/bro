@@ -1,16 +1,19 @@
 import type { ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as Blob from "@vercel/blob";
 import type * as Drive from "@agent/lib/google-workspace/drive";
 import type {
   findDriveFileArtifact,
   saveDriveFileArtifact,
 } from "@db/services/drive-files";
+import type {
+  deleteArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 const mocks = vi.hoisted(() => ({
-  del: vi.fn<typeof Blob.del>(),
+  del: vi.fn<typeof deleteArtifactObject>(),
   find: vi.fn<typeof findDriveFileArtifact>(),
-  put: vi.fn<typeof Blob.put>(),
+  put: vi.fn<typeof putArtifactObject>(),
   read: vi.fn<typeof Drive.readDriveFile>(),
   search: vi.fn<typeof Drive.searchDrive>(),
   save: vi.fn<typeof saveDriveFileArtifact>(),
@@ -25,10 +28,10 @@ vi.mock("@db/services/drive-files", () => ({
   findDriveFileArtifact: mocks.find,
   saveDriveFileArtifact: mocks.save,
 }));
-vi.mock("@vercel/blob", async (importOriginal) => ({
-  ...(await importOriginal<typeof Blob>()),
-  del: mocks.del,
-  put: mocks.put,
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => true,
+  deleteArtifactObject: mocks.del,
+  putArtifactObject: mocks.put,
 }));
 
 import { driveRead, driveSearch } from "@agent/tools/drive";
@@ -56,14 +59,7 @@ beforeEach(() => {
     id: artifact.id ?? artifactId,
     workspaceId: "personal:workspace",
   }));
-  mocks.put.mockResolvedValue({
-    contentDisposition: "",
-    contentType: "application/pdf",
-    downloadUrl: "https://blob.example/download",
-    etag: '"etag"',
-    pathname: "drive-files/workspace/passport",
-    url: "https://blob.example/passport",
-  });
+  mocks.put.mockResolvedValue(undefined);
 });
 
 describe("drive-search", () => {
@@ -110,12 +106,11 @@ describe("drive-read", () => {
 
     const result = await read();
 
-    const [pathname, , options] = mocks.put.mock.calls[0] ?? [];
-    expect(pathname).toMatch(/^drive-files\/[0-9a-f]{32}\/[0-9a-f-]{36}$/u);
-    expect(options).toMatchObject({
-      access: "private",
-      contentType: "application/pdf",
-    });
+    const [stored] = mocks.put.mock.calls[0] ?? [];
+    expect(stored?.pathname).toMatch(
+      /^drive-files\/[0-9a-f]{32}\/[0-9a-f-]{36}$/u
+    );
+    expect(stored?.mediaType).toBe("application/pdf");
     expect(mocks.save.mock.calls[0]?.[1]).toMatchObject({
       driveFileId: "file-1",
       driveVersion: "7",

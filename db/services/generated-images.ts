@@ -9,7 +9,7 @@ type GeneratedImageArtifactInput = Omit<
 >;
 
 /**
- * Records a drawn picture that already sits in private Blob. A replayed tool
+ * Records a drawn picture that already sits in private object storage. A replayed tool
  * step carries the same idempotency key and gets the first row back instead
  * of a second picture.
  */

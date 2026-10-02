@@ -121,6 +121,21 @@ describe("the Cloud.ru sandbox backend", () => {
     });
   });
 
+  it("asks for the memory it was given, or the host's default", async () => {
+    const calls = stubHost(opened, opened);
+    const { cloudRuSandbox } = await backend();
+
+    await cloudRuSandbox({ memoryMb: 1024 }).create(createInput);
+    await cloudRuSandbox().create(createInput);
+
+    const memory = z.object({ memoryMb: z.number().optional() });
+    const [small, standard] = calls.map((call) =>
+      memory.parse(JSON.parse(call.body))
+    );
+    expect(small?.memoryMb).toBe(1024);
+    expect(standard).toEqual({});
+  });
+
   it("opens before onSession knows the workspace, then renews the token", async () => {
     const calls = stubHost(opened, opened);
     const { cloudRuSandbox, keys } = await backend();
