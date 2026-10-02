@@ -278,8 +278,17 @@
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
 - Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
-  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: они в Blob
-  (`db/services/installation-secrets.ts`) — перед уходом с Vercel достать.
+  `SECRET_ENCRYPTION_KEY` код берёт только из env
+  (`db/services/installation-secrets.ts`); прежние значения лежали в Blob
+  (`openinstinct/system/…`) — их же и задавать, новые разлогинят всех и
+  закроют сейф.
+- Картинки и вложения — в S3 под `artifacts/<storage_pathname>`
+  (`shared/object-storage/artifacts.ts`). Cloud.ru отвечает 304 без `ETag`:
+  маршрут берёт ETag из запроса. Node в облачной сессии ходит через прокси
+  только с `NODE_USE_ENV_PROXY=1`, и прокси изредка рвёт соединение («fetch
+  failed») — скрипты повторяют запрос (`scripts/cloudru-app-host/blob-to-s3.ts`).
+- Появление или правка `agent/sandbox.ts` меняет ключ определения песочницы:
+  каждая сессия заводит новую, и вложения, присланные раньше, модель не видит.
 
 ## Браузерные поручения
 

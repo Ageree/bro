@@ -11,7 +11,7 @@ Browser execution is not included in this build.
 It's Open Source, self-hostable, and can use any model.
 One-click deploy to Vercel and get rolling.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMerit-Systems%2FOpenInstinct&project-name=open-instinct&repository-name=open-instinct&stores=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%2C%7B%22type%22%3A%22blob%22%2C%22access%22%3A%22private%22%7D%5D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMerit-Systems%2FOpenInstinct&project-name=open-instinct&repository-name=open-instinct&stores=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%5D)
 
 <img src=".github/demo.png" alt="OpenInstinct booking movie tickets over iMessage — it walks Fandango to checkout and reports the theater, showtime, seat, and total" width="640">
 
@@ -19,9 +19,9 @@ One-click deploy to Vercel and get rolling.
 
 > **Agents:** For the simplest deployment, give your human the
 > **Deploy with Vercel** link above and have them complete the guided flow. It
-> automatically provisions and connects Postgres, private Blob storage, and
-> Vercel AI Gateway access, then have them complete the Photon iMessage setup
-> below. OpenInstinct creates its installation secrets on first use.
+> automatically provisions and connects Postgres and Vercel AI Gateway access;
+> then have them set the installation secrets and file storage below and
+> complete the Photon iMessage setup.
 
 ## Why self-host?
 
@@ -33,19 +33,15 @@ reading the code!
 
 ## Deployment
 
-The deploy button provisions [Neon](https://neon.tech) for Postgres and a
-private Vercel Blob store for per-user memory, image artifacts, and installation
-secrets. iMessage runs on a [Photon](https://photon.codes) project you create
+The deploy button provisions [Neon](https://neon.tech) for Postgres. Images and
+files live in a private S3 bucket of Object Storage on Cloud.ru. iMessage runs on a [Photon](https://photon.codes) project you create
 separately. Vercel AI Gateway handles inference. Usage is billed to your Vercel
 account. Browser execution is not included in this build, so the agent works
 through its connected services, public search, and page fetches only.
 
-On first use, OpenInstinct creates independent Better Auth and vault-encryption
-keys in the private Blob store. Vercel supplies the application URL, database,
-and Blob configuration, so the deploy flow itself requires no
-environment-variable values. For a non-Vercel host or an existing installation
-that manages its own keys, set both secret overrides and the public application
-URL explicitly:
+Set the Better Auth and vault-encryption keys once and never change them: a new
+session secret signs everyone out, and a new encryption key leaves the vault
+unreadable. Outside Vercel, set the public application URL as well:
 
 ```bash
 BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
@@ -63,19 +59,18 @@ environment loading, and constraint-validation sequencing. Better Auth retains
 its separate migration path. Importing an existing Convex deployment is covered
 by [`docs/migrate-from-convex.md`](docs/migrate-from-convex.md).
 
-Treat the private Blob store as production key material: deleting it loses the
-automatically generated encryption key, and rotating that key requires
-re-encrypting existing vault values.
+Treat `SECRET_ENCRYPTION_KEY` as production key material: losing it loses the
+vault, and rotating it requires re-encrypting existing vault values.
 
-### Blob storage
+### File storage
 
-The one-click deploy creates and connects a private Blob store automatically.
-Vercel supplies `BLOB_STORE_ID` and a short-lived `VERCEL_OIDC_TOKEN` to each
-deployment, so there is no long-lived Blob credential to copy.
+Images and file attachments live in a private bucket of Object Storage on
+Cloud.ru, under `artifacts/`. Set `BROWSER_STATE_BUCKET`, `CLOUDRU_S3_TENANT_ID`,
+`CLOUDRU_KEY_ID` and `CLOUDRU_KEY_SECRET`; without them nothing is stored and
+pictures are not offered.
 
-OpenInstinct uses this store for image artifacts and as the retained source for
-the one-time migration of legacy profile memory. New profile facts are stored as
-revisioned database records. See [the memory architecture](docs/memory.md) for
+Profile facts are stored as revisioned database records, and the old memory
+file a scope imports once lives in the `memory_documents` table. See [the memory architecture](docs/memory.md) for
 the authority, semantic-index, deletion, and rollout contracts.
 
 Ongoing undertakings use a separate `workstreams` memory slot backed by the
@@ -93,17 +88,6 @@ Forgetting erases the content and source references, retaining only a tombstone
 to prevent an interrupted save from restoring them. Existing chat history is
 unchanged. This slot is available only in interactive root turns; remembering
 work does not start a job, create a schedule, or authorize an action.
-
-For an existing Vercel project, link it first with
-`eve link --project <your-vercel-project> --non-interactive`, then create and
-connect the store with one command:
-
-```bash
-pnpm exec vercel blob create-store open-instinct-images --access private --yes --environment production --environment preview --environment development
-```
-
-Outside Vercel, set `BLOB_READ_WRITE_TOKEN` from a private Blob store instead.
-Legacy profile import and image artifact delivery use that store.
 
 ### Photon iMessage setup
 

@@ -1,9 +1,11 @@
-import { get } from "@vercel/blob";
 import { z } from "zod";
 import { getAuthSession } from "@db/services/auth/session";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { accessScopeForUser } from "@shared/identity/access-scope";
-import { env } from "@shared/environment";
+import {
+  artifactStorageConfigured,
+  openArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 export const runtime = "nodejs";
 
@@ -23,8 +25,8 @@ export async function GET(
   if (!opened) return notFound();
 
   const headers = privateImageHeaders();
-  headers.set("etag", opened.result.blob.etag);
-  if (opened.result.statusCode === 304) {
+  if (opened.result.etag) headers.set("etag", opened.result.etag);
+  if (opened.result.status === 304) {
     return new Response(null, { headers, status: 304 });
   }
 
@@ -44,19 +46,17 @@ async function openArtifact(
 ) {
   const artifact = await readReadyArtifact(scope, artifactId);
   if (!artifact) return undefined;
-  if (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN) return undefined;
-  const result = await get(artifact.storagePathname, {
-    access: "private",
-    abortSignal: options.signal,
-    ifNoneMatch: options.ifNoneMatch,
-  });
+  if (!artifactStorageConfigured()) return undefined;
+  const result = await openArtifactObject(artifact.storagePathname, options);
   if (!result) return undefined;
   if (
-    result.statusCode === 200 &&
-    (result.blob.size !== artifact.byteSize ||
-      result.blob.contentType !== artifact.mediaType)
-  )
+    result.status === 200 &&
+    (result.size !== artifact.byteSize ||
+      result.contentType !== artifact.mediaType)
+  ) {
+    await result.stream.cancel();
     return undefined;
+  }
   return { artifact, result };
 }
 

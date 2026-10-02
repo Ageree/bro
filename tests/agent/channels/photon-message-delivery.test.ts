@@ -1,7 +1,7 @@
 import type { PhotonIMessageChannelConfig } from "eve/channels/photon";
 import type { AdapterPostableMessage } from "chat";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as Blob from "@vercel/blob";
+import type * as ArtifactObjects from "@shared/object-storage/artifacts";
 import type * as EnvModule from "@shared/environment";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -87,21 +87,22 @@ vi.mock("@db/services/artifacts", () => ({
     };
   },
 }));
-vi.mock("@vercel/blob", async (importOriginal) => {
-  const blob = await importOriginal<typeof Blob>();
-  return {
-    ...blob,
-    async get(pathname: string) {
-      const image = photonChannelCapture.images.get(pathname);
-      if (!image) return null;
-      return {
-        blob: { contentType: image.mediaType, size: image.bytes.byteLength },
-        statusCode: 200,
-        stream: new Response(Buffer.from(image.bytes)).body,
-      };
-    },
-  };
-});
+vi.mock("@shared/object-storage/artifacts", async (importOriginal) => ({
+  ...(await importOriginal<typeof ArtifactObjects>()),
+  artifactStorageConfigured: () => true,
+  async openArtifactObject(pathname: string) {
+    const image = photonChannelCapture.images.get(pathname);
+    if (!image) return undefined;
+    return {
+      contentType: image.mediaType,
+      etag: '"etag"',
+      size: image.bytes.byteLength,
+      status: 200 as const,
+      stream:
+        new Response(Buffer.from(image.bytes)).body ?? new ReadableStream(),
+    };
+  },
+}));
 const handleActionResult =
   photonChannelCapture.config?.events?.["action.result"];
 const handleMessageCompleted =

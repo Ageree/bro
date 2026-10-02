@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://example.com",
-  BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
   DATABASE_URL: "postgresql://user:password@example.com/database",
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
 };
@@ -216,16 +215,6 @@ describe("environment", () => {
 
     expect(env.IMESSAGE_PROJECT_ID).toBe("photon-project");
     expect(env.IMESSAGE_PHONE_NUMBER).toBeUndefined();
-  });
-
-  it("accepts Vercel OIDC Blob storage without a static token", async () => {
-    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
-    vi.stubEnv("BLOB_STORE_ID", "store_openinstinct");
-
-    const { env } = await import("@shared/environment");
-
-    expect(env.BLOB_READ_WRITE_TOKEN).toBeUndefined();
-    expect(env.BLOB_STORE_ID).toBe("store_openinstinct");
   });
 
   it("rejects an iMessage phone number outside E.164 format", async () => {

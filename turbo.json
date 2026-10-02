@@ -6,7 +6,6 @@
       "env": [
         "ACCESS_*",
         "BETTER_AUTH_*",
-        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -17,7 +16,6 @@
         "CLOUDRU_*",
         "COMPOSIO_*",
         "DATABASE_URL",
-        "EVE_MEMORY_BLOB_*",
         "EVE_NEXT_*",
         "FREE_*",
         "IMESSAGE_*",
@@ -40,7 +38,6 @@
       "env": [
         "ACCESS_*",
         "BETTER_AUTH_*",
-        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -51,7 +48,6 @@
         "CLOUDRU_*",
         "COMPOSIO_*",
         "DATABASE_URL",
-        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "IMESSAGE_*",
         "MODEL_PROVIDER",
@@ -83,7 +79,6 @@
       "passThroughEnv": [
         "ACCESS_*",
         "BETTER_AUTH_*",
-        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -94,7 +89,6 @@
         "CLOUDRU_*",
         "COMPOSIO_*",
         "DATABASE_URL",
-        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "IMESSAGE_*",
         "MODEL_PROVIDER",
@@ -128,7 +122,6 @@
       "passThroughEnv": [
         "ACCESS_*",
         "BETTER_AUTH_*",
-        "BLOB_*",
         "BROWSER_BACKEND",
         "BROWSER_HOST_*",
         "BROWSER_POOL_*",
@@ -139,7 +132,6 @@
         "CLOUDRU_*",
         "COMPOSIO_*",
         "DATABASE_URL",
-        "EVE_MEMORY_BLOB_*",
         "FREE_*",
         "IMESSAGE_*",
         "MODEL_PROVIDER",

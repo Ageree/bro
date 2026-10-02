@@ -13,7 +13,7 @@ import {
 import { workspaceMemberships } from "./workspaces";
 
 /**
- * A picture `generate_image` drew, kept in private Blob so it travels as a
+ * A picture `generate_image` drew, kept in private object storage so it travels as a
  * private artifact (`/artifacts/<id>`). The idempotency key is the tool call,
  * so a replayed step hands back the picture it already drew.
  */

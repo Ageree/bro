@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import personalInfoMemory from "@agent/memory/personal_info";
 import {
   preserveProfileMemoryCancellation,
-  resolveProfileMemoryBackend,
   resolveProfileMemoryScope,
 } from "@agent/lib/profile-memory";
 import { parseLegacyDocument } from "@agent/lib/memory/profile";
@@ -29,66 +28,6 @@ describe("profile memory", () => {
     expect(
       parseLegacyDocument("<!-- eve-memory-file-v1 lastAllocatedIndex=12 -->\n")
     ).toEqual({ entries: [], lastAllocatedIndex: 12 });
-  });
-  it("uses an explicit Blob backend for an attached store in production", () => {
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: undefined,
-        BLOB_STORE_ID: "store-id",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({
-      kind: "vercel-blob",
-      options: { storeId: "store-id" },
-    });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        NODE_ENV: "production",
-        VERCEL_ENV: undefined,
-      })
-    ).toEqual({
-      kind: "vercel-blob",
-      options: { token: "blob-token" },
-    });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { token: "blob-token" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: "blob-store",
-        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
-        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { storeId: "blob-store" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: undefined,
-        EVE_MEMORY_BLOB_READ_WRITE_TOKEN: "eve-token",
-        EVE_MEMORY_BLOB_STORE_ID: "eve-store",
-        NODE_ENV: "production",
-        VERCEL_ENV: "production",
-      })
-    ).toEqual({ kind: "vercel-blob", options: { storeId: "eve-store" } });
-    expect(
-      resolveProfileMemoryBackend({
-        BLOB_READ_WRITE_TOKEN: "blob-token",
-        BLOB_STORE_ID: "store-id",
-        NODE_ENV: "development",
-        VERCEL_ENV: undefined,
-      })
-    ).toEqual({ kind: "automatic" });
   });
 
   it("shares the canonical workspace across verified authenticators", () => {
@@ -158,7 +97,7 @@ describe("profile memory", () => {
   });
 
   it("preserves the turn cancellation reason when recall loses it", async () => {
-    const blobAbort = new DOMException(
+    const storageAbort = new DOMException(
       "This operation was aborted",
       "AbortError"
     );
@@ -171,7 +110,7 @@ describe("profile memory", () => {
       defineMemoryProvider({
         recall: {
           async "turn.started"() {
-            throw blobAbort;
+            throw storageAbort;
           },
         },
       })
@@ -183,7 +122,7 @@ describe("profile memory", () => {
   });
 
   it("does not hide a recall failure while the turn remains active", async () => {
-    const blobAbort = new DOMException(
+    const storageAbort = new DOMException(
       "This operation was aborted",
       "AbortError"
     );
@@ -191,7 +130,7 @@ describe("profile memory", () => {
       defineMemoryProvider({
         recall: {
           async "turn.started"() {
-            throw blobAbort;
+            throw storageAbort;
           },
         },
       })
@@ -201,7 +140,7 @@ describe("profile memory", () => {
       provider.recall["turn.started"](
         memoryOperationContext(new AbortController().signal)
       )
-    ).rejects.toBe(blobAbort);
+    ).rejects.toBe(storageAbort);
   });
 });
 

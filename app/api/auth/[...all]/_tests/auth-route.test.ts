@@ -25,16 +25,18 @@ beforeEach(() => {
 });
 
 describe("auth route initialization", () => {
-  it("retries after transient installation-secret failures", async () => {
+  it("retries after a transient initialization failure", async () => {
     mocks.getAuth
-      .mockRejectedValueOnce(new Error("Blob temporarily unavailable"))
+      .mockRejectedValueOnce(new Error("Database temporarily unavailable"))
       .mockResolvedValueOnce({});
     const { GET } = await import("@app/api/auth/[...all]/route");
     const request = new Request(
       "https://openinstinct.example/api/auth/session"
     );
 
-    await expect(GET(request)).rejects.toThrow("Blob temporarily unavailable");
+    await expect(GET(request)).rejects.toThrow(
+      "Database temporarily unavailable"
+    );
     await expect(GET(request)).resolves.toMatchObject({ status: 200 });
     expect(mocks.getAuth).toHaveBeenCalledTimes(2);
     expect(handler).toHaveBeenCalledOnce();

@@ -5,7 +5,6 @@ import { z } from "zod";
 const applicationEnvironment = [
   "ACCESS_*",
   "BETTER_AUTH_*",
-  "BLOB_*",
   "BROWSER_BACKEND",
   "BROWSER_HOST_*",
   "BROWSER_POOL_*",
@@ -16,7 +15,6 @@ const applicationEnvironment = [
   "CLOUDRU_*",
   "COMPOSIO_*",
   "DATABASE_URL",
-  "EVE_MEMORY_BLOB_*",
   "FREE_*",
   "IMESSAGE_*",
   "MODEL_PROVIDER",
@@ -76,8 +74,8 @@ describe("Turbo configuration", () => {
     expect(deployButtons).toHaveLength(1);
     const [deployButton] = deployButtons;
     expect(deployButton).toBeDefined();
-    const blobSetup = readme
-      .split("### Blob storage", 2)[1]
+    const fileStorage = readme
+      .split("### File storage", 2)[1]
       ?.split("### Photon iMessage setup", 1)[0];
 
     expect(deployButton?.searchParams.get("repository-url")).toBe(
@@ -94,20 +92,10 @@ describe("Turbo configuration", () => {
         protocol: "storage",
         type: "integration",
       },
-      { access: "private", type: "blob" },
     ]);
     expect(deployButton?.searchParams.has("connect")).toBe(false);
-    expect(blobSetup).toContain(
-      "vercel blob create-store open-instinct-images --access private --yes"
-    );
-    expect(blobSetup).toContain("BLOB_STORE_ID");
-    expect(blobSetup).toContain("BLOB_READ_WRITE_TOKEN");
-    expect(blobSetup).toContain("VERCEL_OIDC_TOKEN");
-    expect(blobSetup).toContain("one-time migration of legacy profile memory");
-    expect(blobSetup).toContain("revisioned database records");
-    expect(blobSetup).not.toContain("vercel env pull");
-    expect(
-      blobSetup?.match(/^pnpm exec vercel blob create-store .+$/gmu)
-    ).toHaveLength(1);
+    expect(fileStorage).toContain("BROWSER_STATE_BUCKET");
+    expect(fileStorage).toContain("revisioned database records");
+    expect(fileStorage).not.toContain("vercel blob");
   });
 });

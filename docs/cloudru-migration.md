@@ -44,27 +44,37 @@
 Выполнено в проде 01.10 (PR 257): .pptx на 5 слайдов пришёл вложением через
 ≈ 1 мин, ссылка ведёт на подписанный адрес Object Storage.
 
-### 2. Хранилище: Blob → Object Storage
+### 2. Хранилище: Blob → Object Storage — код готов
 
-- Картинки и снимки экрана (`agent/lib/image-artifact/storage.ts`,
-  `app/artifacts/[artifactId]`), вложения Gmail и Диска (`agent/tools/gmail.ts`,
-  `drive.ts`) — в `bucket-ac164a`; клиент S3 уже есть
-  (`agent/lib/browser-pool/s3.ts`), выдача — подписанной ссылкой, как
-  `sandbox-files`.
-- Файловая память eve (`agent/memory/profile.ts`, `vercelBlob`) — свой
-  бэкенд памяти на S3; «автоматический» бэкенд вне Vercel бросает.
-- Ключи `BETTER_AUTH_SECRET` и `SECRET_ENCRYPTION_KEY` в env `bro-next` не
-  заданы (проверено 01.10): они лежат в Blob
-  (`db/services/installation-secrets.ts`). До ухода их надо достать из Blob и
-  задать явно в env нового сервера — без них не расшифровать сейф и не
-  проверить ни одну сессию входа.
-- Песочница главного агента (вложения человека, `eve-sandbox:`) — на бэкенд
-  `bro-cloudru`. Старые сессии ссылаются на файлы Vercel Sandbox: смена имени
-  бэкенда заводит новую песочницу, поэтому вложения старых сессий надо
-  перенести или принять их потерю (решение владельца).
+Сделано (PR «Хранилище: файлы Бро в Object Storage Cloud.ru»):
 
-Готово: в коде нет `@vercel/blob`; новые картинки и вложения открываются из
-S3.
+- Картинки, снимки экрана, фото-референсы, вложения Gmail и файлы Диска
+  пишутся и читаются в бакете пула (`BROWSER_STATE_BUCKET`, ключи
+  `CLOUDRU_*`) под ключом `artifacts/<прежний storage_pathname>`
+  (`shared/object-storage/artifacts.ts`); строки БД не менялись. Маршрут
+  `/artifacts/<id>` по-прежнему проверяет сессию и владельца и отдаёт байты
+  сам (серверный GET по подписанной ссылке, ETag/304, те же заголовки).
+  Подпись SigV4 — `shared/object-storage/` (нужна и `agent`, и `app`).
+- `@vercel/blob` удалён. Ключи `BETTER_AUTH_SECRET` и `SECRET_ENCRYPTION_KEY`
+  берутся только из env (`db/services/installation-secrets.ts`): без них вход
+  и сейф падают с понятной ошибкой. Перед слиянием задать оба в env
+  `bro-next` prod и preview теми же значениями, что лежат в Blob.
+- Файловая память eve — таблица `memory_documents` (версия для CAS) вместо
+  `vercelBlob`; в Blob документов памяти не было, переносить нечего.
+- Копия Blob → S3: `scripts/cloudru-app-host/blob-to-s3.ts` (идемпотентно,
+  сверка размера и sha256, `openinstinct/system/*` не копируется). 02.10
+  скопированы все 146 объектов (≈ 36 МиБ), повторный прогон ничего не копирует.
+  После слияния прогнать ещё раз: картинки, записанные в Blob между копией и
+  деплоем, доедут.
+- Песочница главного агента (вложения человека, `eve-sandbox:`):
+  `agent/sandbox.ts`, переменная `AGENT_SANDBOX` — `default` (eve сам: Vercel
+  Sandbox на Vercel) или `bro-cloudru` (хост песочниц, 1 ГиБ на сессию,
+  простой 20 мин → снимок `/workspace` в S3). Появление файла меняет ключ
+  определения песочницы: после деплоя каждая сессия на Vercel заводит новую
+  песочницу, вложения, присланные до деплоя, модель больше не видит.
+
+Осталось: живой ход с фото, голосовым и PDF на `AGENT_SANDBOX=bro-cloudru`
+против нового хоста `sbx-code-2`; на VM Бро задать `AGENT_SANDBOX=bro-cloudru`.
 
 ### 3. Модели: RouterAI — код готов, прод не переключён
 

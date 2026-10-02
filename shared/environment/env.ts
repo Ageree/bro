@@ -178,8 +178,8 @@ export const env = createEnv({
     // Required
     DATABASE_URL: databaseUrlSchema,
 
-    // Optional overrides with local defaults. Vercel deployments provision
-    // installation secrets in their connected private Blob store.
+    // Local defaults in development; a deployment sets both, and never
+    // changes them (`db/services/installation-secrets.ts`).
     BETTER_AUTH_SECRET: installationSecretWithLocalDefault(
       betterAuthSecretSchema,
       "openinstinct-local-auth-development-secret"
@@ -195,8 +195,6 @@ export const env = createEnv({
     SUPERMEMORY_API_KEY: browserUseApiKeySchema.optional(),
 
     // Optional
-    BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
-    BLOB_STORE_ID: requiredValue.optional(),
     // Where a browser errand runs when its workspace is not in a pilot list
     // below: Browser Use Cloud, the workspace's own Cloud.ru VM, or a
     // sandbox on a shared Cloud.ru host (`pool`, docs/browser-pool.md; see
@@ -473,8 +471,6 @@ export const env = createEnv({
     DATABASE_DRIVER: z
       .enum(["node-postgres", "neon-http"])
       .default("node-postgres"),
-    EVE_MEMORY_BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
-    EVE_MEMORY_BLOB_STORE_ID: requiredValue.optional(),
     // Usage ceilings per workspace: messages on the local day, browser errands
     // and drawn pictures on the local month. A deployment without YooKassa
     // keys never leaves the free column.
@@ -622,6 +618,11 @@ export const env = createEnv({
     ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
     ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
+    // Where Bro's own sandbox runs, the one eve keeps people's photos, voice
+    // messages and documents in (`agent/sandbox.ts`): `default` is eve's
+    // choice (Vercel Sandbox on Vercel), `bro-cloudru` the code sandbox host
+    // below. Changing it starts every session's sandbox afresh.
+    AGENT_SANDBOX: z.enum(["default", "bro-cloudru"]).default("default"),
     // The code sandbox host on Cloud.ru (`sandbox/README.md`): its id, its
     // HTTPS origin (`https://<address with dashes>.sslip.io`), and the key
     // its token key and the sandbox tool router's token key are derived from

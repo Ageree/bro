@@ -7,7 +7,7 @@ import { readGmailAttachmentArtifact } from "./gmail-attachments";
 /**
  * Resolves `/artifacts/<id>` for one workspace user. An artifact is a browser
  * image, a Gmail attachment, a picture `generate_image` drew, or a Drive
- * file; all are private Blob objects that travel by the same reference and
+ * file; all are private objects that travel by the same reference and
  * are served and delivered the same way.
  */
 export async function readReadyArtifact(

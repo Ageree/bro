@@ -128,7 +128,7 @@ export async function saveVaultItem(
 export async function readVaultSecret(scope: AccessScope, id: string) {
   const encrypted = await readEncryptedSecret(scope, id);
   if (!encrypted) return undefined;
-  const { secretEncryptionKey } = await getInstallationSecrets();
+  const { secretEncryptionKey } = getInstallationSecrets();
   return decryptVaultSecret(scope, id, encrypted, secretEncryptionKey);
 }
 
@@ -137,7 +137,7 @@ async function hasVaultSecret(scope: AccessScope, id: string) {
 }
 
 async function writeVaultSecret(scope: AccessScope, id: string, value: string) {
-  const { secretEncryptionKey } = await getInstallationSecrets();
+  const { secretEncryptionKey } = getInstallationSecrets();
   await writeEncryptedSecret(
     scope,
     id,
