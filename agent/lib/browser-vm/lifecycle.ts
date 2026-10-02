@@ -1509,10 +1509,29 @@ async function routeThroughRussia(
   }
   console.warn("[browser-vm] the proxy exit is not in Russia or too slow", {
     country: exit.country ?? null,
+    error: exit.error ?? null,
     latencyMs: exit.latencyMs ?? null,
     mbps: exit.mbps ?? null,
     rotation,
   });
+  // The proxy turned the login away: every sticky session of that login
+  // meets the same answer, so only the owner's account can change it.
+  const refusal = proxyRefusal(exit.error);
+  if (refusal !== undefined) {
+    await alert(
+      "browser-vm-proxy",
+      [
+        `Резидентный прокси (BROWSER_VM_PROXY) отказывает Бро: ${refusal}.`,
+        "Поручения в браузере ждут в очереди. Проверь баланс, тариф и пароль аккаунта прокси; если выдан новый логин — обнови BROWSER_VM_PROXY (порт sticky-сессий).",
+      ].join("\n")
+    );
+    await updateBrowserVm(
+      vm.workspaceId,
+      { proxyExit: null, proxySession: session },
+      now
+    );
+    throw new BrowserUseError(429, "proxy", "proxy refused", noExitRetryMs);
+  }
   if (rotationsLeft > 0) {
     return routeThroughRussia(vm, now, rotation + 1, rotationsLeft - 1);
   }
@@ -1524,6 +1543,18 @@ async function routeThroughRussia(
     now
   );
   throw new BrowserUseError(429, "proxy", "no Russian exit", noExitRetryMs);
+}
+
+/**
+ * The proxy's own refusal of the login, as the worker reports its CONNECT
+ * (`ClientHttpProxyError: 407, message=…`): payment, a forbidden use or a
+ * wrong password. A 502 is the worker's forwarder not reaching the proxy, and
+ * a dead exit is a timeout: another rotation can fix those.
+ */
+function proxyRefusal(error: string | null | undefined) {
+  return /^ClientHttpProxyError: (?:402|403|407)\b[^,]*(?:, message='[^']*')?/u.exec(
+    error ?? ""
+  )?.[0];
 }
 
 /** The rotation the workspace's stored sticky session is on. */

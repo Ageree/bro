@@ -2059,6 +2059,67 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(stored().proxySession).toMatch(/^bro[\da-f]{12}r3$/u);
   });
 
+  it("stops at the proxy's refusal of its login and tells the owner", async () => {
+    // RU 01.10–02.10: every rotation failed within a second for a day, and
+    // the reason was never logged.
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue({
+      ...proxySetup({ country: "RU", ip: "95.24.1.6" }),
+      exit: {
+        error:
+          "ClientHttpProxyError: 407, message='Proxy Authentication Required', url='http://127.0.0.1:3128'",
+      },
+    });
+
+    const refused = await lifecycle
+      .prepareBrowserVmSession(vm, now)
+      .catch((cause: unknown) => cause);
+
+    expect(refused).toMatchObject({
+      name: "BrowserUseError",
+      retryAfterMs: 5 * 60_000,
+      status: 429,
+    });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    expect(stored()).toMatchObject({ proxyExit: null });
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      "browser-vm-proxy",
+      expect.stringContaining(
+        "ClientHttpProxyError: 407, message='Proxy Authentication Required'"
+      ),
+      { repeatAfterMs: 6 * 60 * 60_000 }
+    );
+  });
+
+  it("goes on rotating when the worker could not reach the proxy", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue({
+      ...proxySetup({ country: "RU", ip: "95.24.1.7" }),
+      exit: {
+        error:
+          "ClientHttpProxyError: 502, message='Bad Gateway', url='http://127.0.0.1:3128'",
+      },
+    });
+
+    const refused = await lifecycle
+      .prepareBrowserVmSession(vm, now)
+      .catch((cause: unknown) => cause);
+
+    expect(refused).toMatchObject({ name: "BrowserUseError", status: 429 });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(4);
+    expect(alertOwner).not.toHaveBeenCalled();
+  });
+
   it("leaves the exit of a run going on the browser alone, however old its check", async () => {
     const lifecycle = await loadLifecycle();
     const vm = vmRow({ proxyExit: null });

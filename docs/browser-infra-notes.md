@@ -116,6 +116,11 @@
   только порты sticky-диапазона (10000 и выше): на 9000 (так стоял
   `BROWSER_VM_PROXY` облачной сессии 01.10) — 403 «Can not use -session- on
   rotating ports range», и проверка выхода worker отвечает `error`.
+- Причина пустой проверки выхода — `exit.error` worker (строка
+  `[browser-vm] the proxy exit…` в журнале eve): до 02.10 её не писали, и
+  отказ прокси сутки выглядел как «нет русского выхода». Отказ логина
+  (402/403/407 на CONNECT) ротацией не лечится: Бро шлёт тревогу
+  `browser-vm-proxy` и ждёт (`proxyRefusal` в `agent/lib/browser-vm/lifecycle.ts`).
 - Ozon не пускает само окружение (Chrome на Linux в VM) — не поддерживается;
   Wildberries и Avito проходят через домашний прокси. rzd.ru — корень НУЦ,
   владелец решил ему не доверять. Агент «находил» сайт в web.archive.org —
