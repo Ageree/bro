@@ -50,6 +50,7 @@ CLOUDRU_KEY_SECRET and CLOUDRU_S3_TENANT_ID.
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import io
@@ -61,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -982,22 +984,36 @@ def state_archive(roots):
 
 
 def restore_archive(data, roots, force=False):
-    """Unpack into the given directories (0700, files 0600); a file already there is kept unless `force`."""
+    """Unpack into the given directories (0700, files 0600); a file already there is kept unless `force`.
+    Only a plain relative path inside its root is written, never through a symlink, and each file whole or
+    not at all (a temporary file, fsync, rename): an interrupted restore must not leave a key file empty."""
     written = kept = 0
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         for member in tar.getmembers():
             name, _, relative = member.name.partition("/")
-            if not member.isfile() or name not in roots or ".." in Path(relative).parts:
+            path = Path(relative)
+            if not member.isfile() or name not in roots or not relative or path.is_absolute() or ".." in path.parts:
                 continue
-            target = roots[name] / relative
+            root = roots[name]
+            target = root / path
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if target.is_symlink() or target.parent.resolve() != root.resolve() / path.parent:
+                sys.exit(f"{target}: a symlink on the way, nothing restored past it")
             if target.exists() and not force:
                 kept += 1
                 continue
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "wb") as f:
-                f.write(tar.extractfile(member).read())
-            os.chmod(target, 0o600)
+            fd, temporary = tempfile.mkstemp(dir=target.parent, prefix="." + target.name)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(tar.extractfile(member).read())
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary, target)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary)
+                raise
             written += 1
     return written, kept
 
