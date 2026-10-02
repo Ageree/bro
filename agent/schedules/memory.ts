@@ -6,11 +6,7 @@ import {
   failMemorySyncJob,
   readMemorySyncSource,
 } from "@db/services/memory/sync";
-import {
-  expireMemories,
-  recordUntrackedMemories,
-  trimForgottenMemoryHistory,
-} from "@db/services/memory/records";
+import { expireMemories } from "@db/services/memory/records";
 import {
   addIndexedMemory,
   deleteIndexedMemory,
@@ -28,8 +24,6 @@ export default defineSchedule({
 
 async function maintainMemory() {
   await expireMemories();
-  await trimForgottenMemoryHistory();
-  await recordUntrackedMemories();
   if (!supermemoryConfigured()) return;
   const jobs = await claimMemorySyncJobs();
   await Promise.all(jobs.map(processMemorySyncJob));
