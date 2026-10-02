@@ -579,11 +579,11 @@ REQUIRED = ("DATABASE_URL", "WORKFLOW_POSTGRES_URL", "BETTER_AUTH_URL", "BETTER_
 # as production's), Supermemory or Composio (connected accounts copied from production could send mail);
 # nothing that bills with no scheduler to settle it: Browser Use, the browser VM and pool pilots, the code
 # sandbox pilot. The operator brings one back in stand.json when a rehearsal needs it on purpose.
-STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
+STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
                            r"SUPERMEMORY_API_KEY|COMPOSIO_API_KEY|BROWSER_VM_TWOCAPTCHA_API_KEY|"
                            r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES")
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
-PRODUCTION_STORES = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
+PRODUCTION_STORES = re.compile(r"(BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
                                r"COMPOSIO_API_KEY")
 # EVE_SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
 # Auth reads it too and turns its origin check off.

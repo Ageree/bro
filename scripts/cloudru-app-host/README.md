@@ -140,7 +140,7 @@ host.py rollback bro-app-1                         # ещё раз — на ре
 5. стенд работает на копии данных прода и открыт в интернет, поэтому
    теряет ключи, которые пишут людям, в хранилища и аккаунты прода или
    тратят деньги без планировщика: `TELEGRAM_*`, `IMESSAGE_*`, `YOOKASSA_*`,
-   `BLOB_*`, `EVE_MEMORY_BLOB_*` (те же пути, что у прода),
+   `BLOB_*` (те же пути, что у прода; память eve теперь в Postgres),
    `SUPERMEMORY_API_KEY`, `COMPOSIO_API_KEY` (подключённые аккаунты из копии
    прода), `BROWSER_USE_*`, `BROWSER_HOST_*`, `BROWSER_VM_TWOCAPTCHA_API_KEY`,
    пилоты `BROWSER_POOL_WORKSPACES`, `BROWSER_VM_WORKSPACES`,
