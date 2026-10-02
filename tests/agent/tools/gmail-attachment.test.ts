@@ -1,17 +1,20 @@
 import type { ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as Blob from "@vercel/blob";
 import type * as GmailModule from "@agent/lib/google-workspace/gmail";
 import type { readGmailAttachment } from "@agent/lib/google-workspace/gmail";
 import type {
   findGmailAttachmentArtifact,
   saveGmailAttachmentArtifact,
 } from "@db/services/gmail-attachments";
+import type {
+  deleteArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 const mocks = vi.hoisted(() => ({
-  del: vi.fn<typeof Blob.del>(),
+  del: vi.fn<typeof deleteArtifactObject>(),
   find: vi.fn<typeof findGmailAttachmentArtifact>(),
-  put: vi.fn<typeof Blob.put>(),
+  put: vi.fn<typeof putArtifactObject>(),
   read: vi.fn<typeof readGmailAttachment>(),
   save: vi.fn<typeof saveGmailAttachmentArtifact>(),
 }));
@@ -24,10 +27,10 @@ vi.mock("@db/services/gmail-attachments", () => ({
   findGmailAttachmentArtifact: mocks.find,
   saveGmailAttachmentArtifact: mocks.save,
 }));
-vi.mock("@vercel/blob", async (importOriginal) => ({
-  ...(await importOriginal<typeof Blob>()),
-  del: mocks.del,
-  put: mocks.put,
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => true,
+  deleteArtifactObject: mocks.del,
+  putArtifactObject: mocks.put,
 }));
 
 import { GoogleApiError } from "@agent/lib/google-workspace/client";
@@ -62,14 +65,7 @@ beforeEach(() => {
     id: artifact.id ?? artifactId,
     workspaceId: "personal:workspace",
   }));
-  mocks.put.mockResolvedValue({
-    contentDisposition: "",
-    contentType: "image/jpeg",
-    downloadUrl: "https://blob.example/download",
-    etag: '"etag"',
-    pathname: "gmail-attachments/workspace/beach",
-    url: "https://blob.example/beach",
-  });
+  mocks.put.mockResolvedValue(undefined);
 });
 
 describe("gmail-attachment", () => {
@@ -93,16 +89,12 @@ describe("gmail-attachment", () => {
       "1",
       10 * 1024 * 1024
     );
-    const [pathname, body, options] = mocks.put.mock.calls[0] ?? [];
-    expect(pathname).toMatch(
+    const [stored] = mocks.put.mock.calls[0] ?? [];
+    expect(stored?.pathname).toMatch(
       /^gmail-attachments\/[0-9a-f]{32}\/[0-9a-f-]{36}$/u
     );
-    expect(body).toEqual(Buffer.from(jpeg));
-    expect(options).toMatchObject({
-      access: "private",
-      addRandomSuffix: false,
-      contentType: "image/jpeg",
-    });
+    expect(stored?.bytes).toEqual(jpeg);
+    expect(stored?.mediaType).toBe("image/jpeg");
     const saved = mocks.save.mock.calls[0]?.[1];
     expect(mocks.save.mock.calls[0]?.[0]).toEqual({
       userId: "user-1",
@@ -115,7 +107,7 @@ describe("gmail-attachment", () => {
       gmailPartId: "1",
       mediaType: "image/jpeg",
       rootSessionId: "session-1",
-      storagePathname: pathname,
+      storagePathname: stored?.pathname,
     });
     expect(result.attachments).toEqual([
       {
@@ -158,7 +150,7 @@ describe("gmail-attachment", () => {
     const result = await attach([{ messageId: "message-1", partId: "1" }]);
 
     const [uploaded] = mocks.put.mock.calls[0] ?? [];
-    expect(mocks.del).toHaveBeenCalledExactlyOnceWith(uploaded);
+    expect(mocks.del).toHaveBeenCalledExactlyOnceWith(uploaded?.pathname);
     expect(result.attachments).toEqual([
       expect.objectContaining({
         markdown: `![beach.jpg](/artifacts/${artifactId})`,

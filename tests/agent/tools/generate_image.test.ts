@@ -3,9 +3,12 @@ import type { DynamicResolveContext } from "eve";
 import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type * as Blob from "@vercel/blob";
 import type { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
 import type { readReadyArtifact } from "@db/services/artifacts";
+import type {
+  openArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 import type {
   findGeneratedImageArtifact,
   saveGeneratedImageArtifact,
@@ -13,17 +16,17 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   find: vi.fn<typeof findGeneratedImageArtifact>(),
-  get: vi.fn<typeof Blob.get>(),
-  put: vi.fn<typeof Blob.put>(),
+  get: vi.fn<typeof openArtifactObject>(),
+  put: vi.fn<typeof putArtifactObject>(),
   quota: vi.fn<typeof imageGenerationQuotaGate>(),
   readArtifact: vi.fn<typeof readReadyArtifact>(),
   save: vi.fn<typeof saveGeneratedImageArtifact>(),
 }));
 
-vi.mock("@vercel/blob", async (importOriginal) => ({
-  ...(await importOriginal<typeof Blob>()),
-  get: mocks.get,
-  put: mocks.put,
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => true,
+  openArtifactObject: mocks.get,
+  putArtifactObject: mocks.put,
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   imageGenerationQuotaGate: mocks.quota,
@@ -98,14 +101,7 @@ beforeEach(() => {
   );
   mocks.find.mockResolvedValue(undefined);
   mocks.quota.mockResolvedValue({ allowed: true, note: undefined });
-  mocks.put.mockImplementation(async (pathname) => ({
-    contentDisposition: "",
-    contentType: "image/png",
-    downloadUrl: `https://blob.example/${pathname}`,
-    etag: '"etag"',
-    pathname,
-    url: `https://blob.example/${pathname}`,
-  }));
+  mocks.put.mockResolvedValue(undefined);
   mocks.save.mockImplementation(async (_scope, artifact) => ({
     ...artifact,
     createdAt: new Date(),
@@ -365,14 +361,14 @@ describe("generate_image", () => {
     );
     // The older photo was copied on the turn it arrived; only the new one is.
     expect(mocks.put).toHaveBeenCalledOnce();
-    expect(mocks.put.mock.calls[0]?.[0]).toBe(
-      `reference-photos/user-1/${sha256(dogPhoto)}`
-    );
-    expect(mocks.put.mock.calls[0]?.[2]).toMatchObject({ access: "private" });
+    expect(mocks.put.mock.calls[0]?.[0]).toMatchObject({
+      mediaType: "image/jpeg",
+      pathname: `reference-photos/user-1/${sha256(dogPhoto)}`,
+    });
   });
 
   it("draws with the person's photo as a reference and stores the picture as an artifact", async () => {
-    mocks.get.mockResolvedValue(blobResult(dogPhoto, "image/jpeg"));
+    mocks.get.mockResolvedValue(storedObject(dogPhoto, "image/jpeg"));
     const tool = await resolveTool(
       dynamicContext([
         photoMessage("вот наш пёс", Buffer.from(dogPhoto).toString("base64")),
@@ -407,12 +403,9 @@ describe("generate_image", () => {
     ]);
 
     const storedPicture = mocks.put.mock.calls.at(-1);
-    expect(storedPicture?.[0]).toBe(
-      `generated-images/user-1/${sha256(drawnPicture)}`
-    );
-    expect(storedPicture?.[2]).toMatchObject({
-      access: "private",
-      contentType: "image/png",
+    expect(storedPicture?.[0]).toMatchObject({
+      mediaType: "image/png",
+      pathname: `generated-images/user-1/${sha256(drawnPicture)}`,
     });
     expect(mocks.save).toHaveBeenCalledOnce();
     expect(mocks.save.mock.calls[0]?.[0]).toEqual(scope);
@@ -475,7 +468,7 @@ describe("generate_image", () => {
       mediaType: "image/png",
       storagePathname: "generated-images/user-1/earlier",
     });
-    mocks.get.mockResolvedValue(blobResult(earlierPicture, "image/png"));
+    mocks.get.mockResolvedValue(storedObject(earlierPicture, "image/png"));
     const tool = await resolveTool(dynamicContext([request]));
 
     await execute(tool, {
@@ -578,7 +571,7 @@ describe("generate_image", () => {
       mediaType: "image/png",
       storagePathname: "generated-images/user-1/earlier",
     });
-    mocks.get.mockResolvedValue(blobResult(earlierPicture, "image/png"));
+    mocks.get.mockResolvedValue(storedObject(earlierPicture, "image/png"));
     const tool = await resolveTool(dynamicContext([request]));
 
     const result = await execute(tool, {
@@ -785,12 +778,12 @@ function sha256(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function blobResult(bytes: Uint8Array<ArrayBuffer>, contentType: string) {
-  // SAFETY: The tool reads only the status, size, type and stream of a private blob.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete Blob result would add unrelated metadata.
+function storedObject(bytes: Uint8Array<ArrayBuffer>, contentType: string) {
   return {
-    blob: { contentType, size: bytes.byteLength },
-    statusCode: 200,
-    stream: new Response(bytes).body,
-  } as Awaited<ReturnType<typeof Blob.get>>;
+    contentType,
+    etag: '"etag"',
+    size: bytes.byteLength,
+    status: 200 as const,
+    stream: new Response(bytes).body ?? new ReadableStream(),
+  };
 }

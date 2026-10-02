@@ -40,6 +40,7 @@ describe("source layout", () => {
       "identity",
       "memory",
       "model",
+      "object-storage",
       "photon",
       "schedules",
       "spending",
