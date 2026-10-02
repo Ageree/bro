@@ -750,6 +750,10 @@ export async function recordUntrackedMemories() {
           AND latest.record_index = record.record_index
           AND latest.revision = record.revision
       )
+    -- Locked as a forget locks it: a record forgotten meanwhile is read
+    -- again, without its text, and one being forgotten is left for the
+    -- next tick.
+    FOR UPDATE OF record SKIP LOCKED
     ON CONFLICT DO NOTHING
   `);
 }

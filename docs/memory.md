@@ -56,8 +56,8 @@ Every revision of a profile record is appended to `memory_revisions` in the
 transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 `system`) and what it did (save, update, forget, expire, import, and the
 digest's merge, correction and purge). Existing records with content start
-their history with one `import` revision, and the minute tick gives one to a
-record a release without history saved. The history is for the person to see
+their history with one `import` revision, and the minute tick gives one to
+each record saved by a release that did not write history. The history is for the person to see
 and undo changes on the memory screen in the cabinet (planned: roadmap item
 31, its last PR); it never enters the model's context. Forgetting — at the person's
 word or by the model — wipes the text of every earlier revision of that record
