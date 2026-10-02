@@ -6,7 +6,9 @@ import {
   eq,
   ilike,
   isNotNull,
+  lt,
   lte,
+  notExists,
   or,
   sql,
 } from "drizzle-orm";
@@ -15,6 +17,7 @@ import {
   db,
   memoryOperations,
   memoryRecords,
+  memoryRevisions,
   memoryScopes,
   memorySync,
   workspaces,
@@ -30,6 +33,35 @@ import {
 } from "@shared/memory/schema";
 
 const maximumRecords = 250;
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Who wrote a revision and why. The model writes through its memory tools
+ * in a conversation; the person, in the cabinet; the daily digest and
+ * expiry, on their own.
+ */
+interface MemoryOrigin {
+  readonly actor: (typeof memoryRevisions.$inferInsert)["actor"];
+  readonly action?: RevisionAction;
+  readonly sessionId?: string;
+}
+
+type RevisionAction = (typeof memoryRevisions.$inferInsert)["action"];
+
+const modelOrigin: MemoryOrigin = { actor: "model" };
+
+/**
+ * Removals that keep the record's history readable for a while: what the
+ * digest merged, corrected or found one-off can be restored. Everything
+ * else forgotten — at the person's word, by the model, or a code the digest
+ * purged — leaves no text behind.
+ */
+const removalsKeepingHistory: ReadonlySet<RevisionAction> = new Set([
+  "merge",
+  "correct",
+  "one_off",
+]);
 
 async function ensureMemoryScope(scope: AccessScope, scopeKey: string) {
   await ensureScope(scope);
@@ -180,7 +212,8 @@ export async function saveMemory(
   scopeKey: string,
   input: z.input<typeof saveMemorySchema>,
   operationId: string,
-  source: { sessionId: string; turnId: string }
+  source: { sessionId: string; turnId: string },
+  origin: MemoryOrigin = { ...modelOrigin, sessionId: source.sessionId }
 ) {
   const content = memoryContentSchema.parse(saveMemorySchema.parse(input));
   await ensureMemoryScope(scope, scopeKey);
@@ -264,6 +297,7 @@ export async function saveMemory(
       revision: 1,
     });
     if (!saved) throw new Error("Memory could not be saved.");
+    await recordRevision(transaction, saved, origin, "save");
     await enqueueSync(transaction, saved);
     return { index: saved.index, revision: saved.revision };
   });
@@ -279,7 +313,8 @@ export async function updateMemory(
   scope: AccessScope,
   scopeKey: string,
   input: z.input<typeof updateMemorySchema>,
-  operationId: string
+  operationId: string,
+  origin: MemoryOrigin = modelOrigin
 ) {
   const parsed = updateMemorySchema.parse(input);
   await ensureMemoryScope(scope, scopeKey);
@@ -319,6 +354,7 @@ export async function updateMemory(
       index: saved.index,
       revision: saved.revision,
     });
+    await recordRevision(transaction, saved, origin, "update");
     await transaction
       .update(memorySync)
       .set({
@@ -345,7 +381,8 @@ export async function forgetMemory(
   scope: AccessScope,
   scopeKey: string,
   input: { index: number; expectedRevision?: number },
-  operationId: string
+  operationId: string,
+  origin: MemoryOrigin = modelOrigin
 ) {
   await ensureMemoryScope(scope, scopeKey);
   return db.transaction(async (transaction) => {
@@ -358,12 +395,18 @@ export async function forgetMemory(
     );
     if (replay) return { forgotten: true, ...replay };
     const identity = recordIdentity(scope, scopeKey, input.index);
+    // Locked: expiry, which takes no scope lock, may not bump the revision
+    // this forget is about to write.
     const [current] = await transaction
       .select()
       .from(memoryRecords)
       .where(identity)
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (current?.content === null) {
+      if (!removalsKeepingHistory.has(origin.action ?? "forget")) {
+        await wipeRecordHistory(transaction, scope, scopeKey, input.index);
+      }
       const now = new Date();
       await transaction
         .update(memorySync)
@@ -407,12 +450,22 @@ export async function forgetMemory(
       sourceTurnId: null,
       updatedAt: new Date(),
     };
-    await transaction.update(memoryRecords).set(values).where(identity);
+    const [forgotten] = await transaction
+      .update(memoryRecords)
+      .set(values)
+      .where(identity)
+      .returning();
     await recordOperation(transaction, scope, scopeKey, operationId, {
       action: "forget",
       index: input.index,
       revision,
     });
+    if (!removalsKeepingHistory.has(origin.action ?? "forget")) {
+      await wipeRecordHistory(transaction, scope, scopeKey, input.index);
+    }
+    if (forgotten) {
+      await recordRevision(transaction, forgotten, origin, "forget");
+    }
     await transaction
       .update(memorySync)
       .set({
@@ -455,9 +508,27 @@ export async function expireMemories(now = new Date()) {
       )
       .returning({
         index: memoryRecords.index,
+        revision: memoryRecords.revision,
         scopeKey: memoryRecords.scopeKey,
         workspaceId: memoryRecords.workspaceId,
       });
+    if (expired.length > 0) {
+      await transaction
+        .insert(memoryRevisions)
+        .values(
+          expired.map((row) => ({
+            action: "expire" as const,
+            actor: "system" as const,
+            content: null,
+            createdAt: now,
+            recordIndex: row.index,
+            revision: row.revision,
+            scopeKey: row.scopeKey,
+            workspaceId: row.workspaceId,
+          }))
+        )
+        .onConflictDoNothing();
+    }
     await Promise.all(
       expired.map((row) =>
         transaction
@@ -501,8 +572,8 @@ export async function importLegacyMemories(
     await Promise.all(
       entries
         .filter((entry) => isSafeMemoryText(entry.text))
-        .map((entry) =>
-          transaction
+        .map(async (entry) => {
+          const [imported] = await transaction
             .insert(memoryRecords)
             .values({
               content: memoryContentSchema.parse({
@@ -521,7 +592,16 @@ export async function importLegacyMemories(
               workspaceId: scope.workspaceId,
             })
             .onConflictDoNothing()
-        )
+            .returning();
+          if (imported) {
+            await recordRevision(
+              transaction,
+              imported,
+              { actor: "system" },
+              "import"
+            );
+          }
+        })
     );
     await transaction
       .update(memoryScopes)
@@ -549,6 +629,98 @@ export async function memoryScopeNeedsLegacyImport(
     .where(scopeIdentity(scope, scopeKey))
     .limit(1);
   return state?.completedAt === null;
+}
+
+/**
+ * Marks the scope as the one Bro's conversations read, at most once an
+ * hour: the cabinet shows the memory of the scope recalled last.
+ */
+export async function markMemoryScopeRecalled(
+  scope: AccessScope,
+  scopeKey: string,
+  now = new Date()
+) {
+  await db
+    .update(memoryScopes)
+    .set({ lastRecalledAt: now })
+    .where(
+      and(
+        scopeIdentity(scope, scopeKey),
+        or(
+          sql`${memoryScopes.lastRecalledAt} IS NULL`,
+          lt(
+            memoryScopes.lastRecalledAt,
+            new Date(now.getTime() - 60 * 60 * 1_000)
+          )
+        )
+      )
+    );
+}
+
+/**
+ * Wipes what history still keeps of memories that are gone — expired, or
+ * removed by the digest — once the person has asked Bro to forget
+ * everything: «забудь всё» leaves no text behind, in the profile or in its
+ * history.
+ */
+export async function wipeForgottenMemoryHistory(
+  scope: AccessScope,
+  scopeKey: string
+) {
+  await db.delete(memoryRevisions).where(
+    and(
+      eq(memoryRevisions.workspaceId, scope.workspaceId),
+      eq(memoryRevisions.scopeKey, scopeKey),
+      notExists(
+        db
+          .select({ index: memoryRecords.index })
+          .from(memoryRecords)
+          .where(
+            and(
+              eq(memoryRecords.workspaceId, memoryRevisions.workspaceId),
+              eq(memoryRecords.scopeKey, memoryRevisions.scopeKey),
+              eq(memoryRecords.index, memoryRevisions.recordIndex),
+              isNotNull(memoryRecords.content),
+              currentValidity()
+            )
+          )
+      )
+    )
+  );
+}
+
+/** How long history keeps the text of a memory that expired or the digest removed. */
+const removedTextRetentionMs = 30 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Wipes what history keeps of memories that are gone: their text stays
+ * restorable for 30 days after they expired or the digest removed them,
+ * and not at all when code that writes no revision forgot them — a release
+ * from before the history, during a rollback or a deploy, which leaves the
+ * record at a revision history has no row for.
+ */
+export async function trimForgottenMemoryHistory(now = new Date()) {
+  const keptSince = new Date(now.getTime() - removedTextRetentionMs);
+  await db.execute(sql`
+    UPDATE ${memoryRevisions} AS history
+    SET content = NULL, session_id = NULL
+    FROM ${memoryRecords} AS record
+    WHERE history.workspace_id = record.workspace_id
+      AND history.scope_key = record.scope_key
+      AND history.record_index = record.record_index
+      AND history.content IS NOT NULL
+      AND record.content IS NULL
+      AND (
+        record.updated_at <= ${keptSince}
+        OR NOT EXISTS (
+          SELECT 1 FROM ${memoryRevisions} AS latest
+          WHERE latest.workspace_id = record.workspace_id
+            AND latest.scope_key = record.scope_key
+            AND latest.record_index = record.record_index
+            AND latest.revision = record.revision
+        )
+      )
+  `);
 }
 
 export async function semanticMemoryEnabled(
@@ -588,7 +760,7 @@ function recordIdentity(scope: AccessScope, scopeKey: string, index: number) {
 }
 
 async function lockScope(
-  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: Transaction,
   scope: AccessScope,
   scopeKey: string
 ) {
@@ -605,7 +777,7 @@ async function lockScope(
 }
 
 async function readOperation(
-  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: Transaction,
   scope: AccessScope,
   scopeKey: string,
   operationId: string
@@ -627,7 +799,7 @@ async function readOperation(
 }
 
 function recordOperation(
-  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: Transaction,
   scope: AccessScope,
   scopeKey: string,
   operationId: string,
@@ -643,8 +815,47 @@ function recordOperation(
   });
 }
 
+function recordRevision(
+  transaction: Transaction,
+  row: typeof memoryRecords.$inferSelect,
+  origin: MemoryOrigin,
+  action: RevisionAction
+) {
+  return transaction.insert(memoryRevisions).values({
+    action: origin.action ?? action,
+    actor: origin.actor,
+    content: row.content,
+    createdAt: row.updatedAt,
+    recordIndex: row.index,
+    revision: row.revision,
+    scopeKey: row.scopeKey,
+    sessionId: origin.sessionId ?? null,
+    workspaceId: row.workspaceId,
+  });
+}
+
+/** Forgetting leaves no earlier text of the record in its history. */
+function wipeRecordHistory(
+  transaction: Transaction,
+  scope: AccessScope,
+  scopeKey: string,
+  index: number
+) {
+  return transaction
+    .update(memoryRevisions)
+    .set({ content: null, sessionId: null })
+    .where(
+      and(
+        eq(memoryRevisions.workspaceId, scope.workspaceId),
+        eq(memoryRevisions.scopeKey, scopeKey),
+        eq(memoryRevisions.recordIndex, index),
+        isNotNull(memoryRevisions.content)
+      )
+    );
+}
+
 function enqueueSync(
-  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: Transaction,
   row: typeof memoryRecords.$inferSelect
 ) {
   return transaction

@@ -52,6 +52,22 @@ to import there); the import marker is in Postgres, so an emptied scope is
 not re-imported. New writes are authoritative in Postgres, which means rolling
 back to the old file provider after cutover would hide post-cutover changes.
 
+Every revision of a profile record is appended to `memory_revisions` in the
+transaction that writes it, with who wrote it (`model`, `person`, `digest`,
+`system`) and what it did (save, update, forget, expire, import, and the
+digest's merge, correction and purge). Existing records start their history
+with one `import` revision. The history is for the person to see and undo
+changes; it never enters the model's context. Forgetting — at the person's
+word or by the model — wipes the text of every earlier revision of that record
+at once. The text of a record that expired or that the digest merged,
+corrected or found one-off stays readable for 30 days, to be restored, and
+then the minute tick in `agent/schedules/memory.ts` wipes it; the same tick
+wipes the history of a record forgotten by a release that writes no revisions
+(a rollback or a deploy window). «Забудь всё» (`profile__forget_all` leaving nothing)
+also deletes the history of records that expired or were removed earlier.
+`memory_scopes.last_recalled_at` marks, at most hourly, the scope key Bro's
+conversations read, so the cabinet can show that scope's memory.
+
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat
 messages, historical infrastructure backups, or third-party logs. Telemetry is

@@ -1,4 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
+import { asc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import {
@@ -13,11 +14,14 @@ import {
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import {
+  expireMemories,
   findMemories,
   forgetMemory,
   importLegacyMemories,
   listCurrentMemories,
+  markMemoryScopeRecalled,
   readMemory,
+  trimForgottenMemoryHistory,
   saveMemory,
   updateMemory,
 } from "@db/services/memory/records";
@@ -609,6 +613,351 @@ describe("forgetting everything at once", () => {
 });
 
 /**
+ * Item 31: every revision of a memory is kept, so the cabinet can show what
+ * a memory said and the digest's changes can be undone — but what the
+ * person asked Bro to forget leaves no text behind.
+ */
+describe("memory history", () => {
+  async function history(scopeKey = "scope-a") {
+    const rows = await database
+      .select()
+      .from(schema.memoryRevisions)
+      .where(eq(schema.memoryRevisions.scopeKey, scopeKey))
+      .orderBy(
+        asc(schema.memoryRevisions.workspaceId),
+        asc(schema.memoryRevisions.recordIndex),
+        asc(schema.memoryRevisions.revision)
+      );
+    return rows.map((row) => ({
+      action: row.action,
+      actor: row.actor,
+      index: row.recordIndex,
+      revision: row.revision,
+      sessionId: row.sessionId,
+      text: row.content?.text ?? null,
+      workspaceId: row.workspaceId,
+    }));
+  }
+
+  it("keeps each revision with who wrote it", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "save:city",
+      { sessionId: "session-1", turnId: "turn" }
+    );
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Живёт в Самаре."), expectedRevision: 1, index: 0 },
+      "update:city",
+      { actor: "model", sessionId: "session-2" }
+    );
+    // A replayed call writes no second revision.
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Живёт в Самаре."), expectedRevision: 1, index: 0 },
+      "update:city"
+    );
+    // Nor does a save the profile already holds.
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "живёт в самаре." },
+      "save:again",
+      { sessionId: "session-3", turnId: "turn" }
+    );
+
+    expect(await history()).toEqual([
+      {
+        action: "save",
+        actor: "model",
+        index: 0,
+        revision: 1,
+        sessionId: "session-1",
+        text: "Живёт в Казани.",
+        workspaceId: alice.workspaceId,
+      },
+      {
+        action: "update",
+        actor: "model",
+        index: 0,
+        revision: 2,
+        sessionId: "session-2",
+        text: "Живёт в Самаре.",
+        workspaceId: alice.workspaceId,
+      },
+    ]);
+  });
+
+  it("wipes a forgotten memory's earlier text and keeps others' history", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save:sushi", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await saveMemory(alice, "scope-a", { text: "Живёт в Казани." }, "save:c", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Любит роллы."), expectedRevision: 1, index: 0 },
+      "update:sushi"
+    );
+    await saveMemory(bob, "scope-a", { text: "Любит суши." }, "save:bob", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+
+    await forgetMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 2, index: 0 },
+      "forget:sushi",
+      { actor: "model", sessionId: "session" }
+    );
+
+    expect(
+      (await history()).map(({ action, index, text, workspaceId }) => ({
+        action,
+        index,
+        text,
+        workspaceId,
+      }))
+    ).toEqual([
+      { action: "save", index: 0, text: null, workspaceId: alice.workspaceId },
+      {
+        action: "update",
+        index: 0,
+        text: null,
+        workspaceId: alice.workspaceId,
+      },
+      {
+        action: "forget",
+        index: 0,
+        text: null,
+        workspaceId: alice.workspaceId,
+      },
+      {
+        action: "save",
+        index: 1,
+        text: "Живёт в Казани.",
+        workspaceId: alice.workspaceId,
+      },
+      // Another workspace's memory of the same text is its own.
+      {
+        action: "save",
+        index: 0,
+        text: "Любит суши.",
+        workspaceId: bob.workspaceId,
+      },
+    ]);
+  });
+
+  it("keeps what the digest merged readable, to be restored", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save:sushi", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await forgetMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 1, index: 0 },
+      "digest:merge",
+      { action: "merge", actor: "digest" }
+    );
+
+    expect(
+      (await history()).map(({ action, actor, text }) => ({
+        action,
+        actor,
+        text,
+      }))
+    ).toEqual([
+      { action: "save", actor: "model", text: "Любит суши." },
+      { action: "merge", actor: "digest", text: null },
+    ]);
+  });
+
+  it("records expiry and the legacy import", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      "save:trip",
+      { sessionId: "session", turnId: "turn" }
+    );
+    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    await importLegacyMemories(
+      alice,
+      "scope-b",
+      [{ index: 3, text: "Говорит по-русски." }],
+      3
+    );
+
+    expect(
+      (await history()).map(({ action, actor, revision, text }) => ({
+        action,
+        actor,
+        revision,
+        text,
+      }))
+    ).toEqual([
+      { action: "save", actor: "model", revision: 1, text: "Едет в Казань." },
+      { action: "expire", actor: "system", revision: 2, text: null },
+    ]);
+    expect(
+      (await history("scope-b")).map(({ action, actor, index, text }) => ({
+        action,
+        actor,
+        index,
+        text,
+      }))
+    ).toEqual([
+      {
+        action: "import",
+        actor: "system",
+        index: 3,
+        text: "Говорит по-русски.",
+      },
+    ]);
+  });
+
+  // «Забудь всё»: what expired before goes from history with the rest.
+  it("leaves no text in history once the person has Bro forget everything", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      "save:trip",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    // Lapsed, but not yet swept by expiry.
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Был в Самаре.", validUntil: "2026-10-01T00:00:00.000Z" },
+      "save:lapsed",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save:sushi", {
+      sessionId: "this-session",
+      turnId: "turn",
+    });
+    await saveMemory(alice, "scope-b", { text: "Любит суши." }, "save:b", {
+      sessionId: "this-session",
+      turnId: "turn",
+    });
+    const session = profileToolsContext("this-session");
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+
+    await tools.forget_all.execute(
+      { records: [{ index: 2, text: "Любит суши." }] },
+      { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+    );
+
+    expect(await history()).toEqual([]);
+    expect(await history("scope-b")).toHaveLength(1);
+  });
+
+  // A release from before the history forgets without wiping it.
+  it("wipes the history of a memory an older release forgot", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save:sushi", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await saveMemory(alice, "scope-a", { text: "Живёт в Казани." }, "save:c", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await forgetMemory(alice, "scope-a", { index: 1 }, "digest:merge", {
+      action: "merge",
+      actor: "digest",
+    });
+    await database
+      .update(schema.memoryRecords)
+      .set({ content: null, revision: 2 })
+      .where(eq(schema.memoryRecords.index, 0));
+
+    await trimForgottenMemoryHistory();
+
+    expect(
+      (await history()).map(({ action, index, sessionId, text }) => ({
+        action,
+        index,
+        sessionId,
+        text,
+      }))
+    ).toEqual([
+      { action: "save", index: 0, sessionId: null, text: null },
+      // Forgotten with history: the digest's merge stays readable.
+      {
+        action: "save",
+        index: 1,
+        sessionId: "session",
+        text: "Живёт в Казани.",
+      },
+      { action: "merge", index: 1, sessionId: null, text: null },
+    ]);
+  });
+
+  it("keeps an expired memory's text for 30 days", async () => {
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      "save:trip",
+      { sessionId: "session", turnId: "turn" }
+    );
+    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    const texts = async () => (await history()).map(({ text }) => text);
+
+    await trimForgottenMemoryHistory(new Date("2026-11-04T00:00:00.000Z"));
+    expect(await texts()).toEqual(["Едет в Казань.", null]);
+    await trimForgottenMemoryHistory(new Date("2026-11-06T00:00:00.000Z"));
+    expect(await texts()).toEqual([null, null]);
+  });
+
+  it("marks the scope recalled at most once an hour", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "save", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    const recalledAt = async () =>
+      (
+        await database
+          .select({ at: schema.memoryScopes.lastRecalledAt })
+          .from(schema.memoryScopes)
+          .where(eq(schema.memoryScopes.scopeKey, "scope-a"))
+      )[0]?.at?.toISOString();
+
+    expect(await recalledAt()).toBeUndefined();
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-a",
+      new Date("2026-10-02T10:00:00Z")
+    );
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-a",
+      new Date("2026-10-02T10:30:00Z")
+    );
+    expect(await recalledAt()).toBe("2026-10-02T10:00:00.000Z");
+    await markMemoryScopeRecalled(
+      alice,
+      "scope-a",
+      new Date("2026-10-02T11:01:00Z")
+    );
+    expect(await recalledAt()).toBe("2026-10-02T11:01:00.000Z");
+  });
+});
+
+/**
  * In the RU benchmark (d14) «никогда ничего не оплачивай и никому не пиши
  * без моего ок» was not kept anywhere. A rule is saved as one and read back
  * first, as a boundary that only restricts.
@@ -933,6 +1282,11 @@ describe("a rule only from the person's own turn", () => {
     ).toBe("not-applicable");
   });
 });
+
+/** A fact as a memory tool writes it. */
+function fact(text: string) {
+  return memoryContentSchema.parse({ category: "fact", text });
+}
 
 /** A turn the person's own message started, in this conversation. */
 function personTurn(id: string) {

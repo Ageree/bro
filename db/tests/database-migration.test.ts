@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -112,6 +112,57 @@ describe("database migrations", () => {
       { columnName: "reply_anchor_message_id" },
     ]);
   }, 15_000);
+
+  // Item 31: memory history starts with what each memory says today.
+  it("starts memory history from current memories, once", async () => {
+    const database = createDatabase();
+    const migrations = (
+      await readdir(new URL("../migrations", import.meta.url))
+    )
+      .filter((name) => name.endsWith(".sql"))
+      .toSorted();
+    const historyMigration = await findMigration(
+      migrations,
+      'CREATE TABLE IF NOT EXISTS "memory_revisions"'
+    );
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations apply in order. */
+    for (const name of migrations.slice(
+      0,
+      migrations.indexOf(historyMigration)
+    ))
+      await applyMigration(database, name);
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO memory_records
+        (workspace_id, scope_key, record_index, revision, generation, content, last_operation_id, updated_at)
+      VALUES
+        ('workspace-1', 'scope', 0, 3, 1, '{"text":"Живёт в Казани."}', 'a', '2026-09-30T10:00:00Z'),
+        ('workspace-1', 'scope', 1, 2, 1, NULL, 'b', '2026-09-30T11:00:00Z');
+    `);
+
+    await applyMigration(database, historyMigration);
+    await applyMigration(database, historyMigration);
+
+    expect(
+      (
+        await database.query(`
+          SELECT record_index AS "index", revision, content->>'text' AS text,
+            action, actor, created_at = '2026-09-30T10:00:00Z' AS "keepsDate"
+          FROM memory_revisions
+        `)
+      ).rows
+    ).toEqual([
+      {
+        action: "import",
+        actor: "system",
+        index: 0,
+        keepsDate: true,
+        revision: 3,
+        text: "Живёт в Казани.",
+      },
+    ]);
+  }, 30_000);
 
   it("preserves legacy rows while enforcing constraints for new writes", async () => {
     const database = createDatabase();
@@ -319,6 +370,21 @@ async function applyMigration(database: PGlite, name: string) {
     if (statement.trim()) await database.exec(statement);
   }
   /* oxlint-enable eslint/no-await-in-loop */
+}
+
+async function findMigration(names: readonly string[], statement: string) {
+  const contents = await Promise.all(
+    names.map(async (name) => ({
+      name,
+      sql: await readFile(
+        new URL(`../migrations/${name}`, import.meta.url),
+        "utf8"
+      ),
+    }))
+  );
+  const found = contents.find(({ sql }) => sql.includes(statement));
+  if (!found) throw new Error(`No migration has ${statement}.`);
+  return found.name;
 }
 
 async function pendingConstraintCount(database: PGlite) {

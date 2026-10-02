@@ -34,6 +34,16 @@ export const memoryScopes = pgTable(
     semanticIndexEnabled: boolean("semantic_index_enabled")
       .notNull()
       .default(true),
+    /**
+     * When Bro last read this scope's profile into a turn, at most hourly: a
+     * workspace can hold more than one opaque eve scope key, and the one
+     * recalled last is the one its conversations use.
+     */
+    lastRecalledAt: timestamp("last_recalled_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     updatedAt: timestamp("updated_at", {
       mode: "date",
       precision: 3,
@@ -98,6 +108,80 @@ export const memoryRecords = pgTable(
     check("memory_records_index_check", sql`${table.index} >= 0`),
     check("memory_records_revision_check", sql`${table.revision} > 0`),
     check("memory_records_generation_check", sql`${table.generation} > 0`),
+  ]
+);
+
+/** What a revision of a memory did, and who did it. */
+export const memoryRevisionActions = [
+  "save",
+  "update",
+  "restore",
+  "forget",
+  "expire",
+  "import",
+  "merge",
+  "correct",
+  "one_off",
+  "purge",
+] as const;
+export const memoryRevisionActors = [
+  "model",
+  "person",
+  "digest",
+  "system",
+] as const;
+
+/**
+ * Every revision of a memory, appended in the same transaction that writes
+ * it: `content` is the record as that revision left it (null once forgotten
+ * or expired). Forgetting wipes the text of the record's earlier revisions,
+ * so history never keeps what the person asked Bro to forget.
+ */
+export const memoryRevisions = pgTable(
+  "memory_revisions",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    scopeKey: text("scope_key").notNull(),
+    recordIndex: bigint("record_index", { mode: "number" }).notNull(),
+    revision: integer("revision").notNull(),
+    content: jsonb("content").$type<MemoryContent>(),
+    action: text("action", { enum: memoryRevisionActions }).notNull(),
+    actor: text("actor", { enum: memoryRevisionActors }).notNull(),
+    sessionId: text("session_id"),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.workspaceId,
+        table.scopeKey,
+        table.recordIndex,
+        table.revision,
+      ],
+    }),
+    index("memory_revisions_timeline_idx").on(
+      table.workspaceId,
+      table.scopeKey,
+      table.createdAt
+    ),
+    check(
+      "memory_revisions_action_check",
+      sql`${table.action} IN ('save', 'update', 'restore', 'forget', 'expire', 'import', 'merge', 'correct', 'one_off', 'purge')`
+    ),
+    check(
+      "memory_revisions_actor_check",
+      sql`${table.actor} IN ('model', 'person', 'digest', 'system')`
+    ),
+    check("memory_revisions_index_check", sql`${table.recordIndex} >= 0`),
+    check("memory_revisions_revision_check", sql`${table.revision} > 0`),
   ]
 );
 

@@ -23,12 +23,14 @@ import {
   forgetMemory,
   importLegacyMemories,
   listCurrentMemories,
+  markMemoryScopeRecalled,
   memoryScopeNeedsLegacyImport,
   readMemory,
   readMemorySource,
   saveMemory,
   semanticMemoryEnabled,
   updateMemory,
+  wipeForgottenMemoryHistory,
 } from "@db/services/memory/records";
 import {
   findMemorySchema,
@@ -236,7 +238,8 @@ async function forgetNamedMemories(
   scope: AccessScope,
   scopeKey: string,
   records: z.infer<typeof forgetAllInputSchema>["records"],
-  operationId: string
+  operationId: string,
+  sessionId: string
 ) {
   const current = await Promise.all(
     records.map(async ({ index, text }) => ({
@@ -265,10 +268,15 @@ async function forgetNamedMemories(
       scope,
       scopeKey,
       { expectedRevision: record.revision, index },
-      `${operationId}:${String(index)}`
+      `${operationId}:${String(index)}`,
+      { actor: "model", sessionId }
     );
     forgotten.push(index);
   }
+  const nothingLeft = await nothingLeftBut(scope, scopeKey, changed);
+  // «Забудь всё» leaves no text in history either: what expired or the
+  // digest removed goes with the rest.
+  if (nothingLeft) await wipeForgottenMemoryHistory(scope, scopeKey);
   return {
     forgotten,
     ...(changed.length > 0 && {
@@ -279,7 +287,7 @@ async function forgetNamedMemories(
     // The guide to what stays outside memory answers «удали всё»: only a
     // call that left no memory behind, bar one corrected after the card,
     // carries it — «забудь, что у меня кот» gets a short reply.
-    ...((await nothingLeftBut(scope, scopeKey, changed)) && afterForgetting()),
+    ...(nothingLeft && afterForgetting()),
   };
 }
 
@@ -338,7 +346,8 @@ export function createProfileMemoryProvider(
               scope,
               scopeKey,
               records,
-              `${toolContext.session.id}:${toolContext.callId}`
+              `${toolContext.session.id}:${toolContext.callId}`,
+              toolContext.session.id
             ),
         }),
         read: defineTool({
@@ -353,13 +362,20 @@ export function createProfileMemoryProvider(
           description:
             "Forget one durable memory the user named themselves, or one this conversation just saved wrong; to forget several, or everything («удали всё, что ты про меня помнишь»), use profile__forget_all. When the request is unclear («забудь, что запомнил в этом разговоре» with nothing saved here), forget nothing: ask one short question and end the turn, then act only on the answer. Pass its text exactly as the profile lists it; in a turn the user's own message started it goes at once, without a card. Existing conversation history and external retention are unchanged.",
           inputSchema: removeMemoryInputSchema,
-          execute: ({ expectedRevision, index }, toolContext) =>
-            forgetMemory(
+          async execute({ expectedRevision, index }, toolContext) {
+            const forgotten = await forgetMemory(
               scope,
               scopeKey,
               { expectedRevision, index },
-              `${toolContext.session.id}:${toolContext.callId}`
-            ),
+              `${toolContext.session.id}:${toolContext.callId}`,
+              { actor: "model", sessionId: toolContext.session.id }
+            );
+            // The last memory gone is «забудь всё» too.
+            if (await nothingLeftBut(scope, scopeKey, [])) {
+              await wipeForgottenMemoryHistory(scope, scopeKey);
+            }
+            return forgotten;
+          },
         }),
         save_memory: defineTool({
           description:
@@ -423,7 +439,8 @@ export function createProfileMemoryProvider(
               scope,
               scopeKey,
               input,
-              `${toolContext.session.id}:${toolContext.callId}`
+              `${toolContext.session.id}:${toolContext.callId}`,
+              { actor: "model", sessionId: toolContext.session.id }
             );
           },
         }),
@@ -441,7 +458,17 @@ async function recallProfile(
   const scope = scopeFromPrincipal(current);
   context.abortSignal.throwIfAborted();
   await importLegacyIfNeeded(context, legacyBackend, scope);
-  const records = await listCurrentMemories(scope, context.memory.scope.key);
+  const [records] = await Promise.all([
+    listCurrentMemories(scope, context.memory.scope.key),
+    // Only the cabinet reads the mark: a failed one costs no turn.
+    markMemoryScopeRecalled(scope, context.memory.scope.key).catch(
+      (error: unknown) => {
+        console.warn("[memory] recall mark failed", {
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    ),
+  ]);
   context.abortSignal.throwIfAborted();
   const forRequest = renderPreferencesForRequest(
     records,
