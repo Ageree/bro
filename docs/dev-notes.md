@@ -43,6 +43,9 @@
 - В свежей облачной сессии нет `node_modules` (`pnpm install`), а Node 22 валит
   ~12 наборов `pnpm check` («Unexpected identifier 'r'»). Node 24 без root:
   `npm pack node-linux-x64@24` в scratchpad, `bin` — в начало `PATH`.
+- `TELEGRAM_BOT_USERNAME` облачной сессии начинается с `@`, и проверка env
+  роняет каждый тест, который импортирует `@shared/environment`: гоняйте
+  vitest через `env -u TELEGRAM_BOT_USERNAME`, в env прода — без `@`.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
