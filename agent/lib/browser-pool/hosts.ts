@@ -26,7 +26,7 @@ import {
   readBrowserHostHealth,
 } from "./host";
 import { browserHostKey } from "./keys";
-import { presignBrowserStateObject } from "./s3";
+import { presignStoredObject } from "@shared/object-storage/s3";
 
 /**
  * The hosts of the browser pool (docs/browser-pool.md, section 6): created
@@ -165,7 +165,7 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
     throw new Error("A host id matches [a-z0-9-]{1,63}.");
   }
   const url = (key: string) =>
-    presignBrowserStateObject({
+    presignStoredObject({
       expiresSeconds: bootUrlSeconds,
       key,
       method: "GET",

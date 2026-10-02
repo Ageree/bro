@@ -7,7 +7,7 @@ type BrowserImageArtifactInsert = typeof browserImageArtifacts.$inferInsert;
 
 /**
  * A ready artifact carries its bytes' facts by construction: the row is only
- * written once the image sits in the Blob store, so the columns the schema
+ * written once the image sits in object storage, so the columns the schema
  * leaves nullable for a pending row are required here.
  */
 type ReadyBrowserImageArtifactInput = Omit<
@@ -54,7 +54,7 @@ export async function readReadyBrowserImageArtifact(
 }
 
 /**
- * Record an image that is already in the Blob store as a ready artifact. The
+ * Record an image that is already in object storage as a ready artifact. The
  * idempotency key is unique per workspace, so a second write of the same
  * capture — a retried completion, two settlers racing — hands back the row
  * the first one made instead of a duplicate the person would see twice.

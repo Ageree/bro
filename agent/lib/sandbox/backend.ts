@@ -7,12 +7,13 @@ import type {
   SandboxProcess,
   SandboxSession,
 } from "eve/sandbox";
-import { presignBrowserStateObject } from "@agent/lib/browser-pool/s3";
+import { presignStoredObject } from "@shared/object-storage/s3";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import {
   deleteSandbox,
   execInSandbox,
+  type SandboxOpenRequest,
   killSandboxProcess,
   openSandbox,
   readSandboxFile,
@@ -68,7 +69,7 @@ function snapshotObjectKey(sandboxId: string) {
 async function deleteSnapshot(sandboxId: string, signal?: AbortSignal) {
   const timeout = AbortSignal.timeout(30_000);
   const response = await fetch(
-    presignBrowserStateObject({
+    presignStoredObject({
       expiresSeconds: 300,
       key: snapshotObjectKey(sandboxId),
       method: "DELETE",
@@ -97,17 +98,21 @@ export function resolveSandboxPath(path: string) {
   return relative.length === 0 ? workspaceRoot : `${workspaceRoot}/${relative}`;
 }
 
-function openRequest(sandboxId: string, workspaceId: string) {
+function openRequest(
+  sandboxId: string,
+  workspaceId: string,
+  memoryMb: number | undefined
+) {
   const key = snapshotObjectKey(sandboxId);
-  return {
+  const request: SandboxOpenRequest = {
     snapshot: {
-      get: presignBrowserStateObject({
+      get: presignStoredObject({
         expiresSeconds: 60 * 60,
         key,
         method: "GET",
       }),
       key: sandboxSnapshotKey(sandboxId),
-      put: presignBrowserStateObject({
+      put: presignStoredObject({
         expiresSeconds: snapshotLinkSeconds,
         key,
         method: "PUT",
@@ -123,6 +128,7 @@ function openRequest(sandboxId: string, workspaceId: string) {
     },
     workspace: sandboxOwner,
   };
+  return memoryMb === undefined ? request : { ...request, memoryMb };
 }
 
 function concat(chunks: readonly Uint8Array[]) {
@@ -526,10 +532,12 @@ function savedWorkspace(
  * links. The workspace comes from `onSession` (`use({ workspaceId })`) and is
  * kept in eve's reconnect state for the session's later steps.
  */
-export function cloudRuSandbox(): SandboxBackend<
-  Record<string, never>,
-  CloudRuSessionOptions
-> {
+export function cloudRuSandbox(
+  settings: {
+    /** The sandbox's memory, `/workspace` included; unset, the host's default. */
+    readonly memoryMb?: number;
+  } = {}
+): SandboxBackend<Record<string, never>, CloudRuSessionOptions> {
   return {
     name: backendName,
     create: async (input) => {
@@ -542,7 +550,10 @@ export function cloudRuSandbox(): SandboxBackend<
       }
       const sandboxId = sandboxIdFor(input.sessionKey);
       let workspaceId = savedWorkspace(input.existingMetadata) ?? "";
-      await openSandbox(sandboxId, openRequest(sandboxId, workspaceId));
+      await openSandbox(
+        sandboxId,
+        openRequest(sandboxId, workspaceId, settings.memoryMb)
+      );
       const session = sandboxSession(sandboxId);
       const handle: SandboxBackendHandle<CloudRuSessionOptions> = {
         captureState: async () =>
@@ -576,7 +587,10 @@ export function cloudRuSandbox(): SandboxBackend<
             options.workspaceId !== workspaceId
           ) {
             workspaceId = options.workspaceId;
-            await openSandbox(sandboxId, openRequest(sandboxId, workspaceId));
+            await openSandbox(
+              sandboxId,
+              openRequest(sandboxId, workspaceId, settings.memoryMb)
+            );
           }
           return session;
         },

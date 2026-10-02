@@ -40,12 +40,15 @@ const charsPerToken = { instructions: 3.1, tools: 3.7 } as const;
 
 // Placeholders for the environment the modules validate on import; none of
 // them reaches a service. The keys make the deployment look like production,
-// where Browser Use, OpenRouter and Composio are configured.
+// where Browser Use, OpenRouter, Composio and file storage are configured.
 const placeholderEnvironment = {
   BETTER_AUTH_SECRET: "step-context-placeholder-secret-0123456789",
   BETTER_AUTH_URL: "http://127.0.0.1:9",
-  BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_placeholder",
+  BROWSER_STATE_BUCKET: "placeholder",
   BROWSER_USE_API_KEY: "placeholder",
+  CLOUDRU_KEY_ID: "placeholder",
+  CLOUDRU_KEY_SECRET: "placeholder",
+  CLOUDRU_S3_TENANT_ID: "placeholder",
   COMPOSIO_API_KEY: "placeholder",
   COMPOSIO_GOOGLE_AUTH_CONFIG_ID: "ac_placeholder",
   COMPOSIO_NOTION_AUTH_CONFIG_ID: "ac_placeholder",

@@ -19,7 +19,12 @@ async function loadS3(settings = {}) {
   vi.setSystemTime(now);
   return importWithSettings(
     { ...browserPoolTestEnvironment, ...settings },
-    async () => import("@agent/lib/browser-pool/s3")
+    async () => {
+      const pool = await import("@agent/lib/browser-pool/s3");
+      const shared = await import("@shared/object-storage/s3");
+      const sigv4 = await import("@shared/object-storage/sigv4");
+      return { ...pool, ...shared, ...sigv4 };
+    }
   );
 }
 
@@ -94,7 +99,7 @@ describe("browser pool Object Storage", () => {
       CLOUDRU_KEY_SECRET: "“test-key-\nsecret”",
       CLOUDRU_S3_TENANT_ID: " test-tenant\n",
     });
-    const url = s3.presignBrowserStateObject({
+    const url = s3.presignStoredObject({
       expiresSeconds: 3_600,
       key: "sets/ws-abc/3/chunk-0000",
       method: "PUT",
@@ -178,7 +183,7 @@ describe("browser pool Object Storage", () => {
     const s3 = await loadS3({ CLOUDRU_S3_TENANT_ID: "" });
 
     expect(() =>
-      s3.presignBrowserStateObject({
+      s3.presignStoredObject({
         expiresSeconds: 60,
         key: "k",
         method: "GET",

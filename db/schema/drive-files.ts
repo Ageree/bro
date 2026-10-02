@@ -13,7 +13,7 @@ import {
 import { workspaceMemberships } from "./workspaces";
 
 /**
- * A Google Drive file copied into private Blob so it can travel as a private
+ * A Google Drive file copied into private object storage so it can travel as a private
  * artifact (`/artifacts/<id>`). One row per file version and session: reading
  * the same unchanged file again in that session reuses the stored copy.
  */

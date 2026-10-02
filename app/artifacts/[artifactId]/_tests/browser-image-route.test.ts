@@ -1,11 +1,11 @@
-/* oxlint-disable vitest/require-mock-type-parameters -- The auth and Blob mocks implement only the route boundaries exercised here. */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+/* oxlint-disable vitest/require-mock-type-parameters -- The auth and object storage mocks implement only the route boundaries exercised here. */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const mocks = vi.hoisted(() => ({
   getAuthSession: vi.fn(),
-  getBlob: vi.fn(),
+  openObject: vi.fn(),
   readArtifact: vi.fn(),
 }));
 
@@ -15,8 +15,9 @@ vi.mock("@db/services/auth/session", () => ({
 vi.mock("@db/services/artifacts", () => ({
   readReadyArtifact: mocks.readArtifact,
 }));
-vi.mock("@vercel/blob", () => ({
-  get: mocks.getBlob,
+vi.mock("@shared/object-storage/artifacts", () => ({
+  artifactStorageConfigured: () => true,
+  openArtifactObject: mocks.openObject,
 }));
 
 import { GET } from "@app/artifacts/[artifactId]/route";
@@ -30,11 +31,17 @@ beforeEach(() => {
     mediaType: "image/png",
     storagePathname: "artifacts/product",
   });
-  mocks.getBlob.mockResolvedValue({
-    blob: { contentType: "image/png", etag: '"etag"', size: png.byteLength },
-    statusCode: 200,
+  mocks.openObject.mockResolvedValue({
+    contentType: "image/png",
+    etag: '"etag"',
+    size: png.byteLength,
+    status: 200,
     stream: new Response(png).body,
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("browser image route", () => {
@@ -62,13 +69,11 @@ describe("browser image route", () => {
       mediaType: "application/pdf",
       storagePathname: "gmail-attachments/invoice",
     });
-    mocks.getBlob.mockResolvedValue({
-      blob: {
-        contentType: "application/pdf",
-        etag: '"etag"',
-        size: pdf.byteLength,
-      },
-      statusCode: 200,
+    mocks.openObject.mockResolvedValue({
+      contentType: "application/pdf",
+      etag: '"etag"',
+      size: pdf.byteLength,
+      status: 200,
       stream: new Response(pdf).body,
     });
 
@@ -81,12 +86,8 @@ describe("browser image route", () => {
     );
   });
 
-  it("passes conditional ETags through to private Blob", async () => {
-    mocks.getBlob.mockResolvedValue({
-      blob: { contentType: "image/png", etag: '"etag"', size: png.byteLength },
-      statusCode: 304,
-      stream: null,
-    });
+  it("passes conditional ETags through to private storage", async () => {
+    mocks.openObject.mockResolvedValue({ etag: '"etag"', status: 304 });
 
     const response = await GET(
       request({ "if-none-match": '"etag"' }),
@@ -94,7 +95,8 @@ describe("browser image route", () => {
     );
 
     expect(response.status).toBe(304);
-    expect(mocks.getBlob).toHaveBeenCalledWith(
+    expect(response.headers.get("etag")).toBe('"etag"');
+    expect(mocks.openObject).toHaveBeenCalledWith(
       "artifacts/product",
       expect.objectContaining({ ifNoneMatch: '"etag"' })
     );
@@ -112,9 +114,82 @@ describe("browser image route", () => {
 
       expect(response.status).toBe(404);
       expect(await response.text()).toBe("Not found");
-      expect(mocks.getBlob).not.toHaveBeenCalled();
+      expect(mocks.openObject).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    ["type", "text/html", png.byteLength],
+    ["size", "image/png", png.byteLength + 1],
+  ])(
+    "refuses bytes whose %s differs from the row",
+    async (_name, contentType, size) => {
+      const cancel = vi.fn();
+      mocks.openObject.mockResolvedValue({
+        contentType,
+        etag: '"etag"',
+        size,
+        status: 200,
+        stream: new ReadableStream({ cancel }),
+      });
+
+      const response = await GET(request(), context());
+
+      expect(response.status).toBe(404);
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("answers 502 when the body of a refused object cannot be cancelled", async () => {
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    // A stream that already failed rejects its cancel with that failure.
+    const dropped = new Error("connection reset");
+    mocks.openObject.mockResolvedValue({
+      contentType: "image/png",
+      etag: '"etag"',
+      size: png.byteLength + 1,
+      status: 200,
+      stream: new ReadableStream({
+        start(controller) {
+          controller.error(dropped);
+        },
+      }),
+    });
+
+    const response = await GET(request(), context());
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(error).toHaveBeenCalledWith(
+      "[artifacts] Object Storage read failed",
+      dropped
+    );
+  });
+
+  it("answers 502 with the private headers when storage fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.openObject.mockRejectedValue(new TypeError("fetch failed"));
+
+    const response = await GET(request(), context());
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("leaves a database failure to the server, not to a storage 502", async () => {
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.readArtifact.mockRejectedValue(new Error("database is down"));
+
+    await expect(GET(request(), context())).rejects.toThrow("database is down");
+    expect(mocks.openObject).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
 
   it("does not reveal an unavailable or cross-workspace artifact", async () => {
     mocks.readArtifact.mockResolvedValue(undefined);

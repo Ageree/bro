@@ -1,7 +1,6 @@
 import {
   defineMemoryProvider,
   type MemoryCompactionCompletedContext,
-  type MemoryProvider,
   type MemoryTurnStartedContext,
 } from "eve/memory";
 import type { MemoryDocumentBackend } from "eve/memory/file";
@@ -293,13 +292,16 @@ async function nothingLeftBut(
   return left.every((record) => changed.includes(record.index));
 }
 
+/**
+ * Profile memory in `memory_records`, importing once what eve's file memory
+ * kept for the scope in `legacyBackend`.
+ */
 export function createProfileMemoryProvider(
-  legacyProvider: MemoryProvider,
-  legacyBackend: MemoryDocumentBackend | null = null
+  legacyBackend: MemoryDocumentBackend
 ) {
   const recall = (
     context: MemoryTurnStartedContext | MemoryCompactionCompletedContext
-  ) => recallProfile(context, legacyProvider, legacyBackend);
+  ) => recallProfile(context, legacyBackend);
   return defineMemoryProvider({
     recall: {
       "compaction.completed": recall,
@@ -432,14 +434,13 @@ export function createProfileMemoryProvider(
 
 async function recallProfile(
   context: MemoryTurnStartedContext | MemoryCompactionCompletedContext,
-  legacyProvider: MemoryProvider,
-  legacyBackend: MemoryDocumentBackend | null
+  legacyBackend: MemoryDocumentBackend
 ) {
   const current = context.session.auth.current;
   if (current?.principalType !== "user") return null;
   const scope = scopeFromPrincipal(current);
   context.abortSignal.throwIfAborted();
-  await importLegacyIfNeeded(context, legacyProvider, legacyBackend, scope);
+  await importLegacyIfNeeded(context, legacyBackend, scope);
   const records = await listCurrentMemories(scope, context.memory.scope.key);
   context.abortSignal.throwIfAborted();
   const forRequest = renderPreferencesForRequest(
@@ -597,57 +598,25 @@ export function renderPreferencesForRequest(
 
 async function importLegacyIfNeeded(
   context: MemoryTurnStartedContext | MemoryCompactionCompletedContext,
-  legacyProvider: MemoryProvider,
-  legacyBackend: MemoryDocumentBackend | null,
+  legacyBackend: MemoryDocumentBackend,
   scope: ReturnType<typeof scopeFromPrincipal>
 ) {
   if (!(await memoryScopeNeedsLegacyImport(scope, context.memory.scope.key)))
     return;
-  if (legacyBackend) {
-    const document = await legacyBackend.read({
-      key: context.memory.scope.key,
-      signal: context.abortSignal,
-    });
-    context.abortSignal.throwIfAborted();
-    const parsed = document
-      ? parseLegacyDocument(document.content)
-      : { entries: [], lastAllocatedIndex: -1 };
-    await importLegacyMemories(
-      scope,
-      context.memory.scope.key,
-      parsed.entries,
-      parsed.lastAllocatedIndex
-    );
-    return;
-  }
-  let recalled;
-  if ("compaction" in context) {
-    const handler = legacyProvider.recall["compaction.completed"];
-    if (!handler) return;
-    recalled = await handler(context);
-  } else {
-    recalled = await legacyProvider.recall["turn.started"](context);
-  }
+  const document = await legacyBackend.read({
+    key: context.memory.scope.key,
+    signal: context.abortSignal,
+  });
   context.abortSignal.throwIfAborted();
-  const entries = parseLegacyRecall(recalled?.messages[0]?.content ?? "");
+  const parsed = document
+    ? parseLegacyDocument(document.content)
+    : { entries: [], lastAllocatedIndex: -1 };
   await importLegacyMemories(
     scope,
     context.memory.scope.key,
-    entries,
-    entries.at(-1)?.index ?? -1
+    parsed.entries,
+    parsed.lastAllocatedIndex
   );
-}
-
-export function parseLegacyRecall(content: string) {
-  const entries: { index: number; text: string }[] = [];
-  for (const line of content.split("\n")) {
-    const match = /^(\d+): (.+)$/u.exec(line);
-    if (!match) continue;
-    const index = Number(match[1]);
-    if (Number.isSafeInteger(index) && match[2])
-      entries.push({ index, text: match[2] });
-  }
-  return entries.toSorted((left, right) => left.index - right.index);
 }
 
 export function parseLegacyDocument(content: string) {

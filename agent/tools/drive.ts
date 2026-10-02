@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { del, put } from "@vercel/blob";
 import {
   defineDynamic,
   defineTool,
@@ -36,8 +35,12 @@ import {
   findDriveFileArtifact,
   saveDriveFileArtifact,
 } from "@db/services/drive-files";
-import { env } from "@shared/environment";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
+import {
+  artifactStorageConfigured,
+  deleteArtifactObject,
+  putArtifactObject,
+} from "@shared/object-storage/artifacts";
 
 /**
  * `reads` is what the current turn's Google reads already did: Drive shares
@@ -65,7 +68,7 @@ function defineDriveSearch(reads: TurnReads) {
 }
 
 /**
- * Copies one downloaded file into private Blob and records it as an artifact
+ * Copies one downloaded file into private object storage and records it as an artifact
  * of this session, so `send_message` can forward it. The same file version
  * read again in the session reuses the copy.
  */
@@ -76,7 +79,7 @@ async function storeDriveFile(
   mediaType: string
 ) {
   const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
-  if (!caller || (!env.BLOB_STORE_ID && !env.BLOB_READ_WRITE_TOKEN)) {
+  if (!caller || !artifactStorageConfigured()) {
     return undefined;
   }
   const scope = scopeFromPrincipal(caller);
@@ -93,17 +96,12 @@ async function storeDriveFile(
     .update(scope.workspaceId)
     .digest("hex")
     .slice(0, 32)}/${id}`;
-  await put(
-    storagePathname,
-    Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-    {
-      abortSignal: ctx.abortSignal,
-      access: "private",
-      addRandomSuffix: false,
-      allowOverwrite: false,
-      contentType: mediaType,
-    }
-  );
+  await putArtifactObject({
+    bytes,
+    mediaType,
+    pathname: storagePathname,
+    signal: ctx.abortSignal,
+  });
   const saved = await saveDriveFileArtifact(scope, {
     ...version,
     byteSize: bytes.byteLength,
@@ -116,7 +114,7 @@ async function storeDriveFile(
   if (saved.id !== id) {
     // A concurrent call stored the same version first; its copy is the one
     // the artifact points at, so this upload has no reader.
-    await del(storagePathname).catch(() => undefined);
+    await deleteArtifactObject(storagePathname).catch(() => undefined);
   }
   return saved;
 }
