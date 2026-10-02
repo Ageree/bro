@@ -119,8 +119,12 @@ watchdog (код 0 или 1).
 
 ## Что должен сделать сервер
 
-Сервер приложения (`scripts/cloudru-app-host/`, `host/` и `ops/`) — не
-часть этого каталога, но без этих шагов мост включать нельзя: SSH на VM нет,
+Сделано в сервере (`scripts/cloudru-app-host/README.md`, раздел «Telegram»):
+установка — `host/install-code.sh`, перезапуски eve — `deployd.py`
+(`bridge_paused`), команды — `ops/tg-bridge.sh` (плюс `hold`: только снять
+вебхук), сторож — `watchdog.py` (`tg-bridge`, `tg-egress`). Требования, по
+которым это сделано: сервер приложения (`scripts/cloudru-app-host/`, `host/`
+и `ops/`) — не часть этого каталога, но без этих шагов мост включать нельзя: SSH на VM нет,
 root — только у `deployd`, а упавший мост без сторожа делает бота немым
 молча (у вебхука Telegram хотя бы виден `last_error`).
 

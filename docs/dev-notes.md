@@ -123,6 +123,14 @@
   достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
   (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`),
   хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`).
+- deployd запускает ops-скрипты релиза от `bro` (файлы релиза — его); от root —
+  только `ROOT_OPS` из бандла хоста (`ops/tg-bridge.sh`). Файл релиза от root
+  не запускайте: это root для инструментов модели. Код хоста на живой VM —
+  `host.py update-host`, а не пересоздание.
+- Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+  `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
+  Telegram на Vercel и живые хосты пула работают, только если значения
+  сведены до окна (`docs/cloudru-migration.md`, «Переключение»).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
