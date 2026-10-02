@@ -14,14 +14,14 @@ describe(
   "chat with Bro",
   { serial: true, session: "person", tags: ["agent"], timeout: 300_000 },
   () => {
-    test("Bro greets a new person", async ({ agent, app, browser, screen }) => {
+    test("Bro greets a new person", async ({ app, browser, screen }) => {
       await app.open("/chat");
-      await sendToBro({ browser, screen }, "Привет!");
+      const reply = await sendToBro({ browser, screen }, "Привет!");
 
       await expect(browser).toHaveURL(/\/chat\/[\w-]+$/u);
-      await agent.assert(
-        "the chat log continues after the person's «Привет!» with at least one message written in Russian"
-      );
+      // Not a judge: the log does not say who wrote which message, and the
+      // model took the person's «Привет!» for Bro's own greeting.
+      expect(reply).toMatch(/[а-яё]{3,}/iu);
     });
 
     test("Bro answers a question in the same conversation", async ({
