@@ -10,6 +10,9 @@ Group=caddy
 ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
 # The admin API is a unix socket only (on localhost:2019 any local process could load a config).
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force --address unix//run/caddy/admin.sock
+# The only way in, for the app and for deployd: back after a crash, a panic (exit 2) or an OOM kill.
+Restart=on-failure
+RestartSec=2
 TimeoutStopSec=5s
 LimitNOFILE=1048576
 PrivateTmp=true

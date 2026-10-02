@@ -205,14 +205,23 @@ def ops_domain(name):
     return domain
 
 
-def call(name, method, path, body=None, timeout=60):
-    """deployd on the VM with a fresh 5-minute token; (status, JSON body)."""
+class LostAnswer(Exception):
+    """A request that starts a job went out, but its answer did not come back."""
+
+
+def call(name, method, path, body=None, timeout=60, retry=None):
+    """deployd on the VM with a fresh 5-minute token; (status, JSON body).
+
+    Only requests that change nothing on a repeat are retried (GET, PUT sites): a job-starting request whose
+    answer was lost may be running already, and a repeat would get `busy` or run a finished job twice."""
+    retry = method == "GET" if retry is None else retry
     token = deployd.sign_token(host_key(name), name, ttl=300)
     url = f"https://{ops_domain(name)}/ops/v1/{path}"
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(url, data, {"Authorization": f"Bearer {token}",
                                                  "Content-Type": "application/json"}, method=method)
-    for attempt in range(4):  # the session's egress proxy drops a tunnel now and then
+    attempts = 4 if retry else 1
+    for attempt in range(attempts):  # the session's egress proxy drops a tunnel now and then
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.status, json.loads(response.read() or b"{}")
@@ -223,9 +232,25 @@ def call(name, method, path, body=None, timeout=60):
             except ValueError:
                 return error.code, {"error": payload[:300].decode(errors="replace")}
         except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
-            if attempt == 3:
+            if attempt == attempts - 1:
+                if not retry:
+                    raise LostAnswer(f"{method} {path}: {error}") from None
                 sys.exit(f"{method} {path}: {error}")
             time.sleep(2 ** attempt)
+
+
+def start_job(name, method, path, body):
+    """Start a deployd job; when the answer is lost, follow the job deployd is running instead of repeating."""
+    try:
+        return checked(call(name, method, path, body))
+    except LostAnswer as error:
+        print(f"{error}; asking deployd what it runs", flush=True)
+    status = checked(call(name, "GET", "status"), (200,))
+    if status.get("job"):
+        print(f"deployd runs job {status['job']}: following it", flush=True)
+        return {"id": status["job"]}
+    sys.exit(f"deployd runs no job now: the request may not have arrived, or it ended already. Check "
+             f"`python host.py status {name}` and the logs before repeating it")
 
 
 def checked(response, expected=(200, 202)):
@@ -415,7 +440,15 @@ def assemble(stage, version, commit):
         "node": node, "workflowWorld": world_version}, indent=1) + "\n")
 
 
+def local_env_files():
+    """The .env files Next and eve's Nitro read during a build, whatever the env: real values would reach
+    the artifact."""
+    return sorted(p.name for p in REPO.glob(".env*") if p.is_file() and p.name != ".env.example")
+
+
 def cmd_build(args):
+    if local_env_files():
+        sys.exit(f"move {', '.join(local_env_files())} out of {REPO}: Next and eve read them during the build")
     status = git("status", "--porcelain", "--untracked-files=no")
     if status and not args.allow_dirty:
         sys.exit("the working tree has changes: commit them (or --allow-dirty for a test build)")
@@ -461,13 +494,13 @@ def cmd_deploy(args):
     record = release_record(args.version) if args.version else cmd_build(args)
     body = {"version": record["version"], "sha256": record["sha256"],
             "url": s3.presign("GET", record["key"], 1800)}
-    job = checked(call(args.name, "POST", "release", body))
+    job = start_job(args.name, "POST", "release", body)
     print(f"release {record['version']}: job {job['id']}")
     follow(args.name, job)
 
 
 def cmd_rollback(args):
-    job = checked(call(host_name(args.name), "POST", "rollback", {"version": args.version} if args.version else {}))
+    job = start_job(host_name(args.name), "POST", "rollback", {"version": args.version} if args.version else {})
     follow(args.name, job)
 
 
@@ -482,12 +515,21 @@ NOT_RUNTIME = {"NODE_ENV", "WORKFLOW_WORLD", "DATABASE_DRIVER", "VERCEL_BRANCH_U
 FROM_PROFILE_ONLY = {"DATABASE_URL", "DATABASE_URL_UNPOOLED", "WORKFLOW_POSTGRES_URL"}
 REQUIRED = ("DATABASE_URL", "WORKFLOW_POSTGRES_URL", "BETTER_AUTH_URL", "BETTER_AUTH_SECRET",
             "SECRET_ENCRYPTION_KEY")
-# The rehearsal stand writes to nobody and starts nothing that bills without a scheduler to stop it: no
-# messenger or payment keys, and no browser VM pilots (with SCHEDULES=off nothing would reconcile them).
-STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_).*|BROWSER_VM_TWOCAPTCHA_API_KEY|"
-                           r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES")
+# The rehearsal stand runs on a copy of production's data and is reachable from the internet, so it gets no
+# key that reaches people or production's stores: no messengers or payments; no Vercel Blob (the same paths
+# as production's), Supermemory or Composio (connected accounts copied from production could send mail);
+# nothing that bills with no scheduler to settle it: Browser Use, the browser VM and pool pilots, the code
+# sandbox pilot. The operator brings one back in stand.json when a rehearsal needs it on purpose.
+STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
+                           r"SUPERMEMORY_API_KEY|COMPOSIO_API_KEY|BROWSER_VM_TWOCAPTCHA_API_KEY|"
+                           r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES")
+# Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
+PRODUCTION_STORES = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
+                               r"COMPOSIO_API_KEY")
+# SCHEDULES=off makes every schedule's tick do nothing (agent/lib/schedules/enabled.ts). Not TEST=1: Better
+# Auth reads it too and turns its origin check off.
 PROFILES = {
-    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "SCHEDULES": "off", "TEST": "1"},
+    "stand": {"BETTER_AUTH_URL": "https://cloud.brobro.tech", "SCHEDULES": "off"},
     "prod": {"BETTER_AUTH_URL": "https://brobro.tech", "SCHEDULES": "on"},
 }
 # graphile wants a pool at least its concurrency + 2. WORKFLOW_WORLD as the build had it: agent.ts reads it
@@ -561,9 +603,13 @@ def cmd_env(args):
         by_source.setdefault(sources[name], []).append(name)
     for source, names in by_source.items():
         print(f"{source}: {' '.join(names)}")
-    absent = [n for n in EXPECTED + (EXPECTED_PROD if args.profile == "prod" else ()) if n not in values]
+    absent = [n for n in EXPECTED + (EXPECTED_PROD if args.profile == "prod" else ()) if n not in values
+              and not (args.profile == "stand" and STAND_DROPPED.fullmatch(n))]
     if absent:
         print(f"not found anywhere (Vercel keeps them sensitive): {' '.join(absent)}")
+    if args.profile == "stand":
+        for name in sorted(n for n in values if PRODUCTION_STORES.fullmatch(n)):
+            print(f"warning: the stand keeps {name} ({sources[name]}): it acts on production's store or accounts")
     if "OPS_ALERT_CHAT_ID" not in values:
         print(f"note: no OPS_ALERT_CHAT_ID in {args.profile}.json: the watchdog alerts nobody")
     missing = [name for name in REQUIRED if name not in values]
@@ -571,7 +617,7 @@ def cmd_env(args):
         sys.exit(f"missing {', '.join(missing)}: put them in {SECRETS / (args.profile + '.json')} (0600)")
     if args.dry_run:
         return
-    job = checked(call(args.name, "PUT", "env", {"env": values}))
+    job = start_job(args.name, "PUT", "env", {"env": values})
     follow(args.name, job)
 
 
@@ -588,7 +634,7 @@ def cmd_sites(args):
     if args.remove:
         sites = [s for s in sites if s != args.remove]
     if args.set is not None or args.add or args.remove:
-        current = checked(call(args.name, "PUT", "sites", {"sites": sites}), (200,))
+        current = checked(call(args.name, "PUT", "sites", {"sites": sites}, retry=True), (200,))
     print(json.dumps(current))
 
 
@@ -598,11 +644,11 @@ def cmd_logs(args):
 
 
 def cmd_restart(args):
-    follow(args.name, checked(call(host_name(args.name), "POST", "restart", {"units": args.units})))
+    follow(args.name, start_job(host_name(args.name), "POST", "restart", {"units": args.units}))
 
 
 def cmd_stop(args):
-    follow(args.name, checked(call(host_name(args.name), "POST", "stop", {"units": args.units})))
+    follow(args.name, start_job(host_name(args.name), "POST", "stop", {"units": args.units}))
 
 
 def cmd_ops(args):
@@ -614,11 +660,11 @@ def cmd_ops(args):
             arguments.append(s3.presign(method, key, 6 * 3600))
         else:
             arguments.append(argument)
-    follow(args.name, checked(call(args.name, "POST", "ops", {"script": args.script, "args": arguments})),
+    follow(args.name, start_job(args.name, "POST", "ops", {"script": args.script, "args": arguments}),
            timeout_s=6 * 3600)
 
 
-def main():
+def parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("key").set_defaults(fn=cmd_key)
@@ -678,9 +724,14 @@ def main():
     ops = sub.add_parser("ops")
     ops.add_argument("name")
     ops.add_argument("script")
-    ops.add_argument("args", nargs="*")
+    # REMAINDER: the script's own options (db-restore.sh --replace) are its arguments, not host.py's.
+    ops.add_argument("args", nargs=argparse.REMAINDER)
     ops.set_defaults(fn=cmd_ops)
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
     args.fn(args)
 
 

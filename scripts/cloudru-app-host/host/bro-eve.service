@@ -2,6 +2,9 @@
 Description=Bro eve (agent, channels, schedules and the Postgres Workflow world on 127.0.0.1:4274)
 After=network-online.target
 Wants=network-online.target
+# Without bro's egress rules (no metadata service, no deployd) the app does not start.
+Requires=bro-egress.service
+After=bro-egress.service
 ConditionPathExists=/srv/bro/current/eve/server/index.mjs
 
 [Service]

@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "deployd.py", "watchdog.py", "bro-web.service", "bro-eve.service", "deployd.service",
+FILES = ("provision.sh", "deployd.py", "watchdog.py", "egress.sh", "bro-egress.service", "bro-web.service", "bro-eve.service", "deployd.service",
          "bro-watchdog.service", "bro-watchdog.timer", "caddy.service")
 VENDOR = json.loads((HERE / "vendor.json").read_text())
 HOST_ID = re.compile(r"[a-z0-9-]{1,63}")

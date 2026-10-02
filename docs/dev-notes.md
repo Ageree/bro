@@ -98,6 +98,9 @@
   `/.well-known/workflow/*` наружу не публикуйте: вход очереди мира без
   авторизации. Без схемы мир Postgres падает на старте: до запуска —
   `ops/migrate.mjs world`; две среды на одной базе мира исполняют чужие ходы.
+- Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
+  Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
+  `SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
 - esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
   `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
   для `tar -I zstd`: `apt-get install -y zstd`.

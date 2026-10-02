@@ -7,7 +7,7 @@ Cloud.ru. Одна и та же VM сначала служит репетици�
 
 ```
 Caddy :443 ─ /eve/* ───────────────▶ bro-eve  node .output/server/index.mjs  127.0.0.1:4274
-          ├─ /.well-known/workflow/* → 404 (вход очереди мира — только по loopback)
+          ├─ /.well-known/workflow/*, /api/health → 404 (только по loopback)
           ├─ /ops/v1/* (только ops-хост) ▶ deployd  127.0.0.1:8095
           └─ остальное ────────────────▶ bro-web  node server.js (Next standalone)  127.0.0.1:3000
 bro-eve ── мир @workflow/world-postgres (graphile-worker в процессе) ──▶ PostgreSQL Cloud.ru
@@ -20,7 +20,8 @@ bro-eve ── мир @workflow/world-postgres (graphile-worker в процес�
 | `host/provision.sh`     | установка VM из cloud-init (стадии — `/var/lib/bro/stage`)                      |
 | `host/deployd.py`       | релизы, env, сайты, логи, ops-скрипты (Python stdlib, root)                     |
 | `host/watchdog.py`      | раз в минуту: здоровье Next, eve, Caddy; Telegram владельцу                     |
-| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`                        |
+| `host/*.service, timer` | `bro-web`, `bro-eve`, `deployd`, `caddy`, `bro-watchdog`, `bro-egress`          |
+| `host/egress.sh`        | iptables для `bro`: без metadata `169.254/16` и без порта deployd               |
 | `host/vendor.json`      | пины sha256: Caddy, Node 24 linux-x64, клиент PostgreSQL 18 (PGDG jammy)        |
 | `ops/migrate.ts`        | миграции Бро (`db/migrations`) и схема мира + очереди; в релизе — `migrate.mjs` |
 | `ops/db-*.sh`           | дамп и восстановление базы с VM (кластер доступен только из её подсети)         |
@@ -62,12 +63,21 @@ host.py status bro-app-1 --stage  # стадия установки через s
 `create` подписывает ссылки на 12 часов, ждёт `running`, затем
 `https://<ip с дефисами>.sslip.io/ops/v1/health` (сеть в `ru.AZ-1` появляется
 минуты через три). Пароль root для serial-консоли — в
-`~/.bro-app-host/bro-app-1.password` (в user data — только хэш; SSH нет).
+`~/.bro-app-host/bro-app-1.password` (в user data — только его хэш; SSH нет).
+Ключ VM для deployd и ссылки S3 на 12 часов лежат в user data открыто: их
+видно в консоли Cloud.ru и любому процессу VM через metadata
+`169.254.169.254`. Поэтому процессам `bro` (приложение, инструменты модели,
+ops-скрипты) `bro-egress.service` (`host/egress.sh`, iptables по
+`--uid-owner bro`) закрывает `169.254.0.0/16` и порт deployd `8095`; без этих
+правил `bro-web` и `bro-eve` не стартуют.
 Первая загрузка иногда встаёт в `(initramfs)` — `host.py reboot bro-app-1`.
 
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
-клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro`,
-`/srv/bro/releases/<версия>` и симлинк `/srv/bro/current`, `/etc/bro/env`
+клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro` (дом —
+`/var/lib/bro-home`), `/srv/bro/releases/<версия>` и симлинк
+`/srv/bro/current` (`/srv/bro`, `releases/`, `downloads/`, история и
+`current` — root: там работает root-deployd; `bro` владеет лишь распакованными
+релизами), `/etc/bro/env`
 (`0600`, пустой до первого `host.py env`), журнал не больше 1 ГБ, Caddy с
 ops-хостом `<ip>.sslip.io`, `deployd`, таймер watchdog. `bro-web` и `bro-eve`
 включены, но стартуют только когда есть `current`.
@@ -79,10 +89,16 @@ host.py env bro-app-1 --profile stand --dry-run   # какие имена отк
 host.py env bro-app-1 --profile stand
 host.py deploy bro-app-1                          # build + release; или --version <версия>
 host.py sites bro-app-1 --add cloud.brobro.tech   # после A-записи на IP VM
-host.py rollback bro-app-1
+host.py rollback bro-app-1                         # ещё раз — на релиз раньше
 ```
 
-`host.py build` требует чистое дерево (`--allow-dirty` — для пробы):
+Задачу deployd (релиз, откат, env, ops, restart, stop) `host.py` не
+повторяет: если ответ потерялся, он спрашивает `status` и следит за идущей
+задачей. Повторяются только чтения и `PUT sites`.
+
+`host.py build` требует чистое дерево (`--allow-dirty` — для пробы) и
+отказывает, пока в корне есть `.env`, `.env.local`, `.env.production*`: Next
+и Nitro eve читают их при сборке в обход чистого env.
 `pnpm install --frozen-lockfile`, `pnpm build:eve` с `WORKFLOW_WORLD=postgres`,
 `next build` с `NEXT_OUTPUT=standalone` (напрямую, не через turbo — кэш turbo
 мог бы подставить сборку для Vercel), esbuild `ops/migrate.ts`. Всё — в
@@ -95,6 +111,8 @@ host.py rollback bro-app-1
 (миграции должны быть совместимы с работающим релизом — `db/README.md`),
 переключить `current`, перезапустить `bro-eve` и `bro-web`, ждать до 120 с
 `/api/health` и `/eve/v1/health`; не дождался — `current` назад и перезапуск.
+Откат без `--version` идёт на релиз, вышедший до текущего, и обрезает
+историю после него: второй откат идёт дальше назад, а не обратно.
 Хранятся текущий и пять последних релизов. eve на SIGTERM выходит сразу:
 шаги, что шли, мир повторит (оплаченный шаг модели — повторно), поэтому
 выкладывать в тихое время.
@@ -113,11 +131,21 @@ host.py rollback bro-app-1
    отдаёт: Telegram, RouterAI, Composio…);
 4. `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=20`, `…_MAX_POOL_SIZE=24`,
    `WORKFLOW_WORLD=postgres`; профиль: стенд — `BETTER_AUTH_URL=https://cloud.brobro.tech`,
-   `SCHEDULES=off`, `TEST=1` (eve не запускает планировщик), без
-   `TELEGRAM_*`, `IMESSAGE_*`, `YOOKASSA_*`, `BROWSER_VM_TWOCAPTCHA_API_KEY` и
-   пилотов браузерных VM (без расписаний их никто не остановит); прод —
-   `https://brobro.tech`, `SCHEDULES=on`;
-5. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор): базы
+   `SCHEDULES=off` (тики расписаний ничего не делают; не `TEST=1`: его читает
+   и Better Auth и выключает проверку Origin); прод — `https://brobro.tech`,
+   `SCHEDULES=on`;
+5. стенд работает на копии данных прода и открыт в интернет, поэтому
+   теряет ключи, которые пишут людям, в хранилища и аккаунты прода или
+   тратят деньги без планировщика: `TELEGRAM_*`, `IMESSAGE_*`, `YOOKASSA_*`,
+   `BLOB_*`, `EVE_MEMORY_BLOB_*` (те же пути, что у прода),
+   `SUPERMEMORY_API_KEY`, `COMPOSIO_API_KEY` (подключённые аккаунты из копии
+   прода), `BROWSER_USE_*`, `BROWSER_HOST_*`, `BROWSER_VM_TWOCAPTCHA_API_KEY`,
+   пилоты `BROWSER_POOL_WORKSPACES`, `BROWSER_VM_WORKSPACES`,
+   `SANDBOX_WORKSPACES`. Остаются модель (RouterAI/OpenRouter), Cloud.ru, ключи
+   подписи песочниц и браузерных VM, `BROWSER_STATE_KEY`. Вернуть ключ можно
+   в `stand.json`; `host.py env` тогда печатает предупреждение для каждого
+   ключа хранилища прода;
+6. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор): базы
    `DATABASE_URL`, `WORKFLOW_POSTGRES_URL` (обязательны), `OPS_ALERT_CHAT_ID`
    и всё, что надо перекрыть; `null` удаляет имя.
 
@@ -145,4 +173,10 @@ host.py rollback bro-app-1
 повтор не чаще раза в час, и сообщение о восстановлении. Бот и чат —
 `OPS_ALERT_BOT_TOKEN`/`OPS_ALERT_CHAT_ID` из `/etc/bro/env`, иначе
 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_OWNER_CHAT_ID` приложения. Состояние —
-`/var/lib/bro/watchdog.json`.
+`/var/lib/bro/watchdog.json`; несданное сообщение (и о восстановлении)
+уходит на следующем тике.
+
+Watchdog живёт на той же VM: падение VM, сети, DNS, истёкший сертификат он
+не заметит. Внешней проверки `https://<домен>/eve/v1/health` пока нет — её
+нужно завести до переключения прода (мониторинг Cloud.ru или внешний пинг).
+`/api/health` снаружи закрыт Caddy (404), его спрашивают только по loopback.

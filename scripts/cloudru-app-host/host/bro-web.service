@@ -2,6 +2,9 @@
 Description=Bro web (Next standalone server on 127.0.0.1:3000 behind Caddy)
 After=network-online.target
 Wants=network-online.target
+# Without bro's egress rules (no metadata service, no deployd) the app does not start.
+Requires=bro-egress.service
+After=bro-egress.service
 # No release yet: nothing to start (deployd starts it after the first switch).
 ConditionPathExists=/srv/bro/current/web/server.js
 

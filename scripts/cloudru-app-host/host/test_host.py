@@ -2,7 +2,8 @@
 
 deployd's tokens, env file, Caddyfile and jobs (a release that comes up, one that does not and goes back,
 a failed migration, an env that breaks the app) against a temporary root with a fake runner, its HTTP
-routes, the watchdog's alert rules, the user data boot.py renders and provision.sh's syntax.
+routes, the watchdog's alert rules, the user data boot.py renders, provision.sh's syntax and units, and
+host.py's parser and env profiles.
 """
 
 import base64
@@ -160,6 +161,18 @@ class ReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(deployd.Refused, "current already"):
             self.deployd.do_rollback({"version": "v1"}, self.log.append)
 
+    def test_a_second_rollback_goes_further_back(self):
+        for version in ("v1", "v2", "v3"):
+            self.release(version)
+        self.assertEqual(self.deployd.do_rollback({}, self.log.append)["version"], "v2")
+        self.assertEqual(self.deployd.do_rollback({}, self.log.append)["version"], "v1")
+        self.assertEqual(self.deployd.history(), ["v1"])
+        with self.assertRaisesRegex(deployd.Refused, "no earlier release"):
+            self.deployd.do_rollback({}, self.log.append)
+        # A named release goes live like a release; the next rollback leaves it.
+        self.assertEqual(self.deployd.do_rollback({"version": "v3"}, self.log.append)["version"], "v3")
+        self.assertEqual(self.deployd.do_rollback({}, self.log.append)["version"], "v1")
+
     def test_old_releases_are_pruned(self):
         for n in range(1, 9):
             self.release(f"v{n}")
@@ -216,7 +229,12 @@ class CaddyTest(unittest.TestCase):
         self.assertIn("admin unix//run/caddy/admin.sock", text)
         snippet = deployd.APP_SNIPPET
         self.assertIn("handle /.well-known/workflow/* {\n\t\trespond 404", snippet)
-        self.assertIn("reverse_proxy 127.0.0.1:4274 {\n\t\t\tflush_interval -1", snippet)
+        self.assertIn("handle /api/health {\n\t\trespond 404", snippet)
+        eve = snippet.split("handle /eve/* {", 1)[1].split("\n\t}\n", 1)[0]
+        self.assertIn("reverse_proxy 127.0.0.1:4274 {\n\t\t\tflush_interval -1", eve)
+        # eve's streams go out unencoded: only Next's answers are compressed.
+        self.assertEqual(snippet.count("encode "), 1)
+        self.assertIn("\thandle {\n\t\tencode zstd gzip\n\t\treverse_proxy 127.0.0.1:3000", snippet)
 
     def test_sites_are_plain_domains_and_not_sslip(self):
         self.assertEqual(deployd.checked_sites(["a.example", "a.example"]), ["a.example"])
@@ -267,13 +285,15 @@ class TokenAndHttpTest(unittest.TestCase):
         self.assertEqual(self.get("logs?unit=sshd", token)[0], 400)
         self.assertEqual(self.get("logs?unit=bro-eve&lines=5", token)[0], 200)
         self.assertEqual(self.get("jobs/nope", token)[0], 404)
+        self.assertIsNone(status["job"])
         self.assertEqual(self.get("../x", token)[0], 404)
 
     def test_one_job_at_a_time(self):
         gate = threading.Event()
         job = self.deployd.start_job("slow", lambda body, log: gate.wait(5), {})
-        with self.assertRaisesRegex(deployd.Refused, "busy"):
+        with self.assertRaisesRegex(deployd.Refused, f"busy with job {job['id']}"):
             self.deployd.start_job("other", lambda body, log: None, {})
+        self.assertEqual(self.deployd.running_job(), job["id"])
         gate.set()
         for _ in range(50):
             if job["state"] != "running":
@@ -288,15 +308,33 @@ class WatchdogTest(unittest.TestCase):
         state, t0 = {}, 1_000_000
         self.assertEqual(watchdog.step(state, {"eve": False}, t0, "bro-app-1"), [])
         self.assertEqual(watchdog.step(state, {"eve": False}, t0 + 240, "bro-app-1"), [])
-        [alert] = watchdog.step(state, {"eve": False}, t0 + 300, "bro-app-1")
+        [(name, alert)] = watchdog.step(state, {"eve": False}, t0 + 300, "bro-app-1")
         self.assertIn("не отвечает", alert)
-        state["eve"]["alertedAt"] = state["eve"].pop("pendingAlert")
+        watchdog.sent(state, name)
         self.assertEqual(watchdog.step(state, {"eve": False}, t0 + 1800, "bro-app-1"), [])
         self.assertEqual(len(watchdog.step(state, {"eve": False}, t0 + 300 + 3600, "bro-app-1")), 1)
-        state["eve"]["alertedAt"] = state["eve"].pop("pendingAlert")
-        [recovered] = watchdog.step(state, {"eve": True}, t0 + 4000, "bro-app-1")
+        watchdog.sent(state, "eve")
+        [(name, recovered)] = watchdog.step(state, {"eve": True}, t0 + 4000, "bro-app-1")
         self.assertIn("снова работает", recovered)
+        watchdog.sent(state, name)
         self.assertEqual(state["eve"], {})
+
+    def test_an_unsent_recovery_is_sent_again(self):
+        state, t0 = {"web": {"downSince": 0, "alertedAt": 300}}, 1000
+        [(_, first)] = watchdog.step(state, {"web": True}, t0, "h")
+        [(_, again)] = watchdog.step(state, {"web": True}, t0 + 60, "h")
+        self.assertEqual(first, again)
+        watchdog.sent(state, "web")
+        self.assertEqual(watchdog.step(state, {"web": True}, t0 + 120, "h"), [])
+
+    def test_only_the_sent_alert_is_marked(self):
+        state = {"web": {"downSince": 0}, "eve": {"downSince": 0}}
+        messages = watchdog.step(state, {"web": False, "eve": False}, 600, "h")
+        self.assertEqual([name for name, _ in messages], ["web", "eve"])
+        watchdog.sent(state, "web")
+        state["eve"].pop("pendingAlert")
+        self.assertEqual([name for name, _ in watchdog.step(state, {"web": False, "eve": False}, 660, "h")],
+                         ["eve"])
 
     def test_a_blip_says_nothing(self):
         state = {}
@@ -361,6 +399,62 @@ class BootTest(unittest.TestCase):
             self.assertIn(line, eve)
         web = (HERE / "bro-web.service").read_text()
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
+        for unit in ("bro-web.service", "bro-eve.service"):
+            self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
+
+    def test_every_long_running_unit_restarts(self):
+        for unit in ("bro-web.service", "bro-eve.service", "deployd.service", "caddy.service"):
+            text = (HERE / unit).read_text()
+            self.assertRegex(text, r"\nRestart=(always|on-failure)\n", unit)
+
+    def test_bro_reaches_neither_the_metadata_service_nor_deployd(self):
+        subprocess.run(["bash", "-n", str(HERE / "egress.sh")], check=True)
+        rules = (HERE / "egress.sh").read_text()
+        self.assertIn("-d 169.254.0.0/16 -j REJECT", rules)
+        self.assertIn(f"--dport {deployd.LISTEN[1]} -j REJECT", rules)
+        self.assertIn("--uid-owner bro -j BRO_EGRESS", rules)
+        provision = (HERE / "provision.sh").read_text()
+        self.assertIn("chown root:root /srv/bro /srv/bro/releases /srv/bro/downloads", provision)
+        self.assertNotRegex(provision, r"chown bro:bro [^\n]*/srv/bro")
+
+
+def load_host_py():
+    """host.py of the session, loaded by path (its name is that of this directory), with a scratch state."""
+    import importlib.util
+    os.environ["BRO_APP_HOST_DIR"] = tempfile.mkdtemp()
+    spec = importlib.util.spec_from_file_location("app_host", HERE.parent / "host.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class HostCliTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.host = load_host_py()
+        cls.addClassCleanup(shutil.rmtree, os.environ["BRO_APP_HOST_DIR"])
+
+    def test_the_readme_restore_command_parses(self):
+        args = self.host.parser().parse_args(
+            ["ops", "bro-app-1", "db-restore.sh", "app", "s3get:app/backups/x.dump", "a" * 64, "--replace"])
+        self.assertEqual(args.script, "db-restore.sh")
+        self.assertEqual(args.args, ["app", "s3get:app/backups/x.dump", "a" * 64, "--replace"])
+
+    def test_the_stand_gets_no_key_that_reaches_people_or_production(self):
+        session = {name: "x" for name in (
+            "TELEGRAM_BOT_TOKEN", "IMESSAGE_PROJECT_SECRET", "YOOKASSA_SECRET_KEY", "BLOB_READ_WRITE_TOKEN",
+            "BLOB_STORE_ID", "EVE_MEMORY_BLOB_READ_WRITE_TOKEN", "SUPERMEMORY_API_KEY", "COMPOSIO_API_KEY",
+            "BROWSER_USE_API_KEY", "BROWSER_USE_PROXY_PASSWORD", "BROWSER_HOST_MAX", "SANDBOX_WORKSPACES",
+            "BROWSER_POOL_WORKSPACES", "BROWSER_VM_WORKSPACES", "ROUTERAI_API_KEY")}
+        values, _ = self.host.compose_env("stand", session)
+        self.assertEqual(values["SCHEDULES"], "off")
+        self.assertNotIn("TEST", values)  # Better Auth would drop its origin check
+        self.assertIn("ROUTERAI_API_KEY", values)
+        kept = [n for n in session if n in values and n != "ROUTERAI_API_KEY"]
+        self.assertEqual(kept, [])
+        prod, _ = self.host.compose_env("prod", session)
+        self.assertIn("BROWSER_USE_API_KEY", prod)
+        self.assertNotIn("TEST", prod)
 
 
 if __name__ == "__main__":

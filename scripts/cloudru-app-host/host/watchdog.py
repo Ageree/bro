@@ -7,7 +7,10 @@ TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_CHAT_ID (agent/lib/owner-alert.ts writes t
 stand has no TELEGRAM_BOT_TOKEN, so it gets the OPS_ALERT_* pair alone. Without them every check is still
 logged to journald; nothing is sent.
 
-State: /var/lib/bro/watchdog.json (when each check went down, when the owner last heard).
+State: /var/lib/bro/watchdog.json (when each check went down, when the owner last heard, an unsent recovery).
+
+It runs on the VM it watches: the VM down, its network, DNS or certificate fail without a word from it. The
+outside probe is a separate thing (scripts/cloudru-app-host/README.md, «Watchdog»).
 """
 
 import json
@@ -76,24 +79,37 @@ def clock(seconds):
 
 
 def step(state, checks, now, host):
-    """The messages due for these results; updates state in place. Pure, for the tests."""
+    """The messages due for these results, as (check, text); updates state in place. A message goes on the
+    record only once it is sent (sent()), so an unsent alert or recovery is due again on the next tick."""
     messages = []
     for name, ok in checks.items():
         entry = state.setdefault(name, {})
         if ok:
-            if entry.get("alertedAt"):
-                messages.append(f"Бро на {host}: {NAMES[name]} снова работает "
-                                f"(лежал с {clock(entry['downSince'])}).")
-            state[name] = {}
+            if "alertedAt" in entry or "recovered" in entry:
+                since = entry["recovered"] if "recovered" in entry else entry["downSince"]
+                state[name] = {"recovered": since}
+                messages.append((name, f"Бро на {host}: {NAMES[name]} снова работает (лежал с {clock(since)})."))
+            else:
+                state[name] = {}
             continue
+        entry.pop("recovered", None)
         entry.setdefault("downSince", now)
         down_for = now - entry["downSince"]
         alerted = entry.get("alertedAt")
         if down_for >= DOWN_BEFORE_ALERT_S and (alerted is None or now - alerted >= REPEAT_S):
-            messages.append(f"Бро на {host}: {NAMES[name]} не отвечает с {clock(entry['downSince'])} "
-                            f"({int(down_for // 60)} мин). Логи: host.py logs.")
+            messages.append((name, f"Бро на {host}: {NAMES[name]} не отвечает с {clock(entry['downSince'])} "
+                                   f"({int(down_for // 60)} мин). Логи: host.py logs."))
             entry["pendingAlert"] = now
     return messages
+
+
+def sent(state, name):
+    """The message about this check reached the owner."""
+    entry = state.get(name, {})
+    if "recovered" in entry:
+        state[name] = {}
+    elif "pendingAlert" in entry:
+        entry["alertedAt"] = entry.pop("pendingAlert")
 
 
 def main():
@@ -110,14 +126,12 @@ def main():
         host = json.loads(paths.config.read_text())["host"]
     except (OSError, ValueError, KeyError):
         host = socket.gethostname()
-    messages = step(state, checks, now, host)
     env = read_env(paths)
-    sent = all([send(env, text) for text in messages]) if messages else True
+    for name, text in step(state, checks, now, host):
+        if send(env, text):
+            sent(state, name)
     for entry in state.values():
-        pending = entry.pop("pendingAlert", None)
-        # Unsent, the alert is due again on the next tick.
-        if pending is not None and sent:
-            entry["alertedAt"] = pending
+        entry.pop("pendingAlert", None)  # unsent: due again on the next tick
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state) + "\n")
 

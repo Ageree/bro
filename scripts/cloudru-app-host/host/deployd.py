@@ -53,7 +53,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.1"
+VERSION = "2026-10-02.2"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -201,18 +201,23 @@ def write_private(path, text, mode=0o600):
 # --- Caddy --------------------------------------------------------------------------------------------------
 
 APP_SNIPPET = """(bro_app) {
-\tencode zstd gzip
 \t# The Workflow queue's entry points answer without auth; the world reaches them over loopback only.
 \thandle /.well-known/workflow/* {
 \t\trespond 404
 \t}
-\t# Long event streams of eve go straight to it: Next's proxy cuts them at 30 s.
+\t# The app's health runs a query: for deployd and the watchdog over loopback, not for the internet.
+\thandle /api/health {
+\t\trespond 404
+\t}
+\t# Long event streams of eve go straight to it, with no encoder to hold chunks back: Next's proxy cuts
+\t# them at 30 s.
 \thandle /eve/* {
 \t\treverse_proxy 127.0.0.1:4274 {
 \t\t\tflush_interval -1
 \t\t}
 \t}
 \thandle {
+\t\tencode zstd gzip
 \t\treverse_proxy 127.0.0.1:3000
 \t}
 }
@@ -288,6 +293,8 @@ WEB_HEALTH = "http://127.0.0.1:3000/api/health"
 EVE_HEALTH = "http://127.0.0.1:4274/eve/v1/health"
 NODE = "/usr/local/bin/node"
 PG_BIN = "/usr/lib/postgresql/18/bin"
+# bro's home: bro may not write /srv/bro, where root deployd works (provision.sh).
+BRO_HOME = "/var/lib/bro-home"
 
 
 class Deployd:
@@ -319,7 +326,8 @@ class Deployd:
             return None
 
     def history(self):
-        """The releases that went live, oldest first: a rollback goes to the one before current."""
+        """The releases that went live, oldest first. A rollback cuts the list after its target, so a second
+        rollback goes further back instead of returning to the release just left."""
         try:
             return [v for v in json.loads(self.paths.history.read_text()) if isinstance(v, str)]
         except (OSError, ValueError):
@@ -360,7 +368,7 @@ class Deployd:
 
     def migrate(self, version, log):
         """Bro's migrations and the world's schema, with the env of the services, as the user bro."""
-        env = {"PATH": f"/usr/local/bin:/usr/bin:/bin:{PG_BIN}", "HOME": "/srv/bro", "NODE_ENV": "production",
+        env = {"PATH": f"/usr/local/bin:/usr/bin:/bin:{PG_BIN}", "HOME": BRO_HOME, "NODE_ENV": "production",
                **read_env(self.paths)}
         if not env.get("WORKFLOW_POSTGRES_URL"):
             raise Refused("WORKFLOW_POSTGRES_URL is not in /etc/bro/env: PUT /ops/v1/env first")
@@ -405,14 +413,15 @@ class Deployd:
         os.rename(partial, release)
         log(f"unpacked {version}")
 
-    def activate(self, version, log):
-        """Switch to the release; back to the one before if it does not come up healthy."""
+    def activate(self, version, log, went_live=None):
+        """Switch to the release; back to the one before if it does not come up healthy. `went_live` records
+        it in the history (remember by default)."""
         previous = self.current_version()
         self.switch(version)
         log(f"current: {previous or '-'} -> {version}")
         self.restart(log)
         if self.wait_healthy(log):
-            self.remember(version)
+            (went_live or self.remember)(version)
             return {"version": version, "previous": previous}
         if previous is None or previous == version:
             raise Refused(f"{version} is not healthy and there is no release to go back to")
@@ -448,17 +457,27 @@ class Deployd:
     def do_rollback(self, body, log):
         current = self.current_version()
         target = body.get("version")
+        history = self.history()
         if target is None:
+            # The release that went live before current (or the latest other one when current is not in
+            # the history); the history then ends at it, and the release left behind drops out of it.
             present = set(self.releases())
-            older = [v for v in self.history() if v != current and v in present]
+            before = history[:history.index(current)] if current in history else history
+            older = [v for v in before if v != current and v in present]
             if not older:
                 raise Refused("no earlier release to go back to")
             target = older[-1]
+            kept = history[:history.index(target) + 1]
+
+            def went_live(_version):
+                write_private(self.paths.history, json.dumps(kept) + "\n", mode=0o644)
+        else:
+            went_live = None  # a named release, older or newer, goes to the end like a release
         if not isinstance(target, str) or target not in self.releases():
             raise Refused(f"no release {str(target)[:64]!r}")
         if target == current:
             raise Refused(f"{target} is current already")
-        return self.activate(target, log)
+        return self.activate(target, log, went_live)
 
     # -- env, sites, ops
 
@@ -523,7 +542,7 @@ class Deployd:
         if not path.is_file():
             raise Refused(f"release {version} has no ops/{script}")
         interpreter = NODE if script.endswith(".mjs") else "/bin/bash"
-        env = {"PATH": f"/usr/local/bin:/usr/bin:/bin:{PG_BIN}", "HOME": "/srv/bro", "NODE_ENV": "production",
+        env = {"PATH": f"/usr/local/bin:/usr/bin:/bin:{PG_BIN}", "HOME": BRO_HOME, "NODE_ENV": "production",
                **read_env(self.paths)}
         log(f"run ops/{script} of {version} with {len(args)} arguments")
         code, output = self.runner.run([interpreter, str(path), *args], env=env, cwd=str(path.parent.parent),
@@ -568,7 +587,7 @@ class Deployd:
             "releaseInfo": self.release_info(version) if version else None, "releases": self.releases(),
             "units": units, "health": {"web": self.runner.healthy(WEB_HEALTH), "eve": self.runner.healthy(EVE_HEALTH)},
             "opsDomain": self.ops_domain(), "sites": read_sites(self.paths),
-            "diskFreeGb": round(disk.free / 1e9, 1), "busy": self.busy.locked(),
+            "diskFreeGb": round(disk.free / 1e9, 1), "busy": self.busy.locked(), "job": self.running_job(),
         }
 
     def env_names(self):
@@ -589,10 +608,13 @@ class Deployd:
 
     # -- jobs
 
+    def running_job(self):
+        """The id of the job that runs now: host.py follows it when a job-starting answer got lost."""
+        return next((j for j, v in self.jobs.items() if v["state"] == "running"), None)
+
     def start_job(self, kind, work, body):
         if not self.busy.acquire(blocking=False):
-            running = next((j for j, v in self.jobs.items() if v["state"] == "running"), None)
-            raise Refused(f"busy with job {running}")
+            raise Refused(f"busy with job {self.running_job()}")
         job_id = uuid.uuid4().hex[:12]
         job = {"id": job_id, "kind": kind, "state": "running", "log": [], "result": None,
                "started": int(time.time())}

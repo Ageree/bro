@@ -4,7 +4,7 @@
 # only mirror.yandex.ru (apt) and Object Storage answer reliably: Caddy comes in the bundle, Node and the
 # PostgreSQL client from presigned Object Storage URLs, each checked by SHA-256.
 #
-# What it leaves: the user bro, /srv/bro/{releases,current}, /etc/bro/env (0600, empty until PUT
+# What it leaves: the user bro (home /var/lib/bro-home), /srv/bro/{releases,current} owned by root, /etc/bro/env (0600, empty until PUT
 # /ops/v1/env), the units bro-web and bro-eve (they start with the first release), deployd behind Caddy on
 # the ops host <public IP with dashes>.sslip.io, the watchdog timer, journald capped at 1 GB. Stages go to
 # /var/lib/bro/stage and timeline; a failure leaves `failed:<stage>:line N`.
@@ -29,7 +29,7 @@ print(value)' "$1" "$2"; }
 APT=(apt-get -q -o DPkg::Lock::Timeout=600)
 stage start
 
-for file in deployd.py watchdog.py bro-web.service bro-eve.service deployd.service bro-watchdog.service \
+for file in deployd.py watchdog.py egress.sh bro-egress.service bro-web.service bro-eve.service deployd.service bro-watchdog.service \
   bro-watchdog.timer caddy.service vendor/caddy; do
   [ -f "$HOST/$file" ] || fail "the bundle has no $file"
 done
@@ -42,7 +42,7 @@ if [ -n "$APT_MIRROR" ]; then
     /etc/apt/sources.list
 fi
 retry "${APT[@]}" update
-retry "${APT[@]}" install -y curl ca-certificates zstd xz-utils python3
+retry "${APT[@]}" install -y curl ca-certificates zstd xz-utils python3 iptables
 
 fetch() {  # url sha256 out
   for i in 1 2 3 4 5; do
@@ -83,10 +83,16 @@ rm -f "${DEBS[@]}"
 apt-mark hold libpq5 postgresql-client-18 postgresql-client-common >/dev/null
 
 stage layout
-id -u bro >/dev/null 2>&1 || useradd --system --user-group --home-dir /srv/bro --shell /usr/sbin/nologin bro
-mkdir -p /srv/bro/releases /srv/bro/downloads /var/backups/bro /etc/bro
-chown bro:bro /srv/bro /var/backups/bro
-chmod 750 /var/backups/bro
+# bro runs the app and the model's tools: it writes only its home, the backups and the unpacked release
+# trees. /srv/bro itself, releases/, downloads/, history.json and `current` stay root's: root deployd
+# renames, unpacks and removes there, and a bro that could swap releases/ for a link would steer that.
+id -u bro >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/bro-home --shell /usr/sbin/nologin bro
+usermod --home /var/lib/bro-home bro
+mkdir -p /srv/bro/releases /srv/bro/downloads /var/backups/bro /etc/bro /var/lib/bro-home
+chown root:root /srv/bro /srv/bro/releases /srv/bro/downloads
+chmod 755 /srv/bro /srv/bro/releases /srv/bro/downloads
+chown bro:bro /var/backups/bro /var/lib/bro-home
+chmod 750 /var/backups/bro /var/lib/bro-home
 [ -f /etc/bro/env ] || install -m 600 /dev/null /etc/bro/env
 chmod 600 /etc/bro/env /etc/bro/deployd.json
 # journald: the services log to it; a busy month must not fill the disk.
@@ -128,10 +134,14 @@ systemctl enable caddy >/dev/null
 systemctl restart caddy
 
 stage services
-for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service bro-watchdog.timer; do
+for unit in bro-egress.service bro-web.service bro-eve.service deployd.service bro-watchdog.service \
+  bro-watchdog.timer; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
+# bro's processes never reach the metadata service (the user data holds deployd's host key) nor deployd.
+systemctl enable --now bro-egress >/dev/null
+iptables -w -C OUTPUT -m owner --uid-owner bro -j BRO_EGRESS || fail "no egress rules for bro"
 systemctl enable bro-web bro-eve >/dev/null
 systemctl enable --now deployd bro-watchdog.timer >/dev/null
 for i in $(seq 1 30); do
