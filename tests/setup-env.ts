@@ -3,6 +3,7 @@ import { vi } from "vitest";
 const testEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://example.com",
+  BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
   // A fake project: tests reach Composio only through a stubbed fetch, and a
   // real key in the host shell must never be the one they send.
   COMPOSIO_API_KEY: "test-composio-key",

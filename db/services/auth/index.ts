@@ -32,7 +32,7 @@ async function initializeAuthWithRetry() {
 }
 
 async function initializeAuth() {
-  const { betterAuthSecret } = getInstallationSecrets();
+  const { betterAuthSecret } = await getInstallationSecrets();
   return betterAuth({
     appName: "Bro",
     baseURL: betterAuthBaseURL(),

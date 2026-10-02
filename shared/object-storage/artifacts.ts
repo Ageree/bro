@@ -79,7 +79,10 @@ export async function openArtifactObject(
   }
   const response = await fetch(presignArtifact(pathname, "GET"), {
     headers,
-    signal: options.signal,
+    // A stalled connection must not hold a request or a tool step forever:
+    // off Vercel no function limit cuts it. The bound covers the body too,
+    // and an artifact is a few megabytes at most.
+    signal: withTimeout(options.signal),
   });
   if (response.status === 404) {
     await response.body?.cancel();

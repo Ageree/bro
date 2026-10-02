@@ -178,8 +178,10 @@ export const env = createEnv({
     // Required
     DATABASE_URL: databaseUrlSchema,
 
-    // Local defaults in development; a deployment sets both, and never
-    // changes them (`db/services/installation-secrets.ts`).
+    // Optional overrides with local defaults. Without them a Vercel
+    // deployment reads the installation secrets from its connected private
+    // Blob store (`db/services/installation-secrets.ts`); off Vercel set both,
+    // with the values from that store.
     BETTER_AUTH_SECRET: installationSecretWithLocalDefault(
       betterAuthSecretSchema,
       "openinstinct-local-auth-development-secret"
@@ -195,6 +197,8 @@ export const env = createEnv({
     SUPERMEMORY_API_KEY: browserUseApiKeySchema.optional(),
 
     // Optional
+    BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
+    BLOB_STORE_ID: requiredValue.optional(),
     // Where a browser errand runs when its workspace is not in a pilot list
     // below: Browser Use Cloud, the workspace's own Cloud.ru VM, or a
     // sandbox on a shared Cloud.ru host (`pool`, docs/browser-pool.md; see

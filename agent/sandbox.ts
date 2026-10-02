@@ -1,4 +1,4 @@
-import { defaultBackend, defineSandbox } from "eve/sandbox";
+import { defineSandbox } from "eve/sandbox";
 import { cloudRuSandbox } from "@agent/lib/sandbox/backend";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { env } from "@shared/environment";
@@ -25,6 +25,13 @@ const cloudRuDefinition = defineSandbox({
   },
 });
 
+/**
+ * `default` is exactly eve's own default sandbox (`defineSandbox({})`): with
+ * no bootstrap and no workspace files the session sandbox key holds only the
+ * backend name, the project, the session and the node, so this file leaves
+ * every live session on Vercel in the sandbox it already has. AGENT_SANDBOX
+ * is read when the module loads: set it for `eve build` as well as at run.
+ */
 export default env.AGENT_SANDBOX === "bro-cloudru"
   ? cloudRuDefinition
-  : defineSandbox({ backend: () => defaultBackend() });
+  : defineSandbox({});

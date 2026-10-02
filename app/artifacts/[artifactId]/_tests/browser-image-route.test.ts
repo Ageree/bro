@@ -130,6 +130,17 @@ describe("browser image route", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it("answers 502 with the private headers when storage fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.openObject.mockRejectedValue(new TypeError("fetch failed"));
+
+    const response = await GET(request(), context());
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
   it("does not reveal an unavailable or cross-workspace artifact", async () => {
     mocks.readArtifact.mockResolvedValue(undefined);
 

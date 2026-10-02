@@ -278,17 +278,19 @@
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
 - Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
-  `SECRET_ENCRYPTION_KEY` код берёт только из env
-  (`db/services/installation-secrets.ts`); прежние значения лежали в Blob
-  (`openinstinct/system/…`) — их же и задавать, новые разлогинят всех и
+  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: прод берёт их из Blob
+  (`db/services/installation-secrets.ts`); вне Vercel задавать те же значения
+  (`installation-secrets.json`, сверен с Blob 02.10), новые разлогинят всех и
   закроют сейф.
 - Картинки и вложения — в S3 под `artifacts/<storage_pathname>`
   (`shared/object-storage/artifacts.ts`). Cloud.ru отвечает 304 без `ETag`:
   маршрут берёт ETag из запроса. Node в облачной сессии ходит через прокси
   только с `NODE_USE_ENV_PROXY=1`, и прокси изредка рвёт соединение («fetch
   failed») — скрипты повторяют запрос (`scripts/cloudru-app-host/blob-to-s3.ts`).
-- Появление или правка `agent/sandbox.ts` меняет ключ определения песочницы:
-  каждая сессия заводит новую, и вложения, присланные раньше, модель не видит.
+- Ключ песочницы сессии eve без `bootstrap` и файлов workspace не зависит от
+  текста `agent/sandbox.ts` (`sourceHash` входит лишь в план `bootstrap`,
+  `runtime/sandbox/keys.js`), но зависит от имени бэкенда: смена
+  `AGENT_SANDBOX` заводит каждой сессии новую песочницу без старых вложений.
 
 ## Браузерные поручения
 

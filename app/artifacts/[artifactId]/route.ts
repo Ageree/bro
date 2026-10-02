@@ -18,10 +18,20 @@ export async function GET(
   if (!session || !parsedId.success) return notFound();
 
   const scope = accessScopeForUser(`better-auth:${session.user.id}`);
-  const opened = await openArtifact(scope, parsedId.data, {
-    ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
-    signal: request.signal,
-  });
+  let opened: Awaited<ReturnType<typeof openArtifact>>;
+  try {
+    opened = await openArtifact(scope, parsedId.data, {
+      ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+      signal: request.signal,
+    });
+  } catch (error) {
+    // Object Storage refused, timed out or dropped the connection.
+    console.error("[artifacts] Object Storage read failed", error);
+    return new Response("Storage unavailable", {
+      headers: privateImageHeaders(),
+      status: 502,
+    });
+  }
   if (!opened) return notFound();
 
   const headers = privateImageHeaders();
