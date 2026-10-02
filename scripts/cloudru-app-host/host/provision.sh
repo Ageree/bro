@@ -30,7 +30,7 @@ print(value)' "$1" "$2"; }
 APT=(apt-get -q -o DPkg::Lock::Timeout=600)
 stage start
 
-for file in install-code.sh deployd.py watchdog.py egress.sh bro-egress.service bro-web.service bro-eve.service \
+for file in install-code.sh deployd.py watchdog.py egress.sh world-unlock.sh bro-egress.service bro-web.service bro-eve.service \
   deployd.service bro-watchdog.service bro-watchdog.timer bro-backup.service bro-backup.timer \
   bro-backup-alert.service caddy.service vendor/caddy tg-egress/tg_egress.py tg-egress/setup.sh \
   tg-egress/bro-tg-egress.service tg-bridge/tg_bridge.py tg-bridge/install.sh tg-bridge/bro-tg-bridge.service \

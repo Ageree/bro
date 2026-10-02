@@ -24,7 +24,7 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "install-code.sh", "deployd.py", "watchdog.py", "egress.sh", "bro-egress.service",
+FILES = ("provision.sh", "install-code.sh", "deployd.py", "watchdog.py", "egress.sh", "world-unlock.sh", "bro-egress.service",
          "bro-web.service", "bro-eve.service", "deployd.service", "bro-watchdog.service", "bro-watchdog.timer",
          "bro-backup.service", "bro-backup.timer", "bro-backup-alert.service", "caddy.service")
 # From the sibling directories, at the same relative path in the bundle: the way out to Telegram, the bridge

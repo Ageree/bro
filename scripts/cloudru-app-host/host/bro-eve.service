@@ -22,14 +22,14 @@ EnvironmentFile=/etc/bro/env
 # queue to this process over loopback: 127.0.0.1, so `localhost` never goes to ::1.
 Environment=NODE_ENV=production TZ=UTC PORT=4274 HOST=127.0.0.1
 Environment=WORKFLOW_LOCAL_BASE_URL=http://127.0.0.1:4274
-# Before every start (release, restart, crash, reboot) the queue jobs the previous eve held go back to the
-# queue (ops/migrate.mjs unlock): eve's SIGTERM exit leaves them locked, and a turn cut mid-step otherwise
-# resumed 14 minutes later. The leading - starts eve even when the database does not answer.
-ExecStartPre=-/usr/bin/timeout 30 /usr/local/bin/node /srv/bro/current/ops/migrate.mjs unlock
+# Before every start (release, rollback, restart, crash, reboot) the queue jobs the previous eve held go back
+# to the queue (world-unlock.sh, host code): eve's SIGTERM exit leaves them locked, and a turn cut mid-step
+# otherwise resumed 14 minutes later. The leading - starts eve even when the database does not answer.
+ExecStartPre=-/usr/bin/timeout 30 /bin/bash /opt/bro/app-host/world-unlock.sh
 ExecStart=/usr/local/bin/node server/index.mjs
 Restart=always
 RestartSec=3
-# eve exits at once on SIGTERM (code 143); the world resumes its open steps after ExecStartPre's unlock.
+# eve exits at once on SIGTERM (code 143); the world resumes its open steps after world-unlock.sh.
 SuccessExitStatus=143
 TimeoutStopSec=30
 LimitNOFILE=65536
