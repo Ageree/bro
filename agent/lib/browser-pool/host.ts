@@ -1,5 +1,9 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
+import {
+  resolvePrivateRoute,
+  withPrivateRoute,
+} from "@agent/lib/browser-vm/private-route";
 import { browserVmKey } from "@agent/lib/browser-vm/token";
 import type { browserHosts } from "@db/schema/browser-hosts";
 import { env } from "@shared/environment";
@@ -516,6 +520,9 @@ async function request(
     readonly timeoutMs: number;
   }
 ) {
+  const url = `${browserHostOrigin(host)}/h${path}`;
+  // As for a worker: the private address is looked up before the timeout.
+  await resolvePrivateRoute(url);
   const headers = new Headers({ accept: "application/json" });
   if (options.signed !== false) {
     headers.set("authorization", `Bearer ${signBrowserHostToken(host.id)}`);
@@ -531,7 +538,7 @@ async function request(
   }
   // No retry here: a start or a park is the caller's to repeat, by its
   // generation.
-  const response = await fetch(`${browserHostOrigin(host)}/h${path}`, init);
+  const response = await fetch(url, withPrivateRoute(init));
   const route = path.split("?")[0] ?? path;
   const text = await response.text();
   if (!response.ok) throw new BrowserHostError(response.status, route, text);

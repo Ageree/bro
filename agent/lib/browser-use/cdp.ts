@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  openPrivateRouteWebSocket,
+  withPrivateRoute,
+} from "@agent/lib/browser-vm/private-route";
 
 /**
  * Typing a one-time code into the run's own browser over the Chrome DevTools
@@ -759,9 +763,10 @@ async function pageSocketUrl(cdpUrl: string) {
     .replace(/\/$/u, "")
     .replace(/^ws:/iu, "http:")
     .replace(/^wss:/iu, "https:");
-  const response = await fetch(`${httpBase}/json`, {
-    signal: AbortSignal.timeout(connectTimeoutMs),
-  });
+  const response = await fetch(
+    `${httpBase}/json`,
+    withPrivateRoute({ signal: AbortSignal.timeout(connectTimeoutMs) })
+  );
   if (!response.ok) {
     throw new Error(
       `The browser's target list answered ${String(response.status)}.`
@@ -775,7 +780,7 @@ async function pageSocketUrl(cdpUrl: string) {
 }
 
 async function connect(cdpUrl: string): Promise<CdpConnection> {
-  const socket = new WebSocket(await pageSocketUrl(cdpUrl));
+  const socket = openPrivateRouteWebSocket(await pageSocketUrl(cdpUrl));
   const pending = new Map<
     number,
     (reply: z.infer<typeof messageSchema>) => void
