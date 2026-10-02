@@ -17,7 +17,7 @@ import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PRICE = re.compile(r"\d[\d\s  ]*\s?(₽|руб|\$|€)")
+PRICE = re.compile(r"\d[\d\s  ]*\s?(₽|руб|\$|€|£)|(\$|€|£)\s?\d")  # "1 990 ₽" and "$19.41"
 
 
 SPACES = str.maketrans({"\u00a0": " ", "\u202f": " ", "\u2009": " "})
@@ -64,7 +64,7 @@ LIVE = {
                     "Найди поезда «Сапсан» из Москвы в Санкт-Петербург на пятницу 9 октября 2026 года, после 18:00. "
                     "Остановись, когда видны варианты поездов.",
                     lambda r: "/search" in _u(r) and has(r, "сапсан", "санкт-петербург")
-                    and ("2026-10-09" in _u(r) or "9 октября" in _t(r))),
+                    and ("2026-10-09" in _u(r) or "9 октября" in _t(r)) and "evening" in _u(r)),
     "rasp_click": ("dev", "https://rasp.yandex.ru/",
                    "Открой расписание из Москвы в Санкт-Петербург по ссылке в популярных направлениях. "
                    "Ничего не вводи с клавиатуры.",
@@ -88,11 +88,13 @@ LIVE = {
     "kayak_chicago": ("heldout", "https://www.kayak.com/",
                       "Find one-way flights from New York to Chicago on November 20, 2026, for one adult. "
                       "Stop when flight results with prices are visible.",
-                      lambda r: "/flights/" in _u(r) and "2026-11-20" in _u(r) and "chi" in _u(r).lower()),
+                      lambda r: re.search(r"/flights/(NYC|JFK|LGA|EWR)-[A-Z]*CHI|/flights/(NYC|JFK|LGA|EWR)-(ORD|MDW)", _u(r))
+                      is not None and "2026-11-20" in _u(r)),
     "airbnb_lisbon": ("heldout", "https://www.airbnb.com/",
                       "Find places to stay in Lisbon for 2 adults from November 12 to November 15, 2026. "
                       "Stop when listings with prices are visible.",
-                      lambda r: "lisbon" in _u(r).lower() and "2026-11-12" in _u(r) and "2026-11-15" in _u(r)),
+                      lambda r: "lisbon" in _u(r).lower() and "2026-11-12" in _u(r) and "2026-11-15" in _u(r)
+                      and "adults=2" in _u(r)),
     "ostrovok_kazan": ("heldout", "https://ostrovok.ru/",
                        "Найди отели в Казани с 12 по 15 ноября 2026 года для двоих взрослых. "
                        "Остановись, когда видны отели с ценами.",
@@ -145,7 +147,7 @@ LIVE = {
                     lambda r: moved(r) and has(r, "lego") and price(r)),
     "kinopoisk_brat2": ("fresh", "https://www.kinopoisk.ru/",
                         "Найди на Кинопоиске фильм «Брат 2» (2000) и открой его страницу.",
-                        lambda r: "/film/" in _u(r) and "брат 2" in (r.get("title") or "").lower()),
+                        lambda r: "/film/" in _u(r) and (r.get("title") or "").lower().startswith("брат 2")),
 }
 
 
