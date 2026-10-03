@@ -433,6 +433,8 @@ describe("the skills of the marked instructions", () => {
     // The setups with the files differ from the others by this body alone.
     for (const each of skillSetups.filter(({ taskFiles }) => taskFiles)) {
       const without = { ...each, taskFiles: false };
+      expect(availableSkills(each)).toContain("files");
+      expect(availableSkills(without)).not.toContain("files");
       expect(availableSkills(each)).toEqual(
         skillNames.filter(
           (name) => name === "files" || availableSkills(without).includes(name)

@@ -178,7 +178,11 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
   ),
   files: stems(
     String.raw`презентац|слайд|таблиц|эксел|excel(?!l)|xlsx?(?!\p{L})|csv(?!\p{L})`,
-    String.raw`docx?(?!\p{L})|pptx?(?!\p{L})|ворд|график|диаграмм`,
+    String.raw`docx?(?!\p{L})|pptx?(?!\p{L})|ворд|диаграмм`,
+    // A chart, not a bare «график»: «график дежурств» is a schedule, and so
+    // is the one someone is put «в график» or «на график».
+    String.raw`(постро|нарису|сдела|начерти|добав|встав)\p{L}*\s+((?!(в|во|на)\s)\p{L}+\s+){0,2}график(?!\p{L}*\s+(дежур|работ|смен|отпуск|заняти|уборк|при[её]м|встреч))`,
+    String.raw`график\p{L}*\s+(продаж|расход|доход|трат|выручк|динамик|рост|цен|курс|температур|по (месяц|дн|недел|годам|данн|таблиц))`,
     String.raw`spreadsheets?|slides?(?!\p{L})|charts?(?!\p{L})|presentations?`,
     // Not a bare «deck»: a deck of cards is no slides.
     String.raw`(slide|pitch) deck`

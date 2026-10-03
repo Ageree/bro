@@ -14,6 +14,7 @@ import type * as SandboxPilot from "@agent/lib/sandbox/pilot";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
+import { ooxmlPackage } from "@tests/helpers/office-package";
 
 const botToken = "123456:telegram-test-bot-token";
 
@@ -241,8 +242,7 @@ describe("Telegram inbound media", () => {
   });
 
   it("hands a spreadsheet to the model only where the person's files reach the task agent", async () => {
-    const xlsx = new Uint8Array(32);
-    xlsx.set([0x50, 0x4b, 0x03, 0x04]);
+    const xlsx = ooxmlPackage();
     const xlsxType =
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     serveTelegram(xlsx);

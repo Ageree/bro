@@ -120,8 +120,11 @@ export function resolveMediaType(
   return sniffMediaType(bytes) ?? baseMediaType(declared);
 }
 
-/** How a document's bytes must begin for its extension to be believed. */
-type DocumentContainer = "cfb" | "text" | "zip";
+/**
+ * What a document's bytes must be for its extension to be believed: an OOXML
+ * or OpenDocument package (both zips), an OLE compound file, or text.
+ */
+type DocumentContainer = "cfb" | "odf" | "ooxml" | "text";
 
 /**
  * The documents the task agent can open, by extension: the canonical media
@@ -136,7 +139,7 @@ const documentTypes: ReadonlyMap<
   [
     "xlsx",
     {
-      container: "zip",
+      container: "ooxml",
       mediaType:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     },
@@ -144,7 +147,7 @@ const documentTypes: ReadonlyMap<
   [
     "xlsm",
     {
-      container: "zip",
+      container: "ooxml",
       mediaType: "application/vnd.ms-excel.sheet.macroEnabled.12",
     },
   ],
@@ -154,7 +157,7 @@ const documentTypes: ReadonlyMap<
   [
     "docx",
     {
-      container: "zip",
+      container: "ooxml",
       mediaType:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     },
@@ -163,7 +166,7 @@ const documentTypes: ReadonlyMap<
   [
     "pptx",
     {
-      container: "zip",
+      container: "ooxml",
       mediaType:
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     },
@@ -171,19 +174,19 @@ const documentTypes: ReadonlyMap<
   ["ppt", { container: "cfb", mediaType: "application/vnd.ms-powerpoint" }],
   [
     "odt",
-    { container: "zip", mediaType: "application/vnd.oasis.opendocument.text" },
+    { container: "odf", mediaType: "application/vnd.oasis.opendocument.text" },
   ],
   [
     "ods",
     {
-      container: "zip",
+      container: "odf",
       mediaType: "application/vnd.oasis.opendocument.spreadsheet",
     },
   ],
   [
     "odp",
     {
-      container: "zip",
+      container: "odf",
       mediaType: "application/vnd.oasis.opendocument.presentation",
     },
   ],
@@ -200,7 +203,7 @@ const documentMediaTypes: ReadonlySet<string> = new Set(
 /**
  * What a sender may declare next to an allowlisted extension: nothing, the
  * generic binary type, any listed document type (Windows declares a CSV as
- * `application/vnd.ms-excel`), the zip types for a zip container or any
+ * `application/vnd.ms-excel`), the zip types for a package or any
  * `text/*` type for a text one. Anything else, a video or an executable
  * renamed to `.xlsx`, keeps the file a note.
  */
@@ -212,7 +215,7 @@ function declaredFits(
     return true;
   }
   if (documentMediaTypes.has(declared)) return true;
-  if (container === "zip") {
+  if (container === "ooxml" || container === "odf") {
     return (
       declared === "application/zip" ||
       declared === "application/x-zip-compressed"
@@ -257,30 +260,69 @@ function containerOf(mediaType: string) {
   )?.container;
 }
 
+/**
+ * Whether a zip is the package its extension names, not any archive renamed:
+ * OOXML lists its parts in `[Content_Types].xml`, whose name the zip's
+ * directory holds as is; OpenDocument begins with an uncompressed `mimetype`
+ * entry whose content is the document's own media type.
+ */
+function packageMatches(
+  container: "odf" | "ooxml",
+  mediaType: string,
+  bytes: Uint8Array
+) {
+  if (!startsWith(bytes, zipSignature)) return false;
+  if (container === "ooxml") {
+    return Buffer.from(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength
+    ).includes("[Content_Types].xml");
+  }
+  const nameLength = (bytes[26] ?? 0) | ((bytes[27] ?? 0) << 8);
+  const extraLength = (bytes[28] ?? 0) | ((bytes[29] ?? 0) << 8);
+  return (
+    ascii(bytes, 30, nameLength) === "mimetype" &&
+    ascii(bytes, 30 + nameLength + extraLength, mediaType.length) === mediaType
+  );
+}
+
 function startsWithUtf16Bom(bytes: Uint8Array) {
   return utf16Boms.some((bom) => startsWith(bytes, bom));
 }
 
 /**
- * Whether a text document of `mediaType` is UTF-16 with a byte order mark,
- * as Excel's "Unicode Text" saves it. The little-endian mark FF FE reads as
- * MPEG frame sync, so such a file's sniff is no verdict: the channels skip
- * it and take the document branch (`documentBytesMatch` believes the mark).
+ * Whether a text document of `mediaType` only looks like audio to the sniff:
+ * UTF-16 with a byte order mark, as Excel's "Unicode Text" saves it (the
+ * little-endian mark FF FE reads as MPEG frame sync), or text that begins
+ * with «ID3» and has no NUL byte, which a real ID3 tag always carries in its
+ * version. Such a file's sniff is no verdict: the channels skip it and take
+ * the document branch rather than send it to transcription.
  */
-export function utf16TextDocument(mediaType: string, bytes: Uint8Array) {
-  return containerOf(mediaType) === "text" && startsWithUtf16Bom(bytes);
+export function textDocumentLooksLikeAudio(
+  mediaType: string,
+  bytes: Uint8Array
+) {
+  if (containerOf(mediaType) !== "text") return false;
+  if (startsWithUtf16Bom(bytes)) return true;
+  return (
+    isAudioMediaType(sniffMediaType(bytes)) &&
+    documentBytesMatch(mediaType, bytes)
+  );
 }
 
 /**
- * Whether the bytes are what a document of `mediaType` comes in: a zip for
- * OOXML and OpenDocument, an OLE compound file for the legacy Office formats,
+ * Whether the bytes are what a document of `mediaType` comes in: its own
+ * package for OOXML and OpenDocument (`packageMatches`), an OLE compound file for the legacy Office formats,
  * and text without NUL bytes (or with a UTF-16 byte order mark) for the rest.
  * A renamed executable or archive of another kind fails here.
  */
 export function documentBytesMatch(mediaType: string, bytes: Uint8Array) {
-  switch (containerOf(mediaType)) {
-    case "zip": {
-      return startsWith(bytes, zipSignature);
+  const container = containerOf(mediaType);
+  switch (container) {
+    case "odf":
+    case "ooxml": {
+      return packageMatches(container, mediaType, bytes);
     }
     case "cfb": {
       return startsWith(bytes, cfbSignature);

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
+import { ooxmlPackage } from "@tests/helpers/office-package";
 
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
@@ -422,8 +423,7 @@ describe("Photon media turn", () => {
   });
 
   it("hands over an allowlisted document only when documents are on", async () => {
-    const docx = new Uint8Array(32);
-    docx.set([0x50, 0x4b, 0x03, 0x04]);
+    const docx = ooxmlPackage();
     const docxType =
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     const { photonMediaTurn } = await loadPhotonMedia();
@@ -503,6 +503,40 @@ describe("Photon media turn", () => {
           data: Buffer.from(utf16).toString("base64"),
           filename: "data.txt",
           mediaType: "text/plain",
+          type: "file",
+        },
+      ],
+      notice: undefined,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("hands over a text file that begins with «ID3» rather than transcribing it", async () => {
+    const notes = Buffer.from("ID3 tags: заметки по формату\n");
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    await expect(
+      photonMediaTurn(
+        photonMessage(
+          [
+            {
+              data: notes,
+              mimeType: "text/markdown",
+              name: "id3.md",
+              type: "file",
+            },
+          ],
+          undefined
+        ),
+        { documents: true }
+      )
+    ).resolves.toEqual({
+      message: [
+        { text: "[файл: id3.md (text/markdown)]", type: "text" },
+        {
+          data: notes.toString("base64"),
+          filename: "id3.md",
+          mediaType: "text/markdown",
           type: "file",
         },
       ],

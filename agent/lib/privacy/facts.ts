@@ -2,12 +2,11 @@ import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
-import { sandboxHostConfigured } from "@agent/lib/sandbox/host";
+import { taskFilesDeployed } from "@agent/lib/sandbox/pilot";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
-import { objectStorageConfigured } from "@shared/object-storage/s3";
 import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 
@@ -34,20 +33,6 @@ export function keptData() {
       : []),
     "Приложение и сам Бро работают на Vercel; история переписки (сессии Бро) хранится там же, в Vercel Workflow.",
   ];
-}
-
-/**
- * Whether the person's files can reach the task agent anywhere in this
- * deployment (`taskFilesEnabled` in `agent/lib/sandbox/pilot.ts`, per
- * workspace): said to everyone once any workspace is listed, since saying
- * too much here costs nothing and saying too little misleads.
- */
-function taskFilesDeployed() {
-  return (
-    (env.TASK_FILES_WORKSPACES ?? []).length > 0 &&
-    sandboxHostConfigured() &&
-    objectStorageConfigured()
-  );
 }
 
 /**

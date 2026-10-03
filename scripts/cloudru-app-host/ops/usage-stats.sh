@@ -66,7 +66,9 @@ STEPS="WITH all_steps AS (
 # A turn of a session, from its steps (\$STEPS above). eve numbers turns per run of the session
 # (turn_0, turn_1…), and a deploy handoff on Vercel starts again at turn_0 under the same session id: its steps
 # then share keys with the earlier turns, and usage_costs keeps only the first row of each key. A session whose
-# turn numbers do not grow with time, or whose turn spans hours, is such a one and is left out.
+# turn numbers do not grow with time, or whose turn spans hours, is such a one and is left out. The task agent's
+# steps are filed under the delegating conversation's session but numbered by their own (its turn_0 would merge
+# with the conversation's and mark the session restarted), so they stay out of the turns.
 TURNS="turns AS (
   SELECT session_id, turn_id,
          substring(turn_id from '[0-9]+\$')::int AS turn_number,
@@ -78,7 +80,7 @@ TURNS="turns AS (
          (array_agg(cached ORDER BY step_index, occurred_at))[1] AS first_cached,
          count(*) AS steps
   FROM all_steps
-  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL
+  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL AND source <> 'task'
   GROUP BY session_id, turn_id
 ), numbered AS (
   SELECT *,

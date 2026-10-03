@@ -64,6 +64,7 @@ const optionalServices = [
   "SANDBOX_HOST_ID",
   "SANDBOX_HOST_ORIGIN",
   "SANDBOX_SIGNING_KEY",
+  "SANDBOX_WORKSPACES",
   "SUPERMEMORY_API_KEY",
   "TASK_FILES_WORKSPACES",
   "TELEGRAM_BOT_TOKEN",
@@ -195,16 +196,64 @@ describe("privacy", () => {
     const sentence = "копируются в его песочницу на Cloud.ru";
     const kept = async (services: Parameters<typeof withServices>[0]) =>
       (await withServices(services)).facts.keptData().join("\n");
+    // Every gate of `taskFilesEnabled`: the files' list, the task agent's
+    // pilot naming the same workspace, the direct model, the host, the bucket.
+    const deployed = {
+      ...storage,
+      ...host,
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_WORKSPACES: "workspace-1",
+      TASK_FILES_WORKSPACES: "workspace-1",
+    };
 
+    expect(await kept(deployed)).toContain(sentence);
+    expect(await kept({ ...deployed, SANDBOX_WORKSPACES: "*" })).toContain(
+      sentence
+    );
     expect(
-      await kept({ ...storage, ...host, TASK_FILES_WORKSPACES: "workspace-1" })
+      await kept({
+        ...deployed,
+        SANDBOX_WORKSPACES: "workspace-2",
+        TASK_FILES_WORKSPACES: "*",
+      })
     ).toContain(sentence);
-    expect(await kept({ ...storage, ...host })).not.toContain(sentence);
     expect(
-      await kept({ ...storage, TASK_FILES_WORKSPACES: "workspace-1" })
+      await kept({ ...deployed, TASK_FILES_WORKSPACES: "" })
+    ).not.toContain(sentence);
+    // No workspace is in both pilots: nobody's files reach the sandbox.
+    expect(await kept({ ...deployed, SANDBOX_WORKSPACES: "" })).not.toContain(
+      sentence
+    );
+    expect(
+      await kept({ ...deployed, SANDBOX_WORKSPACES: "workspace-2" })
     ).not.toContain(sentence);
     expect(
-      await kept({ ...host, TASK_FILES_WORKSPACES: "workspace-1" })
+      await kept({
+        ...deployed,
+        SANDBOX_WORKSPACES: "owner@example.test",
+        TASK_FILES_WORKSPACES: "*",
+      })
+    ).not.toContain(sentence);
+    // On the AI Gateway the task agent never runs.
+    expect(await kept({ ...deployed, OPENROUTER_API_KEY: "" })).not.toContain(
+      sentence
+    );
+    expect(
+      await kept({
+        ...deployed,
+        BROWSER_STATE_BUCKET: "",
+        CLOUDRU_KEY_ID: "",
+        CLOUDRU_KEY_SECRET: "",
+        CLOUDRU_S3_TENANT_ID: "",
+      })
+    ).not.toContain(sentence);
+    expect(
+      await kept({
+        ...deployed,
+        SANDBOX_HOST_ID: "",
+        SANDBOX_HOST_ORIGIN: "",
+        SANDBOX_SIGNING_KEY: "",
+      })
     ).not.toContain(sentence);
   });
 

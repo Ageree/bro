@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
+import { ooxmlPackage } from "@tests/helpers/office-package";
 
 const botToken = "123456:telegram-test-bot-token";
 
@@ -283,8 +284,7 @@ describe("Telegram media turn", () => {
   });
 
   it("hands over an allowlisted document only when documents are on", async () => {
-    const xlsx = new Uint8Array(32);
-    xlsx.set([0x50, 0x4b, 0x03, 0x04]);
+    const xlsx = ooxmlPackage();
     const xlsxType =
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     serveTelegram({ next: { bytes: xlsx, contentType: "application/zip" } });
@@ -388,6 +388,28 @@ describe("Telegram media turn", () => {
         data: pdfBase64,
         filename: "notes.txt",
         mediaType: "application/pdf",
+        type: "file",
+      },
+    ]);
+
+    serveTelegram({ next: { bytes: jpeg } });
+    const image = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "table.csv",
+          file_size: jpeg.byteLength,
+        },
+      }),
+      { documents: true }
+    );
+
+    expect(image?.message).toEqual([
+      { text: "[фото]", type: "text" },
+      {
+        data: jpegBase64,
+        filename: "table.csv",
+        mediaType: "image/jpeg",
         type: "file",
       },
     ]);

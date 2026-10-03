@@ -513,10 +513,18 @@ describe("the skills a turn attaches", () => {
       "сведи в таблицу и построй график",
       "make a pitch deck about us",
       "convert this to xlsx",
+      "нарисуй график",
+      "построй мне график расходов",
+      "график продаж по месяцам",
     ]) {
       expect(skillsFor(text)).toContain("files");
     }
     for (const text of [
+      // «График» is a schedule too.
+      "скинь график дежурств на неделю",
+      "какой у тебя график работы?",
+      "сделай график дежурств на неделю",
+      "добавь меня в график",
       "build a Commander deck around Atraxa",
       "this is excellent",
       "свари документы на подпись",

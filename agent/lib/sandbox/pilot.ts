@@ -62,6 +62,30 @@ export function taskFilesEnabled(workspaceId: string | undefined) {
   );
 }
 
+/**
+ * Whether `taskFilesEnabled` holds for some workspace of this deployment,
+ * decided from the settings alone (privacy facts, `agent/lib/privacy/facts.ts`):
+ * a workspace both lists name by id, or `*` in one with an id in the other.
+ * A pilot named only by owners' emails never matches a workspace id.
+ */
+export function taskFilesDeployed() {
+  const files = env.TASK_FILES_WORKSPACES ?? [];
+  const pilot = (env.SANDBOX_WORKSPACES ?? []).filter(
+    (entry) => !entry.includes("@")
+  );
+  const overlap = pilot.includes("*")
+    ? files.length > 0
+    : files.includes("*")
+      ? pilot.length > 0
+      : files.some((id) => pilot.includes(id));
+  return (
+    overlap &&
+    sandboxHostConfigured() &&
+    directModelActive() &&
+    objectStorageConfigured()
+  );
+}
+
 const userCallerSchema = z.object({
   attributes: z.object({ workspaceId: z.string().min(1) }),
   principalType: z.literal("user"),

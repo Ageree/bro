@@ -29,7 +29,7 @@ const attachmentPath =
  * than a name holds leave room for a sentence's period.
  */
 const attachmentPathInText =
-  /(?<![\w./-])\/workspace\/attachments\/[\da-f]{16}\/[\w.-]{1,128}(?![\w./\0\p{L}\p{N}-])/gu;
+  /(?<![\w./\p{L}\p{N}-])\/workspace\/attachments\/[\da-f]{16}\/[\w.-]{1,128}(?![\w./\0\p{L}\p{N}-])/gu;
 /** How many distinct paths one text is searched for. */
 const scannedPaths = 50;
 /** A presigned URL here is used at once, by the server that signed it. */
@@ -168,7 +168,7 @@ async function request(
     } catch (error) {
       if (last || signal?.aborted === true) throw error;
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
-      await pause();
+      await pause(signal);
       continue;
     }
     if (response.ok || (method === "GET" && response.status === 404)) {
@@ -182,15 +182,27 @@ async function request(
       );
     }
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
-    await pause();
+    await pause(signal);
   }
 }
 
-/** The wait before the second try: past the caller's deadline, it fails at once. */
-async function pause() {
-  await new Promise((resolve) => {
-    setTimeout(resolve, retryDelayMs);
+/**
+ * The wait before the second try. The caller's deadline cuts it short and
+ * fails the request at once.
+ */
+async function pause(signal: AbortSignal | undefined) {
+  // An abort that came before the wait fires no event.
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(done, retryDelayMs);
+    signal?.addEventListener("abort", done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
   });
+  signal?.throwIfAborted();
 }
 
 function bounded(signal: AbortSignal | undefined) {

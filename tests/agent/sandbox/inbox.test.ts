@@ -65,6 +65,9 @@ describe("the paths Bro names", () => {
           `${root}/...`,
           `${root}/a\0b`,
           `/tmp/workspace/attachments/${hash}/x.csv`,
+          // Under a directory of another script's letters, or after a digit.
+          `папка/workspace/attachments/${hash}/x.csv`,
+          `2/workspace/attachments/${hash}/x.csv`,
           `/workspace/attachments/${hash}/sub/x.csv`,
           `/workspace/attachments/${hash.toUpperCase()}/x.csv`,
           `${root}/${"n".repeat(121)}`,
@@ -167,6 +170,29 @@ describe("the inbox in Object Storage", () => {
       "PUT",
       "PUT",
     ]);
+  });
+
+  it("stops waiting to ask again once the caller's deadline passes", async () => {
+    vi.useFakeTimers();
+    const calls = stubStorage(
+      new Response(null, { status: 503 }),
+      new Response(bytes, { status: 200 })
+    );
+    const { getInbox, inboxKey } = await loadInbox();
+    const deadline = new AbortController();
+
+    const read = getInbox(inboxKey("w", "s", path), deadline.signal);
+    const settled = read.then(
+      () => "read",
+      () => "failed"
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    deadline.abort();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await Promise.race([settled, Promise.resolve("waiting")])).toBe(
+      "failed"
+    );
+    expect(calls).toHaveLength(1);
   });
 
   it("gives up after the second 5xx, and at once on a refusal", async () => {
