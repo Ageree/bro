@@ -154,6 +154,14 @@ export const cardToolsBeforeOutcomeNote =
   "Tools that ask the person on an approval card (the calendar, mail, Notion, Slack, apps, schedules, spending) are held back in this report turn until a message of yours has reached the person: no card may come before the outcome. They come back right after it. When the report asks you to put a booking in the calendar or set up a later step, say in that message what you will add, then call its tool.";
 
 /**
+ * The same in the pilot of the cache-friendly step, where the turn keeps one
+ * tool set (`reportTurnTools`) and its card tools refuse instead
+ * (`reportCardHold`).
+ */
+export const cardToolsRefuseBeforeOutcomeNote =
+  "In this report turn calendar-create-event, schedules-create and connect_google refuse until a message of yours has reached the person: no card may come before the outcome. When the report asks you to put a booking in the calendar or set up a later step, say in that message what you will add, then call its tool.";
+
+/**
  * The card steps a browser report asks for once its message is out, each by
  * the instruction that asks for it (`agent/lib/browser-use/completion.ts`):
  * the calendar entry of a booking the site confirmed, the schedule of a step
@@ -173,24 +181,6 @@ const stepsAfterMessage = [
 ] as const;
 
 /**
- * All a browser report's turn may still need once its message is out, in the
- * pilot of the cache-friendly step (`stepContextPilot`): another message, the
- * errand's `continue` or `status`, the orders the outcome may be checked
- * against, every card step the report may ask for (`stepsAfterMessage`) and
- * `connect_google`, which the calendar's refusal names when Google is not
- * connected (`googleNotConnectedWriteRefusal`). The other ≈ 50 schemas,
- * ≈ 20 thousand tokens, went with every step after the message and were read
- * at full price, since the tool set changed there.
- */
-export const reportToolsAfterOutcome = [
-  "browser_task",
-  "connect_google",
-  "list_orders",
-  "send_message",
-  ...stepsAfterMessage.map(({ tool }) => tool),
-];
-
-/**
  * The card steps a browser report's own instructions ask for after its
  * message. The instructions close the report, after every line the page
  * wrote, so a page that quotes one in its own text asks for nothing.
@@ -208,6 +198,9 @@ export function stepsAskedBy(report: string) {
  * was «end the turn without calling any tool», and the calendar card the
  * message promised never came.
  */
-export function owedStepsNote(steps: ReturnType<typeof stepsAskedBy>) {
-  return `Your message with the outcome has reached the person. The report still asks you to ${steps.map(({ step }) => step).join(", and to ")}: do it now, without writing again. It is the step the report asks for, not a new message, so «end the turn without calling any tool» does not apply until it is done. When its tool is not among your tools, end the turn without a word.`;
+export function owedStepsNote(
+  steps: ReturnType<typeof stepsAskedBy>,
+  stableContext = false
+) {
+  return `Your message with the outcome has reached the person. The report still asks you to ${steps.map(({ step }) => step).join(", and to ")}: do it now, without writing again. It is the step the report asks for, not a new message, so «end the turn without calling any tool» does not apply until it is done. ${stableContext ? "When its tool refuses or is not among your tools" : "When its tool is not among your tools"}, end the turn without a word.`;
 }

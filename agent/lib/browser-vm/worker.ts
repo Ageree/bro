@@ -156,6 +156,31 @@ const llmSchema = z.object({
   model: z.string().min(1),
 });
 
+/** Upstream host slugs of the model's service, as the worker checks them. */
+const hostsSchema = z
+  .array(z.string().regex(/^[a-z0-9][a-z0-9._/-]{0,63}$/u))
+  .max(32);
+
+/**
+ * How the worker's browser-use agent runs (`agent_tuning` in
+ * browser-vm/worker/worker.py); absent, with browser-use's defaults. A
+ * worker older than 2026-10-01.1 ignores it, one older than 2026-10-03.1
+ * ignores `provider`: which hosts of the model's service may serve the run,
+ * in its `provider` routing (`requireParameters` is `require_parameters`).
+ */
+const tuningSchema = z.object({
+  flashMode: z.boolean().optional(),
+  maxActionsPerStep: z.number().int().min(1).max(10).optional(),
+  provider: z
+    .object({
+      ignore: hostsSchema.optional(),
+      order: hostsSchema.optional(),
+      requireParameters: z.boolean().optional(),
+    })
+    .optional(),
+  reasoning: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
+});
+
 const runInputSchema = z.object({
   /** A slider puzzle the worker cannot place goes to 2Captcha with this key. */
   captcha: z.object({ twoCaptchaKey: z.string().min(1) }).optional(),
@@ -180,20 +205,7 @@ const runInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   task: z.string().min(1),
   timeoutSeconds: z.number().int().positive().optional(),
-  /**
-   * How the worker's browser-use agent runs (`agent_tuning` in
-   * browser-vm/worker/worker.py); absent, with browser-use's defaults. A
-   * worker older than 2026-10-01.1 ignores it.
-   */
-  tuning: z
-    .object({
-      flashMode: z.boolean().optional(),
-      maxActionsPerStep: z.number().int().min(1).max(10).optional(),
-      reasoning: z
-        .enum(["none", "minimal", "low", "medium", "high"])
-        .optional(),
-    })
-    .optional(),
+  tuning: tuningSchema.optional(),
 });
 
 const sessionSchema = z.object({
@@ -384,7 +396,9 @@ export async function readBrowserVmWorkerSession(
  * A message into a session: the live run reads it before its next step, or
  * an idle session starts a follow-up run under `runId` in the same tab. The
  * model goes with it every time, since a restarted worker forgot the one the
- * session had and would refuse the follow-up.
+ * session had and would refuse the follow-up; so does the tuning, without
+ * which the follow-up would run unrouted (a worker older than 2026-10-03.1
+ * ignores it and keeps the session's).
  */
 export async function sendBrowserVmWorkerMessage(
   vm: BrowserVmTarget,
@@ -393,14 +407,19 @@ export async function sendBrowserVmWorkerMessage(
     readonly llm: z.input<typeof llmSchema>;
     readonly runId?: string;
     readonly text: string;
+    readonly tuning?: z.input<typeof tuningSchema>;
   }
 ) {
+  const body = {
+    ...message,
+    tuning: tuningSchema.optional().parse(message.tuning),
+  };
   return sessionMessageSchema.parse(
     await request(
       vm,
       "POST",
       `/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { body: message, timeoutMs: writeTimeoutMs }
+      { body, timeoutMs: writeTimeoutMs }
     )
   );
 }

@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { fileURLToPath } from "node:url";
+import type { JSONSchema7 } from "ai";
 import type { DynamicResolveContext } from "eve/tools";
 import type profileMemory from "../../agent/memory/profile.ts";
 import type calendar from "../../agent/tools/calendar.ts";
@@ -25,9 +27,13 @@ import { registerApplicationModuleResolution } from "../lib/module-resolution.ts
  * It measures both ways a step is built: as today, and in the pilot of the
  * cache-friendly step (STEP_CONTEXT_WORKSPACES, `stepContextPilot`), where
  * the clock leaves the instructions for the step's note after the history,
- * `send_message` is the last tool, and a browser report's turn keeps only
- * `reportToolsAfterOutcome` once its message is out. The cache columns are
- * estimates from where each prefix breaks, not a measurement of a host.
+ * and a turn keeps one tool block from its first step to its last
+ * (`turnTools`, `stepToolsTransform`): `send_message`'s schema is the same in
+ * every step, the volatile tools come last, and a browser report's turn is
+ * offered `reportTurnTools` throughout. The cache columns are estimates from
+ * where each prefix breaks, not a measurement of a host. A table of the tool
+ * block's digest at each simulated step of a turn, by kind, checks that it
+ * changes only at the allowed points.
  *
  * Tokens are estimated from characters with ratios measured on the DeepSeek
  * V3.1 tokenizer (`deepseek-ai/DeepSeek-V3.1`, `tokenizer.json`) on these
@@ -85,11 +91,16 @@ const content = (path: string) =>
   readFileSync(new URL(`agent/instructions/content/${path}`, root), "utf8");
 
 const measureSkills = process.argv.includes("--skills");
-// The skills pilot (`SKILLS_WORKSPACES`) for `load_skill` and the core; the
-// tables of today leave both out.
+/** The workspace of today's tables, outside the skills pilot. */
+const todayWorkspace = "personal:workspace";
+/** The workspace in the skills pilot (`--skills`). */
+const skillsWorkspace = "personal:skills";
+// The skills pilot (`SKILLS_WORKSPACES`) for `load_skill`, the core and the
+// short tools; only its own workspace is in it, so the tables of today are
+// measured as they are.
 if (measureSkills) {
   // oxlint-disable-next-line eslint/no-restricted-properties -- this measurement sets its own process's pilot before any module reads it
-  Object.assign(process.env, { SKILLS_WORKSPACES: "*" });
+  Object.assign(process.env, { SKILLS_WORKSPACES: skillsWorkspace });
 }
 
 const catalog = await import("../../agent/lib/skills/catalog.ts");
@@ -182,9 +193,9 @@ const kinds: readonly Kind[] = [
   },
 ];
 
-function contextOf(kind: Kind) {
+function contextOf(kind: Kind, workspaceId = todayWorkspace) {
   const current = {
-    attributes: { ...kind.attributes, workspaceId: "personal:workspace" },
+    attributes: { ...kind.attributes, workspaceId },
     authenticator: kind.authenticator,
     principalId: "user-1",
     principalType: "user" as const,
@@ -387,7 +398,7 @@ const memoryModuleSchema = z.object({
   }),
 });
 
-async function moduleTools(file: string, kind: Kind) {
+async function moduleTools(file: string, kind: Kind, workspaceId: string) {
   const toolModule = toolModuleSchema.parse(
     await import(new URL(`agent/tools/${file}`, root).href)
   );
@@ -399,7 +410,7 @@ async function moduleTools(file: string, kind: Kind) {
   const resolve = events["step.started"] ?? events["turn.started"];
   if (!resolve) return [];
   // A module resolves to a set of tools, one tool, or nothing in this mode.
-  const resolved = await resolve({}, contextOf(kind));
+  const resolved = await resolve({}, contextOf(kind, workspaceId));
   if (!resolved) return [];
   const single = singleToolSchema.safeParse(resolved);
   if (single.success) return [[name, advertised(name, single.data)] as const];
@@ -408,7 +419,7 @@ async function moduleTools(file: string, kind: Kind) {
   );
 }
 
-async function memoryTools(slot: string, kind: Kind) {
+async function memoryTools(slot: string, kind: Kind, workspaceId: string) {
   const memory = memoryModuleSchema.parse(
     await import(new URL(`agent/memory/${slot}.ts`, root).href)
   );
@@ -417,7 +428,7 @@ async function memoryTools(slot: string, kind: Kind) {
     .nullable()
     .parse(
       await memory.default.provider.tools({
-        ...contextOf(kind),
+        ...contextOf(kind, workspaceId),
         memory: {
           scope: { key: `${slot}-key`, namespace: slot, value: "workspace" },
           slot,
@@ -434,14 +445,14 @@ async function memoryTools(slot: string, kind: Kind) {
   );
 }
 
-async function toolsOf(kind: Kind) {
+async function toolsOf(kind: Kind, workspaceId = todayWorkspace) {
   const files = readdirSync(new URL("agent/tools/", root)).filter((file) =>
     file.endsWith(".ts")
   );
   const settled = await Promise.allSettled([
-    ...files.map(async (file) => moduleTools(file, kind)),
+    ...files.map(async (file) => moduleTools(file, kind, workspaceId)),
     ...["personal_info", "profile", "workstreams"].map(async (slot) =>
-      memoryTools(slot, kind)
+      memoryTools(slot, kind, workspaceId)
     ),
   ]);
   const sources = [...files, "personal_info", "profile", "workstreams"];
@@ -464,8 +475,10 @@ const thousands = (value: number) => (value / 1000).toFixed(1);
 const totalLength = (texts: Iterable<string>) =>
   [...texts].reduce((sum, text) => sum + text.length, 0);
 
-const { cardToolsBeforeOutcome, reportToolsAfterOutcome } =
-  await import("../../agent/lib/delivery/browser-report.ts");
+const [{ cardToolsBeforeOutcome }, { reportTurnTools }] = await Promise.all([
+  import("../../agent/lib/delivery/browser-report.ts"),
+  import("../../agent/lib/turn-kind/sets.ts"),
+]);
 
 const dumpIndex = process.argv.indexOf("--dump");
 const dumpDirectory =
@@ -474,14 +487,18 @@ if (dumpDirectory) mkdirSync(dumpDirectory, { recursive: true });
 
 const measured = await Promise.all(
   kinds.map(async (kind) => {
-    const [parts, pilotParts, { failures, tools }] = await Promise.all([
-      instructionParts(kind.mode),
-      instructionParts(kind.mode, true),
-      toolsOf(kind),
-    ]);
-    // The skills pilot's own tool is measured with the skills (`--skills`).
-    const loadSkill = tools.get("load_skill");
-    tools.delete("load_skill");
+    const [parts, pilotParts, { failures, tools }, skilled] = await Promise.all(
+      [
+        instructionParts(kind.mode),
+        instructionParts(kind.mode, true),
+        toolsOf(kind),
+        measureSkills ? toolsOf(kind, skillsWorkspace) : undefined,
+      ]
+    );
+    // The skills pilot's own tool, and its short tools, are measured with
+    // the skills (`--skills`).
+    const skillTools = skilled?.tools ?? new Map<string, string>();
+    const loadSkill = skillTools.get("load_skill");
     if (dumpDirectory) {
       const base = `${dumpDirectory}/${kind.authenticator}-${kind.mode}`;
       writeFileSync(
@@ -522,7 +539,7 @@ const measured = await Promise.all(
           ? {
               now: toolTokensOf((name) => name !== "ask_question"),
               pilot: toolTokensOf((name) =>
-                reportToolsAfterOutcome.some((kept) => kept === name)
+                reportTurnTools.some((kept) => kept === name)
               ),
             }
           : undefined,
@@ -540,10 +557,10 @@ const measured = await Promise.all(
           instructionText(pilotParts),
           charsPerToken.instructions
         ),
-        replyTool: toolTokensOf((name) => name === "send_message"),
         stepTools: withheld.size > 0 ? firstStepTokens : toolTokens,
       },
       loadSkill,
+      skillTools,
       row: [
         kind.label,
         thousands(instructionTokens),
@@ -626,38 +643,187 @@ for (const { cache } of measured) {
   if (cache.kind.mode !== "interactive") {
     row("каждый", now(cache.stepTools), pilot(cache.stepTools, steady));
   } else if (after === undefined) {
-    // A forced step requires `text` in `send_message` and the next one does
-    // not: the turn's first step and the one after the reply. With the tool
-    // last, only its schema and the history after it are re-read.
-    row(
-      "1-й и после ответа (схема send_message)",
-      now(cache.stepTools),
-      pilot(cache.stepTools, steady - cache.replyTool)
-    );
-    row("прочие", now(cache.stepTools), pilot(cache.stepTools, steady));
+    // `send_message`'s schema is the same forced or not: the turn's first
+    // step and the one after the reply re-read nothing before the history.
+    row("каждый", now(cache.stepTools), pilot(cache.stepTools, steady));
   } else {
-    // The card tools are held back from the first step: the set differs
-    // from the last turn's, so only the instructions are read from cache.
+    // Today the card tools are held back until the message and come back
+    // after it; in the pilot the report's own set holds from the first step,
+    // which differs from the last person's turn: only the instructions are
+    // read from cache there.
+    const reportSteady = cache.pilotInstructions + after.pilot;
     row(
-      "1-й (без карточек)",
+      "1-й",
       now(cache.stepTools),
-      pilot(cache.stepTools, cache.pilotInstructions)
+      pilot(after.pilot, cache.pilotInstructions)
     );
     row(
       "до сообщения, следующие",
       now(cache.stepTools),
-      pilot(cache.stepTools, steady)
+      pilot(after.pilot, reportSteady)
     );
+    row("после сообщения", now(after.now), pilot(after.pilot, reportSteady));
   }
-  if (after) {
-    console.log(
-      `| ${cache.kind.label} | 1-й после сообщения (смена набора) | ${now(after.now)} | ${pilot(after.pilot, cache.pilotInstructions)} |`
+}
+
+/** A short hash of a step's tool block, to compare steps by. */
+function blockDigest(json: string) {
+  return createHash("sha256").update(json).digest("hex").slice(0, 8);
+}
+
+/**
+ * The tool block of each simulated step of one turn in the pilot, by kind:
+ * the turn's tools through `turnTools` and `stepToolsTransform`, as
+ * `agent/agent.ts` and `agent/lib/model/direct.ts` build them. The block
+ * may change within a turn only after the turn's `ask_question` and while a
+ * question holds the actions it asked about (`actionsHeldForAnswer`).
+ */
+async function reportToolBlocks() {
+  const [{ turnTools }, { stepToolsTransform }] = await Promise.all([
+    import("../../agent/lib/turn-kind/tools.ts"),
+    import("../../agent/lib/model/direct.ts"),
+  ]);
+  type Step = Parameters<typeof turnTools>[0] & {
+    readonly allowed?: boolean;
+    readonly forced: boolean;
+    readonly label: string;
+  };
+  const quiet = {
+    askedQuestion: false,
+    cardsHeld: false,
+    heldForAnswer: false,
+    reportPastAnswer: false,
+    stableContext: true,
+    taskAgent: false,
+  } as const;
+  const personSteps = (kind: "background-task" | "person"): Step[] => [
+    { ...quiet, forced: true, kind, label: "1-й, вызов обязателен" },
+    { ...quiet, forced: true, kind, label: "после web_search" },
+    { ...quiet, forced: false, kind, label: "после ответа" },
+    {
+      ...quiet,
+      forced: false,
+      kind,
+      label: "после отклонённой карточки gmail-send",
+    },
+    {
+      ...quiet,
+      allowed: true,
+      forced: false,
+      heldForAnswer: true,
+      kind,
+      label: "вопрос ждёт ответа",
+    },
+    {
+      ...quiet,
+      allowed: true,
+      askedQuestion: true,
+      forced: false,
+      kind,
+      label: "после ask_question",
+    },
+  ];
+  const reportSteps: Step[] = [
+    {
+      ...quiet,
+      cardsHeld: true,
+      forced: true,
+      kind: "browser-report",
+      label: "1-й",
+    },
+    {
+      ...quiet,
+      cardsHeld: true,
+      forced: false,
+      kind: "browser-report",
+      label: "до сообщения",
+    },
+    {
+      ...quiet,
+      forced: false,
+      kind: "browser-report",
+      label: "после сообщения",
+    },
+    {
+      ...quiet,
+      forced: false,
+      kind: "browser-report",
+      label: "после ответа",
+      reportPastAnswer: true,
+    },
+  ];
+  const twoSteps = (kind: Step["kind"]): Step[] => [
+    { ...quiet, forced: false, kind, label: "1-й" },
+    { ...quiet, forced: false, kind, label: "2-й" },
+  ];
+  const stepsOf = (kind: Kind): Step[] => {
+    if (kind.authenticator === "browser-result") return reportSteps;
+    if (kind.mode === "interactive") return personSteps("person");
+    return twoSteps(kind.mode);
+  };
+  const toolSchemaOf = z.object({
+    function: z.object({
+      description: z.string().optional(),
+      name: z.string(),
+      parameters: z.custom<JSONSchema7>(
+        (value) => emittedSchema.safeParse(value).success
+      ),
+    }),
+  });
+  const stepToolsOf = (tools: ReadonlyMap<string, string>) =>
+    [...tools.values()].map((json) => {
+      const { function: tool } = toolSchemaOf.parse(JSON.parse(json));
+      return {
+        description: tool.description,
+        inputSchema: tool.parameters,
+        name: tool.name,
+        type: "function" as const,
+      };
+    });
+
+  console.log(
+    "\nБлок инструментов по шагам хода в пилоте шага (STEP_CONTEXT_WORKSPACES): хэш на каждом шаге. Меняться он может только после ask_question и пока вопрос держит действия, о которых спросил."
+  );
+  console.log("| Вид хода | Шаги: хэш | Разных | Смены вне разрешённых |");
+  console.log("| --- | --- | --- | --- |");
+  const rows = [
+    ...measured.map(({ cache, tools }) => ({
+      label: cache.kind.label,
+      steps: stepsOf(cache.kind),
+      tools,
+    })),
+    {
+      label: "Отчёт task-агента",
+      steps: personSteps("background-task"),
+      tools: measured[0]?.tools ?? new Map<string, string>(),
+    },
+  ];
+  for (const { label, steps, tools } of rows) {
+    const turnCatalog = stepToolsOf(tools);
+    const blocks = steps.map((step) => {
+      const set = turnTools(step);
+      return blockDigest(
+        JSON.stringify(
+          stepToolsTransform(turnCatalog, {
+            forcedReply: step.forced,
+            offered: set.offeredTools,
+            stableContext: true,
+            withheld: set.withheldTools,
+          })
+        )
+      );
+    });
+    const first = blocks[0];
+    const unexpected = steps.flatMap((step, index) =>
+      blocks[index] !== first && step.allowed !== true ? [step.label] : []
     );
     console.log(
-      `| ${cache.kind.label} | следующие после сообщения | ${now(after.now)} | ${pilot(after.pilot, cache.pilotInstructions + after.pilot)} |`
+      `| ${label} | ${steps.map((step, index) => `${step.label}: ${blocks[index] ?? ""}`).join("; ")} | ${String(new Set(blocks).size)} | ${unexpected.join(", ") || "нет"} |`
     );
   }
 }
+
+await reportToolBlocks();
 
 if (process.argv.includes("--tools")) {
   const web = measured[0]?.tools ?? new Map<string, string>();
@@ -834,8 +1000,24 @@ async function reportSkills() {
   const clockIndex = coreParts.findIndex(([name]) => name === "50 local-time");
   const coreBeforeClock = toTokens(promptOf(coreParts.slice(0, clockIndex)));
   const pilotCore = toTokens(promptOf(pilotCoreParts));
-  const loadSkillTokens =
-    loadSkill === undefined ? 0 : tokens(loadSkill.length, charsPerToken.tools);
+  // The tools a turn of the skills pilot has: the core ones, `load_skill`
+  // among them, and the groups its blocks offer, with short descriptions
+  // (`agent/lib/skills/tools.ts`); the median over the benchmark messages.
+  const { toolOffered } = await import("../../agent/lib/skills/tools.ts");
+  const skillTools = measured[0]?.skillTools ?? new Map<string, string>();
+  const offeredSchemas = replay
+    .map(({ names }) =>
+      tokens(
+        totalLength(
+          [...skillTools].flatMap(([name, json]) =>
+            toolOffered(name, names) ? [json] : []
+          )
+        ),
+        charsPerToken.tools
+      )
+    )
+    .toSorted((a, b) => a - b);
+  const skillSchemas = quantile(offeredSchemas, 0.5);
   const median = quantile(attached, 0.5);
   const note = replyNoteTokens;
   const cell = (input: number, full: number) =>
@@ -845,21 +1027,21 @@ async function reportSkills() {
   const today = web.instructions + web.stepTools + note;
   const nowCell = cell(today, today - web.beforeClock);
   const stepPilot = web.pilotInstructions + web.stepTools + note + web.clock;
-  const skills = interactiveCore + loadSkillTokens + web.stepTools + note;
+  const skills = interactiveCore + skillSchemas + note;
   const skillsCell = cell(skills + median, skills + median - coreBeforeClock);
-  const both = pilotCore + loadSkillTokens + web.stepTools + note + web.clock;
+  const both = pilotCore + skillSchemas + note + web.clock;
   console.log(
-    "\nШаг в вебе без истории, тыс. токенов: вход / из них полной ценой. В пилоте шага первый шаг хода перечитывает схему send_message; блоки навыков — в истории, их первый шаг читает полной ценой."
+    "\nШаг в вебе без истории, тыс. токенов: вход / из них полной ценой. В пилоте шага блок инструментов в ходе не меняется; блоки навыков — в истории, их первый шаг читает полной ценой. В пилоте навыков схемы — ядро и группы приложенных навыков (медиана по сообщениям), блоки — медиана."
   );
   console.log(
     "| Шаг | Сейчас | Пилот шага | Навыки без пилота шага | Навыки и пилот шага |"
   );
   console.log("| --- | --- | --- | --- | --- |");
   console.log(
-    `| 1-й шаг хода, блоки приложены (медиана) | ${nowCell} | ${cell(stepPilot, web.replyTool + note + web.clock)} | ${skillsCell} | ${cell(both + median, web.replyTool + median + note + web.clock)} |`
+    `| 1-й шаг хода, блоки приложены (медиана) | ${nowCell} | ${cell(stepPilot, note + web.clock)} | ${skillsCell} | ${cell(both + median, median + note + web.clock)} |`
   );
   console.log(
-    `| 1-й шаг хода, блоки уже были | ${nowCell} | ${cell(stepPilot, web.replyTool + note + web.clock)} | ${skillsCell} | ${cell(both + median, web.replyTool + note + web.clock)} |`
+    `| 1-й шаг хода, блоки уже были | ${nowCell} | ${cell(stepPilot, note + web.clock)} | ${skillsCell} | ${cell(both + median, note + web.clock)} |`
   );
   console.log(
     `| следующие шаги | ${nowCell} | ${cell(stepPilot, note + web.clock)} | ${skillsCell} | ${cell(both + median, note + web.clock)} |`
@@ -878,7 +1060,282 @@ async function reportSkills() {
   }
 }
 
-if (measureSkills) await reportSkills();
+/** A person's message, as eve keeps it in history. */
+function personMessage(text: string) {
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
+/** A step of Bro's that called one tool. */
+function toolCall(
+  toolName: string,
+  toolCallId: string,
+  input: Readonly<Record<string, string>>
+) {
+  return {
+    content: [{ input, toolCallId, toolName, type: "tool-call" as const }],
+    role: "assistant" as const,
+  };
+}
+
+/** What that tool returned. */
+function toolResult(toolName: string, toolCallId: string, value: string) {
+  return {
+    content: [
+      {
+        output: { type: "text" as const, value },
+        toolCallId,
+        toolName,
+        type: "tool-result" as const,
+      },
+    ],
+    role: "tool" as const,
+  };
+}
+
+/**
+ * Both pilots (docs/roadmap.md, items 24 and 25): a turn of the skills
+ * pilot reads the core, the blocks it attached, and the tools of the
+ * groups those blocks offer, with the short descriptions
+ * (`agent/lib/skills/tools.ts`), and in the pilot of the step all of it
+ * stays one cached prefix. Each benchmark message is one turn without
+ * history; a case of several messages is one session, which keeps every
+ * block and group it got.
+ */
+async function reportBothPilots() {
+  const [
+    { skillRecord },
+    { skillsForTurn },
+    { offeredSkills, toolGroup, toolGroups, toolOffered },
+    { caseTurns },
+  ] = await Promise.all([
+    import("../../agent/lib/skills/render.ts"),
+    import("../../agent/lib/skills/triggers.ts"),
+    import("../../agent/lib/skills/tools.ts"),
+    import("../bench/cases.ts"),
+  ]);
+  const [web, telegram, report] = measured;
+  if (!web || !telegram || !report) return;
+  const blockTokens = (name: Parameters<typeof skillRecord>[0]) => {
+    const block = skillRecord(name, skillSetup);
+    return block === undefined ? 0 : toTokens(block);
+  };
+  const schemaTokens = (
+    tools: ReadonlyMap<string, string>,
+    keep: (name: string) => boolean
+  ) =>
+    tokens(
+      totalLength(
+        [...tools].flatMap(([name, json]) => (keep(name) ? [json] : []))
+      ),
+      charsPerToken.tools
+    );
+  const pilotCore = toTokens(
+    promptOf(await instructionParts("interactive", true, "core"))
+  );
+  const note = replyNoteTokens;
+
+  console.log(
+    "\nСхемы по группам, тыс. токенов: полные описания (сейчас) и короткие (SKILLS_WORKSPACES). Группа приходит вместе с блоком своего навыка."
+  );
+  console.log("| Группа | Инструментов | Сейчас | В пилоте навыков |");
+  console.log("| --- | --- | --- | --- |");
+  for (const group of [undefined, ...toolGroups]) {
+    const inGroup = (name: string) => toolGroup(name) === group;
+    const names = [...web.skillTools.keys()].filter(inGroup);
+    console.log(
+      `| ${group ?? "ядро"} | ${String(names.length)} | ${thousands(schemaTokens(web.tools, inGroup))} | ${thousands(schemaTokens(web.skillTools, inGroup))} |`
+    );
+  }
+
+  const turns = await caseTurns();
+  type Turn = (typeof turns)[number];
+  /** One step of a person's turn, by what its session holds. */
+  const personStep = (
+    tools: ReadonlyMap<string, string>,
+    clock: number,
+    names: ReturnType<typeof skillsForTurn>
+  ) => {
+    const bodies = names.reduce((sum, name) => sum + blockTokens(name), 0);
+    const schemas = schemaTokens(tools, (name) => toolOffered(name, names));
+    return {
+      bodies,
+      schemas,
+      total: pilotCore + bodies + schemas + note + clock,
+    };
+  };
+  const stepsOf = (
+    tools: ReadonlyMap<string, string>,
+    clock: number,
+    of: readonly Turn[]
+  ) =>
+    of.map(({ text }) =>
+      personStep(tools, clock, offeredSkills([personMessage(text)], skillSetup))
+    );
+  const sessionsOf = (tools: ReadonlyMap<string, string>, clock: number) => {
+    const held = new Map<
+      string,
+      Set<ReturnType<typeof skillsForTurn>[number]>
+    >();
+    for (const { id, text } of turns) {
+      const session = id.split("#")[0] ?? id;
+      const names = held.get(session) ?? new Set();
+      for (const name of offeredSkills([personMessage(text)], skillSetup)) {
+        names.add(name);
+      }
+      held.set(session, names);
+    }
+    return [...held.values()].map((names) =>
+      personStep(tools, clock, [...names])
+    );
+  };
+  const spread = (values: readonly number[]) => {
+    const sorted = values.toSorted((a, b) => a - b);
+    return `${thousands(quantile(sorted, 0.5))} / ${thousands(quantile(sorted, 0.75))} / ${thousands(quantile(sorted, 0.9))}`;
+  };
+  const target = 31_000;
+  console.log(
+    `\nОба пилота (STEP_CONTEXT_WORKSPACES и SKILLS_WORKSPACES): шаг без истории, тыс. токенов, медиана / p75 / p90 по ${String(turns.length)} сообщениям бенчмарков (сессия — по кейсам). Цель для веба — не больше ${thousands(target)}.`
+  );
+  console.log(
+    "| Вид хода | Ядро | Блоки навыков | Схемы | Без истории | Не больше цели |"
+  );
+  console.log("| --- | --- | --- | --- | --- | --- |");
+  for (const [label, measure] of [
+    ["Сообщение в вебе", web],
+    ["Сообщение в Telegram", telegram],
+  ] as const) {
+    for (const [scope, steps] of [
+      ["ход", stepsOf(measure.skillTools, measure.cache.clock, turns)],
+      ["сессия", sessionsOf(measure.skillTools, measure.cache.clock)],
+    ] as const) {
+      const within = steps.filter(({ total }) => total <= target).length;
+      console.log(
+        `| ${label}, ${scope} | ${thousands(pilotCore)} | ${spread(steps.map(({ bodies }) => bodies))} | ${spread(steps.map(({ schemas }) => schemas))} | ${spread(steps.map(({ total }) => total))} | ${String(Math.round((within / steps.length) * 100))}% |`
+      );
+    }
+    const bare = personStep(measure.skillTools, measure.cache.clock, []);
+    const every = personStep(
+      measure.skillTools,
+      measure.cache.clock,
+      offeredSkills(
+        [personMessage(turns.map(({ text }) => text).join("\n"))],
+        skillSetup
+      )
+    );
+    console.log(
+      `| ${label}: только ядро / все группы и блоки | ${thousands(pilotCore)} | 0.0 / ${thousands(every.bodies)} | ${thousands(bare.schemas)} / ${thousands(every.schemas)} | ${thousands(bare.total)} / ${thousands(every.total)} | — |`
+    );
+  }
+  // A browser report: its own set, the browser's block, no group filter.
+  const reportSchemas = schemaTokens(report.skillTools, (name) =>
+    reportTurnTools.some((kept) => kept === name)
+  );
+  const reportBodies = blockTokens("browser");
+  console.log(
+    `| Ход-отчёт браузера | ${thousands(pilotCore)} | ${thousands(reportBodies)} | ${thousands(reportSchemas)} | ${thousands(pilotCore + reportBodies + reportSchemas + note + report.cache.clock)} | — |`
+  );
+  for (const { cache } of measured.slice(3)) {
+    console.log(
+      `| ${cache.kind.label} (полный текст, без групп) | — | — | ${thousands(cache.stepTools)} | ${thousands(cache.pilotInstructions + cache.stepTools + (cache.kind.mode === "scheduled-report" ? note : 0) + cache.clock)} | — |`
+    );
+  }
+}
+
+/**
+ * The tool block of a person's turn in both pilots, step by step: groups
+ * follow the skills of the conversation, so the block may change only
+ * after `ask_question` and a `load_skill`, and the next turn keeps what
+ * the last one had.
+ */
+async function skillsToolBlocks() {
+  const [{ stepToolsTransform }, { offeredSkills }, { skillRecord }] =
+    await Promise.all([
+      import("../../agent/lib/model/direct.ts"),
+      import("../../agent/lib/skills/tools.ts"),
+      import("../../agent/lib/skills/render.ts"),
+    ]);
+  const toolSchemaOf = z.object({
+    function: z.object({
+      description: z.string().optional(),
+      name: z.string(),
+      parameters: z.custom<JSONSchema7>(
+        (value) => emittedSchema.safeParse(value).success
+      ),
+    }),
+  });
+  const opening = [personMessage("Привет! Что у меня завтра?")];
+  const searched = [
+    ...opening,
+    toolCall("calendar-list-events", "call-1", {}),
+    toolResult("calendar-list-events", "call-1", "[]"),
+  ];
+  const answered = [
+    ...searched,
+    toolCall("send_message", "call-2", {
+      kind: "message",
+      text: "Завтра свободно.",
+    }),
+    toolResult("send_message", "call-2", "submitted"),
+  ];
+  const loaded = [
+    ...answered,
+    toolCall("load_skill", "call-3", { name: "apps" }),
+    toolResult("load_skill", "call-3", skillRecord("apps", skillSetup) ?? ""),
+  ];
+  const nextTurn = [...loaded, personMessage("Спасибо!")];
+  const steps = [
+    { label: "1-й", messages: opening },
+    { label: "после чтения", messages: searched },
+    { label: "после ответа", messages: answered },
+    { allowed: true, label: "после load_skill apps", messages: loaded },
+    { allowed: true, label: "следующий ход", messages: nextTurn },
+  ];
+  console.log(
+    "\nБлок инструментов хода человека в обоих пилотах: группы идут за навыками разговора. Меняться он может только после ask_question и load_skill; следующий ход держит блок прошлого."
+  );
+  console.log("| Вид хода | Шаги: хэш | Разных | Смены вне разрешённых |");
+  console.log("| --- | --- | --- | --- |");
+  for (const { cache, skillTools } of measured.slice(0, 2)) {
+    const turnCatalog = [...skillTools.values()].map((json) => {
+      const { function: tool } = toolSchemaOf.parse(JSON.parse(json));
+      return {
+        description: tool.description,
+        inputSchema: tool.parameters,
+        name: tool.name,
+        type: "function" as const,
+      };
+    });
+    const blocks = steps.map(({ messages }) =>
+      blockDigest(
+        JSON.stringify(
+          stepToolsTransform(turnCatalog, {
+            forcedReply: false,
+            groups: offeredSkills(messages, skillSetup),
+            stableContext: true,
+            withheld: ["task"],
+          })
+        )
+      )
+    );
+    const unexpected = steps.flatMap((step, index) =>
+      blocks[index] !== blocks[0] && step.allowed !== true ? [step.label] : []
+    );
+    // The turn after the load keeps the block the load made.
+    if (blocks.at(-1) !== blocks.at(-2)) unexpected.push("следующий ход");
+    console.log(
+      `| ${cache.kind.label} | ${steps.map((step, index) => `${step.label}: ${blocks[index] ?? ""}`).join("; ")} | ${String(new Set(blocks).size)} | ${unexpected.join(", ") || "нет"} |`
+    );
+  }
+}
+
+if (measureSkills) {
+  await reportSkills();
+  await reportBothPilots();
+  await skillsToolBlocks();
+}
 
 // Pools opened by an imported module would keep the process alive.
 process.exit(0);

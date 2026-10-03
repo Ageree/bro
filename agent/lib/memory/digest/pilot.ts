@@ -25,3 +25,8 @@ export async function memoryDigestPilot(
     return whenUnknown;
   }
 }
+
+/** Whether the digest has a pilot at all: without one it runs for no one. */
+export function memoryDigestConfigured() {
+  return (env.MEMORY_DIGEST_WORKSPACES ?? []).length > 0;
+}

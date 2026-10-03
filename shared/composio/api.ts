@@ -14,11 +14,25 @@ const defaultTimeoutMs = 20_000;
  */
 export class ComposioError extends Error {
   override readonly name = "ComposioError";
+  /**
+   * The start of a body that is not Composio's own error, and the `server`
+   * that sent it: a firewall's page in front of Composio, not Composio. For
+   * the log only; Composio's refusals carry no data of the person's.
+   */
+  readonly answer:
+    | { readonly bodyStart: string; readonly server: string }
+    | undefined;
   readonly slug: string | undefined;
   readonly status: number;
 
-  constructor(status: number, slug: string | undefined, message: string) {
+  constructor(
+    status: number,
+    slug: string | undefined,
+    message: string,
+    answer?: ComposioError["answer"]
+  ) {
     super(message);
+    this.answer = answer;
     this.slug = slug;
     this.status = status;
   }
@@ -27,6 +41,14 @@ export class ComposioError extends Error {
 const composioErrorBodySchema = z.object({
   error: z.object({ message: z.string(), slug: z.string().optional() }),
 });
+
+function parsedJson(text: string) {
+  try {
+    return z.json().parse(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
 
 /** Whether this deployment reaches Composio at all. */
 export function composioConfigured() {
@@ -70,13 +92,20 @@ export async function composioRequest<Schema extends z.ZodType>(
     method: options.method ?? "GET",
     signal: options.signal ?? AbortSignal.timeout(defaultTimeoutMs),
   });
-  const payload: unknown = await response.json().catch(() => undefined);
+  const text = await response.text().catch(() => "");
+  const payload = parsedJson(text);
   if (!response.ok) {
     const error = composioErrorBodySchema.safeParse(payload).data?.error;
     throw new ComposioError(
       response.status,
       error?.slug,
-      `Composio answered ${String(response.status)}${error ? `: ${error.message}` : "."}`
+      `Composio answered ${String(response.status)}${error ? `: ${error.message}` : "."}`,
+      error
+        ? undefined
+        : {
+            bodyStart: text.slice(0, 120),
+            server: response.headers.get("server") ?? "",
+          }
     );
   }
   return schema.parse(payload);

@@ -4,8 +4,14 @@ import {
   classifyMemories,
 } from "@agent/lib/memory/digest/classifier";
 import { mergedAliases, planDedupe } from "@agent/lib/memory/digest/dedupe";
-import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
-import { redactUnsafeText } from "@agent/lib/memory/digest/redact";
+import {
+  memoryDigestConfigured,
+  memoryDigestPilot,
+} from "@agent/lib/memory/digest/pilot";
+import {
+  redactionPlaceholder,
+  redactUnsafeText,
+} from "@agent/lib/memory/digest/redact";
 import {
   claimMemoryDigestDay,
   finishMemoryDigestDay,
@@ -59,13 +65,16 @@ type Outcome = Record<
 >;
 
 /**
- * Runs the daily memory digest for each workspace whose local day has come
- * and has no digest yet, a few per tick. No model and no turn: the digest
- * cuts one-time codes and credentials out of memory and its history, folds
- * duplicate memories together for the pilot (MEMORY_DIGEST_WORKSPACES) and
- * trims the history. A workspace that fails is retried at the next tick.
+ * Runs the daily memory digest for each pilot workspace
+ * (MEMORY_DIGEST_WORKSPACES) whose local day has come and has no digest yet,
+ * a few per tick. No model and no turn: the digest cuts one-time codes and
+ * credentials out of memory, its history and workstreams, folds duplicate
+ * memories together and trims the history. Everything it does changes what
+ * a person has saved, so nothing runs outside the pilot. A workspace that
+ * fails is retried at the next tick.
  */
 export async function runDueMemoryDigests(now = new Date()) {
+  if (!memoryDigestConfigured()) return;
   const tickStartedAt = Date.now();
   const workspaces = await listMemoryDigestWorkspaces(
     localDayKey(new Date(now.getTime() - 2 * dayMs), "UTC")
@@ -81,6 +90,8 @@ export async function runDueMemoryDigests(now = new Date()) {
   let started = 0;
   for (const { localDate, workspaceId } of due) {
     if (started >= workspacesPerTick) break;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- One workspace at a time, as below.
+    if (!(await inPilot(workspaceId))) continue;
     // Each claim's lease runs from when it is taken, not from the tick's
     // start: the workspaces before it may have taken minutes.
     const claimedAt = new Date(now.getTime() + Date.now() - tickStartedAt);
@@ -133,21 +144,15 @@ export async function digestWorkspace(workspaceId: string, localDate: string) {
     workstreamsRedacted: 0,
   };
   const scope = await readWorkspaceScope(workspaceId);
-  if (scope === null) return outcome;
-  const merges = await memoryDigestPilot(scope);
+  if (scope === null || !(await memoryDigestPilot(scope))) return outcome;
   // The model looks again only at memory that changed since the last digest
   // that asked it — counted from that digest's start, so a memory saved while
   // it ran is asked about the next day.
-  const since = merges
-    ? await lastMemoryClassificationStartedAt(workspaceId)
-    : null;
+  const since = await lastMemoryClassificationStartedAt(workspaceId);
   for (const scopeKey of await listMemoryScopeKeys(workspaceId)) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Scopes one at a time: each write locks the workspace.
-    await digestScope(scope, scopeKey, `memory-digest:${localDate}`, {
-      merges,
-      outcome,
-    });
-    if (merges && directModelActive()) {
+    await digestScope(scope, scopeKey, `memory-digest:${localDate}`, outcome);
+    if (directModelActive()) {
       outcome.classified += 1;
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       await classifyScope(scope, scopeKey, { localDate, outcome, since });
@@ -163,7 +168,7 @@ async function digestScope(
   scope: AccessScope,
   scopeKey: string,
   operation: string,
-  { merges, outcome }: { readonly merges: boolean; readonly outcome: Outcome }
+  outcome: Outcome
 ) {
   const records = (await listCurrentMemories(scope, scopeKey)).flatMap(
     ({ content, index, revision }) =>
@@ -171,15 +176,16 @@ async function digestScope(
   );
   const purged = new Set<number>();
   for (const record of records) {
-    const { aliases, category, text } = record.content;
+    const { aliases, text } = record.content;
     if ([text, ...aliases].every(isSafeMemoryText)) continue;
     purged.add(record.index);
     const identity = `${operation}:purge:${String(record.index)}:${String(record.revision)}`;
+    const redacted = redactUnsafeText(text);
     // oxlint-disable-next-line eslint/no-await-in-loop -- Each write locks the memory scope.
     const done = await skipChanged<object>(() =>
-      // A rule keeps binding Bro with the code cut out of it; any other
-      // memory with a code in it goes.
-      category === "rule"
+      // The memory keeps what it says with the code cut out of it; one that
+      // said nothing but the code goes.
+      saysMoreThanCode(redacted)
         ? updateMemory(
             scope,
             scopeKey,
@@ -187,7 +193,7 @@ async function digestScope(
               content: {
                 ...record.content,
                 aliases: aliases.filter(isSafeMemoryText),
-                text: redactUnsafeText(text),
+                text: redacted,
               },
               expectedRevision: record.revision,
               index: record.index,
@@ -204,10 +210,9 @@ async function digestScope(
           )
     );
     if (!done) outcome.skipped += 1;
-    else if (category === "rule") outcome.redacted += 1;
+    else if (saysMoreThanCode(redacted)) outcome.redacted += 1;
     else outcome.purged += 1;
   }
-  if (!merges) return;
   const plan = planDedupe(records.filter(({ index }) => !purged.has(index)));
   // The revision each record is at after this digest's own writes.
   const revisions = new Map(
@@ -380,6 +385,17 @@ async function classifyScope(
     if (await forget(record, "one_off")) outcome.oneOff += 1;
     else outcome.skipped += 1;
   }
+}
+
+/** Whether a pilot workspace: the digest runs for no one else. */
+async function inPilot(workspaceId: string) {
+  const scope = await readWorkspaceScope(workspaceId);
+  return scope !== null && memoryDigestPilot(scope);
+}
+
+/** Whether a text with its codes cut out still says something. */
+function saysMoreThanCode(text: string) {
+  return /[\p{L}\p{N}]/u.test(text.replaceAll(redactionPlaceholder, ""));
 }
 
 /** Cuts credentials and one-time codes out of the workspace's workstreams. */

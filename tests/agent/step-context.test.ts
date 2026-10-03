@@ -8,6 +8,7 @@ import type {
 } from "@db/services/settings";
 import type { readWorkspaceTimeZone } from "@db/services/user-profile";
 import type { readAccountEmail } from "@db/services/users";
+import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const services = vi.hoisted(() => ({
@@ -73,6 +74,10 @@ type ProviderSettings = Partial<
 afterEach(() => {
   for (const name of providerSettings) vi.stubEnv(name, "");
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
+  // A case that failed half-way must not leave its clock or its silenced
+  // console to the next one.
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 /** Loads `load` against a fresh environment with these settings. */
@@ -179,23 +184,16 @@ describe("a step in the pilot", () => {
     expect(services.readWorkspaceTimeZone).not.toHaveBeenCalled();
   });
 
-  it("gives a browser report's turn only its few tools once the message is out", async () => {
-    const { cardToolsBeforeOutcome, reportToolsAfterOutcome, stepsAskedBy } =
+  it("gives a browser report's turn one set of tools from its first step to its last", async () => {
+    const { reportTurnTools } = await import("@agent/lib/turn-kind/sets");
+    const { stepsAskedBy, cardToolsRefuseBeforeOutcomeNote } =
       await import("@agent/lib/delivery/browser-report");
     const report = [humanMessage("Browser run finished")];
 
-    // Before the message nothing changes: the cards wait as they did.
     const before = await stepOptions(
       "*",
       interactiveContext(report, "browser-result", reportAttributes)
     );
-    expect(before?.offeredTools).toBeUndefined();
-    expect(before?.withheldTools).toEqual([
-      "ask_question",
-      ...cardToolsBeforeOutcome,
-      "task",
-    ]);
-
     const after = await stepOptions(
       "*",
       interactiveContext(
@@ -204,8 +202,13 @@ describe("a step in the pilot", () => {
         reportAttributes
       )
     );
-    expect(after?.offeredTools).toEqual(reportToolsAfterOutcome);
-    expect(after?.withheldTools).toEqual(["ask_question", "task"]);
+    // The card tools stay offered before the message and refuse there
+    // (`reportCardHold`), so the tool block does not change at the message.
+    for (const options of [before, after]) {
+      expect(options?.offeredTools).toEqual(reportTurnTools);
+      expect(options?.withheldTools).toEqual(["ask_question", "task"]);
+    }
+    expect(before?.replyNote).toContain(cardToolsRefuseBeforeOutcomeNote);
     // Every card step a report may ask for, and the sign-in the calendar's
     // refusal names when Google is not connected.
     const { googleNotConnectedWriteRefusal } =
@@ -217,9 +220,21 @@ describe("a step in the pilot", () => {
     ).map(({ tool }) => tool);
     expect(owed).toEqual(["calendar-create-event", "schedules-create"]);
     expect(googleNotConnectedWriteRefusal).toContain("connect_google");
-    expect(reportToolsAfterOutcome).toEqual(
+    expect(reportTurnTools).toEqual(
       expect.arrayContaining([...owed, "connect_google", "send_message"])
     );
+    // A search of the mail or Drive comes with its read.
+    expect(reportTurnTools).toEqual(
+      expect.arrayContaining([
+        "drive-read",
+        "drive-search",
+        "gmail-read-thread",
+        "gmail-search",
+      ])
+    );
+    // No question card, and no card that is not a report's own step.
+    expect(reportTurnTools).not.toContain("ask_question");
+    expect(reportTurnTools).not.toContain("gmail-send");
 
     // Outside the pilot the turn keeps every tool after its message.
     const outside = await stepOptions(
@@ -231,6 +246,107 @@ describe("a step in the pilot", () => {
       )
     );
     expect(outside).not.toHaveProperty("offeredTools");
+  });
+
+  it("keeps a report turn's messages offered past its answer, refusing instead", async () => {
+    const report = [humanMessage("Browser run finished")];
+    const dropped = [
+      ...report,
+      ...sent("call-1", "Записал на 3 октября, 14:30."),
+      ...skipped("call-2", "Записал на 3 октября."),
+    ];
+    const options = await stepOptions(
+      "*",
+      interactiveContext(dropped, "browser-result", reportAttributes)
+    );
+    expect(options?.withheldTools).toEqual(["ask_question", "task"]);
+
+    const outside = await stepOptions(
+      undefined,
+      interactiveContext(dropped, "browser-result", reportAttributes)
+    );
+    expect(outside?.withheldTools).toEqual(
+      expect.arrayContaining(["react_to_message", "send_message"])
+    );
+  });
+
+  it("asks the pilot once per turn and keeps its verdict through the turn", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const agent = await loadAgent("alice@example.com");
+    const context = interactiveContext([humanMessage("что у меня завтра?")]);
+    const step = (turnId: string, stepIndex: number) =>
+      agent.model.events["step.started"]?.(
+        { data: { sequence: 1, stepIndex, turnId }, type: "step.started" },
+        context
+      );
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    await step("turn-a", 0);
+    // The email's verdict is remembered for ten minutes; past them the
+    // lookup fails.
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+    services.readAccountEmail.mockRejectedValue(new Error("db down"));
+    await step("turn-a", 1);
+    expect(services.modelSelection.mock.lastCall?.[1]?.stableContext).toBe(
+      true
+    );
+    // A new turn whose lookup fails keeps the session's last verdict.
+    await step("turn-b", 0);
+    expect(services.modelSelection.mock.lastCall?.[1]?.stableContext).toBe(
+      true
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.step).toEqual({
+      sessionId: "interactive-session",
+      stepIndex: 0,
+      turnId: "turn-b",
+    });
+    expect(services.readAccountEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it("tells the step after a declined gmail-send card in its note, not in gmail-draft", async () => {
+    const { declinedGmailSendNote } =
+      await import("@agent/lib/google-workspace/turn-reads");
+    const declined = [
+      humanMessage("ответь Ане, что приду"),
+      {
+        content: [
+          {
+            input: { body: "Приду", subject: "Re: встреча", to: ["a@x.ru"] },
+            toolCallId: "call-1",
+            toolName: "gmail-send",
+            type: "tool-call" as const,
+          },
+          {
+            approvalId: "approval-1",
+            toolCallId: "call-1",
+            type: "tool-approval-request" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            approvalId: "approval-1",
+            approved: false,
+            type: "tool-approval-response" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+    const piloted = await stepOptions("*", interactiveContext(declined));
+    expect(piloted?.replyNote).toContain(declinedGmailSendNote);
+    // The draft keeps every field of the email the card showed.
+    const { gmailComposeSchema } =
+      await import("@agent/lib/google-workspace/gmail");
+    expect(
+      Object.keys(gmailComposeSchema.shape).filter(
+        (field) => !declinedGmailSendNote.includes(field)
+      )
+    ).toEqual([]);
+    const outside = await stepOptions(undefined, interactiveContext(declined));
+    expect(outside?.replyNote ?? "").not.toContain(declinedGmailSendNote);
   });
 
   it("keeps a person's turn on every tool after its reply", async () => {
@@ -307,6 +423,37 @@ function sent(id: string, text: string) {
       content: [
         {
           output: { type: "text" as const, value: "submitted" },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-result" as const,
+        },
+      ],
+      role: "tool" as const,
+    },
+  ];
+}
+
+/** A `send_message` call of the turn that was dropped as a repeat. */
+function skipped(id: string, text: string) {
+  return [
+    {
+      content: [
+        {
+          input: { kind: "message", text },
+          toolCallId: id,
+          toolName: "send_message",
+          type: "tool-call" as const,
+        },
+      ],
+      role: "assistant" as const,
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "text" as const,
+            value: skippedSendNotice("duplicate"),
+          },
           toolCallId: id,
           toolName: "send_message",
           type: "tool-result" as const,
