@@ -818,11 +818,11 @@ describe("memory history", () => {
     await saveMemory(
       alice,
       "scope-a",
-      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      { text: "Едет в Казань.", validUntil: tomorrow() },
       "save:trip",
       { sessionId: "session", turnId: "turn" }
     );
-    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    await expireMemories(new Date(Date.now() + 2 * day));
     await importLegacyMemories(
       alice,
       "scope-b",
@@ -863,16 +863,19 @@ describe("memory history", () => {
     await saveMemory(
       alice,
       "scope-a",
-      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      { text: "Едет в Казань.", validUntil: tomorrow() },
       "save:trip",
       { sessionId: "this-session", turnId: "turn" }
     );
-    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    await expireMemories(new Date(Date.now() + 2 * day));
     // Lapsed, but not yet swept by expiry.
     await saveMemory(
       alice,
       "scope-a",
-      { text: "Был в Самаре.", validUntil: "2026-10-01T00:00:00.000Z" },
+      {
+        text: "Был в Самаре.",
+        validUntil: new Date(Date.now() - day).toISOString(),
+      },
       "save:lapsed",
       { sessionId: "this-session", turnId: "turn" }
     );
@@ -942,11 +945,11 @@ describe("memory history", () => {
     await saveMemory(
       alice,
       "scope-a",
-      { text: "Едет в Казань.", validUntil: "2026-10-05T00:00:00.000Z" },
+      { text: "Едет в Казань.", validUntil: tomorrow() },
       "save:trip",
       { sessionId: "session", turnId: "turn" }
     );
-    await expireMemories(new Date("2026-10-06T00:00:00.000Z"));
+    await expireMemories(new Date(Date.now() + 2 * day));
     const texts = async () => (await history()).map(({ text }) => text);
 
     await trimForgottenMemoryHistory(new Date("2026-11-04T00:00:00.000Z"));
@@ -1380,6 +1383,13 @@ describe("a rule only from the person's own turn", () => {
 });
 
 /** A fact as a memory tool writes it. */
+const day = 86_400_000;
+
+/** A validity date still ahead whenever the suite runs. */
+function tomorrow() {
+  return new Date(Date.now() + day).toISOString();
+}
+
 function fact(text: string) {
   return memoryContentSchema.parse({ category: "fact", text });
 }
