@@ -46,6 +46,7 @@ describe("source layout", () => {
       "photon",
       "schedules",
       "spending",
+      "subscriptions",
       "user-profile",
       "vault",
       "workstreams",
