@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calendarSignals,
+  flightEvents,
   flightReminders,
   gmailProbeQuery,
   gmailSignals,
@@ -237,6 +238,31 @@ describe("proactive signals", () => {
     );
     // One line per flight, however many reminders it has.
     expect(prompt.match(/^- flight:/gmu)).toHaveLength(1);
+    expect(prompt).not.toContain("Counted by code");
+  });
+
+  it("gives a reminder the times its flight's watch counted, to use as they are", () => {
+    const prompt = proactiveRunPrompt({
+      flightFacts: new Map([
+        ["flight", "Departs 2026-09-24 07:05, Thursday (Europe/Moscow)."],
+      ]),
+      home: noHome,
+      scheduledFor: now,
+      signals: [
+        {
+          dedupeKey: "flight@2026-09-24T07:05:00+03:00#evening",
+          itemId: "flight",
+          source: "calendar",
+          threadId: null,
+        },
+      ],
+    });
+    expect(prompt).toContain(
+      "- flight: it leaves tomorrow morning, and this is tonight's reminder"
+    );
+    expect(prompt).toContain(
+      "  Counted by code, use these times as they are: Departs 2026-09-24 07:05, Thursday (Europe/Moscow)."
+    );
   });
 
   it("warns a night run that its handover waits unless marked urgent", () => {
@@ -323,6 +349,57 @@ describe("what may wake the person at night", () => {
 function at(time: string) {
   return new Date(`${time}+03:00`);
 }
+
+describe("the flights ahead a check hands to their watches", () => {
+  it("takes timed flights not cancelled and not gone, with their place", () => {
+    const checkedAt = new Date("2026-09-23T12:00:00.000Z");
+    expect(
+      flightEvents(
+        [
+          {
+            id: "dp405",
+            location: "Аэропорт Внуково (VKO), терминал A",
+            start: { dateTime: "2026-09-24T07:05:00+03:00" },
+            status: "confirmed",
+            summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+          },
+          {
+            id: "gone",
+            start: { dateTime: "2026-09-23T10:00:00Z" },
+            status: "confirmed",
+            summary: "Рейс SU 10",
+          },
+          {
+            id: "cancelled",
+            start: { dateTime: "2026-09-24T10:00:00Z" },
+            status: "cancelled",
+            summary: "Рейс SU 11",
+          },
+          {
+            id: "meeting",
+            start: { dateTime: "2026-09-24T10:00:00Z" },
+            status: "confirmed",
+            summary: "Планёрка",
+          },
+          {
+            id: "all-day",
+            start: { date: "2026-09-24" },
+            status: "confirmed",
+            summary: "Рейс в отпуск",
+          },
+        ],
+        checkedAt
+      )
+    ).toEqual([
+      {
+        eventId: "dp405",
+        location: "Аэропорт Внуково (VKO), терминал A",
+        start: "2026-09-24T07:05:00+03:00",
+        summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+      },
+    ]);
+  });
+});
 
 describe("flight reminders by the clock", () => {
   const moscow = "Europe/Moscow";

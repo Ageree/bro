@@ -45,3 +45,27 @@ export function quietHoursEnd(now: Date, timeZone: string) {
   const drift = quietEndMinute - localMinuteOfDay(new Date(estimate), timeZone);
   return new Date(estimate + drift * 60_000);
 }
+
+/**
+ * From 21:00 ordinary mail waits for the morning in the subscriptions pilot:
+ * letters of the last evening hour went out one by one, and the next
+ * morning brought another summary (RU d11: «утром одно сводное сообщение»).
+ * Only what cannot wait starts a run then, as at night.
+ */
+const eveningMailStartMinute = 21 * 60;
+
+/**
+ * When the evening's mail hold ends — the end of the coming quiet hours —
+ * from 21:00 until they begin, or `undefined` outside that hour.
+ */
+export function eveningMailUntil(now: Date, timeZone: string) {
+  const minute = localMinuteOfDay(now, timeZone);
+  if (minute < eveningMailStartMinute || minute >= quietStartMinute) {
+    return undefined;
+  }
+  const startOfMinute = now.getTime() - (now.getTime() % 60_000);
+  return quietHoursEnd(
+    new Date(startOfMinute + (quietStartMinute - minute) * 60_000),
+    timeZone
+  );
+}

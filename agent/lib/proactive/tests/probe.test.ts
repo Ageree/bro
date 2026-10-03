@@ -66,6 +66,9 @@ describe("probeGoogleSignals", () => {
     composio.connect({ id: "ca_google", toolkit: "googlesuper" });
 
     await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
+      // Fewer events than a page: the read saw the whole 26 hours.
+      calendarSeenUntil: new Date("2026-09-25T11:00:00.000Z"),
+      flights: [],
       signals: [
         {
           dedupeKey: "flight@2026-09-25T06:00:00.000Z",
@@ -239,6 +242,16 @@ describe("probeGoogleSignals", () => {
     await expect(
       probeGoogleSignals(scope, { ...window, nightOnly: true })
     ).resolves.toEqual({
+      calendarSeenUntil: new Date("2026-09-25T11:00:00.000Z"),
+      // The flight ahead comes back for its watch, night or day.
+      flights: [
+        {
+          eventId: "flight",
+          location: "Шереметьево",
+          start: "2026-09-24T14:00:00.000Z",
+          summary: "Рейс SU 1234",
+        },
+      ],
       signals: [
         {
           dedupeKey: "flight@2026-09-24T14:00:00.000Z",
@@ -268,6 +281,28 @@ describe("probeGoogleSignals", () => {
     });
   });
 
+  it("says how far a full page of events saw, so a flight past it is not taken as gone", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const busy = Array.from({ length: 25 }, (_, index) => ({
+      id: `e${String(index)}`,
+      start: {
+        dateTime: new Date(
+          now.getTime() + (index + 1) * 30 * 60_000
+        ).toISOString(),
+      },
+      status: "confirmed",
+    }));
+    composio.proxy.mockImplementation(({ url }) =>
+      url.hostname === "gmail.googleapis.com"
+        ? { data: {} }
+        : { data: { items: busy } }
+    );
+    const probed = await probeGoogleSignals(scope, window);
+    expect(probed.calendarSeenUntil).toEqual(
+      new Date(now.getTime() + 25 * 30 * 60_000)
+    );
+  });
+
   it("reads an empty inbox and calendar the proxy hands over as an empty string", async () => {
     composio.connect({ id: "ca_google", toolkit: "googlesuper" });
     // What Composio answered on 26.09 for a Gmail list with `fields` and no
@@ -275,6 +310,9 @@ describe("probeGoogleSignals", () => {
     composio.proxy.mockResolvedValue({ data: "", status: 204 });
 
     await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
+      // Fewer events than a page: the read saw the whole 26 hours.
+      calendarSeenUntil: new Date("2026-09-25T11:00:00.000Z"),
+      flights: [],
       signals: [],
       state: "connected",
     });
@@ -289,6 +327,9 @@ describe("probeGoogleSignals", () => {
     );
 
     await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
+      // Fewer events than a page: the read saw the whole 26 hours.
+      calendarSeenUntil: new Date("2026-09-25T11:00:00.000Z"),
+      flights: [],
       signals: [
         { dedupeKey: "m1", itemId: "m1", source: "gmail", threadId: "t1" },
       ],

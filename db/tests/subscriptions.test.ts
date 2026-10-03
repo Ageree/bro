@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must be applied in order. */
 import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NewSubscription } from "@db/services/subscriptions";
@@ -387,6 +388,163 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
   });
 
+  it("keeps one watch per flight on the proactive job, and ends a moved one's", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const jobId = await proactiveJob(db);
+    const dp405 = {
+      eventId: "dp405",
+      location: "Аэропорт Внуково (VKO), терминал A",
+      start: "2026-10-03T07:05:00+03:00",
+      summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+    };
+    const sync = (flights: readonly (typeof dp405)[], at = now) =>
+      subscriptions.syncFlightWatches({
+        flights,
+        jobId,
+        now: at,
+        scope: alice,
+        seenUntil: new Date(at.getTime() + 26 * 60 * 60_000),
+      });
+    expect(await sync([dp405])).toEqual({ ended: 0, started: 1 });
+    // The next check sees the same flight: nothing new.
+    expect(await sync([dp405])).toEqual({ ended: 0, started: 0 });
+    const [started] = await db.query.subscriptions.findMany();
+    expect(started).toMatchObject({
+      action: "worker",
+      dedupeKey: "dp405@2026-10-03T07:05:00+03:00",
+      expiresAt: new Date("2026-10-03T04:05:00.000Z"),
+      jobId,
+      nextCheckAt: now,
+      state: { done: [] },
+      template: "flight",
+      wake: "urgent_at_night",
+    });
+    // The flight moved to 09:00: the old watch goes, a new one starts.
+    const moved = { ...dp405, start: "2026-10-03T09:00:00+03:00" };
+    expect(await sync([moved])).toEqual({ ended: 1, started: 1 });
+    expect(
+      (await db.query.subscriptions.findMany()).map(
+        ({ dedupeKey, status }) => ({ dedupeKey, status })
+      )
+    ).toEqual([
+      { dedupeKey: "dp405@2026-10-03T09:00:00+03:00", status: "active" },
+    ]);
+    // Moved back, it is watched again; its reminders' own dedupe keeps
+    // them from going out twice.
+    expect(await sync([dp405, moved])).toEqual({ ended: 0, started: 1 });
+    await sync([moved]);
+    // A flight beyond what the calendar read covered is not taken as gone.
+    const far = {
+      ...dp405,
+      eventId: "far",
+      start: "2026-10-09T09:00:00+03:00",
+    };
+    await sync([moved, far]);
+    expect(await sync([moved])).toEqual({ ended: 0, started: 0 });
+    // A flight whose watch ended (every reminder went out) gets no new one.
+    await db
+      .update(schema.subscriptions)
+      .set({ status: "fired" })
+      .where(eq(schema.subscriptions.status, "active"));
+    expect(await sync([moved])).toEqual({ ended: 0, started: 0 });
+    // A flight already gone gets no watch.
+    expect(
+      await sync([{ ...dp405, eventId: "past", start: "2026-10-01T09:00:00Z" }])
+    ).toMatchObject({ started: 0 });
+  });
+
+  it("settles a flight's check on its lease, and never touches the proactive job", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const jobId = await proactiveJob(db);
+    await subscriptions.syncFlightWatches({
+      flights: [
+        {
+          eventId: "dp405",
+          location: null,
+          start: "2026-10-03T07:05:00+03:00",
+          summary: "Рейс DP 405",
+        },
+      ],
+      jobId,
+      now,
+      scope: alice,
+      seenUntil: new Date(now.getTime() + 26 * 60 * 60_000),
+    });
+    const lease = { leaseForMs: 10 * 60_000, limit: 10, now };
+    const [claim] = await subscriptions.claimDueSubscriptions(lease);
+    if (!claim) throw new Error("Expected the flight's watch.");
+    const evening = new Date("2026-10-02T15:00:00.000Z");
+    expect(
+      await subscriptions.settleFlightWatch(
+        claim,
+        { kind: "next", nextCheckAt: evening, state: { done: ["checkin"] } },
+        now
+      )
+    ).toBe("waiting");
+    // A tick that lost the lease writes nothing.
+    expect(
+      await subscriptions.settleFlightWatch(
+        claim,
+        { kind: "ended", status: "fired" },
+        now
+      )
+    ).toBeUndefined();
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      checks: 1,
+      nextCheckAt: evening,
+      state: { done: ["checkin"] },
+      status: "active",
+    });
+
+    // Held past its term outside the pilot, it ends; its job goes on.
+    const [late] = await subscriptions.claimDueSubscriptions({
+      ...lease,
+      now: new Date("2026-10-03T05:00:00.000Z"),
+    });
+    if (!late) throw new Error("Expected the flight's watch again.");
+    expect(
+      await subscriptions.settleSubscriptionCheck(late, { kind: "lapsed" })
+    ).toBe("lapsed");
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      kind: "proactive",
+      status: "active",
+    });
+    expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
+
+    // The facts of its reminders are found by the event.
+    expect(
+      await subscriptions.listFlightWatches(alice.workspaceId, ["dp405"])
+    ).toMatchObject([{ source: { eventId: "dp405" }, template: "flight" }]);
+  });
+
+  it("lists and changes only the person's own watches, not Bro's flights", async () => {
+    const { subscriptions, db } = await openDatabase();
+    const jobId = await proactiveJob(db);
+    await subscriptions.syncFlightWatches({
+      flights: [
+        {
+          eventId: "dp405",
+          location: null,
+          start: "2026-10-03T07:05:00+03:00",
+          summary: "Рейс DP 405",
+        },
+      ],
+      jobId,
+      now,
+      scope: alice,
+      seenUntil: new Date(now.getTime() + 26 * 60 * 60_000),
+    });
+    const [flight] = await db.query.subscriptions.findMany();
+    if (!flight) throw new Error("Expected the flight's watch.");
+    expect(await subscriptions.listLiveSubscriptions(alice)).toEqual([]);
+    expect(
+      await subscriptions.setSubscriptionStatus(alice, flight.id, "deleted")
+    ).toBeUndefined();
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      status: "active",
+    });
+  });
+
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {
     const { subscriptions } = await openDatabase();
     await expect(
@@ -407,6 +565,33 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     ).rejects.toThrow(/Failed query/u);
   });
 });
+
+/** The workspace's hidden proactive job, which flights' watches ride on. */
+async function proactiveJob(
+  database: Awaited<ReturnType<typeof openDatabase>>["db"]
+) {
+  const [job] = await database
+    .insert(schema.scheduledAgentJobs)
+    .values({
+      conversationChannel: "telegram",
+      conversationId: "100::",
+      createdByUserId: alice.userId,
+      kind: "proactive",
+      missedRunPolicy: "skip",
+      nextRunAt: null,
+      prompt: "Проверить почту и календарь.",
+      status: "active",
+      timing: {
+        anchoredAt: now.toISOString(),
+        everyMinutes: 15,
+        kind: "interval",
+      },
+      workspaceId: alice.workspaceId,
+    })
+    .returning({ id: schema.scheduledAgentJobs.id });
+  if (!job) throw new Error("Expected the proactive job.");
+  return job.id;
+}
 
 async function migrateOnce() {
   const client = new PGlite();

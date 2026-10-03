@@ -388,17 +388,25 @@ export async function filterUnseenProactiveSignals<
  * message in parallel) or once the workspace had `maxRunsPerDay` runs in the
  * last 24 hours (a busy inbox never turns into a model run per check). A run
  * carrying a calendar event passes the cap: events are few, and one that
- * waited for the cap to reset could start before anyone heard of it.
+ * waited for the cap to reset could start before anyone heard of it. A run
+ * without `mailCheckedAt` — a flight's reminder from its watch
+ * (`agent/schedules/subscriptions.ts`) — leaves the mail watermark alone.
  */
 export async function queueProactiveRun(input: {
   readonly jobId: string;
-  readonly mailCheckedAt: Date;
+  readonly mailCheckedAt?: Date;
   readonly maxRunsPerDay: number;
   readonly now: Date;
   readonly signals: readonly ProactiveSignal[];
   readonly workspaceId: string;
 }) {
   return db.transaction(async (transaction) => {
+    // The proactive check and a flight's watch (`agent/schedules/
+    // subscriptions.ts`) queue on the same job at the same minute: one at a
+    // time, so neither misses the other's open run.
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`proactive-run:${input.jobId}`}, 0))`
+    );
     const [open] = await transaction
       .select({ id: scheduledAgentRuns.id })
       .from(scheduledAgentRuns)
@@ -454,14 +462,16 @@ export async function queueProactiveRun(input: {
         }))
       )
       .onConflictDoNothing();
-    await transaction
-      .update(proactiveWatches)
-      .set({
-        googleState: "connected",
-        mailCheckedAt: input.mailCheckedAt,
-        updatedAt: input.now,
-      })
-      .where(eq(proactiveWatches.workspaceId, input.workspaceId));
+    if (input.mailCheckedAt) {
+      await transaction
+        .update(proactiveWatches)
+        .set({
+          googleState: "connected",
+          mailCheckedAt: input.mailCheckedAt,
+          updatedAt: input.now,
+        })
+        .where(eq(proactiveWatches.workspaceId, input.workspaceId));
+    }
     await transaction
       .update(scheduledAgentJobs)
       .set({ lastRunAt: input.now, updatedAt: input.now })

@@ -16,6 +16,7 @@ import {
 import {
   calendarHorizonMs,
   calendarSignals,
+  flightEvents,
   flightReminders,
   gmailProbeQuery,
   gmailSignals,
@@ -35,6 +36,8 @@ import { googleWorkspaceAuthConfigId } from "@shared/google-workspace/connection
 import type { AccessScope } from "@shared/identity/access-scope";
 
 const probeTimeoutMs = 20_000;
+/** One page of upcoming events: a check reads no more. */
+const maxCalendarEvents = 25;
 /**
  * Mail ids are listed a page at a time, newest first. Five pages cover any
  * realistic day of inbox mail; past that the oldest of it is not news.
@@ -200,12 +203,21 @@ async function readJson<Schema extends z.ZodType>(
  * before or not. A night check (`nightOnly`) keeps only what may not wait for
  * the morning: a flight leaving within hours or tonight's reminder of one,
  * and mail whose subject is about a flight or an account's security; that
- * costs a subject read per message.
+ * costs a subject read per message. The flights ahead come back too
+ * (`flights`), for their watches; where those watches remind of them
+ * (`flightReminders: false`, the subscriptions pilot), the check does not.
  */
 export async function probeGoogleSignals(
   scope: AccessScope,
   window: {
+    /** Whether the check itself reminds of flights; it does by default. */
+    readonly flightReminders?: boolean;
     readonly mailAfter: Date;
+    /**
+     * Which events a night check hands over: flights within hours (the
+     * default) or all (the evening, when only mail waits for the morning).
+     */
+    readonly nightCalendar?: "all" | "flights";
     readonly nightOnly?: boolean;
     readonly now: Date;
     readonly timeZone: string;
@@ -225,7 +237,7 @@ export async function probeGoogleSignals(
         calendarEventListSchema,
         googleUrl(calendarApi, "/calendars/primary/events", {
           fields: "items(id,status,start,summary,location)",
-          maxResults: 25,
+          maxResults: maxCalendarEvents,
           orderBy: "startTime",
           singleEvents: true,
           timeMax: new Date(
@@ -237,11 +249,24 @@ export async function probeGoogleSignals(
     ]);
     const items = events.items ?? [];
     const night = window.nightOnly === true;
-    const reminders = flightReminders(items, window.now, window.timeZone, {
-      night,
-    });
+    const reminders =
+      window.flightReminders === false
+        ? []
+        : flightReminders(items, window.now, window.timeZone, { night });
+    const flights = flightEvents(items, window.now);
+    // Until when the read saw every event: a full page may have left later
+    // ones out, and a flight among them is not gone.
+    const calendarSeenUntil =
+      items.length < maxCalendarEvents
+        ? new Date(window.now.getTime() + calendarHorizonMs)
+        : new Date(
+            Date.parse(items.at(-1)?.start?.dateTime ?? "") ||
+              window.now.getTime()
+          );
     if (!night) {
       return {
+        calendarSeenUntil,
+        flights,
         signals: [
           ...calendarSignals(items, window.now, window.timeZone),
           ...reminders,
@@ -251,9 +276,13 @@ export async function probeGoogleSignals(
       };
     }
     return {
+      calendarSeenUntil,
+      flights,
       signals: [
         ...calendarSignals(
-          items.filter((event) => isNightFlight(event, window.now)),
+          window.nightCalendar === "all"
+            ? items
+            : items.filter((event) => isNightFlight(event, window.now)),
           window.now,
           window.timeZone
         ),
