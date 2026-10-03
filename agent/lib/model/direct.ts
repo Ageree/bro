@@ -52,6 +52,10 @@ const keyOrderedHosts = ["alibaba", "morph", "wafer"];
  * InferenceNet answered a forced `ask_question` with `{}` in 8 of 27 tries
  * on 26.09, whatever the key order (0 of 8 under `auto`), and dropped the
  * required `kind` of a forced `send_message` in 1 of 8.
+ * OpenInference hides tools once the history holds a tool call (03.10): the
+ * model listed only `send_message` and `find_images` of 34, so «Запомни»
+ * found no `profile__save_memory` and Bro said the build had no memory —
+ * 0 of 7 calls there, 22 of 22 on seven other hosts with the same body.
  */
 const brokenHosts = [
   "sail-research",
@@ -59,6 +63,7 @@ const brokenHosts = [
   "parasail",
   "phala",
   "inference-net",
+  "open-inference",
 ];
 
 /**
@@ -76,7 +81,7 @@ const routerAiDeepSeekSkipped = ["deepseek"];
  * `deepseek/deepseek-v4.1-flash` whole on every repeat (01.10): a repeated
  * step cost 0.031 ₽ there against 0.071 ₽ on Sail Research and gave each
  * tool call its own id. OpenInference, where routing lands without an order,
- * cached only 533 tokens. Sail Research caches as well but stays in
+ * cached only 533 tokens (and is now skipped: `brokenHosts`). Sail Research caches as well but stays in
  * `brokenHosts`: on 01.10 it broke off answer after answer, as on 24.09.
  * A pinned host is never skipped by the lists above; one that fails an
  * answer is skipped for a while (`routerai/hosts.ts`).
