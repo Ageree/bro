@@ -54,6 +54,14 @@ describe("what memory may keep", () => {
     // A one-time word outweighs the order the code is for.
     "код подтверждения заказа 123456",
     "Order confirmation code 482193",
+    // A bare code is one-time unless its clause names a door.
+    "код 482913",
+    "Код: 482913",
+    "Мой код 482913",
+    "code 123456",
+    "Your code 123456",
+    "Your code is 123456",
+    "Карта 4276-1234-5678-9012, до 12/28",
   ])("refuses «%s»", (text) => {
     expect(isSafeMemoryText(text)).toBe(false);
   });
@@ -99,10 +107,29 @@ describe("what memory may keep", () => {
     "В Сбере код клиента 774411",
     "pin 1234 от домофона",
     "PIN для домофона 4512",
+    "Код на входе в офис 7788",
+    "Код для входа в офис 7788",
+    "Код входа в офис 7788",
+    "Код от почтового ящика 123",
+    "Код от почтового ящика 4512",
+    "Код 7788 от подъезда",
+    // A long number is no card: an account, a policy, a parcel.
+    "Счёт 40817810099910004312",
+    "р/с 40817810099910004312",
+    "Полис ОМС 1234567890123456",
+    "Трек 12345678901234",
+    "Трек посылки: 1234 5678 9012 34",
     "Пароль от wifi — на наклейке роутера",
     "Никогда не спрашивай пароль от почты",
   ])("keeps «%s»", (text) => {
     expect(isSafeMemoryText(text)).toBe(true);
+  });
+
+  it("cuts a card's number, not an account's beside it", () => {
+    const text = "Счёт 40817810099910004312, карта 4276 1234 5678 9012.";
+    expect(
+      unsafeMemoryRanges(text).map(([start, end]) => text.slice(start, end))
+    ).toEqual(["4276 1234 5678 9012"]);
   });
 
   it("finds the code itself, to cut it out of a longer note", () => {
