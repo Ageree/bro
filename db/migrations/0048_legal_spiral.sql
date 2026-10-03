@@ -1,0 +1,2 @@
+ALTER TABLE "usage_costs" DROP CONSTRAINT IF EXISTS "usage_costs_source_check";--> statement-breakpoint
+ALTER TABLE "usage_costs" ADD CONSTRAINT "usage_costs_source_check" CHECK ("usage_costs"."source" IN ('chat', 'background', 'browser-report', 'browser-run', 'browser-vm', 'proxy', 'memory', 'task'));
