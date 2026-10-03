@@ -20,6 +20,8 @@ export const flightSourceSchema = z.strictObject({
   // reminder's dedupe key, which a moved flight changes.
   start: z.string().min(1),
   summary: z.string().nullable(),
+  // The zone the calendar gives the start in: where the flight leaves from.
+  timeZone: z.string().nullable(),
 });
 
 /** A flight's watch has one condition: its reminders by the clock. */
@@ -27,23 +29,30 @@ export const flightConditionSchema = z.strictObject({
   kind: z.literal("reminders"),
 });
 
-/** The drive to the airport, as code measured it. */
-const travelSchema = z.strictObject({
-  // Whether it was counted from the person's home or the city centre.
-  from: z.enum(["home", "centre"]),
-  km: z.number().nonnegative(),
-  minutes: z.number().int().positive(),
-  // The airport as the map found it, for the worker to check.
-  to: z.string().max(120),
-});
+/**
+ * The drive to the airport, as code measured it: from the person's home or
+ * their city's centre to the airport the map found (`to`, for the worker to
+ * check), or `elsewhere` — the flight leaves from another city, and no
+ * leave-by time is counted.
+ */
+const travelSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    from: z.enum(["home", "centre"]),
+    kind: z.literal("drive"),
+    km: z.number().nonnegative(),
+    minutes: z.number().int().positive(),
+    to: z.string().max(120),
+  }),
+  z.strictObject({ kind: z.literal("elsewhere") }),
+]);
 
 /**
- * The reminders already handed to a run, and the drive to the airport:
- * absent until measured, `null` when it could not be.
+ * The reminders already handed to a run, and the drive to the airport,
+ * absent until measured: a failed measurement is tried again next time.
  */
 export const flightStateSchema = z.strictObject({
   done: z.array(z.enum(flightStages)),
-  travel: travelSchema.nullable().optional(),
+  travel: travelSchema.optional(),
 });
 
 export type FlightSource = z.output<typeof flightSourceSchema>;

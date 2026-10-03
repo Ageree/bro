@@ -204,6 +204,7 @@ describe("probeGoogleSignals", () => {
               {
                 id: "flight",
                 location: "Шереметьево",
+                organizer: { self: true },
                 start: { dateTime: "2026-09-24T14:00:00.000Z" },
                 status: "confirmed",
                 summary: "Рейс SU 1234",
@@ -250,6 +251,7 @@ describe("probeGoogleSignals", () => {
           location: "Шереметьево",
           start: "2026-09-24T14:00:00.000Z",
           summary: "Рейс SU 1234",
+          timeZone: null,
         },
       ],
       signals: [
@@ -269,6 +271,70 @@ describe("probeGoogleSignals", () => {
     expect(subjectRead?.searchParams.get("format")).toBe("metadata");
     expect(subjectRead?.searchParams.getAll("metadataHeaders")).toEqual([
       "Subject",
+    ]);
+  });
+
+  it("also takes in the evening what Gmail marks important and an event within hours", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const mail = new Map([
+      [
+        "m1",
+        { labels: ["INBOX", "IMPORTANT"], subject: "Встреча завтра в 7:30" },
+      ],
+      ["m2", { labels: ["INBOX"], subject: "го в субботу на шашлыки?" }],
+    ]);
+    composio.proxy.mockImplementation(({ url }) => {
+      if (url.hostname !== "gmail.googleapis.com") {
+        return {
+          data: {
+            items: [
+              {
+                id: "standup",
+                start: { dateTime: "2026-09-24T12:00:00.000Z" },
+                status: "confirmed",
+                summary: "Планёрка",
+              },
+              {
+                id: "tomorrow",
+                start: { dateTime: "2026-09-25T08:00:00.000Z" },
+                status: "confirmed",
+                summary: "Обед",
+              },
+            ],
+          },
+        };
+      }
+      const id = url.pathname.split("/").at(-1) ?? "";
+      const letter = mail.get(id);
+      return letter
+        ? {
+            data: {
+              id,
+              labelIds: letter.labels,
+              payload: {
+                headers: [{ name: "Subject", value: letter.subject }],
+              },
+              threadId: `t-${id}`,
+            },
+          }
+        : {
+            data: {
+              messages: [
+                { id: "m1", threadId: "t-m1" },
+                { id: "m2", threadId: "t-m2" },
+              ],
+            },
+          };
+    });
+
+    const probed = await probeGoogleSignals(scope, {
+      ...window,
+      evening: true,
+      nightOnly: true,
+    });
+    expect(probed.signals?.map(({ itemId }) => itemId)).toEqual([
+      "standup",
+      "m1",
     ]);
   });
 

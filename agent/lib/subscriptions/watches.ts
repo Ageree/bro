@@ -43,6 +43,7 @@ export function flightWatchOf<Row extends StoredWatch>(row: Row) {
 export type PriceWatch = NonNullable<
   ReturnType<typeof priceWatchOf<ClaimedSubscription>>
 >;
+/** A flight's watch as stored: the proactive check reads it, unleased. */
 export type FlightWatch = NonNullable<
-  ReturnType<typeof flightWatchOf<ClaimedSubscription>>
+  ReturnType<typeof flightWatchOf<Omit<ClaimedSubscription, "leaseUntil">>>
 >;

@@ -3,6 +3,7 @@ import {
   calendarSignals,
   flightEvents,
   flightReminders,
+  isEveningEvent,
   gmailProbeQuery,
   gmailSignals,
   isNightFlight,
@@ -261,8 +262,9 @@ describe("proactive signals", () => {
       "- flight: it leaves tomorrow morning, and this is tonight's reminder"
     );
     expect(prompt).toContain(
-      "  Counted by code, use these times as they are: Departs 2026-09-24 07:05, Thursday (Europe/Moscow)."
+      "  Counted by code from the calendar (estimates where they say so): Departs 2026-09-24 07:05, Thursday (Europe/Moscow)."
     );
+    expect(prompt).toContain("by the facts below");
   });
 
   it("warns a night run that its handover waits unless marked urgent", () => {
@@ -351,53 +353,119 @@ function at(time: string) {
 }
 
 describe("the flights ahead a check hands to their watches", () => {
-  it("takes timed flights not cancelled and not gone, with their place", () => {
-    const checkedAt = new Date("2026-09-23T12:00:00.000Z");
-    expect(
-      flightEvents(
-        [
-          {
-            id: "dp405",
-            location: "Аэропорт Внуково (VKO), терминал A",
-            start: { dateTime: "2026-09-24T07:05:00+03:00" },
-            status: "confirmed",
-            summary: "Рейс DP 405 Москва (Внуково) — Сочи",
-          },
-          {
-            id: "gone",
-            start: { dateTime: "2026-09-23T10:00:00Z" },
-            status: "confirmed",
-            summary: "Рейс SU 10",
-          },
-          {
-            id: "cancelled",
-            start: { dateTime: "2026-09-24T10:00:00Z" },
-            status: "cancelled",
-            summary: "Рейс SU 11",
-          },
-          {
-            id: "meeting",
-            start: { dateTime: "2026-09-24T10:00:00Z" },
-            status: "confirmed",
-            summary: "Планёрка",
-          },
-          {
-            id: "all-day",
-            start: { date: "2026-09-24" },
-            status: "confirmed",
-            summary: "Рейс в отпуск",
-          },
-        ],
-        checkedAt
-      )
-    ).toEqual([
+  const checkedAt = new Date("2026-09-23T12:00:00.000Z");
+  const own = {
+    id: "dp405",
+    location: "Аэропорт Внуково (VKO), терминал A",
+    organizer: { self: true },
+    start: {
+      dateTime: "2026-09-24T07:05:00+03:00",
+      timeZone: "Europe/Moscow",
+    },
+    status: "confirmed",
+    summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  };
+  const kept = (events: Parameters<typeof flightEvents>[0]) =>
+    flightEvents(events, checkedAt).map(({ eventId }) => eventId);
+
+  it("takes the person's own timed flights ahead, with the zone they leave from", () => {
+    expect(flightEvents([own], checkedAt)).toEqual([
       {
         eventId: "dp405",
         location: "Аэропорт Внуково (VKO), терминал A",
         start: "2026-09-24T07:05:00+03:00",
         summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+        timeZone: "Europe/Moscow",
       },
     ]);
+    expect(
+      kept([
+        { ...own, id: "gone", start: { dateTime: "2026-09-23T10:00:00Z" } },
+        { ...own, id: "cancelled", status: "cancelled" },
+        { ...own, id: "all-day", start: { date: "2026-09-24" } },
+      ])
+    ).toEqual([]);
+  });
+
+  it("takes an invitation only once accepted, and a booking Gmail put there", () => {
+    const invited = {
+      ...own,
+      attendees: [{ responseStatus: "needsAction", self: true }],
+      organizer: { self: false },
+    };
+    expect(kept([invited])).toEqual([]);
+    expect(
+      kept([
+        {
+          ...invited,
+          attendees: [{ responseStatus: "accepted", self: true }],
+        },
+      ])
+    ).toEqual(["dp405"]);
+    expect(
+      kept([
+        {
+          eventType: "fromGmail",
+          id: "gmail",
+          location: "Moscow VKO",
+          start: own.start,
+          status: "confirmed",
+          summary: "Flight to Sochi (DP 405)",
+        },
+      ])
+    ).toEqual(["gmail"]);
+  });
+
+  it("needs a flight number and an airport, not a metro station or a meeting", () => {
+    expect(
+      kept([
+        { ...own, id: "review", location: "Офис", summary: "Ревью PR 292" },
+        {
+          ...own,
+          id: "call",
+          location: "Zoom",
+          summary: "Созвон по MS 365",
+        },
+        {
+          ...own,
+          id: "metro",
+          location: "м. Аэропорт",
+          summary: "Встреча с SU 1234",
+        },
+        {
+          ...own,
+          id: "street",
+          location: "ул. Аэропортовская, 5",
+          summary: "Рейс DP 405",
+        },
+        { ...own, id: "no-number", summary: "Рейс в Сочи" },
+        { ...own, id: "s7", summary: "S7 2513 Новосибирск" },
+        {
+          ...own,
+          id: "code",
+          location: "Sheremetyevo (SVO), Terminal B",
+          summary: "SU 1290",
+        },
+      ])
+    ).toEqual(["s7", "code"]);
+  });
+});
+
+describe("what an evening check hands over at once", () => {
+  it("takes an event starting within twelve hours, not tomorrow afternoon's", () => {
+    const evening = new Date("2026-09-23T18:30:00.000Z");
+    expect(
+      isEveningEvent(
+        { start: { dateTime: "2026-09-24T04:30:00.000Z" } },
+        evening
+      )
+    ).toBe(true);
+    expect(
+      isEveningEvent(
+        { start: { dateTime: "2026-09-24T12:00:00.000Z" } },
+        evening
+      )
+    ).toBe(false);
   });
 });
 

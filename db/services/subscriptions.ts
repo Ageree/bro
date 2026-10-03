@@ -183,11 +183,14 @@ export async function claimDueSubscriptions(options: {
           )
         );
     }
+    // Only the person's watches are checked here; a flight's reminders go
+    // with the proactive check (`agent/schedules/proactive.ts`).
     const due = await transaction
       .select()
       .from(subscriptions)
       .where(
         and(
+          eq(subscriptions.template, personTemplate),
           eq(subscriptions.status, "active"),
           lte(subscriptions.nextCheckAt, options.now)
         )
@@ -451,32 +454,72 @@ function flightKey(flight: Pick<FlightSource, "eventId" | "start">) {
 }
 
 /**
+ * A flight's watch is never due for the subscriptions tick: its reminders
+ * go with the proactive check. So a release that does not know flights
+ * (#277) never takes one for a price watch either.
+ */
+const flightNeverDue = new Date("9999-12-31T00:00:00.000Z");
+
+/** A flight watch's hidden job: it carries no runs; it only owns the row. */
+const flightJobPrompt =
+  "Напомнить о рейсе из календаря накануне и к открытию регистрации.";
+
+/**
  * Keeps one watch per upcoming flight the proactive check read from the
- * calendar (`agent/schedules/proactive.ts`), on the workspace's proactive
- * job: a flight without a watch, live or ended, gets one due now. A watched
- * flight the calendar no longer shows within `seenUntil` (what the read
- * fully covered) was moved or cancelled, and its watch is removed: should
- * it come back — an edit undone, a page that left it out — it gets a new
- * one, and the reminders already handed over are not handed over again
- * (`proactive_signals`). A moved flight is a new key, so its reminders come
- * again. Returns how many watches started and ended.
+ * calendar (`agent/schedules/proactive.ts`), each on a hidden job of its
+ * own, never the proactive one: a flight without a watch, live or ended,
+ * gets one. A watch of a flight already gone ends; a watched flight the
+ * calendar no longer shows before `seenUntil` (what the read fully covered)
+ * was moved or cancelled, and goes with its job: should it come back — an
+ * edit undone, a page that left it out — it gets a new one, and reminders
+ * already handed over are not handed over again (`proactive_signals`).
+ * Returns how many watches started and ended.
  */
 export async function syncFlightWatches(input: {
   readonly flights: readonly FlightSource[];
-  readonly jobId: string;
   readonly now: Date;
   readonly scope: AccessScope;
-  /** Until when the calendar read covered: a flight past it is not gone. */
+  /** Until when the calendar read covered: a flight from it on is not gone. */
   readonly seenUntil: Date;
 }) {
   return db.transaction(async (transaction) => {
+    // Two checks of one workspace keep its watches one at a time.
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`flight-watches:${input.scope.workspaceId}`}, 0))`
+    );
+    const departed = await transaction
+      .update(subscriptions)
+      .set({
+        status: sql`CASE WHEN jsonb_array_length(${subscriptions.state}->'done') > 0 THEN 'fired' ELSE 'expired' END`,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(subscriptions.workspaceId, input.scope.workspaceId),
+          eq(subscriptions.template, "flight"),
+          eq(subscriptions.status, "active"),
+          lte(subscriptions.expiresAt, input.now)
+        )
+      )
+      .returning({ jobId: subscriptions.jobId });
+    if (departed.length > 0) {
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ status: "completed", updatedAt: input.now })
+        .where(
+          inArray(
+            scheduledAgentJobs.id,
+            departed.map((watch) => watch.jobId)
+          )
+        );
+    }
     // Every watch of a flight not yet gone, ended ones too: a flight whose
-    // reminders all went out keeps its ended watch, and gets no new one.
+    // reminders all went out keeps its watch, and gets no new one.
     const known = await transaction
       .select({
         dedupeKey: subscriptions.dedupeKey,
         expiresAt: subscriptions.expiresAt,
-        id: subscriptions.id,
+        jobId: subscriptions.jobId,
         status: subscriptions.status,
       })
       .from(subscriptions)
@@ -486,20 +529,20 @@ export async function syncFlightWatches(input: {
           eq(subscriptions.template, "flight"),
           gt(subscriptions.expiresAt, input.now)
         )
-      )
-      .for("update");
+      );
     const keys = new Set(input.flights.map(flightKey));
     const gone = known.filter(
       (watch) =>
-        (watch.status === "active" || watch.status === "paused") &&
+        watch.status === "active" &&
         !keys.has(watch.dedupeKey) &&
-        watch.expiresAt.getTime() <= input.seenUntil.getTime()
+        watch.expiresAt.getTime() < input.seenUntil.getTime()
     );
     if (gone.length > 0) {
-      await transaction.delete(subscriptions).where(
+      // The row goes with its job.
+      await transaction.delete(scheduledAgentJobs).where(
         inArray(
-          subscriptions.id,
-          gone.map((watch) => watch.id)
+          scheduledAgentJobs.id,
+          gone.map((watch) => watch.jobId)
         )
       );
     }
@@ -509,85 +552,89 @@ export async function syncFlightWatches(input: {
         !watched.has(flightKey(flight)) &&
         Date.parse(flight.start) > input.now.getTime()
     );
-    let started = 0;
-    if (fresh.length > 0) {
-      const inserted = await transaction
-        .insert(subscriptions)
-        .values(
-          fresh.map((flight) => ({
-            action: "worker" as const,
-            checkEverySeconds: 60 * 60,
-            condition: { kind: "reminders" as const },
-            createdAt: input.now,
-            createdByUserId: input.scope.userId,
-            dedupeKey: flightKey(flight),
-            expiresAt: new Date(flight.start),
-            jobId: input.jobId,
-            nextCheckAt: input.now,
-            source: flight,
-            state: { done: [] },
-            template: "flight" as const,
-            updatedAt: input.now,
-            // For the record only: a flight's reminders are proactive runs,
-            // timed as those (`proactiveReportTiming`).
-            wake: "urgent_at_night" as const,
-            workspaceId: input.scope.workspaceId,
-          }))
-        )
-        // A concurrent check started the same watch first.
-        .onConflictDoNothing()
-        .returning({ id: subscriptions.id });
-      started = inserted.length;
+    for (const flight of fresh) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each watch needs its own job first.
+      const [job] = await transaction
+        .insert(scheduledAgentJobs)
+        .values({
+          conversationChannel: "eve",
+          conversationId: `flight:${flightKey(flight)}`,
+          createdAt: input.now,
+          createdByUserId: input.scope.userId,
+          kind: "subscription",
+          missedRunPolicy: "skip",
+          nextRunAt: null,
+          prompt: flightJobPrompt,
+          status: "active",
+          timing: { at: flight.start, kind: "once" },
+          updatedAt: input.now,
+          workspaceId: input.scope.workspaceId,
+        })
+        .returning({ id: scheduledAgentJobs.id });
+      if (!job) throw new Error("The flight's job could not be created.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The row needs the job just made.
+      await transaction.insert(subscriptions).values({
+        action: "worker",
+        checkEverySeconds: 60 * 60,
+        condition: { kind: "reminders" },
+        createdAt: input.now,
+        createdByUserId: input.scope.userId,
+        dedupeKey: flightKey(flight),
+        expiresAt: new Date(flight.start),
+        jobId: job.id,
+        nextCheckAt: flightNeverDue,
+        source: flight,
+        state: { done: [] },
+        template: "flight",
+        updatedAt: input.now,
+        // For the record only: a flight's reminders are proactive runs,
+        // timed as those (`proactiveReportTiming`).
+        wake: "urgent_at_night",
+        workspaceId: input.scope.workspaceId,
+      });
     }
-    return { ended: gone.length, started };
+    return { ended: gone.length + departed.length, started: fresh.length };
   });
 }
 
+/** A workspace's live flight watches, for the reminders due now. */
+export async function listLiveFlightWatches(workspaceId: string) {
+  return db
+    .select()
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.workspaceId, workspaceId),
+        eq(subscriptions.template, "flight"),
+        eq(subscriptions.status, "active")
+      )
+    );
+}
+
 /**
- * Writes what a flight's check decided, while the claim's lease is still
- * the watch's: its next look and state, or its end. A flight's watch never
- * reports through its job: its reminders go to proactive runs.
+ * Writes what the proactive check learned of its flights' watches: the
+ * reminders handed to a run, the drive it measured. Only a live watch.
  */
-export async function settleFlightWatch(
-  claim: Pick<ClaimedSubscription, "id" | "leaseUntil">,
-  outcome:
-    | {
-        readonly kind: "next";
-        readonly nextCheckAt: Date;
-        readonly state: FlightState;
-      }
-    | {
-        readonly kind: "ended";
-        readonly state?: FlightState;
-        readonly status: "expired" | "failed" | "fired";
-      },
+export async function recordFlightWatch(
+  id: string,
+  state: FlightState,
   now = new Date()
 ) {
-  const settled = await db
+  await db
     .update(subscriptions)
     .set({
       checks: sql`${subscriptions.checks} + 1`,
       lastCheckedAt: now,
+      state,
       updatedAt: now,
-      ...(outcome.state && { state: outcome.state }),
-      ...(outcome.kind === "next"
-        ? { nextCheckAt: outcome.nextCheckAt }
-        : { status: outcome.status }),
     })
     .where(
       and(
-        eq(subscriptions.id, claim.id),
+        eq(subscriptions.id, id),
         eq(subscriptions.template, "flight"),
-        eq(subscriptions.status, "active"),
-        eq(subscriptions.nextCheckAt, claim.leaseUntil)
+        eq(subscriptions.status, "active")
       )
-    )
-    .returning({ id: subscriptions.id });
-  return settled.length > 0
-    ? outcome.kind === "next"
-      ? ("waiting" as const)
-      : outcome.status
-    : undefined;
+    );
 }
 
 /**

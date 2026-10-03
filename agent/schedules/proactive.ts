@@ -16,9 +16,16 @@ import {
   reminderOf,
   selectRunSignals,
 } from "@agent/lib/proactive/signals";
-import { flightFacts } from "@agent/lib/subscriptions/flight";
+import {
+  flightFacts,
+  flightReminderSignals,
+  measureDrive,
+} from "@agent/lib/subscriptions/flight";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { flightWatchOf } from "@agent/lib/subscriptions/watches";
+import {
+  type FlightWatch,
+  flightWatchOf,
+} from "@agent/lib/subscriptions/watches";
 import {
   advanceProactiveWatermark,
   claimDueProactiveWatches,
@@ -36,8 +43,11 @@ import {
 } from "@db/services/scheduled-agent-jobs";
 import {
   listFlightWatches,
+  listLiveFlightWatches,
+  recordFlightWatch,
   syncFlightWatches,
 } from "@db/services/subscriptions";
+import type { FlightStage } from "@shared/subscriptions/flight";
 import { readUserProfile } from "@db/services/user-profile";
 import { localRunLabel } from "@shared/schedules/timing";
 import { resolveTimeZone } from "@shared/user-profile/schema";
@@ -60,6 +70,12 @@ const workerStartupLimitMs = 5 * 60_000;
  * morning, which reads everything since the evening.
  */
 const nightMailWindowMs = checkEveryMs + 10 * 60_000;
+/**
+ * In the subscriptions pilot a night or evening check reads an hour back:
+ * an urgent letter whose run found the job busy is read again by the next
+ * checks, instead of waiting for the morning.
+ */
+const pilotNightMailWindowMs = 60 * 60_000;
 
 type ClaimedWatch = Awaited<
   ReturnType<typeof claimDueProactiveWatches>
@@ -141,33 +157,124 @@ interface CheckMode {
   readonly timeZone: string;
 }
 
+/** How long measuring a flight's drive may take within a check. */
+const driveTimeoutMs = 20_000;
+
 /**
- * Keeps a watch for each flight the check read (`syncFlightWatches`), in the
- * subscriptions pilot: those watches remind of flights by the clock
- * (`agent/schedules/subscriptions.ts`). A failure here is logged and leaves
- * the check itself alone.
+ * A check's flights in the subscriptions pilot. It keeps a watch for each
+ * flight it read (`syncFlightWatches`) and adds their reminders due now
+ * (`flightReminderSignals`) to its own signals: a check-in opening at night
+ * then goes with the morning's mail as one message, as the check's own
+ * clock reminders did. Before the run is queued, the drive to the airport is
+ * measured for a reminder actually handed over (`prepare`), so the home
+ * address goes to the map only then; once queued, the watches remember what
+ * went (`record`). A failure here is logged and leaves the check alone.
  */
-async function syncFlights(
+async function pilotFlights(
   watch: ClaimedWatch,
   now: Date,
+  timeZone: string,
   probe: Pick<Parameters<typeof syncFlightWatches>[0], "flights" | "seenUntil">
 ) {
-  try {
-    const synced = await syncFlightWatches({
-      ...probe,
-      jobId: watch.jobId,
-      now,
-      scope: { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
-    });
-    return synced.started > 0 || synced.ended > 0 ? { flights: synced } : {};
-  } catch (error) {
-    console.warn("[proactive] flight watches not synced", {
+  const scope = {
+    userId: watch.createdByUserId,
+    workspaceId: watch.workspaceId,
+  };
+  const failed = (step: string) => (error: unknown) => {
+    console.warn("[proactive] flight watches", {
       name: error instanceof Error ? error.name : "error",
+      step,
       workspaceId: watch.workspaceId,
     });
-    return {};
+  };
+  let logged = {};
+  let due: ReturnType<typeof flightReminderSignals> = [];
+  const watches = new Map<string, FlightWatch>();
+  try {
+    const synced = await syncFlightWatches({ ...probe, now, scope });
+    if (synced.started > 0 || synced.ended > 0) logged = { flights: synced };
+    for (const row of await listLiveFlightWatches(watch.workspaceId)) {
+      const flight = flightWatchOf(row);
+      if (flight) watches.set(flight.id, flight);
+    }
+    due = flightReminderSignals([...watches.values()], now, timeZone);
+  } catch (error) {
+    failed("sync")(error);
   }
+  const handedOver = (unseen: readonly ProactiveSignal[]) => {
+    const keys = new Set(unseen.map((signal) => signal.dedupeKey));
+    return due.filter(({ signal }) => keys.has(signal.dedupeKey));
+  };
+  return {
+    logged,
+    signals: due.map(({ signal }) => signal),
+    /** Measures the drive of each flight with a reminder about to go. */
+    async prepare(unseen: readonly ProactiveSignal[]) {
+      const lacking = [
+        ...new Set(
+          handedOver(unseen)
+            .map(({ watchId }) => watches.get(watchId))
+            .filter((flight) => flight?.state.travel === undefined)
+        ),
+      ];
+      if (lacking.length === 0) return;
+      try {
+        const home = await readUserProfile(scope);
+        for (const flight of lacking) {
+          if (!flight) continue;
+          // oxlint-disable-next-line eslint/no-await-in-loop -- The map's limit is one request a second.
+          const travel = await measureDrive(
+            flight,
+            home,
+            AbortSignal.timeout(driveTimeoutMs)
+          );
+          if (!travel) continue;
+          const state = { ...flight.state, travel };
+          watches.set(flight.id, { ...flight, state });
+          // oxlint-disable-next-line eslint/no-await-in-loop -- One watch at a time.
+          await recordFlightWatch(flight.id, state, now);
+        }
+      } catch (error) {
+        failed("drive")(error);
+      }
+    },
+    /**
+     * Writes the reminders that went: those a run was handed before, and,
+     * once this check's run is queued, those it carries. A busy job leaves
+     * them due for the next check.
+     */
+    async record(unseen: readonly ProactiveSignal[], queued: boolean) {
+      const unseenKeys = new Set(unseen.map((signal) => signal.dedupeKey));
+      const went = new Map<string, FlightStage[]>();
+      for (const { signal, stage, watchId } of due) {
+        if (unseenKeys.has(signal.dedupeKey) && !queued) continue;
+        went.set(watchId, [...(went.get(watchId) ?? []), stage]);
+      }
+      try {
+        for (const [watchId, stages] of went) {
+          const flight = watches.get(watchId);
+          if (!flight) continue;
+          // oxlint-disable-next-line eslint/no-await-in-loop -- One watch at a time.
+          await recordFlightWatch(
+            watchId,
+            { ...flight.state, done: [...flight.state.done, ...stages] },
+            now
+          );
+        }
+      } catch (error) {
+        failed("record")(error);
+      }
+    },
+  };
 }
+
+/** A check outside the pilot: the probe reminds of flights itself. */
+const noFlights = {
+  logged: {},
+  prepare: async () => undefined,
+  record: async () => undefined,
+  signals: [],
+};
 
 /**
  * A daytime check hands every new signal to one run. The reports held over
@@ -189,24 +296,26 @@ async function checkByDay(
     }
   );
   if (probe.state !== "connected") return disconnect(watch, now, probe.state);
-  const synced = pilot
-    ? await syncFlights(watch, now, {
+  const flights = pilot
+    ? await pilotFlights(watch, now, timeZone, {
         flights: probe.flights,
         seenUntil: probe.calendarSeenUntil,
       })
-    : {};
-  const unseen = await filterUnseenProactiveSignals(
-    watch.workspaceId,
-    probe.signals
-  );
+    : noFlights;
+  const unseen = await filterUnseenProactiveSignals(watch.workspaceId, [
+    ...probe.signals,
+    ...flights.signals,
+  ]);
   if (unseen.length === 0) {
+    await flights.record(unseen, false);
     await advanceProactiveWatermark(watch.workspaceId, now);
-    return { outcome: "nothing_new", signalCount: 0, ...synced };
+    return { outcome: "nothing_new", signalCount: 0, ...flights.logged };
   }
   // After a pause (a reconnect, the end of quiet hours, turning proactive
   // messages back on) the backlog becomes one catch-up run; the watermark
   // moves past the rest instead of queuing batch after batch of old mail.
   const { droppedMail, signals } = await catchUpSignals(watch, unseen);
+  await flights.prepare(signals);
   const queued = await queueProactiveRun({
     jobId: watch.jobId,
     mailCheckedAt: now,
@@ -215,11 +324,12 @@ async function checkByDay(
     signals,
     workspaceId: watch.workspaceId,
   });
+  await flights.record(signals, queued.status === "queued");
   return {
     outcome: queued.status,
     signalCount: unseen.length,
     ...(droppedMail > 0 && { droppedMail }),
-    ...synced,
+    ...flights.logged,
   };
 }
 
@@ -263,12 +373,13 @@ async function checkAtNight(
     { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
     {
       flightReminders: !pilot,
-      // In the evening only mail waits: a new event still starts a run.
-      ...(evening && { nightCalendar: "all" as const }),
+      // In the evening also an event within hours or mail Gmail marks
+      // important starts a run; the rest waits for the morning.
+      ...(evening && { evening: true }),
       mailAfter: new Date(
         Math.max(
           mailSearchStart(watch.mailCheckedAt, now).getTime(),
-          now.getTime() - nightMailWindowMs
+          now.getTime() - (pilot ? pilotNightMailWindowMs : nightMailWindowMs)
         )
       ),
       nightOnly: true,
@@ -277,34 +388,37 @@ async function checkAtNight(
     }
   );
   if (probe.state !== "connected") return disconnect(watch, now, probe.state);
-  const synced = pilot
-    ? await syncFlights(watch, now, {
+  const flights = pilot
+    ? await pilotFlights(watch, now, timeZone, {
         flights: probe.flights,
         seenUntil: probe.calendarSeenUntil,
       })
-    : {};
-  const unseen = await filterUnseenProactiveSignals(
-    watch.workspaceId,
-    probe.signals
-  );
+    : noFlights;
+  const unseen = await filterUnseenProactiveSignals(watch.workspaceId, [
+    ...probe.signals,
+    ...flights.signals,
+  ]);
+  const signals = selectRunSignals(unseen);
+  if (signals.length > 0) await flights.prepare(signals);
   const queued =
-    unseen.length > 0
+    signals.length > 0
       ? await queueProactiveRun({
           jobId: watch.jobId,
           mailCheckedAt: watch.mailCheckedAt,
           maxRunsPerDay,
           now,
-          signals: selectRunSignals(unseen),
+          signals,
           workspaceId: watch.workspaceId,
         })
       : undefined;
+  await flights.record(signals, queued?.status === "queued");
   if (quietUntil < watch.leaseUntil) {
     await deferProactiveWatch(watch, quietUntil);
   }
   return {
     outcome: `night_${queued?.status ?? "quiet"}`,
     signalCount: unseen.length,
-    ...synced,
+    ...flights.logged,
   };
 }
 

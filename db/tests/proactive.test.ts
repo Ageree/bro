@@ -190,31 +190,6 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(claim?.job.kind).toBe("proactive");
   });
 
-  it("leaves the mail watermark alone for a flight's reminder", async () => {
-    const { db, proactive } = await openDatabase();
-    await proactive.recordProactiveTarget(alice, telegram, now);
-    const [watch] = await proactive.claimDueProactiveWatches({
-      leaseForMs: 15 * 60_000,
-      limit: 10,
-      now,
-    });
-    if (!watch) throw new Error("Expected a due watch.");
-    const later = new Date(now.getTime() + 60 * 60_000);
-    expect(
-      await proactive.queueProactiveRun({
-        jobId: watch.jobId,
-        maxRunsPerDay: 12,
-        now: later,
-        signals: [{ ...flight, dedupeKey: `${flight.dedupeKey}#checkin` }],
-        workspaceId: alice.workspaceId,
-      })
-    ).toMatchObject({ status: "queued" });
-    // The mail since the last check is still the next check's to read.
-    expect(await db.query.proactiveWatches.findFirst()).toMatchObject({
-      mailCheckedAt: watch.mailCheckedAt,
-    });
-  });
-
   it("stops starting runs for a workspace past its daily cap", async () => {
     const { jobs, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);

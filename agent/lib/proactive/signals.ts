@@ -1,5 +1,4 @@
-import type { z } from "zod";
-import type { calendarEventListSchema } from "@agent/lib/google-workspace/calendar";
+import { z } from "zod";
 import { localMinuteOfDay } from "@agent/lib/proactive/quiet-hours";
 import { urgentHandoverMarker } from "@agent/lib/schedules/outcome";
 import type { ProactiveSignal } from "@db/services/proactive";
@@ -120,10 +119,47 @@ const flightWords =
 // «SU 1234», «DP405»: an airline code and a number.
 const flightNumber = /\b[A-Z]{2} ?\d{2,4}\b/u;
 
-type CalendarEventFacts = Pick<
-  NonNullable<z.output<typeof calendarEventListSchema>["items"]>[number],
-  "id" | "location" | "start" | "status" | "summary"
->;
+/**
+ * The events a check reads: what it acts on, and whose they are — an
+ * invitation from someone else is not the person's flight.
+ */
+export const proactiveEventListSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        attendees: z
+          .array(
+            z.object({
+              responseStatus: z.string().optional(),
+              self: z.boolean().optional(),
+            })
+          )
+          .optional(),
+        eventType: z.string().optional(),
+        id: z.string().optional(),
+        location: z.string().optional(),
+        organizer: z.object({ self: z.boolean().optional() }).optional(),
+        start: z
+          .object({
+            date: z.string().optional(),
+            dateTime: z.string().optional(),
+            timeZone: z.string().optional(),
+          })
+          .optional(),
+        status: z.string().optional(),
+        summary: z.string().optional(),
+      })
+    )
+    .optional(),
+});
+
+/** The fields the check asks Google for, to fit `proactiveEventListSchema`. */
+export const proactiveEventFields =
+  "items(id,status,start,summary,location,eventType,organizer(self),attendees(self,responseStatus))";
+
+type CalendarEventFacts = NonNullable<
+  z.output<typeof proactiveEventListSchema>["items"]
+>[number];
 
 /** Whether an event is a flight, by its title or place. */
 function isFlight(event: CalendarEventFacts) {
@@ -131,9 +167,48 @@ function isFlight(event: CalendarEventFacts) {
   return flightWords.test(text) || flightNumber.test(event.summary ?? "");
 }
 
+/** An airline code and a number: «SU 1234», «DP405», «S7 2513», «U6 101». */
+const ownFlightNumber =
+  /(?<![\p{L}\d])(?:[A-Z]{2}|[A-Z]\d|\d[A-Z]) ?\d{2,4}(?![\p{L}\d])/u;
+/** A place that is an airport, not a metro station or a street named so. */
+const airportPlace =
+  /аэропорт(?!овск)|airport|шереметьев|внуков|домодедов|пулков|кольцов|толмач|aeroporto|flughafen/iu;
+const airportCode = /\([A-Z]{3}\)/u;
+const notAirportPlace =
+  /(?:(?<![\p{L}\d])м\.|метро|станци\p{L}*)\s*«?\s*аэропорт/iu;
+
 /**
- * The flights ahead in the events a check read, as their watches keep them
- * (`syncFlightWatches`): only timed ones, not cancelled, not yet gone.
+ * Whether an event is the person's own flight, strictly: it is theirs (they
+ * made it, accepted it, or Gmail put it there from a booking), its title has
+ * a flight number, and it leaves from an airport — Gmail's own events name
+ * one in their own way. «Ревью PR 292», «Созвон по MS 365» or «м.
+ * Аэропорт» are no flights, and someone else's invitation is not the
+ * person's trip.
+ */
+function isOwnFlight(event: CalendarEventFacts) {
+  const fromGmail = event.eventType === "fromGmail";
+  const theirs =
+    fromGmail ||
+    event.organizer?.self === true ||
+    (event.attendees ?? []).some(
+      (attendee) =>
+        attendee.self === true && attendee.responseStatus === "accepted"
+    );
+  const place = event.location ?? "";
+  const atAirport =
+    (airportPlace.test(place) || airportCode.test(place)) &&
+    !notAirportPlace.test(place);
+  return (
+    theirs &&
+    ownFlightNumber.test(event.summary ?? "") &&
+    (atAirport || fromGmail)
+  );
+}
+
+/**
+ * The person's flights ahead in the events a check read, as their watches
+ * keep them (`syncFlightWatches`): timed ones, not cancelled, not gone, in
+ * the zone they leave from.
  */
 export function flightEvents(
   events: readonly CalendarEventFacts[],
@@ -142,16 +217,31 @@ export function flightEvents(
   return events.flatMap((event) => {
     const start = event.start?.dateTime;
     if (!event.id || !start || event.status === "cancelled") return [];
-    if (!isFlight(event) || !(Date.parse(start) > now.getTime())) return [];
+    if (!isOwnFlight(event) || !(Date.parse(start) > now.getTime())) {
+      return [];
+    }
     return [
       {
         eventId: event.id,
         location: event.location?.slice(0, 200) ?? null,
         start,
         summary: event.summary?.slice(0, 200) ?? null,
+        timeZone: event.start?.timeZone ?? null,
       },
     ];
   });
+}
+
+/** How soon an event must start for an evening check to hand it over. */
+const eveningEventHorizonMs = 12 * 60 * 60_000;
+
+/**
+ * Whether an evening check hands a new event over at once: one that starts
+ * within twelve hours. The rest waits for the morning with the mail.
+ */
+export function isEveningEvent(event: CalendarEventFacts, now: Date) {
+  const start = Date.parse(event.start?.dateTime ?? "");
+  return start - now.getTime() <= eveningEventHorizonMs;
 }
 
 /**
@@ -357,6 +447,17 @@ function homeLine(
     : "Home address: not in Personal Info; take it from memory if it is there, otherwise count a leave-by time from the city centre and say so.";
 }
 
+/**
+ * What the worker is to say about a flight when its watch counted the
+ * facts: check-in only usually opens 24 hours before, so nothing is said to
+ * be open for certain.
+ */
+const countedReminderTasks = {
+  checkin:
+    "online check-in usually opens about now (24 hours before departure for most airlines): say when it opens by the facts below and to check the booking letter or the airline, and offer to check in and pick a seat as soon as the person says yes.",
+  evening: `it leaves tomorrow morning, and this is tonight's reminder, before the person goes to sleep: when to leave home and how at that hour, by the facts below, an alarm, check-in, documents. Make ${urgentHandoverMarker} the first line of your handover: it has to reach the person tonight, even if their quiet hours begin before you finish.`,
+} satisfies Record<FlightReminder, string>;
+
 /** What the worker is to say about a flight for each timed reminder. */
 const reminderTasks = {
   checkin:
@@ -386,10 +487,11 @@ function reminderLines(
     "Flight reminders due now. Earlier checks may have seen these flights; what is new is the time. Hand each over as a flight, even when nothing about it changed:",
     ...[...due].map(([itemId, reminders]) => {
       const counted = facts.get(itemId);
+      const tasks = counted ? countedReminderTasks : reminderTasks;
       return [
-        `- ${itemId}: ${reminders.map((reminder) => reminderTasks[reminder]).join(" Also, ")}`,
+        `- ${itemId}: ${reminders.map((reminder) => tasks[reminder]).join(" Also, ")}`,
         counted
-          ? `  Counted by code, use these times as they are: ${counted}`
+          ? `  Counted by code from the calendar (estimates where they say so): ${counted}`
           : undefined,
       ]
         .filter((line) => line !== undefined)

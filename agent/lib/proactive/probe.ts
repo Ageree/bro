@@ -1,9 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
-import {
-  calendarApi,
-  calendarEventListSchema,
-} from "@agent/lib/google-workspace/calendar";
+import { calendarApi } from "@agent/lib/google-workspace/calendar";
 import {
   GoogleApiError,
   type GoogleClient,
@@ -20,9 +17,12 @@ import {
   flightReminders,
   gmailProbeQuery,
   gmailSignals,
+  isEveningEvent,
   isNightFlight,
   isNightSubject,
   mailRank,
+  proactiveEventFields,
+  proactiveEventListSchema,
 } from "@agent/lib/proactive/signals";
 import type { ProactiveSignal } from "@db/services/proactive";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
@@ -214,10 +214,10 @@ export async function probeGoogleSignals(
     readonly flightReminders?: boolean;
     readonly mailAfter: Date;
     /**
-     * Which events a night check hands over: flights within hours (the
-     * default) or all (the evening, when only mail waits for the morning).
+     * The evening before the quiet hours: a night check that also hands over
+     * events within twelve hours and mail Gmail marks important.
      */
-    readonly nightCalendar?: "all" | "flights";
+    readonly evening?: boolean;
     readonly nightOnly?: boolean;
     readonly now: Date;
     readonly timeZone: string;
@@ -234,9 +234,9 @@ export async function probeGoogleSignals(
       listMailIds(google, gmailProbeQuery(window.mailAfter)),
       readJson(
         google,
-        calendarEventListSchema,
+        proactiveEventListSchema,
         googleUrl(calendarApi, "/calendars/primary/events", {
-          fields: "items(id,status,start,summary,location)",
+          fields: proactiveEventFields,
           maxResults: maxCalendarEvents,
           orderBy: "startTime",
           singleEvents: true,
@@ -280,15 +280,21 @@ export async function probeGoogleSignals(
       flights,
       signals: [
         ...calendarSignals(
-          window.nightCalendar === "all"
-            ? items
-            : items.filter((event) => isNightFlight(event, window.now)),
+          items.filter(
+            (event) =>
+              isNightFlight(event, window.now) ||
+              (window.evening === true && isEveningEvent(event, window.now))
+          ),
           window.now,
           window.timeZone
         ),
         ...reminders,
         ...gmailSignals(
-          await nightMail(google, messages.slice(0, maxNightSubjects))
+          await nightMail(
+            google,
+            messages.slice(0, maxNightSubjects),
+            window.evening === true
+          )
         ),
       ],
       state: "connected" as const,
@@ -399,9 +405,15 @@ async function readHeaders(
 }
 
 /** The messages among `messages` whose subject may not wait for the morning. */
+/**
+ * The mail of a night check that cannot wait, by subject (`isNightSubject`);
+ * in the evening also what Gmail marks important: a person they write
+ * with, a meeting moved to the morning.
+ */
 async function nightMail(
   google: GoogleClient,
-  messages: readonly { readonly id: string; readonly threadId?: string }[]
+  messages: readonly { readonly id: string; readonly threadId?: string }[],
+  evening: boolean
 ) {
   const described = await readHeaders(
     google,
@@ -412,7 +424,8 @@ async function nightMail(
     const metadata = described[index];
     return (
       metadata !== undefined &&
-      isNightSubject(headerReader(metadata)("subject"))
+      (isNightSubject(headerReader(metadata)("subject")) ||
+        (evening && (metadata.labelIds ?? []).includes("IMPORTANT")))
     );
   });
 }

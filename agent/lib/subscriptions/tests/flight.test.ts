@@ -12,8 +12,9 @@ vi.mock("@agent/lib/routes/openstreetmap", async (importOriginal) => ({
 }));
 
 import {
+  dueFlightStages,
   flightFacts,
-  flightPlan,
+  flightReminderSignals,
   measureDrive,
 } from "@agent/lib/subscriptions/flight";
 
@@ -22,109 +23,126 @@ afterEach(() => {
 });
 
 const moscow = "Europe/Moscow";
-// DP 405, 07:05 Moscow on Saturday 4 October.
+// DP 405, 07:05 Moscow on Sunday 4 October.
 const departure = new Date("2026-10-04T04:05:00.000Z");
 const at = (iso: string) => new Date(iso);
+const due = (
+  now: string,
+  done: readonly ("checkin" | "evening")[] = [],
+  flightZone = moscow,
+  personZone = moscow,
+  leaves = departure
+) =>
+  dueFlightStages({
+    departure: leaves,
+    done,
+    flightZone,
+    now: at(now),
+    personZone,
+  });
 
 describe("a flight's reminders by the clock", () => {
-  it("reminds of check-in in the morning and of the flight in the evening", () => {
-    // Check-in opens at 07:05 the day before, inside the quiet hours: it
-    // waits for 08:00. The evening reminder waits for 18:00.
-    expect(
-      flightPlan({
-        departure,
-        done: [],
-        now: at("2026-10-03T03:00:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: [], next: at("2026-10-03T05:00:00.000Z") });
-    expect(
-      flightPlan({
-        departure,
-        done: [],
-        now: at("2026-10-03T06:00:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: ["checkin"], next: at("2026-10-03T15:00:00.000Z") });
-    expect(
-      flightPlan({
-        departure,
-        done: ["checkin"],
-        now: at("2026-10-03T15:30:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: ["evening"], next: undefined });
+  it("reminds of check-in by day once it opens, and of the flight in the evening", () => {
+    // 09:00 the day before: check-in opened at 07:05.
+    expect(due("2026-10-03T06:00:00.000Z")).toEqual(["checkin"]);
+    // 19:00 the day before: both, unless one already went.
+    expect(due("2026-10-03T16:00:00.000Z").toSorted()).toEqual([
+      "checkin",
+      "evening",
+    ]);
+    expect(due("2026-10-03T16:00:00.000Z", ["checkin"])).toEqual(["evening"]);
   });
 
-  it("never hands check-in over at night, and lets it go if the night outlasts it", () => {
-    // A 14:00 flight seen at 23:30: its check-in waits for 08:00.
-    expect(
-      flightPlan({
-        departure: at("2026-10-04T11:00:00.000Z"),
-        done: [],
-        now: at("2026-10-03T20:30:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: [], next: at("2026-10-04T05:00:00.000Z") });
-  });
-
-  it("hands both over at once to a flight first seen in the evening", () => {
-    expect(
-      flightPlan({
-        departure,
-        done: [],
-        now: at("2026-10-03T16:00:00.000Z"),
-        timeZone: moscow,
-      }).due.toSorted()
-    ).toEqual(["checkin", "evening"]);
-  });
-
-  it("lets a window pass without a word once it is over", () => {
-    // 23:30 the evening before: too late to write about tomorrow's flight,
-    // and check-in, whose window ends at 04:05, is no news at night.
-    expect(
-      flightPlan({
-        departure,
-        done: [],
-        now: at("2026-10-03T20:30:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: [], next: undefined });
+  it("never reminds of check-in in the person's quiet hours", () => {
+    // 07:30 the day before: check-in is open, but it is night for them.
+    expect(due("2026-10-03T04:30:00.000Z")).toEqual([]);
+    // 23:30 the evening before: too late for the evening, night for
+    // check-in.
+    expect(due("2026-10-03T20:30:00.000Z")).toEqual([]);
     // Three hours before departure the person is on the way.
-    expect(
-      flightPlan({
-        departure,
-        done: [],
-        now: at("2026-10-04T01:30:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: [], next: undefined });
+    expect(due("2026-10-04T01:30:00.000Z")).toEqual([]);
   });
 
   it("has no evening reminder for a flight after noon", () => {
-    const afternoon = new Date("2026-10-04T12:30:00.000Z");
     expect(
-      flightPlan({
-        departure: afternoon,
-        done: [],
-        // 13:00 the day before: only check-in lies ahead, at 15:30.
-        now: at("2026-10-03T10:00:00.000Z"),
-        timeZone: moscow,
-      })
-    ).toEqual({ due: [], next: at("2026-10-03T12:30:00.000Z") });
+      due(
+        "2026-10-03T16:00:00.000Z",
+        [],
+        moscow,
+        moscow,
+        at("2026-10-04T12:30:00.000Z")
+      )
+    ).not.toContain("evening");
   });
 
-  it("counts the evening on the person's own clock across a DST change", () => {
-    // Berlin leaves summer time on 25 October 2026: the evening before a
-    // 07:00 flight on the 26th is still 18:00 local, now at 17:00 UTC.
+  it("counts the evening on the clock of the city the flight leaves", () => {
+    // 06:00 in Novosibirsk (UTC+7) is 02:00 in Moscow. The evening before is
+    // Novosibirsk's: 18:00 there is 14:00 in Moscow.
+    const novosibirsk = at("2026-10-03T23:00:00.000Z");
     expect(
-      flightPlan({
-        departure: at("2026-10-26T06:00:00.000Z"),
-        done: ["checkin"],
-        now: at("2026-10-25T16:30:00.000Z"),
-        timeZone: "Europe/Berlin",
-      })
-    ).toEqual({ due: [], next: at("2026-10-25T17:00:00.000Z") });
+      due(
+        "2026-10-03T11:30:00.000Z",
+        ["checkin"],
+        "Asia/Novosibirsk",
+        moscow,
+        novosibirsk
+      )
+    ).toEqual(["evening"]);
+    expect(
+      due(
+        "2026-10-03T10:30:00.000Z",
+        ["checkin"],
+        "Asia/Novosibirsk",
+        moscow,
+        novosibirsk
+      )
+    ).toEqual([]);
+  });
+
+  it("counts the evening across a DST change", () => {
+    // Berlin leaves summer time on 25 October 2026: 18:00 the evening before
+    // a 07:00 flight on the 26th is 17:00 UTC.
+    const berlin = "Europe/Berlin";
+    const leaves = at("2026-10-26T06:00:00.000Z");
+    expect(
+      due("2026-10-25T16:30:00.000Z", ["checkin"], berlin, berlin, leaves)
+    ).toEqual([]);
+    expect(
+      due("2026-10-25T17:00:00.000Z", ["checkin"], berlin, berlin, leaves)
+    ).toEqual(["evening"]);
+  });
+
+  it("keys a due reminder as the proactive check's own", () => {
+    expect(
+      flightReminderSignals(
+        [
+          {
+            id: "w1",
+            source: {
+              eventId: "dp405",
+              location: "Аэропорт Внуково",
+              start: "2026-10-04T07:05:00+03:00",
+              summary: "Рейс DP 405",
+              timeZone: moscow,
+            },
+            state: { done: [] },
+          },
+        ],
+        at("2026-10-03T06:00:00.000Z"),
+        moscow
+      )
+    ).toEqual([
+      {
+        signal: {
+          dedupeKey: "dp405@2026-10-04T07:05:00+03:00#checkin",
+          itemId: "dp405",
+          source: "calendar",
+          threadId: null,
+        },
+        stage: "checkin",
+        watchId: "w1",
+      },
+    ]);
   });
 });
 
@@ -134,14 +152,28 @@ const watch = {
     location: "Аэропорт Внуково (VKO), терминал A",
     start: "2026-10-04T07:05:00+03:00",
     summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+    timeZone: moscow,
   },
   state: {
     done: [],
-    travel: { from: "home" as const, km: 31.4, minutes: 42, to: "Внуково" },
+    travel: {
+      from: "home" as const,
+      kind: "drive" as const,
+      km: 31.4,
+      minutes: 42,
+      to: "Внуково",
+    },
   },
 };
 
-function place(name: string, lat: number, lon: number) {
+const noHome = {
+  addressLine1: null,
+  addressLine2: null,
+  city: "Москва",
+  region: null,
+};
+
+function place(name: string, lat: number, lon: number, tag?: string) {
   return {
     countryCode: "ru",
     district: undefined,
@@ -152,104 +184,110 @@ function place(name: string, lat: number, lon: number) {
     lat,
     lon,
     name,
-    tag: undefined,
+    tag,
   };
 }
 
 describe("a flight's facts, counted by code", () => {
-  it("names the departure, the check-in opening and when to leave, on the person's clock", () => {
+  it("names the departure, the usual check-in opening and a leave-by estimate", () => {
     const facts = flightFacts(watch, moscow) ?? "";
     expect(facts).toContain("Departs 2026-10-04 07:05, Sunday (Europe/Moscow)");
-    expect(facts).toContain("2026-10-03 07:05, Saturday (Europe/Moscow)");
-    // 07:05 − 2 h at the airport − 42 min by car.
-    expect(facts).toContain("Leave home by about 2026-10-04 04:23");
+    expect(facts).toContain(
+      "Online check-in usually opens about 24 h before, 2026-10-03 07:05, Saturday (Europe/Moscow), but airlines differ"
+    );
+    // 07:05 − about 2 h at the airport − 42 min by car.
+    expect(facts).toContain("A leave-by estimate: about 2026-10-04 04:23");
     expect(facts).toContain(
       "42 min (31.4 km) by car without traffic from home to «Внуково»"
     );
+    expect(facts).not.toMatch(/use these times as they are|check-in is open/u);
   });
 
-  it("asks the worker to count the drive itself when code could not", () => {
+  it("names the times where the flight leaves and on the person's clock", () => {
+    const facts =
+      flightFacts(
+        {
+          ...watch,
+          source: { ...watch.source, timeZone: "Asia/Novosibirsk" },
+        },
+        moscow
+      ) ?? "";
+    expect(facts).toContain(
+      "Departs 2026-10-04 11:05, Sunday (Asia/Novosibirsk); 2026-10-04 07:05, Sunday (Europe/Moscow) on the person's own clock"
+    );
+  });
+
+  it("counts no leave-by time from another city or without a drive", () => {
     expect(
-      flightFacts({ ...watch, state: { done: [], travel: null } }, moscow)
-    ).toContain("could not be measured");
+      flightFacts(
+        { ...watch, state: { done: [], travel: { kind: "elsewhere" } } },
+        moscow
+      )
+    ).toContain("leaves from another city: no leave-by time");
+    expect(flightFacts({ ...watch, state: { done: [] } }, moscow)).toContain(
+      "give no leave-by time"
+    );
   });
 
-  it("measures the drive from home to the airport the event names", async () => {
+  it("measures the drive from home to the aerodrome the event names", async () => {
     routes.findPlaces
       .mockResolvedValueOnce([place("дом", 55.75, 37.6)])
-      .mockResolvedValueOnce([place("Внуково", 55.6, 37.27)]);
+      .mockResolvedValueOnce([
+        // «Аэропорт» is also a metro station; only the aerodrome counts.
+        place("Аэропорт", 55.8, 37.53, "railway:station"),
+        place("Внуково", 55.6, 37.27, "aeroway:aerodrome"),
+      ]);
     routes.measureRoutes.mockResolvedValue([{ km: 31.4, minutes: 42 }]);
     await expect(
       measureDrive(
         watch,
-        {
-          addressLine1: "ул. Профсоюзная, 12",
-          addressLine2: null,
-          city: "Москва",
-          region: null,
-        },
+        { ...noHome, addressLine1: "ул. Профсоюзная, 12" },
         new AbortController().signal
       )
-    ).resolves.toEqual({ from: "home", km: 31.4, minutes: 42, to: "Внуково" });
+    ).resolves.toEqual({
+      from: "home",
+      kind: "drive",
+      km: 31.4,
+      minutes: 42,
+      to: "Внуково",
+    });
     // The terminal and the code are no part of the airport's name.
     expect(routes.findPlaces.mock.calls[1]?.[0]).toBe("Аэропорт Внуково");
+    expect(routes.measureRoutes.mock.calls[0]?.[2]).toEqual([
+      expect.objectContaining({ tag: "aeroway:aerodrome" }),
+    ]);
   });
 
-  it("measures nothing to an airport the event does not name", async () => {
-    await expect(
-      measureDrive(
-        { source: { ...watch.source, location: null } },
-        {
-          addressLine1: null,
-          addressLine2: null,
-          city: "Москва",
-          region: null,
-        },
-        new AbortController().signal
-      )
-    ).resolves.toBeNull();
-    expect(routes.findPlaces).not.toHaveBeenCalled();
-  });
-
-  it("measures nothing without a start, or from an airport found far away", async () => {
-    await expect(
-      measureDrive(
-        watch,
-        { addressLine1: null, addressLine2: null, city: null, region: null },
-        new AbortController().signal
-      )
-    ).resolves.toBeNull();
+  it("calls an airport of another city elsewhere, and counts no drive", async () => {
     routes.findPlaces
       .mockResolvedValueOnce([place("Москва", 55.75, 37.6)])
-      .mockResolvedValueOnce([place("Внуково, Калмыкия", 46.3, 44.3)]);
+      .mockResolvedValueOnce([
+        place("Толмачёво", 55.01, 82.65, "aeroway:aerodrome"),
+      ]);
     await expect(
-      measureDrive(
-        watch,
-        {
-          addressLine1: null,
-          addressLine2: null,
-          city: "Москва",
-          region: null,
-        },
-        new AbortController().signal
-      )
-    ).resolves.toBeNull();
+      measureDrive(watch, noHome, new AbortController().signal)
+    ).resolves.toEqual({ kind: "elsewhere" });
     expect(routes.measureRoutes).not.toHaveBeenCalled();
   });
 
-  it("measures nothing when the map fails, without failing the check", async () => {
-    routes.findPlaces.mockRejectedValue(new Error("rate limited"));
+  it("measures nothing, to try again later, without an aerodrome, a place or a map", async () => {
     await expect(
       measureDrive(
-        watch,
-        {
-          addressLine1: null,
-          addressLine2: null,
-          city: "Москва",
-          region: null,
-        },
+        { source: { ...watch.source, location: null } },
+        noHome,
         new AbortController().signal
       )
-    ).resolves.toBeNull();
+    ).resolves.toBeUndefined();
+    expect(routes.findPlaces).not.toHaveBeenCalled();
+    routes.findPlaces
+      .mockResolvedValueOnce([place("Москва", 55.75, 37.6)])
+      .mockResolvedValueOnce([place("м. Аэропорт", 55.8, 37.53)]);
+    await expect(
+      measureDrive(watch, noHome, new AbortController().signal)
+    ).resolves.toBeUndefined();
+    routes.findPlaces.mockRejectedValue(new Error("rate limited"));
+    await expect(
+      measureDrive(watch, noHome, new AbortController().signal)
+    ).resolves.toBeUndefined();
   });
 });

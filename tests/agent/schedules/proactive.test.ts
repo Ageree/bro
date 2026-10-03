@@ -17,8 +17,11 @@ import type {
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
 import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
+import type * as flightModule from "@agent/lib/subscriptions/flight";
 import type {
   listFlightWatches,
+  listLiveFlightWatches,
+  recordFlightWatch,
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
@@ -42,8 +45,11 @@ const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
 const rank = vi.hoisted(() => vi.fn<typeof rankMail>());
 const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
 const flights = vi.hoisted(() => ({
+  drive: vi.fn<typeof flightModule.measureDrive>(),
   list: vi.fn<typeof listFlightWatches>(() => Promise.resolve([])),
+  live: vi.fn<typeof listLiveFlightWatches>(() => Promise.resolve([])),
   pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(false)),
+  record: vi.fn<typeof recordFlightWatch>(),
   sync: vi.fn<typeof syncFlightWatches>(),
 }));
 
@@ -75,7 +81,13 @@ vi.mock("@agent/lib/subscriptions/pilot", () => ({
 }));
 vi.mock("@db/services/subscriptions", () => ({
   listFlightWatches: flights.list,
+  listLiveFlightWatches: flights.live,
+  recordFlightWatch: flights.record,
   syncFlightWatches: flights.sync,
+}));
+vi.mock("@agent/lib/subscriptions/flight", async (importOriginal) => ({
+  ...(await importOriginal<typeof flightModule>()),
+  measureDrive: flights.drive,
 }));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
@@ -117,7 +129,15 @@ describe("proactive schedule", () => {
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     flights.pilot.mockResolvedValue(false);
     flights.list.mockResolvedValue([]);
+    flights.live.mockResolvedValue([]);
     flights.sync.mockResolvedValue({ ended: 0, started: 0 });
+    flights.drive.mockResolvedValue({
+      from: "home",
+      kind: "drive",
+      km: 31.4,
+      minutes: 42,
+      to: "Внуково",
+    });
   });
 
   afterEach(() => {
@@ -382,19 +402,14 @@ describe("proactive schedule", () => {
     );
   });
 
-  it("keeps a watch per flight in the pilot, and leaves the reminders to them", async () => {
+  it("keeps a watch per flight in the pilot, and hands its due reminder over with the run", async () => {
     flights.pilot.mockResolvedValue(true);
     flights.sync.mockResolvedValue({ ended: 0, started: 1 });
-    const dp405 = {
-      eventId: "dp405",
-      location: "Аэропорт Внуково (VKO), терминал A",
-      start: "2026-09-24T07:05:00+03:00",
-      summary: "Рейс DP 405 Москва (Внуково) — Сочи",
-    };
+    flights.live.mockResolvedValue([flightWatchRow()]);
     probe.mockResolvedValue({
       calendarSeenUntil: seenUntil,
       flights: [dp405],
-      signals: [],
+      signals: [mailSignal],
       state: "connected",
     });
 
@@ -406,15 +421,65 @@ describe("proactive schedule", () => {
     );
     expect(flights.sync).toHaveBeenCalledExactlyOnceWith({
       flights: [dp405],
-      jobId: "00000000-0000-4000-8000-000000000001",
       now: afternoon,
       scope: { userId: "better-auth:alice", workspaceId: "workspace:alice" },
-      // The calendar read covers 26 hours ahead.
-      seenUntil: new Date("2026-09-24T14:00:00.000Z"),
+      seenUntil,
     });
+    // Check-in opened at 07:05 today: it goes with the run, keyed as the
+    // check's own reminder, with the mail.
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        signals: [checkinSignal, mailSignal],
+      })
+    );
+    // The drive is measured once, for the reminder that goes, and then the
+    // watch remembers it went.
+    expect(flights.drive).toHaveBeenCalledOnce();
+    expect(flights.record).toHaveBeenLastCalledWith(
+      "watch-1",
+      {
+        done: ["checkin"],
+        travel: expect.objectContaining({ minutes: 42 }),
+      },
+      afternoon
+    );
     expect(console.info).toHaveBeenCalledWith(
       "[proactive] check",
       expect.objectContaining({ flights: { ended: 0, started: 1 } })
+    );
+  });
+
+  it("keeps a flight's reminder due while the job is busy, and measures nothing for one already sent", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    proactive.queue.mockResolvedValue({ status: "busy" });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+    // Only the drive was written: the reminder is still due.
+    expect(flights.record).toHaveBeenCalledExactlyOnceWith(
+      "watch-1",
+      { done: [], travel: expect.objectContaining({ kind: "drive" }) },
+      afternoon
+    );
+
+    // A run had it before: it is marked, nothing is measured or queued.
+    flights.record.mockClear();
+    flights.drive.mockClear();
+    proactive.queue.mockClear();
+    proactive.filterUnseen.mockResolvedValue([]);
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(proactive.queue).not.toHaveBeenCalled();
+    expect(flights.drive).not.toHaveBeenCalled();
+    expect(flights.record).toHaveBeenCalledExactlyOnceWith(
+      "watch-1",
+      { done: ["checkin"] },
+      afternoon
     );
   });
 
@@ -461,8 +526,13 @@ describe("proactive schedule", () => {
     // morning, which reads the whole evening as one batch.
     expect(probe).toHaveBeenLastCalledWith(
       expect.anything(),
-      // A new event still starts a run: only mail waits.
-      expect.objectContaining({ nightCalendar: "all", nightOnly: true })
+      // An event within hours or important mail still starts a run.
+      expect.objectContaining({
+        evening: true,
+        // An hour back: an urgent letter a busy job left is read again.
+        mailAfter: new Date("2026-09-23T17:30:00.000Z"),
+        nightOnly: true,
+      })
     );
     expect(proactive.advance).toHaveBeenCalledOnce();
     expect(proactive.defer).not.toHaveBeenCalled();
@@ -491,10 +561,17 @@ describe("proactive schedule", () => {
           location: "Аэропорт Внуково",
           start: "2026-09-24T07:40:00+03:00",
           summary: "Рейс DP 405",
+          timeZone: "Europe/Moscow",
         },
         state: {
           done: ["evening"],
-          travel: { from: "home", km: 31.4, minutes: 42, to: "Внуково" },
+          travel: {
+            from: "home",
+            kind: "drive",
+            km: 31.4,
+            minutes: 42,
+            to: "Внуково",
+          },
         },
         template: "flight",
       },
@@ -510,10 +587,10 @@ describe("proactive schedule", () => {
       "flight",
     ]);
     expect(send.mock.calls[0]?.[0]).toContain(
-      "Counted by code, use these times as they are: Departs 2026-09-24 07:40, Thursday (Europe/Moscow)."
+      "Counted by code from the calendar (estimates where they say so): Departs 2026-09-24 07:40, Thursday (Europe/Moscow)."
     );
     expect(send.mock.calls[0]?.[0]).toContain(
-      "Leave home by about 2026-09-24 04:58"
+      "A leave-by estimate: about 2026-09-24 04:58"
     );
 
     // Outside the pilot the check reminds by itself: no watch is read.
@@ -664,5 +741,59 @@ function workerSession(): Session {
     reset: vi.fn<Session["reset"]>(),
     respond: vi.fn<Session["respond"]>(),
     send: vi.fn<Session["send"]>(),
+  };
+}
+
+/** DP 405 tomorrow at 07:05 Moscow, as the calendar read gives it. */
+const dp405 = {
+  eventId: "dp405",
+  location: "Аэропорт Внуково (VKO), терминал A",
+  start: "2026-09-24T07:05:00+03:00",
+  summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  timeZone: "Europe/Moscow",
+};
+
+const mailSignal = {
+  dedupeKey: "m1",
+  itemId: "m1",
+  source: "gmail" as const,
+  threadId: "t1",
+};
+
+const checkinSignal = {
+  dedupeKey: "dp405@2026-09-24T07:05:00+03:00#checkin",
+  itemId: "dp405",
+  source: "calendar" as const,
+  threadId: null,
+};
+
+/** DP 405's watch, nothing handed over yet. */
+function flightWatchRow(): Awaited<
+  ReturnType<typeof listLiveFlightWatches>
+>[number] {
+  return {
+    action: "worker",
+    checkEverySeconds: 3600,
+    checks: 0,
+    condition: { kind: "reminders" },
+    createdAt: afternoon,
+    createdByUserId: "better-auth:alice",
+    dedupeKey: "dp405@2026-09-24T07:05:00+03:00",
+    expiresAt: new Date("2026-09-24T04:05:00.000Z"),
+    failures: 0,
+    hits: 0,
+    id: "watch-1",
+    jobId: "flight-job",
+    lastCheckedAt: null,
+    lastError: null,
+    lastHitAt: null,
+    nextCheckAt: new Date("9999-12-31T00:00:00.000Z"),
+    source: dp405,
+    state: { done: [] },
+    status: "active",
+    template: "flight",
+    updatedAt: afternoon,
+    wake: "urgent_at_night",
+    workspaceId: "workspace:alice",
   };
 }

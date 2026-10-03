@@ -42,6 +42,14 @@ function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
   };
 }
 
+const dp405 = {
+  eventId: "dp405",
+  location: "Аэропорт Внуково (VKO), терминал A",
+  start: "2026-10-03T07:05:00+03:00",
+  summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  timeZone: "Europe/Moscow",
+};
+
 const hitOutcome = {
   kind: "result" as const,
   summary: "«Чайник» now costs 7 490 RUB.",
@@ -388,19 +396,11 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
   });
 
-  it("keeps one watch per flight on the proactive job, and ends a moved one's", async () => {
+  it("keeps one watch per flight, each on a job of its own, and lets a moved one go", async () => {
     const { db, subscriptions } = await openDatabase();
-    const jobId = await proactiveJob(db);
-    const dp405 = {
-      eventId: "dp405",
-      location: "Аэропорт Внуково (VKO), терминал A",
-      start: "2026-10-03T07:05:00+03:00",
-      summary: "Рейс DP 405 Москва (Внуково) — Сочи",
-    };
     const sync = (flights: readonly (typeof dp405)[], at = now) =>
       subscriptions.syncFlightWatches({
         flights,
-        jobId,
         now: at,
         scope: alice,
         seenUntil: new Date(at.getTime() + 26 * 60 * 60_000),
@@ -413,136 +413,135 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
       action: "worker",
       dedupeKey: "dp405@2026-10-03T07:05:00+03:00",
       expiresAt: new Date("2026-10-03T04:05:00.000Z"),
-      jobId,
-      nextCheckAt: now,
+      // Never due for the subscriptions tick.
+      nextCheckAt: new Date("9999-12-31T00:00:00.000Z"),
       state: { done: [] },
       template: "flight",
-      wake: "urgent_at_night",
     });
-    // The flight moved to 09:00: the old watch goes, a new one starts.
+    expect(await db.query.scheduledAgentJobs.findMany()).toEqual([
+      expect.objectContaining({
+        id: started?.jobId,
+        kind: "subscription",
+        nextRunAt: null,
+      }),
+    ]);
+    // The flight moved to 09:00: the old watch goes with its job, a new one
+    // starts.
     const moved = { ...dp405, start: "2026-10-03T09:00:00+03:00" };
     expect(await sync([moved])).toEqual({ ended: 1, started: 1 });
     expect(
       (await db.query.subscriptions.findMany()).map(
-        ({ dedupeKey, status }) => ({ dedupeKey, status })
+        ({ dedupeKey }) => dedupeKey
       )
-    ).toEqual([
-      { dedupeKey: "dp405@2026-10-03T09:00:00+03:00", status: "active" },
-    ]);
-    // Moved back, it is watched again; its reminders' own dedupe keeps
-    // them from going out twice.
+    ).toEqual(["dp405@2026-10-03T09:00:00+03:00"]);
+    expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
+    // Moved back, it is watched again; its reminders' own dedupe keeps them
+    // from going out twice.
     expect(await sync([dp405, moved])).toEqual({ ended: 0, started: 1 });
     await sync([moved]);
-    // A flight beyond what the calendar read covered is not taken as gone.
+    // A flight from where the calendar read stopped on is not taken as gone.
     const far = {
       ...dp405,
       eventId: "far",
-      start: "2026-10-09T09:00:00+03:00",
+      start: "2026-10-03T13:00:00+03:00",
     };
     await sync([moved, far]);
-    expect(await sync([moved])).toEqual({ ended: 0, started: 0 });
-    // A flight whose watch ended (every reminder went out) gets no new one.
+    expect(
+      await subscriptions.syncFlightWatches({
+        flights: [moved],
+        now,
+        scope: alice,
+        seenUntil: new Date("2026-10-03T10:00:00.000Z"),
+      })
+    ).toEqual({ ended: 0, started: 0 });
+    // A flight whose reminders all went out gets no new watch.
     await db
       .update(schema.subscriptions)
       .set({ status: "fired" })
       .where(eq(schema.subscriptions.status, "active"));
-    expect(await sync([moved])).toEqual({ ended: 0, started: 0 });
+    expect(await sync([moved, far])).toEqual({ ended: 0, started: 0 });
     // A flight already gone gets no watch.
     expect(
       await sync([{ ...dp405, eventId: "past", start: "2026-10-01T09:00:00Z" }])
     ).toMatchObject({ started: 0 });
   });
 
-  it("settles a flight's check on its lease, and never touches the proactive job", async () => {
+  it("closes a departed flight's watch, and remembers what went", async () => {
     const { db, subscriptions } = await openDatabase();
-    const jobId = await proactiveJob(db);
+    const seen = (at: Date) => new Date(at.getTime() + 26 * 60 * 60_000);
     await subscriptions.syncFlightWatches({
-      flights: [
-        {
-          eventId: "dp405",
-          location: null,
-          start: "2026-10-03T07:05:00+03:00",
-          summary: "Рейс DP 405",
-        },
-      ],
-      jobId,
+      flights: [dp405, { ...dp405, eventId: "quiet" }],
       now,
       scope: alice,
-      seenUntil: new Date(now.getTime() + 26 * 60 * 60_000),
+      seenUntil: seen(now),
     });
-    const lease = { leaseForMs: 10 * 60_000, limit: 10, now };
-    const [claim] = await subscriptions.claimDueSubscriptions(lease);
-    if (!claim) throw new Error("Expected the flight's watch.");
-    const evening = new Date("2026-10-02T15:00:00.000Z");
-    expect(
-      await subscriptions.settleFlightWatch(
-        claim,
-        { kind: "next", nextCheckAt: evening, state: { done: ["checkin"] } },
-        now
-      )
-    ).toBe("waiting");
-    // A tick that lost the lease writes nothing.
-    expect(
-      await subscriptions.settleFlightWatch(
-        claim,
-        { kind: "ended", status: "fired" },
-        now
-      )
-    ).toBeUndefined();
-    expect(await db.query.subscriptions.findFirst()).toMatchObject({
-      checks: 1,
-      nextCheckAt: evening,
-      state: { done: ["checkin"] },
-      status: "active",
-    });
-
-    // Held past its term outside the pilot, it ends; its job goes on.
-    const [late] = await subscriptions.claimDueSubscriptions({
-      ...lease,
-      now: new Date("2026-10-03T05:00:00.000Z"),
-    });
-    if (!late) throw new Error("Expected the flight's watch again.");
-    expect(
-      await subscriptions.settleSubscriptionCheck(late, { kind: "lapsed" })
-    ).toBe("lapsed");
-    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
-      kind: "proactive",
-      status: "active",
-    });
-    expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
-
-    // The facts of its reminders are found by the event.
+    const live = await subscriptions.listLiveFlightWatches(alice.workspaceId);
+    expect(live).toHaveLength(2);
+    const reminded = live.find((row) => row.dedupeKey.startsWith("dp405@"));
+    if (!reminded) throw new Error("Expected the flight's watch.");
+    await subscriptions.recordFlightWatch(
+      reminded.id,
+      {
+        done: ["checkin"],
+        travel: {
+          from: "home",
+          kind: "drive",
+          km: 31.4,
+          minutes: 42,
+          to: "Внуково",
+        },
+      },
+      now
+    );
     expect(
       await subscriptions.listFlightWatches(alice.workspaceId, ["dp405"])
-    ).toMatchObject([{ source: { eventId: "dp405" }, template: "flight" }]);
+    ).toMatchObject([
+      { state: { done: ["checkin"], travel: { minutes: 42 } } },
+    ]);
+    // After departure the next check closes both: one reminded, one not.
+    const after = new Date("2026-10-03T05:00:00.000Z");
+    expect(
+      await subscriptions.syncFlightWatches({
+        flights: [],
+        now: after,
+        scope: alice,
+        seenUntil: seen(after),
+      })
+    ).toEqual({ ended: 2, started: 0 });
+    expect(
+      (await db.query.subscriptions.findMany())
+        .map(({ dedupeKey, status }) => [dedupeKey.split("@")[0], status])
+        .toSorted()
+    ).toEqual([
+      ["dp405", "fired"],
+      ["quiet", "expired"],
+    ]);
+    expect(
+      (await db.query.scheduledAgentJobs.findMany()).map((job) => job.status)
+    ).toEqual(["completed", "completed"]);
   });
 
-  it("lists and changes only the person's own watches, not Bro's flights", async () => {
-    const { subscriptions, db } = await openDatabase();
-    const jobId = await proactiveJob(db);
+  it("keeps Bro's flights out of the price watches' tick and the person's tools", async () => {
+    const { db, subscriptions } = await openDatabase();
     await subscriptions.syncFlightWatches({
-      flights: [
-        {
-          eventId: "dp405",
-          location: null,
-          start: "2026-10-03T07:05:00+03:00",
-          summary: "Рейс DP 405",
-        },
-      ],
-      jobId,
+      flights: [dp405],
       now,
       scope: alice,
       seenUntil: new Date(now.getTime() + 26 * 60 * 60_000),
     });
     const [flight] = await db.query.subscriptions.findMany();
     if (!flight) throw new Error("Expected the flight's watch.");
+    expect(
+      await subscriptions.claimDueSubscriptions({
+        leaseForMs: 10 * 60_000,
+        limit: 10,
+        now: new Date("9999-12-31T00:00:00.000Z"),
+      })
+    ).toEqual([]);
     expect(await subscriptions.listLiveSubscriptions(alice)).toEqual([]);
     expect(
       await subscriptions.setSubscriptionStatus(alice, flight.id, "deleted")
     ).toBeUndefined();
-    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
-      status: "active",
-    });
   });
 
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {
@@ -565,33 +564,6 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     ).rejects.toThrow(/Failed query/u);
   });
 });
-
-/** The workspace's hidden proactive job, which flights' watches ride on. */
-async function proactiveJob(
-  database: Awaited<ReturnType<typeof openDatabase>>["db"]
-) {
-  const [job] = await database
-    .insert(schema.scheduledAgentJobs)
-    .values({
-      conversationChannel: "telegram",
-      conversationId: "100::",
-      createdByUserId: alice.userId,
-      kind: "proactive",
-      missedRunPolicy: "skip",
-      nextRunAt: null,
-      prompt: "Проверить почту и календарь.",
-      status: "active",
-      timing: {
-        anchoredAt: now.toISOString(),
-        everyMinutes: 15,
-        kind: "interval",
-      },
-      workspaceId: alice.workspaceId,
-    })
-    .returning({ id: schema.scheduledAgentJobs.id });
-  if (!job) throw new Error("Expected the proactive job.");
-  return job.id;
-}
 
 async function migrateOnce() {
   const client = new PGlite();

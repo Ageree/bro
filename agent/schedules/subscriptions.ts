@@ -1,28 +1,16 @@
 import { defineSchedule } from "eve/schedules";
 import { within } from "@agent/lib/browser-use/deadline";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
-import { flightReminderKey } from "@agent/lib/proactive/signals";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
-import { flightPlan, measureDrive } from "@agent/lib/subscriptions/flight";
 import { readPricePage } from "@agent/lib/subscriptions/page";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { flightWatchOf, priceWatchOf } from "@agent/lib/subscriptions/watches";
-import {
-  filterUnseenProactiveSignals,
-  queueProactiveRun,
-} from "@db/services/proactive";
+import { priceWatchOf } from "@agent/lib/subscriptions/watches";
 import {
   type ClaimedSubscription,
   type SubscriptionCheck,
   claimDueSubscriptions,
-  settleFlightWatch,
   settleSubscriptionCheck,
 } from "@db/services/subscriptions";
-import {
-  readProactiveMessages,
-  readUserProfile,
-} from "@db/services/user-profile";
-import { resolveTimeZone } from "@shared/user-profile/schema";
 
 /**
  * A check's lease. Each page read is bounded (`downloadWithin`), and a tick
@@ -37,15 +25,6 @@ const leaseForMs = 10 * 60_000;
  */
 const tickDeadlineMs = 3 * 60_000;
 const claimLimit = 25;
-/** How long measuring a flight's drive may take within a tick. */
-const driveTimeoutMs = 20_000;
-/** When another proactive run is open, a flight's reminder tries again. */
-const busyRetryMs = 5 * 60_000;
-/**
- * The proactive job's daily cap; a flight's reminder is a calendar run,
- * which passes it (`queueProactiveRun`).
- */
-const proactiveRunsPerDay = 12;
 
 /**
  * The checks of event subscriptions (docs/roadmap.md, 27), every five
@@ -170,105 +149,6 @@ function settle(subscription: ClaimedSubscription, check: SubscriptionCheck) {
   return settleSubscriptionCheck(subscription, check);
 }
 
-/**
- * A flight's check. The reminders due now (`flightPlan`) go to one run of
- * the proactive worker with the facts counted by code; a reminder an
- * earlier run was handed (the proactive check's own, before the pilot) is
- * not handed again. Another open run puts it off by a few minutes; a person
- * who turned proactive messages off is owed none. The watch ends once no
- * reminder is ahead.
- */
-async function checkFlight(subscription: ClaimedSubscription) {
-  const now = new Date();
-  const held = await heldCheck(subscription, now);
-  if (held) return { outcome: await settle(subscription, held) };
-  const watch = flightWatchOf(subscription);
-  if (!watch) {
-    return {
-      outcome: await settleFlightWatch(subscription, {
-        kind: "ended",
-        status: "failed",
-      }),
-    };
-  }
-  const scope = {
-    userId: watch.createdByUserId,
-    workspaceId: watch.workspaceId,
-  };
-  const [profile, proactive] = await Promise.all([
-    readUserProfile(scope),
-    readProactiveMessages(scope),
-  ]);
-  const timeZone = resolveTimeZone(profile.timezone);
-  const departure = new Date(watch.source.start);
-  const { due } = flightPlan({
-    departure,
-    done: watch.state.done,
-    now,
-    timeZone,
-  });
-  let state = watch.state;
-  if (due.length > 0 && proactive) {
-    if (state.travel === undefined) {
-      state = {
-        ...state,
-        travel: await measureDrive(
-          watch,
-          profile,
-          AbortSignal.timeout(driveTimeoutMs)
-        ),
-      };
-    }
-    const signals = await filterUnseenProactiveSignals(
-      watch.workspaceId,
-      due.map((stage) => ({
-        dedupeKey: flightReminderKey(
-          watch.source.eventId,
-          watch.source.start,
-          stage
-        ),
-        itemId: watch.source.eventId,
-        source: "calendar" as const,
-        threadId: null,
-      }))
-    );
-    if (signals.length > 0) {
-      const queued = await queueProactiveRun({
-        jobId: watch.jobId,
-        maxRunsPerDay: proactiveRunsPerDay,
-        now,
-        signals,
-        workspaceId: watch.workspaceId,
-      });
-      if (queued.status !== "queued") {
-        return {
-          due,
-          outcome: await settleFlightWatch(watch, {
-            kind: "next",
-            nextCheckAt: new Date(now.getTime() + busyRetryMs),
-            state,
-          }),
-        };
-      }
-    }
-  }
-  state = { ...state, done: [...state.done, ...due] };
-  const { next } = flightPlan({ departure, done: state.done, now, timeZone });
-  return {
-    due,
-    outcome: await settleFlightWatch(
-      watch,
-      next
-        ? { kind: "next", nextCheckAt: next, state }
-        : {
-            kind: "ended",
-            state,
-            status: state.done.length > 0 ? "fired" : "expired",
-          }
-    ),
-  };
-}
-
 /** One check, logged as one line with its outcome and never the page. */
 async function checkSubscription(subscription: ClaimedSubscription) {
   const logged = {
@@ -277,15 +157,6 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     workspaceId: subscription.workspaceId,
   };
   try {
-    if (subscription.template === "flight") {
-      const { due, outcome } = await checkFlight(subscription);
-      console.info("[subscriptions] check", {
-        ...logged,
-        outcome: outcome ?? "lease_lost",
-        ...(due && due.length > 0 && { due }),
-      });
-      return;
-    }
     const { check, outcome } = await checkPrice(subscription);
     console.info("[subscriptions] check", {
       ...logged,
