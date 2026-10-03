@@ -79,6 +79,17 @@ function isPersonMessage(message: ModelMessage) {
 }
 
 /**
+ * Everything the person wrote in the conversation, oldest first, never a
+ * turn Bro opened for itself. A setting that must come from the person — a
+ * watch's link or threshold — is checked against these words.
+ */
+export function personMessages(messages: readonly ModelMessage[]) {
+  return messages
+    .filter((message) => startsTurn(message) && isPersonMessage(message))
+    .map((message) => messageText(message));
+}
+
+/**
  * The person's messages that end at `opening`: it, and any they sent right
  * before it with nothing of Bro's between — «739204» and a second later
  * «это код», which eve steers into one turn. Null when Bro opened the turn.

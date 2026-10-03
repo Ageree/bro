@@ -118,7 +118,9 @@ type ScheduledJob = Awaited<ReturnType<typeof createScheduledAgentJob>>;
  * (`reportConversations`). RU d12 (25.09): a summary set up in the web chat
  * would have gone to Telegram, and the reply did not say so.
  */
-export async function scheduleDelivery(job: ScheduledJob) {
+export async function scheduleDelivery(
+  job: Parameters<typeof reportConversations>[0]
+) {
   const { delivery } = await reportConversations(job);
   const here =
     delivery.conversationChannel === job.conversationChannel &&

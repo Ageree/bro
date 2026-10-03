@@ -44,6 +44,8 @@ import {
   readsMustEnd,
   turnDeclinedGmailSend,
 } from "@agent/lib/google-workspace/turn-reads";
+import { eligibleHistory } from "@agent/lib/history/eligible";
+import { historyTrimPilot } from "@agent/lib/history/pilot";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
@@ -227,25 +229,32 @@ export default defineAgent({
           stepStartedEventSchema.safeParse(event).data,
           ctx.session.id
         );
-        const [modelId, formOfAddress, [stableContext, timeZone], taskAgent] =
-          await Promise.all([
-            getWorkspaceModelId(scope),
-            writesToPerson ? getFormOfAddress(scope) : undefined,
-            stepContextPilot(scope, step).then(
-              async (pilot) =>
-                [
-                  pilot,
-                  pilot && clockOwed
-                    ? await readWorkspaceTimeZone(scope)
-                    : undefined,
-                ] as const
-            ),
-            // The task agent works for the person's own requests; a report
-            // or a worker never starts one.
-            resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
-              ? taskAgentPilot(scope, step)
-              : false,
-          ]);
+        const [
+          modelId,
+          formOfAddress,
+          [stableContext, timeZone],
+          taskAgent,
+          historyTrimmed,
+        ] = await Promise.all([
+          getWorkspaceModelId(scope),
+          writesToPerson ? getFormOfAddress(scope) : undefined,
+          stepContextPilot(scope, step).then(
+            async (pilot) =>
+              [
+                pilot,
+                pilot && clockOwed
+                  ? await readWorkspaceTimeZone(scope)
+                  : undefined,
+              ] as const
+          ),
+          // The task agent works for the person's own requests; a report
+          // or a worker never starts one.
+          resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
+            ? taskAgentPilot(scope, step)
+            : false,
+          // Old tool results go as short traces (docs/roadmap.md, 28).
+          historyTrimPilot(scope, step),
+        ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
           timeZone === undefined ? undefined : localClock(new Date(), timeZone),
@@ -294,6 +303,12 @@ export default defineAgent({
             staleReport ||
             turnDelivered(ctx.messages) ||
             (reportRunId !== undefined && turnActed(ctx.messages)),
+          // The pilot of trimming old history: results, long errands and
+          // browser reports from before the last few turns reach the model as
+          // short traces; the set holds for the whole turn.
+          historyTrim: historyTrimmed
+            ? eligibleHistory(ctx.messages, step)
+            : undefined,
           replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
           silent,
           // The skills pilot reads Bro's rules from `bro-skill` blocks in the

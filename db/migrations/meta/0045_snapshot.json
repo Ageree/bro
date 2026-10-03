@@ -1,5 +1,5 @@
 {
-  "id": "a334ec27-7d8c-41f9-a7a3-a53f57a0807b",
+  "id": "0c6adc73-f1b9-4b40-8894-8d232bf7f3e3",
   "prevId": "8771ffb4-263c-4e61-8402-be7123210419",
   "version": "7",
   "dialect": "postgresql",
@@ -2904,109 +2904,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.memory_digest_runs": {
-      "name": "memory_digest_runs",
-      "schema": "",
-      "columns": {
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "local_date": {
-          "name": "local_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "lease_until": {
-          "name": "lease_until",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error_code": {
-          "name": "error_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "memory_digest_runs_day_idx": {
-          "name": "memory_digest_runs_day_idx",
-          "columns": [
-            {
-              "expression": "local_date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "memory_digest_runs_workspace_id_workspaces_id_fk": {
-          "name": "memory_digest_runs_workspace_id_workspaces_id_fk",
-          "tableFrom": "memory_digest_runs",
-          "tableTo": "workspaces",
-          "columnsFrom": ["workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "memory_digest_runs_workspace_id_local_date_pk": {
-          "name": "memory_digest_runs_workspace_id_local_date_pk",
-          "columns": ["workspace_id", "local_date"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "memory_digest_runs_status_check": {
-          "name": "memory_digest_runs_status_check",
-          "value": "\"memory_digest_runs\".\"status\" IN ('running', 'done', 'failed')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.memory_documents": {
       "name": "memory_documents",
       "schema": "",
@@ -4349,7 +4246,7 @@
         },
         "scheduled_agent_jobs_kind_check": {
           "name": "scheduled_agent_jobs_kind_check",
-          "value": "\"scheduled_agent_jobs\".\"kind\" IN ('task', 'proactive')"
+          "value": "\"scheduled_agent_jobs\".\"kind\" IN ('task', 'proactive', 'subscription')"
         },
         "scheduled_agent_jobs_missed_run_policy_check": {
           "name": "scheduled_agent_jobs_missed_run_policy_check",
@@ -4808,6 +4705,305 @@
         "spend_entries_source_check": {
           "name": "spend_entries_source_check",
           "value": "\"spend_entries\".\"source\" IN ('limit', 'card', 'standing')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.subscriptions": {
+      "name": "subscriptions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "template": {
+          "name": "template",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "condition": {
+          "name": "condition",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'notify'"
+        },
+        "wake": {
+          "name": "wake",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'day_only'"
+        },
+        "state": {
+          "name": "state",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "check_every_s": {
+          "name": "check_every_s",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checks": {
+          "name": "checks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "failures": {
+          "name": "failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "hits": {
+          "name": "hits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_hit_at": {
+          "name": "last_hit_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "subscriptions_due_idx": {
+          "name": "subscriptions_due_idx",
+          "columns": [
+            {
+              "expression": "next_check_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"subscriptions\".\"status\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscriptions_job_idx": {
+          "name": "subscriptions_job_idx",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscriptions_owner_idx": {
+          "name": "subscriptions_owner_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_by_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscriptions_live_idx": {
+          "name": "subscriptions_live_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_by_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "template",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "dedupe_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"subscriptions\".\"status\" IN ('active', 'paused')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "subscriptions_job_id_scheduled_agent_jobs_id_fk": {
+          "name": "subscriptions_job_id_scheduled_agent_jobs_id_fk",
+          "tableFrom": "subscriptions",
+          "tableTo": "scheduled_agent_jobs",
+          "columnsFrom": ["job_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "subscriptions_membership_fkey": {
+          "name": "subscriptions_membership_fkey",
+          "tableFrom": "subscriptions",
+          "tableTo": "workspace_memberships",
+          "columnsFrom": ["workspace_id", "created_by_user_id"],
+          "columnsTo": ["workspace_id", "user_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "subscriptions_template_check": {
+          "name": "subscriptions_template_check",
+          "value": "\"subscriptions\".\"template\" IN ('price')"
+        },
+        "subscriptions_action_check": {
+          "name": "subscriptions_action_check",
+          "value": "\"subscriptions\".\"action\" IN ('notify')"
+        },
+        "subscriptions_wake_check": {
+          "name": "subscriptions_wake_check",
+          "value": "\"subscriptions\".\"wake\" IN ('day_only', 'urgent_at_night')"
+        },
+        "subscriptions_status_check": {
+          "name": "subscriptions_status_check",
+          "value": "\"subscriptions\".\"status\" IN ('active', 'paused', 'fired', 'expired', 'failed', 'cancelled')"
+        },
+        "subscriptions_json_check": {
+          "name": "subscriptions_json_check",
+          "value": "jsonb_typeof(\"subscriptions\".\"source\") = 'object' AND jsonb_typeof(\"subscriptions\".\"condition\") = 'object' AND jsonb_typeof(\"subscriptions\".\"state\") = 'object'"
+        },
+        "subscriptions_dedupe_key_check": {
+          "name": "subscriptions_dedupe_key_check",
+          "value": "\"subscriptions\".\"dedupe_key\" <> ''"
+        },
+        "subscriptions_check_every_check": {
+          "name": "subscriptions_check_every_check",
+          "value": "\"subscriptions\".\"check_every_s\" >= 3600"
+        },
+        "subscriptions_expires_check": {
+          "name": "subscriptions_expires_check",
+          "value": "\"subscriptions\".\"expires_at\" > \"subscriptions\".\"created_at\" AND \"subscriptions\".\"expires_at\" <= \"subscriptions\".\"created_at\" + interval '90 days'"
         }
       },
       "isRLSEnabled": false

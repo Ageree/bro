@@ -202,7 +202,8 @@ WITH runs AS (
          sum(cost_rub) FILTER (WHERE source = 'proxy') AS proxy,
          sum(cost_rub) FILTER (WHERE source = 'browser-report') AS report_turns
   FROM usage_costs
-  WHERE run_id IS NOT NULL
+  -- A background turn carries its schedule's run, not an errand's.
+  WHERE run_id IS NOT NULL AND source <> 'background'
   GROUP BY run_id
 )
 SELECT count(*) AS errands,

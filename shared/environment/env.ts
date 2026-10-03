@@ -714,6 +714,17 @@ export const env = createEnv({
     // turns keep only their few tools after the message. Only with
     // OpenRouter. Unset, every step is built as before.
     STEP_CONTEXT_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of trimming old tool results in the step's prompt
+    // (docs/roadmap.md, item 28): workspace ids or owners' emails, or `*`
+    // for every workspace, whose steps send results, long `browser_task`
+    // errands and browser reports older than the last few turns as a short
+    // trace (`agent/lib/history/`). Only with the direct model. Unset, every
+    // step sends the whole history as before.
+    HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
+    // or owners' emails, or `*` for every workspace, whose Bro may set up a
+    // price watch that code checks without the model (`watch-create`).
+    SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),
