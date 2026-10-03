@@ -8,7 +8,7 @@ import { redactUnsafeText } from "@agent/lib/memory/digest/redact";
 import {
   claimMemoryDigestDay,
   finishMemoryDigestDay,
-  lastMemoryDigestFinishedAt,
+  lastMemoryClassificationStartedAt,
   listMemoryDigestWorkspaces,
 } from "@db/services/memory/digest-runs";
 import {
@@ -41,6 +41,7 @@ const dayMs = 24 * 60 * 60_000;
 const digest = { actor: "digest" } as const;
 
 type Outcome = Record<
+  | "classified"
   | "classifierCalls"
   | "classifierFailed"
   | "contained"
@@ -116,6 +117,7 @@ export async function runDueMemoryDigests(now = new Date()) {
 /** One workspace's digest; returns what it did, in counts. */
 export async function digestWorkspace(workspaceId: string, localDate: string) {
   const outcome: Outcome = {
+    classified: 0,
     classifierCalls: 0,
     classifierFailed: 0,
     contained: 0,
@@ -132,8 +134,12 @@ export async function digestWorkspace(workspaceId: string, localDate: string) {
   const scope = await readWorkspaceScope(workspaceId);
   if (scope === null) return outcome;
   const merges = await memoryDigestPilot(scope);
-  // The model looks again only at memory that changed since the last digest.
-  const since = merges ? await lastMemoryDigestFinishedAt(workspaceId) : null;
+  // The model looks again only at memory that changed since the last digest
+  // that asked it — counted from that digest's start, so a memory saved while
+  // it ran is asked about the next day.
+  const since = merges
+    ? await lastMemoryClassificationStartedAt(workspaceId)
+    : null;
   for (const scopeKey of await listMemoryScopeKeys(workspaceId)) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Scopes one at a time: each write locks the workspace.
     await digestScope(scope, scopeKey, `memory-digest:${localDate}`, {
@@ -141,6 +147,7 @@ export async function digestWorkspace(workspaceId: string, localDate: string) {
       outcome,
     });
     if (merges && directModelActive()) {
+      outcome.classified += 1;
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       await classifyScope(scope, scopeKey, { localDate, outcome, since });
     }

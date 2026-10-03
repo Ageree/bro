@@ -116,21 +116,23 @@ export async function finishMemoryDigestDay(
 }
 
 /**
- * When the workspace's last digest that went through finished, if one did:
- * a day whose model step failed does not count, so the next one asks again.
+ * When the workspace's last digest that asked the model about its memory
+ * started, if one did: a day whose model step failed, or that skipped it
+ * (no direct provider), does not count, so the next one asks again.
  */
-export async function lastMemoryDigestFinishedAt(workspaceId: string) {
+export async function lastMemoryClassificationStartedAt(workspaceId: string) {
   const [last] = await db
-    .select({ finishedAt: memoryDigestRuns.finishedAt })
+    .select({ startedAt: memoryDigestRuns.startedAt })
     .from(memoryDigestRuns)
     .where(
       and(
         eq(memoryDigestRuns.workspaceId, workspaceId),
         eq(memoryDigestRuns.status, "done"),
+        sql`coalesce((${memoryDigestRuns.outcome}->>'classified')::int, 0) > 0`,
         sql`coalesce((${memoryDigestRuns.outcome}->>'classifierFailed')::int, 0) = 0`
       )
     )
-    .orderBy(desc(memoryDigestRuns.finishedAt))
+    .orderBy(desc(memoryDigestRuns.startedAt))
     .limit(1);
-  return last?.finishedAt ?? null;
+  return last?.startedAt ?? null;
 }

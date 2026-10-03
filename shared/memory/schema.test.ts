@@ -47,6 +47,7 @@ describe("what memory may keep", () => {
     "Код домофона 1234, код Ozon 5678",
     "Пароль: СекретноеСлово для сайта",
     "В Ozon код 1234",
+    "смс для входа 482193",
   ])("refuses «%s»", (text) => {
     expect(isSafeMemoryText(text)).toBe(false);
   });

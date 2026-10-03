@@ -378,7 +378,7 @@ describe("the daily memory digest", () => {
 
     expect(
       Object.values(await digestWorkspace(alice.workspaceId, "2026-10-03"))
-    ).toEqual(Array(12).fill(0));
+    ).toEqual(Array(13).fill(0));
     expect(renderProfile(await listCurrentMemories(alice, "scope-a"))).toBe(
       before
     );
@@ -599,6 +599,7 @@ describe("the digest's model, for the pilot", () => {
       finishedAt: new Date("2026-10-02T05:00:00Z"),
       leaseUntil: new Date("2026-10-02T05:15:00Z"),
       localDate: "2026-10-02",
+      outcome: { classified: 1 },
       startedAt: new Date("2026-10-02T04:59:00Z"),
       status: "done",
       workspaceId: alice.workspaceId,
@@ -608,6 +609,53 @@ describe("the digest's model, for the pilot", () => {
       await digestWorkspace(alice.workspaceId, "2026-10-03")
     ).toMatchObject({ classifierCalls: 0 });
     expect(model.generate).not.toHaveBeenCalled();
+  });
+
+  it("asks about a memory saved while the last digest ran, or after a day that skipped the model", async () => {
+    proposes({});
+    const day = (localDate: string, classified: number) => ({
+      finishedAt: new Date(`${localDate}T05:00:00Z`),
+      leaseUntil: new Date(`${localDate}T05:15:00Z`),
+      localDate,
+      outcome: { classified },
+      startedAt: new Date(`${localDate}T04:59:00Z`),
+      status: "done" as const,
+      workspaceId: alice.workspaceId,
+    });
+    await database.insert(schema.memoryDigestRuns).values(day("2026-10-02", 1));
+    await database
+      .update(schema.memoryRecords)
+      .set({ updatedAt: new Date("2026-10-02T04:59:30Z") })
+      .where(eq(schema.memoryRecords.index, 5));
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ classifierCalls: 1 });
+
+    await database
+      .update(schema.memoryRecords)
+      .set({ updatedAt: new Date("2026-10-01T10:00:00Z") })
+      .where(eq(schema.memoryRecords.index, 5));
+    await database.insert(schema.memoryDigestRuns).values(day("2026-10-03", 0));
+    // 03.10 asked nothing: the watermark stays at 02.10, and 01.10 is before it.
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-04")
+    ).toMatchObject({ classifierCalls: 0 });
+  });
+
+  it("forgets as one-off only what the model read in full, and folds only in the same order", async () => {
+    await remember(
+      6,
+      { text: `Столик на пятницу. ${"Любит итальянскую кухню. ".repeat(14)}` },
+      "2026-09-20"
+    );
+    await remember(7, { text: "Anna loves Boris." }, "2026-09-21");
+    await remember(8, { text: "Boris loves Anna." }, "2026-09-22");
+    proposes({ duplicateOf: [{ index: 7, of: 8 }], oneOff: [6] });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ deduped: 0, oneOff: 0 });
   });
 
   it("never sends a preference, and keeps a local-only text out of the index", async () => {
@@ -746,6 +794,7 @@ describe("folding memories together", () => {
     // A clause after a comma may lean on the one before it.
     expect(saysInFull("По выходным, любит суши.", "Любит суши")).toBe(false);
     expect(saysInFull("Не любит суши.", "Любит суши")).toBe(false);
+    expect(saysInFull("Любит суши, когда голоден.", "Любит суши")).toBe(false);
     expect(saysInFull("Любит суши.", "Любит суши и роллы")).toBe(false);
     // A clause that narrows or takes back the memory is no copy of it.
     expect(saysInFull("Любит суши по пятницам.", "Любит суши")).toBe(false);

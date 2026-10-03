@@ -204,6 +204,23 @@ const polarityWords = new Set([
   "anymore",
 ]);
 
+/**
+ * A text's words in order, lower-cased: «Anna loves Boris» is no «Boris
+ * loves Anna».
+ */
+function orderedWords(text: string) {
+  return [...text.toLocaleLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map(
+    ([word]) => word
+  );
+}
+
+/** Whether `inner`'s words appear in `outer` in the same order. */
+function inOrder(outer: readonly string[], inner: readonly string[]) {
+  let at = 0;
+  for (const word of outer) if (word === inner[at]) at += 1;
+  return at === inner.length;
+}
+
 /** Words that may say what a record is about: four letters or more. */
 function subjectWords(text: string) {
   return [...allWords(text)].filter((word) => word.length >= 4);
@@ -290,7 +307,11 @@ function checkedPlan(
     if (
       words.size === 0 ||
       ![...words].every((word) => kept.has(word)) ||
-      [...kept].some((word) => !words.has(word) && polarityWords.has(word))
+      [...kept].some((word) => !words.has(word) && polarityWords.has(word)) ||
+      !inOrder(
+        orderedWords(into.content.text),
+        orderedWords(record.content.text)
+      )
     )
       continue;
     if (take(record.index, into.index)) duplicates.push({ into, record });
@@ -304,7 +325,9 @@ function checkedPlan(
       !record ||
       !oneOffCategories.has(record.content.category) ||
       // A trip with dates expires on its own, and the person may ask about it.
-      record.content.validUntil !== null
+      record.content.validUntil !== null ||
+      // The model saw only the start: the rest may be what lasts.
+      record.content.text.length > maximumTextChars
     )
       continue;
     if (take(record.index)) oneOff.push(record);
