@@ -10,6 +10,16 @@ import {
   selectWorkspaceModel,
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
+import {
+  forgetMemory,
+  listCurrentMemories,
+  listMemoryScopeKeys,
+  restoreMemory,
+  updateMemory,
+  wipeForgottenMemoryHistory,
+} from "@db/services/memory/records";
+import { listMemoryRecordHistory } from "@db/services/memory/revisions";
+import { memoryIndexSchema, memoryTextSchema } from "@shared/memory/schema";
 import { saveChatSchema } from "@shared/chat/schema";
 import { cabinetAppSchema } from "@shared/composio/catalog";
 import {
@@ -31,6 +41,9 @@ import {
   vaultImportItemsSchema,
 } from "@shared/vault/schema";
 import { createTRPCRouter, protectedProcedure } from "./init";
+
+/** An eve memory scope key, as the cabinet page received it. */
+const scopeKeySchema = z.string().min(1).max(512);
 
 export const appRouter = createTRPCRouter({
   chats: {
@@ -149,7 +162,184 @@ export const appRouter = createTRPCRouter({
   models: {
     list: protectedProcedure.query(readModelCatalog),
   },
+  /**
+   * Profile memory in the cabinet. The person reads, corrects and forgets
+   * any memory and brings back an earlier text; a rule is set or changed
+   * only in their own conversation with Bro — stating one there also
+   * narrows the spend limit and standing permissions — so here a rule can
+   * only be read and forgotten.
+   */
+  memory: {
+    history: protectedProcedure
+      .input(z.object({ index: memoryIndexSchema, scopeKey: scopeKeySchema }))
+      .query(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
+        return listMemoryRecordHistory(
+          ctx.scope.workspaceId,
+          scopeKey,
+          input.index
+        );
+      }),
+    remove: protectedProcedure
+      .input(
+        z.object({
+          expectedRevision: z.number().int().positive(),
+          index: memoryIndexSchema,
+          scopeKey: scopeKeySchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
+        await memoryWrite(() =>
+          forgetMemory(
+            ctx.scope,
+            scopeKey,
+            { expectedRevision: input.expectedRevision, index: input.index },
+            `cabinet:${crypto.randomUUID()}`,
+            { actor: "person" }
+          )
+        );
+        // The last memory gone leaves no text in history either.
+        if ((await listCurrentMemories(ctx.scope, scopeKey)).length === 0) {
+          await wipeForgottenMemoryHistory(ctx.scope, scopeKey);
+        }
+      }),
+    restore: protectedProcedure
+      .input(
+        z.object({
+          expectedRevision: z.number().int().positive(),
+          index: memoryIndexSchema,
+          revision: z.number().int().positive(),
+          scopeKey: scopeKeySchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
+        await memoryWrite(() =>
+          restoreMemory(
+            ctx.scope,
+            scopeKey,
+            {
+              expectedRevision: input.expectedRevision,
+              index: input.index,
+              revision: input.revision,
+            },
+            `cabinet:${crypto.randomUUID()}`
+          )
+        );
+      }),
+    update: protectedProcedure
+      .input(
+        z.object({
+          expectedRevision: z.number().int().positive(),
+          index: memoryIndexSchema,
+          scopeKey: scopeKeySchema,
+          text: memoryTextSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
+        const current = (await listCurrentMemories(ctx.scope, scopeKey)).find(
+          ({ index }) => index === input.index
+        );
+        if (!current?.content || current.revision !== input.expectedRevision) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Memory changed. Open the page again.",
+          });
+        }
+        if (current.content.category === "rule") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "A rule is changed only in a conversation with Bro.",
+          });
+        }
+        // The old aliases name what the person just corrected away.
+        const content = { ...current.content, aliases: [], text: input.text };
+        await memoryWrite(() =>
+          updateMemory(
+            ctx.scope,
+            scopeKey,
+            {
+              content,
+              expectedRevision: input.expectedRevision,
+              index: input.index,
+            },
+            `cabinet:${crypto.randomUUID()}`,
+            { action: "update", actor: "person" }
+          )
+        );
+      }),
+  },
 });
+
+/**
+ * The scope the page showed, only if it is this workspace's: a write goes to
+ * what the person saw, even when a conversation has since recalled another.
+ */
+async function cabinetScopeKey(workspaceId: string, scopeKey: string) {
+  if (!(await listMemoryScopeKeys(workspaceId)).includes(scopeKey)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "No such memory." });
+  }
+  return scopeKey;
+}
+
+/** What a memory write refuses that the page can explain. */
+const refusedMemoryWrites = new Set([
+  "That revision keeps no text to bring back.",
+  "That memory is not in this profile.",
+  "A rule is set or changed only in a conversation.",
+  "Profile memory is full.",
+]);
+
+/**
+ * Runs a memory write the page may have raced: a memory changed since the
+ * page read it, a text the filter refuses, or a restore the profile cannot
+ * take comes back as a TRPC error the page shows. Anything else stays an
+ * internal error, its message unseen.
+ */
+async function memoryWrite<Result>(write: () => Promise<Result>) {
+  try {
+    return await write();
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    if (error.message.startsWith("Memory changed")) {
+      throw new TRPCError({
+        cause: error,
+        code: "CONFLICT",
+        message: "Memory changed. Open the page again.",
+      });
+    }
+    if (error.name === "ZodError" || refusedMemoryWrites.has(error.message)) {
+      throw new TRPCError({
+        cause: error,
+        code: "BAD_REQUEST",
+        message:
+          error.name === "ZodError"
+            ? "That text cannot be kept in memory."
+            : error.message,
+      });
+    }
+    // tRPC would send this message as it is: a query's carries memory text.
+    throw new TRPCError({
+      cause: error,
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Memory could not be changed.",
+    });
+  }
+}
 
 export type AppRouter = typeof appRouter;
 

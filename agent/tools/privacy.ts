@@ -10,7 +10,10 @@ import {
   serverLocation,
 } from "@agent/lib/privacy/facts";
 import { googleAccessOptions } from "@agent/lib/privacy/google-access";
-import { removalOutsideMemory } from "@agent/lib/privacy/removal";
+import {
+  memoryRemoval,
+  removalOutsideMemory,
+} from "@agent/lib/privacy/removal";
 import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
@@ -72,10 +75,7 @@ export const privacy = defineTool({
       processors: dataProcessors(modelId, { memoryDigest }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
-      remove: [
-        "Память и сохранённые дела — «удали всё, что ты про меня помнишь» или «забудь …»: стираются сразу.",
-        ...removalOutsideMemory(),
-      ],
+      remove: [memoryRemoval(), ...removalOutsideMemory()],
       reply,
     };
   },

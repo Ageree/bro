@@ -111,6 +111,25 @@ export async function listMemoryScopeKeys(workspaceId: string) {
   return rows.map(({ scopeKey }) => scopeKey);
 }
 
+/**
+ * The scope key the cabinet shows: the one Bro's conversations recalled
+ * last, or the one written last when none was recalled yet; `null` before
+ * the first conversation. eve's keys are opaque, so the cabinet cannot
+ * compute one.
+ */
+export async function readCabinetMemoryScopeKey(workspaceId: string) {
+  const [row] = await db
+    .select({ scopeKey: memoryScopes.scopeKey })
+    .from(memoryScopes)
+    .where(eq(memoryScopes.workspaceId, workspaceId))
+    .orderBy(
+      sql`${memoryScopes.lastRecalledAt} DESC NULLS LAST`,
+      desc(memoryScopes.updatedAt)
+    )
+    .limit(1);
+  return row?.scopeKey ?? null;
+}
+
 export async function listCurrentRules(scope: AccessScope) {
   const rows = await db
     .select({ index: memoryRecords.index, content: memoryRecords.content })
@@ -455,6 +474,7 @@ export async function forgetMemory(
       .for("update");
     if (current?.content === null) {
       if (!removalsKeepingHistory.has(origin.action ?? "forget")) {
+        await wipeFoldedHistory(transaction, scope, scopeKey, current);
         await wipeRecordHistory(transaction, scope, scopeKey, input.index);
       }
       const now = new Date();
@@ -511,6 +531,7 @@ export async function forgetMemory(
       revision,
     });
     if (!removalsKeepingHistory.has(origin.action ?? "forget")) {
+      await wipeFoldedHistory(transaction, scope, scopeKey, current);
       await wipeRecordHistory(transaction, scope, scopeKey, input.index);
     }
     if (forgotten) {
@@ -534,6 +555,127 @@ export async function forgetMemory(
         )
       );
     return { forgotten: true, index: input.index, revision };
+  });
+}
+
+/**
+ * Brings back what a memory said at an earlier revision, as the person asks
+ * in the cabinet: over the current text, or for a memory that is gone. A
+ * rule is set only in the person's own conversation, so none comes back
+ * here; a text the filter now refuses does not either, and a validity date
+ * already past is dropped rather than expiring the memory again at once.
+ */
+export async function restoreMemory(
+  scope: AccessScope,
+  scopeKey: string,
+  input: {
+    readonly expectedRevision: number;
+    readonly index: number;
+    readonly revision: number;
+  },
+  operationId: string
+) {
+  await ensureMemoryScope(scope, scopeKey);
+  return db.transaction(async (transaction) => {
+    await lockScope(transaction, scope, scopeKey);
+    const replay = await readOperation(
+      transaction,
+      scope,
+      scopeKey,
+      operationId
+    );
+    if (replay) return replay;
+    const [earlier] = await transaction
+      .select({ content: memoryRevisions.content })
+      .from(memoryRevisions)
+      .where(
+        and(
+          eq(memoryRevisions.workspaceId, scope.workspaceId),
+          eq(memoryRevisions.scopeKey, scopeKey),
+          eq(memoryRevisions.recordIndex, input.index),
+          eq(memoryRevisions.revision, input.revision)
+        )
+      )
+      .limit(1);
+    if (!earlier?.content) {
+      throw new Error("That revision keeps no text to bring back.");
+    }
+    const identity = recordIdentity(scope, scopeKey, input.index);
+    const [current] = await transaction
+      .select()
+      .from(memoryRecords)
+      .where(identity)
+      .limit(1)
+      .for("update");
+    if (!current) throw new Error("That memory is not in this profile.");
+    if (current.revision !== input.expectedRevision) {
+      throw new Error("Memory changed. Open it again.");
+    }
+    if (
+      earlier.content.category === "rule" ||
+      current.content?.category === "rule"
+    ) {
+      throw new Error("A rule is set or changed only in a conversation.");
+    }
+    const validUntil = earlier.content.validUntil;
+    const content = memoryContentSchema.parse({
+      ...earlier.content,
+      validUntil:
+        validUntil !== null && new Date(validUntil) <= new Date()
+          ? null
+          : validUntil,
+    });
+    // A memory past its date counts for nothing until expiry sweeps it.
+    const live =
+      current.content !== null &&
+      (current.content.validUntil === null ||
+        new Date(current.content.validUntil) > new Date());
+    if (!live) {
+      const [total] = await transaction
+        .select({ count: sql<number>`count(*)::int` })
+        .from(memoryRecords)
+        .where(
+          and(
+            eq(memoryRecords.workspaceId, scope.workspaceId),
+            eq(memoryRecords.scopeKey, scopeKey),
+            isNotNull(memoryRecords.content),
+            currentValidity()
+          )
+        );
+      if ((total?.count ?? 0) >= maximumRecords) {
+        throw new Error("Profile memory is full.");
+      }
+    }
+    const [saved] = await transaction
+      .update(memoryRecords)
+      .set({
+        content,
+        lastOperationId: operationId,
+        revision: current.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(and(identity, eq(memoryRecords.revision, current.revision)))
+      .returning();
+    if (!saved) throw new Error("Memory changed. Open it again.");
+    await recordOperation(transaction, scope, scopeKey, operationId, {
+      action: "restore",
+      index: saved.index,
+      revision: saved.revision,
+    });
+    await recordRevision(transaction, saved, { actor: "person" }, "restore");
+    // The text it replaces leaves the semantic index, as on an update.
+    await transaction
+      .update(memorySync)
+      .set(syncRemoval(new Date()))
+      .where(
+        and(
+          eq(memorySync.workspaceId, scope.workspaceId),
+          eq(memorySync.scopeKey, scopeKey),
+          eq(memorySync.recordIndex, saved.index)
+        )
+      );
+    await enqueueSync(transaction, saved);
+    return { index: saved.index, revision: saved.revision };
   });
 }
 
@@ -1209,6 +1351,83 @@ function recordRevision(
     sessionId: origin.sessionId ?? null,
     workspaceId: row.workspaceId,
   });
+}
+
+/** A memory's words, lower-cased: what says one memory holds another. */
+function memoryWords(text: string) {
+  return [...text.toLocaleLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map(
+    ([word]) => word
+  );
+}
+
+/**
+ * Forgetting a record also wipes the history of the gone records folded
+ * into it: a duplicate the digest merged, an older fact it corrected, the
+ * copy a move to the pinned scope key retired under the old key. Their text
+ * stays restorable for 30 days only while what holds it lives; the person
+ * who deleted the memory meant those words too. A gone record of any of the
+ * workspace's scopes goes when every word of one of its kept texts is in the
+ * forgotten record, as it reads now or read at any kept revision.
+ */
+async function wipeFoldedHistory(
+  transaction: Transaction,
+  scope: AccessScope,
+  scopeKey: string,
+  record: typeof memoryRecords.$inferSelect
+) {
+  const own = await transaction
+    .select({ content: memoryRevisions.content })
+    .from(memoryRevisions)
+    .where(
+      and(
+        eq(memoryRevisions.workspaceId, scope.workspaceId),
+        eq(memoryRevisions.scopeKey, scopeKey),
+        eq(memoryRevisions.recordIndex, record.index),
+        isNotNull(memoryRevisions.content)
+      )
+    );
+  const said = new Set(
+    [record.content, ...own.map(({ content }) => content)].flatMap((content) =>
+      content ? memoryWords([content.text, ...content.aliases].join(" ")) : []
+    )
+  );
+  if (said.size === 0) return;
+  const kept = await transaction
+    .select({
+      content: memoryRevisions.content,
+      index: memoryRevisions.recordIndex,
+      scopeKey: memoryRevisions.scopeKey,
+    })
+    .from(memoryRevisions)
+    .innerJoin(
+      memoryRecords,
+      and(
+        eq(memoryRecords.workspaceId, memoryRevisions.workspaceId),
+        eq(memoryRecords.scopeKey, memoryRevisions.scopeKey),
+        eq(memoryRecords.index, memoryRevisions.recordIndex)
+      )
+    )
+    .where(
+      and(
+        eq(memoryRevisions.workspaceId, scope.workspaceId),
+        isNotNull(memoryRevisions.content),
+        sql`${memoryRecords.content} IS NULL`,
+        sql`NOT (${memoryRevisions.scopeKey} = ${scopeKey} AND ${memoryRevisions.recordIndex} = ${record.index})`
+      )
+    );
+  const folded = new Map(
+    kept.flatMap(({ content, index, scopeKey: key }) => {
+      const words = content ? memoryWords(content.text) : [];
+      return words.length > 0 && words.every((word) => said.has(word))
+        ? [[`${key}\0${String(index)}`, { index, key }] as const]
+        : [];
+    })
+  );
+  await Promise.all(
+    [...folded.values()].map(({ index, key }) =>
+      wipeRecordHistory(transaction, scope, key, index)
+    )
+  );
 }
 
 /** Forgetting leaves no earlier text of the record in its history. */

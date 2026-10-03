@@ -58,8 +58,8 @@ transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 digest's merge, correction, one-off and purge). Existing records with content start
 their history with one `import` revision, and the hourly pass gives one to
 each record saved by a release that did not write history. The history is for the person to see
-and undo changes on the memory screen in the cabinet (planned: roadmap item
-31, its last PR); it never enters the model's context. Forgetting — at the person's
+and undo changes on the memory screen in the cabinet (`/workspace/memory`);
+it never enters the model's context. Forgetting — at the person's
 word or by the model — wipes the text of every earlier revision of that record
 at once. A live record keeps its earlier texts up to its last ten revisions. The text of a record that expired or that the digest merged,
 corrected or found one-off stays readable for 30 days, to be restored, and
@@ -105,6 +105,27 @@ organization, and code writes its dated text («… (с 01.10; раньше: …
 most three of each kind and a fifth of the memories change in a day; a failed
 call changes nothing. Its cost is a `usage_costs` row with the source
 `memory`.
+
+The memory screen (`/workspace/memory`, tRPC `memory.*` in
+`web/trpc/router.ts`) shows the scope Bro's conversations last read, or,
+before any recall was marked (a scope from before the mark), the one written
+last: rules,
+preferences and the rest, and a timeline of the last changes. The person
+edits a record's text (checked by `memoryTextSchema`, refused on a stale
+revision), deletes it (history wiped as when Bro forgets it), and brings back
+an earlier revision from the record's history (`restoreMemory`, written as
+`restore` by `person`); a memory the digest removed or that expired comes
+back from the timeline while its text is kept. A revision whose text the
+filter now refuses is shown without it. Rules are only deleted there: they are set and changed
+in the conversation, where a rule write needs the person's own turn.
+Every call names the scope key the page showed, checked against the
+workspace's own, so a conversation that recalls another scope meanwhile
+does not redirect a delete; restore and edit refuse a stale revision, and an
+edit drops the old aliases. Forgetting a record, here or in a conversation,
+also wipes the history of the gone records the digest folded into it — every
+word of their text is in the forgotten one — so a merged duplicate or a
+corrected older fact does not stay restorable after the person deleted what
+held it.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat

@@ -195,7 +195,8 @@ export function comparableMemoryText(text: string) {
     .trim();
 }
 
-const safeMemoryTextSchema = z
+/** A memory's text as it is kept: one line, safe, at most 2 KB. */
+export const memoryTextSchema = z
   .string()
   .trim()
   .transform((value) => value.replaceAll(/\s+/gu, " "))
@@ -217,7 +218,7 @@ const memoryAliasSchema = z
   .pipe(z.string().min(1).max(80).refine(isSafeMemoryText, "Unsafe alias"));
 
 export const memoryContentSchema = z.strictObject({
-  text: safeMemoryTextSchema,
+  text: memoryTextSchema,
   category: memoryCategorySchema
     .default("fact")
     .describe(

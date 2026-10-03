@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SpendLimitSection } from "@app/(authenticated)/workspace/_components/spend-limit-section";
+import { SpendLimitSection } from "@app/(authenticated)/workspace/(overview)/_components/spend-limit-section";
 import { formatRub } from "@shared/spending/limit";
 
 describe("workspace spend limit", () => {
