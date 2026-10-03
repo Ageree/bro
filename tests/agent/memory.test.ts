@@ -949,12 +949,13 @@ describe("memory history", () => {
       "save:trip",
       { sessionId: "session", turnId: "turn" }
     );
-    await expireMemories(new Date(Date.now() + 2 * day));
+    const expiredAt = Date.now() + 2 * day;
+    await expireMemories(new Date(expiredAt));
     const texts = async () => (await history()).map(({ text }) => text);
 
-    await trimForgottenMemoryHistory(new Date("2026-11-04T00:00:00.000Z"));
+    await trimForgottenMemoryHistory(new Date(expiredAt + 29 * day));
     expect(await texts()).toEqual(["Едет в Казань.", null]);
-    await trimForgottenMemoryHistory(new Date("2026-11-06T00:00:00.000Z"));
+    await trimForgottenMemoryHistory(new Date(expiredAt + 31 * day));
     expect(await texts()).toEqual([null, null]);
   });
 
