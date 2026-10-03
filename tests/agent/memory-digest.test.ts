@@ -349,12 +349,12 @@ describe("the daily memory digest", () => {
   });
 
   it("never folds a memory into one with no words", () => {
-    const record = (index: number, text: string) => ({
+    const wordless = ["!!!", "???"].map((text, index) => ({
       content: memoryContentSchema.parse({ text }),
       index,
       revision: 1,
-    });
-    expect(planDedupe([record(0, "!!!"), record(1, "???")]).drop).toEqual([]);
+    }));
+    expect(planDedupe(wordless).drop).toEqual([]);
   });
 
   it("writes nothing when nothing needs doing", async () => {
