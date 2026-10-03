@@ -449,6 +449,20 @@ describe("adopting the profile saved after the move", () => {
           action === "merge" && actor === "system" && content === null
       )
     ).toBe(true);
+    // The target holds the text: none stays under the keys it left.
+    expect(
+      history.filter(
+        ({ content, scopeKey }) =>
+          scopeKey !== pinnedProfileKey && content !== null
+      )
+    ).toEqual([]);
+    // An import is dated when it happened, not when the memory was saved.
+    const imports = history.filter(({ action }) => action === "import");
+    expect(
+      imports.every(
+        ({ createdAt }) => Date.now() - createdAt.getTime() < 60_000
+      )
+    ).toBe(true);
     expect(
       await adoptMemoryRecords(alice, vmProfileKeys, pinnedProfileKey)
     ).toBe(0);

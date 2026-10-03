@@ -635,8 +635,9 @@ export async function importLegacyMemories(
  * takes the target's next index (related indexes follow it), joins the
  * semantic index queue, and retires the source as forgetting would, so a
  * repeated call finds nothing to move. History sees each step as `system`:
- * an `import` in the target, a `merge` for the copy it folded and for the
- * source it retired. The number of records moved.
+ * an `import` in the target (dated now), a `merge` for the copy it folded
+ * and for the source it retired, whose earlier text is wiped: the target
+ * holds it. The number of records moved.
  */
 export async function adoptMemoryRecords(
   scope: AccessScope,
@@ -771,7 +772,7 @@ export async function adoptMemoryRecords(
         .returning();
       if (!saved) throw new Error("Memory could not be adopted.");
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
-      await recordRevision(transaction, saved, adoption, "import");
+      await recordRevision(transaction, saved, adoption, "import", now);
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
       await enqueueSync(transaction, saved);
     }
@@ -815,8 +816,8 @@ export async function adoptMemoryRecords(
       .update(memoryScopes)
       .set({ lastAllocatedIndex: lastIndex, updatedAt: now })
       .where(scopeIdentity(scope, toKey));
-    // The text lives on in the target, so a source keeps its history as a
-    // merge does, for 30 days.
+    // The text lives on in the target, the one record that holds it now: the
+    // source keeps no earlier text, so forgetting the target forgets it all.
     await Promise.all(
       retired.map(async (row) => {
         const [gone] = await transaction
@@ -836,7 +837,9 @@ export async function adoptMemoryRecords(
             )
           )
           .returning();
-        if (gone) await recordRevision(transaction, gone, adoption, "merge");
+        if (!gone) return;
+        await wipeRecordHistory(transaction, scope, row.scopeKey, row.index);
+        await recordRevision(transaction, gone, adoption, "merge");
       })
     );
     await Promise.all(
@@ -1145,13 +1148,16 @@ function recordRevision(
   transaction: Transaction,
   row: typeof memoryRecords.$inferSelect,
   origin: MemoryOrigin,
-  action: RevisionAction
+  action: RevisionAction,
+  // When the revision was written, if not when the record last changed: a
+  // moved record keeps its own dates.
+  createdAt = row.updatedAt
 ) {
   return transaction.insert(memoryRevisions).values({
     action: origin.action ?? action,
     actor: origin.actor,
     content: row.content,
-    createdAt: row.updatedAt,
+    createdAt,
     recordIndex: row.index,
     revision: row.revision,
     scopeKey: row.scopeKey,
