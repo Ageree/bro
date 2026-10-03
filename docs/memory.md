@@ -107,6 +107,14 @@ revision), deletes it (history wiped as when Bro forgets it), and brings back
 an earlier revision from the record's history (`restoreMemory`, written as
 `restore` by `person`). Rules are only deleted there: they are set and changed
 in the conversation, where a rule write needs the person's own turn.
+Every call names the scope key the page showed, checked against the
+workspace's own, so a conversation that recalls another scope meanwhile
+does not redirect a delete; restore and edit refuse a stale revision, and an
+edit drops the old aliases. Forgetting a record, here or in a conversation,
+also wipes the history of the gone records the digest folded into it — every
+word of their text is in the forgotten one — so a merged duplicate or a
+corrected older fact does not stay restorable after the person deleted what
+held it.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat

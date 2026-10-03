@@ -31,7 +31,7 @@ const readAppMock = vi.spyOn(ConnectedApps, "readConnectedApp");
 const startAppMock = vi.spyOn(ConnectedApps, "startConnectedAppAuthorization");
 const disconnectAppMock = vi.spyOn(ConnectedApps, "disconnectConnectedApp");
 
-const cabinetScopeMock = vi.spyOn(MemoryRecords, "readCabinetMemoryScopeKey");
+const scopeKeysMock = vi.spyOn(MemoryRecords, "listMemoryScopeKeys");
 const listMemoriesMock = vi.spyOn(MemoryRecords, "listCurrentMemories");
 const updateMemoryMock = vi.spyOn(MemoryRecords, "updateMemory");
 const restoreMemoryMock = vi.spyOn(MemoryRecords, "restoreMemory");
@@ -40,6 +40,21 @@ const scope = {
   userId: "user-1",
   workspaceId: "workspace-1",
 } satisfies AccessScope;
+
+/** A profile memory as the cabinet lists it. */
+const memory = (category: "fact" | "rule", revision = 2) => ({
+  content: {
+    aliases: [],
+    category,
+    localOnly: false,
+    relatedIndexes: [],
+    text: category === "rule" ? "Не платить без моего ок." : "Живёт в Казани.",
+    validUntil: null,
+  },
+  index: 3,
+  revision,
+  updatedAt: "2026-10-02T10:00:00.000Z",
+});
 
 describe("appRouter", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -199,23 +214,8 @@ describe("appRouter", () => {
   describe("memory in the cabinet", () => {
     const caller = () =>
       appRouter.createCaller({ origin: "https://example.com", scope });
-    const memory = (category: "fact" | "rule", revision = 2) => ({
-      content: {
-        aliases: [],
-        category,
-        localOnly: false,
-        relatedIndexes: [],
-        text:
-          category === "rule" ? "Не платить без моего ок." : "Живёт в Казани.",
-        validUntil: null,
-      },
-      index: 3,
-      revision,
-      updatedAt: "2026-10-02T10:00:00.000Z",
-    });
-
     beforeEach(() => {
-      cabinetScopeMock.mockResolvedValue("scope-key");
+      scopeKeysMock.mockResolvedValue(["other-key", "scope-key"]);
     });
 
     it("corrects a fact as the person, in the scope Bro reads", async () => {
@@ -225,22 +225,24 @@ describe("appRouter", () => {
       await caller().memory.update({
         expectedRevision: 2,
         index: 3,
+        scopeKey: "scope-key",
         text: "Живёт в Самаре.",
       });
 
-      expect(updateMemoryMock).toHaveBeenCalledWith(
+      expect(updateMemoryMock).toHaveBeenCalledOnce();
+      const [calledScope, scopeKey, update, operation, origin] =
+        updateMemoryMock.mock.calls[0] ?? [];
+      expect([calledScope, scopeKey, origin]).toEqual([
         scope,
         "scope-key",
-        expect.objectContaining({
-          content: expect.objectContaining({
-            category: "fact",
-            text: "Живёт в Самаре.",
-          }),
-          expectedRevision: 2,
-        }),
-        expect.stringMatching(/^cabinet:/u),
-        { action: "update", actor: "person" }
-      );
+        { action: "update", actor: "person" },
+      ]);
+      expect(operation).toMatch(/^cabinet:/u);
+      // The old aliases named what the person corrected away.
+      expect(update).toMatchObject({
+        content: { aliases: [], category: "fact", text: "Живёт в Самаре." },
+        expectedRevision: 2,
+      });
     });
 
     it("never edits a rule: it is changed only in a conversation", async () => {
@@ -250,6 +252,7 @@ describe("appRouter", () => {
         caller().memory.update({
           expectedRevision: 2,
           index: 3,
+          scopeKey: "scope-key",
           text: "Платить без ок.",
         })
       ).rejects.toThrow("only in a conversation");
@@ -263,26 +266,46 @@ describe("appRouter", () => {
         caller().memory.update({
           expectedRevision: 5,
           index: 3,
+          scopeKey: "scope-key",
           text: "Код из смс 482193",
         })
-      ).rejects.toThrow();
+      ).rejects.toThrow("one-time codes");
       await expect(
         caller().memory.update({
           expectedRevision: 2,
           index: 3,
+          scopeKey: "scope-key",
           text: "Живёт в Самаре.",
         })
       ).rejects.toThrow("Memory changed");
       expect(updateMemoryMock).not.toHaveBeenCalled();
     });
 
-    it("has nothing to change before the first conversation", async () => {
-      cabinetScopeMock.mockResolvedValue(null);
+    it("writes only to a scope of this workspace, the one the page showed", async () => {
+      restoreMemoryMock.mockResolvedValue({ index: 3, revision: 4 });
 
       await expect(
-        caller().memory.restore({ index: 3, revision: 1 })
-      ).rejects.toThrow("No memory yet");
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "someone-else",
+        })
+      ).rejects.toThrow("No such memory");
       expect(restoreMemoryMock).not.toHaveBeenCalled();
+
+      await caller().memory.restore({
+        expectedRevision: 3,
+        index: 3,
+        revision: 1,
+        scopeKey: "other-key",
+      });
+      expect(restoreMemoryMock).toHaveBeenCalledWith(
+        scope,
+        "other-key",
+        { expectedRevision: 3, index: 3, revision: 1 },
+        expect.stringMatching(/^cabinet:/u)
+      );
     });
   });
 });

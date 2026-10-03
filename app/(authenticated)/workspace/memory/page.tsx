@@ -97,6 +97,7 @@ export default async function Page() {
                     <MemoryRecordRow
                       key={record.index}
                       record={record}
+                      scopeKey={scopeKey}
                       timeZone={timeZone}
                     />
                   ))}

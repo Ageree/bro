@@ -13,7 +13,7 @@ import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import {
   forgetMemory,
   listCurrentMemories,
-  readCabinetMemoryScopeKey,
+  listMemoryScopeKeys,
   restoreMemory,
   updateMemory,
   wipeForgottenMemoryHistory,
@@ -41,6 +41,9 @@ import {
   vaultImportItemsSchema,
 } from "@shared/vault/schema";
 import { createTRPCRouter, protectedProcedure } from "./init";
+
+/** An eve memory scope key, as the cabinet page received it. */
+const scopeKeySchema = z.string().min(1).max(512);
 
 export const appRouter = createTRPCRouter({
   chats: {
@@ -168,9 +171,12 @@ export const appRouter = createTRPCRouter({
    */
   memory: {
     history: protectedProcedure
-      .input(z.object({ index: memoryIndexSchema }))
+      .input(z.object({ index: memoryIndexSchema, scopeKey: scopeKeySchema }))
       .query(async ({ ctx, input }) => {
-        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
         return listMemoryRecordHistory(
           ctx.scope.workspaceId,
           scopeKey,
@@ -182,15 +188,19 @@ export const appRouter = createTRPCRouter({
         z.object({
           expectedRevision: z.number().int().positive(),
           index: memoryIndexSchema,
+          scopeKey: scopeKeySchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
         await memoryWrite(() =>
           forgetMemory(
             ctx.scope,
             scopeKey,
-            input,
+            { expectedRevision: input.expectedRevision, index: input.index },
             `cabinet:${crypto.randomUUID()}`,
             { actor: "person" }
           )
@@ -203,17 +213,26 @@ export const appRouter = createTRPCRouter({
     restore: protectedProcedure
       .input(
         z.object({
+          expectedRevision: z.number().int().positive(),
           index: memoryIndexSchema,
           revision: z.number().int().positive(),
+          scopeKey: scopeKeySchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
         await memoryWrite(() =>
           restoreMemory(
             ctx.scope,
             scopeKey,
-            input,
+            {
+              expectedRevision: input.expectedRevision,
+              index: input.index,
+              revision: input.revision,
+            },
             `cabinet:${crypto.randomUUID()}`
           )
         );
@@ -223,11 +242,15 @@ export const appRouter = createTRPCRouter({
         z.object({
           expectedRevision: z.number().int().positive(),
           index: memoryIndexSchema,
+          scopeKey: scopeKeySchema,
           text: memoryTextSchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const scopeKey = await cabinetScopeKey(ctx.scope.workspaceId);
+        const scopeKey = await cabinetScopeKey(
+          ctx.scope.workspaceId,
+          input.scopeKey
+        );
         const current = (await listCurrentMemories(ctx.scope, scopeKey)).find(
           ({ index }) => index === input.index
         );
@@ -243,7 +266,8 @@ export const appRouter = createTRPCRouter({
             message: "A rule is changed only in a conversation with Bro.",
           });
         }
-        const content = { ...current.content, text: input.text };
+        // The old aliases name what the person just corrected away.
+        const content = { ...current.content, aliases: [], text: input.text };
         await memoryWrite(() =>
           updateMemory(
             ctx.scope,
@@ -261,11 +285,13 @@ export const appRouter = createTRPCRouter({
   },
 });
 
-/** The scope the cabinet shows, or NOT_FOUND before the first conversation. */
-async function cabinetScopeKey(workspaceId: string) {
-  const scopeKey = await readCabinetMemoryScopeKey(workspaceId);
-  if (scopeKey === null) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "No memory yet." });
+/**
+ * The scope the page showed, only if it is this workspace's: a write goes to
+ * what the person saw, even when a conversation has since recalled another.
+ */
+async function cabinetScopeKey(workspaceId: string, scopeKey: string) {
+  if (!(await listMemoryScopeKeys(workspaceId)).includes(scopeKey)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "No such memory." });
   }
   return scopeKey;
 }

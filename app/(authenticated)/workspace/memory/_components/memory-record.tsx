@@ -33,9 +33,11 @@ type MemoryRecord = Awaited<ReturnType<typeof listCurrentMemories>>[number];
  */
 export function MemoryRecordRow({
   record,
+  scopeKey,
   timeZone,
 }: {
   readonly record: MemoryRecord;
+  readonly scopeKey: string;
   readonly timeZone: string;
 }) {
   const router = useRouter();
@@ -69,8 +71,12 @@ export function MemoryRecordRow({
         ) : null}
       </div>
       <div className="flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1">
-        {rule ? null : <EditMemory record={record} />}
-        <MemoryHistory record={record} timeZone={timeZone} />
+        {rule ? null : <EditMemory record={record} scopeKey={scopeKey} />}
+        <MemoryHistory
+          record={record}
+          scopeKey={scopeKey}
+          timeZone={timeZone}
+        />
         <Button
           aria-label={`Удалить: ${text}`}
           disabled={remove.isPending}
@@ -78,6 +84,7 @@ export function MemoryRecordRow({
             remove.mutate({
               expectedRevision: record.revision,
               index: record.index,
+              scopeKey,
             });
           }}
           size="act-sm"
@@ -91,7 +98,13 @@ export function MemoryRecordRow({
   );
 }
 
-function EditMemory({ record }: { readonly record: MemoryRecord }) {
+function EditMemory({
+  record,
+  scopeKey,
+}: {
+  readonly record: MemoryRecord;
+  readonly scopeKey: string;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(record.content?.text ?? "");
@@ -108,13 +121,22 @@ function EditMemory({ record }: { readonly record: MemoryRecord }) {
     update.mutate({
       expectedRevision: record.revision,
       index: record.index,
+      scopeKey,
       text: parsed.data,
     });
   };
   const fieldId = `memory-text-${String(record.index)}`;
+  // Each opening starts from the text the page shows now, with no old error.
+  const openChange = (next: boolean) => {
+    if (next) {
+      setText(record.content?.text ?? "");
+      update.reset();
+    }
+    setOpen(next);
+  };
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
+    <Dialog onOpenChange={openChange} open={open}>
       <DialogTrigger
         render={
           <Button
@@ -176,15 +198,17 @@ function EditMemory({ record }: { readonly record: MemoryRecord }) {
 
 function MemoryHistory({
   record,
+  scopeKey,
   timeZone,
 }: {
   readonly record: MemoryRecord;
+  readonly scopeKey: string;
   readonly timeZone: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const history = api.memory.history.useQuery(
-    { index: record.index },
+    { index: record.index, scopeKey },
     { enabled: open }
   );
   const restore = api.memory.restore.useMutation({
@@ -194,9 +218,13 @@ function MemoryHistory({
     },
   });
   const rule = record.content?.category === "rule";
+  const openChange = (next: boolean) => {
+    if (next) restore.reset();
+    setOpen(next);
+  };
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
+    <Dialog onOpenChange={openChange} open={open}>
       <DialogTrigger
         render={
           <Button
@@ -240,8 +268,10 @@ function MemoryHistory({
                     disabled={restore.isPending}
                     onClick={() => {
                       restore.mutate({
+                        expectedRevision: record.revision,
                         index: record.index,
                         revision: entry.revision,
+                        scopeKey,
                       });
                     }}
                     size="act-sm"
@@ -261,7 +291,8 @@ function MemoryHistory({
         )}
         {restore.error ? (
           <p className="type-status text-destructive" role="alert">
-            Не вернулось: {restore.error.message}
+            Не вернулось: запись изменилась или память полна, открой страницу
+            заново.
           </p>
         ) : null}
       </DialogContent>
