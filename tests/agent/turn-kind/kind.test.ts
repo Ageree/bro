@@ -21,25 +21,29 @@ const backgroundTask = Object.assign(
 );
 
 describe("the kind of a turn", () => {
+  const step = { sessionId: "session-1", stepIndex: 0, turnId: "turn_1" };
+
   it("reads the caller and the turn's opening message", () => {
-    expect(turnKind(catalogContext("web"))).toBe("person");
-    expect(turnKind(catalogContext("telegram"))).toBe("person");
-    expect(turnKind(catalogContext("browser-report"))).toBe("browser-report");
-    expect(turnKind(catalogContext("scheduled-worker"))).toBe(
+    expect(turnKind(catalogContext("web"), step)).toBe("person");
+    expect(turnKind(catalogContext("telegram"), step)).toBe("person");
+    expect(turnKind(catalogContext("browser-report"), step)).toBe(
+      "browser-report"
+    );
+    expect(turnKind(catalogContext("scheduled-worker"), step)).toBe(
       "scheduled-worker"
     );
-    expect(turnKind(catalogContext("proactive-worker"))).toBe(
+    expect(turnKind(catalogContext("proactive-worker"), step)).toBe(
       "proactive-worker"
     );
-    expect(turnKind(catalogContext("scheduled-report"))).toBe(
+    expect(turnKind(catalogContext("scheduled-report"), step)).toBe(
       "scheduled-report"
     );
   });
 
   it("tells the task agent's report from the browser report whose caller it keeps", () => {
-    expect(turnKind(catalogContext("browser-report", [backgroundTask]))).toBe(
-      "background-task"
-    );
+    expect(
+      turnKind(catalogContext("browser-report", [backgroundTask]), step)
+    ).toBe("background-task");
   });
 });
 

@@ -744,6 +744,21 @@ export const env = createEnv({
         "TASK_FILES_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of compacting a long conversation (docs/roadmap.md, item 28):
+    // workspace ids or owners' emails, or `*` for every workspace, whose
+    // turns let eve summarize the older history once a step's whole input
+    // passes COMPACTION_INPUT_TOKENS, and only at the first step of a turn
+    // a person's text opened (`agent/lib/compaction/`). Only with the direct
+    // model. Unset, eve compacts only near the model's own window, as before.
+    COMPACTION_WORKSPACES: workspaceListSchema.optional(),
+    // The whole input of a step, instructions and tools included, past which
+    // a pilot turn compacts. Compaction is a model call and a miss of the
+    // prompt cache, so never below 100k.
+    COMPACTION_INPUT_TOKENS: z.coerce
+      .number()
+      .int()
+      .min(100_000)
+      .default(150_000),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),

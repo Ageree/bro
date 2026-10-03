@@ -10,6 +10,11 @@ import {
 } from "@agent/lib/browser-use/said";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
+/** The person's words of a turn read without a step: no turn id to keep. */
+function wordsOf(messages: readonly ModelMessage[]) {
+  return personWordsThisTurn(messages, { sessionId: "session-1" });
+}
+
 function person(text: string): ModelMessage {
   // eve adds `kind` to every user-role message it keeps in history.
   return Object.assign(
@@ -278,27 +283,25 @@ describe("the person's words this turn", () => {
 
   it("is the message they opened the turn with, not an earlier turn's", () => {
     expect(
-      personWordsThisTurn([
-        person("найди такси"),
-        replied(),
-        person("код 482913"),
-      ])
+      wordsOf([person("найди такси"), replied(), person("код 482913")])
     ).toEqual({ answers: [], paymentAsked: null, said: ["код 482913"] });
   });
 
   it("keeps the messages they sent one after another", () => {
     // «739204», then a second later «это код»: eve steers the second into
     // the same turn, with nothing of Bro's between them.
-    expect(
-      personWordsThisTurn([replied(), person("739204"), person("это код")])
-    ).toEqual({ answers: [], paymentAsked: null, said: ["739204", "это код"] });
+    expect(wordsOf([replied(), person("739204"), person("это код")])).toEqual({
+      answers: [],
+      paymentAsked: null,
+      said: ["739204", "это код"],
+    });
   });
 
   it("stops at anything of Bro's, an earlier turn's words never count", () => {
     // eve's history has no turn id, but a turn Bro answered always leaves a
     // reply or a tool result before the person's next message.
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("739204"),
         asked(),
         answered({ text: "да, это он" }),
@@ -309,20 +312,20 @@ describe("the person's words this turn", () => {
       paymentAsked: null,
       said: ["это код из смс, вводи быстрее"],
     });
-    expect(
-      personWordsThisTurn([person("739204"), report, person("вводи")])
-    ).toEqual({ answers: [], paymentAsked: null, said: ["вводи"] });
+    expect(wordsOf([person("739204"), report, person("вводи")])).toEqual({
+      answers: [],
+      paymentAsked: null,
+      said: ["вводи"],
+    });
   });
 
   it("is nothing in a turn Bro opened that the person said nothing in", () => {
-    expect(personWordsThisTurn([person("код 482913"), report])).toEqual(
+    expect(wordsOf([person("код 482913"), report])).toEqual(nothing);
+    expect(wordsOf([person("код 482913"), replied(), report, asked()])).toEqual(
       nothing
     );
     expect(
-      personWordsThisTurn([person("код 482913"), replied(), report, asked()])
-    ).toEqual(nothing);
-    expect(
-      personWordsThisTurn([
+      wordsOf([
         Object.assign(
           { content: "Browser run r-1 finished.", role: "user" as const },
           {
@@ -336,7 +339,7 @@ describe("the person's words this turn", () => {
   it("keeps their answers to a question in a turn Bro opened apart", () => {
     // The answer is theirs, the turn is not: it earns no consent.
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("найди такси"),
         replied(),
         report,
@@ -348,29 +351,20 @@ describe("the person's words this turn", () => {
 
   it("counts what the person wrote into a turn Bro opened", () => {
     expect(
-      personWordsThisTurn([
-        person("найди такси"),
-        replied(),
-        report,
-        person("739204"),
-      ])
+      wordsOf([person("найди такси"), replied(), report, person("739204")])
     ).toEqual({ answers: [], paymentAsked: null, said: ["739204"] });
   });
 
   it("includes what they answered to a question in the turn", () => {
     expect(
-      personWordsThisTurn([
-        person("ну что там?"),
-        asked(),
-        answered({ text: "739204" }),
-      ])
+      wordsOf([person("ну что там?"), asked(), answered({ text: "739204" })])
     ).toEqual({
       answers: ["739204"],
       paymentAsked: null,
       said: ["ну что там?"],
     });
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("бери"),
         asked([{ id: "window", label: "У окна" }]),
         answered({ optionId: "window" }),
@@ -494,15 +488,11 @@ describe("the person's answer to the payment question", () => {
 
   it("knows the question the person's message answers", () => {
     expect(
-      personWordsThisTurn([
-        person("купи сапсан"),
-        ...sent(question),
-        person("да"),
-      ])
+      wordsOf([person("купи сапсан"), ...sent(question), person("да")])
     ).toEqual({ answers: [], paymentAsked: question, said: ["да"] });
     // A courtesy question is not the one before paying.
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("купи сапсан"),
         ...sent("Нашёл сапсан на 18:40. Эконом подойдёт?"),
         person("да"),
@@ -510,7 +500,7 @@ describe("the person's answer to the payment question", () => {
     ).toBeNull();
     // Something Bro sent after the question is what the person answers.
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("купи сапсан"),
         ...sent(question),
         ...sent("Кстати, завтра дождь.", "send-2"),
@@ -519,15 +509,14 @@ describe("the person's answer to the payment question", () => {
     ).toBeNull();
     // A turn Bro opened answers nothing for the person.
     expect(
-      personWordsThisTurn([
+      wordsOf([
         person("купи сапсан"),
         ...sent(question),
         person(`${backgroundTurnMarker}\nBrowser run r-1 finished.`),
       ]).paymentAsked
     ).toBeNull();
     expect(
-      personWordsThisTurn([...sent("Shall I pay 4,320 ₽?"), person("yes")])
-        .paymentAsked
+      wordsOf([...sent("Shall I pay 4,320 ₽?"), person("yes")]).paymentAsked
     ).toBe("Shall I pay 4,320 ₽?");
   });
 });

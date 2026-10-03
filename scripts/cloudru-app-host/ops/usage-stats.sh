@@ -19,7 +19,9 @@
 #     none of the turn's own tool results, its p50/p95 and growth per turn (roadmap item 28);
 #   - errands: roubles per run_id over every source that carries it (model in the browser, its VM and proxy,
 #     the report turns), for the runs whose first cost was recorded in the window — usage_costs has no start
-#     of a run, and a run's costs land within minutes of each other.
+#     of a run, and a run's costs land within minutes of each other;
+#   - compactions: eve's summary calls in the compaction pilot (agent/lib/compaction/call.ts), by channel.
+#     They are no step and stay out of the step sections above; a report turn's call counts in its errand.
 #
 # A step without a price (units.unpriced) counts in tokens, not in roubles.
 source "$(dirname "$0")/db-lib.sh"
@@ -56,6 +58,7 @@ STEPS="WITH all_steps AS (
   LEFT JOIN chats c ON c.session_id = u.session_id AND c.workspace_id = u.workspace_id
   WHERE u.source IN ('chat', 'background', 'browser-report', 'task')
     AND u.units ? 'inputTokens'
+    AND u.idempotency_key LIKE 'step:%'
     AND u.occurred_at < :'until'::timestamptz
 ), placed_steps AS (
   SELECT *, row_number() OVER (PARTITION BY session_id, kind ORDER BY occurred_at) AS place
@@ -220,4 +223,21 @@ SELECT count(*) AS errands,
        round(avg(COALESCE(report_turns, 0)), 2) AS report_turns_avg
 FROM runs
 WHERE first_cost >= :'since'::timestamptz AND first_cost < :'until'::timestamptz;
+
+\echo
+\echo Compactions: summary calls of eve in the compaction pilot, by channel (tokens in thousands)
+SELECT CASE WHEN grouping(COALESCE(c.channel, 'none')) = 1 THEN 'all'
+            ELSE COALESCE(c.channel, 'none') END AS channel,
+       count(*) AS compactions,
+       count(DISTINCT u.session_id) AS sessions,
+       round(avg((u.units->>'inputTokens')::bigint)::numeric / 1000, 1) AS input_avg,
+       round(avg((u.units->>'outputTokens')::bigint)::numeric / 1000, 1) AS output_avg,
+       round(sum(u.cost_rub), 2) AS rub_sum,
+       count(*) FILTER (WHERE COALESCE((u.units->>'unpriced')::boolean, false)) AS unpriced
+FROM usage_costs u
+LEFT JOIN chats c ON c.session_id = u.session_id AND c.workspace_id = u.workspace_id
+WHERE u.idempotency_key LIKE 'compaction:%'
+  AND u.occurred_at >= :'since'::timestamptz AND u.occurred_at < :'until'::timestamptz
+GROUP BY ROLLUP (COALESCE(c.channel, 'none'))
+ORDER BY grouping(COALESCE(c.channel, 'none')), 1;
 SQL

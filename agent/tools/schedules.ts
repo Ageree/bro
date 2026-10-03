@@ -4,7 +4,11 @@ import type { ApprovalContext, ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { reportCardHold } from "@agent/lib/delivery/report-cards";
-import { answerableScheduledQuestions } from "@agent/lib/schedules/question";
+import { answerableThisTurn } from "@agent/lib/schedules/question";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
 import {
   scheduleConfirmation,
   scheduleDelivery,
@@ -367,7 +371,7 @@ export default defineDynamic({
   events: {
     // A scheduled report turn, a browser report or a worker speaks for
     // nobody, so only a turn the person's own message started may answer.
-    "turn.started": (_event, context) => {
+    "turn.started": (event, context) => {
       // The skills pilot's turns read the short descriptions.
       const short = skillsLayout(context) === "core";
       const managing = {
@@ -380,7 +384,14 @@ export default defineDynamic({
       // conversation, from an old question they wrote past, or from
       // nothing, as one did in a turn about a message to a friend — is
       // refused.
-      const answerable = answerableScheduledQuestions(context.messages);
+      // `turn.started` carries the turn id where `step.started` does.
+      const answerable = answerableThisTurn(
+        context.messages,
+        stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          context.session.id
+        )
+      );
       const answering = {
         ...managing,
         "schedules-answer": defineTool({
