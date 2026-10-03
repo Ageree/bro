@@ -2,12 +2,17 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { writeCookieJar } from "./cookies.ts";
+import { withRetry } from "./retry.ts";
 
 /**
  * Signs the benchmark in the way a person signs in on the site: a code to
  * the phone, then the code back. The two halves are separate commands
  * because the code comes from the owner, possibly minutes later, and is
  * passed straight to `verify` — it is never logged or stored.
+ *
+ * A POST here goes again only if it never left (`retry.ts`): a second
+ * `send-otp` would text the owner a second code, and `verify` spends the
+ * code it is given.
  */
 
 async function post(
@@ -15,13 +20,17 @@ async function post(
   path: string,
   body: Readonly<Record<string, string>>
 ) {
-  const response = await fetch(new URL(path, host), {
-    body: JSON.stringify(body),
-    // better-auth refuses a cross-site POST; the site's own origin passes.
-    headers: { "content-type": "application/json", origin: host.origin },
-    method: "POST",
-    redirect: "manual",
-  });
+  const response = await withRetry(
+    { idempotent: false, label: `POST ${path}` },
+    () =>
+      fetch(new URL(path, host), {
+        body: JSON.stringify(body),
+        // better-auth refuses a cross-site POST; the site's own origin passes.
+        headers: { "content-type": "application/json", origin: host.origin },
+        method: "POST",
+        redirect: "manual",
+      })
+  );
   if (!response.ok) {
     throw new Error(
       `${path} answered ${String(response.status)}: ${(await response.text()).slice(0, 300)}`
@@ -62,13 +71,18 @@ const sessionSchema = z
  * first message instead of on it.
  */
 export async function signedInSession(host: URL, cookie: string) {
-  const response = await fetch(new URL("/api/auth/get-session", host), {
-    headers: { cookie, origin: host.origin },
-    redirect: "manual",
-  });
-  const session = response.ok
-    ? sessionSchema.safeParse(await response.json())
-    : undefined;
+  const session = await withRetry(
+    { idempotent: true, label: "GET /api/auth/get-session" },
+    async () => {
+      const response = await fetch(new URL("/api/auth/get-session", host), {
+        headers: { cookie, origin: host.origin },
+        redirect: "manual",
+      });
+      return response.ok
+        ? sessionSchema.safeParse(await response.json())
+        : undefined;
+    }
+  );
   if (!session?.success || session.data === null) {
     throw new Error(
       `${host.origin} does not know this session any more: sign in again with \`pnpm bench otp\` and \`pnpm bench verify\`.`

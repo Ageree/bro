@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withRetry } from "../retry.ts";
 
 /**
  * The tester's Google account as Bro reaches it: a Composio connected
@@ -21,27 +22,42 @@ const accountsSchema = z.object({
   ),
 });
 
+/**
+ * One Composio call, sent again after a dropped connection only when that
+ * cannot write twice (`retry.ts`): a read, or a request that never left.
+ */
 async function composioFetch(
   apiKey: string,
   path: string,
-  init: { readonly body?: string; readonly method: "GET" | "POST" }
+  init: {
+    readonly body?: string;
+    readonly method: "GET" | "POST";
+    /** Changes nothing: a GET, or a Google GET through the proxy. */
+    readonly read: boolean;
+  }
 ) {
   const headers = new Headers({ "x-api-key": apiKey });
   if (init.body) headers.set("content-type", "application/json");
-  const response = await fetch(`${composioApi}${path}`, {
-    body: init.body,
-    headers,
-    method: init.method,
-  });
-  if (!response.ok) {
-    // Composio's errors name the problem; they carry no credentials.
-    const detail = (await response.text()).slice(0, 300);
-    throw new Error(
-      `Composio ${init.method} ${path.split("?")[0] ?? path} answered ${String(response.status)}: ${detail}`
-    );
-  }
-  const json: unknown = await response.json();
-  return json;
+  const route = path.split("?")[0] ?? path;
+  return await withRetry(
+    { idempotent: init.read, label: `Composio ${init.method} ${route}` },
+    async () => {
+      const response = await fetch(`${composioApi}${path}`, {
+        body: init.body,
+        headers,
+        method: init.method,
+      });
+      if (!response.ok) {
+        // Composio's errors name the problem; they carry no credentials.
+        const detail = (await response.text()).slice(0, 300);
+        throw new Error(
+          `Composio ${init.method} ${route} answered ${String(response.status)}: ${detail}`
+        );
+      }
+      const json: unknown = await response.json();
+      return json;
+    }
+  );
 }
 
 /**
@@ -59,6 +75,7 @@ export async function findGoogleAccount(apiKey: string, userId: string) {
   const { items } = accountsSchema.parse(
     await composioFetch(apiKey, `/connected_accounts?${query.toString()}`, {
       method: "GET",
+      read: true,
     })
   );
   const active = items.filter((item) => item.status === "ACTIVE");
@@ -118,6 +135,8 @@ export function composioProxy(apiKey: string, account: string) {
           parameters,
         }),
         method: "POST",
+        // A letter inserted or an event created twice would be a fixture twice.
+        read: request.method === "GET",
       })
     );
     return { data: result.data, status: result.status };
