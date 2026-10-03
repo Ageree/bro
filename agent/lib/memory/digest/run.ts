@@ -15,7 +15,6 @@ import {
   forgetMemory,
   listCurrentMemories,
   listMemoryScopeKeys,
-  readMemory,
   updateMemory,
 } from "@db/services/memory/records";
 import {
@@ -202,6 +201,10 @@ async function digestScope(
   }
   if (!merges) return;
   const plan = planDedupe(records.filter(({ index }) => !purged.has(index)));
+  // The revision each record is at after this digest's own writes.
+  const revisions = new Map(
+    records.map(({ index, revision }) => [index, revision])
+  );
   for (const { aliases, record } of plan.keep) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
     const done = await skipChanged(() =>
@@ -217,24 +220,23 @@ async function digestScope(
         { ...digest, action: "merge" }
       )
     );
-    if (!done) outcome.skipped += 1;
+    if (done) revisions.set(record.index, record.revision + 1);
+    else outcome.skipped += 1;
   }
-  const planned = new Map(records.map((record) => [record.index, record]));
   for (const { into, reason, record } of plan.drop) {
-    // What it folds into must still say what the plan read: a record the
-    // conversation reworded meanwhile may no longer hold this one's words.
-    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
-    const keeper = await readMemory(scope, scopeKey, into);
-    if (keeper?.content?.text !== planned.get(into)?.content.text) {
-      outcome.skipped += 1;
-      continue;
-    }
+    // What it folds into must still say what the plan read, checked in the
+    // forget's own transaction: a record the conversation reworded meanwhile
+    // may no longer hold this one's words.
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
     const done = await skipChanged(() =>
       forgetMemory(
         scope,
         scopeKey,
-        { expectedRevision: record.revision, index: record.index },
+        {
+          expectedRevision: record.revision,
+          index: record.index,
+          keeper: { index: into, revision: revisions.get(into) ?? 0 },
+        },
         `${operation}:merge:${String(record.index)}:${String(record.revision)}`,
         { ...digest, action: "merge" }
       )

@@ -104,14 +104,15 @@ function sameKind(a: MemoryContent, b: MemoryContent) {
   );
 }
 
+/** Whether two memories say the same words; one with no words says none. */
 function sameWords(a: string, b: string) {
+  const first = words(a).map(({ word }) => word);
   return (
-    words(a)
-      .map(({ word }) => word)
-      .join(" ") ===
-    words(b)
-      .map(({ word }) => word)
-      .join(" ")
+    first.length > 0 &&
+    first.join(" ") ===
+      words(b)
+        .map(({ word }) => word)
+        .join(" ")
   );
 }
 

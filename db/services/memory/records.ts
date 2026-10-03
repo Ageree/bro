@@ -395,7 +395,12 @@ export async function updateMemory(
 export async function forgetMemory(
   scope: AccessScope,
   scopeKey: string,
-  input: { index: number; expectedRevision?: number },
+  input: {
+    index: number;
+    expectedRevision?: number;
+    /** A record this one folds into, which must still be at that revision. */
+    keeper?: { readonly index: number; readonly revision: number };
+  },
   operationId: string,
   origin: MemoryOrigin = modelOrigin
 ) {
@@ -409,6 +414,26 @@ export async function forgetMemory(
       operationId
     );
     if (replay) return { forgotten: true, ...replay };
+    if (input.keeper) {
+      // Locked, as below: the text this one folds into stays what was read
+      // until the forget commits.
+      const [keeper] = await transaction
+        .select({ revision: memoryRecords.revision })
+        .from(memoryRecords)
+        .where(
+          and(
+            recordIdentity(scope, scopeKey, input.keeper.index),
+            isNotNull(memoryRecords.content)
+          )
+        )
+        .limit(1)
+        .for("update");
+      if (keeper?.revision !== input.keeper.revision) {
+        throw new Error(
+          "Memory changed: what it folds into is not what was read."
+        );
+      }
+    }
     const identity = recordIdentity(scope, scopeKey, input.index);
     // Locked: expiry, which takes no scope lock, may not bump the revision
     // this forget is about to write.

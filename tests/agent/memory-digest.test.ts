@@ -15,6 +15,7 @@ import {
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import {
+  forgetMemory,
   listCurrentMemories,
   saveMemory,
   updateMemory,
@@ -310,6 +311,50 @@ describe("the daily memory digest", () => {
       "digest",
     ]);
     expect(await historyTexts()).toContain("Любит суши.");
+  });
+
+  it("folds nothing into a memory changed after the digest read it", async () => {
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s0", source);
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Любит суши и роллы." },
+      "s1",
+      source
+    );
+    await updateMemory(
+      alice,
+      "scope-a",
+      {
+        content: memoryContentSchema.parse({ text: "Не любит рыбу." }),
+        expectedRevision: 1,
+        index: 1,
+      },
+      "u1"
+    );
+    await expect(
+      forgetMemory(
+        alice,
+        "scope-a",
+        { expectedRevision: 1, index: 0, keeper: { index: 1, revision: 1 } },
+        "digest:merge",
+        { action: "merge", actor: "digest" }
+      )
+    ).rejects.toThrow("Memory changed");
+    expect(
+      (await listCurrentMemories(alice, "scope-a")).map(
+        ({ content }) => content?.text
+      )
+    ).toEqual(["Любит суши.", "Не любит рыбу."]);
+  });
+
+  it("never folds a memory into one with no words", () => {
+    const record = (index: number, text: string) => ({
+      content: memoryContentSchema.parse({ text }),
+      index,
+      revision: 1,
+    });
+    expect(planDedupe([record(0, "!!!"), record(1, "???")]).drop).toEqual([]);
   });
 
   it("writes nothing when nothing needs doing", async () => {
