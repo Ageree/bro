@@ -61,7 +61,10 @@ describe("memory with Bro", { tags: ["agent"], timeout: 420_000 }, () => {
         .getByRole("button", "История: Не ест свинину и баранину.")
         .tap();
       const history = screen.getByRole("dialog", "История записи");
-      await history.getByRole("button", { name: /^Вернуть: / }).first().tap();
+      await history
+        .getByRole("button", { name: /^Вернуть: / })
+        .first()
+        .tap();
       await expect(history).toBeHidden();
       await expect(
         screen.getByRole("button", "История: Не ест свинину и баранину.")
