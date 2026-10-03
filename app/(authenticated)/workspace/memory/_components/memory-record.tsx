@@ -241,7 +241,7 @@ function MemoryHistory({
         <DialogHeader className="pr-10 sm:pr-6">
           <DialogTitle>История записи</DialogTitle>
           <DialogDescription>
-            Прежние тексты: любой можно вернуть. Забытое не хранится.
+            Прежние тексты, кроме правил, можно вернуть. Забытое не хранится.
           </DialogDescription>
         </DialogHeader>
         {history.data ? (
@@ -297,5 +297,53 @@ function MemoryHistory({
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Brings back a memory the digest removed or that expired, from the
+ * timeline: its record is gone, so only the kept text names it.
+ */
+export function RestoreGoneMemory({
+  expectedRevision,
+  index,
+  revision,
+  scopeKey,
+  text,
+}: {
+  readonly expectedRevision: number;
+  readonly index: number;
+  readonly revision: number;
+  readonly scopeKey: string;
+  readonly text: string;
+}) {
+  const router = useRouter();
+  const restore = api.memory.restore.useMutation({
+    onSuccess: () => {
+      router.refresh();
+    },
+  });
+
+  return (
+    <>
+      <Button
+        aria-label={`Вернуть: ${text}`}
+        disabled={restore.isPending}
+        onClick={() => {
+          restore.mutate({ expectedRevision, index, revision, scopeKey });
+        }}
+        size="act-sm"
+        type="button"
+        variant="act"
+      >
+        Вернуть
+      </Button>
+      {restore.error ? (
+        <p className="type-status text-destructive" role="alert">
+          Не вернулось: запись изменилась или память полна, открой страницу
+          заново.
+        </p>
+      ) : null}
+    </>
   );
 }

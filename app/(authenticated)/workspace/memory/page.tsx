@@ -15,7 +15,10 @@ import { readUserProfile } from "@db/services/user-profile";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { historyLine, historyText } from "./_components/history";
-import { MemoryRecordRow } from "./_components/memory-record";
+import {
+  MemoryRecordRow,
+  RestoreGoneMemory,
+} from "./_components/memory-record";
 
 export const metadata: Metadata = { title: "Память" };
 
@@ -119,6 +122,18 @@ export default async function Page() {
                     {historyText(entry) === null ? null : (
                       <p>{historyText(entry)}</p>
                     )}
+                    {entry.text !== null &&
+                    !entry.live &&
+                    entry.category !== "rule" &&
+                    entry.revision < entry.recordRevision ? (
+                      <RestoreGoneMemory
+                        expectedRevision={entry.recordRevision}
+                        index={entry.index}
+                        revision={entry.revision}
+                        scopeKey={scopeKey}
+                        text={entry.text}
+                      />
+                    ) : null}
                   </Row>
                 ))}
               </Rows>

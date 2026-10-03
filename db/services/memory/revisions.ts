@@ -1,5 +1,5 @@
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
-import { db, memoryRevisions } from "@db";
+import { db, memoryRecords, memoryRevisions } from "@db";
 import { isSafeMemoryText } from "@shared/memory/schema";
 
 /** How many revisions of a memory its history keeps. */
@@ -74,7 +74,12 @@ export async function trimMemoryHistory(workspaceId: string) {
   return trimmed.length;
 }
 
+/**
+ * A revision as the cabinet shows it. A text the filter now refuses — a code
+ * saved before it, still waiting for the digest to wipe it — is not shown.
+ */
 function historyEntry(row: typeof memoryRevisions.$inferSelect) {
+  const text = row.content?.text ?? null;
   return {
     action: row.action,
     actor: row.actor,
@@ -82,7 +87,7 @@ function historyEntry(row: typeof memoryRevisions.$inferSelect) {
     category: row.content?.category ?? null,
     index: row.recordIndex,
     revision: row.revision,
-    text: row.content?.text ?? null,
+    text: text !== null && isSafeMemoryText(text) ? text : null,
   };
 }
 
@@ -106,15 +111,31 @@ export async function listMemoryRecordHistory(
   return rows.map(historyEntry);
 }
 
-/** The latest changes to a scope's memory, newest first. */
+/**
+ * The latest changes to a scope's memory, newest first, each with the
+ * record's current revision and whether it still lives: a gone record's kept
+ * text can be brought back from here.
+ */
 export async function listMemoryTimeline(
   workspaceId: string,
   scopeKey: string,
   limit = 30
 ) {
   const rows = await db
-    .select()
+    .select({
+      live: sql<boolean>`${memoryRecords.content} IS NOT NULL`,
+      record: memoryRecords.revision,
+      revision: memoryRevisions,
+    })
     .from(memoryRevisions)
+    .innerJoin(
+      memoryRecords,
+      and(
+        eq(memoryRecords.workspaceId, memoryRevisions.workspaceId),
+        eq(memoryRecords.scopeKey, memoryRevisions.scopeKey),
+        eq(memoryRecords.index, memoryRevisions.recordIndex)
+      )
+    )
     .where(
       and(
         eq(memoryRevisions.workspaceId, workspaceId),
@@ -123,5 +144,7 @@ export async function listMemoryTimeline(
     )
     .orderBy(desc(memoryRevisions.createdAt), desc(memoryRevisions.revision))
     .limit(limit);
-  return rows.map(historyEntry);
+  return rows.map(({ live, record, revision }) =>
+    Object.assign(historyEntry(revision), { live, recordRevision: record })
+  );
 }

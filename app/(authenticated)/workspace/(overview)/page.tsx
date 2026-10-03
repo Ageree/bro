@@ -593,8 +593,9 @@ function MemorySection({ count }: { readonly count: number }) {
       title="Память"
     >
       <p className="type-fine text-muted-foreground">
-        Что Бро помнит о тебе: правила, предпочтения и факты. Каждую запись
-        можно исправить, удалить или вернуть прежний текст.
+        Что Бро помнит о тебе: правила, предпочтения и факты. Записи можно
+        исправить, удалить или вернуть их прежний текст; правила — только
+        удалить, задаются они в разговоре.
       </p>
       <Actions>
         <Link className="type-act bro-link" href="/workspace/memory">

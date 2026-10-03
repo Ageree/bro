@@ -296,23 +296,43 @@ async function cabinetScopeKey(workspaceId: string, scopeKey: string) {
   return scopeKey;
 }
 
+/** What a memory write refuses that the page can explain. */
+const refusedMemoryWrites = new Set([
+  "That revision keeps no text to bring back.",
+  "That memory is not in this profile.",
+  "A rule is set or changed only in a conversation.",
+  "Profile memory is full.",
+]);
+
 /**
  * Runs a memory write the page may have raced: a memory changed since the
- * page read it, or a text the filter refuses, comes back as a TRPC error
- * the page shows, not a crash.
+ * page read it, a text the filter refuses, or a restore the profile cannot
+ * take comes back as a TRPC error the page shows. Anything else stays an
+ * internal error, its message unseen.
  */
 async function memoryWrite<Result>(write: () => Promise<Result>) {
   try {
     return await write();
   } catch (error) {
-    if (!(error instanceof Error) || error.message === "") throw error;
-    throw new TRPCError({
-      cause: error,
-      code: /changed|forgotten/u.test(error.message)
-        ? "CONFLICT"
-        : "BAD_REQUEST",
-      message: error.message,
-    });
+    if (!(error instanceof Error)) throw error;
+    if (error.message.startsWith("Memory changed")) {
+      throw new TRPCError({
+        cause: error,
+        code: "CONFLICT",
+        message: "Memory changed. Open the page again.",
+      });
+    }
+    if (error.name === "ZodError" || refusedMemoryWrites.has(error.message)) {
+      throw new TRPCError({
+        cause: error,
+        code: "BAD_REQUEST",
+        message:
+          error.name === "ZodError"
+            ? "That text cannot be kept in memory."
+            : error.message,
+      });
+    }
+    throw error;
   }
 }
 

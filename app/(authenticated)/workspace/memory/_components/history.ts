@@ -1,14 +1,14 @@
-import type { listMemoryTimeline } from "@db/services/memory/revisions";
+import type { listMemoryRecordHistory } from "@db/services/memory/revisions";
 
-type HistoryEntry = Awaited<ReturnType<typeof listMemoryTimeline>>[number];
+type HistoryEntry = Awaited<ReturnType<typeof listMemoryRecordHistory>>[number];
 
 const actions: Record<HistoryEntry["action"], string> = {
-  correct: "исправлено сводкой",
+  correct: "исправлено",
   expire: "истёк срок",
   forget: "забыто",
   import: "перенесено",
-  merge: "объединено сводкой",
-  one_off: "убрано сводкой как разовое",
+  merge: "объединено",
+  one_off: "убрано как разовое",
   purge: "вычищен код",
   restore: "возвращено",
   save: "сохранено",
@@ -19,7 +19,7 @@ const actors: Record<HistoryEntry["actor"], string> = {
   digest: "сводка",
   model: "Бро",
   person: "ты",
-  system: "Бро",
+  system: "система",
 };
 
 /** «02.10, 14:05 · изменено · ты» on the person's own clock. */
@@ -31,14 +31,7 @@ export function historyLine(entry: HistoryEntry, timeZone: string) {
     month: "2-digit",
     timeZone,
   }).format(new Date(entry.at));
-  const who =
-    entry.action === "merge" ||
-    entry.action === "correct" ||
-    entry.action === "one_off" ||
-    entry.action === "purge"
-      ? ""
-      : ` · ${actors[entry.actor]}`;
-  return `${at} · ${actions[entry.action]}${who}`;
+  return `${at} · ${actions[entry.action]} · ${actors[entry.actor]}`;
 }
 
 /** Removals leave no text of their own: the revision before keeps it. */

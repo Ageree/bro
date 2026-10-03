@@ -1345,12 +1345,13 @@ function memoryWords(text: string) {
 }
 
 /**
- * Forgetting a record also wipes the history of the gone records the digest
- * folded into it: a duplicate it merged, an older fact it corrected. Their
- * text stays restorable for 30 days only while what holds it lives; the
- * person who deleted the memory meant those words too. A gone record goes
- * when every word of one of its kept texts is in the forgotten record, as
- * it reads now or read at any kept revision.
+ * Forgetting a record also wipes the history of the gone records folded
+ * into it: a duplicate the digest merged, an older fact it corrected, the
+ * copy a move to the pinned scope key retired under the old key. Their text
+ * stays restorable for 30 days only while what holds it lives; the person
+ * who deleted the memory meant those words too. A gone record of any of the
+ * workspace's scopes goes when every word of one of its kept texts is in the
+ * forgotten record, as it reads now or read at any kept revision.
  */
 async function wipeFoldedHistory(
   transaction: Transaction,
@@ -1379,6 +1380,7 @@ async function wipeFoldedHistory(
     .select({
       content: memoryRevisions.content,
       index: memoryRevisions.recordIndex,
+      scopeKey: memoryRevisions.scopeKey,
     })
     .from(memoryRevisions)
     .innerJoin(
@@ -1392,23 +1394,22 @@ async function wipeFoldedHistory(
     .where(
       and(
         eq(memoryRevisions.workspaceId, scope.workspaceId),
-        eq(memoryRevisions.scopeKey, scopeKey),
         isNotNull(memoryRevisions.content),
         sql`${memoryRecords.content} IS NULL`,
-        sql`${memoryRevisions.recordIndex} <> ${record.index}`
+        sql`NOT (${memoryRevisions.scopeKey} = ${scopeKey} AND ${memoryRevisions.recordIndex} = ${record.index})`
       )
     );
-  const folded = new Set(
-    kept.flatMap(({ content, index }) => {
+  const folded = new Map(
+    kept.flatMap(({ content, index, scopeKey: key }) => {
       const words = content ? memoryWords(content.text) : [];
       return words.length > 0 && words.every((word) => said.has(word))
-        ? [index]
+        ? [[`${key}\0${String(index)}`, { index, key }] as const]
         : [];
     })
   );
   await Promise.all(
-    [...folded].map((index) =>
-      wipeRecordHistory(transaction, scope, scopeKey, index)
+    [...folded.values()].map(({ index, key }) =>
+      wipeRecordHistory(transaction, scope, key, index)
     )
   );
 }
