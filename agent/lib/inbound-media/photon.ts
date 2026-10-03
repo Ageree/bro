@@ -1,14 +1,18 @@
 import type { Attachment, Message } from "chat";
 import { z } from "zod";
-import { downloadWithin } from "./download";
+import { documentDownloadTimeoutMs, downloadWithin } from "./download";
 import {
   audioByteCap,
   baseMediaType,
+  documentByteCap,
+  documentBytesMatch,
+  documentMediaType,
   inlineImageByteCap,
   isAudioMediaType,
   isImageMediaType,
   pdfByteCap,
   resolveMediaType,
+  textDocumentLooksLikeAudio,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -102,7 +106,8 @@ function within(bytes: Uint8Array, maxBytes: number): AttachmentBytes {
 async function attachmentBytes(
   attachment: Attachment,
   reader: Reader,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs?: number
 ): Promise<AttachmentBytes> {
   // The adapter reports the size up front, so a file the model would never
   // receive is refused before its bytes are pulled into memory.
@@ -125,7 +130,7 @@ async function attachmentBytes(
     return { kind: "failed", reason: "read failed" };
   }
   if (attachment.url && URL.canParse(attachment.url)) {
-    return downloadWithin(new URL(attachment.url), maxBytes);
+    return downloadWithin(new URL(attachment.url), maxBytes, { timeoutMs });
   }
   return { kind: "failed", reason: "no source" };
 }
@@ -141,9 +146,48 @@ function isVoiceName(name: string | undefined) {
   return name?.toLowerCase().endsWith(".caf") === true;
 }
 
+/**
+ * A spreadsheet or document for the task agent (`documentMediaType`), or the
+ * note it was before when the name, the declared type or the bytes say it is
+ * not one.
+ */
+function taskDocumentItem(
+  attachment: Attachment,
+  declared: string | undefined,
+  bytes: Uint8Array,
+  mediaType: string | undefined
+): InboundMediaItem {
+  const taskType = documentMediaType(attachment.name, declared);
+  if (
+    attachment.name === undefined ||
+    taskType === undefined ||
+    !documentBytesMatch(taskType, bytes)
+  ) {
+    return { kind: "note", text: fileNote(attachment.name, mediaType) };
+  }
+  if (bytes.byteLength > documentByteCap) {
+    return {
+      kind: "note",
+      text: fileNote(attachment.name, taskType, "слишком большой"),
+    };
+  }
+  console.info("[inbound-media] photon document", {
+    bytes: bytes.byteLength,
+    mediaType: taskType,
+    status: "ok",
+  });
+  return {
+    data: bytes,
+    filename: attachment.name,
+    kind: "document",
+    mediaType: taskType,
+  };
+}
+
 async function attachmentItem(
   attachment: Attachment,
-  reader: Reader
+  reader: Reader,
+  documents: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(attachment.mimeType);
   const voiceLike =
@@ -153,10 +197,17 @@ async function attachmentItem(
   if (voiceLike && !transcriptionAvailable()) {
     return { kind: "voice-unsupported" };
   }
+  // A file that may be one for the task agent is up to 10 MB: its download
+  // gets a document's time, not a photo's.
   const resolved = await attachmentBytes(
     attachment,
     reader,
-    byteCapFor(declared, voiceLike)
+    byteCapFor(declared, voiceLike),
+    documents &&
+      !voiceLike &&
+      documentMediaType(attachment.name, declared) !== undefined
+      ? documentDownloadTimeoutMs
+      : undefined
   );
   if (resolved.kind === "oversize") {
     if (voiceLike) return { kind: "voice-failed" };
@@ -176,6 +227,19 @@ async function attachmentItem(
       kind: "note",
       text: fileNote(attachment.name, declared, "не удалось получить"),
     };
+  }
+  // A UTF-16 text file's byte order mark, or a text that begins with «ID3»,
+  // reads as MPEG audio: the name and the bytes decide it before the sniff
+  // could send it to transcription.
+  const taskType =
+    documents && !voiceLike
+      ? documentMediaType(attachment.name, declared)
+      : undefined;
+  if (
+    taskType !== undefined &&
+    textDocumentLooksLikeAudio(taskType, resolved.bytes)
+  ) {
+    return taskDocumentItem(attachment, declared, resolved.bytes, taskType);
   }
   const mediaType =
     resolveMediaType(resolved.bytes, resolved.mediaType) ?? declared;
@@ -222,22 +286,28 @@ async function attachmentItem(
       ? { kind: "transcript", text: transcript.text }
       : { kind: "voice-failed" };
   }
+  if (documents) {
+    return taskDocumentItem(attachment, declared, resolved.bytes, mediaType);
+  }
   return { kind: "note", text: fileNote(attachment.name, mediaType) };
 }
 
 /**
  * The turn for an iMessage that carries attachments, or `undefined` when it is
- * text only and eve's default turn applies.
+ * text only and eve's default turn applies. `documents` (`taskFilesEnabled`)
+ * also hands the model the spreadsheets and documents the task agent can
+ * open; without it they stay a note.
  */
 export async function photonMediaTurn(
-  message: Message
+  message: Message,
+  { documents = false }: { readonly documents?: boolean } = {}
 ): Promise<InboundTurn | undefined> {
   const attachments = message.attachments;
   if (attachments.length === 0) return undefined;
   const readers = rawReaders(message);
   const items = await Promise.all(
     attachments.map((attachment, index) =>
-      attachmentItem(attachment, readers[index])
+      attachmentItem(attachment, readers[index], documents)
     )
   );
   return inboundTurn(message.text, items);

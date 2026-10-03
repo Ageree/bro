@@ -58,6 +58,7 @@ function emptyBySource(): Record<UsageCostSource, number> {
     chat: 0,
     memory: 0,
     proxy: 0,
+    task: 0,
   };
 }
 

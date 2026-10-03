@@ -8,7 +8,8 @@ import { usdToRub } from "@shared/costs/prices";
  * Every model step of Bro's own turns, on every channel, into
  * `usage_costs`: the web chat used to be the only place a step's price was
  * summed (`chats.cost_usd`, in the browser), so Telegram, iMessage, the
- * schedules' workers and the browser reports cost nothing anywhere. The key
+ * schedules' workers and the browser reports cost nothing anywhere; the
+ * task agent re-exports this hook, so its steps count as `task`. The key
  * is the step's own coordinates, which a retried hook computes again, so a
  * step is counted once. OpenRouter prices a step in dollars; a step without
  * a price (a Gateway model) keeps its tokens at zero roubles, marked
@@ -22,7 +23,7 @@ export default defineHook({
     async "step.completed"(event, ctx) {
       const workspaceId = turnWorkspaceId(ctx.session.auth);
       if (workspaceId === undefined) return;
-      const { runId, source } = turnCostSource(ctx.session.auth);
+      const { runId, source } = turnCostSource(ctx.session);
       const { stepIndex, turnId, usage } = event.data;
       const costUsd = usage?.costUsd;
       await recordCost({
@@ -31,7 +32,9 @@ export default defineHook({
         idempotencyKey: `step:${ctx.session.id}:${turnId}:${String(stepIndex)}`,
         occurredAt: new Date(event.meta.at),
         runId: runId ?? null,
-        sessionId: ctx.session.id,
+        // The task agent's step is filed under the conversation that
+        // delegated it, which `chats` knows; the key keeps its own session.
+        sessionId: ctx.session.parent?.rootSessionId ?? ctx.session.id,
         source,
         units: {
           cachedInputTokens: usage?.cacheReadTokens ?? 0,

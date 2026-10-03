@@ -29,10 +29,31 @@ const workspaceId = "workspace-1";
 
 /** Every variable a case sets; `tests/setup-env.ts` unsets them all. */
 const variables = [
+  "BROWSER_STATE_BUCKET",
   "BROWSER_USE_API_KEY",
+  "CLOUDRU_KEY_ID",
+  "CLOUDRU_KEY_SECRET",
+  "CLOUDRU_S3_TENANT_ID",
   "OPENROUTER_API_KEY",
+  "SANDBOX_HOST_ID",
+  "SANDBOX_HOST_ORIGIN",
+  "SANDBOX_SIGNING_KEY",
+  "SANDBOX_WORKSPACES",
   "SKILLS_WORKSPACES",
+  "TASK_FILES_WORKSPACES",
 ] as const;
+
+/** The task agent and the object store, so the person's files reach it. */
+const taskFiles = {
+  BROWSER_STATE_BUCKET: "test-bucket",
+  CLOUDRU_KEY_ID: "test-key-id",
+  CLOUDRU_KEY_SECRET: "test-key-secret",
+  CLOUDRU_S3_TENANT_ID: "test-tenant",
+  SANDBOX_HOST_ID: "sbx-test",
+  SANDBOX_HOST_ORIGIN: "https://sandbox.example.test",
+  SANDBOX_SIGNING_KEY: "ab".repeat(32),
+  SANDBOX_WORKSPACES: "*",
+};
 
 async function load(
   environment: Partial<Record<(typeof variables)[number], string>> = {
@@ -379,6 +400,43 @@ describe("the skills memory slot", () => {
     ).toEqual([null, null]);
   });
 
+  it("attaches the rules for files only where the person's files reach the task agent", async () => {
+    const document = person(
+      "[файл: смета.xlsx (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet)]"
+    );
+    const recalledIds = async (
+      environment: Parameters<typeof load>[0]
+    ): Promise<string[]> => {
+      const { skills } = await load(environment);
+      const recalled = recalledSchema.parse(
+        await skills.provider.recall["turn.started"](
+          turnContext({ input: [document] })
+        )
+      );
+      return (recalled?.messages ?? []).map(({ id }) => id);
+    };
+    const pilot = {
+      BROWSER_USE_API_KEY: "test-browser-use-key",
+      OPENROUTER_API_KEY: "test-openrouter-key",
+      SKILLS_WORKSPACES: workspaceId,
+    };
+    expect(await recalledIds(pilot)).not.toContain("skill:files");
+    expect(
+      await recalledIds({
+        ...pilot,
+        ...taskFiles,
+        TASK_FILES_WORKSPACES: "workspace-2",
+      })
+    ).not.toContain("skill:files");
+    expect(
+      await recalledIds({
+        ...pilot,
+        ...taskFiles,
+        TASK_FILES_WORKSPACES: workspaceId,
+      })
+    ).toEqual(["skill:files"]);
+  });
+
   it("attaches the browser's rules to a browser run's report", async () => {
     const { skillRecord, skills } = await load();
     const recalled = recalledSchema.parse(
@@ -554,6 +612,26 @@ describe("load_skill", () => {
     expect(run(tool, "weather")).toMatch(
       /^There is no skill «weather»\. The skills are: browser, .*\bgames\b.*\.$/u
     );
+  });
+
+  it("names the files among the skills only where they reach the task agent", async () => {
+    const pilot = {
+      BROWSER_USE_API_KEY: "test-browser-use-key",
+      OPENROUTER_API_KEY: "test-openrouter-key",
+      SKILLS_WORKSPACES: workspaceId,
+    };
+    expect(run(await resolveTool(await load(pilot)), "weather")).not.toMatch(
+      /\bfiles\b/u
+    );
+    const tool = await resolveTool(
+      await load({
+        ...pilot,
+        ...taskFiles,
+        TASK_FILES_WORKSPACES: workspaceId,
+      })
+    );
+    expect(run(tool, "weather")).toMatch(/\bschedules, files, images\b/u);
+    expect(run(tool, "files")).toMatch(/^<bro-skill name="files">\n/u);
   });
 
   it("points to the block already above instead of a second copy", async () => {

@@ -1,6 +1,7 @@
 import { defineAgent, defineDynamic } from "eve";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { offlineRefusal } from "@agent/lib/sandbox/offline";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 import { getWorkspaceModelId } from "@db/services/settings";
 import { env } from "@shared/environment";
@@ -30,6 +31,14 @@ export default defineAgent({
         // withheld tools: the agent itself refuses before any sandbox work.
         if (!(await taskAgentPilot(scope))) {
           throw new Error("The task agent is not enabled for this workspace.");
+        }
+        // Its sandbox had to go off the web and could not be marked so, or
+        // whether it had to could not be checked: the tool router would
+        // still let it out (`offlineRefusal`).
+        if (offlineRefusal() !== "none") {
+          throw new Error(
+            "The task agent's sandbox could not be taken off the web; it does not work until it is. Tell the person the helper is unavailable for now."
+          );
         }
         return modelSelection(
           env.TASK_AGENT_MODEL ?? (await getWorkspaceModelId(scope))

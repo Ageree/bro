@@ -153,7 +153,15 @@ export const proactiveEventListSchema = z.object({
     .optional(),
 });
 
-/** The fields the check asks Google for, to fit `proactiveEventListSchema`. */
+/** The fields every check asks Google for. */
+export const proactiveEventBaseFields =
+  "items(id,status,start,summary,location)";
+
+/**
+ * The fields a check of the subscriptions pilot asks Google for: also whose
+ * the event is, for its flight watches (`isOwnFlight`). They fit
+ * `proactiveEventListSchema`, where they are optional.
+ */
 export const proactiveEventFields =
   "items(id,status,start,summary,location,eventType,organizer(self),attendees(self,responseStatus))";
 

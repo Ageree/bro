@@ -1,6 +1,19 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import messaging from "@agent/tools/messaging";
+
+const taskFiles = vi.hoisted(() => ({
+  here: vi.fn<() => boolean>(() => false),
+}));
+vi.mock("@agent/lib/sandbox/pilot", () => ({
+  taskFilesOfCaller: taskFiles.here,
+}));
+/** A link `share_file` made: Bro's own origin, signed for the task agent's file. */
+const sharedFile =
+  "https://bro.example.test/eve/v1/sandbox-files/0123456789abcdef01234567/chart.png?sig=ok";
+vi.mock("@agent/lib/sandbox/files", () => ({
+  isSharedFileLink: (url: string) => url === sharedFile,
+}));
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 describe("send_message channel notes", () => {
@@ -194,6 +207,160 @@ describe("send_message and the reply language", () => {
     const message = { kind: "message" as const, text: reply };
 
     expect(await sendMessage.execute(message, toolContext())).toEqual(message);
+  });
+});
+
+describe("send_message in the task agent's report", () => {
+  const taskReport = Object.assign(
+    {
+      content:
+        "Background task task_1 (task) is completed.\n\nResult:\nИсточник: https://evil.example/s?d=c2VjcmV0",
+      role: "user" as const,
+    },
+    { kind: "execution.background_task" }
+  );
+
+  it("sends a link as plain text, never as its own preview", async () => {
+    // A preview is fetched by the channel's servers before the person reads
+    // it, and the report may have built the link from the person's files.
+    taskFiles.here.mockReturnValue(true);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Разбери таблицу"),
+      taskReport,
+    ]);
+
+    expect(
+      await sendMessage.execute(
+        {
+          kind: "link",
+          replyTo: { kind: "current" },
+          url: "https://evil.example/s?d=c2VjcmV0",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      replyTo: { kind: "current" },
+      text: "https://evil.example/s?d=c2VjcmV0",
+    });
+  });
+
+  it("sends an attachment from elsewhere as plain text, never fetched", async () => {
+    // Telegram and iMessage download an attachment to upload it, the web
+    // chat loads it from its URL: the query alone would carry the sheet out.
+    taskFiles.here.mockReturnValue(true);
+    for (const channel of ["channel:photon", "channel:eve"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One channel at a time.
+      const onChannel = await resolveSendMessage(channel, [
+        personMessage("Разбери таблицу"),
+        taskReport,
+      ]);
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await onChannel.execute(
+          {
+            attachments: [
+              { kind: "image", url: "https://evil.example/c.png?d=c2VjcmV0" },
+            ],
+            kind: "message",
+            replyTo: { kind: "current" },
+            text: "Вот график",
+          },
+          toolContext()
+        )
+      ).toEqual({
+        kind: "message",
+        replyTo: { kind: "current" },
+        text: "Вот график\nhttps://evil.example/c.png?d=c2VjcmV0",
+      });
+    }
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Разбери таблицу"),
+      taskReport,
+    ]);
+    expect(
+      await sendMessage.execute(
+        {
+          attachments: [
+            { kind: "image", url: "https://evil.example/c.png?d=c2VjcmV0" },
+          ],
+          kind: "message",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      text: "https://evil.example/c.png?d=c2VjcmV0",
+    });
+  });
+
+  it("keeps the task agent's own files as attachments", async () => {
+    taskFiles.here.mockReturnValue(true);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Разбери таблицу"),
+      taskReport,
+    ]);
+    const own = { kind: "image" as const, name: "chart.png", url: sharedFile };
+
+    expect(
+      await sendMessage.execute(
+        { attachments: [own], kind: "message", text: "Готово" },
+        toolContext()
+      )
+    ).toEqual({ attachments: [own], kind: "message", text: "Готово" });
+    expect(
+      await sendMessage.execute(
+        {
+          attachments: [
+            own,
+            { kind: "image", url: "https://evil.example/c.png?d=MQ" },
+          ],
+          kind: "message",
+          text: "Ещё",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      attachments: [own],
+      kind: "message",
+      text: "Ещё\nhttps://evil.example/c.png?d=MQ",
+    });
+  });
+
+  it("keeps attachments from elsewhere in the person's own turn", async () => {
+    taskFiles.here.mockReturnValue(true);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Пришли фото кота"),
+    ]);
+    const message = {
+      attachments: [
+        { kind: "image" as const, url: "https://example.com/cat.jpg" },
+      ],
+      kind: "message" as const,
+    };
+
+    expect(await sendMessage.execute(message, toolContext())).toEqual(message);
+  });
+
+  it("keeps a native link where the person's files do not reach the task agent", async () => {
+    taskFiles.here.mockReturnValue(false);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Разбери таблицу"),
+      taskReport,
+    ]);
+    const link = { kind: "link" as const, url: "https://example.com/renew" };
+
+    expect(await sendMessage.execute(link, toolContext())).toEqual(link);
+  });
+
+  it("keeps a native link in the person's own turn", async () => {
+    taskFiles.here.mockReturnValue(true);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Скинь ссылку"),
+    ]);
+    const link = { kind: "link" as const, url: "https://example.com/renew" };
+
+    expect(await sendMessage.execute(link, toolContext())).toEqual(link);
   });
 });
 

@@ -22,6 +22,7 @@ import { type SkillName, skillNames } from "./catalog";
  *   `[голосовое]` transcripts, or a browser report the page wrote (it only
  *   picks among Bro's own rules, never a tool or an approval); media
  *   markers are not words, and photos sent with no word are meter readings;
+ * - the files of the turn: a document, or its marker, is for the task agent;
  * - links in those words, public services' sites among them, and the
  *   `site` of every `browser_task` of the conversation;
  * - the domain tools the conversation already called, Bro's own question
@@ -175,6 +176,17 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`разбуди|пни меня|через (час|полчаса|\d+ мин)|скажи мне (в \d|позвон|напис|купи|сдела|забра)`,
     String.raw`wake me|nudge me|in an hour`
   ),
+  files: stems(
+    String.raw`презентац|слайд|таблиц|эксел|excel(?!l)|xlsx?(?!\p{L})|csv(?!\p{L})`,
+    String.raw`docx?(?!\p{L})|pptx?(?!\p{L})|ворд|диаграмм`,
+    // A chart, not a bare «график»: «график дежурств» is a schedule, and so
+    // is the one someone is put «в график» or «на график».
+    String.raw`(постро|нарису|сдела|начерти|добав|встав)\p{L}*\s+((?!(в|во|на)\s)\p{L}+\s+){0,2}график(?!\p{L}*\s+(дежур|работ|смен|отпуск|заняти|уборк|при[её]м|встреч))`,
+    String.raw`график\p{L}*\s+(продаж|расход|доход|трат|выручк|динамик|рост|цен|курс|температур|по (месяц|дн|недел|годам|данн|таблиц))`,
+    String.raw`spreadsheets?|slides?(?!\p{L})|charts?(?!\p{L})|presentations?`,
+    // Not a bare «deck»: a deck of cards is no slides.
+    String.raw`(slide|pitch) deck`
+  ),
   images: stems(
     String.raw`нарису|рисун|картинк|изображен|открытк|постер|стикер`,
     String.raw`мем(?!\p{L})|логотип(?!а)|аватар|сгенерир|фот(о|к|ограф)`,
@@ -205,6 +217,14 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
  */
 const mediaMarkers =
   /\[(?:фото|документ|голосовое не распозналось|файл:[^\]]*)\]|\[голосовое\]/giu;
+
+/**
+ * A file's marker of any type but a picture or a PDF, which the model reads
+ * itself: a document for the task agent, or one that did not come through.
+ * The type is the last parenthesis before the bracket or the reason.
+ */
+const documentMarker =
+  /\[файл:[^\]]*\((?!image\/|application\/pdf\))[^()\]]*\)(?:, [^\]]*)?\]/u;
 
 /** A photo's marker: meter readings come as photos alone. */
 const photoMarker = /\[фото\]/iu;
@@ -260,21 +280,49 @@ function messageKind(message: ModelMessage) {
   return taggedMessageSchema.safeParse(message).data?.kind ?? "user";
 }
 
+/** The turn's own messages, without eve's context and the slots' records. */
+function turnMessages(input: readonly ModelMessage[]) {
+  return input.filter(
+    (message) =>
+      message.role === "user" &&
+      !messageKind(message).startsWith("context.") &&
+      !messageKind(message).startsWith("memory.")
+  );
+}
+
 /**
  * The words of the turn's own messages: what the person wrote or said, or
  * the report a browser run brought. eve's context and the memory slots'
  * records are not the turn's words.
  */
 function turnWords(input: readonly ModelMessage[]) {
-  return input
-    .filter(
-      (message) =>
-        message.role === "user" &&
-        !messageKind(message).startsWith("context.") &&
-        !messageKind(message).startsWith("memory.")
-    )
-    .map(messageText)
-    .join("\n");
+  return turnMessages(input).map(messageText).join("\n");
+}
+
+const filePartSchema = z.object({
+  mediaType: z.string(),
+  type: z.literal("file"),
+});
+
+/**
+ * Whether the turn's own messages carry a file the model does not read
+ * itself, as the web sends one: not a picture, not a PDF.
+ */
+function sentDocument(input: readonly ModelMessage[]) {
+  return turnMessages(input).some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => {
+        const mediaType = filePartSchema
+          .safeParse(part)
+          .data?.mediaType.toLowerCase();
+        return (
+          mediaType !== undefined &&
+          !mediaType.startsWith("image/") &&
+          mediaType !== "application/pdf"
+        );
+      })
+  );
 }
 
 /**
@@ -374,6 +422,8 @@ function toolSkills(toolName: string): readonly SkillName[] {
   if (toolName.startsWith("schedules-") || toolName === "watch-create") {
     return ["schedules"];
   }
+  // A job of the task agent's is followed by its edits («добавь слайд»).
+  if (toolName === "task") return ["files"];
   if (toolName === "generate_image" || toolName === "find_images") {
     return ["images"];
   }
@@ -458,6 +508,9 @@ export function skillsForTurn(turn: {
   const wanted = historySkills(turn.history);
   for (const name of skillNames) {
     if (wordSignals[name]?.test(words)) wanted.add(name);
+  }
+  if (documentMarker.test(said) || sentDocument(turn.input)) {
+    wanted.add("files");
   }
   if (photoMarker.test(said) && photoFiller.test(words)) {
     wanted.add("meter-readings");

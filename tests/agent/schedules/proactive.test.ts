@@ -446,6 +446,65 @@ describe("proactive schedule", () => {
     );
   });
 
+  it("never lets a full run cut a flight's reminder, nor marks one it did not carry", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    // A reconnect: more new events than one run carries.
+    const events = Array.from({ length: 13 }, (_, index) => ({
+      dedupeKey: `event${String(index)}`,
+      itemId: `event${String(index)}`,
+      source: "calendar" as const,
+      threadId: null,
+    }));
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: events,
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    const queued = proactive.queue.mock.calls[0]?.[0];
+    expect(queued?.signals).toHaveLength(12);
+    expect(queued?.signals[0]).toEqual(checkinSignal);
+    // Written as done only together with the run that carries it: before,
+    // the cut reminder was written as done and never went.
+    expect({
+      carried: queued?.signals.some(
+        ({ dedupeKey }) => dedupeKey === checkinSignal.dedupeKey
+      ),
+      done: flights.record.mock.lastCall?.[1].done,
+    }).toEqual({ carried: true, done: ["checkin"] });
+
+    // Thirteen flights due at once: the run carries twelve, and the
+    // thirteenth stays due for the next check instead of being marked done.
+    flights.record.mockClear();
+    flights.live.mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => ({
+        ...flightWatchRow(),
+        id: `watch-${String(index)}`,
+        source: { ...dp405, eventId: `flight${String(index)}` },
+      }))
+    );
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(proactive.queue.mock.lastCall?.[0].signals).toHaveLength(12);
+    // The drive is written for each, the reminder only for those carried.
+    expect(
+      flights.record.mock.calls
+        .filter(([, state]) => state.done.length > 0)
+        .map(([id]) => id)
+    ).toEqual(
+      Array.from({ length: 12 }, (_, index) => `watch-${String(index)}`)
+    );
+  });
+
   it("keeps a flight's reminder due while the job is busy, and measures nothing for one already sent", async () => {
     flights.pilot.mockResolvedValue(true);
     flights.live.mockResolvedValue([flightWatchRow()]);
@@ -495,6 +554,48 @@ describe("proactive schedule", () => {
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(proactive.queue).toHaveBeenCalledOnce();
+  });
+
+  it("hands a flight's reminders over first on an evening check with a full run", async () => {
+    // 21:30 in Moscow: the evening check of the pilot, both of DP 405's
+    // reminders due, and more new events than one run carries.
+    const evening = new Date("2026-09-23T18:30:00.000Z");
+    vi.setSystemTime(evening);
+    proactive.claimWatches.mockResolvedValue([
+      { ...watch(), leaseUntil: new Date("2026-09-23T18:45:00.000Z") },
+    ]);
+    flights.pilot.mockResolvedValue(true);
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: Array.from({ length: 13 }, (_, index) => ({
+        dedupeKey: `event${String(index)}`,
+        itemId: `event${String(index)}`,
+        source: "calendar" as const,
+        threadId: null,
+      })),
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(probe).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ nightOnly: true })
+    );
+    const queued = proactive.queue.mock.calls[0]?.[0];
+    expect(queued?.signals).toHaveLength(12);
+    expect(
+      queued?.signals.slice(0, 2).map(({ dedupeKey }) => dedupeKey)
+    ).toEqual([
+      `${checkinSignal.dedupeKey.replace("#checkin", "")}#evening`,
+      checkinSignal.dedupeKey,
+    ]);
+    expect(flights.record.mock.lastCall?.[1].done).toEqual([
+      "evening",
+      "checkin",
+    ]);
   });
 
   it("holds the evening's ordinary mail for the morning from 21:00 in the pilot", async () => {

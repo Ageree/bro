@@ -3,6 +3,7 @@ import { customProxy } from "@agent/lib/browser-use/proxy";
 import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
 import { memoryDigestModelId } from "@agent/lib/memory/digest/classifier";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
+import { taskFilesDeployed } from "@agent/lib/sandbox/pilot";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
@@ -24,6 +25,11 @@ export function keptData() {
     ...(artifactStorageConfigured()
       ? [
           "Файлы — вложения писем, файлы с Диска, нарисованные картинки и снимки страниц из поручений — в приватном хранилище Object Storage облака Cloud.ru.",
+        ]
+      : []),
+    ...(taskFilesDeployed()
+      ? [
+          "Файлы, которые Бро передаёт помощнику с компьютером, копируются в его песочницу на Cloud.ru и в приватное хранилище Object Storage Cloud.ru.",
         ]
       : []),
     "Приложение и сам Бро работают на Vercel; история переписки (сессии Бро) хранится там же, в Vercel Workflow.",

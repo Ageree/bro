@@ -23,6 +23,7 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import {
   sendMessageToolResultSchema,
@@ -287,7 +288,11 @@ export default photonIMessageChannel({
     const turnContext = await firstContactContext(scope);
     // Photos and voice notes are read from the Photon message here, because
     // the adapter exposes no URL for them and the model otherwise sees nothing.
-    const media = await photonMediaTurn(message);
+    // Spreadsheets and documents reach the model only where the task agent
+    // gets them.
+    const media = await photonMediaTurn(message, {
+      documents: taskFilesEnabled(scope.workspaceId),
+    });
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
     if (media.notice) await context.thread.post({ raw: media.notice });
     if (media.message === undefined) {

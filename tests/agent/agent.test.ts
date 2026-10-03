@@ -41,6 +41,7 @@ vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
+  taskFilesOfCaller: () => false,
 }));
 vi.mock("@agent/lib/history/pilot", () => ({
   historyTrimPilot: services.historyTrimPilot,

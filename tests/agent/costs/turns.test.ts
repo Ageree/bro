@@ -30,7 +30,19 @@ function auth(current: Caller | null, initiator: Caller | null = current) {
   return { current, initiator };
 }
 
-function context(current: Caller | null, initiator: Caller | null = current) {
+// The person's conversation delegated to the task agent, one level down.
+const delegatedBy = {
+  callId: "call-1",
+  rootSessionId: "session-root",
+  sessionId: "session-root",
+  turn: { id: "turn-7", sequence: 7 },
+};
+
+function context(
+  current: Caller | null,
+  initiator: Caller | null = current,
+  parent?: typeof delegatedBy
+) {
   return {
     agent: { name: "test-agent" },
     channel: {},
@@ -43,6 +55,7 @@ function context(current: Caller | null, initiator: Caller | null = current) {
     session: {
       auth: auth(current, initiator),
       id: "session-1",
+      ...(parent && { parent }),
       turn: { id: "turn-1", sequence: 0 },
     },
   } satisfies HookContext;
@@ -87,7 +100,7 @@ describe("whose turn a model step is", () => {
       "photon-imessage",
       "telegram-webhook",
     ]) {
-      expect(turnCostSource(auth(caller(authenticator)))).toEqual({
+      expect(turnCostSource({ auth: auth(caller(authenticator)) })).toEqual({
         runId: undefined,
         source: "chat",
       });
@@ -96,12 +109,12 @@ describe("whose turn a model step is", () => {
 
   it("is a browser report's, with its run, when a run's report opened it", () => {
     expect(
-      turnCostSource(
-        auth(
+      turnCostSource({
+        auth: auth(
           caller("browser-result", { browserRunId: "run-1" }),
           caller("authjs")
-        )
-      )
+        ),
+      })
     ).toEqual({ runId: "run-1", source: "browser-report" });
   });
 
@@ -111,42 +124,57 @@ describe("whose turn a model step is", () => {
       caller("scheduled-worker", { scheduledRunKind: "proactive" }),
       caller("scheduled-result"),
     ]) {
-      expect(turnCostSource(auth(current)).source).toBe("background");
+      expect(turnCostSource({ auth: auth(current) }).source).toBe("background");
+    }
+  });
+
+  it("is the task agent's in a delegated session, whatever caller it inherited", () => {
+    for (const current of [
+      caller("authjs"),
+      caller("browser-result", { browserRunId: "run-1" }),
+      caller("scheduled-worker"),
+    ]) {
+      expect(
+        turnCostSource({ auth: auth(current), parent: delegatedBy })
+      ).toEqual({ runId: undefined, source: "task" });
     }
   });
 
   it("ties Bro's own turn to its scheduled run", () => {
     expect(
-      turnCostSource(
-        auth(caller("scheduled-result", { scheduledRunId: "run-7" }))
-      )
+      turnCostSource({
+        auth: auth(caller("scheduled-result", { scheduledRunId: "run-7" })),
+      })
     ).toEqual({ runId: "run-7", source: "background" });
-    expect(turnCostSource(auth(caller("scheduled-worker"))).runId).toBe(
-      undefined
-    );
+    expect(
+      turnCostSource({ auth: auth(caller("scheduled-worker")) }).runId
+    ).toBe(undefined);
     // A resumed worker's turn: the run is on the caller that opened it.
     expect(
-      turnCostSource(
-        auth(
+      turnCostSource({
+        auth: auth(
           caller("scheduled-input"),
           caller("scheduled-worker", { scheduledRunId: "run-8" })
-        )
-      ).runId
+        ),
+      }).runId
     ).toBe("run-8");
     // eve's later turn in a session a report opened ([Task state]) is not
     // that report's run.
     expect(
-      turnCostSource(
-        auth(
+      turnCostSource({
+        auth: auth(
           caller("scheduled-result"),
           caller("scheduled-result", { scheduledRunId: "run-9" })
-        )
-      )
+        ),
+      })
     ).toEqual({ runId: undefined, source: "background" });
     expect(
-      turnCostSource(
-        auth(null, caller("scheduled-worker", { scheduledRunId: "run-8" }))
-      ).runId
+      turnCostSource({
+        auth: auth(
+          null,
+          caller("scheduled-worker", { scheduledRunId: "run-8" })
+        ),
+      }).runId
     ).toBe("run-8");
   });
 
@@ -221,6 +249,41 @@ describe("recording a model step", () => {
       })
     );
     expect(recordUsageCost.mock.calls[0]?.[0].units?.unpriced).toBe(true);
+  });
+
+  it("files a task agent's step under the conversation that delegated it, keyed by its own session", async () => {
+    await completeStep(
+      context(caller("telegram-webhook"), caller("telegram-webhook"), {
+        ...delegatedBy,
+        // A deeper task still files under the person's conversation.
+        sessionId: "session-middle",
+      }),
+      { costUsd: 0.01, inputTokens: 10 }
+    );
+
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        idempotencyKey: "step:session-1:turn-1:1",
+        runId: null,
+        sessionId: "session-root",
+        source: "task",
+        workspaceId,
+      })
+    );
+  });
+
+  it("is what the task agent's own hook records", async () => {
+    const taskHook = (await import("@agent/subagents/task/hooks/usage-costs"))
+      .default;
+    await completeStep(
+      context(caller("authjs"), caller("authjs"), delegatedBy),
+      { inputTokens: 10 },
+      taskHook
+    );
+
+    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionId: "session-root", source: "task" })
+    );
   });
 
   it("skips a turn with no workspace and never fails a turn on the accounting", async () => {

@@ -730,6 +730,20 @@ export const env = createEnv({
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
     // price watch that code checks without the model (`watch-create`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the person's files for the task agent (docs/roadmap.md,
+    // item 30): workspace ids, or `*` for every workspace, whose Telegram and
+    // iMessage documents (tables, texts, decks) reach Bro's sandbox and,
+    // when Bro names their paths to `task`, the task agent's
+    // (`agent/hooks/task-files.ts`). It takes effect only inside the task
+    // agent's pilot, named there by id or `*` (`taskFilesEnabled`). No
+    // owners' emails: ingestion and the skill's setup decide without a
+    // lookup.
+    TASK_FILES_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "TASK_FILES_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),

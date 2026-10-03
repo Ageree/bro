@@ -3,6 +3,7 @@ import { z } from "zod";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
+import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
 import type { InstructionLayout, SkillSetup } from "./catalog";
@@ -56,12 +57,15 @@ export function skillsLayout(context: SkillsContext): InstructionLayout {
 }
 
 /**
- * What this turn can do, and so which skills exist for it: the browser and
- * drawing as the instructions check them (`40-browser.ts`, `60-creative.ts`).
+ * What this turn can do, and so which skills exist for it: the browser,
+ * drawing and the person's files as the instructions check them
+ * (`40-browser.ts`, `60-creative.ts`, `66-task-files.ts`). Without the files
+ * the setup has no `taskFiles` at all, so it reads as before them.
  */
 export function skillSetup(context: SkillsContext): SkillSetup {
-  return {
+  const setup = {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
   };
+  return taskFilesOfCaller(context) ? { ...setup, taskFiles: true } : setup;
 }

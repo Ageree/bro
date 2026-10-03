@@ -204,6 +204,27 @@ describe("the core instructions of the skills pilot", () => {
     expect(tokens(largest)).toBeLessThanOrEqual(10_000);
   });
 
+  it("stay within 10k tokens with the person's files, and leave their rules to the skill", async () => {
+    const withFiles = await corePrompt("interactive", {
+      ...fullDeployment,
+      ...taskAgentDeployment,
+      TASK_FILES_WORKSPACES: "workspace-1",
+    });
+    expect(tokens(withFiles)).toBeLessThanOrEqual(10_000);
+    expect(withFiles).toMatch(/^- files — [^\n]+\.$/mu);
+    expect(withFiles).not.toContain("# Файлы человека");
+    expect(
+      corePhrases.filter((phrase) => occurrences(withFiles, phrase) !== 1)
+    ).toEqual([]);
+    // Without the files the index has no such line.
+    expect(
+      await corePrompt("interactive", {
+        ...fullDeployment,
+        ...taskAgentDeployment,
+      })
+    ).not.toMatch(/^- files — /mu);
+  });
+
   it("are a third of the full instructions", async () => {
     stubDeployment(fullDeployment);
     const full = await systemPrompt(turnKinds.interactive);

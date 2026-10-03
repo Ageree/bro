@@ -144,6 +144,8 @@ describe("usage costs", { timeout: 30_000 }, () => {
           source: "browser-run",
         }),
         cost({ costRub: 1.2, idempotencyKey: "a7", source: "browser-vm" }),
+        // A step of the task agent, which the source check admits.
+        cost({ costRub: 0.4, idempotencyKey: "a9", source: "task" }),
         cost({
           costRub: 0,
           idempotencyKey: "a8",
@@ -188,6 +190,7 @@ describe("usage costs", { timeout: 30_000 }, () => {
         chat: 3.5,
         memory: 0,
         proxy: 0.25,
+        task: 0.4,
       },
       errands: {
         averageRub: 3,
@@ -197,8 +200,8 @@ describe("usage costs", { timeout: 30_000 }, () => {
       },
       fixedVmRub: 131.5,
       ownerEmail: "alice@example.com",
-      recordedRub: 12.2,
-      totalRub: 143.7,
+      recordedRub: 12.6,
+      totalRub: 144.1,
       unpricedRows: 1,
       workspaceId: alice.workspaceId,
     });
@@ -208,7 +211,7 @@ describe("usage costs", { timeout: 30_000 }, () => {
       ownerEmail: null,
       totalRub: 4,
     });
-    expect(summary.totalRub).toBe(147.7);
+    expect(summary.totalRub).toBe(148.1);
 
     // The month so far: 5 of September's 30 days.
     const current = await costs.summarizeUsageCosts(
