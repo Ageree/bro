@@ -240,8 +240,9 @@
 - `limits` eve кладёт в сессию при её создании: новый потолок входа
   (`agent/agent.ts`) живая сессия Telegram получит лишь со следующей, а живёт
   она 30 дней (`sessionTimeoutMs`). Без потолка eve после 40 млн входа ставил
-  карточку Approve/Stop. На Vercel после деплоя ход сессии снова `turn_0`:
-  замер по ходам (`usage-stats.sh`) читайте внутри одного мира.
+  карточку Approve/Stop. На Vercel после деплоя ход сессии снова `turn_0`, а
+  `usage_costs` молча теряет совпавшие ключи шагов: замер по ходам
+  (`usage-stats.sh`) такие сессии исключает и считает.
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
 - Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root

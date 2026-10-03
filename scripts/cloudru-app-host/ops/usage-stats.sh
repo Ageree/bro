@@ -61,6 +61,36 @@ STEPS="WITH all_steps AS (
 ), steps AS (
   SELECT * FROM placed_steps WHERE occurred_at >= :'since'::timestamptz
 )"
+# A turn of a session, from its steps (\$STEPS above). eve numbers turns per run of the session
+# (turn_0, turn_1…), and a deploy handoff on Vercel starts again at turn_0 under the same session id: its steps
+# then share keys with the earlier turns, and usage_costs keeps only the first row of each key. A session whose
+# turn numbers do not grow with time, or whose turn spans hours, is such a one and is left out.
+TURNS="turns AS (
+  SELECT session_id, turn_id,
+         substring(turn_id from '[0-9]+\$')::int AS turn_number,
+         min(source) AS source, min(channel) AS channel,
+         min(occurred_at) AS started_at,
+         max(occurred_at) AS ended_at,
+         min(step_index) AS first_index,
+         (array_agg(input ORDER BY step_index, occurred_at))[1] AS first_input,
+         (array_agg(cached ORDER BY step_index, occurred_at))[1] AS first_cached,
+         count(*) AS steps
+  FROM all_steps
+  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL
+  GROUP BY session_id, turn_id
+), numbered AS (
+  SELECT *,
+         row_number() OVER (PARTITION BY session_id ORDER BY started_at) AS turn_place,
+         lag(turn_number) OVER (PARTITION BY session_id ORDER BY started_at) AS previous_number
+  FROM turns
+), restarted AS (
+  SELECT DISTINCT session_id FROM numbered
+  WHERE turn_number <= previous_number OR ended_at - started_at > interval '6 hours'
+), person_turns AS (
+  SELECT * FROM numbered
+  WHERE source = 'chat' AND first_index = 0 AND started_at >= :'since'::timestamptz
+    AND session_id NOT IN (SELECT session_id FROM restarted)
+)"
 echo "usage_costs from $SINCE to $UNTIL"
 PGOPTIONS="-c default_transaction_read_only=on" psql_on SRC -v since="$SINCE" -v until="$UNTIL" <<SQL
 \pset tuples_only off
@@ -124,26 +154,9 @@ ORDER BY 1, 2;
 
 \echo
 \echo Person turns by their place in the whole session: the first step of each (does history grow? roadmap 28)
-\echo Every turn of the session counts towards the place, reports too; only person turns are shown.
-\echo A deploy handoff restarts the turn ids of eve at turn_0 in the same session (Vercel): read one world.
-$STEPS, turns AS (
-  SELECT session_id, turn_id,
-         min(source) AS source, min(channel) AS channel,
-         min(occurred_at) AS started_at,
-         min(step_index) AS first_index,
-         (array_agg(input ORDER BY step_index, occurred_at))[1] AS first_input,
-         (array_agg(cached ORDER BY step_index, occurred_at))[1] AS first_cached,
-         count(*) AS steps
-  FROM all_steps
-  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL AND kind = 'interactive'
-  GROUP BY session_id, turn_id
-), ordered AS (
-  SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY started_at) AS turn_place
-  FROM turns
-), person_turns AS (
-  SELECT * FROM ordered
-  WHERE source = 'chat' AND first_index = 0 AND started_at >= :'since'::timestamptz
-)
+\echo Every turn of the session counts towards the place, reports and schedules too; only person turns are shown.
+\echo Sessions whose turn ids started again at turn_0 (a deploy handoff on Vercel) are left out: see the count below.
+$STEPS, $TURNS
 SELECT channel,
        CASE WHEN turn_place <= 5 THEN '001-005'
             WHEN turn_place <= 20 THEN '006-020'
@@ -164,27 +177,19 @@ ORDER BY 1, 2;
 
 \echo
 \echo Growth of the same first steps: tokens per turn of the session (about 0 once the step holds steady)
-$STEPS, turns AS (
-  SELECT session_id, turn_id,
-         min(source) AS source, min(channel) AS channel,
-         min(occurred_at) AS started_at,
-         min(step_index) AS first_index,
-         (array_agg(input ORDER BY step_index, occurred_at))[1] AS first_input
-  FROM all_steps
-  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL AND kind = 'interactive'
-  GROUP BY session_id, turn_id
-), ordered AS (
-  SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY started_at) AS turn_place
-  FROM turns
-)
+$STEPS, $TURNS
 SELECT channel,
        count(*) AS turns,
        round(regr_slope(first_input, turn_place)::numeric, 0) AS tokens_per_turn,
        round(corr(first_input, turn_place)::numeric, 2) AS corr
-FROM ordered
-WHERE source = 'chat' AND first_index = 0 AND started_at >= :'since'::timestamptz
+FROM person_turns
 GROUP BY 1
 ORDER BY 1;
+
+\echo
+\echo Sessions left out of the two above because their turn ids started again
+$STEPS, $TURNS
+SELECT count(DISTINCT session_id) AS restarted_sessions FROM restarted;
 
 \echo
 \echo Errands: roubles per run over every source that carries its run_id (runs whose first cost falls in the window)
