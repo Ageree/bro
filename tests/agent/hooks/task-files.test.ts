@@ -24,6 +24,7 @@ vi.mock("eve/context", () => ({
 }));
 
 const pilot = vi.hoisted(() => ({
+  taskFilesGuarded: vi.fn<() => boolean>(() => true),
   taskFilesOfCaller: vi.fn<() => boolean>(() => true),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => pilot);
@@ -187,6 +188,7 @@ async function requested(
 beforeEach(() => {
   for (const reset of stateControls.reset) reset();
   vi.clearAllMocks();
+  pilot.taskFilesGuarded.mockReturnValue(true);
   pilot.taskFilesOfCaller.mockReturnValue(true);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -230,7 +232,12 @@ describe("the person's files for the task agent", () => {
     expect(putPersonSend).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
       "session-1",
-      { callId: "call-task", kind: "start" },
+      {
+        callId: "call-task",
+        kind: "start",
+        message: "Найди курс евро",
+        turnId: "turn_3",
+      },
       expect.any(AbortSignal)
     );
     expect(putInbox).not.toHaveBeenCalled();
@@ -284,13 +291,22 @@ describe("the person's files for the task agent", () => {
       [
         workspaceId,
         "session-1",
-        { agentId: "ag_task:0a1b", kind: "continue" },
+        {
+          agentId: "ag_task:0a1b",
+          kind: "continue",
+          message: "Добавь слайд с ценами",
+        },
         expect.any(AbortSignal),
       ],
       [
         workspaceId,
         "session-1",
-        { callId: "call-task", kind: "start" },
+        {
+          callId: "call-task",
+          kind: "start",
+          message: "Найди курс евро",
+          turnId: "turn_3",
+        },
         expect.any(AbortSignal),
       ],
     ]);
@@ -423,7 +439,9 @@ describe("the person's files for the task agent", () => {
     expect(putInbox).not.toHaveBeenCalled();
   });
 
-  it("copies nothing without the pilot", async () => {
+  it("copies nothing without the pilot, but still records the person's calls", async () => {
+    // A conversation marked before the flag was cleared still asks whether
+    // the person sent its task agents their messages.
     pilot.taskFilesOfCaller.mockReturnValue(false);
     const sandbox = sandboxOf([table]);
     const ctx = context({ sandbox });
@@ -432,6 +450,27 @@ describe("the person's files for the task agent", () => {
 
     expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(putInbox).not.toHaveBeenCalled();
+    expect(putPersonSend).toHaveBeenCalledExactlyOnceWith(
+      workspaceId,
+      "session-1",
+      {
+        callId: "call-task",
+        kind: "start",
+        message: table.path,
+        turnId: "turn_3",
+      },
+      expect.any(AbortSignal)
+    );
+  });
+
+  it("records nothing without Object Storage, where no file ever moved", async () => {
+    pilot.taskFilesGuarded.mockReturnValue(false);
+    pilot.taskFilesOfCaller.mockReturnValue(false);
+    const ctx = context();
+    await personTurn(ctx);
+    await requested([taskCall("Найди курс евро")], ctx);
+
+    expect(putPersonSend).not.toHaveBeenCalled();
   });
 
   it("skips a missing file or another file under the path", async () => {

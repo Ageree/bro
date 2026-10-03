@@ -61,6 +61,16 @@ async function router(overrides: Readonly<Record<string, string>> = {}) {
       sandboxId: "sb-1",
       workspaceId: "personal:abc",
     });
+    /** A link `share_file` makes, on the given origin. */
+    const shareLink = (origin: string) => {
+      const id = "ab".repeat(12);
+      const url = new URL(`/eve/v1/sandbox-files/${id}/report.xlsx`, origin);
+      url.searchParams.set(
+        "sig",
+        keys.sandboxFileLinkSignature(`sandbox/files/${id}/report.xlsx`)
+      );
+      return url.href;
+    };
     const ask = async (
       query: string,
       variables?: Readonly<Record<string, z.infer<ReturnType<typeof z.json>>>>,
@@ -73,7 +83,7 @@ async function router(overrides: Readonly<Record<string, string>> = {}) {
           method: "POST",
         })
       );
-    return { ask, pageText };
+    return { ask, pageText, shareLink };
   }, overrides);
 }
 
@@ -285,16 +295,34 @@ describe("the sandbox tool router", () => {
     ).toEqual(["sb-1", "sb-1", "sb-1"]);
   });
 
-  it("asks for no mark without the files pilot", async () => {
-    // No sandbox gets the person's files then, and the web does not wait
-    // on Object Storage.
-    storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
+  it("keeps a marked sandbox off the web after the files flag is cleared", async () => {
+    // The flag is the pilot's off switch: the files the sandbox got while
+    // it was on stay in `/workspace` and its snapshots.
+    storage.answer.mockImplementation((url) =>
+      url.pathname.endsWith("/sandbox/person-files/sb-1")
+        ? Promise.resolve(new Response("1", { status: 200 }))
+        : noMark()
+    );
+    const { ask } = await router({ TASK_FILES_WORKSPACES: "" });
+    const answer = await executed(
+      await ask(execute, {
+        input: { url: "https://example.com/?d=c2VjcmV0" },
+        name: "web_fetch",
+      })
+    );
+
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toMatch(/holds the person's files/u);
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+  });
+
+  it("asks for no mark without Object Storage, where no file could come in", async () => {
     network.fetchPublic.mockResolvedValue(
       new Response("<p>Привет</p>", {
         headers: { "content-type": "text/html; charset=utf-8" },
       })
     );
-    const { ask } = await router();
+    const { ask } = await router({ BROWSER_STATE_BUCKET: "" });
     const answer = await executed(
       await ask(execute, {
         input: { url: "https://example.com/" },
@@ -304,6 +332,67 @@ describe("the sandbox tool router", () => {
 
     expect(answer.ok).toBe(true);
     expect(storage.answer).not.toHaveBeenCalled();
+  });
+
+  it("fetches none of Bro's own links, its shared files above all", async () => {
+    network.fetchPublic.mockResolvedValue(
+      new Response("secret,table", { headers: { "content-type": "text/csv" } })
+    );
+    const { ask, shareLink } = await router();
+    for (const url of [
+      shareLink("https://bro.example.test"),
+      // The same host written otherwise, a name under it, its bucket.
+      shareLink("https://BRO.example.test."),
+      "https://www.bro.example.test/",
+      "https://s3.cloud.ru/bro-state-test/sandbox/files/x",
+      "https://bro-state-test.s3.cloud.ru/sandbox/files/x",
+      // A deployment answers the shared file's path under any of its names.
+      shareLink("https://bro-next-git-x.vercel.app"),
+      "https://bro-next-git-x.vercel.app/eve/v1/%73andbox-files/x/y",
+      "https://bro-next-git-x.vercel.app//EVE/v1/sandbox-files/x/y",
+    ]) {
+      for (const name of ["web_fetch", "download"]) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each link is its own case.
+        const answer = await executed(
+          // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+          await ask(execute, { input: { url }, name })
+        );
+        expect(answer.ok, `${name} ${url}`).toBe(false);
+        expect(answer.error, `${name} ${url}`).toMatch(/Bro's own links/u);
+      }
+    }
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+  });
+
+  it("follows no redirect to Bro's own links", async () => {
+    const { ask, shareLink } = await router();
+    network.fetchPublic.mockImplementation(async (url: URL) =>
+      Promise.resolve(
+        url.hostname === "short.example.test"
+          ? new Response(null, {
+              headers: { location: shareLink("https://bro.example.test") },
+              status: 302,
+            })
+          : new Response("secret,table", {
+              headers: { "content-type": "text/csv" },
+            })
+      )
+    );
+    for (const name of ["web_fetch", "download"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each tool is its own case.
+      const answer = await executed(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await ask(execute, {
+          input: { url: "https://short.example.test/x" },
+          name,
+        })
+      );
+      expect(answer.ok).toBe(false);
+      expect(answer.error).toMatch(/blocked-host/u);
+    }
+    expect(network.fetchPublic.mock.calls.map(([url]) => url.hostname)).toEqual(
+      ["short.example.test", "short.example.test"]
+    );
   });
 
   it("refuses the web while the mark cannot be read", async () => {

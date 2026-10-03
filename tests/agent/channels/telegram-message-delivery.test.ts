@@ -54,8 +54,9 @@ const taskFiles = vi.hoisted(() => ({
   here: vi.fn<() => boolean>(() => false),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
+  // The files pilot, or a conversation one of whose task agents got them.
+  conversationHoldsFiles: async () => await Promise.resolve(taskFiles.here()),
   taskFilesEnabled: () => false,
-  taskFilesOfCaller: taskFiles.here,
 }));
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: vi.fn<typeof findChannelIdentity>(),

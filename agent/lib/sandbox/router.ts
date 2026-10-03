@@ -8,11 +8,15 @@ import {
 } from "graphql";
 import { z } from "zod";
 import { env } from "@shared/environment";
+import { applicationOrigin } from "@shared/environment/origin";
+import { objectStorageConfigured } from "@shared/object-storage/s3";
+import { objectStorageEndpoint } from "@shared/object-storage/sigv4";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
 import { decodePage } from "@agent/lib/web-page/decode";
 import { searchWeb, webSearchInputSchema } from "@agent/lib/web-search/search";
+import { isSharedFileLink, sandboxFilesPath } from "./files";
 import { sandboxHoldsPersonFiles } from "./inbox";
 import { verifySandboxToolsToken } from "./keys";
 import { fetchPublic } from "./public-fetch";
@@ -24,7 +28,7 @@ import { fetchPublic } from "./public-fetch";
  * here: a prompt injected into a page the task agent reads can at most
  * search, read and download public pages: every hop of a read goes only to
  * an address checked public (`./public-fetch.ts`), never into Bro's own
- * network.
+ * network, and never to Bro's own links or bucket (`fetchable`).
  *
  * Each of them also carries what the sandbox puts in its request out to the
  * web: a URL, a query. So a sandbox that was given the person's files
@@ -32,16 +36,17 @@ import { fetchPublic } from "./public-fetch";
  * hidden in a sheet or a file name could otherwise send the file's content
  * out in a URL. The task agent's hook marks the sandbox in Object Storage
  * before the first file goes in (`markSandboxHoldsPersonFiles`), and every
- * network call here checks that mark first; a mark that cannot be read
- * refuses too. The trade-off: a task with the person's files has no web,
+ * network call here checks that mark first, whether or not the files pilot
+ * is still on; a mark that cannot be read refuses too. The trade-off: a task with the person's files has no web,
  * so Bro looks up what it needs itself and passes it in the message.
  *
  * The content can also leave as text: in the task agent's report, which
  * opens a turn of Bro's that may start or continue a task agent. So the
  * same mark goes on every task agent of that conversation that gets a
  * message the person's own turn did not just send: a new one, a
- * continuation (checked by its `agentId`, since `ctx.session.parent` stays
- * the starting call's for the child's whole life), a steered message
+ * continuation (checked by its `agentId` and the text, since
+ * `ctx.session.parent` stays the starting call's for the child's whole
+ * life), a steered message
  * (`keepOffWebUnlessSent` in `agent/subagents/task/hooks/person-files.ts`).
  * The report turn's own sends carry no URL a server fetches: a native link
  * and every attachment but the task agent's own files go as plain text
@@ -81,6 +86,72 @@ const downloadInputSchema = z.object({
     .describe("The https:// URL of a public file to download, up to 15 MB."),
 });
 
+/** A host name as compared here: lower case, no trailing dots. */
+function hostKey(hostname: string) {
+  return hostname.toLowerCase().replace(/\.+$/u, "");
+}
+
+/**
+ * Bro's own hosts and its bucket's: the origin a `share_file` link is on
+ * (`BETTER_AUTH_URL` or Vercel's), the deployment's other Vercel names, the
+ * router's own address and Object Storage, which a shared file's link
+ * redirects to. Read per call: `env` is parsed once anyway.
+ */
+function ownHosts() {
+  const hosts = new Set<string>([
+    hostKey(new URL(objectStorageEndpoint).hostname),
+  ]);
+  const origins = [env.BETTER_AUTH_URL, env.SANDBOX_TOOLS_URL];
+  try {
+    origins.push(applicationOrigin());
+  } catch {
+    // No origin outside Vercel without BETTER_AUTH_URL: the rest still count.
+  }
+  for (const origin of origins) {
+    const hostname =
+      origin === undefined ? undefined : URL.parse(origin)?.hostname;
+    if (hostname !== undefined && hostname !== "") hosts.add(hostKey(hostname));
+  }
+  for (const name of [
+    env.VERCEL_BRANCH_URL,
+    env.VERCEL_PROJECT_PRODUCTION_URL,
+    env.VERCEL_URL,
+  ]) {
+    if (name !== undefined) hosts.add(hostKey(name));
+  }
+  return hosts;
+}
+
+/** A path as a server may read it: decoded, lower case, slashes folded. */
+function servedPath(url: URL) {
+  let path = url.pathname;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // A broken escape is matched as written.
+  }
+  return path.toLowerCase().replaceAll(/\/{2,}/gu, "/");
+}
+
+/**
+ * Whether the router may request this URL for a sandbox: a public host, and
+ * none of Bro's own. A `share_file` link is public and signed, and it may
+ * reach a task agent with the web through a report that carries it; fetched
+ * there, the file the link opens would leave with the next request. So no
+ * hop goes to Bro or its bucket, to a shared file's path on any host (a
+ * deployment answers it under many names), or to anything that is such a
+ * link; every redirect hop is asked the same (`allowUrl`).
+ */
+function fetchable(url: URL) {
+  if (isBlockedHost(url.hostname)) return false;
+  const host = hostKey(url.hostname);
+  for (const own of ownHosts()) {
+    if (host === own || host.endsWith(`.${own}`)) return false;
+  }
+  if (servedPath(url).includes(sandboxFilesPath)) return false;
+  return !isSharedFileLink(url.href);
+}
+
 function publicUrl(value: string) {
   const url = URL.parse(value);
   if (url?.protocol !== "https:") {
@@ -88,6 +159,11 @@ function publicUrl(value: string) {
   }
   if (isBlockedHost(url.hostname)) {
     throw new Error("Only public hosts can be fetched.");
+  }
+  if (!fetchable(url)) {
+    throw new Error(
+      "Bro's own links, its shared files included, cannot be fetched from the sandbox."
+    );
   }
   return url;
 }
@@ -189,7 +265,7 @@ export function pageText(html: string) {
 async function fetchPage(input: z.infer<typeof webFetchInputSchema>) {
   const url = publicUrl(input.url);
   const download = await downloadWithin(url, maximumPageBytes, {
-    allowUrl: (next) => !isBlockedHost(next.hostname),
+    allowUrl: fetchable,
     fetch: fetchPublic,
     headers: { "user-agent": "Mozilla/5.0 (compatible; BroSandbox/1.0)" },
   });
@@ -218,7 +294,7 @@ function downloadFileName(url: URL) {
 async function downloadFile(input: z.infer<typeof downloadInputSchema>) {
   const url = publicUrl(input.url);
   const download = await downloadWithin(url, maximumDownloadBytes, {
-    allowUrl: (next) => !isBlockedHost(next.hostname),
+    allowUrl: fetchable,
     fetch: fetchPublic,
   });
   if (download.kind === "oversize") throw new Error("The file is over 15 MB.");
@@ -354,9 +430,15 @@ const rootValue = {
     if (tool === undefined) {
       return { error: `There is no tool ${args.name}.`, ok: false };
     }
-    // Without the files pilot no sandbox gets the person's files, and a web
-    // call does not wait on Object Storage (`TASK_FILES_WORKSPACES`).
-    if (tool.network && (env.TASK_FILES_WORKSPACES ?? []).length > 0) {
+    // Whatever TASK_FILES_WORKSPACES says now: a sandbox given the person's
+    // files while it named the workspace keeps them, so clearing the flag
+    // must not give it the web back. Only without Object Storage could no
+    // file ever have come in. The cost: every web call of every pilot
+    // sandbox waits on one GET first, and while Object Storage is down or
+    // slow (up to `markTimeoutMs`) no sandbox has the web at all. No answer
+    // is cached: a "no" goes stale the moment the hook marks the sandbox,
+    // just before its first file goes in.
+    if (tool.network && objectStorageConfigured()) {
       const refusal = await networkRefusal(context.sandboxId);
       if (refusal !== undefined) return { error: refusal, ok: false };
     }
