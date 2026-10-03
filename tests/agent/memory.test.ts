@@ -27,6 +27,10 @@ import {
   saveMemory,
   updateMemory,
 } from "@db/services/memory/records";
+import {
+  listMemoryRecordHistory,
+  listMemoryTimeline,
+} from "@db/services/memory/revisions";
 import profileMemory from "@agent/memory/profile";
 import {
   memoryBulkRemovalApproval,
@@ -1191,6 +1195,91 @@ describe("memory history", () => {
     // Only the dog, folded into nothing that was forgotten, stays restorable.
     expect(kept.map(({ index, text }) => [index, text])).toEqual([
       [4, "Есть собака."],
+    ]);
+  });
+
+  it("forgetting a moved memory wipes the copy left under the old scope key", async () => {
+    const session = { sessionId: "session", turnId: "turn" };
+    await saveMemory(
+      alice,
+      "scope-b",
+      { text: "Живёт в Казани." },
+      "b0",
+      session
+    );
+    await forgetMemory(alice, "scope-b", { index: 0 }, "moved", {
+      action: "merge",
+      actor: "system",
+    });
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "a0",
+      session
+    );
+
+    await forgetMemory(alice, "scope-a", { index: 0 }, "f0", {
+      actor: "person",
+    });
+
+    expect(
+      [...(await history("scope-a")), ...(await history("scope-b"))].filter(
+        ({ text }) => text !== null
+      )
+    ).toEqual([]);
+  });
+
+  it("shows no code an old revision kept, and offers back what is gone", async () => {
+    const session = { sessionId: "session", turnId: "turn" };
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s0", session);
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "s1",
+      session
+    );
+    // Saved before the filter knew this phrasing.
+    await database
+      .update(schema.memoryRevisions)
+      .set({ content: fact("Любит суши.") })
+      .where(eq(schema.memoryRevisions.recordIndex, 0));
+    await database
+      .update(schema.memoryRevisions)
+      .set({
+        content: { ...fact("Живёт в Казани."), text: "смс для входа 482193" },
+      })
+      .where(eq(schema.memoryRevisions.recordIndex, 1));
+    await forgetMemory(alice, "scope-a", { index: 0 }, "d0", {
+      action: "one_off",
+      actor: "digest",
+    });
+
+    expect(
+      (await listMemoryRecordHistory(alice.workspaceId, "scope-a", 1)).map(
+        ({ text }) => text
+      )
+    ).toEqual([null]);
+    const timeline = await listMemoryTimeline(alice.workspaceId, "scope-a");
+    expect(
+      timeline.map(({ index, live, recordRevision, revision, text }) => ({
+        index,
+        live,
+        recordRevision,
+        revision,
+        text,
+      }))
+    ).toEqual([
+      { index: 0, live: false, recordRevision: 2, revision: 2, text: null },
+      { index: 1, live: true, recordRevision: 1, revision: 1, text: null },
+      {
+        index: 0,
+        live: false,
+        recordRevision: 2,
+        revision: 1,
+        text: "Любит суши.",
+      },
     ]);
   });
 

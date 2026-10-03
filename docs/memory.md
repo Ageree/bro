@@ -100,12 +100,16 @@ memories change in a day; a failed call changes nothing. Its cost is a
 since the digest read it is left for the next day.
 
 The memory screen (`/workspace/memory`, tRPC `memory.*` in
-`web/trpc/router.ts`) shows the scope Bro's conversations last read: rules,
+`web/trpc/router.ts`) shows the scope Bro's conversations last read, or,
+before any recall was marked (a scope from before the mark), the one written
+last: rules,
 preferences and the rest, and a timeline of the last changes. The person
 edits a record's text (checked by `memoryTextSchema`, refused on a stale
 revision), deletes it (history wiped as when Bro forgets it), and brings back
 an earlier revision from the record's history (`restoreMemory`, written as
-`restore` by `person`). Rules are only deleted there: they are set and changed
+`restore` by `person`); a memory the digest removed or that expired comes
+back from the timeline while its text is kept. A revision whose text the
+filter now refuses is shown without it. Rules are only deleted there: they are set and changed
 in the conversation, where a rule write needs the person's own turn.
 Every call names the scope key the page showed, checked against the
 workspace's own, so a conversation that recalls another scope meanwhile

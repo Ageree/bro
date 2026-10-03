@@ -332,7 +332,12 @@ async function memoryWrite<Result>(write: () => Promise<Result>) {
             : error.message,
       });
     }
-    throw error;
+    // tRPC would send this message as it is: a query's carries memory text.
+    throw new TRPCError({
+      cause: error,
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Memory could not be changed.",
+    });
   }
 }
 

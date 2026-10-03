@@ -281,6 +281,38 @@ describe("appRouter", () => {
       expect(updateMemoryMock).not.toHaveBeenCalled();
     });
 
+    it("keeps an unexpected failure internal, its message unseen", async () => {
+      restoreMemoryMock.mockRejectedValue(
+        new Error(
+          'Failed query: update "memory_records" params: Живёт в Казани.'
+        )
+      );
+
+      await expect(
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "scope-key",
+        })
+      ).rejects.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Memory could not be changed.",
+      });
+      restoreMemoryMock.mockRejectedValue(new Error("Profile memory is full."));
+      await expect(
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "scope-key",
+        })
+      ).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "Profile memory is full.",
+      });
+    });
+
     it("writes only to a scope of this workspace, the one the page showed", async () => {
       restoreMemoryMock.mockResolvedValue({ index: 3, revision: 4 });
 
