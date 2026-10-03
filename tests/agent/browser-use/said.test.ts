@@ -369,7 +369,12 @@ describe("the person's words this turn", () => {
         asked([{ id: "window", label: "У окна" }]),
         answered({ optionId: "window" }),
       ])
-    ).toEqual({ answers: ["У окна"], paymentAsked: null, said: ["бери"] });
+    ).toEqual({
+      answers: ["У окна"],
+      paymentAsked: null,
+      picked: ["У окна"],
+      said: ["бери"],
+    });
   });
 });
 

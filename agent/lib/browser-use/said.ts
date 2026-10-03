@@ -38,12 +38,14 @@ function answerOf(output: ToolResultPart["output"]) {
 
 /**
  * The person's answers to `ask_question` in this turn: what they typed, and
- * the label of the option they picked. An answer resumes the same turn as a
+ * the label of the option they picked, which is also in `picked`: Bro wrote
+ * it, and the person only chose it. An answer resumes the same turn as a
  * tool result, not as a message of theirs.
  */
 function answersThisTurn(messages: readonly ModelMessage[]) {
   const labels = new Map<string, ReadonlyMap<string, string>>();
   const answers: string[] = [];
+  const picked: string[] = [];
   for (const message of messages) {
     if (message.role === "assistant" && Array.isArray(message.content)) {
       for (const part of message.content) {
@@ -68,10 +70,13 @@ function answersThisTurn(messages: readonly ModelMessage[]) {
         answer?.optionId === undefined
           ? undefined
           : labels.get(part.toolCallId)?.get(answer.optionId);
-      if (label !== undefined) answers.push(label);
+      if (label !== undefined) {
+        answers.push(label);
+        picked.push(label);
+      }
     }
   }
-  return answers;
+  return { answers, picked };
 }
 
 /** A message the person wrote, not one Bro opened a turn with. */
@@ -242,6 +247,7 @@ export interface PersonWords {
   compacted?: true;
   nearby?: string[];
   paymentAsked: string | null;
+  picked?: string[];
   said: string[] | null;
 }
 
@@ -249,9 +255,11 @@ export interface PersonWords {
  * What the person wrote in this turn. `said`: the messages they opened it
  * with, null when Bro opened it — a browser report, a scheduled result, a
  * wakeup, whose text a page or a worker wrote. `answers`: what they answered
- * to its questions, in either kind of turn. `paymentAsked`: Bro's question
- * about paying that their message answers, if it is one. A follow-up acts on
- * these words only; only a turn they opened is theirs for consent.
+ * to its questions, in either kind of turn, and `picked`: those of them that
+ * are the label of an option they chose, which Bro wrote. `paymentAsked`:
+ * Bro's question about paying that their message answers, if it is one. A
+ * follow-up acts on these words only; only a turn they opened is theirs for
+ * consent.
  *
  * `nearby`: when a compaction at this turn's start, or right before it,
  * or one inside the turn before narrowed `said` (`personBurst`), the
@@ -302,11 +310,16 @@ export function personWordsThisTurn(
     first.opener === words.opener
       ? first
       : words;
+  const { answers, picked } =
+    opening === -1
+      ? { answers: [], picked: [] }
+      : answersThisTurn(messages.slice(opening + 1));
   const result: PersonWords = {
-    answers: opening === -1 ? [] : answersThisTurn(messages.slice(opening + 1)),
+    answers,
     paymentAsked: kept.paymentAsked,
     said: kept.said,
   };
+  if (picked.length > 0) result.picked = picked;
   const nearby = personBurst(messages, opening);
   if (nearby !== null && nearby.length !== words.said?.length) {
     result.nearby = nearby;

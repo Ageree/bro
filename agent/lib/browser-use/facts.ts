@@ -332,51 +332,197 @@ export async function readOwnContacts(scope: AccessScope) {
 const ownPhonePlaceholder = "[телефон человека не передаётся]";
 const ownEmailPlaceholder = "[почта человека не передаётся]";
 
-/** Spaces, brackets, dots and dashes people put between a phone's digits. */
-const phoneSeparator = String.raw`[\s().\-\u2010-\u2015\u2212]{0,3}`;
+/** A digit as typed, or full-width («９»). */
+const anyDigit = String.raw`[\d\uFF10-\uFF19]`;
 
 /**
- * A phone as people write it, by its last ten digits: «+7 999 000-00-01»,
- * «8 (999) 000 00 01» and «9990000001» are all «+79990000001».
+ * What people put between a phone's digits: spaces, brackets, dots, dashes,
+ * slashes and underscores, a few of them at a time.
  */
-function phonePattern(phone: string) {
-  const digits = phone.replaceAll(/\D/gu, "").slice(-10);
-  if (digits.length < 7) return undefined;
-  const spaced = digits.replaceAll(/(?<=\d)(?=\d)/gu, phoneSeparator);
+const phoneSeparator = String.raw`[\s()./_\-\u2010-\u2015\u2212]{0,6}`;
+
+/**
+ * A run of digits a phone field writes as one number or as several, with
+ * the matcher's own separators: «+7 (999) 000-00-01 8 495 123 45 67». A
+ * comma, a word or a plus ends it, so «…01, рабочий +7 495…» is two runs and
+ * «…01 после 18:00» leaves the time out.
+ */
+const digitRunPattern = new RegExp(
+  `${anyDigit}(?:${phoneSeparator}${anyDigit})*`,
+  "gu"
+);
+
+/**
+ * The numbers of one run. Up to twelve digits are one number, by its last
+ * ten however it is grouped: «+375 29 123-45-67» is «5291234567». Seven to
+ * nine digits are a short number of their own. A longer run holds several,
+ * read group by group in the order written: every group boundary where ten
+ * to twelve digits have added up gives a reading by its last ten — groups
+ * cannot tell a number's last pair from the next one's country code, so
+ * both readings count — and a group that would take them past twelve
+ * starts the next number. Seven to nine digits left over are a short
+ * number. Only digits written together with nothing between them, too many
+ * for one number, are split blindly: every ten of them in a row count.
+ */
+function runNumbers(groups: readonly string[]) {
+  const digits = groups.join("");
+  if (digits.length <= 12) {
+    if (digits.length >= 10) return [digits.slice(-10)];
+    return digits.length >= 7 ? [digits] : [];
+  }
+  const numbers: string[] = [];
+  let pending = "";
+  for (const group of groups) {
+    if (pending.length >= 10 && pending.length + group.length > 12) {
+      pending = "";
+    }
+    pending += group;
+    if (pending.length > 12) {
+      numbers.push(
+        ...Array.from({ length: pending.length - 9 }, (_, from) =>
+          pending.slice(from, from + 10)
+        )
+      );
+      pending = "";
+    } else if (pending.length >= 10) {
+      numbers.push(pending.slice(-10));
+    }
+  }
+  return pending.length >= 7 && pending.length < 10
+    ? [...numbers, pending]
+    : numbers;
+}
+
+/**
+ * The numbers a phone field holds, each by its last ten digits or, written
+ * shorter, by all of them. The field is free text, up to a work number, an
+ * extension or the hours to call.
+ */
+function phoneNumbers(phone: string) {
+  return [...phone.matchAll(digitRunPattern)].flatMap(([run]) =>
+    runNumbers(
+      run
+        .normalize("NFKC")
+        .split(/\D+/u)
+        .filter((group) => group.length > 0)
+    )
+  );
+}
+
+/** The distinct numbers of the person's phone fields. */
+function ownPhoneNumbers(phones: readonly string[]) {
+  return [...new Set(phones.flatMap(phoneNumbers))];
+}
+
+/** One digit of a phone, as typed or full-width. */
+function phoneDigit(digit: string) {
+  return `[${digit}${String.fromCodePoint(0xff10 + Number(digit))}]`;
+}
+
+/**
+ * The country code before a number: «+7», «+44», «(+7)», «007» or «8». A
+ * bare small number is not one: «дом 5 / 999 000 00 01» keeps its «5».
+ */
+const countryCode = String.raw`(?:\([+\uFF0B]?${anyDigit}{1,3}\)|[+\uFF0B]${anyDigit}{1,3}|00${anyDigit}{1,3}|[78\uFF17\uFF18])${phoneSeparator}`;
+
+/**
+ * A full number's country code without its plus, written right against it
+ * as a link writes it: «wa.me/447911123456», «tel:12125550100». Not before
+ * a short number: «9991234567» is another number than «123-45-67».
+ */
+const gluedCountryCode = `${anyDigit}{1,3}`;
+
+/**
+ * A phone as people write it: «+7 999 000-00-01», «8 (999) 000 00 01»,
+ * «(+7) 999/000/00/01» and «9990000001» are all «+79990000001». Brackets
+ * round the country or the area code go with it, so no stray «(» is left.
+ */
+function phonePattern(number: string) {
+  const digits = Array.from(number, phoneDigit);
+  const area = digits.slice(0, 3).join(phoneSeparator);
+  const rest = digits.slice(3).join(phoneSeparator);
+  const code =
+    number.length < 10 ? countryCode : `${countryCode}|${gluedCountryCode}`;
   return new RegExp(
-    String.raw`(?<!\d)(?:\+?\d{1,3}${phoneSeparator})?${spaced}(?!\d)`,
+    String.raw`(?<!${anyDigit})(?:${code})?(?:\(${phoneSeparator}${area}${phoneSeparator}\)|${area})${phoneSeparator}${rest}(?!${anyDigit})`,
     "gu"
   );
 }
 
-/** An email in any case, and not inside a longer address. */
+/** Text that a regular expression matches as written. */
+function literally(text: string) {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+}
+
+/**
+ * An email in any case, with «%40» for its «@» as a link writes it, and
+ * with the plus-addresses of the same mailbox: «ivan+shop@…» is ivan@…. A
+ * leading «+» is part of the mailbox's name, not a tag. Not inside a longer
+ * address.
+ */
 function emailPattern(email: string) {
-  const escaped = email.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
-  return new RegExp(
-    String.raw`(?<![\p{L}\p{N}._%+\-])${escaped}(?![\p{L}\p{N}_\-]|\.[\p{L}\p{N}])`,
-    "giu"
-  );
+  const at = email.lastIndexOf("@");
+  if (at < 1) return [];
+  const local = email.slice(0, at);
+  const tag = local.indexOf("+", 1);
+  const mailbox = tag === -1 ? local : local.slice(0, tag);
+  return [
+    new RegExp(
+      String.raw`(?<![\p{L}\p{N}._%+\-])${literally(mailbox)}(?:\+[\p{L}\p{N}._\-]*)?(?:@|%40)${literally(email.slice(at + 1))}(?![\p{L}\p{N}_\-]|\.[\p{L}\p{N}])`,
+      "giu"
+    ),
+  ];
+}
+
+/**
+ * The person's contacts less those they wrote themselves this turn (`words`):
+ * those are theirs to pass on, and Bro saying them again passes on nothing
+ * new. Phones come back as their numbers.
+ */
+export function contactsNotIn(
+  own: Awaited<ReturnType<typeof readOwnContacts>>,
+  words: readonly string[]
+) {
+  const said = words.join("\n");
+  return {
+    emails: own.emails.filter((email) =>
+      emailPattern(email).every((pattern) => said.search(pattern) === -1)
+    ),
+    phones: ownPhoneNumbers(own.phones).filter(
+      (number) => said.search(phonePattern(number)) === -1
+    ),
+  };
 }
 
 /**
  * The model's own words for a run without the person's phone and email in
- * them. A run that may not type their details is told so, but a number in
- * the errand text is text the run hands to any page (`signin_phone` exists
- * so that the phone it signs in with is bound to one site only). Emails go
- * first: «79990000001@mail.ru» is an address, not a phone.
+ * them, and whether each was there. A run that may not type their details
+ * is told so, but a number in the errand text is text the run hands to any
+ * page (`signin_phone` exists so that the phone it signs in with is bound to
+ * one site only). Emails go first: «79990000001@mail.ru» is an address, not
+ * a phone.
  */
 export function withoutOwnContacts(
   text: string,
   own: Awaited<ReturnType<typeof readOwnContacts>>
 ) {
-  const withoutEmails = own.emails.reduce(
-    (cut, email) => cut.replaceAll(emailPattern(email), ownEmailPlaceholder),
-    text
-  );
-  return own.phones.reduce((cut, phone) => {
-    const pattern = phonePattern(phone);
-    return pattern ? cut.replaceAll(pattern, ownPhonePlaceholder) : cut;
-  }, withoutEmails);
+  const withoutEmails = own.emails
+    .flatMap(emailPattern)
+    .reduce(
+      (cut, pattern) => cut.replaceAll(pattern, ownEmailPlaceholder),
+      text
+    );
+  const withoutPhones = ownPhoneNumbers(own.phones)
+    .map(phonePattern)
+    .reduce(
+      (cut, pattern) => cut.replaceAll(pattern, ownPhonePlaceholder),
+      withoutEmails
+    );
+  return {
+    email: withoutEmails !== text,
+    phone: withoutPhones !== withoutEmails,
+    text: withoutPhones,
+  };
 }
 
 /**
