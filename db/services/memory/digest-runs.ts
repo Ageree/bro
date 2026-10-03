@@ -1,28 +1,52 @@
-import { and, eq, gte, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
 import {
   db,
   memoryDigestRuns,
   memoryScopes,
+  user,
   userProfiles,
+  workspaceMemberships,
   workspaces,
   workstreams,
 } from "@db";
 
+const betterAuthPrincipalPrefix = "better-auth:";
+
 /**
  * Workspaces with something for the daily memory digest — profile memory or
- * workstreams — with their time zone, and the local days the digest has
- * already done for them since `since`.
+ * workstreams — in the pilot (`pilot`: workspace ids and owners' emails,
+ * lower-case), with their time zone and the local days the digest has
+ * already done for them since `since`. The pilot is filtered here, not per
+ * workspace: the digest is due for everyone outside it at every tick.
  */
-export async function listMemoryDigestWorkspaces(since: string) {
+export async function listMemoryDigestWorkspaces(
+  since: string,
+  pilot: "everyone" | { readonly emails: string[]; readonly ids: string[] }
+) {
   const [candidates, done] = await Promise.all([
     db
       .select({ timeZone: userProfiles.timezone, workspaceId: workspaces.id })
       .from(workspaces)
       .leftJoin(userProfiles, eq(userProfiles.workspaceId, workspaces.id))
       .where(
-        or(
-          sql`EXISTS (SELECT 1 FROM ${memoryScopes} WHERE ${memoryScopes.workspaceId} = ${workspaces.id})`,
-          sql`EXISTS (SELECT 1 FROM ${workstreams} WHERE ${workstreams.workspaceId} = ${workspaces.id} AND ${workstreams.content} IS NOT NULL)`
+        and(
+          or(
+            sql`EXISTS (SELECT 1 FROM ${memoryScopes} WHERE ${memoryScopes.workspaceId} = ${workspaces.id})`,
+            sql`EXISTS (SELECT 1 FROM ${workstreams} WHERE ${workstreams.workspaceId} = ${workspaces.id} AND ${workstreams.content} IS NOT NULL)`
+          ),
+          pilot === "everyone"
+            ? undefined
+            : or(
+                pilot.ids.length > 0
+                  ? inArray(workspaces.id, pilot.ids)
+                  : sql`false`,
+                pilot.emails.length > 0
+                  ? sql`EXISTS (SELECT 1 FROM ${workspaceMemberships} JOIN ${user} ON ${workspaceMemberships.userId} = ${betterAuthPrincipalPrefix} || ${user.id} WHERE ${workspaceMemberships.workspaceId} = ${workspaces.id} AND lower(${user.email}) IN (${sql.join(
+                      pilot.emails.map((email) => sql`${email}`),
+                      sql`, `
+                    )}))`
+                  : sql`false`
+              )
         )
       ),
     db

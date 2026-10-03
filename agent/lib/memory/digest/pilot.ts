@@ -26,3 +26,18 @@ export async function memoryDigestPilot(scope: AccessScope) {
 export function memoryDigestConfigured() {
   return (env.MEMORY_DIGEST_WORKSPACES ?? []).length > 0;
 }
+
+/**
+ * The pilot as the list of due workspaces filters it: everyone, or its
+ * workspace ids and owners' emails.
+ */
+export function memoryDigestPilotEntries() {
+  const list = env.MEMORY_DIGEST_WORKSPACES ?? [];
+  if (list.includes("*")) return "everyone" as const;
+  return {
+    emails: list
+      .filter((entry) => entry.includes("@"))
+      .map((entry) => entry.toLowerCase()),
+    ids: list.filter((entry) => !entry.includes("@")),
+  };
+}

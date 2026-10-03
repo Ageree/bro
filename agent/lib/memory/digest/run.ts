@@ -3,6 +3,7 @@ import { planDedupe } from "@agent/lib/memory/digest/dedupe";
 import {
   memoryDigestConfigured,
   memoryDigestPilot,
+  memoryDigestPilotEntries,
 } from "@agent/lib/memory/digest/pilot";
 import {
   redactionPlaceholder,
@@ -66,7 +67,8 @@ export async function runDueMemoryDigests(now = new Date()) {
   if (!memoryDigestConfigured()) return;
   const tickStartedAt = Date.now();
   const workspaces = await listMemoryDigestWorkspaces(
-    localDayKey(new Date(now.getTime() - 2 * dayMs), "UTC")
+    localDayKey(new Date(now.getTime() - 2 * dayMs), "UTC"),
+    memoryDigestPilotEntries()
   );
   const due = workspaces.flatMap(({ doneDates, timeZone, workspaceId }) => {
     const zone = resolveTimeZone(timeZone);
@@ -79,8 +81,6 @@ export async function runDueMemoryDigests(now = new Date()) {
   let started = 0;
   for (const { localDate, workspaceId } of due) {
     if (started >= workspacesPerTick) break;
-    // oxlint-disable-next-line eslint/no-await-in-loop -- One workspace at a time, as below.
-    if (!(await inPilot(workspaceId))) continue;
     // Each claim's lease runs from when it is taken, not from the tick's
     // start: the workspaces before it may have taken minutes.
     const claimedAt = new Date(now.getTime() + Date.now() - tickStartedAt);
@@ -233,12 +233,6 @@ async function digestScope(
     else if (reason === "duplicate") outcome.deduped += 1;
     else outcome.contained += 1;
   }
-}
-
-/** Whether a pilot workspace: the digest runs for no one else. */
-async function inPilot(workspaceId: string) {
-  const scope = await readWorkspaceScope(workspaceId);
-  return scope !== null && memoryDigestPilot(scope);
 }
 
 /** Whether a text with its codes cut out still says something. */

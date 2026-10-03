@@ -41,6 +41,15 @@ vi.mock("@agent/lib/memory/digest/pilot", () => ({
     Promise.resolve(
       pilot.list.includes("*") || pilot.list.includes(scope.workspaceId)
     ),
+  memoryDigestPilotEntries: () =>
+    pilot.list.includes("*")
+      ? ("everyone" as const)
+      : {
+          emails: pilot.list
+            .filter((entry) => entry.includes("@"))
+            .map((entry) => entry.toLowerCase()),
+          ids: pilot.list.filter((entry) => !entry.includes("@")),
+        },
 }));
 
 const client = new PGlite();
@@ -384,6 +393,33 @@ describe("the daily memory digest", () => {
     expect(done).toHaveLength(1);
     expect(done[0]).toMatchObject({ localDate: "2026-10-03", status: "done" });
     expect(done[0]?.outcome?.purged).toBe(0);
+  });
+
+  it("lists only the pilot's workspaces, named by id or owner's email", async () => {
+    const bob = { userId: "better-auth:bob", workspaceId: "workspace-bob" };
+    const carol = { userId: "carol", workspaceId: "workspace-carol" };
+    for (const scope of [alice, bob, carol])
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Three workspaces, in order.
+      await saveMemory(
+        scope,
+        "scope-a",
+        { text: "Живёт в Казани." },
+        "a",
+        source
+      );
+    await database.insert(schema.user).values({
+      email: "Bob@Example.com",
+      id: "bob",
+      name: "Bob",
+    });
+    pilot.list.push("bob@example.COM", carol.workspaceId);
+
+    await runDueMemoryDigests(new Date("2026-10-03T05:30:00Z"));
+    const runs = await database.select().from(schema.memoryDigestRuns);
+    expect(runs.map(({ workspaceId }) => workspaceId).toSorted()).toEqual([
+      bob.workspaceId,
+      carol.workspaceId,
+    ]);
   });
 
   it("takes a day back from a run that outlived its lease", async () => {

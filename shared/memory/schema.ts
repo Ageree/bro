@@ -58,10 +58,10 @@ const credentialPatterns = [
 
 /** PIN and SMS codes: secret wherever they stand, but at a door. */
 const codePatterns = [
-  // A card's or an app's secret number, unless its clause is about a door
-  // («pin 1234 от домофона»).
+  // A card's, an app's or a safe's secret number («PIN-код от сейфа 4821»),
+  // unless its clause is about a door («pin 1234 от домофона»).
   new RegExp(
-    String.raw`${notAfterWord}(?:otp|totp|2fa|cvv2?|cvc2?|пин-?код|pin-?code|пин|pin)${notBeforeLetter}${codeGap}${codeDigits}`,
+    String.raw`${notAfterWord}(?:otp|totp|2fa|cvv2?|cvc2?|пин-?код|pin-?code|пин|pin)${notBeforeLetter}${codeGap}(?:(?:от|для|к|for|to)(?:\s+[^\s\d,;.!?]+){1,3}${codeGap})?${codeDigits}`,
     "dgiu"
   ),
   // An SMS code has four digits or more: «смс 482193», «смс от банка: 1234»,
@@ -90,9 +90,12 @@ const codeOwners =
  */
 const referenceWords =
   /(?:бик|инн|кпп|огрн|снилс|сч[её]т|клиент|договор|заказ|трек|посылк|ошибк|регион|город|стран|товар|артикул|подразделен|bic|swift|iban|client|customer|order|account|tracking|error|region|country|product)/iu;
-/** A door's code is no one-time code («код домофона 1234К, вход со двора»). */
+/**
+ * A door's code is no one-time code («код домофона 1234К, вход со двора»). A
+ * safe's or a deposit box's is a secret all the same: no «сейф», «ячейка».
+ */
 const doorWords =
-  /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|сейф|замк|замок|ячейк|intercom|door|gate|entrance)/iu;
+  /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|замк|замок|intercom|door|gate|entrance)/iu;
 const codeContextChars = 25;
 
 /** The first group a match captured, as a `[start, end)` range. */
@@ -125,10 +128,11 @@ export function unsafeMemoryRanges(value: string) {
         .slice(Math.max(0, match.index - codeContextChars), match.index)
         .split(/[,;.!?\n]/u)
         .at(-1) ?? "";
+    // «Код подтверждения заказа 123456» is one-time all the same.
     if (
       doorWords.test(gap) ||
       doorWords.test(before) ||
-      referenceWords.test(gap)
+      (referenceWords.test(gap) && !oneTimeWords.test(gap))
     )
       continue;
     const end = match.index + match[0].length;
