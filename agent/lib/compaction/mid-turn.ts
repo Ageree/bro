@@ -1,17 +1,7 @@
 import type { ModelMessage } from "ai";
-import { z } from "zod";
 import { compactionOfTurn } from "@agent/lib/compaction/record";
+import { compactionMarker } from "@agent/lib/compaction/summary";
 import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
-
-const taggedMessageSchema = z.object({ kind: z.string() });
-
-/** Whether a message is eve's compaction marker (`context.compaction`). */
-export function compactionMarker(message: ModelMessage) {
-  return (
-    message.role === "user" &&
-    taggedMessageSchema.safeParse(message).data?.kind === "context.compaction"
-  );
-}
 
 /** The turns whose missing record was already logged on this instance. */
 const loggedUnknown = turnMemory<true>();
@@ -26,14 +16,20 @@ const loggedUnknown = turnMemory<true>();
  * before compaction existed. With a marker and no record of this turn — a
  * turn begun before this code ran, a failed write, a subagent — nothing
  * tells whose summary it is, and the turn is taken as compacted inside, of
- * an unknown kind. `backgroundTask` is known only from a record.
+ * an unknown kind. `afterInside`, `backgroundTask` and `summaryOpener` are
+ * known only from a record.
  */
 export function turnCompaction(
   messages: readonly ModelMessage[],
   step: StepIdentity
 ): NonNullable<ReturnType<typeof compactionOfTurn>> {
   if (!messages.some(compactionMarker)) {
-    return { backgroundTask: null, compaction: "none" };
+    return {
+      afterInside: false,
+      backgroundTask: null,
+      compaction: "none",
+      summaryOpener: null,
+    };
   }
   const record = compactionOfTurn(step.turnId, messages);
   if (record !== undefined) return record;
@@ -46,5 +42,10 @@ export function turnCompaction(
       turnId: step.turnId,
     });
   }
-  return { backgroundTask: null, compaction: "inside" };
+  return {
+    afterInside: false,
+    backgroundTask: null,
+    compaction: "inside",
+    summaryOpener: null,
+  };
 }

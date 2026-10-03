@@ -5,6 +5,7 @@ import type {
   getFormOfAddress,
   getWorkspaceModelId,
 } from "@db/services/settings";
+import type * as CompactionRecord from "@agent/lib/compaction/record";
 import type * as ModelSelection from "@agent/lib/model/selection";
 import type * as Provider from "@shared/model/provider";
 import type * as SkillsPilot from "@agent/lib/skills/pilot";
@@ -18,6 +19,7 @@ const services = vi.hoisted(() => ({
   historyTrimPilot: vi.fn<() => Promise<boolean>>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
+  recordStepHistory: vi.fn<typeof CompactionRecord.recordStepHistory>(),
   directModelActive: vi.fn<() => boolean>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
@@ -55,6 +57,11 @@ vi.mock("@agent/lib/compaction/call", () => ({
   compactionCallMiddleware: () => ({}),
   compactionHeld: services.compactionHeld,
 }));
+vi.mock("@agent/lib/compaction/record", async (importOriginal) => {
+  const original = await importOriginal<typeof CompactionRecord>();
+  services.recordStepHistory.mockImplementation(original.recordStepHistory);
+  return { ...original, recordStepHistory: services.recordStepHistory };
+});
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
   const original = await importOriginal<typeof ModelSelection>();
   services.modelSelection.mockImplementation(original.modelSelection);
@@ -917,6 +924,27 @@ describe("interactive delivery enforcement", () => {
       ...outside,
       historyTrim: undefined,
     });
+  });
+
+  it("hands every step's history to the turn's compaction record", async () => {
+    // Before eve may compact it: the record settles the claims of the
+    // steps before and, at the first step, reads the turn's opening.
+    const history = [humanMessage("найди поезд в Казань")];
+    async function readStep(stepIndex: number) {
+      await agent.model.events["step.started"]?.(
+        { data: { stepIndex, turnId: "turn_3" } },
+        interactiveContext(history)
+      );
+      return services.recordStepHistory.mock.lastCall;
+    }
+    expect(await readStep(0)).toEqual([
+      { sessionId: "interactive-session", stepIndex: 0, turnId: "turn_3" },
+      history,
+    ]);
+    expect(await readStep(1)).toEqual([
+      { sessionId: "interactive-session", stepIndex: 1, turnId: "turn_3" },
+      history,
+    ]);
   });
 
   it("lets only the first step of a text turn compact, in the pilot", async () => {
