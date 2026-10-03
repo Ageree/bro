@@ -11,9 +11,17 @@ import browserRuns from "@agent/schedules/browser-runs";
 import browserSignIns from "@agent/schedules/browser-sign-ins";
 import dynamic from "@agent/schedules/dynamic";
 import memory from "@agent/schedules/memory";
+import memoryHistory from "@agent/schedules/memory-history";
 import proactive from "@agent/schedules/proactive";
 
-const schedules = { browserRuns, browserSignIns, dynamic, memory, proactive };
+const schedules = {
+  browserRuns,
+  browserSignIns,
+  dynamic,
+  memory,
+  memoryHistory,
+  proactive,
+};
 
 function tickArguments() {
   const waitUntil = vi.fn<ScheduleHandlerArgs["waitUntil"]>();

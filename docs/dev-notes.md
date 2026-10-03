@@ -646,6 +646,9 @@
 ## Память Бро
 
 - Устройство — `docs/memory.md`; пишет только модель в интерактивных ходах.
+- Сообщение ошибки drizzle (`DrizzleQueryError`) — «Failed query: … params:
+  …», то есть текст памяти: в лог — только `name` и SQLSTATE из `cause`
+  (`agent/schedules/memory-history.ts`), не `{ cause: error }`.
 - Удаление записи из другого разговора — карточка (`memoryRemovalApproval` в
   `agent/lib/memory/profile.ts`): правило по источнику записи, а не «одно
   удаление за ход», — параллельные вызовы шага политика не видит.
