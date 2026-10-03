@@ -1198,6 +1198,37 @@ const eventIdSchema = z.object({
   event: z.object({ meta: z.object({ id: z.string() }) }),
 });
 
+/** The ids of the events the case journaled, in order. */
+const journaledIds = async (outDir: string) =>
+  (await readFile(join(outDir, "case-under-test.events.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => eventIdSchema.parse(JSON.parse(line)).event.meta.id);
+
+/**
+ * A stream's answer cut after its first `lines` events, by a reset eve does
+ * not reconnect on by itself.
+ */
+async function cutAfter(response: Response, lines: number) {
+  const kept = (await response.text()).split("\n").slice(0, lines);
+  let pulls = 0;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          controller.enqueue(
+            new TextEncoder().encode(kept.map((line) => `${line}\n`).join(""))
+          );
+        } else {
+          controller.error(readReset());
+        }
+      },
+    }),
+    { headers: response.headers, status: response.status }
+  );
+}
+
 describe("a way out to eve that drops requests", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
@@ -1221,6 +1252,26 @@ describe("a way out to eve that drops requests", () => {
           () => realFetch(input, init)
         )
     );
+  }
+
+  /**
+   * Cuts the first stream read that starts at `startIndex` (null: at the
+   * first event) after `lines` events. Returns where every stream read
+   * started, in order.
+   */
+  function cutStreamRead(startIndex: string | null, lines: number) {
+    const starts: (string | null)[] = [];
+    let cut = false;
+    interceptFetch(async (url, _init, pass) => {
+      const response = await pass();
+      if (!url.pathname.endsWith("/stream")) return response;
+      const start = url.searchParams.get("startIndex");
+      starts.push(start);
+      if (cut || start !== startIndex) return response;
+      cut = true;
+      return await cutAfter(response, lines);
+    });
+    return starts;
   }
 
   it("opens the conversation again after a connect timeout, once", async () => {
@@ -1335,31 +1386,8 @@ describe("a way out to eve that drops requests", () => {
     const cursor = first.driver.sessions[0]?.streamIndex ?? 0;
     // Bro wrote on its own since the driver last looked.
     fake.append(turn(delivered("поезд нашёлся")));
-    let cut = false;
-    interceptFetch(async (url, _init, pass) => {
-      const response = await pass();
-      if (cut || url.searchParams.get("startIndex") !== String(cursor)) {
-        return response;
-      }
-      // The catch-up read breaks after one event, on a reset eve does not
-      // reconnect on by itself.
-      cut = true;
-      const [firstLine = ""] = (await response.text()).split("\n");
-      let pulls = 0;
-      return new Response(
-        new ReadableStream<Uint8Array>({
-          pull(controller) {
-            pulls += 1;
-            if (pulls === 1) {
-              controller.enqueue(new TextEncoder().encode(`${firstLine}\n`));
-            } else {
-              controller.error(readReset());
-            }
-          },
-        }),
-        { headers: response.headers, status: response.status }
-      );
-    });
+    // The catch-up read from the cursor breaks after one event.
+    const starts = cutStreamRead(String(cursor), 1);
 
     const record = await continueCase(client, first, settings, {
       code: undefined,
@@ -1368,23 +1396,134 @@ describe("a way out to eve that drops requests", () => {
       text: "ну что там?",
     });
 
-    expect(cut).toBe(true);
     expect(record.driver.status).toBe("completed");
-    const journaled = (
-      await readFile(
-        join(settings.outDir, "case-under-test.events.jsonl"),
-        "utf8"
-      )
-    )
-      .trim()
-      .split("\n")
-      .map((line) => eventIdSchema.parse(JSON.parse(line)).event.meta.id);
+    expect(starts.slice(1, 3)).toEqual([String(cursor), String(cursor + 1)]);
     // Every event once, in order: the read went on where it broke.
-    expect(journaled).toEqual(fake.events.map((event) => event.meta.id));
+    expect(await journaledIds(settings.outDir)).toEqual(
+      fake.events.map((event) => event.meta.id)
+    );
     const log = await readLog(settings.outDir);
     expect(log.split("<- Бро: поезд нашёлся")).toHaveLength(2);
     expect(log).toContain(
       "== драйвер: чтение разговора: сбой сети (ECONNRESET: read ECONNRESET) — повтор через 2 с (1/4)"
     );
   }, 15_000);
+
+  it("remembers past codes on from where a cut read stopped", async () => {
+    const fake = await startFakeEve((post) =>
+      turn(delivered(post.route === "create" ? "привет!" : "держу в курсе"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, [step], [], settings);
+    // `send` first reads the history from its start for the codes in it.
+    const starts = cutStreamRead(null, 1);
+
+    const record = await continueCase(client, first, settings, {
+      code: undefined,
+      kind: "hint",
+      respond: () => undefined,
+      text: "ну что там?",
+    });
+
+    expect(record.driver.status).toBe("completed");
+    expect(starts.slice(0, 2)).toEqual([null, "1"]);
+  }, 15_000);
+
+  it("watches a conversation on from where a cut read stopped", async () => {
+    const fake = await startFakeEve(() => []);
+    stopFake = () => fake.close();
+    fake.append(
+      turn(delivered("рейс в 9:40"), delivered("регистрация открыта"))
+    );
+    const settings = await settingsFor(fake.url);
+    // The first read of a conversation never read before breaks after
+    // `turn.started` and the first message.
+    const starts = cutStreamRead(null, 2);
+
+    const record = await observeCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      undefined,
+      settings,
+      {
+        channel: "web",
+        durationMs: 0,
+        notes: [],
+        sessionId: "wrun_fake",
+        since: new Date(0),
+      }
+    );
+
+    expect(starts.slice(0, 2)).toEqual([null, "2"]);
+    expect(record.driver.observations.map((item) => item.text)).toEqual([
+      "рейс в 9:40",
+      "регистрация открыта",
+    ]);
+    expect(await journaledIds(settings.outDir)).toEqual(
+      fake.events.map((event) => event.meta.id)
+    );
+  }, 15_000);
+
+  it("reads an accepted turn on from the cursor when its stream breaks", async () => {
+    const fake = await startFakeEve(() =>
+      turn(delivered("привет!"), delivered("чем помочь?"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const starts = cutStreamRead(null, 2);
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      [step],
+      [],
+      settings
+    );
+
+    expect(record.driver.status).toBe("completed");
+    expect(fake.posts.map((post) => post.route)).toEqual(["create"]);
+    expect(starts.slice(0, 2)).toEqual([null, "2"]);
+    expect(await journaledIds(settings.outDir)).toEqual(
+      fake.events.map((event) => event.meta.id)
+    );
+    const log = await readLog(settings.outDir);
+    expect(log).toContain("<- Бро: чем помочь?");
+    expect(log).toContain(
+      "== драйвер: чтение разговора: сбой сети (ECONNRESET: read ECONNRESET) — повтор через 2 с (1/4)"
+    );
+  }, 15_000);
+
+  it("fails without sending again when an accepted turn cannot be read", async () => {
+    const fake = await startFakeEve(() => turn(delivered("привет!")));
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    interceptFetch(async (url, _init, pass) =>
+      url.pathname.endsWith("/stream")
+        ? new Response("unauthorized", { status: 401 })
+        : await pass()
+    );
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      [step],
+      [],
+      settings
+    );
+
+    expect(fake.posts.map((post) => post.route)).toEqual(["create"]);
+    expect(record.driver.status).toBe("failed");
+    expect(record.driver.statusDetail).toContain(
+      "новый разговор: eve его принял, но ход Бро не дочитан"
+    );
+    expect(record.driver.statusDetail).toContain(
+      `сообщение принято, не отправляйте его заново; что ответил Бро, дочитать без отправки: pnpm bench observe --out ${settings.outDir} --case case-under-test --minutes 0`
+    );
+    // `observe` can pick the conversation up: its cursor is in the record.
+    expect(record.driver.sessions).toEqual([
+      { sessionId: "wrun_fake", streamIndex: 0 },
+    ]);
+  });
 });

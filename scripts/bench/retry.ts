@@ -13,30 +13,37 @@ import { z } from "zod";
  *
  * A POST cut off once the connection was up may have reached Bro: sent
  * again, a message would arrive twice and change the case. It is never
- * repeated; the error says so, and the case fails as before.
+ * repeated; the error says so, and the case fails as before. Neither is a
+ * request the proxy or TLS turned away for good (a 403 to the tunnel, a
+ * certificate that does not verify): it never left, but a repeat gets the
+ * same answer.
  */
 
 /** The waits before each repeat: four repeats, 30 s in all. */
 const retryDelaysMs = [2000, 4000, 8000, 16_000] as const;
 
-/** Failures before the connection was up: nothing of the request was sent. */
-const unsentCodes = new Set([
-  "EAI_AGAIN",
+/** A TCP connect that failed: only with `syscall: "connect"`. */
+const connectCodes = new Set([
   "ECONNREFUSED",
   "EHOSTUNREACH",
   "ENETUNREACH",
-  "ENOTFOUND",
-  // undici's connect timeout covers the TCP connect and the TLS handshake.
-  "UND_ERR_CONNECT_TIMEOUT",
+  "ETIMEDOUT",
 ]);
-const unsentSyscalls = new Set(["connect", "getaddrinfo"]);
+/** A name that did not resolve: only with `syscall: "getaddrinfo"`. */
+const lookupCodes = new Set(["EAI_AGAIN", "ENOTFOUND"]);
+/** A socket closed during the TLS handshake; its code is `ECONNRESET`. */
+const handshakeClosed =
+  "Client network socket disconnected before secure TLS connection was established";
 /**
- * A socket closed during the TLS handshake (code `ECONNRESET`), and the
- * session's proxy failing to reach the host, which undici reports as an
- * aborted request.
+ * The session's proxy answering the tunnel request (`CONNECT`) with something
+ * other than 200; undici reports it as an aborted request.
  */
-const unsentMessage =
-  /^(?:Client network socket disconnected before secure TLS connection was established|Proxy response \(50[234]\) !== 200 when HTTP Tunneling)/u;
+const proxyTunnel = /^Proxy response \((\d+)\) !== 200 when HTTP Tunneling$/u;
+/** The proxy could not reach the host: a 502, 503 or 504 to the tunnel. */
+const proxyTunnelTransient = new Set([502, 503, 504]);
+/** A certificate that does not verify; the request was never sent. */
+const certificateCode =
+  /^(?:CERT_\w+|UNABLE_TO_\w+|ERR_TLS_CERT_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|HOSTNAME_MISMATCH)$/u;
 
 /** A connection dropped after it was up: the request may have been sent. */
 const droppedCodes = new Set([
@@ -48,8 +55,6 @@ const droppedCodes = new Set([
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_SOCKET",
 ]);
-/** What undici's `fetch` throws for any network failure, and for a cut body. */
-const fetchFailure = /^(?:fetch failed|terminated)$/u;
 
 /** Node's string `code`; a DOMException's numeric one is something else. */
 const errnoSchema = z.object({
@@ -70,31 +75,41 @@ function causeChain(error: Error): Error[] {
   return chain;
 }
 
-/** Whether this link of the chain says the connection never came up. */
-function neverConnected(link: Error) {
+/**
+ * What one link of the chain says about the request: it never left and a
+ * repeat may pass (`unsent`), it never left and a repeat gets the same
+ * answer (`refused`), it may have arrived (`uncertain`), or nothing.
+ */
+function linkLoss(link: Error) {
   const { code, syscall } = errnoSchema.parse(link);
-  return (
-    (code !== undefined && unsentCodes.has(code)) ||
-    (syscall !== undefined && unsentSyscalls.has(syscall)) ||
-    unsentMessage.test(link.message)
-  );
-}
-
-function connectionDropped(link: Error) {
-  const { code } = errnoSchema.parse(link);
-  return code !== undefined && droppedCodes.has(code);
-}
-
-/** Whether the request never left, may have, or the failure is not the network's. */
-function lostRequest(error: Error) {
-  const chain = causeChain(error);
-  if (chain.some((link) => neverConnected(link))) return "unsent";
-  if (
-    (error instanceof TypeError && fetchFailure.test(error.message)) ||
-    chain.some((link) => connectionDropped(link))
-  ) {
-    return "uncertain";
+  const tunnel = proxyTunnel.exec(link.message);
+  if (tunnel) {
+    return proxyTunnelTransient.has(Number(tunnel[1])) ? "unsent" : "refused";
   }
+  if (code !== undefined && certificateCode.test(code)) return "refused";
+  if (
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    (code !== undefined && connectCodes.has(code) && syscall === "connect") ||
+    (code !== undefined &&
+      lookupCodes.has(code) &&
+      syscall === "getaddrinfo") ||
+    link.message === handshakeClosed
+  ) {
+    return "unsent";
+  }
+  if (code !== undefined && droppedCodes.has(code)) return "uncertain";
+  return undefined;
+}
+
+/**
+ * How the request was lost, by the most telling link of the error's cause
+ * chain; undefined when the failure is not the network's.
+ */
+function lostRequest(error: Error) {
+  const losses = new Set(causeChain(error).map((link) => linkLoss(link)));
+  if (losses.has("refused")) return "refused";
+  if (losses.has("unsent")) return "unsent";
+  if (losses.has("uncertain")) return "uncertain";
   return undefined;
 }
 
@@ -138,7 +153,7 @@ export class UncertainDeliveryError extends Error {
   }
 }
 
-export interface RetryRequest {
+interface RetryRequest {
   /** A read, safe to send again even if it reached the server. */
   readonly idempotent: boolean;
   /** What is sent, for the log: «сообщение», «GET /api/auth/get-session». */
@@ -152,8 +167,8 @@ export interface RetryRequest {
 /**
  * Runs `send` — one request and the reading of its answer — and runs it
  * again, after 2, 4, 8 and 16 s, while it fails on the way in a way that is
- * safe to repeat (see above). Any other failure, and the last one, is thrown
- * as it came.
+ * safe to repeat (see above). A refusal for good fails at once with what it
+ * was; any other failure, and the last one, is thrown as it came.
  */
 export async function withRetry<T>(
   request: RetryRequest,
@@ -172,6 +187,12 @@ export async function withRetry<T>(
       if (!(error instanceof Error) || request.signal?.aborted) throw error;
       const loss = lostRequest(error);
       if (loss === undefined) throw error;
+      if (loss === "refused") {
+        throw new Error(
+          `${request.label}: запрос не ушёл — ${lossDetail(error)}; такой отказ повтором не проходит, драйвер не повторяет`,
+          { cause: error }
+        );
+      }
       if (loss === "uncertain" && !request.idempotent) {
         throw new UncertainDeliveryError(request.label, error);
       }

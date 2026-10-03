@@ -6,8 +6,11 @@
 
 const failed = (cause: Error) => new TypeError("fetch failed", { cause });
 
-const coded = (message: string, code: string, name = "Error") =>
-  Object.assign(new Error(message), { code, name });
+const coded = (
+  message: string,
+  code: string,
+  extra: { readonly name?: string; readonly syscall?: string } = {}
+) => Object.assign(new Error(message), { code, ...extra });
 
 /** The connection never came up: nothing of the request was sent. */
 export const connectTimeout = () =>
@@ -15,27 +18,59 @@ export const connectTimeout = () =>
     coded(
       "Connect Timeout Error (attempted address: brobro.tech:443, timeout: 10000ms)",
       "UND_ERR_CONNECT_TIMEOUT",
-      "ConnectTimeoutError"
+      { name: "ConnectTimeoutError" }
     )
   );
 
-/** The session's proxy could not reach the host: the tunnel was refused. */
-export const tunnelRefused = () =>
+/** A system error of the connect or the lookup: `connect ECONNREFUSED …`. */
+export const systemError = (code: string, syscall?: string) =>
   failed(
     coded(
-      "Proxy response (502) !== 200 when HTTP Tunneling",
+      `${syscall ?? "socket"} ${code} brobro.tech`,
+      code,
+      syscall === undefined ? {} : { syscall }
+    )
+  );
+
+/** The proxy answered the tunnel request with `status`. */
+export const tunnelRefused = (status = 502) =>
+  failed(
+    coded(
+      `Proxy response (${String(status)}) !== 200 when HTTP Tunneling`,
       "UND_ERR_ABORTED",
-      "AbortError"
+      { name: "AbortError" }
+    )
+  );
+
+/** The socket closed during the TLS handshake: nothing was sent. */
+export const handshakeClosed = () =>
+  failed(
+    coded(
+      "Client network socket disconnected before secure TLS connection was established",
+      "ECONNRESET"
+    )
+  );
+
+/** A certificate that does not verify: nothing was sent, and never will be. */
+export const certificateRejected = () =>
+  failed(
+    coded(
+      "self-signed certificate; if the root CA is installed locally, try running Node.js with --use-system-ca",
+      "DEPTH_ZERO_SELF_SIGNED_CERT"
     )
   );
 
 /** The connection closed after the request went out: it may have arrived. */
 export const socketClosed = () =>
-  failed(coded("other side closed", "UND_ERR_SOCKET", "SocketError"));
+  failed(coded("other side closed", "UND_ERR_SOCKET", { name: "SocketError" }));
+
+/** A reset after the connection was up (or during TLS: Node cannot tell). */
+export const connectionReset = () =>
+  failed(coded("read ECONNRESET", "ECONNRESET", { syscall: "read" }));
+
+/** A failure that names nothing the driver knows. */
+export const unknownFailure = () => failed(new Error("something else broke"));
 
 /** A reset as a stream's body reports it, which eve does not reconnect on. */
 export const readReset = () =>
-  Object.assign(new Error("read ECONNRESET"), {
-    code: "ECONNRESET",
-    syscall: "read",
-  });
+  coded("read ECONNRESET", "ECONNRESET", { syscall: "read" });
