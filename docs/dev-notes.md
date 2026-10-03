@@ -251,6 +251,12 @@
   Принятое eve (`200`) до рестарта eve может пропасть, поэтому deployd перед
   рестартом eve останавливает мост (`bridge_paused`, README моста, «Что делает
   сервер»).
+- `limits` eve кладёт в сессию при её создании: новый потолок входа
+  (`agent/agent.ts`) живая сессия Telegram получит лишь со следующей, а живёт
+  она 30 дней (`sessionTimeoutMs`). Без потолка eve после 40 млн входа ставил
+  карточку Approve/Stop. На Vercel после деплоя ход сессии снова `turn_0`, а
+  `usage_costs` молча теряет совпавшие ключи шагов: замер по ходам
+  (`usage-stats.sh`) такие сессии исключает и считает.
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
 - Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root
@@ -477,6 +483,13 @@
 - DeepSeek на RouterAI по умолчанию думает: в JSON шага тогда течёт
   `｜｜DSML｜｜`, шаг пропадает, а вызов оплачен. Бро выключает это
   (`runTuning` в `agent/lib/browser-vm/runs.ts`, `tuning` worker).
+- Хост DeepSeek для worker пула Бро закрепляет так же, как основному агенту
+  (`providerRouting`, `deepinfra`): сам RouterAI брал хосты без
+  `structured_outputs`, и строгая схема browser-use валила шаги («validation
+  error for AgentOutput»). `require_parameters` RouterAI принимает, но не
+  фильтрует — такие хосты названы в `ignore` (`runTuning` в
+  `agent/lib/browser-vm/runs.ts`); продолжение несёт `tuning` (worker после
+  рестарта его забывает), хост ответа — `usage_costs.units.hosts`.
 - «accepted» от `attachSession(...).send` — не доставка: итог доставлен, когда
   ход-отчёт отправил сообщение, вызвал `browser_task` или закончился
   (`agent/hooks/browser-run-report.ts`). Аренду итога (10 минут) не
@@ -581,6 +594,11 @@
   middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200
   вместо dispatch. V4 Browser Use не присылает вебхук, так что локальный
   `browser-runs` без этого тика не доставит законченный отчёт в чат.
+- Composio с адреса Cloud.ru изредка отвечает голым 403 (03.10: 5 из 9 ночных
+  проверок), а тот же ключ из сессии — 200. Проверка почты спрашивает ещё раз
+  через 3 с (`onceMore` в `agent/lib/proactive/probe.ts`); `ComposioError.answer`
+  хранит начало чужого тела и `server`, строка `[proactive] check` — `failure`:
+  403 Composio отдельно от лимита Google.
 - `next_check_at` захваченной проактивной проверки — её аренда: отсрочка
   проходит, лишь пока аренда и `google_state` те же (`deferProactiveWatch`).
 - Воркер с сессией без начатого хода сторож ждёт ещё 20 минут: Workflow держит
@@ -625,6 +643,9 @@
 ## Память Бро
 
 - Устройство — `docs/memory.md`; пишет только модель в интерактивных ходах.
+- Сообщение ошибки drizzle (`DrizzleQueryError`) — «Failed query: … params:
+  …», то есть текст памяти: в лог — только `name` и SQLSTATE из `cause`
+  (`agent/schedules/memory-history.ts`), не `{ cause: error }`.
 - Удаление записи из другого разговора — карточка (`memoryRemovalApproval` в
   `agent/lib/memory/profile.ts`): правило по источнику записи, а не «одно
   удаление за ход», — параллельные вызовы шага политика не видит.

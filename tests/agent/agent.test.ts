@@ -122,6 +122,13 @@ describe("root agent model resolution", () => {
   });
 });
 
+describe("session limits", () => {
+  it("lets a messenger chat run its 30 days without the input-token card", () => {
+    // eve's default of 40M stops a Telegram chat after about 400 steps.
+    expect(agent.limits).toEqual({ maxInputTokensPerSession: 400_000_000 });
+  });
+});
+
 describe("interactive delivery enforcement", () => {
   const pending = [humanMessage("сделай мне фейковый паспорт")];
   const delivered = [

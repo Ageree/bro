@@ -22,13 +22,15 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/session                        {proxy: {host, port, username, password}} → exit address and speed
                                           (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
-  POST /v1/runs                           start an agent run (`tuning`: how its browser-use agent runs); idempotent
+  POST /v1/runs                           start an agent run (`tuning`: how its browser-use agent runs, which
+                                          upstream hosts serve its model); idempotent
                                           on its id; 409 when busy
   GET  /v1/runs/<id>                      status, result, error, task, steps, final page, usage, traffic, unreadMessages
   POST /v1/runs/<id>/cancel               stop the agent (waits up to 20 s for it to end), keep the page
   GET  /v1/sessions/<id>                  latest run and its status
-  POST /v1/sessions/<id>/messages         {text}: join the live run (unread when it ends: unreadMessages),
-                                          or start a follow-up in the tab; 409 while the live run cancels
+  POST /v1/sessions/<id>/messages         {text, tuning?}: join the live run (unread when it ends:
+                                          unreadMessages), or start a follow-up in the tab with `tuning` over the
+                                          session's; 409 while the live run cancels
   POST /v1/sessions/<id>/release          close the session's tab (the page is no longer kept)
   POST /v1/sessions/<id>/open {url}       direct mode, no agent: open a page in the session's tab
   GET  /v1/sessions/<id>/state            address, title, indexed interactive elements
@@ -71,7 +73,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-01.2"
+VERSION = "2026-10-03.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -131,6 +133,13 @@ NEW_REQUEST = "<sys>A new request starts here: the steps above served an earlier
 # What Bro may tune of the browser-use agent per run (`tuning`); a run without it is the agent as before.
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
 TUNING_LIMITS = {"maxActionsPerStep": (1, 10)}
+# Bro's `tuning.provider`: which upstream hosts of the model's service (RouterAI, OpenRouter) may serve the
+# run, in the service's own `provider` routing names. A slug may name a variant (`deepinfra/fp8`).
+PROVIDER_SLUG = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,63}$")
+PROVIDER_HOSTS_MAX = 32
+PROVIDER_FIELDS = {"order": "order", "ignore": "ignore", "requireParameters": "require_parameters"}
+# How many distinct hosts a run's bill names; a host past them is not counted by name.
+BILLED_HOSTS_MAX = 16
 BATCH_HINT = """
 Put the actions of one step together when the later ones do not depend on what the page shows after the
 earlier ones: type into a field and press Enter or its search button, fill several fields of one form, tick
@@ -537,7 +546,35 @@ def agent_tuning(value):
         if value["reasoning"] not in REASONING_EFFORTS:
             raise web.HTTPBadRequest(text=f"tuning.reasoning must be one of {', '.join(REASONING_EFFORTS)}")
         tuning["reasoning"] = value["reasoning"]
+    if value.get("provider") is not None:
+        routing = provider_routing(value["provider"])
+        if routing:
+            tuning["provider"] = routing
     return tuning
+
+
+def provider_routing(value):
+    """Bro's `tuning.provider`, checked and kept in Bro's names, so that a session's stored tuning passes this
+    check again as a follow-up's: `order` and `ignore` lists of host slugs, `requireParameters`. An unknown
+    key is ignored, an empty list dropped."""
+    if not isinstance(value, dict):
+        raise web.HTTPBadRequest(text="tuning.provider must be an object")
+    routing = {}
+    for key in ("order", "ignore"):
+        hosts = value.get(key)
+        if hosts is None:
+            continue
+        if (not isinstance(hosts, list) or len(hosts) > PROVIDER_HOSTS_MAX
+                or not all(isinstance(host, str) and PROVIDER_SLUG.fullmatch(host) for host in hosts)):
+            raise web.HTTPBadRequest(text=f"tuning.provider.{key} must be a list of up to "
+                                          f"{PROVIDER_HOSTS_MAX} host slugs")
+        if hosts:
+            routing[key] = list(dict.fromkeys(hosts))
+    if value.get("requireParameters") is not None:
+        if not isinstance(value["requireParameters"], bool):
+            raise web.HTTPBadRequest(text="tuning.provider.requireParameters must be a boolean")
+        routing["requireParameters"] = value["requireParameters"]
+    return routing
 
 
 def system_extension(tuning):
@@ -549,14 +586,19 @@ def system_extension(tuning):
 
 
 def tuned_llm_options(tuning):
-    """ChatOpenRouter's options for the run's reasoning: DeepSeek V4.1 Flash on RouterAI reasons before it
-    answers unless told not to, and those tokens are billed as output and slow every step. browser-use
-    passes `extra_body` on to the OpenAI client, which merges its own `extra_body` into the request."""
+    """ChatOpenRouter's options for the run's reasoning and routing. DeepSeek V4.1 Flash on RouterAI reasons
+    before it answers unless told not to, and those tokens are billed as output and slow every step. Left to
+    pick a host itself, RouterAI served it from hosts without structured outputs (its own `deepseek` among
+    them): browser-use asks for a strict JSON schema, and their answers failed `AgentOutput` four times in a
+    row until browser-use ended the run (six errands on 03.10.2026). browser-use passes `extra_body` on to
+    the OpenAI client, which merges its own `extra_body` into the request."""
+    body = {}
     reasoning = tuning.get("reasoning")
-    if reasoning is None:
-        return {}
-    body = {"reasoning": {"enabled": False} if reasoning == "none" else {"effort": reasoning}}
-    return {"extra_body": {"extra_body": body}}
+    if reasoning is not None:
+        body["reasoning"] = {"enabled": False} if reasoning == "none" else {"effort": reasoning}
+    if tuning.get("provider"):
+        body["provider"] = {PROVIDER_FIELDS[key]: value for key, value in tuning["provider"].items()}
+    return {"extra_body": {"extra_body": body}} if body else {}
 
 
 def tuned_agent_options(tuning):
@@ -574,7 +616,8 @@ def usage_summary(history, agent, billed=None):
     and a 0 would read as a free run."""
     usage = getattr(history, "usage", None)
     has_billed = billed is not None and billed.calls
-    if usage is None and not has_billed:
+    hosts = dict(billed.hosts) if billed is not None and billed.hosts else None
+    if usage is None and not has_billed and not hosts:
         return None
     # No usage of browser-use's own when it could parse no answer at all: the service's bill still counts.
     data = usage.model_dump() if hasattr(usage, "model_dump") else {}
@@ -582,6 +625,8 @@ def usage_summary(history, agent, billed=None):
                                            "total_prompt_cached_tokens") if k in data}
     if has_billed:
         summary.update(billed=round(billed.total, 6), billed_calls=billed.calls)
+    if hosts:
+        summary["hosts"] = hosts
     return summary
 
 
@@ -589,17 +634,24 @@ class Billed:
     """What the model's service billed for each call of a run, in its own currency (roubles at RouterAI): the
     `usage.cost` of every answer, read off the HTTP client. browser-use's own count misses the calls whose
     answer it could not parse — with DeepSeek's reasoning on, up to half the calls of a run (01.10.2026),
-    billed all the same — and the price changed within a morning (twice as much at 10:00 as at 08:40 MSK)."""
+    billed all the same — and the price changed within a morning (twice as much at 10:00 as at 08:40 MSK).
+    `hosts` counts the answers by the upstream host that served them (the answer's `provider`, "DeepInfra"),
+    with a cost or without: which host a run got shows whether Bro's routing held (`tuning.provider`)."""
 
     def __init__(self):
-        self.total, self.calls = 0.0, 0
+        self.total, self.calls, self.hosts = 0.0, 0, {}
 
     async def count(self, response):
         if response.request.method != "POST" or not response.request.url.path.endswith("/chat/completions"):
             return
         with contextlib.suppress(Exception):
             await response.aread()
-            cost = (response.json().get("usage") or {}).get("cost")
+            answer = response.json()
+            host = answer.get("provider")
+            if (isinstance(host, str) and 0 < len(host) <= 64
+                    and (host in self.hosts or len(self.hosts) < BILLED_HOSTS_MAX)):
+                self.hosts[host] = self.hosts.get(host, 0) + 1
+            cost = (answer.get("usage") or {}).get("cost")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                 self.total += cost
                 self.calls += 1
@@ -1640,9 +1692,12 @@ async def session_message(request):
     if llm is None:  # the worker restarted since the session's last run and forgot its model
         raise web.HTTPConflict(text=json.dumps({"error": "session has no model; start a run"}),
                                content_type="application/json")
+    # Bro's `tuning` goes with the message, as `llm` does: a worker that restarted since the session's last
+    # run forgot the session's own, and the follow-up would run unrouted, its hidden reasoning back on.
     run, _ = await worker.start_run({"id": body.get("runId") or f"{session.id[:40]}-{uuid.uuid4().hex[:12]}",
                                      "sessionId": session.id, "task": text, "llm": llm,
-                                     **{k: v for k, v in session.options.items() if v is not None}})
+                                     **{k: v for k, v in session.options.items() if v is not None},
+                                     **({"tuning": body["tuning"]} if "tuning" in body else {})})
     return web.json_response({"sessionId": session.id, "status": "started", "runId": run.id})
 
 
