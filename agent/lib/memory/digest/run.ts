@@ -247,6 +247,12 @@ async function digestScope(
   }
 }
 
+/** A memory at the revision a digest write expects. */
+interface Revisioned {
+  readonly index: number;
+  readonly revision: number;
+}
+
 /**
  * The model's part of the digest, for the pilot: one-off task details,
  * duplicates in other words and facts a newer one corrects, as
@@ -275,7 +281,8 @@ async function classifyScope(
   const changed = candidates.some(
     ({ updatedAt }) => since === null || new Date(updatedAt) > since
   );
-  if (candidates.length < 2 || !changed) return;
+  // One memory alone may still be a one-off task detail.
+  if (candidates.length === 0 || !changed) return;
   let plan: Awaited<ReturnType<typeof classifyMemories>>;
   try {
     outcome.classifierCalls += 1;
@@ -295,14 +302,15 @@ async function classifyScope(
   }
   const operation = `memory-digest:${localDate}`;
   const forget = (
-    record: { readonly index: number; readonly revision: number },
-    action: "correct" | "merge" | "one_off"
+    record: Revisioned,
+    action: "correct" | "merge" | "one_off",
+    keeper?: Revisioned
   ) =>
     skipChanged(() =>
       forgetMemory(
         scope,
         scopeKey,
-        { expectedRevision: record.revision, index: record.index },
+        { expectedRevision: record.revision, index: record.index, keeper },
         `${operation}:${action}:${String(record.index)}:${String(record.revision)}`,
         { ...digest, action }
       )
@@ -322,24 +330,30 @@ async function classifyScope(
       )
     );
   for (const { newer, older, text } of plan.corrections) {
-    // The older fact goes first: a newer one rewritten while the older stays
-    // would say the old text twice.
+    // The newer fact is rewritten first, the older forgotten only while the
+    // rewrite still stands: a conversation that changed either meanwhile
+    // leaves both, and nothing is lost.
     // oxlint-disable-next-line eslint/no-await-in-loop -- Each write locks the memory scope.
-    if (!(await forget(older, "correct"))) {
-      outcome.skipped += 1;
-      continue;
-    }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
     const rewritten = await rewrite(
       newer,
       { ...newer.content, aliases: mergedAliases(newer, [older]), text },
       "correct"
     );
-    if (rewritten) outcome.corrected += 1;
+    if (!rewritten) {
+      outcome.skipped += 1;
+      continue;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    const forgotten = await forget(older, "correct", {
+      index: newer.index,
+      revision: newer.revision + 1,
+    });
+    if (forgotten) outcome.corrected += 1;
     else outcome.skipped += 1;
   }
   for (const { into, record } of plan.duplicates) {
     const aliases = mergedAliases(into, [record]);
+    let keeper: Revisioned = into;
     if (aliases.length > into.content.aliases.length) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       const kept = await rewrite(into, { ...into.content, aliases }, "merge");
@@ -347,9 +361,10 @@ async function classifyScope(
         outcome.skipped += 1;
         continue;
       }
+      keeper = { index: into.index, revision: into.revision + 1 };
     }
     // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
-    if (await forget(record, "merge")) outcome.deduped += 1;
+    if (await forget(record, "merge", keeper)) outcome.deduped += 1;
     else outcome.skipped += 1;
   }
   for (const record of plan.oneOff) {

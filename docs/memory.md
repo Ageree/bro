@@ -55,7 +55,7 @@ back to the old file provider after cutover would hide post-cutover changes.
 Every revision of a profile record is appended to `memory_revisions` in the
 transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 `system`) and what it did (save, update, forget, expire, import, and the
-digest's merge, correction and purge). Existing records with content start
+digest's merge, correction, one-off and purge). Existing records with content start
 their history with one `import` revision, and the hourly pass gives one to
 each record saved by a release that did not write history. The history is for the person to see
 and undo changes on the memory screen in the cabinet (planned: roadmap item

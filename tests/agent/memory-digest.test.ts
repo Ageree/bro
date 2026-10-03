@@ -622,6 +622,21 @@ describe("the digest's model, for the pilot", () => {
     expect(await texts()).toContain("Живёт в Уфе.");
   });
 
+  it("asks about a lone memory, which may be a one-off detail", async () => {
+    await database.delete(schema.memoryRecords);
+    await remember(
+      6,
+      { text: "Столик в «Пушкине» на 19:00 в субботу." },
+      "2026-10-02"
+    );
+    proposes({ oneOff: [6] });
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ classifierCalls: 1, oneOff: 1 });
+    expect(await texts()).toEqual([]);
+  });
+
   it("refuses to merge two things that share no word, or a negation into its opposite", async () => {
     await remember(
       6,
@@ -636,7 +651,11 @@ describe("the digest's model, for the pilot", () => {
     await remember(8, { text: "Не ест острое." }, "2026-09-22");
     await remember(9, { text: "Ест острое." }, "2026-09-23");
     proposes({
-      duplicateOf: [{ index: 8, of: 9 }],
+      // Either way round: the keeper may be the negated one.
+      duplicateOf: [
+        { index: 8, of: 9 },
+        { index: 9, of: 8 },
+      ],
       supersededBy: [{ newer: 7, older: 6 }],
     });
 

@@ -71,13 +71,15 @@ const instructions = [
 
 /**
  * The memories the model may propose changes to: facts, people,
- * organizations and decisions. Rules and preferences («свинину не ест») are
- * never sent: a weak model folding or dropping one would change what Bro
- * does for the person.
+ * organizations and decisions, newest first, at most 120. Rules and
+ * preferences («свинину не ест») are never sent: a weak model folding or
+ * dropping one would change what Bro does for the person.
  */
 export function classifierCandidates(records: readonly ClassifiedRecord[]) {
+  // Newest first: what changed since the last digest is always asked about.
   return records
     .filter(({ content }) => proposedCategories.has(content.category))
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, maximumRecords);
 }
 
@@ -169,6 +171,39 @@ function allWords(text: string) {
   );
 }
 
+/**
+ * Words that turn a statement around or limit it: a record that adds one of
+ * them says something else («не ест мясо» is no fuller «ест мясо»).
+ */
+const polarityWords = new Set([
+  "не",
+  "нет",
+  "ни",
+  "никогда",
+  "без",
+  "кроме",
+  "только",
+  "но",
+  "однако",
+  "больше",
+  "уже",
+  "not",
+  "no",
+  "never",
+  "without",
+  "except",
+  "only",
+  "but",
+  // «don't» splits into «don» and «t».
+  "don",
+  "doesn",
+  "didn",
+  "isn",
+  "aren",
+  "won",
+  "anymore",
+]);
+
 /** Words that may say what a record is about: four letters or more. */
 function subjectWords(text: string) {
   return [...allWords(text)].filter((word) => word.length >= 4);
@@ -249,9 +284,15 @@ function checkedPlan(
     )
       continue;
     const kept = allWords(into.content.text);
-    const words = [...allWords(record.content.text)];
-    // Nothing the folded record says may be lost: every word is in the other.
-    if (words.length === 0 || !words.every((word) => kept.has(word))) continue;
+    const words = allWords(record.content.text);
+    // Nothing the folded record says may be lost: every word is in the other,
+    // and the other adds no word that turns it around.
+    if (
+      words.size === 0 ||
+      ![...words].every((word) => kept.has(word)) ||
+      [...kept].some((word) => !words.has(word) && polarityWords.has(word))
+    )
+      continue;
     if (take(record.index, into.index)) duplicates.push({ into, record });
   }
 
