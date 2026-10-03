@@ -177,12 +177,14 @@ describe("the core instructions of the skills pilot", () => {
     }
   );
 
-  it("read alike in a person's turn and a browser report's", async () => {
-    // One system prefix for the whole session keeps it cached.
-    expect(await corePrompt("browser-result")).toBe(
-      await corePrompt("interactive")
-    );
-  });
+  it.each(["browser-result", "telegram"] as const)(
+    "read alike in a person's turn on the web and in a %s turn",
+    async (kind) => {
+      // One system prefix for the whole session keeps it cached, and a
+      // messenger reads the same rules as the web.
+      expect(await corePrompt(kind)).toBe(await corePrompt("interactive"));
+    }
+  );
 
   it("stay within 10k tokens, the task agent's pilot without drawing included", async () => {
     expect(tokens(await corePrompt())).toBeLessThanOrEqual(10_000);

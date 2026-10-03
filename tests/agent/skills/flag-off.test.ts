@@ -118,6 +118,10 @@ describe("instructions outside the skills pilot", () => {
     ] as const) {
       expect(piloted[kind]).toBe(hashes[kind]);
     }
+    // The interactive turns of the pilot read the core instead.
+    for (const kind of ["browser-result", "interactive", "telegram"] as const) {
+      expect(piloted[kind]).not.toBe(hashes[kind]);
+    }
   });
 
   it("stay so on the Gateway, where nobody is in the pilot", async () => {

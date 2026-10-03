@@ -527,11 +527,98 @@ const fileBytesSchema = z.union([
 const textMediaType =
   /^text(?:\/|$)|^application\/(?:[\w.-]+\+)?(?:json|xml|csv)$/iu;
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const utf8 = new TextEncoder();
+
+/**
+ * The second byte's range and the sequence's length that a lead byte of
+ * UTF-8 takes (the WHATWG decoder's: no overlong form, no surrogate,
+ * nothing past U+10FFFF), or none for a byte that leads nothing.
+ */
+function utf8Lead(lead: number) {
+  if (lead >= 0xc2 && lead <= 0xdf) return { high: 0xbf, length: 2, low: 0x80 };
+  if (lead === 0xe0) return { high: 0xbf, length: 3, low: 0xa0 };
+  if (lead === 0xed) return { high: 0x9f, length: 3, low: 0x80 };
+  if (lead >= 0xe1 && lead <= 0xef) return { high: 0xbf, length: 3, low: 0x80 };
+  if (lead === 0xf0) return { high: 0xbf, length: 4, low: 0x90 };
+  if (lead >= 0xf1 && lead <= 0xf3) return { high: 0xbf, length: 4, low: 0x80 };
+  if (lead === 0xf4) return { high: 0x8f, length: 4, low: 0x80 };
+  return undefined;
+}
+
+/** How many bytes of UTF-8 the character at `at` takes; 0 when none. */
+function utf8Length(bytes: Uint8Array, at: number) {
+  const lead = bytes[at] ?? 0;
+  if (lead < 0x80) return 1;
+  const sequence = utf8Lead(lead);
+  if (sequence === undefined) return 0;
+  const second = bytes[at + 1] ?? 0;
+  if (second < sequence.low || second > sequence.high) return 0;
+  for (let next = at + 2; next < at + sequence.length; next += 1) {
+    const byte = bytes[next] ?? 0;
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return sequence.length;
+}
+
+/**
+ * A text document's bytes as text. A byte that is no part of UTF-8 — the
+ * whole of a `.csv` saved in Windows-1251, or one stray byte — becomes a
+ * lone surrogate of its own (U+DC80–U+DCFF, as Python's `surrogateescape`):
+ * the UTF-8 around it is still read, forged tags and all, and the text
+ * encodes back to the very same bytes (`documentBytes`).
+ */
+function documentText(bytes: Uint8Array) {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    // Not UTF-8 throughout: read it run by run.
+  }
+  const parts: string[] = [];
+  let run = 0;
+  let at = 0;
+  while (at < bytes.length) {
+    const length = utf8Length(bytes, at);
+    if (length > 0) {
+      at += length;
+      continue;
+    }
+    parts.push(
+      strictUtf8.decode(bytes.subarray(run, at)),
+      String.fromCharCode(0xdc00 + (bytes[at] ?? 0))
+    );
+    at += 1;
+    run = at;
+  }
+  parts.push(strictUtf8.decode(bytes.subarray(run)));
+  return parts.join("");
+}
+
+/** A document's text back to bytes: an escaped byte as itself. */
+function documentBytes(text: string) {
+  const parts: Uint8Array[] = [];
+  let run = 0;
+  let at = 0;
+  for (const char of text) {
+    const unit = char.charCodeAt(0);
+    if (char.length === 1 && unit >= 0xdc80 && unit <= 0xdcff) {
+      parts.push(
+        utf8.encode(text.slice(run, at)),
+        Uint8Array.of(unit - 0xdc00)
+      );
+      run = at + 1;
+    }
+    at += char.length;
+  }
+  parts.push(utf8.encode(text.slice(run)));
+  return Buffer.concat(parts);
+}
+
 /**
  * A file's data with the tags defused: inline text, and the bytes of a text
  * document — a person's `.txt` or `.csv`, a page saved as text — decoded,
  * defused and encoded again only when a tag was found, so every other file
- * goes on byte for byte.
+ * goes on byte for byte, and in a defused one every byte outside the tags.
  */
 function defusedFileData(
   data: FileData,
@@ -542,13 +629,13 @@ function defusedFileData(
   if (data.type !== "data" || !textMediaType.test(mediaType)) return data;
   const bytes = fileBytesSchema.safeParse(data.data).data;
   if (bytes === undefined) return data;
-  const text = new TextDecoder().decode(bytes.bytes);
+  const text = documentText(bytes.bytes);
   const defused = defuse(text);
   if (defused === text) return data;
-  const encoded = new TextEncoder().encode(defused);
+  const encoded = documentBytes(defused);
   return {
     ...data,
-    data: bytes.base64 ? Buffer.from(encoded).toString("base64") : encoded,
+    data: bytes.base64 ? encoded.toString("base64") : new Uint8Array(encoded),
   };
 }
 

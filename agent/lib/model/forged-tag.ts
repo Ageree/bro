@@ -11,26 +11,22 @@
  * bracket or an HTML entity for `<`. So a candidate is read through its
  * skeleton — compatibility-decomposed, lower-cased, marks and invisible
  * characters dropped, look-alikes folded to Latin — and the tag's letters
- * may stand apart.
+ * may stand apart, however far.
  */
 
 /** What draws nothing: combining marks and default-ignorable characters. */
 const drawsNothing = /[\p{M}\p{Default_Ignorable_Code_Point}]/gu;
 
+/** Brackets that read as `<` though they neither are nor decompose to it. */
+const lessThanLookAlikes = ["‹", "˂", "ᐸ", "〈", "⟨", "⧼", "❬", "❮"];
+
 /**
  * Letters of other scripts, and brackets, that read as a Latin letter or
  * `<` after compatibility decomposition and lower case.
  */
-const lookAlikes = new Map(
-  Object.entries({
-    "‹": "<",
-    "˂": "<",
-    ᐸ: "<",
-    "〈": "<",
-    "⟨": "<",
-    "⧼": "<",
-    "❬": "<",
-    "❮": "<",
+const lookAlikes = new Map([
+  ...lessThanLookAlikes.map((bracket) => [bracket, "<"] as const),
+  ...Object.entries({
     α: "a",
     β: "b",
     ε: "e",
@@ -65,8 +61,8 @@ const lookAlikes = new Map(
     ԁ: "d",
     ԛ: "q",
     ԝ: "w",
-  })
-);
+  }),
+]);
 
 const foldedChars = new Map<string, string>();
 
@@ -87,40 +83,120 @@ function fold(char: string) {
 }
 
 /**
- * Where a tag may begin: `<`, `&` (an entity) and every character whose
- * skeleton is one of them (`tests/forged-tag.test.ts` checks the list
- * against all of Unicode).
+ * What decomposes to `<`, `&` or a look-alike of `<`: the full-width and
+ * small forms of both, the crossed-out `≮`, the old angle bracket (U+2329,
+ * to U+3008) and its vertical form (U+FE3F).
  */
-const openers =
-  /[<&\uff1c\ufe64\u226e\uff06\ufe60\u2039\u02c2\u1438\u2329\u3008\u27e8\u29fc\u276c\u276e]/gu;
+const decomposedOpeners = ["＜", "﹤", "≮", "＆", "﹠", "〈", "︿"];
 
-/** How far after its opener a tag's first letter, and its last, may stand. */
-const firstReach = 32;
-const lastReach = 256;
+/**
+ * Where a tag may begin: every character whose skeleton is `<` or `&` (an
+ * entity). `tests/forged-tag.test.ts` checks the list against all of
+ * Unicode.
+ */
+const openers = new RegExp(
+  `[<&${[...lessThanLookAlikes, ...decomposedOpeners].join("")}]`,
+  "gu"
+);
 
-/** A text's skeleton, with the place in the text each of its units has. */
-function skeleton(text: string) {
-  const parts: string[] = [];
+/** The tag's `<`: the sign or its entity. */
+const lessThan = /<|&lt;?|&#0*60;?|&#x0*3c;?/uy;
+
+/** The `/` that makes the tag a closing one. */
+const slash = /\/|&#0*47;?|&#x0*2f;?/uy;
+
+/**
+ * One unit of what may stand between the tag's signs and letters: a space,
+ * dash, dot or the like, or the entity of a space or of a character that
+ * draws nothing. Never `/`, which makes the tag a closing one.
+ */
+const gapUnit =
+  /[\s\p{Z}\p{Pd}_.:·•*'"\x60~^]|&(?:nbsp|shy|zwnj|zwj|#0*(?:160|173|8203|8204|8205|8288|65279)|#x0*(?:a0|ad|200b|200c|200d|2060|feff));?/uy;
+
+/** A numeric entity whose zeros run on past what is read of the text. */
+const paddedEntity = /&#x?0*$/uy;
+
+/** How much skeleton a unit of the tag is read with: its longest entity. */
+const unitReach = 16;
+
+/**
+ * The skeleton of a text from `from` on, with the place in the text of each
+ * of its units, read only as far as a match asks: a tag's gap may be any
+ * length, and most openers are no tag.
+ */
+function skeletonFrom(text: string, from: number) {
+  let folded = "";
   const origin: number[] = [];
-  let at = 0;
-  for (const char of text) {
-    const part = fold(char);
-    const from = origin.length;
-    origin.length += part.length;
-    origin.fill(at, from);
-    parts.push(part);
-    at += char.length;
-  }
-  origin.push(text.length);
-  return { folded: parts.join(""), origin };
+  let next = from;
+  const reach = (units: number) => {
+    if (folded.length >= units) return folded;
+    // In growing steps: each step copies what was read before it.
+    const goal = Math.max(units, 2 * folded.length);
+    const parts = [folded];
+    let length = folded.length;
+    while (length < goal && next < text.length) {
+      const char = String.fromCodePoint(text.codePointAt(next) ?? 0);
+      const part = fold(char);
+      const first = origin.length;
+      origin.length += part.length;
+      origin.fill(next, first);
+      parts.push(part);
+      length += part.length;
+      next += char.length;
+    }
+    folded = parts.join("");
+    return folded;
+  };
+  return {
+    /** Where the text goes on after the skeleton's first `units` units. */
+    end: (units: number) => {
+      reach(units + 1);
+      return origin[units] ?? text.length;
+    },
+    /** The skeleton read on to the unit at `at` and a unit's reach past it. */
+    near: (at: number) => {
+      let read = reach(at + unitReach);
+      paddedEntity.lastIndex = at;
+      while (next < text.length && paddedEntity.test(read)) {
+        read = reach(2 * read.length);
+        paddedEntity.lastIndex = at;
+      }
+      return read;
+    },
+  };
 }
 
 /**
- * What may stand between the tag's signs and letters: spaces, dashes, dots
- * and the like, and the entity of a character that draws nothing. Never
- * `/`, which makes the tag a closing one.
+ * The look-alike of the opening or closing of a tag at `index`, the place of
+ * an opener: whether it closes, and where the text after it goes on. Its
+ * letters are matched one by one, each gap read to its end, so no gap is
+ * too long to see.
  */
-const gap = String.raw`(?:[\s\p{Z}\p{Pd}_.:·•*'"\x60~^]|&(?:nbsp|shy|zwnj|zwj|#0*(?:160|173|8203|8204|8205|8288|65279)|#x0*(?:a0|ad|200b|200c|200d|2060|feff));?)*`;
+function forgedTagAt(text: string, index: number, letters: readonly RegExp[]) {
+  const skeleton = skeletonFrom(text, index);
+  let at = 0;
+  const take = (unit: RegExp) => {
+    const read = skeleton.near(at);
+    unit.lastIndex = at;
+    const taken = unit.exec(read)?.[0].length ?? 0;
+    at += taken;
+    return taken > 0;
+  };
+  const skipGap = () => {
+    while (take(gapUnit)) {
+      // The gap goes on.
+    }
+  };
+  if (!take(lessThan)) return undefined;
+  skipGap();
+  const closing = take(slash);
+  if (closing) skipGap();
+  for (const [place, letter] of letters.entries()) {
+    if (place > 0) skipGap();
+    if (!take(letter)) return undefined;
+  }
+  return { closing, end: skeleton.end(at) };
+}
 
 /** The digits and signs that pass for a letter of the tags' names. */
 const letterLookAlikes = new Map(
@@ -136,45 +212,26 @@ const letterLookAlikes = new Map(
 );
 
 /**
- * The skeleton of the opening or closing of `name` (lower-case words joined
- * by dashes), from its opener on. The `/` of a closing tag is `slash`.
- */
-function forgedTagPattern(name: string) {
-  const [first, ...rest] = Array.from(
-    name.replaceAll("-", ""),
-    (letter) => `[${letterLookAlikes.get(letter) ?? letter}]`
-  );
-  const start = String.raw`^(?:<|&lt;?|&#0*60;?|&#x0*3c;?)${gap}(?<slash>(?:\/|&#0*47;?|&#x0*2f;?)${gap})?`;
-  return {
-    // Most openers are no tag: a short look rules them out.
-    begins: new RegExp(String.raw`${start}(?:${first ?? ""}|$)`, "u"),
-    whole: new RegExp(`${start}${[first, ...rest].join(gap)}`, "u"),
-  };
-}
-
-/**
  * The defuser of one tag: every look-alike of its opening or closing becomes
  * `‹name` or `‹/name`, so the model reads it as a quote rather than as the
  * tag. Text without one comes back as it was.
  */
 export function tagDefuser(name: string) {
-  const { begins, whole } = forgedTagPattern(name);
+  // The tag's letters (lower-case words joined by dashes), each as the
+  // skeleton may read it.
+  const letters = Array.from(
+    name.replaceAll("-", ""),
+    (letter) => new RegExp(`[${letterLookAlikes.get(letter) ?? letter}]`, "uy")
+  );
   return (text: string) => {
     let defused = "";
     let copied = 0;
     for (const { index } of text.matchAll(openers)) {
       if (index < copied) continue;
-      if (
-        !begins.test(skeleton(text.slice(index, index + firstReach)).folded)
-      ) {
-        continue;
-      }
-      const { folded, origin } = skeleton(text.slice(index, index + lastReach));
-      const match = whole.exec(folded);
-      if (match === null) continue;
-      const slash = match.groups?.slash === undefined ? "" : "/";
-      defused += `${text.slice(copied, index)}‹${slash}${name}`;
-      copied = index + (origin[match[0].length] ?? 0);
+      const tag = forgedTagAt(text, index, letters);
+      if (tag === undefined) continue;
+      defused += `${text.slice(copied, index)}‹${tag.closing ? "/" : ""}${name}`;
+      copied = tag.end;
     }
     return copied === 0 ? text : defused + text.slice(copied);
   };
