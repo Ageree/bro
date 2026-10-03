@@ -17,6 +17,8 @@ import {
   claimMemoryDigestDay,
   finishMemoryDigestDay,
   lastMemoryClassificationStartedAt,
+  markMemoryClassifierAsked,
+  memoryClassifierAskedOn,
   listMemoryDigestWorkspaces,
 } from "@db/services/memory/digest-runs";
 import {
@@ -149,10 +151,14 @@ export async function digestWorkspace(workspaceId: string, localDate: string) {
   // that asked it — counted from that digest's start, so a memory saved while
   // it ran is asked about the next day.
   const since = await lastMemoryClassificationStartedAt(workspaceId);
+  // A day taken again after a failure does not pay for the model twice.
+  const classify =
+    directModelActive() &&
+    !(await memoryClassifierAskedOn(workspaceId, localDate));
   for (const scopeKey of await listMemoryScopeKeys(workspaceId)) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- Scopes one at a time: each write locks the workspace.
     await digestScope(scope, scopeKey, `memory-digest:${localDate}`, outcome);
-    if (directModelActive()) {
+    if (classify) {
       outcome.classified += 1;
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       await classifyScope(scope, scopeKey, { localDate, outcome, since });
@@ -299,6 +305,7 @@ async function classifyScope(
   let plan: Awaited<ReturnType<typeof classifyMemories>>;
   try {
     outcome.classifierCalls += 1;
+    await markMemoryClassifierAsked(scope.workspaceId, localDate);
     plan = await classifyMemories(candidates, {
       localDate,
       scopeKey,

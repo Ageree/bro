@@ -39,12 +39,20 @@ interface ClassifierPlan {
  * routing already knows (`agent/lib/model/direct.ts`).
  */
 const digestModelId = "deepseek/deepseek-v4-flash";
+
+/** The model the digest asks, as the privacy answer names it too. */
+export function memoryDigestModelId() {
+  return env.MEMORY_DIGEST_MODEL ?? digestModelId;
+}
 const maximumPerKind = 3;
 const maximumRecords = 120;
 const maximumTextChars = 300;
 const oneOffCategories = new Set(["fact", "decision", "organization"]);
 const correctedCategories = new Set(["fact", "person", "organization"]);
-/** What the model may see: never a rule, never a preference (RU d13). */
+/**
+ * What the model may see: facts, people, organizations and decisions; never
+ * a rule, never a preference (RU d13), never a local-only memory.
+ */
 const proposedCategories = new Set([
   "fact",
   "person",
@@ -115,7 +123,7 @@ export async function classifyMemories(
     readonly workspaceId: string;
   }
 ): Promise<ClassifierPlan> {
-  const modelId = env.MEMORY_DIGEST_MODEL ?? digestModelId;
+  const modelId = memoryDigestModelId();
   const selection = directModelSelection(modelId, { toolChoice: "none" });
   const result = await generateText({
     abortSignal: AbortSignal.timeout(30_000),

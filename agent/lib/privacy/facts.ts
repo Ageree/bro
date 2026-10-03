@@ -1,15 +1,13 @@
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
+import { memoryDigestModelId } from "@agent/lib/memory/digest/classifier";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
-import {
-  defaultModelId,
-  directModelProviderName,
-} from "@shared/model/provider";
+import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
 
 /**
@@ -78,7 +76,7 @@ export function dataProcessors(
       : []),
     ...(direct !== undefined && memoryDigest
       ? [
-          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил и предпочтений, включая помеченные как только локальные) модели ${env.MEMORY_DIGEST_MODEL ?? defaultModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
+          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил, предпочтений и записей, помеченных как только локальные) модели ${memoryDigestModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
         ]
       : []),
     "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",

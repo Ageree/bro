@@ -86,13 +86,14 @@ export async function claimMemoryDigestDay(
     errorCode: null,
     finishedAt: null,
     leaseUntil: new Date(now.getTime() + leaseMs),
-    outcome: null,
     startedAt: now,
     status: "running" as const,
   };
   const claimed = await db
     .insert(memoryDigestRuns)
     .values({ ...running, localDate, workspaceId })
+    // A day taken again keeps what the failed run left in `outcome`: the
+    // mark that it already asked the model (`markMemoryClassifierAsked`).
     .onConflictDoUpdate({
       set: running,
       setWhere: or(
@@ -159,4 +160,46 @@ export async function lastMemoryClassificationStartedAt(workspaceId: string) {
     .orderBy(desc(memoryDigestRuns.startedAt))
     .limit(1);
   return last?.startedAt ?? null;
+}
+
+/**
+ * Marks the workspace's local day as one that has asked the model, before
+ * the call: a day that fails after it, or whose run dies, is taken again at
+ * the next tick and must not pay for the model again
+ * (`memoryClassifierAskedOn`).
+ */
+export async function markMemoryClassifierAsked(
+  workspaceId: string,
+  localDate: string
+) {
+  await db
+    .update(memoryDigestRuns)
+    .set({
+      outcome: sql`coalesce(${memoryDigestRuns.outcome}, '{}'::jsonb) || '{"classifierAsked": 1}'::jsonb`,
+    })
+    .where(
+      and(
+        eq(memoryDigestRuns.workspaceId, workspaceId),
+        eq(memoryDigestRuns.localDate, localDate)
+      )
+    );
+}
+
+/** Whether a run of this local day has already asked the model. */
+export async function memoryClassifierAskedOn(
+  workspaceId: string,
+  localDate: string
+) {
+  const [run] = await db
+    .select({
+      asked: sql<boolean>`${memoryDigestRuns.outcome} ? 'classifierAsked'`,
+    })
+    .from(memoryDigestRuns)
+    .where(
+      and(
+        eq(memoryDigestRuns.workspaceId, workspaceId),
+        eq(memoryDigestRuns.localDate, localDate)
+      )
+    );
+  return run?.asked === true;
 }

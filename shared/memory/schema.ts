@@ -43,7 +43,13 @@ const credentialPatterns = [
   /\bbearer\s+([A-Za-z0-9._~+/-]{20,}=*)/dgiu,
   // A Telegram bot's token.
   /\b(\d{8,10}:[A-Za-z0-9_-]{30,})/dgu,
-  /((?:\d[ -]?){13,19})/dgu,
+  // A card's number: a group of 13–19 digits of its own, not a piece of a
+  // longer number and not an account's, a policy's or a parcel's
+  // («счёт 40817810099910004312», «полис ОМС 1234…», «трек 1234…»).
+  new RegExp(
+    String.raw`(?<!\d[ -]?)(?<!(?:сч[её]т|р/с|полис|омс|трек|account|policy|tracking)[^\d\n]{0,20})(\d(?:[ -]?\d){12,18})(?![ -]?\d)`,
+    "dgiu"
+  ),
   // A password said with its value: after «:», «=» or a dash, a value with
   // a digit, a Latin letter or a sign in it («пароль от почты — Kot2024!»),
   // or one word that ends the clause or that a qualifier follows («пароль:
@@ -91,11 +97,17 @@ const codeOwners =
 const referenceWords =
   /(?:бик|инн|кпп|огрн|снилс|сч[её]т|клиент|договор|заказ|трек|посылк|ошибк|регион|город|стран|товар|артикул|подразделен|bic|swift|iban|client|customer|order|account|tracking|error|region|country|product)/iu;
 /**
- * A door's code is no one-time code («код домофона 1234К, вход со двора»). A
- * safe's or a deposit box's is a secret all the same: no «сейф», «ячейка».
+ * A door's code is no one-time code («код домофона 1234К, вход со двора»,
+ * «код на входе в офис 7788», «код от почтового ящика 123»). A safe's or a
+ * deposit box's is a secret all the same: no «сейф», «ячейка».
  */
 const doorWords =
-  /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|замк|замок|intercom|door|gate|entrance)/iu;
+  /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|замк|замок|офис|здани|ящик|пропуск|intercom|door|gate|entrance|office|mailbox)/iu;
+/**
+ * Nothing but a separator between a bare «код» and its number: «код
+ * 482913», «Код: 482913», «Your code is 123456».
+ */
+const bareGap = /^(?:\s*(?:[:=#№—–-]|(?:is|это)(?!\p{L})))*\s*$/iu;
 const codeContextChars = 25;
 
 /** The first group a match captured, as a `[start, end)` range. */
@@ -137,15 +149,21 @@ export function unsafeMemoryRanges(value: string) {
       continue;
     const end = match.index + match[0].length;
     const around = before + match[0] + value.slice(end, end + codeContextChars);
+    const digits = match.indices?.[2] ?? ([match.index, end] as const);
+    // A bare «код 482913» of four to eight digits is one-time too, unless
+    // its clause is about a door («код 7788 от подъезда»).
+    const bare =
+      bareGap.test(gap) &&
+      /^\d{4,8}$/u.test((match[2] ?? "").replaceAll(/[ -]/gu, "")) &&
+      !doorWords.test(clauseAround(value, digits));
     // A service names its code before «код» as well: «в Ozon код 1234».
     if (
+      bare ||
       oneTimeWords.test(around) ||
       codeOwners.test(gap) ||
       codeOwners.test(before)
-    ) {
-      const digits = match.indices?.[2];
-      ranges.push(digits ?? [match.index, end]);
-    }
+    )
+      ranges.push(digits);
   }
   return ranges;
 }
