@@ -436,7 +436,8 @@ async function deliverText(
   }
 ) {
   const caller = session.session.auth.current ?? session.session.auth.initiator;
-  const filesHere = await conversationHoldsFiles(session);
+  // Asked alongside the artifacts' preparation; it never rejects.
+  const filesHere = conversationHoldsFiles(session);
   if (!caller) {
     const references = extractImageArtifactMarkdownReferences(text);
     const body =
@@ -448,11 +449,10 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    if (body) await sendText(context, body, { preview: !filesHere });
+    const preview = !(await filesHere);
+    if (body) await sendText(context, body, { preview });
     const prepared = await attachmentDelivery(session, attachments);
-    await uploadFiles(context, prepared.files, prepared.links, {
-      preview: !filesHere,
-    });
+    await uploadFiles(context, prepared.files, prepared.links, { preview });
     return;
   }
 
@@ -473,7 +473,8 @@ async function deliverText(
   const body = [delivery.text, failureMessage].filter(Boolean).join("\n\n");
   // The words are worth reading before the pictures arrive, so nothing waits
   // on a download that may take the whole timeout.
-  if (body) await sendText(context, body, { preview: !filesHere });
+  const preview = !(await filesHere);
+  if (body) await sendText(context, body, { preview });
   const prepared = await attachmentDelivery(session, attachments);
   await uploadFiles(
     context,
@@ -481,7 +482,7 @@ async function deliverText(
     // back to.
     [...delivery.files, ...prepared.files],
     prepared.links,
-    { preview: !filesHere }
+    { preview }
   );
 }
 
@@ -512,7 +513,7 @@ function deliveredTurnId(context: TelegramEventContext) {
  * before the person even reads it, so a link the task agent's report built
  * from the person's files would carry their content out unclicked. Only
  * where those files reach the task agent or reached one of this
- * conversation's, the flag since cleared or not (`conversationHoldsFiles`).
+ * conversation's, whatever the pilots say now (`conversationHoldsFiles`).
  */
 async function sendText(
   context: TelegramEventContext,

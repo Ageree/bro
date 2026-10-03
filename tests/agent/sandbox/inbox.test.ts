@@ -51,6 +51,14 @@ function stubStorage(...answers: readonly (Error | Response)[]) {
   return calls;
 }
 
+/** A listing of the bucket, holding the keys under the conversations' marks. */
+function listing(keys: readonly string[]) {
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>bro-state-test</Name><KeyCount>${String(keys.length)}</KeyCount>${keys.map((key) => `<Contents><Key>sandbox/person-files-conversations/${key}</Key></Contents>`).join("")}<IsTruncated>false</IsTruncated></ListBucketResult>`,
+    { status: 200 }
+  );
+}
+
 describe("the paths Bro names", () => {
   it("finds staged paths in a text, each once, in order", async () => {
     const { namedAttachmentPaths } = await loadInbox();
@@ -286,24 +294,26 @@ describe("the mark of a sandbox that holds the person's files", () => {
     workspaceId: "workspace-1",
   };
 
-  it("marks the conversation, then the sandbox, and reads both", async () => {
+  it("marks the conversation, then the sandbox, and reads them", async () => {
     const calls = stubStorage(
       new Response(null, { status: 200 }),
       new Response(null, { status: 200 }),
       new Response("1", { status: 200 }),
       new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }),
-      new Response("1", { status: 200 }),
       new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
     );
     const {
       conversationHoldsPersonFiles,
       markSandboxHoldsPersonFiles,
       sandboxHoldsPersonFiles,
+      workspaceHoldsPersonFiles,
     } = await loadInbox();
 
     await markSandboxHoldsPersonFiles(target);
     expect(await sandboxHoldsPersonFiles("sb-1")).toBe(true);
     expect(await sandboxHoldsPersonFiles("sb-2")).toBe(false);
+    // What this process marked it knows without asking: a mark stays.
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(true);
     expect(await conversationHoldsPersonFiles("workspace-1", "session-1")).toBe(
       true
     );
@@ -314,13 +324,84 @@ describe("the mark of a sandbox that holds the person's files", () => {
     expect(paths[0]).toMatch(
       /^PUT \/bro-state-test\/sandbox\/person-files-conversations\/[\da-f]{16}\/[\da-f]{16}$/u
     );
-    expect(paths[0]).not.toContain("workspace-1");
+    expect(paths.join("\n")).not.toContain("workspace-1");
     expect(paths.slice(1, 4)).toEqual([
       "PUT /bro-state-test/sandbox/person-files/sb-1",
       "GET /bro-state-test/sandbox/person-files/sb-1",
       "GET /bro-state-test/sandbox/person-files/sb-2",
     ]);
-    expect(paths[4]).toBe(paths[0]?.replace("PUT", "GET"));
+    expect(paths[4]).toMatch(
+      /^GET \/bro-state-test\/sandbox\/person-files-conversations\//u
+    );
+    expect(paths).toHaveLength(5);
+  });
+
+  it("finds a workspace by its conversations' marks, remembering a yes for good and a no for seconds", async () => {
+    vi.useFakeTimers();
+    const calls = stubStorage(
+      listing([]),
+      listing([]),
+      listing([`${sha256("workspace-1").slice(0, 16)}/${"a".repeat(16)}`]),
+      new Response("1", { status: 200 })
+    );
+    const { conversationHoldsPersonFiles, workspaceHoldsPersonFiles } =
+      await loadInbox();
+
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(false);
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(false);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(false);
+    // Another instance marks a conversation: past the few seconds, this
+    // one sees it. A conversation's mark alone is enough, as the releases
+    // before this check wrote nothing else.
+    await vi.advanceTimersByTimeAsync(5100);
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(true);
+    await vi.advanceTimersByTimeAsync(86_400_000);
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(true);
+    expect(calls).toHaveLength(3);
+    // One key under the workspace's own conversations' marks is asked for.
+    for (const call of calls) {
+      expect(`${call.method} ${call.url.pathname}`).toBe("GET /bro-state-test");
+      expect(call.url.searchParams.get("list-type")).toBe("2");
+      expect(call.url.searchParams.get("max-keys")).toBe("1");
+      expect(call.url.searchParams.get("prefix")).toBe(
+        `sandbox/person-files-conversations/${sha256("workspace-1").slice(0, 16)}/`
+      );
+    }
+    // A conversation found marked is not asked again either.
+    expect(await conversationHoldsPersonFiles("workspace-1", "session-1")).toBe(
+      true
+    );
+    expect(await conversationHoldsPersonFiles("workspace-1", "session-1")).toBe(
+      true
+    );
+    expect(calls).toHaveLength(4);
+  });
+
+  it("reads a listing that is not one as unknown, not as unmarked", async () => {
+    stubStorage(
+      new Response("<Error><Code>NoSuchBucket</Code></Error>", {
+        status: 404,
+      }),
+      new Response("<html>gateway</html>", { status: 200 }),
+      new Response(null, { status: 403 }),
+      listing([])
+    );
+    const { InboxStorageError, workspaceHoldsPersonFiles } = await loadInbox();
+
+    await expect(workspaceHoldsPersonFiles("workspace-1")).rejects.toThrow(
+      InboxStorageError
+    );
+    await expect(workspaceHoldsPersonFiles("workspace-1")).rejects.toThrow(
+      InboxStorageError
+    );
+    await expect(workspaceHoldsPersonFiles("workspace-1")).rejects.toThrow(
+      /403/u
+    );
+    // Nothing unknown was remembered.
+    expect(await workspaceHoldsPersonFiles("workspace-1")).toBe(false);
   });
 
   it("reads as unknown, not as absent, on anything but no such key", async () => {
@@ -349,7 +430,7 @@ describe("the mark of a sandbox that holds the person's files", () => {
     );
   });
 
-  it("fails the mark when Object Storage refuses either object", async () => {
+  it("fails the mark when Object Storage refuses any object", async () => {
     const calls = stubStorage(
       new Response(null, { status: 403 }),
       new Response(null, { status: 200 }),
@@ -361,7 +442,11 @@ describe("the mark of a sandbox that holds the person's files", () => {
     // The sandbox is not marked without its conversation.
     expect(calls).toHaveLength(1);
     await expect(markSandboxHoldsPersonFiles(target)).rejects.toThrow(/403/u);
-    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      expect.stringContaining("/sandbox/person-files-conversations/"),
+      expect.stringContaining("/sandbox/person-files-conversations/"),
+      "/bro-state-test/sandbox/person-files/sb-1",
+    ]);
   });
 });
 

@@ -169,17 +169,94 @@ describe("the pilot of the person's files", () => {
   });
 });
 
-/** Object Storage answering the GETs of marks in turn. */
-function stubMarks(...answers: readonly Response[]) {
-  const keys: string[] = [];
-  vi.stubGlobal("fetch", (url: string) => {
-    keys.push(decodeURIComponent(new URL(url).pathname));
-    const answer = answers[keys.length - 1];
-    return answer === undefined
-      ? Promise.reject(new Error("The test ran out of stubbed answers."))
-      : Promise.resolve(answer);
+/**
+ * What Object Storage was asked: the listing of the workspace's
+ * conversations' marks, a GET or PUT of the conversation's mark by its
+ * hashed key, or the key.
+ */
+function askedFor(method: string, url: URL) {
+  const key = decodeURIComponent(url.pathname);
+  if (
+    key === "/bro-state-test" &&
+    url.searchParams.get("list-type") === "2" &&
+    url.searchParams.get("max-keys") === "1" &&
+    /^sandbox\/person-files-conversations\/[\da-f]{16}\/$/u.test(
+      url.searchParams.get("prefix") ?? ""
+    )
+  ) {
+    return "LIST workspace";
+  }
+  if (
+    /^\/bro-state-test\/sandbox\/person-files-conversations\/[\da-f]{16}\/[\da-f]{16}$/u.test(
+      key
+    )
+  ) {
+    return `${method} conversation`;
+  }
+  return `${method} ${key}`;
+}
+
+/**
+ * Object Storage holding the marks named: this conversation's, another
+ * conversation's of the same workspace, or answering every request with
+ * `failing`. Only conversations are marked, as every release did.
+ */
+function stubMarks(
+  held: {
+    readonly conversation?: boolean;
+    readonly otherConversation?: boolean;
+  },
+  failing?: number
+) {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
+    const parsed = new URL(url);
+    const method = init.method ?? "GET";
+    const asked = askedFor(method, parsed);
+    calls.push(asked);
+    if (failing !== undefined) {
+      return Promise.resolve(new Response(null, { status: failing }));
+    }
+    if (asked === "LIST workspace") {
+      const prefix = parsed.searchParams.get("prefix") ?? "";
+      const keys = [
+        ...(held.conversation === true ? [`${prefix}${"a".repeat(16)}`] : []),
+        ...(held.otherConversation === true
+          ? [`${prefix}${"b".repeat(16)}`]
+          : []),
+      ].slice(0, 1);
+      return Promise.resolve(
+        new Response(
+          `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>bro-state-test</Name><Prefix>${prefix}</Prefix><KeyCount>${String(keys.length)}</KeyCount><MaxKeys>1</MaxKeys>${keys.map((key) => `<Contents><Key>${key}</Key></Contents>`).join("")}<IsTruncated>false</IsTruncated></ListBucketResult>`,
+          { status: 200 }
+        )
+      );
+    }
+    const there =
+      method === "PUT" ||
+      (asked === "GET conversation" && held.conversation === true);
+    return Promise.resolve(
+      there
+        ? new Response("1", {
+            headers: { "last-modified": new Date().toUTCString() },
+            status: 200,
+          })
+        : new Response("<Error><Code>NoSuchKey</Code></Error>", {
+            status: 404,
+          })
+    );
   });
-  return keys;
+  return calls;
+}
+
+const workspaceMark = "LIST workspace";
+const conversationMark = "GET conversation";
+
+async function loadPilot(overrides: Readonly<Record<string, string>>) {
+  return await importWithSandbox(
+    async () => await import("@agent/lib/sandbox/pilot"),
+    overrides
+  );
 }
 
 describe("a conversation that may hold the person's files", () => {
@@ -192,81 +269,155 @@ describe("a conversation that may hold the person's files", () => {
   const conversation = {
     session: { auth: { current: person, initiator: null }, id: "session-1" },
   };
+  const taskAgentPilot = {
+    OPENROUTER_API_KEY: "openrouter-test-key",
+    SANDBOX_WORKSPACES: "*",
+  };
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
-  it("holds them by the mark of one of its task agents once the files pilot is cleared", async () => {
-    const keys = stubMarks(
-      new Response("1", {
-        headers: { "last-modified": new Date().toUTCString() },
-        status: 200,
-      })
-    );
+  it("holds them by the marks once the files pilot is cleared", async () => {
+    const calls = stubMarks({ conversation: true });
     const { conversationHoldsFiles, taskFilesGuarded } =
-      await importWithSandbox(
-        async () => await import("@agent/lib/sandbox/pilot"),
-        { OPENROUTER_API_KEY: "openrouter-test-key", SANDBOX_WORKSPACES: "*" }
-      );
+      await loadPilot(taskAgentPilot);
 
     expect(taskFilesGuarded()).toBe(true);
     expect(await conversationHoldsFiles(conversation)).toBe(true);
-    expect(keys).toEqual([
-      expect.stringMatching(
-        /^\/bro-state-test\/sandbox\/person-files-conversations\/[\da-f]{16}\/[\da-f]{16}$/u
-      ),
-    ]);
+    expect(calls).toEqual([workspaceMark, conversationMark]);
   });
 
-  it("holds none without the mark, and counts an unreadable mark as there", async () => {
-    stubMarks(
-      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }),
-      new Response(null, { status: 403 })
-    );
-    const { conversationHoldsFiles } = await importWithSandbox(
-      async () => await import("@agent/lib/sandbox/pilot"),
-      { OPENROUTER_API_KEY: "openrouter-test-key", SANDBOX_WORKSPACES: "*" }
-    );
+  it.each([
+    [
+      "left the task agent's pilot",
+      { ...taskAgentPilot, SANDBOX_WORKSPACES: "personal:someone-else" },
+    ],
+    ["went to the Gateway", { SANDBOX_WORKSPACES: "*" }],
+    [
+      "is named by an email that cannot be looked up",
+      { ...taskAgentPilot, SANDBOX_WORKSPACES: "alice@example.com" },
+    ],
+  ])(
+    "holds them by the marks when the workspace %s",
+    async (_case, settings) => {
+      // The files' content stays in the history whatever the pilots say.
+      services.readAccountEmail.mockRejectedValue(new Error("db down"));
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      stubMarks({ conversation: true });
+      const { conversationHoldsFiles } = await loadPilot(settings);
+
+      expect(await conversationHoldsFiles(conversation)).toBe(true);
+      expect(services.readAccountEmail).not.toHaveBeenCalled();
+    }
+  );
+
+  it("holds none in a workspace whose conversations were never marked", async () => {
+    const calls = stubMarks({});
+    const { conversationHoldsFiles } = await loadPilot(taskAgentPilot);
 
     expect(await conversationHoldsFiles(conversation)).toBe(false);
+    // The listing of the workspace's marks is the only request.
+    expect(calls).toEqual([workspaceMark]);
+  });
+
+  it("holds none in another conversation of a marked workspace", async () => {
+    const calls = stubMarks({ otherConversation: true });
+    const { conversationHoldsFiles } = await loadPilot(taskAgentPilot);
+
+    expect(await conversationHoldsFiles(conversation)).toBe(false);
+    expect(calls).toEqual([workspaceMark, conversationMark]);
+  });
+
+  it("holds them by a conversation's mark alone once the files flag is off", async () => {
+    // The owner's setup: Object Storage configured, TASK_FILES_WORKSPACES
+    // cleared, and only the conversation's mark the releases before the
+    // workspace's check wrote. No object of the workspace's is asked for.
+    const calls = stubMarks({ conversation: true });
+    const { conversationHoldsFiles, reportTurnHoldsFiles } = await loadPilot({
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_WORKSPACES: workspaceId,
+    });
+
     expect(await conversationHoldsFiles(conversation)).toBe(true);
+    expect(await reportTurnHoldsFiles(conversation)).toBe(true);
+    expect(calls).toEqual([workspaceMark, conversationMark]);
   });
 
-  it("reads no mark for a workspace outside the task agent's pilot", async () => {
-    // Every Telegram send asks: only the pilot ever had a helper to give
-    // files to, so nobody else's send waits on Object Storage.
-    const keys = stubMarks();
-    const { conversationHoldsFiles } = await importWithSandbox(
-      async () => await import("@agent/lib/sandbox/pilot"),
-      {
-        OPENROUTER_API_KEY: "openrouter-test-key",
-        SANDBOX_WORKSPACES: "personal:someone-else",
-      }
-    );
+  it("asks a workspace that never gave a task agent a file once in a few seconds", async () => {
+    // Every Telegram send of every workspace asks.
+    vi.useFakeTimers();
+    const calls = stubMarks({});
+    const { conversationHoldsFiles } = await loadPilot({});
 
+    for (const id of ["session-1", "session-2", "session-1"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Sends follow each other.
+      const holds = await conversationHoldsFiles({
+        session: { ...conversation.session, id },
+      });
+      expect(holds).toBe(false);
+    }
+    expect(calls).toEqual([workspaceMark]);
+    await vi.advanceTimersByTimeAsync(5001);
     expect(await conversationHoldsFiles(conversation)).toBe(false);
-    expect(keys).toEqual([]);
+    expect(calls).toEqual([workspaceMark, workspaceMark]);
   });
 
-  it("holds them wherever the files pilot is on, and none without Object Storage", async () => {
-    const keys = stubMarks();
-    const on = await importWithSandbox(
-      async () => await import("@agent/lib/sandbox/pilot"),
-      {
-        OPENROUTER_API_KEY: "openrouter-test-key",
-        SANDBOX_WORKSPACES: workspaceId,
-        TASK_FILES_WORKSPACES: workspaceId,
-      }
-    );
-    expect(await on.conversationHoldsFiles(conversation)).toBe(true);
-    clearSandboxSettings();
-    const off = await importWithSandbox(
-      async () => await import("@agent/lib/sandbox/pilot"),
-      { BROWSER_STATE_BUCKET: "", SANDBOX_WORKSPACES: "*" }
-    );
-    expect(off.taskFilesGuarded()).toBe(false);
-    expect(await off.conversationHoldsFiles(conversation)).toBe(false);
-    expect(keys).toEqual([]);
+  it("holds them while the marks cannot be read, in the owner's setup, and asks again after a minute", async () => {
+    // Object Storage configured, the task agent's pilot by the owner's
+    // email, TASK_FILES_WORKSPACES off, and Object Storage failing.
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    services.readAccountEmail.mockResolvedValue("alice@example.com");
+    const calls = stubMarks({}, 503);
+    const { conversationHoldsFiles } = await loadPilot({
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_WORKSPACES: "alice@example.com",
+    });
+
+    const first = conversationHoldsFiles(conversation);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await first).toBe(true);
+    // The try and its retry, then nothing for a minute.
+    expect(calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(await conversationHoldsFiles(conversation)).toBe(true);
+    expect(calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const later = conversationHoldsFiles(conversation);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await later).toBe(true);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("holds them wherever the files pilot is on, reading no mark", async () => {
+    const calls = stubMarks({});
+    const { conversationHoldsFiles } = await loadPilot({
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_WORKSPACES: workspaceId,
+      TASK_FILES_WORKSPACES: workspaceId,
+    });
+
+    expect(await conversationHoldsFiles(conversation)).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it("holds none without Object Storage, but a report turn's sends carry none", async () => {
+    const calls = stubMarks({ conversation: true });
+    const { conversationHoldsFiles, reportTurnHoldsFiles, taskFilesGuarded } =
+      await loadPilot({ ...taskAgentPilot, BROWSER_STATE_BUCKET: "" });
+
+    expect(taskFilesGuarded()).toBe(false);
+    expect(await conversationHoldsFiles(conversation)).toBe(false);
+    expect(await reportTurnHoldsFiles(conversation)).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it("asks a report turn's conversation its marks where Object Storage is", async () => {
+    stubMarks({});
+    const { reportTurnHoldsFiles } = await loadPilot(taskAgentPilot);
+
+    expect(await reportTurnHoldsFiles(conversation)).toBe(false);
   });
 });

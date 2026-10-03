@@ -16,7 +16,7 @@ import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
 import { decodePage } from "@agent/lib/web-page/decode";
 import { searchWeb, webSearchInputSchema } from "@agent/lib/web-search/search";
-import { isSharedFileLink, sandboxFilesPath } from "./files";
+import { sandboxFilesPath } from "./files";
 import { sandboxHoldsPersonFiles } from "./inbox";
 import { verifySandboxToolsToken } from "./keys";
 import { fetchPublic } from "./public-fetch";
@@ -122,34 +122,124 @@ function ownHosts() {
   return hosts;
 }
 
-/** A path as a server may read it: decoded, lower case, slashes folded. */
-function servedPath(url: URL) {
-  let path = url.pathname;
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-    // A broken escape is matched as written.
+/** How many times a URL is decoded in search of a link nested in it. */
+const nestedDecodes = 8;
+
+/** One round of percent-decoding; an escape that is no UTF-8 reads byte by byte. */
+function decodeEscapes(text: string) {
+  return text.replaceAll(/(?:%[\da-f]{2})+/giu, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run.replaceAll(/%([\da-f]{2})/giu, (_match, hex: string) =>
+        String.fromCharCode(Number.parseInt(hex, 16))
+      );
+    }
+  });
+}
+
+/**
+ * A URL as the servers along its way may read it: as written, then decoded
+ * again and again until nothing changes, as each proxy reader decodes the
+ * address in its query or path before it fetches that
+ * (`api.allorigins.win/raw?url=…`, `r.jina.ai/https%253A…`). Each reading is
+ * folded as a host and a path are compared: compatibility forms and
+ * ideographic dots as plain ones, lower case, backslashes as slashes, runs
+ * of slashes as one.
+ */
+function readings(href: string) {
+  const texts = [fold(href)];
+  for (let round = 0; round < nestedDecodes; round += 1) {
+    const last = texts.at(-1) ?? "";
+    const next = fold(decodeEscapes(last));
+    if (next === last) break;
+    texts.push(next);
   }
-  return path.toLowerCase().replaceAll(/\/{2,}/gu, "/");
+  return texts;
+}
+
+function fold(text: string) {
+  return withoutDotSegments(
+    text
+      .normalize("NFKC")
+      // A URL parser drops these from a host (UTS 46) where NFKC keeps them.
+      .replaceAll(/\p{Default_Ignorable_Code_Point}/gu, "")
+      .replaceAll("\u3002", ".")
+      .toLowerCase()
+      .replaceAll("\\", "/")
+      .replaceAll(/\/{2,}/gu, "/")
+  );
+}
+
+/** `/./` and `/x/../` resolved, as a URL parser resolves them in a path. */
+function withoutDotSegments(text: string) {
+  let folded = text;
+  for (;;) {
+    const next = folded
+      .replaceAll(/\/\.(?=\/|$)/gu, "")
+      .replace(/\/[^/?#]+\/\.\.(?=\/|$)/u, "");
+    if (next === folded) return folded;
+    folded = next;
+  }
+}
+
+/**
+ * The hosts and paths of the `http(s):` addresses written into a reading,
+ * as a proxy reader's own URL parser would make them of the text it got.
+ */
+function nestedAddresses(text: string) {
+  const found: string[] = [];
+  for (const match of text.matchAll(/https?:\/+[^\s"'<>]+/gu)) {
+    const url = URL.parse(match[0].replace(/^(https?:)\/+/u, "$1//"));
+    if (url !== null) found.push(`${hostKey(url.hostname)}${url.pathname}`);
+  }
+  return found;
+}
+
+/** A character a host name may hold, so a match next to it is another name. */
+function hostCharacter(character: string | undefined) {
+  return character !== undefined && /[a-z\d-]/u.test(character);
+}
+
+/** Whether the text names the host or a name under it anywhere. */
+function mentionsHost(text: string, host: string) {
+  for (
+    let at = text.indexOf(host);
+    at !== -1;
+    at = text.indexOf(host, at + 1)
+  ) {
+    if (
+      !hostCharacter(text[at - 1]) &&
+      !hostCharacter(text[at + host.length])
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
  * Whether the router may request this URL for a sandbox: a public host, and
- * none of Bro's own. A `share_file` link is public and signed, and it may
+ * nothing of Bro's own. A `share_file` link is public and signed, and it may
  * reach a task agent with the web through a report that carries it; fetched
  * there, the file the link opens would leave with the next request. So no
  * hop goes to Bro or its bucket, to a shared file's path on any host (a
- * deployment answers it under many names), or to anything that is such a
- * link; every redirect hop is asked the same (`allowUrl`).
+ * deployment answers it under many names), or to a proxy reader that
+ * fetches either for it: no reading of the URL, decoded however deep, may
+ * name one of Bro's hosts or the shared files' path, in its host, path or
+ * query. Every redirect hop is asked the same (`allowUrl`). The price: a
+ * page whose address merely mentions Bro's domain is not read either.
  */
 function fetchable(url: URL) {
   if (isBlockedHost(url.hostname)) return false;
-  const host = hostKey(url.hostname);
-  for (const own of ownHosts()) {
-    if (host === own || host.endsWith(`.${own}`)) return false;
-  }
-  if (servedPath(url).includes(sandboxFilesPath)) return false;
-  return !isSharedFileLink(url.href);
+  const own = [...ownHosts()];
+  return readings(url.href).every((reading) =>
+    [reading, ...nestedAddresses(reading)].every(
+      (text) =>
+        !text.includes(sandboxFilesPath) &&
+        !own.some((host) => mentionsHost(text, host))
+    )
+  );
 }
 
 function publicUrl(value: string) {

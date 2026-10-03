@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import type { SandboxSession } from "eve/sandbox";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
-import { presignStoredObject } from "@shared/object-storage/s3";
+import { objectStore, presignStoredObject } from "@shared/object-storage/s3";
+import {
+  objectStorageEndpoint,
+  objectStorageRegion,
+  presignS3Url,
+  uriEncode,
+} from "@shared/object-storage/sigv4";
 
 /**
  * The person's files on their way from Bro's sandbox to the task agent's
@@ -209,6 +215,105 @@ function conversationMarkerKey(workspaceId: string, parentSessionId: string) {
 }
 
 /**
+ * Where the marks of the workspace's conversations lie, the prefix of
+ * every {@link conversationMarkerKey} of it.
+ */
+function conversationMarkersPrefix(workspaceId: string) {
+  return `sandbox/person-files-conversations/${sha256(workspaceId).slice(0, 16)}/`;
+}
+
+/**
+ * How long a workspace found unmarked is believed so without asking again.
+ * The process that marks a conversation remembers its workspace at once
+ * ({@link markSandboxHoldsPersonFiles}); another instance, until this
+ * runs out. The mark goes in before the first file is copied, and the
+ * files' content reaches the conversation only in the task agent's report:
+ * after at least a model call that reads the file, one that answers, and
+ * Bro's own call that sends the report, which take longer than this.
+ */
+export const workspaceUnmarkedMs = 5000;
+/** Workspaces known marked, for good: a mark is never removed. */
+const markedWorkspaces = new Set<string>();
+/** Workspaces found unmarked, and until when that answer holds. */
+const unmarkedUntil = new Map<string, number>();
+/** Conversations known marked, for good, as their workspace's. */
+const markedConversations = new Set<string>();
+
+function remembersMarked(workspaceId: string) {
+  markedWorkspaces.add(workspaceId);
+  unmarkedUntil.delete(workspaceId);
+}
+
+/**
+ * Whether some conversation of the workspace was given the person's files:
+ * a listing of one key under its conversations' marks. Every Telegram send
+ * of every workspace asks whether its conversation may hold the files
+ * (`conversationHoldsFiles` in `./pilot.ts`), so this answers, remembered,
+ * for the workspaces that never gave a task agent a file, and only a marked
+ * workspace's sends read their conversation's mark. The conversations' own
+ * marks answer, not an object of the workspace's: the releases before this
+ * check wrote only those. A yes is remembered for good, a no for
+ * {@link workspaceUnmarkedMs}; an answer that is neither throws and is not
+ * remembered.
+ */
+export async function workspaceHoldsPersonFiles(
+  workspaceId: string,
+  signal?: AbortSignal
+) {
+  if (markedWorkspaces.has(workspaceId)) return true;
+  if ((unmarkedUntil.get(workspaceId) ?? 0) > Date.now()) return false;
+  const held = await anyStoredUnder(
+    conversationMarkersPrefix(workspaceId),
+    signal
+  );
+  if (held) {
+    remembersMarked(workspaceId);
+  } else {
+    unmarkedUntil.set(workspaceId, Date.now() + workspaceUnmarkedMs);
+  }
+  return held;
+}
+
+/**
+ * Whether the bucket holds some object under `prefix`. Only a listing
+ * Object Storage answered reads as an answer; anything else throws.
+ */
+async function anyStoredUnder(prefix: string, signal: AbortSignal | undefined) {
+  const response = await sendSigned(
+    () => presignedListing(prefix),
+    "GET",
+    {},
+    signal
+  );
+  const text = await response.text();
+  if (!response.ok || !text.includes("<ListBucketResult")) {
+    throw new InboxStorageError(
+      "Object Storage did not list the marks of the person's files."
+    );
+  }
+  return /<Key>[^<]+<\/Key>/u.test(text);
+}
+
+/** A presigned listing of at most one key of the bucket under `prefix`. */
+function presignedListing(prefix: string) {
+  const store = objectStore();
+  const listing = new URL(
+    `${objectStorageEndpoint}/${uriEncode(store.bucket)}`
+  );
+  listing.searchParams.set("list-type", "2");
+  listing.searchParams.set("max-keys", "1");
+  listing.searchParams.set("prefix", prefix);
+  return presignS3Url({
+    ...store.credentials,
+    expiresSeconds: presignSeconds,
+    method: "GET",
+    now: new Date(),
+    region: objectStorageRegion,
+    url: listing.href,
+  });
+}
+
+/**
  * The object that says the person's own turn sent one task agent one
  * message: Bro's hook stores it as the `task` call streams in, before eve
  * hands the message over (`agent/hooks/task-files.ts`). It names the very
@@ -307,11 +412,13 @@ async function markHeld(
 /**
  * Marks the sandbox, and its conversation, as holding the person's files,
  * before the first of them goes in: from then on the tool router keeps that
- * sandbox off the network (`sandboxHoldsPersonFiles` in `./router.ts`), and
- * the conversation's later task agents follow unless the person sent them
- * (`conversationHoldsPersonFiles`). The conversation goes first; a failure
- * throws, and the task agent's hook then copies nothing. Only a file going
- * in marks the conversation: a sandbox merely kept off the web is
+ * sandbox off the network (`sandboxHoldsPersonFiles` in `./router.ts`), the
+ * conversation's later task agents follow unless the person sent them
+ * (`conversationHoldsPersonFiles`), and Bro's sends there carry no URL a
+ * server fetches (`conversationHoldsFiles` in `./pilot.ts`, which finds the
+ * workspace by its conversations' marks). The conversation goes first; a
+ * failure throws, and the task agent's hook then copies nothing. Only a file going in marks the
+ * conversation: a sandbox merely kept off the web is
  * {@link markSandboxOffWeb}'s.
  */
 export async function markSandboxHoldsPersonFiles(
@@ -323,10 +430,13 @@ export async function markSandboxHoldsPersonFiles(
   signal?: AbortSignal
 ) {
   const sandboxKey = personFilesMarkerKey(target.sandboxId);
-  await putMark(
-    conversationMarkerKey(target.workspaceId, target.parentSessionId),
-    signal
+  const conversationKey = conversationMarkerKey(
+    target.workspaceId,
+    target.parentSessionId
   );
+  await putMark(conversationKey, signal);
+  markedConversations.add(conversationKey);
+  remembersMarked(target.workspaceId);
   await putMark(sandboxKey, signal);
 }
 
@@ -355,16 +465,20 @@ export async function sandboxHoldsPersonFiles(
   return await markHeld(personFilesMarkerKey(sandboxId), signal);
 }
 
-/** Whether some task agent of the conversation was given the person's files. */
+/**
+ * Whether some task agent of the conversation was given the person's files;
+ * a yes is remembered for good.
+ */
 export async function conversationHoldsPersonFiles(
   workspaceId: string,
   parentSessionId: string,
   signal?: AbortSignal
 ) {
-  return await markHeld(
-    conversationMarkerKey(workspaceId, parentSessionId),
-    signal
-  );
+  const key = conversationMarkerKey(workspaceId, parentSessionId);
+  if (markedConversations.has(key)) return true;
+  const held = await markHeld(key, signal);
+  if (held) markedConversations.add(key);
+  return held;
 }
 
 /** Records that the person's own turn sent this message. */
@@ -477,15 +591,31 @@ async function request(
   init: Pick<RequestInit, "body" | "headers">,
   signal: AbortSignal | undefined
 ) {
+  return await sendSigned(
+    () => presignStoredObject({ expiresSeconds: presignSeconds, key, method }),
+    method,
+    init,
+    signal
+  );
+}
+
+/** {@link request} to the URL `presigned` signs anew for each try. */
+async function sendSigned(
+  presigned: () => string,
+  method: "GET" | "PUT",
+  init: Pick<RequestInit, "body" | "headers">,
+  signal: AbortSignal | undefined
+) {
   for (let attempt = 0; ; attempt += 1) {
     const last = attempt > 0;
     let response: Response;
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The retry follows the first attempt.
-      response = await fetch(
-        presignStoredObject({ expiresSeconds: presignSeconds, key, method }),
-        { ...init, method, signal: bounded(signal) }
-      );
+      response = await fetch(presigned(), {
+        ...init,
+        method,
+        signal: bounded(signal),
+      });
     } catch (error) {
       if (last || signal?.aborted === true) throw error;
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
