@@ -25,6 +25,7 @@ const brokenDeepSeekHosts = [
   "parasail",
   "phala",
   "inference-net",
+  "open-inference",
 ];
 
 const openrouter = createOpenRouter({ apiKey: e2eEnv.OPENROUTER_API_KEY });
