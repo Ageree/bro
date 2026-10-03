@@ -100,6 +100,8 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   browserRunFacts,
   deliveryAddressFor,
+  readOwnContacts,
+  withoutOwnContacts,
 } from "@agent/lib/browser-use/facts";
 import {
   browserRunFinalScreenshotStem,
@@ -761,6 +763,19 @@ function stagesForPerson(
   staging: Staging | undefined
 ) {
   return consent === undefined && staging === "person";
+}
+
+/**
+ * Whether the run has the person's details: on their consent, or staged in
+ * their own turn. Anywhere else their phone and email are cut from the
+ * model's words as well (`withoutOwnContacts`), since a prompt line alone
+ * left them in text the run could type into any page.
+ */
+function sharesDetails(
+  consent: SubmissionConsent | undefined,
+  staging: Staging | undefined
+) {
+  return consent !== undefined || stagesForPerson(consent, staging);
 }
 
 /**
@@ -3111,6 +3126,14 @@ async function runBrowserTask(
     }
     // Paying for an errand is asking for it to be done in one's name.
     const consent = await consentFromInput(input, context, scope, spoken);
+    // What the person meant decides it, not the errand the model wrote,
+    // which on 25.09 said «ничего не бронировать» to «забронируй».
+    const staging = stagingFor(input.personWants, byPerson);
+    // Their phone and email reach the run only with their details: without
+    // them, the errand the model wrote loses them too, here and as stored.
+    const sent = sharesDetails(consent, staging)
+      ? errand
+      : withoutOwnContacts(errand, await readOwnContacts(scope));
     // The card or the standing permission that named the cost is the
     // permission to pay it: nobody is asked a second time at checkout.
     const allowPayment = input.allowPayment === true || consentPays(consent);
@@ -3173,14 +3196,12 @@ async function runBrowserTask(
           : undefined,
         errand:
           spend?.decision.allowed && input.withinSpendLimit
-            ? `${errand}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
-            : errand,
+            ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
+            : sent,
         facts: facts.details,
         home: facts.home,
         site: input.site,
-        // What the person meant decides it, not the errand the model wrote,
-        // which on 25.09 said «ничего не бронировать» to «забронируй».
-        staging: stagingFor(input.personWants, byPerson),
+        staging,
       });
       // Another errand of the workspace in a browser on the same account
       // may be signing in: this one waits for it and starts signed in,
@@ -3258,7 +3279,7 @@ async function runBrowserTask(
           site: input.site ?? null,
           startedByPerson: byPerson,
           submission: confirmedSubmission(consent),
-          task: errand,
+          task: sent,
           waitsForAccount: started.waitsForAccount ?? null,
         })
       );
@@ -3290,7 +3311,7 @@ async function runBrowserTask(
         startedByPerson: byPerson,
         status: "running",
         submission: confirmedSubmission(consent),
-        task: errand,
+        task: sent,
       })
     );
     const liveViewUrl = await waitForLiveViewUrl(run.id);
@@ -3373,7 +3394,7 @@ async function runBrowserTask(
       const unsaid = unsaidRefusal(input.personSaid, words);
       if (unsaid) throw new Error(unsaid);
     }
-    const message = mail
+    const passedOn = mail
       ? mailCodeInstruction(mail.domain)
       : words === null
         ? coordinatorInstruction(task)
@@ -3416,6 +3437,19 @@ async function runBrowserTask(
       confirmedNow?.kind === "confirmed"
         ? confirmedNow
         : (confirmedBefore ?? confirmedNow);
+    // As on start, the person's phone and email reach the run only with
+    // their details: without them, this follow-up and the errand it repeats
+    // lose them.
+    const own = sharesDetails(
+      consent,
+      done ? undefined : stagingFor(input.personWants, byPerson)
+    )
+      ? undefined
+      : await readOwnContacts(scope);
+    const message =
+      own === undefined ? passedOn : withoutOwnContacts(passedOn, own);
+    const errandText =
+      own === undefined ? row.task : withoutOwnContacts(row.task, own);
     // Paying is allowed on every follow-up of an errand whose consent named
     // what it costs, not only on the call that brings it.
     const allowPayment = input.allowPayment === true || consentPays(consent);
@@ -3588,7 +3622,7 @@ async function runBrowserTask(
                 ? gosuslugiSignInRule(site, true)
                 : undefined,
               details,
-              queuedIntoErrandContract(row.task),
+              queuedIntoErrandContract(errandText),
             ]
               .filter((part) => part !== undefined)
               .join("\n\n")
@@ -3704,7 +3738,7 @@ async function runBrowserTask(
             ? deliveryAddressFor(facts.addresses, row.task, message)
             : undefined,
           done,
-          errand: row.task,
+          errand: errandText,
           facts: facts.details,
           freshBrowser: closed,
           message: withCodeEntry(instruction, codeEntry, carriesCode),
@@ -3792,7 +3826,7 @@ async function runBrowserTask(
             row.sessionId,
             [
               withCodeEntry(instruction, codeEntry, carriesCode),
-              queuedIntoErrandContract(row.task),
+              queuedIntoErrandContract(errandText),
             ].join("\n\n")
           );
           // The session was idle by then and drained the message as a run
