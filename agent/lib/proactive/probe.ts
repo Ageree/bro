@@ -21,6 +21,7 @@ import {
   isNightFlight,
   isNightSubject,
   mailRank,
+  proactiveEventBaseFields,
   proactiveEventFields,
   proactiveEventListSchema,
 } from "@agent/lib/proactive/signals";
@@ -236,7 +237,12 @@ export async function probeGoogleSignals(
         google,
         proactiveEventListSchema,
         googleUrl(calendarApi, "/calendars/primary/events", {
-          fields: proactiveEventFields,
+          // Whether an event is the person's own matters only to the pilot's
+          // flight watches; outside the pilot the request is as before.
+          fields:
+            window.flightReminders === false
+              ? proactiveEventFields
+              : proactiveEventBaseFields,
           maxResults: maxCalendarEvents,
           orderBy: "startTime",
           singleEvents: true,
