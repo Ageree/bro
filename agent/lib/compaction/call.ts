@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { APICallError, type LanguageModelMiddleware } from "ai";
 import { z } from "zod";
 import { recordCost } from "@agent/lib/costs/record";
@@ -62,10 +62,12 @@ export function compactionHeld(sessionId: string) {
  *   RouterAI bills it. Outermost in the stack, the middleware sees the price
  *   `stepCostMiddleware` put where eve reads it and prices the call as the
  *   hook prices a step, under the turn's source and errand
- *   (`turnCostSource`). The row is keyed by the turn and a digest of the
- *   prompt: each summary call of a compaction has a prompt of its own, and
- *   a call run again with the same prompt is counted once. Like every cost,
- *   a write that fails is logged and the compaction goes on.
+ *   (`turnCostSource`). The row is keyed by the turn, a digest of the
+ *   prompt and the provider's id of the answer (a random one without it):
+ *   a step eve runs again — after a restart, or one whose model call
+ *   failed — compacts the same history with the same prompt, and RouterAI
+ *   bills each call; only the same answer is counted once. Like every
+ *   cost, a write that fails is logged and the compaction goes on.
  * - Its failure. A call that throws, or answers no text (eve then throws
  *   itself), fails the step with no retry, and the turn with it: the
  *   session keeps its whole window for a while (`compactionHeld`), so the
@@ -146,7 +148,7 @@ export function compactionCallMiddleware(owner: {
           costRub: costUsd === undefined ? 0 : usdToRub(costUsd),
           costUsd:
             modelEndpoint()?.costCurrency === "rub" ? null : (costUsd ?? null),
-          idempotencyKey: `compaction:${owner.sessionId}:${owner.turnId ?? "-"}:${digest}`,
+          idempotencyKey: `compaction:${owner.sessionId}:${owner.turnId ?? "-"}:${digest}:${result.response?.id ?? randomUUID()}`,
           occurredAt: new Date(),
           runId: owner.runId,
           sessionId: owner.sessionId,

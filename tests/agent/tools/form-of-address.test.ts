@@ -30,7 +30,7 @@ import {
   recordCompactionCompleted,
   recordMessageReceived,
   recordStepStarted,
-  recordTurnOpening,
+  recordStepHistory,
   recordTurnStarted,
 } from "@agent/lib/compaction/record";
 
@@ -45,7 +45,7 @@ function personTurn(
 ) {
   recordTurnStarted(turnId);
   recordMessageReceived({ turnId });
-  recordTurnOpening({ sessionId: "session-1", stepIndex: 0, turnId }, opening);
+  recordStepHistory({ sessionId: "session-1", stepIndex: 0, turnId }, opening);
   for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
     recordStepStarted({ stepIndex, turnId });
   }
@@ -189,7 +189,7 @@ describe("form_of_address in a turn about someone else's letter", () => {
       // one; eve compacted at the first step and kept no results, and the
       // step after runs where the first step's words are not kept.
       const history = [...summary, letter, person("ну?")];
-      personTurn("turn_11", 1, history);
+      personTurn("turn_11", 1, [letter, person("ну?")]);
       recordCompactionCompleted("turn_11");
       recordStepStarted({ stepIndex: 1, turnId: "turn_11" });
       const tool = await resolveTool(history, {
@@ -203,20 +203,36 @@ describe("form_of_address in a turn about someone else's letter", () => {
     });
 
     it("looks for the letter in a message that steered the turn after it", async () => {
-      const opening = [...summary, letter];
-      personTurn("turn_12", 0, opening);
-      await resolveTool(opening, { data: { stepIndex: 0, turnId: "turn_12" } });
+      personTurn("turn_12", 0, [letter]);
+      await resolveTool([letter], {
+        data: { stepIndex: 0, turnId: "turn_12" },
+      });
       recordStepStarted({ stepIndex: 0, turnId: "turn_12" });
       recordCompactionCompleted("turn_12");
       recordStepStarted({ stepIndex: 1, turnId: "turn_12" });
       const tool = await resolveTool(
-        [...opening, person("на вы, как обычно")],
+        [...summary, letter, person("на вы, как обычно")],
         { data: { stepIndex: 1, turnId: "turn_12" } }
       );
 
       await tool.execute({ formal: true }, toolContext());
 
       expect(settings.update).not.toHaveBeenCalled();
+    });
+
+    it("saves after a compaction that wrote no summary", async () => {
+      // eve only reordered memory records: the summary is an earlier
+      // turn's, and the words are this turn's own.
+      const history = [...summary, person("давай на вы")];
+      personTurn("turn_13", 3, history);
+      recordCompactionCompleted("turn_13");
+      const tool = await resolveTool(history, {
+        data: { stepIndex: 2, turnId: "turn_13" },
+      });
+
+      await tool.execute({ formal: true }, toolContext());
+
+      expect(settings.update).toHaveBeenCalledOnce();
     });
 
     it("reads a later turn's words as before", async () => {

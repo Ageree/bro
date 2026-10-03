@@ -41,7 +41,9 @@ const requiredEnvironment = {
 };
 
 /** What the provider answers: a summary, at RouterAI's price in roubles. */
-const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>(async () => ({
+const summaryAnswer = async (): Promise<
+  Awaited<ReturnType<LanguageModelV4["doGenerate"]>>
+> => ({
   content: [{ text: "Сводка разговора.", type: "text" }],
   finishReason: { raw: "stop", unified: "stop" },
   providerMetadata: { openrouter: { usage: { cost: 0.8441 } } },
@@ -55,7 +57,8 @@ const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>(async () => ({
     outputTokens: { reasoning: 300, text: 1_200, total: 1_500 },
   },
   warnings: [],
-}));
+});
+const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>(summaryAnswer);
 
 beforeEach(() => {
   vi.resetModules();
@@ -157,16 +160,26 @@ describe("the window a step of the compaction pilot reports to eve", () => {
 describe("the cost of eve's compaction", () => {
   it("records each summary call once, priced as a step", async () => {
     const { model } = await selection({ compaction: { cost: owner } });
+    const answered = async (id: string) => ({
+      ...(await summaryAnswer()),
+      response: { id },
+    });
+    doGenerate
+      .mockImplementationOnce(async () => answered("gen-1"))
+      .mockImplementationOnce(async () => answered("gen-2"))
+      .mockImplementationOnce(async () => answered("gen-2"));
     await model.doGenerate(compactionCall);
+    // eve ran the step again: the same prompt, another paid call.
+    await model.doGenerate(compactionCall);
+    // The same answer once more.
     await model.doGenerate(compactionCall);
     await model.doGenerate({
       prompt: [...compactionCall.prompt, ...stepCall.prompt],
     });
 
-    expect(costs.recordUsageCost).toHaveBeenCalledTimes(3);
-    const [first, again, other] = costs.recordUsageCost.mock.calls.map(
-      ([row]) => row
-    );
+    expect(costs.recordUsageCost).toHaveBeenCalledTimes(4);
+    const [first, rerun, duplicate, other] =
+      costs.recordUsageCost.mock.calls.map(([row]) => row);
     const { idempotencyKey, occurredAt, ...row } = first ?? {};
     expect(row).toEqual({
       // RouterAI's roubles, not dollars.
@@ -185,11 +198,15 @@ describe("the cost of eve's compaction", () => {
       },
       workspaceId: "workspace-1",
     });
-    expect(idempotencyKey).toMatch(/^compaction:wrun_01:turn_7:[0-9a-f]{16}$/u);
+    expect(idempotencyKey).toMatch(
+      /^compaction:wrun_01:turn_7:[0-9a-f]{16}:gen-1$/u
+    );
     expect(occurredAt).toBeInstanceOf(Date);
-    // The same call again collides on its key; another prompt does not.
-    expect(again?.idempotencyKey).toBe(first?.idempotencyKey);
+    // Each paid call has a key of its own; the same answer collides.
+    expect(rerun?.idempotencyKey).not.toBe(first?.idempotencyKey);
+    expect(duplicate?.idempotencyKey).toBe(rerun?.idempotencyKey);
     expect(other?.idempotencyKey).not.toBe(first?.idempotencyKey);
+    expect(other?.idempotencyKey).not.toBe(rerun?.idempotencyKey);
     expect(console.info).toHaveBeenCalledWith("[compaction]", {
       inputTokens: 120_000,
       outputTokens: 1_500,
