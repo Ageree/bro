@@ -3,9 +3,11 @@ import type {
   ClientSession,
   InputRequest,
   InputResponse,
+  MessageResponse,
   MessageStreamEvent,
 } from "eve/client";
 import { setTimeout as sleep } from "node:timers/promises";
+import { z } from "zod";
 import { decideInputRequest } from "./approvals.ts";
 import type { BenchCase } from "./cases.ts";
 import { isNight } from "./clock.ts";
@@ -19,6 +21,7 @@ import {
   type TesterTurnKind,
 } from "./journal.ts";
 import { messageContent, type OutgoingFile } from "./media.ts";
+import { UncertainDeliveryError, withRetry } from "./retry.ts";
 import { stepOffsetMs, type PlannedStep } from "./steps.ts";
 import { TurnTracker } from "./tracker.ts";
 
@@ -60,6 +63,9 @@ export interface DriverSettings {
  * ends the run as `scheduled` until `pnpm bench next`.
  */
 const inlineWaitMs = 15 * 60_000;
+
+/** How the journal names opening a conversation (`CaseRun.deliver`). */
+const newConversation = "новый разговор";
 
 const union = (...lists: readonly (readonly string[])[]) => [
   ...new Set(lists.flat()),
@@ -147,17 +153,62 @@ class CaseRun {
     await this.journal.event(session.state.sessionId, event);
   }
 
+  /**
+   * A new conversation, a message or a card answer for eve. Sent again only
+   * if it never left; one cut off after it left may have reached Bro, and
+   * fails the case rather than arrive twice (`retry.ts`).
+   */
+  deliver<T>(label: string, signal: AbortSignal, send: () => Promise<T>) {
+    return withRetry(
+      {
+        idempotent: false,
+        label,
+        log: (line) => this.journal.line(`== драйвер: ${line}`),
+        signal,
+      },
+      send
+    );
+  }
+
+  /**
+   * Reads the conversation. eve reopens a dropped stream itself; when even
+   * that fails, the read goes on from the session's cursor, which moves
+   * with every event read, so nothing is journaled twice.
+   */
+  read<T>(signal: AbortSignal | undefined, reading: () => Promise<T>) {
+    return withRetry(
+      {
+        idempotent: true,
+        label: "чтение разговора",
+        log: (line) => this.journal.line(`== драйвер: ${line}`),
+        signal,
+      },
+      reading
+    );
+  }
+
+  /** Whatever arrived since the driver last looked; `send` would skip it. */
+  async catchUp(session: ClientSession) {
+    await this.read(undefined, async () => {
+      for await (const event of session.stream({ follow: false })) {
+        await this.observe(session, event);
+      }
+    });
+  }
+
   async rememberPastCodes(session: ClientSession, streamIndex: number) {
     if (streamIndex === 0) return;
     let seen = 0;
-    for await (const event of session.stream({
-      follow: false,
-      startIndex: 0,
-    })) {
-      this.journal.rememberMessage(event);
-      seen += 1;
-      if (seen === streamIndex) break;
-    }
+    await this.read(undefined, async () => {
+      for await (const event of session.stream({
+        follow: false,
+        startIndex: seen,
+      })) {
+        this.journal.rememberMessage(event);
+        seen += 1;
+        if (seen === streamIndex) break;
+      }
+    });
   }
 
   /**
@@ -307,22 +358,135 @@ async function readTurn(
   session: ClientSession,
   events: AsyncIterable<MessageStreamEvent>
 ) {
-  let completed = false;
   for await (const event of events) {
     await run.observe(session, event);
-    if (event.type === "turn.completed") completed = true;
     if (event.type === "session.waiting" && run.tracker.authorizationPending) {
       break;
     }
   }
+}
+
+/** A request eve accepted whose turn could not be read: it must not go again. */
+class UnreadTurnError extends Error {
+  constructor(label: string, error: Error) {
+    super(
+      `${label}: eve его принял, но ход Бро не дочитан (${error.message})`,
+      {
+        cause: error,
+      }
+    );
+    this.name = "UnreadTurnError";
+  }
+}
+
+const turnBoundaries = new Set<MessageStreamEvent["type"]>([
+  "session.completed",
+  "session.failed",
+  "session.waiting",
+]);
+
+const deliveryIdSchema = z.string().min(1).optional();
+
+/**
+ * The id eve gave an accepted message, which tags the events of its turn.
+ * eve 0.62 keeps it on the response under a symbol it does not export
+ * (`getMessageResponseDeliveryId` is internal). A new conversation and a
+ * card answer have none, and eve's own stream does not filter their turns
+ * either. If an eve upgrade moves it, «reads an accepted turn on past a
+ * background turn» in `conversation.test.ts` fails.
+ */
+function acceptedDeliveryId(response: MessageResponse) {
+  const key = Object.getOwnPropertySymbols(response).find(
+    (symbol) => symbol.description === "acceptedDeliveryId"
+  );
+  return key === undefined
+    ? undefined
+    : deliveryIdSchema.parse(
+        Object.getOwnPropertyDescriptor(response, key)?.value
+      );
+}
+
+/**
+ * Reads the turn eve accepted. eve reconnects a dropped stream itself; when
+ * it gives up, the turn is read on from the session's cursor, which the cut
+ * read moved past every event it saw, and picked out as eve's own response
+ * stream picks it: events of other turns are skipped until one carries this
+ * message's delivery id, and the read ends at the turn's boundary, however
+ * long Bro works. A turn that cannot be read fails the case: the request was
+ * accepted and must not go again. Returns whether the turn completed.
+ */
+async function readAcceptedTurn(
+  run: CaseRun,
+  label: string,
+  session: ClientSession,
+  response: MessageResponse,
+  signal: AbortSignal
+) {
+  const deliveryId = acceptedDeliveryId(response);
+  const ours = (event: MessageStreamEvent) =>
+    deliveryId !== undefined &&
+    event.meta.deliveryIds?.includes(deliveryId) === true;
+  // What the turn has shown, whichever read it came through.
+  let delivered = deliveryId === undefined;
+  let completed = false;
+  async function* noted(events: AsyncIterable<MessageStreamEvent>) {
+    for await (const event of events) {
+      if (ours(event)) delivered = true;
+      if (event.type === "turn.completed") completed = true;
+      yield event;
+    }
+  }
+  async function* rest() {
+    for await (const event of session.stream({
+      signal,
+      // Waits out a turn that works long; the default gives up quietly
+      // after a few empty reconnects.
+      streamReconnectPolicy: {
+        streamIdleReconnectPolicy: { maxAttempts: Number.POSITIVE_INFINITY },
+      },
+    })) {
+      if (deliveryId !== undefined && !ours(event)) {
+        const ends =
+          event.type === "session.completed" || event.type === "session.failed";
+        if (ends && (!delivered || event.type === "session.completed")) {
+          throw new Error(
+            "the session ended before the accepted message reached its turn boundary"
+          );
+        }
+        if (!delivered || (!ends && event.meta.deliveryIds !== undefined)) {
+          continue;
+        }
+      }
+      yield event;
+      if (turnBoundaries.has(event.type)) return;
+    }
+    signal.throwIfAborted();
+    throw new Error("the stream ended before the turn's boundary");
+  }
+  let source: AsyncIterable<MessageStreamEvent> = response;
+  try {
+    await run.read(signal, async () => {
+      const reading = source;
+      source = rest();
+      await readTurn(run, session, noted(reading));
+    });
+  } catch (error) {
+    if (signal.aborted || !(error instanceof Error)) throw error;
+    throw new UnreadTurnError(label, error);
+  }
   return completed;
 }
 
-/** Runs one exchange with a deadline covering the POST and the stream. */
+/**
+ * Runs one exchange with a deadline covering the POST and the stream. The
+ * POST (`post`, named `label` in the journal) goes through `deliver`; its
+ * turn, once eve accepted it, through `readAcceptedTurn`.
+ */
 async function exchange(
   run: CaseRun,
-  start: (signal: AbortSignal) => Promise<{
-    readonly events: AsyncIterable<MessageStreamEvent>;
+  label: string,
+  post: (signal: AbortSignal) => Promise<{
+    readonly events: MessageResponse;
     readonly session: ClientSession;
   }>,
   recoverOnSuccess = false
@@ -332,8 +496,20 @@ async function exchange(
     controller.abort(new TurnTimeoutError(run.settings.turnTimeoutMs));
   }, run.settings.turnTimeoutMs);
   try {
-    const { events, session } = await start(controller.signal);
-    const completed = await readTurn(run, session, events);
+    const { events, session } = await run.deliver(
+      label,
+      controller.signal,
+      () => post(controller.signal)
+    );
+    // The cursor goes into the record even if the turn cannot be read.
+    run.attach(session);
+    const completed = await readAcceptedTurn(
+      run,
+      label,
+      session,
+      events,
+      controller.signal
+    );
     if (recoverOnSuccess && completed) run.tracker.recovered();
     return session;
   } catch (error) {
@@ -392,7 +568,7 @@ async function settleInputs(run: CaseRun, session: ClientSession) {
     }
     if (responses.length === 0) return;
     // oxlint-disable-next-line eslint/no-await-in-loop -- each answer can raise the next card
-    await exchange(run, async (signal) => ({
+    await exchange(run, "ответ на карточку", async (signal) => ({
       events: await session.respond(responses, { signal }),
       session,
     }));
@@ -428,13 +604,17 @@ async function awaitBackground(run: CaseRun, session: ClientSession) {
     }, deadline - Date.now());
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- one stream at a time, reopened in order
-      for await (const event of session.stream({ signal: controller.signal })) {
-        await run.observe(session, event);
-        const settledTurn =
-          event.type === "session.waiting" &&
-          (!run.tracker.awaitingBackground() || run.tracker.pending.size > 0);
-        if (settledTurn || run.tracker.authorizationPending) break;
-      }
+      await run.read(controller.signal, async () => {
+        for await (const event of session.stream({
+          signal: controller.signal,
+        })) {
+          await run.observe(session, event);
+          const settledTurn =
+            event.type === "session.waiting" &&
+            (!run.tracker.awaitingBackground() || run.tracker.pending.size > 0);
+          if (settledTurn || run.tracker.authorizationPending) break;
+        }
+      });
     } catch (error) {
       if (!controller.signal.aborted) throw error;
     } finally {
@@ -462,7 +642,7 @@ async function finishBackground(run: CaseRun, session: ClientSession) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- the hint goes only after the wait ran out
     await run.noteTurn(session, "hint", "после ожидания фонового итога", hint);
     // oxlint-disable-next-line eslint/no-await-in-loop -- sequential by nature
-    await exchange(run, async (signal) => ({
+    await exchange(run, "подсказка", async (signal) => ({
       events: await session.send(hint, { signal }),
       session,
     }));
@@ -527,11 +707,37 @@ function newRecord(
   };
 }
 
+/**
+ * What the tester checks after a request that may have reached Bro: the
+ * driver never sends it again, since a message twice changes the case. A
+ * conversation that may have opened is not in the record yet; a message or
+ * an answer went to the record's latest one, which `observe` reads.
+ */
+function uncertainDeliveryAdvice(run: CaseRun, error: UncertainDeliveryError) {
+  const { caseId } = run.record;
+  const { outDir } = run.settings;
+  return error.label === newConversation
+    ? `разговор мог открыться: проверьте «Все чаты» (/chat/history) и при необходимости повторите кейс: pnpm bench run --case ${caseId} --out ${outDir}`
+    : `что дошло до Бро, дочитать без отправки: pnpm bench observe --out ${outDir} --case ${caseId} --minutes 0; не дошло — повторить: pnpm bench send --out ${outDir} --case ${caseId} …`;
+}
+
+/** After a turn eve accepted but the driver could not read to its end. */
+function unreadTurnAdvice(run: CaseRun) {
+  return `сообщение принято, не отправляйте его заново; что ответил Бро, дочитать без отправки: pnpm bench observe --out ${run.settings.outDir} --case ${run.record.caseId} --minutes 0`;
+}
+
 async function failRun(run: CaseRun, error: Error) {
-  await run.journal.line(`!! драйвер: ${error.message}`);
+  const advice =
+    error instanceof UncertainDeliveryError
+      ? uncertainDeliveryAdvice(run, error)
+      : error instanceof UnreadTurnError
+        ? unreadTurnAdvice(run)
+        : undefined;
+  const detail = advice ? `${error.message}; ${advice}` : error.message;
+  await run.journal.line(`!! драйвер: ${detail}`);
   await run.save(
     error instanceof TurnTimeoutError ? "timed-out" : "failed",
-    error.message
+    detail
   );
 }
 
@@ -590,19 +796,25 @@ async function sendSteps(
       extras ? settings.voice : []
     );
     const opened = step.newConversation ? undefined : session;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+    if (opened) await run.noteTurn(opened, "script", step.at, step.text);
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
-    session = await exchange(run, async (signal) => {
-      if (opened) {
-        await run.noteTurn(opened, "script", step.at, step.text);
-        return {
-          events: await opened.send(message, { signal }),
-          session: opened,
-        };
+    session = await exchange(
+      run,
+      opened ? "сообщение сценария" : newConversation,
+      async (signal) => {
+        if (opened) {
+          return {
+            events: await opened.send(message, { signal }),
+            session: opened,
+          };
+        }
+        const created = await client.sessions.create({ message, signal });
+        // Only after eve took it: a create sent again is noted once.
+        await run.noteTurn(created.session, "script", step.at, step.text);
+        return { events: created.response, session: created.session };
       }
-      const created = await client.sessions.create({ message, signal });
-      await run.noteTurn(created.session, "script", step.at, step.text);
-      return { events: created.response, session: created.session };
-    });
+    );
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     await settleInputs(run, session);
     run.record.driver.remainingSteps = steps.slice(index + 1).map(savedStep);
@@ -700,10 +912,8 @@ export async function continueCase(
   });
   try {
     await run.rememberPastCodes(session, cursor.streamIndex);
-    // Background events since the driver last looked; `send` would skip them.
-    for await (const event of session.stream({ follow: false })) {
-      await run.observe(session, event);
-    }
+    // Background events since the driver last looked.
+    await run.catchUp(session);
     const pendingBeforeAnswer = [...run.tracker.pending.values()];
     const responses = input.respond(pendingBeforeAnswer);
     await run.noteTurn(session, input.kind, "продолжение", input.text);
@@ -711,6 +921,7 @@ export async function continueCase(
       await run.noteDeclines(pendingBeforeAnswer, responses);
       await exchange(
         run,
+        "ответ на карточку",
         async (signal) => ({
           events: await session.respond(responses, { signal }),
           session,
@@ -725,6 +936,7 @@ export async function continueCase(
       );
       await exchange(
         run,
+        "сообщение тестировщика",
         async (signal) => ({
           events: await session.send(message, { signal }),
           session,
@@ -835,10 +1047,8 @@ export async function nextCase(
   try {
     if (session) {
       await run.rememberPastCodes(session, cursor?.streamIndex ?? 0);
-      // Whatever Bro wrote since the driver last looked; `send` would skip it.
-      for await (const event of session.stream({ follow: false })) {
-        await run.observe(session, event);
-      }
+      // Whatever Bro wrote since the driver last looked.
+      await run.catchUp(session);
     }
     if (run.tracker.turnFailure) {
       await run.settle();
@@ -990,14 +1200,15 @@ export async function observeCase(
     `== драйвер наблюдает за ${sessionId} до ${isoWithOffset(until, settings.timeZone)}, ничего не отправляя`
   );
   try {
-    for await (const event of session.stream({
-      follow: false,
-      startIndex: known ? session.state.streamIndex : 0,
-    })) {
-      if (known || Date.parse(event.meta.at) >= options.since.getTime()) {
-        await see(event);
+    // From the cursor: the first event for a session never read, and on
+    // from where a dropped read stopped.
+    await run.read(undefined, async () => {
+      for await (const event of session.stream({ follow: false })) {
+        if (known || Date.parse(event.meta.at) >= options.since.getTime()) {
+          await see(event);
+        }
       }
-    }
+    });
     // A stream gives up after a few idle reconnects; it is reopened until
     // the watch ends.
     while (Date.now() < until.getTime()) {
@@ -1007,11 +1218,13 @@ export async function observeCase(
       }, until.getTime() - Date.now());
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- one stream at a time, reopened in order
-        for await (const event of session.stream({
-          signal: controller.signal,
-        })) {
-          await see(event);
-        }
+        await run.read(controller.signal, async () => {
+          for await (const event of session.stream({
+            signal: controller.signal,
+          })) {
+            await see(event);
+          }
+        });
       } catch (error) {
         if (!controller.signal.aborted) throw error;
       } finally {

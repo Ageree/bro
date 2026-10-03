@@ -37,6 +37,7 @@ import {
   type DriverSettings,
 } from "./conversation.ts";
 import { readRunRecord, type RunRecord } from "./journal.ts";
+import { withRetry } from "./retry.ts";
 import {
   sendSignInCode,
   signedInSession,
@@ -213,7 +214,9 @@ async function connection(flags: Values, recordedHost?: string) {
     // A redirect here is the sign-in page; never follow it with the cookie.
     redirect: "manual",
   });
-  await client.health();
+  await withRetry({ idempotent: true, label: "GET /eve/v1/health" }, () =>
+    client.health()
+  );
   return { client, host: host.origin };
 }
 

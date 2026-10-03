@@ -78,6 +78,10 @@
 - Промис, который вернул шпион `vi.fn`, vitest обрабатывает сам: отказ
   `mockRejectedValue` не станет unhandled. Пропущенный `.catch` ловит только
   простая функция вместо шпиона (`db/tests/health.test.ts`).
+- Фейковые часы vitest не двигают именованный импорт `setTimeout` из
+  `node:timers/promises`: ожидание шло настоящее, а запоздавший повтор
+  попадал в `fetch` следующего теста. Ожидание, которое тест проматывает, —
+  на глобальном `setTimeout` (`pause` в `scripts/bench/retry.ts`).
 
 - e2e: `next dev` на `127.0.0.1` грузит скрипты, только пока он в
   `allowedDevOrigins` (`next.config.ts`), иначе форма входа уходит обычным GET
@@ -794,6 +798,20 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`docs/agent-costs.md`, 3.2): сравнивайте по видам шагов.
 - Драйвер `scripts/bench/` держит курсор сам: `eve/client` двигает `streamIndex`
   только по дочитанному ходу, `session.stream()` сдаётся рано.
+- `eve/client` зовёт глобальный `fetch` (свой не передать) и сам повторяет
+  лишь открытие потока; POST создания, `send` и `respond` — никогда. Повторы
+  драйвера — `scripts/bench/retry.ts`: что угодно, если запрос не ушёл
+  (таймаут соединения, errno с `syscall` `connect`/`getaddrinfo`, туннель
+  прокси «Proxy response (502–504)…»), чтение — и после обрыва, POST после
+  обрыва — никогда (сообщение дважды меняет кейс). Туннель 403/407 и
+  сертификат не повторяются вовсе. `read ECONNRESET` во время TLS не
+  отличить от обрыва после запроса.
+- Ход принятого сообщения после обрыва драйвер дочитывает сам, отбирая
+  события по его `deliveryId`, как поток ответа eve: иначе ход-отчёт,
+  вклинившийся раньше, сошёл бы за ответ. eve 0.62 этот id не экспортирует —
+  драйвер берёт его у `MessageResponse` по символу `acceptedDeliveryId`
+  (`conversation.ts`); после обновления eve смотрите тест «past a background
+  turn».
 - `eve dev` без Docker ставит `just-bash`, и pnpm переписывает `pnpm-lock.yaml`
   и `pnpm-workspace.yaml`: откатите и `pnpm install --frozen-lockfile`.
 - Локально вход по телефону принимает любой код; Google у локального
