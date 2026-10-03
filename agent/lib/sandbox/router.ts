@@ -159,12 +159,41 @@ function readings(href: string) {
 }
 
 function fold(text: string) {
-  return text
-    .normalize("NFKC")
-    .replaceAll("\u3002", ".")
-    .toLowerCase()
-    .replaceAll("\\", "/")
-    .replaceAll(/\/{2,}/gu, "/");
+  return withoutDotSegments(
+    text
+      .normalize("NFKC")
+      // A URL parser drops these from a host (UTS 46) where NFKC keeps them.
+      .replaceAll(/\p{Default_Ignorable_Code_Point}/gu, "")
+      .replaceAll("\u3002", ".")
+      .toLowerCase()
+      .replaceAll("\\", "/")
+      .replaceAll(/\/{2,}/gu, "/")
+  );
+}
+
+/** `/./` and `/x/../` resolved, as a URL parser resolves them in a path. */
+function withoutDotSegments(text: string) {
+  let folded = text;
+  for (;;) {
+    const next = folded
+      .replaceAll(/\/\.(?=\/|$)/gu, "")
+      .replace(/\/[^/?#]+\/\.\.(?=\/|$)/u, "");
+    if (next === folded) return folded;
+    folded = next;
+  }
+}
+
+/**
+ * The hosts and paths of the `http(s):` addresses written into a reading,
+ * as a proxy reader's own URL parser would make them of the text it got.
+ */
+function nestedAddresses(text: string) {
+  const found: string[] = [];
+  for (const match of text.matchAll(/https?:\/+[^\s"'<>]+/gu)) {
+    const url = URL.parse(match[0].replace(/^(https?:)\/+/u, "$1//"));
+    if (url !== null) found.push(`${hostKey(url.hostname)}${url.pathname}`);
+  }
+  return found;
 }
 
 /** A character a host name may hold, so a match next to it is another name. */
@@ -204,10 +233,12 @@ function mentionsHost(text: string, host: string) {
 function fetchable(url: URL) {
   if (isBlockedHost(url.hostname)) return false;
   const own = [...ownHosts()];
-  return readings(url.href).every(
-    (text) =>
-      !text.includes(sandboxFilesPath) &&
-      !own.some((host) => mentionsHost(text, host))
+  return readings(url.href).every((reading) =>
+    [reading, ...nestedAddresses(reading)].every(
+      (text) =>
+        !text.includes(sandboxFilesPath) &&
+        !own.some((host) => mentionsHost(text, host))
+    )
   );
 }
 

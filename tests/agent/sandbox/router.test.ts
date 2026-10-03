@@ -444,6 +444,33 @@ describe("the sandbox tool router", () => {
     expect(network.fetchPublic).not.toHaveBeenCalled();
   });
 
+  it("fetches no shared file through a reader when its host hides a character and its path a dot segment", async () => {
+    // Each trick alone was caught; together the reader's own URL parser
+    // rebuilt Bro's link: UTS 46 drops the hidden character from the host
+    // and the path resolves its dot segments.
+    network.fetchPublic.mockResolvedValue(
+      new Response("secret,table", { headers: { "content-type": "text/csv" } })
+    );
+    const { ask, shareLink } = await router();
+    const share = shareLink("https://bro.example.test");
+    for (const hidden of ["\u00ad", "\u200b"]) {
+      for (const dots of ["/./sandbox-files/", "/x/../sandbox-files/"]) {
+        const nested = share
+          .replace("bro.example.test", `br${hidden}o.example.test`)
+          .replace("/sandbox-files/", dots);
+        const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(nested)}`;
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each link is its own case.
+        const answer = await executed(
+          // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+          await ask(execute, { input: { url }, name: "web_fetch" })
+        );
+        expect(answer.ok, `web_fetch ${url}`).toBe(false);
+        expect(answer.error, `web_fetch ${url}`).toMatch(/Bro's own links/u);
+      }
+    }
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+  });
+
   it("reads through a proxy reader what is not Bro's", async () => {
     network.fetchPublic.mockImplementation(async () =>
       Promise.resolve(
