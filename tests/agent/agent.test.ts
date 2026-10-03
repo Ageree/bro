@@ -868,7 +868,10 @@ describe("interactive delivery enforcement", () => {
 
   it("hands the step what old history to trim only in the pilot", async () => {
     services.directModelActive.mockReturnValue(true);
-    services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+    // Once per step below: later tests get the real selection back.
+    services.modelSelection
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash")
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
     // Twelve turns, each a search: the first eight are old enough.
     const history = Array.from({ length: 12 }, (_, turn) => [
       humanMessage(`вопрос ${String(turn)}`),

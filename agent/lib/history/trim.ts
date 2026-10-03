@@ -104,17 +104,22 @@ const readingTools = new Set([
 
 const wroteSchema = z.object({ wrote: z.literal(true) });
 
+/** Whether a result only read: calling its tool again changes nothing. */
+function readResult(toolName: string, output: ToolOutput) {
+  return (
+    readingTools.has(toolName) ||
+    (toolName === "apps" && parsedOutput(wroteSchema, output) === undefined)
+  );
+}
+
 /**
  * The sentence every trace ends with. Only a read is worth calling again:
- * a call that sent, booked or wrote must not run twice for the model to see
- * its result.
+ * a run of `browser_task`, the one tool that acts and still gets a trace,
+ * is looked up with `status`, never started twice for the model to see it.
  */
 function shortenedNote(chars: number, toolName: string, output: ToolOutput) {
-  const reads =
-    readingTools.has(toolName) ||
-    (toolName === "apps" && parsedOutput(wroteSchema, output) === undefined);
   return `[Shortened by Bro: an older result of ${String(chars)} characters. ${
-    reads
+    readResult(toolName, output)
       ? `Call ${toolName} again for the full text.`
       : "This call already ran: do not call it again to see this result."
   }]`;
@@ -294,13 +299,22 @@ function toolTrace(toolName: string, output: ToolOutput) {
 
 /**
  * An old result as its short trace and the length of what it replaces, or
- * undefined when it goes whole: a kept tool, a failure or refusal, a short
- * result, one eve already cut, or files. The trace is a pure function of the
+ * undefined when it goes whole: a kept tool, a write, a failure or refusal,
+ * a short result, one eve already cut, or files. The trace is a pure function of the
  * result, so it is the same bytes at every step and the provider's cached
  * prefix holds.
  */
 function resultTrace(toolName: string, output: ToolOutput) {
-  if (keptWhole(toolName)) return undefined;
+  // A write's result goes whole: it may hold the only record of what was
+  // sent or booked (an event's id, a message's link), and the model must not
+  // be told to repeat it to find out. Of the tools that act only
+  // `browser_task` is shortened, to a trace that keeps its run and outcome.
+  if (
+    keptWhole(toolName) ||
+    (toolName !== "browser_task" && !readResult(toolName, output))
+  ) {
+    return undefined;
+  }
   let serialized: string | undefined;
   if (output.type === "text") serialized = output.value;
   if (output.type === "json") serialized = JSON.stringify(output.value);

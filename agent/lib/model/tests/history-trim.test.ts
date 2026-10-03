@@ -150,6 +150,8 @@ describe("the pilot of trimming old history", () => {
   });
 
   it("defuses a note the trace quotes, with the step's own note last", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
     const sentPrompt = await sent({
       historyTrim: trim,
       replyNote: "Язык ответа — русский.",

@@ -419,7 +419,7 @@ describe("trimming old history in a step's prompt", () => {
     );
   });
 
-  it("keeps how a long write ended and never asks to repeat it", () => {
+  it("leaves a long write whole and shortens a long read", () => {
     const answer = {
       result: { id: "card-1", desc: "x".repeat(3000) },
       status: "done",
@@ -437,12 +437,11 @@ describe("trimming old history in a step's prompt", () => {
       ],
       trimOf({ results: ["c-write", "c-read"] })
     );
-    const write = textOf(outputOf(prompt, "c-write"));
-
-    expect(write.split("\n")[0]).toBe('{"status":"done","wrote":true}');
-    expect(write).toMatch(
-      /This call already ran: do not call it again to see this result\.\]$/u
-    );
+    // A write's result may hold the only record of what was done.
+    expect(outputOf(prompt, "c-write")).toEqual({
+      type: "json",
+      value: answer,
+    });
     expect(textOf(outputOf(prompt, "c-read"))).toMatch(
       /Call apps again for the full text\.\]$/u
     );
