@@ -64,7 +64,7 @@ export const privacy = defineTool({
       googleNow(scope),
       // The digest's model reads memory only where the digest runs and asks.
       schedulesEnabled() && directModelActive()
-        ? memoryDigestPilot(scope)
+        ? memoryDigestPilot(scope, { whenUnknown: true })
         : false,
     ]);
     return {
