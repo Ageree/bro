@@ -709,6 +709,13 @@ export const env = createEnv({
     // turns keep only their few tools after the message. Only with
     // OpenRouter. Unset, every step is built as before.
     STEP_CONTEXT_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of trimming old tool results in the step's prompt
+    // (docs/roadmap.md, item 28): workspace ids or owners' emails, or `*`
+    // for every workspace, whose steps send results, long `browser_task`
+    // errands and browser reports older than the last few turns as a short
+    // trace (`agent/lib/history/`). Only with the direct model. Unset, every
+    // step sends the whole history as before.
+    HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,
