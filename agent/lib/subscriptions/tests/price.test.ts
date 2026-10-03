@@ -375,9 +375,9 @@ describe("reading a price", () => {
       const largeMs = timed(page(small * 8));
       // Linear is about 8x and quadratic about 64x. Under 50 ms the ratio
       // is only noise, and a small page read in a few milliseconds gives a
-      // ratio a single collection of the heap can triple (6 → 148 ms on CI):
-      // the small time counts as at least 10 ms.
-      const linear = largeMs < 50 || largeMs < 24 * Math.max(smallMs, 10);
+      // ratio a single collection of the heap can triple (6 → 148 and
+      // 7 → 194 ms on CI): the small time counts as at least 20 ms.
+      const linear = largeMs < 50 || largeMs < 24 * Math.max(smallMs, 20);
       return largeMs < 2_000 && linear
         ? []
         : [
