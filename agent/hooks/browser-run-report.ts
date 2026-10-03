@@ -1,8 +1,10 @@
 import { defineHook, type HookContext } from "eve/hooks";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { keepBrowserVmAfterReport } from "@agent/lib/browser-vm/idle";
+import { openReportTurn } from "@agent/lib/delivery/holds";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import {
+  browserRunReportDelivered,
   finishBrowserRunReport,
   renewBrowserRunReportLease,
   reopenBrowserRunReport,
@@ -48,6 +50,15 @@ export default defineHook({
         runId,
         sessionId: ctx.session.id,
       });
+      // The card tools of the turn ask whether the report reached the
+      // person before it began (`reportCardHold`); a delivery recorded
+      // during the turn by a `browser_task` call is no message. A failed
+      // read holds the cards back rather than failing the turn.
+      openReportTurn(
+        ctx.session,
+        runId,
+        await browserRunReportDelivered(runId).catch(() => false)
+      );
       await renewBrowserRunReportLease(runId);
     },
     async "action.result"(event, ctx) {

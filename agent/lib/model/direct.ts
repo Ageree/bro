@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
   generateId,
@@ -9,7 +10,10 @@ import {
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import type { SkillName } from "@agent/lib/skills/catalog";
 import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
+import { toolGroup, toolGroups, toolOffered } from "@agent/lib/skills/tools";
+import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import {
   defuseStepNoteTag,
   taggedStepNote,
@@ -308,23 +312,6 @@ function hostSchema(schema: JSONSchema7): JSONSchema7 {
   );
 }
 
-/** Every function tool of a step with its input schema as `hostSchema`. */
-function toolSchemaMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.map((tool) =>
-          tool.type === "function"
-            ? { ...tool, inputSchema: hostSchema(tool.inputSchema) }
-            : tool
-        ),
-      };
-    },
-  };
-}
-
 /** The tool that reaches the person, which a forced step exists to call. */
 const replyToolName = "send_message";
 
@@ -366,51 +353,6 @@ function forcedReplySchema(schema: JSONSchema7): JSONSchema7 {
 }
 
 /**
- * A forced step's `send_message` with the message's `text` required. Hosts
- * that decode a forced tool call with a grammar (DeepInfra, OpenInference,
- * Krea, AtlasCloud, SiliconFlow on 25.09) keep the schema's key order and let
- * any optional key be skipped: a model that wrote another key where the text
- * belongs could only close the call without it, and did so again at every
- * forced step. Required, the text is the one key the grammar cannot skip.
- * Only what the host decodes changes: the tool still takes an attachment
- * without text, and a step left to the model (`auto`) is not touched.
- */
-function forcedReplyTextMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.map((tool) =>
-          tool.type === "function" && tool.name === replyToolName
-            ? { ...tool, inputSchema: forcedReplySchema(tool.inputSchema) }
-            : tool
-        ),
-      };
-    },
-  };
-}
-
-/**
- * Takes tools out of one step's offer. The history keeps its earlier calls
- * of them; the model just cannot make another. A call without tools, such as
- * compaction, is left alone.
- */
-function withheldToolsMiddleware(
-  names: readonly string[]
-): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.filter((tool) => !names.includes(tool.name)),
-      };
-    },
-  };
-}
-
-/**
  * Appends the reply note (language, Bro's voice, how to address the person,
  * `agent/lib/delivery/language.ts`) as the last system message of the prompt.
  * At the end it does not break the cached prefix, and it is the freshest thing
@@ -429,41 +371,138 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   };
 }
 
+/** The tools of one model call, as middleware sees them. */
+type StepTools = NonNullable<
+  Parameters<
+    NonNullable<LanguageModelMiddleware["transformParams"]>
+  >[0]["params"]["tools"]
+>;
+
 /**
- * Keeps only the tools a step is offered. Like `withheldToolsMiddleware`, the
- * history keeps earlier calls of the rest; a call without tools is left alone.
+ * Tools whose presence changes from turn to turn, or within one: drawing
+ * comes only when a picture was asked for (`agent/tools/generate_image.ts`),
+ * `schedules-answer` only when a schedule's question waits for the person's
+ * answer, `send_message`'s schema changed between forced and free steps
+ * before the pilot kept it the same, and `ask_question` goes once the turn
+ * asked its question. In the pilot they come last, in this order, so a
+ * change among them leaves every schema before them in the cached prefix.
  */
-function offeredToolsMiddleware(
-  names: readonly string[]
+const volatileTools = [
+  "generate_image",
+  "schedules-answer",
+  replyToolName,
+  "ask_question",
+];
+
+/**
+ * The tools in their order: the core ones as eve gives them, then each
+ * group that follows a skill (`toolGroups`), then the volatile ones
+ * (`volatileTools`). A group offered later joins after the core, and a
+ * change among the volatile tools leaves everything before them as it was.
+ */
+function stableOrder(tools: StepTools): StepTools {
+  const volatile = (name: string) => volatileTools.includes(name);
+  return [
+    ...tools.filter(
+      (tool) => !volatile(tool.name) && toolGroup(tool.name) === undefined
+    ),
+    ...toolGroups.flatMap((group) =>
+      tools.filter(
+        (tool) => !volatile(tool.name) && toolGroup(tool.name) === group
+      )
+    ),
+    ...volatileTools.flatMap((name) =>
+      tools.filter((tool) => tool.name === name)
+    ),
+  ];
+}
+
+/**
+ * The tools one step sends, from every tool of its turn. Every function
+ * tool's schema is as a host should decode it (`hostSchema`). A forced step
+ * (`forcedReply`) gets `send_message` with the message's `text` required:
+ * hosts that decode a forced tool call with a grammar (DeepInfra,
+ * OpenInference, Krea, AtlasCloud, SiliconFlow on 25.09) keep the schema's
+ * key order and let any optional key be skipped, so a model that wrote
+ * another key where the text belongs could only close the call without it,
+ * and did so again at every forced step. Required, the text is the one key
+ * the grammar cannot skip; the tool itself still takes an attachment
+ * without text. Then the step's `withheld` tools go, and only its `offered`
+ * ones stay; the history keeps earlier calls of the rest.
+ *
+ * In the pilot of the cache-friendly step (`stableContext`) the tool block
+ * is the same in every step of a turn: `send_message` has its text required
+ * in every step, forced or not, since its schema flipping after the reply
+ * made the next step re-read the whole history at full price, and the
+ * volatile tools come last (`volatileTools`). A message of attachments
+ * alone then needs a caption.
+ *
+ * In the skills pilot a person's step leaves out the tools of the groups no
+ * skill of the conversation offers (`groups`); in the pilot of the step
+ * they come after the core tools, group by group.
+ */
+export function stepToolsTransform(
+  tools: StepTools,
+  options: {
+    readonly forcedReply: boolean;
+    /**
+     * In the skills pilot, the skills whose tools a person's step is
+     * offered (`offeredSkills`): a tool of a group none of them offers is
+     * left out (`agent/lib/skills/tools.ts`). Undefined, no tool is.
+     */
+    readonly groups?: readonly SkillName[];
+    readonly offered?: readonly string[];
+    readonly stableContext?: boolean;
+    readonly withheld: readonly string[];
+  }
+): StepTools {
+  const forced = options.forcedReply || options.stableContext === true;
+  const kept = tools
+    .map((tool) => {
+      if (tool.type !== "function") return tool;
+      const schema = hostSchema(tool.inputSchema);
+      return {
+        ...tool,
+        inputSchema:
+          forced && tool.name === replyToolName
+            ? forcedReplySchema(schema)
+            : schema,
+      };
+    })
+    .filter((tool) => !options.withheld.includes(tool.name))
+    .filter((tool) => options.offered?.includes(tool.name) ?? true)
+    .filter(
+      (tool) =>
+        options.groups === undefined || toolOffered(tool.name, options.groups)
+    );
+  return options.stableContext ? stableOrder(kept) : kept;
+}
+
+/**
+ * The tools of every step as `stepToolsTransform` builds them. A call
+ * without tools, such as compaction, is left alone. In the pilot each step
+ * logs a digest of its tool block, which must not change within a turn but
+ * at the allowed points (docs/agent-costs.md, 3.2).
+ */
+function stepToolsMiddleware(
+  options: Parameters<typeof stepToolsTransform>[1],
+  step: StepIdentity | undefined
 ): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.filter((tool) => names.includes(tool.name)),
-      };
-    },
-  };
-}
-
-/**
- * `send_message` last among the tools. Its schema is the one that changes
- * inside a turn — `text` is required in a forced step and not after it
- * (`forcedReplyTextMiddleware`) — so every schema before it stays in the
- * cached prefix when it does. Only the order changes.
- */
-function replyToolLastMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: [
-          ...params.tools.filter((tool) => tool.name !== replyToolName),
-          ...params.tools.filter((tool) => tool.name === replyToolName),
-        ],
-      };
+      const tools = stepToolsTransform(params.tools, options);
+      if (options.stableContext) {
+        console.info("[tools]", {
+          ...step,
+          count: tools.length,
+          digest: createHash("sha256")
+            .update(JSON.stringify(tools))
+            .digest("hex")
+            .slice(0, 16),
+        });
+      }
+      return { ...params, tools };
     },
   };
 }
@@ -1216,10 +1255,17 @@ export function directModelSelection(
     readonly skillBlocks?: boolean;
     /**
      * The pilot of the cache-friendly step (`stepContextPilot`): the note
-     * follows the history as a tagged user message, and `send_message` is
-     * the last tool.
+     * follows the history as a tagged user message, and the tool block
+     * stays the same through the turn (`stepToolsTransform`).
      */
     readonly stableContext?: boolean;
+    /** Which session, turn and step this is, for the pilot's tool log. */
+    readonly step?: StepIdentity;
+    /**
+     * The skills pilot's person's step: the skills whose tools it is
+     * offered (`stepToolsTransform`).
+     */
+    readonly toolGroups?: readonly SkillName[];
     readonly toolChoice: StepToolChoice;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
@@ -1251,16 +1297,18 @@ export function directModelSelection(
       ? "auto"
       : options.toolChoice;
 
-  const withheld = options.withheldTools ?? [];
   const middleware = [
     ...(routerAi ? [stepCostMiddleware((rub) => rub / env.USAGE_USD_RUB)] : []),
-    toolSchemaMiddleware(),
-    ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
-    ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
-    ...(options.offeredTools
-      ? [offeredToolsMiddleware(options.offeredTools)]
-      : []),
-    ...(options.stableContext ? [replyToolLastMiddleware()] : []),
+    stepToolsMiddleware(
+      {
+        forcedReply: toolChoice === "required",
+        groups: options.toolGroups,
+        offered: options.offeredTools,
+        stableContext: options.stableContext,
+        withheld: options.withheldTools ?? [],
+      },
+      options.step
+    ),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.stableContext
       ? [

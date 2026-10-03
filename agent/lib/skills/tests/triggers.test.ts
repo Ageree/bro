@@ -262,6 +262,35 @@ const synthetic = [
     "add these payments to my budgeting spreadsheet",
     ["google", "apps", "money"],
   ],
+  // Undoing a permission or a schedule must find its tool, which follows
+  // its skill (`agent/lib/skills/tools.ts`).
+  [
+    "permission-revoke",
+    "спрашивай меня снова, прежде чем записывать",
+    ["money"],
+  ],
+  [
+    "permission-revoke-en",
+    "ask me again before you book",
+    ["browser", "money"],
+  ],
+  ["schedule-stop", "больше не присылай сводку", ["schedules"]],
+  ["schedule-stop-tired", "хватит присылать мне погоду", ["schedules"]],
+  ["schedule-stop-en", "stop sending me the morning brief", ["schedules"]],
+  ["schedule-cancel", "хватит, отмени эту сводку", ["schedules"]],
+  ["schedule-remove", "убери утреннюю сводку", ["schedules"]],
+  ["schedule-no-more", "не надо больше присылать новости", ["schedules"]],
+  ["schedule-no-longer", "больше не надо присылать погоду", ["schedules"]],
+  ["no-more-thanks", "мне больше не надо, спасибо", []],
+  ["schedule-quit", "перестань мне писать про погоду", ["schedules"]],
+  ["schedule-cancel-en", "cancel my morning brief", ["schedules"]],
+  ["schedule-move", "перенеси сводку на 8", ["google", "schedules"]],
+  ["reminder-wake", "разбуди меня завтра в 7", ["schedules"]],
+  ["reminder-nudge", "через час пни меня насчёт отчёта", ["schedules"]],
+  ["reminder-tell", "в 6 вечера скажи мне позвонить маме", ["schedules"]],
+  ["calendar-add", "добавь на пятницу ужин с мамой", ["google"]],
+  ["calendar-move-en", "Move my 3pm to 4", ["google"]],
+  ["calendar-push-en", "push the sync with Anna to Friday", ["google"]],
   [
     "esia-report",
     "RESULT: экран esia.gosuslugi.ru «Предоставление прав доступа», NEEDS: decision",
@@ -503,6 +532,27 @@ describe("the skills a turn attaches", () => {
         browserReturned("RESULT: корзина готова\nNEEDS: payment"),
       ])
     ).toEqual(["money"]);
+  });
+
+  it("answer a schedule's report with the rules to change the schedule", () => {
+    const report = called([
+      "send_message",
+      {
+        kind: "message",
+        replyTo: {
+          id: "11111111-1111-4111-8111-111111111111",
+          kind: "automation",
+        },
+        text: "Доброе утро! Сегодня +12, дождь к вечеру.",
+      },
+    ]);
+    expect(skillsFor("ок, спасибо", [report])).toEqual(["schedules"]);
+    // Only the latest message: a later answer of Bro's is no report.
+    const answer = called([
+      "send_message",
+      { kind: "message", replyTo: { kind: "current" }, text: "Готово." },
+    ]);
+    expect(skillsFor("ок", [report, answer])).toEqual([]);
   });
 
   it("keep the readings and Госуслуги once a run or Bro asked for them", () => {

@@ -37,62 +37,88 @@ function cardLine(max: number) {
     );
 }
 
-/**
- * What a browser errand may submit in the person's name, as the person saw
- * it on the approval card. The card is the permission: a run is held to what
- * it names, and the errand's follow-ups and background retries carry it, but
- * a new errand never inherits it.
- */
-export const browserSubmissionSchema = z.object({
-  kind: z
-    .enum(browserSubmissionKinds)
-    .describe(
-      "What kind of action it is: appointment (a doctor, a salon, any service slot), table (a restaurant table), taxi, order (goods, food, groceries), booking (a stay, tickets, a rental), application (an application or request to an agency, Gosuslugi included), job_application, message (a message, contact form or request to a business or a tradesperson), other. The user's standing permissions are matched on it."
-    ),
-  what: cardLine(300).describe(
-    "Exactly what will be submitted in the user's name, in the user's language: «запись к терапевту», «заявление на справку об отсутствии судимости», «отклики на 3 вакансии Python-разработчика», «чек в „Мой налог“ на 15 000 ₽», «заказ такси до Шереметьево»."
-  ),
-  // A basket's lines, each its own line of the card: «корзина на 1 337 ₽»
-  // alone did not say what the person was paying for.
-  items: z
-    .array(cardLine(160))
-    .min(1)
-    .max(30)
-    .optional()
-    .describe(
-      "For an order or a basket, one line per position exactly as the run staged it — the item with its variant, weight or size, the quantity and the price: «Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽». The card lists them and the run submits exactly these. Leave out for anything that is not a basket."
-    ),
-  where: cardLine(200).describe(
-    "Who receives it and on which site: «Госуслуги (gosuslugi.ru)», «поликлиника по прикреплению через ЕМИАС (emias.info)», «hh.ru»."
-  ),
-  forWhom: cardLine(120).describe(
-    "Whose name it is in: the user, or the family member it is for, by name when known."
-  ),
-  personalData: z
-    .array(cardLine(60))
-    .max(12)
-    .describe(
-      "Which of the person's details the site will receive, in the user's language: «имя», «телефон», «почта», «адрес», «дата рождения», «паспорт», «СНИЛС», «полис ОМС», «резюме». Empty only when nothing personal is sent."
-    ),
-  when: cardLine(200)
-    .optional()
-    .describe(
-      "The date, time or slot, or the window the run may pick one from: «ближайший свободный слот 29.09–03.10, до обеда». Leave out when there is none."
-    ),
-  amount: cardLine(120)
-    .optional()
-    .describe(
-      "What it costs the person, fees included: «бесплатно», «госпошлина 0 ₽», «около 900 ₽ по тарифу „Комфорт“»."
-    ),
-  chargeRub: z
-    .number()
-    .nonnegative()
-    .max(10_000_000)
-    .optional()
-    .describe(
-      "The total in roubles the user pays on this errand, every fee included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money: the tool then pays only after the user's plain yes to your one question naming this exact total, with no extra margin. A higher total needs a new question and yes. 0, together with allowPayment, for a card guarantee that charges nothing today; ask about binding the card first too. Leave it out when the errand is free or not priced in roubles."
-    ),
-});
+/** The words of a submission's fields, in full or short. */
+type SubmissionWords = Readonly<
+  Record<
+    | "kind"
+    | "what"
+    | "items"
+    | "where"
+    | "forWhom"
+    | "personalData"
+    | "when"
+    | "amount"
+    | "chargeRub",
+    string
+  >
+>;
+
+const fullSubmissionWords: SubmissionWords = {
+  kind: "What kind of action it is: appointment (a doctor, a salon, any service slot), table (a restaurant table), taxi, order (goods, food, groceries), booking (a stay, tickets, a rental), application (an application or request to an agency, Gosuslugi included), job_application, message (a message, contact form or request to a business or a tradesperson), other. The user's standing permissions are matched on it.",
+  what: "Exactly what will be submitted in the user's name, in the user's language: «запись к терапевту», «заявление на справку об отсутствии судимости», «отклики на 3 вакансии Python-разработчика», «чек в „Мой налог“ на 15 000 ₽», «заказ такси до Шереметьево».",
+  items:
+    "For an order or a basket, one line per position exactly as the run staged it — the item with its variant, weight or size, the quantity and the price: «Корм Whiskas с кроликом 1,9 кг × 2 — 1 298 ₽». The card lists them and the run submits exactly these. Leave out for anything that is not a basket.",
+  where:
+    "Who receives it and on which site: «Госуслуги (gosuslugi.ru)», «поликлиника по прикреплению через ЕМИАС (emias.info)», «hh.ru».",
+  forWhom:
+    "Whose name it is in: the user, or the family member it is for, by name when known.",
+  personalData:
+    "Which of the person's details the site will receive, in the user's language: «имя», «телефон», «почта», «адрес», «дата рождения», «паспорт», «СНИЛС», «полис ОМС», «резюме». Empty only when nothing personal is sent.",
+  when: "The date, time or slot, or the window the run may pick one from: «ближайший свободный слот 29.09–03.10, до обеда». Leave out when there is none.",
+  amount:
+    "What it costs the person, fees included: «бесплатно», «госпошлина 0 ₽», «около 900 ₽ по тарифу „Комфорт“».",
+  chargeRub:
+    "The total in roubles the user pays on this errand, every fee included, as the site or the tariff shows it now or your honest estimate. Set it whenever the errand costs money: the tool then pays only after the user's plain yes to your one question naming this exact total, with no extra margin. A higher total needs a new question and yes. 0, together with allowPayment, for a card guarantee that charges nothing today; ask about binding the card first too. Leave it out when the errand is free or not priced in roubles.",
+};
+
+/** The same in a line each, for the skills pilot's `browser_task`. */
+const shortSubmissionWords: SubmissionWords = {
+  kind: "What kind of action: appointment (a doctor, a salon, any service slot), table, taxi, order, booking (a stay, tickets, a rental), application (Gosuslugi included), job_application, message (a contact form too), other. Standing permissions are matched on it.",
+  what: "Exactly what is submitted in the user's name, in their language: «запись к терапевту», «заказ такси до Шереметьево».",
+  items:
+    "For an order or a basket: one line per position as the run staged it — item, variant, quantity, price.",
+  where: "Who receives it and on which site.",
+  forWhom: "Whose name it is in.",
+  personalData:
+    "Which of the person's details the site receives («имя», «телефон», «адрес»); empty only when none.",
+  when: "The date, time or slot, or the window the run may pick from; leave out when none.",
+  amount: "What it costs the person, fees included, in words.",
+  chargeRub:
+    "The total in roubles with every fee, as the site shows it; set it whenever the errand costs money: paid only after the user's plain yes to this exact total. 0 with allowPayment for a card guarantee. Leave out when free.",
+};
+
+function submissionSchemaWith(words: SubmissionWords) {
+  return z.object({
+    kind: z.enum(browserSubmissionKinds).describe(words.kind),
+    what: cardLine(300).describe(words.what),
+    // A basket's lines, each its own line of the card: «корзина на 1 337 ₽»
+    // alone did not say what the person was paying for.
+    items: z
+      .array(cardLine(160))
+      .min(1)
+      .max(30)
+      .optional()
+      .describe(words.items),
+    where: cardLine(200).describe(words.where),
+    forWhom: cardLine(120).describe(words.forWhom),
+    personalData: z.array(cardLine(60)).max(12).describe(words.personalData),
+    when: cardLine(200).optional().describe(words.when),
+    amount: cardLine(120).optional().describe(words.amount),
+    chargeRub: z
+      .number()
+      .nonnegative()
+      .max(10_000_000)
+      .optional()
+      .describe(words.chargeRub),
+  });
+}
+
+export const browserSubmissionSchema =
+  submissionSchemaWith(fullSubmissionWords);
+
+/** `browserSubmissionSchema` with its fields in a line each. */
+export const shortBrowserSubmissionSchema =
+  submissionSchemaWith(shortSubmissionWords);
 
 export type BrowserSubmission = z.infer<typeof browserSubmissionSchema>;
 

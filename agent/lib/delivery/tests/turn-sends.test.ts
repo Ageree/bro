@@ -2970,3 +2970,41 @@ describe("turnOpenedByBackgroundTask", () => {
     expect(turnOpenedByBackgroundTask([taskReport, person])).toBe(false);
   });
 });
+
+describe("rewriteSendNotice", () => {
+  it("says how to get a tool of a skill's group in the skills pilot, for every rewrite that sends the model to a tool", () => {
+    // Every reason, by whether its rewrite sends the model to a tool whose
+    // group may not be offered yet.
+    const sendsToTool = {
+      announced: true,
+      approved: false,
+      browser: false,
+      calendar: true,
+      // Only in a browser report's turn, which keeps the calendar tool.
+      "calendar-later": false,
+      declined: false,
+      found: true,
+      report: false,
+      restated: false,
+      status: true,
+      undone: true,
+    } as const satisfies Record<
+      Parameters<typeof rewriteSendNotice>[0],
+      boolean
+    >;
+    const reasons = Object.keys(sendsToTool).filter(
+      (name): name is keyof typeof sendsToTool => name in sendsToTool
+    );
+    expect(
+      reasons.filter((reason) =>
+        rewriteSendNotice(reason, true).includes("load_skill")
+      )
+    ).toEqual(reasons.filter((reason) => sendsToTool[reason]));
+    // Outside the pilot no notice names it.
+    expect(
+      reasons.filter((reason) =>
+        rewriteSendNotice(reason).includes("load_skill")
+      )
+    ).toEqual([]);
+  });
+});

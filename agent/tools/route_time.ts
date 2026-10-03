@@ -1,4 +1,5 @@
 import { defineDynamic, defineTool } from "eve/tools";
+import { skillsLayout } from "@agent/lib/skills/pilot";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import {
@@ -26,22 +27,36 @@ const basisByMode = {
   walking: "Walking along OpenStreetMap streets and paths at about 4.5 km/h.",
 } as const;
 
-const inputSchema = z.object({
-  from: placeSchema.describe(
-    "The start: a street address or a named place with its city («отель Метрополь, Москва», «метро Чистые пруды, Москва», «Tverskaya 7, Moscow»), or «lat, lon». A station, an airport or a landmark goes by its own name and city («вокзал, Казань», «аэропорт Шереметьево», «Казанский кремль, Казань»), never by an address you composed for it: a guessed street is often another place. Only places and addresses, never a person's name or phone."
-  ),
-  mode: z
-    .enum(travelModes)
-    .describe(
-      "walking for «пешком» and «walking distance», cycling for a bike or a scooter, driving for a car or a taxi."
-    ),
-  to: z
-    .array(placeSchema)
-    .min(1)
-    .max(5)
-    .describe(
-      "Destinations in the same form as from, each with its street or city and the place's name first when it has one («Флер, Чистопрудный бульвар 19 с1, Москва»), so each result says whose time it is; up to five are measured from the same start in one call."
-    ),
+/** The words of `route_time`'s parameters, in full or short. */
+interface RouteTimeTexts {
+  readonly from: string;
+  readonly to: string;
+}
+
+function routeTimeSchema(texts: RouteTimeTexts) {
+  return z.object({
+    from: placeSchema.describe(texts.from),
+    mode: z
+      .enum(travelModes)
+      .describe(
+        "walking for «пешком» and «walking distance», cycling for a bike or a scooter, driving for a car or a taxi."
+      ),
+    to: z.array(placeSchema).min(1).max(5).describe(texts.to),
+  });
+}
+
+const inputSchema = routeTimeSchema({
+  from: "The start: a street address or a named place with its city («отель Метрополь, Москва», «метро Чистые пруды, Москва», «Tverskaya 7, Moscow»), or «lat, lon». A station, an airport or a landmark goes by its own name and city («вокзал, Казань», «аэропорт Шереметьево», «Казанский кремль, Казань»), never by an address you composed for it: a guessed street is often another place. Only places and addresses, never a person's name or phone.",
+  to: "Destinations in the same form as from, each with its street or city and the place's name first when it has one («Флер, Чистопрудный бульвар 19 с1, Москва»), so each result says whose time it is; up to five are measured from the same start in one call.",
+});
+
+/**
+ * The same in the skills pilot's turns (`skillsLayout`): how to name a
+ * place and pick among them is in the recommendations skill's body.
+ */
+const shortInputSchema = routeTimeSchema({
+  from: "The start: an address or a named place with its city, or «lat, lon»; a station, an airport or a landmark by its own name and city, never an address you composed. Never a person's name or phone.",
+  to: "Up to five destinations in the same form, each with the place's name first when it has one.",
 });
 
 /**
@@ -831,13 +846,30 @@ export const routeTime = defineTool({
   },
 });
 
+/**
+ * `route_time` in the skills pilot's turns: what each result means, in a
+ * few lines. The rules of a pick of places are in the recommendations
+ * skill's body and in the result itself (`pick`).
+ */
+const shortRouteTime = defineTool({
+  description:
+    "Walking, cycling or driving time and distance between places on OpenStreetMap: up to five destinations from one start in one call. Check that each result's place (`matched`; `fromMatched` for the start) is the one meant, in the right city, and name it with the time. A result with `uncertain` (`fromUncertain`: the start, so every row), or an error for a street, a district or another building, has no time to state as fact: do what it says. Use the minutes and km as returned and credit the map with `attribution` («по данным © OpenStreetMap»); `link` opens the route, with live traffic for a car.",
+  inputSchema: shortInputSchema,
+  async execute(input, ctx) {
+    return measure(input, ctx.abortSignal);
+  },
+});
+
 export default defineDynamic({
   events: {
     // A person's question and a digest they scheduled; Bro's own mail
     // checks and report turns never send an address anywhere.
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
-        interactive: { route_time: routeTime },
+        interactive: {
+          route_time:
+            skillsLayout(context) === "core" ? shortRouteTime : routeTime,
+        },
         "scheduled-worker": { route_time: routeTime },
       }),
   },
