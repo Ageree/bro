@@ -140,11 +140,12 @@ function taskCall(message: string, toolName = "task", kind = "tool-call") {
 async function requested(
   actions: readonly ReturnType<typeof taskCall>[],
   ctx: Ctx = context(),
-  turnId = "turn_3"
+  turnId = "turn_3",
+  stepIndex = 1
 ) {
   await emit(
     "actions.requested",
-    { actions, sequence: 3, stepIndex: 1, turnId },
+    { actions, sequence: 3, stepIndex, turnId },
     ctx
   );
 }
@@ -332,5 +333,38 @@ describe("the person's files for the task agent", () => {
     const keys = putInbox.mock.calls.map(([key]) => key);
     expect(keys.slice(10)).toEqual(keys.slice(0, 10));
     expect(new Set(keys).size).toBe(10);
+  });
+
+  it("counts ten files for all of a step's calls, each its own event", async () => {
+    const files = Array.from({ length: 21 }, (_, index) =>
+      staged(`f${String(index)}.csv`, `file ${String(index)}`)
+    );
+    const ctx = context({ sandbox: sandboxOf(files) });
+    await personTurn(ctx);
+    const paths = files.map((file) => file.path);
+    // eve emits one `actions.requested` a streamed call.
+    await requested([taskCall(paths.slice(0, 6).join("\n"))], ctx);
+    await requested([taskCall(paths.slice(6, 16).join("\n"))], ctx);
+
+    expect(putInbox).toHaveBeenCalledTimes(10);
+
+    // The next step has a budget of its own.
+    await requested([taskCall(paths[20] ?? "")], ctx, "turn_3", 2);
+    expect(putInbox).toHaveBeenCalledTimes(11);
+  });
+
+  it("ends a step's copying at one deadline for all its calls", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const ctx = context();
+      await personTurn(ctx);
+      await requested([taskCall(table.path)], ctx);
+      vi.setSystemTime(Date.now() + 21_000);
+      await requested([taskCall(deck.path)], ctx);
+
+      expect(putInbox).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -17,8 +17,8 @@ export const pdfByteCap = 10 * 1024 * 1024;
 export const audioByteCap = 25 * 1024 * 1024;
 /**
  * A spreadsheet, document or text file the person sends for the task agent
- * (TASK_FILES_WORKSPACES): the same cap as the object store's copy for the
- * task agent (`agent/lib/sandbox/inbox.ts`).
+ * (TASK_FILES_WORKSPACES); the object store's copy for the task agent
+ * (`attachmentByteCap` in `agent/lib/sandbox/inbox.ts`) takes this cap.
  */
 export const documentByteCap = 10 * 1024 * 1024;
 
@@ -251,6 +251,26 @@ const utf16Boms = [
 /** A text file is believed when this much of its head has no NUL byte. */
 const textProbeBytes = 8 * 1024;
 
+function containerOf(mediaType: string) {
+  return [...documentTypes.values()].find(
+    (entry) => entry.mediaType === mediaType
+  )?.container;
+}
+
+function startsWithUtf16Bom(bytes: Uint8Array) {
+  return utf16Boms.some((bom) => startsWith(bytes, bom));
+}
+
+/**
+ * Whether a text document of `mediaType` is UTF-16 with a byte order mark,
+ * as Excel's "Unicode Text" saves it. The little-endian mark FF FE reads as
+ * MPEG frame sync, so such a file's sniff is no verdict: the channels skip
+ * it and take the document branch (`documentBytesMatch` believes the mark).
+ */
+export function utf16TextDocument(mediaType: string, bytes: Uint8Array) {
+  return containerOf(mediaType) === "text" && startsWithUtf16Bom(bytes);
+}
+
 /**
  * Whether the bytes are what a document of `mediaType` comes in: a zip for
  * OOXML and OpenDocument, an OLE compound file for the legacy Office formats,
@@ -258,10 +278,7 @@ const textProbeBytes = 8 * 1024;
  * A renamed executable or archive of another kind fails here.
  */
 export function documentBytesMatch(mediaType: string, bytes: Uint8Array) {
-  const type = [...documentTypes.values()].find(
-    (entry) => entry.mediaType === mediaType
-  );
-  switch (type?.container) {
+  switch (containerOf(mediaType)) {
     case "zip": {
       return startsWith(bytes, zipSignature);
     }
@@ -269,7 +286,7 @@ export function documentBytesMatch(mediaType: string, bytes: Uint8Array) {
       return startsWith(bytes, cfbSignature);
     }
     case "text": {
-      if (utf16Boms.some((bom) => startsWith(bytes, bom))) return true;
+      if (startsWithUtf16Bom(bytes)) return true;
       return !bytes.subarray(0, textProbeBytes).includes(0);
     }
     default: {

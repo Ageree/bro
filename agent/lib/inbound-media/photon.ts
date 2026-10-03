@@ -12,6 +12,7 @@ import {
   isImageMediaType,
   pdfByteCap,
   resolveMediaType,
+  utf16TextDocument,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -218,6 +219,15 @@ async function attachmentItem(
       kind: "note",
       text: fileNote(attachment.name, declared, "не удалось получить"),
     };
+  }
+  // A UTF-16 text file's byte order mark reads as MPEG audio: the name and
+  // the mark decide it before the sniff could send it to transcription.
+  const taskType =
+    documents && !voiceLike
+      ? documentMediaType(attachment.name, declared)
+      : undefined;
+  if (taskType !== undefined && utf16TextDocument(taskType, resolved.bytes)) {
+    return taskDocumentItem(attachment, declared, resolved.bytes, taskType);
   }
   const mediaType =
     resolveMediaType(resolved.bytes, resolved.mediaType) ?? declared;

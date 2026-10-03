@@ -393,6 +393,38 @@ describe("Telegram media turn", () => {
     ]);
   });
 
+  it("hands over a UTF-16 text file, whose byte order mark reads as audio", async () => {
+    // Excel's "Unicode Text": FF FE, then UTF-16LE.
+    const utf16 = new Uint8Array([
+      0xff,
+      0xfe,
+      ...Buffer.from("дата;сумма\n01.10;100\n", "utf16le"),
+    ]);
+    serveTelegram({ next: { bytes: utf16 } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "data.csv",
+          file_size: utf16.byteLength,
+        },
+      }),
+      { documents: true }
+    );
+
+    expect(turn?.message).toEqual([
+      { text: "[файл: data.csv (text/csv)]", type: "text" },
+      {
+        data: Buffer.from(utf16).toString("base64"),
+        filename: "data.csv",
+        mediaType: "text/csv",
+        type: "file",
+      },
+    ]);
+  });
+
   it("transcribes a voice note into the turn text", async () => {
     serveTelegram(
       { next: { bytes: ogg, contentType: "audio/ogg" } },

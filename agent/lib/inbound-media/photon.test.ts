@@ -471,4 +471,43 @@ describe("Photon media turn", () => {
       message: "[файл: book.xlsx (неизвестный тип)]",
     });
   });
+
+  it("hands over a UTF-16 text file rather than transcribing its byte order mark", async () => {
+    // Excel's "Unicode Text": FF FE, then UTF-16LE.
+    const utf16 = new Uint8Array([
+      0xff,
+      0xfe,
+      ...Buffer.from("дата\tсумма\n01.10\t100\n", "utf16le"),
+    ]);
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    await expect(
+      photonMediaTurn(
+        photonMessage(
+          [
+            {
+              data: Buffer.from(utf16),
+              mimeType: "text/plain",
+              name: "data.txt",
+              type: "file",
+            },
+          ],
+          undefined
+        ),
+        { documents: true }
+      )
+    ).resolves.toEqual({
+      message: [
+        { text: "[файл: data.txt (text/plain)]", type: "text" },
+        {
+          data: Buffer.from(utf16).toString("base64"),
+          filename: "data.txt",
+          mediaType: "text/plain",
+          type: "file",
+        },
+      ],
+      notice: undefined,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

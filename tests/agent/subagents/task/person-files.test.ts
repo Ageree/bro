@@ -3,6 +3,26 @@ import type { HookContext } from "eve/hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as inbox from "@agent/lib/sandbox/inbox";
 
+const stateControls = vi.hoisted(() => ({
+  // SAFETY: The array is populated only with zero-argument reset callbacks created by this mock.
+  reset: [] as (() => void)[],
+}));
+
+vi.mock("eve/context", () => ({
+  defineState<T>(_name: string, initial: () => T) {
+    let value = initial();
+    stateControls.reset.push(() => {
+      value = initial();
+    });
+    return {
+      get: () => value,
+      update(update: (current: T) => T) {
+        value = update(value);
+      },
+    };
+  },
+}));
+
 const pilot = vi.hoisted(() => ({
   taskFilesOfCaller: vi.fn<() => boolean>(() => true),
 }));
@@ -100,11 +120,21 @@ function context(
   } satisfies HookContext;
 }
 
-async function received(message: string, ctx: ReturnType<typeof context>) {
+let turnSequence = 0;
+
+/** A message that opens a turn of its own, unless `turnId` names one. */
+async function received(
+  message: string,
+  ctx: ReturnType<typeof context>,
+  turnId?: string
+) {
   const handler = personFilesHook.events?.["message.received"];
-  // SAFETY: the hook reads only the message's text.
+  turnSequence += 1;
+  const turn = turnId ?? `turn_${String(turnSequence)}`;
+  const event = { data: { message, sequence: 0, turnId: turn } };
+  // SAFETY: the hook reads only the message's text and its turn.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A partial event stands in for the stream event.
-  await handler?.({ data: { message } } as never, ctx);
+  await handler?.(event as never, ctx);
 }
 
 /** eve's first message to a subagent wraps Bro's text (`subagents/invocation.js`). */
@@ -135,6 +165,7 @@ function text(bytes: Uint8Array | undefined) {
 }
 
 beforeEach(() => {
+  for (const reset of stateControls.reset) reset();
   vi.clearAllMocks();
   pilot.taskFilesOfCaller.mockReturnValue(true);
   getInbox.mockResolvedValue(null);
@@ -170,7 +201,7 @@ describe("the person's files in the task agent's sandbox", () => {
     await received(firstMessage(`${table.path}\n${deck.path}`), ctx);
 
     expect(text(sandbox.files.get(notReceived))).toBe(
-      `Эти файлы из последнего сообщения Бро не дошли:\n${deck.path} — Бро не передал этот файл\n`
+      `Не дошли файлы из последнего сообщения Бро, где он назвал файлы:\n${deck.path} — Бро не передал этот файл\n`
     );
 
     // A continuation comes as Bro's own text.
@@ -250,5 +281,51 @@ describe("the person's files in the task agent's sandbox", () => {
     expect(text(sandbox.files.get(notReceived))).toContain(
       `${files[10]?.path ?? ""} — больше 10 файлов в одном сообщении`
     );
+  });
+
+  it("asks again for a while for a file of a message steered into the turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const sandbox = sandboxOf();
+      const ctx = context(sandbox);
+      await received(firstMessage("Сделай отчёт"), ctx, "turn_0");
+      // Bro's hook is still copying when the steered message comes.
+      getInbox.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+      getInbox.mockResolvedValue(table.bytes);
+      const steered = received(`И вот таблица: ${table.path}`, ctx, "turn_0");
+      await vi.advanceTimersByTimeAsync(3000);
+      await steered;
+
+      expect(getInbox).toHaveBeenCalledTimes(3);
+      expect(sandbox.files.get(table.path)).toEqual(table.bytes);
+      expect(sandbox.files.has(notReceived)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks once for a file of a message that opens its turn", async () => {
+    const sandbox = sandboxOf();
+    await received(firstMessage(table.path), context(sandbox), "turn_0");
+
+    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(text(sandbox.files.get(notReceived))).toContain(
+      `${table.path} — Бро не передал этот файл`
+    );
+  });
+
+  it("replaces the list when a later message names files by a broken path", async () => {
+    const sandbox = sandboxOf();
+    const ctx = context(sandbox);
+    await received(table.path, ctx);
+    expect(text(sandbox.files.get(notReceived))).toContain(table.path);
+
+    // A hash one digit short matches no staged file.
+    const broken = deck.path.replace(/\/[\da-f]{16}\//u, "/0123456789abcde/");
+    await received(`Вот презентация: ${broken}`, ctx);
+
+    const list = text(sandbox.files.get(notReceived)) ?? "";
+    expect(list).not.toContain(table.path);
+    expect(list).toContain("путь в сообщении Бро не похож на переданный файл");
   });
 });

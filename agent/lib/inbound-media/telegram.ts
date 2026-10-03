@@ -13,6 +13,7 @@ import {
   pdfByteCap,
   resolveMediaType,
   sniffMediaType,
+  utf16TextDocument,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -215,7 +216,9 @@ async function taskDocumentItem(
       text: fileNote(name, mediaType, "не удалось скачать"),
     };
   }
-  const sniffed = sniffMediaType(download.bytes);
+  const sniffed = utf16TextDocument(mediaType, download.bytes)
+    ? undefined
+    : sniffMediaType(download.bytes);
   if (sniffed === "application/pdf") {
     return { data: download.bytes, filename: name, kind: "pdf" };
   }

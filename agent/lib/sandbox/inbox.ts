@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { presignStoredObject } from "@shared/object-storage/s3";
 
 /**
@@ -13,8 +14,8 @@ import { presignStoredObject } from "@shared/object-storage/s3";
  * bytes, so each side checks the file it moves against it.
  */
 
-/** The same cap as a document the person sends (`documentByteCap`). */
-export const attachmentByteCap = 10 * 1024 * 1024;
+/** The cap of a document the person sends, so any of them can go. */
+export const attachmentByteCap = documentByteCap;
 /** The files one message to the task agent brings along. */
 export const attachmentsPerMessage = 10;
 

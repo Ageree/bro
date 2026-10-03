@@ -2,6 +2,7 @@ import { defineState } from "eve/context";
 import { defineHook, type HookContext, type HookEvent } from "eve/hooks";
 import { z } from "zod";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { opensAsBackgroundTask } from "@agent/lib/delivery/turn-sends";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -23,25 +24,31 @@ import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
  * any background work delivered into the turn marks it for good. A turn
  * that resumes after a card brings no message and stays nobody's. eve
  * numbers turns again from `turn_0` in a successor run, so the record names
- * the turn's sequence too.
+ * the turn's sequence too. eve emits `actions.requested` once per streamed
+ * call (`harness/emission.js`), so the record also keeps the step's budget:
+ * the files its calls took and when its copying has to end.
  */
 const turnRecord = defineState<{
   readonly background: boolean;
   readonly person: boolean;
   readonly sequence: number | null;
+  readonly step: {
+    readonly deadlineAt: number;
+    readonly index: number;
+    readonly paths: readonly string[];
+  } | null;
   readonly turnId: string | null;
 }>("bro.task-files-turn", () => ({
   background: false,
   person: false,
   sequence: null,
+  step: null,
   turnId: null,
 }));
 
-/** eve's own opening of finished background work (`turn-sends.ts`). */
-const backgroundTaskOpening = /^Background task task_\S+ /u;
 /** The part of `task`'s input that names the files. */
 const taskInputSchema = z.object({ message: z.string() });
-/** All files of one step are copied within this, one after another. */
+/** All files of one step's calls are copied within this, one after another. */
 const stepBudgetMs = 20_000;
 
 type TurnCoordinates = Pick<
@@ -50,7 +57,7 @@ type TurnCoordinates = Pick<
 >;
 
 function openRecord({ sequence, turnId }: TurnCoordinates) {
-  return { background: false, person: false, sequence, turnId };
+  return { background: false, person: false, sequence, step: null, turnId };
 }
 
 /** The person's own message under their own caller, no report's. */
@@ -73,7 +80,7 @@ function personTurn(ctx: HookContext, step: TurnCoordinates) {
   );
 }
 
-/** The staged paths the step's `task` calls name, at most ten in all. */
+/** The staged paths one event's `task` calls name. */
 function namedPaths(
   actions: HookEvent<"actions.requested">["data"]["actions"]
 ) {
@@ -86,7 +93,31 @@ function namedPaths(
     const message = taskInputSchema.safeParse(action.input).data?.message;
     for (const path of namedAttachmentPaths(message ?? "")) paths.add(path);
   }
-  return [...paths].slice(0, attachmentsPerMessage);
+  return [...paths];
+}
+
+/**
+ * Of the paths an event names, the ones its step may still copy: the first
+ * ten distinct paths of all the step's calls, a replay of one of them
+ * included, and the step's one deadline for all of them.
+ */
+function stepShare(stepIndex: number, named: readonly string[]) {
+  const recorded = turnRecord.get().step;
+  const step =
+    recorded?.index === stepIndex
+      ? recorded
+      : { deadlineAt: Date.now() + stepBudgetMs, index: stepIndex, paths: [] };
+  const paths = [...step.paths];
+  for (const path of named) {
+    if (!paths.includes(path) && paths.length < attachmentsPerMessage) {
+      paths.push(path);
+    }
+  }
+  turnRecord.update((record) => ({ ...record, step: { ...step, paths } }));
+  return {
+    deadlineAt: step.deadlineAt,
+    paths: named.filter((path) => paths.includes(path)),
+  };
 }
 
 /**
@@ -95,8 +126,10 @@ function namedPaths(
  * message, its bytes go from Bro's sandbox to Object Storage under the
  * conversation's inbox (`agent/lib/sandbox/inbox.ts`), where the task
  * agent's own hook picks them up. eve drains the step's hooks before the
- * step ends and starts the task's body only after it, so the file is there
- * before the task agent looks. Nothing fails the turn: a file not copied
+ * step ends and starts a new task's body only after it, so the file is
+ * there before the task agent looks; a message steered into a busy task
+ * agent can come first, and its hook asks again for a while. Nothing fails
+ * the turn: a file not copied
  * is one the task agent reports missing. The logs carry counts only.
  */
 export default defineHook({
@@ -113,7 +146,7 @@ export default defineHook({
         const { kind, message } = event.data;
         const background =
           kind === "execution.background_task" ||
-          backgroundTaskOpening.test(message);
+          opensAsBackgroundTask(message);
         turnRecord.update((current) => {
           const record =
             current.turnId === event.data.turnId &&
@@ -136,8 +169,11 @@ export default defineHook({
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
+        const share = stepShare(event.data.stepIndex, paths);
+        if (share.paths.length === 0) return;
         const { failed, mirrored } = await mirror({
-          paths,
+          deadlineAt: share.deadlineAt,
+          paths: share.paths,
           sandbox: await ctx.getSandbox(),
           sessionId: ctx.session.id,
           workspaceId,
@@ -161,16 +197,19 @@ export default defineHook({
  * failed on the way rather than being absent or another file.
  */
 async function mirror(input: {
+  readonly deadlineAt: number;
   readonly paths: readonly string[];
   readonly sandbox: Awaited<ReturnType<HookContext["getSandbox"]>>;
   readonly sessionId: string;
   readonly workspaceId: string;
 }) {
-  const deadline = AbortSignal.timeout(stepBudgetMs);
+  const deadline = AbortSignal.timeout(
+    Math.max(0, input.deadlineAt - Date.now())
+  );
   let failed = 0;
   let mirrored = 0;
   for (const path of input.paths) {
-    if (deadline.aborted) break;
+    if (deadline.aborted || Date.now() >= input.deadlineAt) break;
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- One file at a time, within the step's budget.
       const bytes = await input.sandbox.readBinaryFile({

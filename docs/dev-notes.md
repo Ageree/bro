@@ -203,7 +203,11 @@
   `toolName: "task"`, не `subagent-call` (внутренний запрос диспетчера,
   `harness/coordination.js`). Хуки шага отрабатывают до его конца
   (`closeAndDrain`), а тело задачи ждёт `ready` после шага
-  (`acknowledgeDelegatedTasksStep`): ребёнку не нужно ждать файлов. Ход-отчёт
+  (`acknowledgeDelegatedTasksStep`): новой задаче ждать файлов не нужно. Но
+  сообщение занятому task-агенту (`steer.js`) уходит из execute `task` и
+  обгоняет хуки шага: файлы такого сообщения ребёнок просит заново ~20 с.
+  `actions.requested` приходит на каждый вызов отдельно (`emission.js`):
+  лимит файлов шага держит состояние хода, а не событие. Ход-отчёт
   задачи сохраняет вызывающего, поэтому кто открыл ход, решает
   `message.received.kind`, а не `startedByPerson` (`agent/hooks/task-files.ts`).
   Оба хука идут в области песочницы шага (`context/run-step.js`), так что
