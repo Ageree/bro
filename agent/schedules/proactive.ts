@@ -1,7 +1,11 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
-import { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
+import {
+  probeFailure,
+  probeGoogleSignals,
+  rankMail,
+} from "@agent/lib/proactive/probe";
 import { quietHoursEnd } from "@agent/lib/proactive/quiet-hours";
 import {
   mailSearchStart,
@@ -97,6 +101,7 @@ async function checkWorkspace(watch: ClaimedWatch, now: Date) {
     console.warn("[proactive] check", {
       ...logged,
       cause: error,
+      failure: probeFailure(error),
       outcome: "failed",
     });
   }
