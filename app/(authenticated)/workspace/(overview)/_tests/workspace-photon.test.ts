@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChannelsSection,
   LimitsSection,
-} from "@app/(authenticated)/workspace/page";
+} from "@app/(authenticated)/workspace/(overview)/page";
 
 const dayMs = 24 * 60 * 60 * 1000;
 

@@ -22,10 +22,15 @@ import {
   markMemoryScopeRecalled,
   readMemory,
   recordUntrackedMemories,
+  restoreMemory,
   trimForgottenMemoryHistory,
   saveMemory,
   updateMemory,
 } from "@db/services/memory/records";
+import {
+  listMemoryRecordHistory,
+  listMemoryTimeline,
+} from "@db/services/memory/revisions";
 import profileMemory from "@agent/memory/profile";
 import {
   memoryBulkRemovalApproval,
@@ -1020,6 +1025,261 @@ describe("memory history", () => {
     expect(marks.map(({ at }) => at?.toISOString())).toEqual([
       "2026-10-02T10:59:00.000Z",
       "2026-10-02T10:30:00.000Z",
+    ]);
+  });
+
+  it("brings back an earlier text, and what the digest folded, but never a rule", async () => {
+    await saveMemory(alice, "scope-a", { text: "Живёт в Казани." }, "s0", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Живёт в Самаре."), expectedRevision: 1, index: 0 },
+      "u0"
+    );
+    await restoreMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 2, index: 0, revision: 1 },
+      "r0"
+    );
+    expect((await readMemory(alice, "scope-a", 0))?.content?.text).toBe(
+      "Живёт в Казани."
+    );
+
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s1", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await forgetMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 1, index: 1 },
+      "digest:merge",
+      { action: "merge", actor: "digest" }
+    );
+    await restoreMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 2, index: 1, revision: 1 },
+      "r1"
+    );
+    expect((await readMemory(alice, "scope-a", 1))?.content?.text).toBe(
+      "Любит суши."
+    );
+
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "rule", text: "Не платить без моего ок." },
+      "s2",
+      { sessionId: "session", turnId: "turn" }
+    );
+    await forgetMemory(alice, "scope-a", { index: 2 }, "f2", {
+      action: "merge",
+      actor: "digest",
+    });
+    await expect(
+      restoreMemory(
+        alice,
+        "scope-a",
+        { expectedRevision: 2, index: 2, revision: 1 },
+        "r2"
+      )
+    ).rejects.toThrow("only in a conversation");
+    expect(
+      (await history()).filter(({ action }) => action === "restore")
+    ).toMatchObject([
+      { actor: "person", index: 0, text: "Живёт в Казани." },
+      { actor: "person", index: 1, text: "Любит суши." },
+    ]);
+  });
+
+  it("restores only over the revision the person saw, and drops the replaced text from the index", async () => {
+    await saveMemory(alice, "scope-a", { text: "Живёт в Казани." }, "s0", {
+      sessionId: "session",
+      turnId: "turn",
+    });
+    await updateMemory(
+      alice,
+      "scope-a",
+      { content: fact("Живёт в Самаре."), expectedRevision: 1, index: 0 },
+      "u0"
+    );
+    await expect(
+      restoreMemory(
+        alice,
+        "scope-a",
+        { expectedRevision: 1, index: 0, revision: 1 },
+        "stale"
+      )
+    ).rejects.toThrow("Memory changed");
+    await restoreMemory(
+      alice,
+      "scope-a",
+      { expectedRevision: 2, index: 0, revision: 1 },
+      "r0"
+    );
+    const sync = await database
+      .select()
+      .from(schema.memorySync)
+      .where(eq(schema.memorySync.recordIndex, 0))
+      .orderBy(asc(schema.memorySync.revision));
+    expect(
+      sync.map(({ desiredPresent, revision }) => [revision, desiredPresent])
+    ).toEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+    ]);
+  });
+
+  it("forgetting a memory wipes what the digest folded into it", async () => {
+    const session = { sessionId: "session", turnId: "turn" };
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "s0",
+      session
+    );
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s1", session);
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Любит суши по пятницам." },
+      "s2",
+      session
+    );
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Самаре." },
+      "s3",
+      session
+    );
+    await saveMemory(alice, "scope-a", { text: "Есть собака." }, "s4", session);
+    // The digest folds «Любит суши.» into the longer one, and corrects Kazan.
+    await forgetMemory(alice, "scope-a", { index: 1 }, "d1", {
+      action: "merge",
+      actor: "digest",
+    });
+    await forgetMemory(alice, "scope-a", { index: 0 }, "d0", {
+      action: "correct",
+      actor: "digest",
+    });
+    await updateMemory(
+      alice,
+      "scope-a",
+      {
+        content: fact("Живёт в Самаре. (с 02.10; раньше: Живёт в Казани.)"),
+        expectedRevision: 1,
+        index: 3,
+      },
+      "d3",
+      { action: "correct", actor: "digest" }
+    );
+    await forgetMemory(alice, "scope-a", { index: 4 }, "d4", {
+      action: "merge",
+      actor: "digest",
+    });
+
+    await forgetMemory(alice, "scope-a", { index: 2 }, "f2", {
+      actor: "person",
+    });
+    await forgetMemory(alice, "scope-a", { index: 3 }, "f3");
+
+    const kept = (await history()).filter(({ text }) => text !== null);
+    // Only the dog, folded into nothing that was forgotten, stays restorable.
+    expect(kept.map(({ index, text }) => [index, text])).toEqual([
+      [4, "Есть собака."],
+    ]);
+  });
+
+  it("forgetting a moved memory wipes the copy left under the old scope key", async () => {
+    const session = { sessionId: "session", turnId: "turn" };
+    await saveMemory(
+      alice,
+      "scope-b",
+      { text: "Живёт в Казани." },
+      "b0",
+      session
+    );
+    await forgetMemory(alice, "scope-b", { index: 0 }, "moved", {
+      action: "merge",
+      actor: "system",
+    });
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "a0",
+      session
+    );
+
+    await forgetMemory(alice, "scope-a", { index: 0 }, "f0", {
+      actor: "person",
+    });
+
+    expect(
+      [...(await history("scope-a")), ...(await history("scope-b"))].filter(
+        ({ text }) => text !== null
+      )
+    ).toEqual([]);
+  });
+
+  it("shows no code an old revision kept, and offers back what is gone", async () => {
+    const session = { sessionId: "session", turnId: "turn" };
+    await saveMemory(alice, "scope-a", { text: "Любит суши." }, "s0", session);
+    await saveMemory(
+      alice,
+      "scope-a",
+      { text: "Живёт в Казани." },
+      "s1",
+      session
+    );
+    // Saved before the filter knew this phrasing.
+    await database
+      .update(schema.memoryRevisions)
+      .set({ content: fact("Любит суши.") })
+      .where(eq(schema.memoryRevisions.recordIndex, 0));
+    await database
+      .update(schema.memoryRevisions)
+      .set({
+        content: { ...fact("Живёт в Казани."), text: "смс для входа 482193" },
+      })
+      .where(eq(schema.memoryRevisions.recordIndex, 1));
+    await forgetMemory(alice, "scope-a", { index: 0 }, "d0", {
+      action: "one_off",
+      actor: "digest",
+    });
+
+    expect(
+      (await listMemoryRecordHistory(alice.workspaceId, "scope-a", 1)).map(
+        ({ text }) => text
+      )
+    ).toEqual([null]);
+    const timeline = await listMemoryTimeline(alice.workspaceId, "scope-a");
+    expect(
+      timeline.map(({ index, live, recordRevision, revision, text }) => ({
+        index,
+        live,
+        recordRevision,
+        revision,
+        text,
+      }))
+    ).toEqual([
+      { index: 0, live: false, recordRevision: 2, revision: 2, text: null },
+      { index: 1, live: true, recordRevision: 1, revision: 1, text: null },
+      {
+        index: 0,
+        live: false,
+        recordRevision: 2,
+        revision: 1,
+        text: "Любит суши.",
+      },
     ]);
   });
 

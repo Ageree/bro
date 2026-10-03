@@ -56,6 +56,7 @@ function emptyBySource(): Record<UsageCostSource, number> {
     "browser-run": 0,
     "browser-vm": 0,
     chat: 0,
+    memory: 0,
     proxy: 0,
     task: 0,
   };

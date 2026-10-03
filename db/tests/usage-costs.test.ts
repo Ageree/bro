@@ -188,6 +188,7 @@ describe("usage costs", { timeout: 30_000 }, () => {
         "browser-run": 2.75,
         "browser-vm": 1.2,
         chat: 3.5,
+        memory: 0,
         proxy: 0.25,
         task: 0.4,
       },

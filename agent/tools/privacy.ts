@@ -1,5 +1,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -8,7 +10,10 @@ import {
   serverLocation,
 } from "@agent/lib/privacy/facts";
 import { googleAccessOptions } from "@agent/lib/privacy/google-access";
-import { removalOutsideMemory } from "@agent/lib/privacy/removal";
+import {
+  memoryRemoval,
+  removalOutsideMemory,
+} from "@agent/lib/privacy/removal";
 import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
@@ -19,6 +24,7 @@ import {
   readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { directModelActive } from "@shared/model/provider";
 
 const googleUnknown = "Проверить подключение Google сейчас не получилось.";
 
@@ -56,19 +62,20 @@ export const privacy = defineTool({
       throw new Error("An authenticated user is required.");
     }
     const scope = scopeFromPrincipal(auth);
-    const [modelId, google] = await Promise.all([
+    const [modelId, google, memoryDigest] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
+      // The digest's model reads memory only where the digest runs and asks.
+      schedulesEnabled() && directModelActive()
+        ? memoryDigestPilot(scope, { whenUnknown: true })
+        : false,
     ]);
     return {
       kept: keptData(),
-      processors: dataProcessors(modelId),
+      processors: dataProcessors(modelId, { memoryDigest }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
-      remove: [
-        "Память и сохранённые дела — «удали всё, что ты про меня помнишь» или «забудь …»: стираются сразу.",
-        ...removalOutsideMemory(),
-      ],
+      remove: [memoryRemoval(), ...removalOutsideMemory()],
       reply,
     };
   },
