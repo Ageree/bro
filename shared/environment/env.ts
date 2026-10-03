@@ -688,10 +688,10 @@ export const env = createEnv({
     // mail and write to people from a copy of production's data, and only
     // one scheduler may run per database (docs/cloudru-migration.md).
     EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
-    // The pilot of the daily memory digest's merges (docs/memory.md):
-    // workspace ids or owners' emails, or `*` for every workspace, whose
-    // duplicate memories the digest folds together. Unset, it only cuts
-    // one-time codes out of memory and trims history, for everyone.
+    // The pilot of the daily memory digest (docs/memory.md): workspace ids or
+    // owners' emails, or `*` for every workspace, whose memory the digest
+    // cleans (codes cut out, duplicates folded, history trimmed). Unset, the
+    // digest runs for no one: it changes what people saved.
     MEMORY_DIGEST_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of skills chosen by the server (docs/roadmap.md, item 24):
     // workspace ids, or `*` for every workspace, whose interactive turns get

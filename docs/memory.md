@@ -72,20 +72,22 @@ conversations read, so the cabinet can show that scope's memory.
 
 A daily digest (`agent/schedules/memory-digest.ts`, every hour at :41, each
 workspace once per local day from 04:00) runs without a conversation and
-without the main agent's model. `memory_digest_runs` holds each workspace's
-day: the claim with its lease and the outcome in counts, never text. For
-everyone it cuts one-time codes and credentials out of memory
-(`isSafeMemoryText` refuses them in Russian and English; a door or entrance
-code stays): a record that carries one is forgotten, a rule keeps binding
-with the code replaced by «[удалено]», workstream notes are redacted the same
-way, and any revision text with one is wiped. It also keeps the last ten
-revisions of each memory. For the pilot (`MEMORY_DIGEST_WORKSPACES`) it folds
-memories that say the same words, or whose words another memory of the same
-category, validity and `localOnly` says in full as a sentence of its own,
-into the one that stays,
-with their aliases; rules are never folded, and what was folded stays
-restorable from history for 30 days. A record the conversation changed since
-the digest read it is left for the next day.
+without the main agent's model, and only for the pilot
+(`MEMORY_DIGEST_WORKSPACES`): it changes what people saved, so with the
+variable unset it runs for no one. `memory_digest_runs` holds each workspace's
+day: the claim with its lease and the outcome in counts, never text. It cuts
+one-time codes and credentials out of memory (`isSafeMemoryText`, in Russian
+and English; a door's code, a phone number and a reference number such as a
+client's or a bank's stay): the code itself is replaced by «[удалено]» and
+the record keeps the rest; one that said nothing but the code is forgotten.
+Workstream notes are redacted the same way, and any revision text with one is
+wiped. It keeps the last ten revisions of each memory, and folds memories that
+say the same words, or whose words another memory of the same category,
+validity and `localOnly` says in full as a sentence of its own, into the one
+that stays, with their aliases; rules are never folded, and what was folded
+stays restorable from history for 30 days. A record the conversation changed
+since the digest read it is left for the next day. Saving refuses a text with
+a code for everyone, as before.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat
