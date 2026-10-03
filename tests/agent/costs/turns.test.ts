@@ -142,36 +142,39 @@ describe("whose turn a model step is", () => {
 
   it("ties Bro's own turn to its scheduled run", () => {
     expect(
-      turnCostSource(
-        auth(caller("scheduled-result", { scheduledRunId: "run-7" }))
-      )
+      turnCostSource({
+        auth: auth(caller("scheduled-result", { scheduledRunId: "run-7" })),
+      })
     ).toEqual({ runId: "run-7", source: "background" });
-    expect(turnCostSource(auth(caller("scheduled-worker"))).runId).toBe(
-      undefined
-    );
+    expect(
+      turnCostSource({ auth: auth(caller("scheduled-worker")) }).runId
+    ).toBe(undefined);
     // A resumed worker's turn: the run is on the caller that opened it.
     expect(
-      turnCostSource(
-        auth(
+      turnCostSource({
+        auth: auth(
           caller("scheduled-input"),
           caller("scheduled-worker", { scheduledRunId: "run-8" })
-        )
-      ).runId
+        ),
+      }).runId
     ).toBe("run-8");
     // eve's later turn in a session a report opened ([Task state]) is not
     // that report's run.
     expect(
-      turnCostSource(
-        auth(
+      turnCostSource({
+        auth: auth(
           caller("scheduled-result"),
           caller("scheduled-result", { scheduledRunId: "run-9" })
-        )
-      )
+        ),
+      })
     ).toEqual({ runId: undefined, source: "background" });
     expect(
-      turnCostSource(
-        auth(null, caller("scheduled-worker", { scheduledRunId: "run-8" }))
-      ).runId
+      turnCostSource({
+        auth: auth(
+          null,
+          caller("scheduled-worker", { scheduledRunId: "run-8" })
+        ),
+      }).runId
     ).toBe("run-8");
   });
 
