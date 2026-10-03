@@ -1,10 +1,8 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
-import {
-  compactionMarker,
-  turnCompaction,
-} from "@agent/lib/compaction/mid-turn";
+import { turnCompaction } from "@agent/lib/compaction/mid-turn";
+import { compactionMarker, messageDigest } from "@agent/lib/compaction/summary";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
 import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
 
@@ -108,36 +106,65 @@ export function personMessages(messages: readonly ModelMessage[]) {
  * id, but a turn Bro answered always leaves one, so an earlier turn's code or
  * «можно дороже» never reaches a later «ну что там?».
  *
- * Except after eve's compaction: when the kept messages run over its
- * threshold, it keeps none of their tool results and none of Bro's steps
- * without text (`keepNonToolResultMessages` in
+ * Except right after eve's compaction at a turn's start: when the kept
+ * messages run over its threshold, it keeps none of their tool results and
+ * none of Bro's steps without text (`keepNonToolResultMessages` in
  * `eve/dist/src/harness/compaction.js`), and a message of an earlier turn
  * that Bro never answered in words ends up next to the opener. With no tool
- * result between the summary and the opener, only the opener is this
- * turn's — unless `whole`: a check that refuses on the person's words reads
- * the walk as it was, since fewer words would refuse less.
+ * result between the summary and the opener — nothing of Bro's since that
+ * compaction — the walk stops at the opener of the turn compacted
+ * (`narrow.summaryOpener`, kept by `agent/lib/compaction/record.ts`), which
+ * is only the opener in that turn itself (`narrow.start`); a turn that
+ * failed after it leaves its opener before the next one. Where no record
+ * names that opener, or it is not there, only the opener is this turn's. A
+ * summary of an earlier turn is followed by Bro's results and replies,
+ * which stop the walk anyway; and a check that refuses on the person's
+ * words reads the walk as it was (`narrow` undefined), since fewer words
+ * would refuse less.
+ *
+ * Nor after a turn eve compacted inside, which may have ended — its model
+ * call failed — with the guard's copy of an older message of the person's
+ * after the kept results, right before this opener: the results do not
+ * stop the walk at the copy, and only the opener is this turn's
+ * (`narrow.afterInside`, kept by the record).
  */
 function personBurst(
   messages: readonly ModelMessage[],
   opening: number,
-  whole = false
+  narrow?: {
+    readonly afterInside: boolean;
+    readonly start: boolean;
+    readonly summaryOpener: string | null;
+  }
 ) {
   const message = messages[opening];
   if (message === undefined || !isPersonMessage(message)) return null;
-  const summary = messages.slice(0, opening).findLastIndex(compactionMarker);
-  if (
-    !whole &&
-    summary !== -1 &&
-    !messages.slice(summary + 1, opening).some((kept) => kept.role === "tool")
-  ) {
-    return [messageText(message)];
-  }
+  if (narrow?.afterInside === true) return [messageText(message)];
   const before = messages.slice(0, opening);
-  const stop = before.findLastIndex(
+  let stop = before.findLastIndex(
     (earlier) =>
       earlier.role !== "user" ||
       (startsTurn(earlier) && !isPersonMessage(earlier))
   );
+  const summary = before.findLastIndex(compactionMarker);
+  if (
+    narrow !== undefined &&
+    summary !== -1 &&
+    !before.slice(summary + 1).some((kept) => kept.role === "tool")
+  ) {
+    const { summaryOpener } = narrow;
+    const from = narrow.start
+      ? -1
+      : before.findLastIndex(
+          (earlier, at) =>
+            at > summary &&
+            startsTurn(earlier) &&
+            isPersonMessage(earlier) &&
+            messageDigest(earlier) === summaryOpener
+        );
+    if (from === -1) return [messageText(message)];
+    stop = Math.max(stop, from - 1);
+  }
   return [...before.slice(stop + 1), message]
     .filter((said) => startsTurn(said) && isPersonMessage(said))
     .map((said) => messageText(said));
@@ -234,8 +261,9 @@ export interface PersonWords {
  * follow-up acts on these words only; only a turn they opened is theirs for
  * consent.
  *
- * `nearby`: when compaction narrowed `said` to the opener (`personBurst`),
- * the messages it would be without that, for a check that refuses on them.
+ * `nearby`: when a compaction at this turn's start, or right before it,
+ * or one inside the turn before narrowed `said` (`personBurst`), the
+ * messages it would be without that, for a check that refuses on them.
  *
  * `compacted`: eve compacted the conversation inside the turn `step` belongs
  * to (`turnCompaction`), and its words are unknown: the message that reads
@@ -246,7 +274,10 @@ export function personWordsThisTurn(
   messages: readonly ModelMessage[],
   step: StepIdentity
 ): PersonWords {
-  const { compaction } = turnCompaction(messages, step);
+  const { afterInside, compaction, summaryOpener } = turnCompaction(
+    messages,
+    step
+  );
   if (compaction === "inside") {
     return {
       answers: [],
@@ -260,7 +291,11 @@ export function personWordsThisTurn(
   const words = {
     opener: opener === undefined ? undefined : messageText(opener),
     paymentAsked: paymentQuestionBefore(messages, opening) ?? null,
-    said: personBurst(messages, opening),
+    said: personBurst(messages, opening, {
+      afterInside,
+      start: compaction === "start",
+      summaryOpener,
+    }),
   };
   // Written while nothing is compacted yet, so a turn of the same id an
   // earlier run of the session left on this instance is overwritten.
@@ -285,7 +320,7 @@ export function personWordsThisTurn(
     said: kept.said,
   };
   if (picked.length > 0) result.picked = picked;
-  const nearby = personBurst(messages, opening, true);
+  const nearby = personBurst(messages, opening);
   if (nearby !== null && nearby.length !== words.said?.length) {
     result.nearby = nearby;
   }
@@ -524,6 +559,16 @@ export function oneTimeCodesIn(
   text: string,
   options: { readonly awaitingCode: boolean }
 ) {
+  return oneTimeCodeRanges(text, options).map(([start, end]) =>
+    text.slice(start, end).replaceAll(/\D/gu, "")
+  );
+}
+
+/** Where `oneTimeCodesIn` finds its codes, as `[start, end)` ranges. */
+export function oneTimeCodeRanges(
+  text: string,
+  options: { readonly awaitingCode: boolean }
+) {
   return [...text.matchAll(digitGroupPattern)].flatMap((match) => {
     const start = match.index;
     const end = start + match[0].length;
@@ -541,7 +586,7 @@ export function oneTimeCodesIn(
       (!namedOtherwise(match[0], before, after) &&
         (options.awaitingCode ||
           near.some((words) => codeContextPattern.test(words))));
-    return isCode ? [match[0].replaceAll(/\D/gu, "")] : [];
+    return isCode ? [[start, end] as const] : [];
   });
 }
 

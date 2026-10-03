@@ -11,6 +11,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { z } from "zod";
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import {
@@ -42,11 +43,20 @@ import {
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { memoryContentSchema } from "@shared/memory/schema";
 import { fakeComposio } from "@tests/helpers/composio";
+import type { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { afterForgetting } from "@agent/lib/privacy/removal";
 import {
   claimMemorySyncJobs,
   completeMemorySyncJob,
 } from "@db/services/memory/sync";
+
+const pilot = vi.hoisted(() => ({
+  crossChannelPilot: vi.fn<typeof crossChannelPilot>(),
+}));
+
+vi.mock("@agent/lib/conversation/pilot", () => ({
+  crossChannelPilot: pilot.crossChannelPilot,
+}));
 
 const client = new PGlite();
 const database = drizzle(client, { schema });
@@ -61,6 +71,7 @@ beforeAll(async () => {
 }, 20_000);
 
 beforeEach(async () => {
+  pilot.crossChannelPilot.mockResolvedValue(false);
   await database.delete(schema.workspaces);
 });
 
@@ -614,6 +625,16 @@ describe("forgetting everything at once", () => {
   // «удали всё», and its reply stays short.
   it("adds the guide to what stays outside memory only once nothing is left", async () => {
     await saveEverything();
+    // What the person said in Telegram, for another channel's recap.
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Я живу в Казани",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    const logged = async () =>
+      (await database.select().from(schema.conversationLog)).length;
     const session = profileToolsContext("this-session");
     const tools = await profileMemory.provider.tools(session);
     if (!tools) throw new Error("Expected profile tools.");
@@ -625,6 +646,9 @@ describe("forgetting everything at once", () => {
     expect(partial).toMatchObject({ forgotten: [0, 2] });
     expect(partial).not.toHaveProperty("outsideMemory");
     expect(partial).not.toHaveProperty("reply");
+    // Review of item 28: the person's own words may hold what they asked
+    // to forget, so the recap's lines go on every call.
+    expect(await logged()).toBe(0);
 
     // The last one gone, the store is empty: now the guide comes.
     const rest = await tools.forget_all.execute(
@@ -632,6 +656,162 @@ describe("forgetting everything at once", () => {
       { ...session, callId: "forget-rest", toolName: "profile__forget_all" }
     );
     expect(rest).toMatchObject({ forgotten: [1], ...afterForgetting() });
+  });
+
+  // Review of item 28: forget_all took one record at least, so «удали всё»
+  // with no memory saved never ran it, and the log the privacy answer says
+  // «стирается сразу» stayed.
+  it("erases the cross-channel log on «удали всё» with no memory saved, in the pilot", async () => {
+    await database.insert(schema.workspaces).values({ id: alice.workspaceId });
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Я живу в Казани",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    const session = profileToolsContext("this-session");
+
+    // Outside the pilot the tool is what it was.
+    const outside = await profileMemory.provider.tools(session);
+    expect(outside?.forget_all.description).toContain(
+      "the conversation history are not memory records"
+    );
+    expect(takesEmptyList(outside?.forget_all)).toBe(false);
+
+    pilot.crossChannelPilot.mockResolvedValue(true);
+    const tools = await profileMemory.provider.tools(session);
+    if (!tools) throw new Error("Expected profile tools.");
+    expect(takesEmptyList(tools.forget_all)).toBe(true);
+    expect(tools.forget_all.description).toContain(
+      "call it with an empty list when no memory is saved"
+    );
+    expect(tools.forget_all.description).toContain(
+      "erases at once the user's messages kept for the recap"
+    );
+
+    const result = await tools.forget_all.execute(
+      { records: [] },
+      { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+    );
+
+    expect(result).toMatchObject({ forgotten: [], ...afterForgetting() });
+    expect(await database.select().from(schema.conversationLog)).toEqual([]);
+  });
+
+  // Review of item 28: a failed erase of the log failed the call after the
+  // memories were forgotten, and the rest of «забудь всё» waited for the
+  // model to try again.
+  it("forgets the memories when the log cannot be erased, and logs no line of it", async () => {
+    await database.insert(schema.workspaces).values({ id: alice.workspaceId });
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "fact", text: "Живёт в Казани." },
+      "save:kazan",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Я живу в Казани",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    await client.exec(`
+      CREATE FUNCTION refuse_log_delete() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'no deletes' USING ERRCODE = '55P03'; END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER refuse_log_delete BEFORE DELETE ON conversation_log
+        FOR EACH ROW EXECUTE FUNCTION refuse_log_delete();
+    `);
+    const failed = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      pilot.crossChannelPilot.mockResolvedValue(true);
+      const session = profileToolsContext("this-session");
+      const tools = await profileMemory.provider.tools(session);
+      if (!tools) throw new Error("Expected profile tools.");
+
+      const result = await tools.forget_all.execute(
+        { records: [{ index: 0, text: "Живёт в Казани." }] },
+        { ...session, callId: "forget-all", toolName: "profile__forget_all" }
+      );
+
+      expect(result).toMatchObject({ forgotten: [0], ...afterForgetting() });
+      expect(await listCurrentMemories(alice, "scope-a")).toEqual([]);
+      expect(failed.mock.calls).toEqual([
+        [
+          "[cross-channel] the conversation log was not erased",
+          { error: "Error", sqlState: "55P03" },
+        ],
+      ]);
+    } finally {
+      failed.mockRestore();
+      await client.exec(`
+        DROP TRIGGER refuse_log_delete ON conversation_log;
+        DROP FUNCTION refuse_log_delete();
+      `);
+    }
+  });
+
+  // Review of item 28: an empty list forgets nothing but the person's own
+  // messages, and a browser report's text is the page's — there it is
+  // refused, and a report that forgets what it saved itself keeps the log.
+  it("keeps the cross-channel log in a turn Bro opened", async () => {
+    await database.insert(schema.workspaces).values({ id: alice.workspaceId });
+    await saveMemory(
+      alice,
+      "scope-a",
+      { category: "fact", text: "Ждёт посылку." },
+      "report:save",
+      { sessionId: "this-session", turnId: "turn" }
+    );
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Я живу в Казани",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    pilot.crossChannelPilot.mockResolvedValue(true);
+
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        reportTurn("this-session"),
+        { records: [] }
+      )
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await memoryBulkRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { records: [] }
+      )
+    ).toBe("not-applicable");
+
+    const report = {
+      ...profileToolsContext("this-session"),
+      session: {
+        ...reportTurn("this-session"),
+        turn: { id: "turn", sequence: 1 },
+      },
+    };
+    const tools = await profileMemory.provider.tools(report);
+    if (!tools) throw new Error("Expected profile tools.");
+    const result = await tools.forget_all.execute(
+      { records: [{ index: 0, text: "Ждёт посылку." }] },
+      { ...report, callId: "forget", toolName: "profile__forget_all" }
+    );
+
+    expect(result).toMatchObject({ forgotten: [0] });
+    expect(await database.select().from(schema.conversationLog)).toHaveLength(
+      1
+    );
   });
 });
 
@@ -1463,6 +1643,41 @@ describe("the person's rules in the profile", () => {
       expect(note).not.toContain("без свинины");
     });
 
+    // Review of item 28: the cross-channel recap is eve's turn context, a
+    // user-role message, and its «Сапсан, место у окна» from Telegram
+    // decided the preferences of a web request for a train with berths.
+    it("reads the person's request, not the turn's context, at recall", async () => {
+      for (const { content } of saved) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- indexes follow the order of saving
+        await saveMemory(alice, "scope-a", content, `save:${content.text}`, {
+          sessionId: "other-session",
+          turnId: "turn",
+        });
+      }
+      const recall = profileMemory.provider.recall["turn.started"];
+
+      const recalled = await recall({
+        ...profileToolsContext("web-session"),
+        operationId: "recall",
+        turn: {
+          id: "turn",
+          input: [
+            tagged(
+              "context.instruction",
+              "Background from the person's other chats with Bro…\n[Telegram, вт 29.09 14:05] Person: Сапсан в Питер, место у окна"
+            ),
+            tagged("user", "найди поезд до казани на следующие выходные"),
+          ],
+          sequence: 1,
+        },
+      });
+
+      const note = recalled?.messages.find(
+        ({ id }) => id === "profile-relevant-memory"
+      )?.content;
+      expect(note).toContain("«Нижняя полка», «место у прохода».");
+    });
+
     it("applies the diet to a dinner pick, and only the diet", () => {
       const note = renderPreferencesForRequest(
         saved,
@@ -1653,6 +1868,23 @@ function tomorrow() {
 
 function fact(text: string) {
   return memoryContentSchema.parse({ category: "fact", text });
+}
+
+/** A user-role message of the turn under eve's tag. */
+function tagged(kind: string, content: string) {
+  return Object.assign({ content, role: "user" as const }, { kind });
+}
+
+type ProfileTools = NonNullable<
+  Awaited<ReturnType<typeof profileMemory.provider.tools>>
+>;
+
+/** Whether a forget-all tool takes an empty list of records. */
+function takesEmptyList(tool: ProfileTools["forget_all"] | undefined) {
+  return z
+    .instanceof(z.ZodType)
+    .parse(tool?.inputSchema)
+    .safeParse({ records: [] }).success;
 }
 
 /** A turn the person's own message started, in this conversation. */

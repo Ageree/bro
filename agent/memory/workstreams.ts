@@ -19,6 +19,7 @@ import {
 } from "@agent/lib/memory/namespace";
 import { afterForgetting } from "@agent/lib/privacy/removal";
 import { forgetAllCardFits } from "@shared/chat/approval-card";
+import { eraseConversationLines } from "@agent/lib/conversation/erase";
 import {
   adoptWorkstreams,
   findWorkstreams,
@@ -215,6 +216,18 @@ export default defineMemory({
               );
               forgotten.push(id);
             }
+            // What the person asked to forget may stand in their own words
+            // too: the lines another channel's recap would carry back
+            // (`conversation_log`) go on every call the person's own message
+            // started — a turn Bro opened forgets only what it names.
+            if (startedByPerson(ctx)) {
+              await eraseConversationLines(scope.workspaceId);
+            }
+            // Only a call that left no saved work behind answers «удали
+            // всё»: it carries the guide to what stays outside memory.
+            const nothingLeft = (
+              await findWorkstreams(scope, key, {})
+            ).items.every(({ id }) => changed.includes(id));
             return {
               forgotten,
               ...(changed.length > 0 && {
@@ -222,11 +235,7 @@ export default defineMemory({
                 note: "The workstreams in changed were renamed after the card and were not forgotten.",
               }),
               ...(missing.length > 0 && { missing }),
-              // Only a call that left no saved work behind answers «удали
-              // всё» and carries the guide to what stays outside memory.
-              ...((await findWorkstreams(scope, key, {})).items.every(
-                ({ id }) => changed.includes(id)
-              ) && afterForgetting()),
+              ...(nothingLeft && afterForgetting()),
             };
           },
         }),

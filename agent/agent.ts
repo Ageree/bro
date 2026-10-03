@@ -1,7 +1,7 @@
 import { defineAgent, defineDynamic } from "eve";
 import { compactionHeld } from "@agent/lib/compaction/call";
 import { compactionPilot } from "@agent/lib/compaction/pilot";
-import { recordTurnOpening } from "@agent/lib/compaction/record";
+import { recordStepHistory } from "@agent/lib/compaction/record";
 import { compactsAtTurnStart } from "@agent/lib/compaction/turn-start";
 import { compactionThresholdPercent } from "@agent/lib/compaction/window";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
@@ -132,9 +132,10 @@ export default defineAgent({
           stepStartedEventSchema.safeParse(event).data,
           ctx.session.id
         );
-        // The first step reads the turn's opening before eve may compact
-        // it: whether a message of the turn reached its history at all.
-        recordTurnOpening(step, ctx.messages);
+        // Every step reads its history before eve may compact it: whether
+        // the steps before wrote a new summary, and at the first step
+        // whether a message of the turn reached its history at all.
+        recordStepHistory(step, ctx.messages);
         // A turn eve compacted inside takes its kind from its record.
         const kind = turnKind(ctx, step);
         const backgroundTaskTurn = kind === "background-task";

@@ -759,6 +759,12 @@ export const env = createEnv({
       .int()
       .min(100_000)
       .default(150_000),
+    // The pilot of one history across channels (docs/roadmap.md, item 28):
+    // workspace ids or owners' emails, or `*` for every workspace, whose
+    // chats log what the person said (`conversation_log`) and whose
+    // messages in one channel carry a short recap of what was said in the
+    // others since (`agent/lib/conversation/`). Unset, nothing is logged.
+    CROSS_CHANNEL_WORKSPACES: workspaceListSchema.optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),
