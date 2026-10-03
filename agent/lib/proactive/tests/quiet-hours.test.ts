@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { quietHoursEnd } from "@agent/lib/proactive/quiet-hours";
+import {
+  eveningMailUntil,
+  quietHoursEnd,
+} from "@agent/lib/proactive/quiet-hours";
 
 describe("proactive quiet hours", () => {
   it("lets daytime and early-evening checks through", () => {
@@ -43,5 +46,24 @@ describe("proactive quiet hours", () => {
     expect(quietHoursEnd(now, "Europe/Moscow")).toBeDefined();
     // 13:30 in Los Angeles.
     expect(quietHoursEnd(now, "America/Los_Angeles")).toBeUndefined();
+  });
+});
+
+describe("the evening's mail hold", () => {
+  it("holds mail from 21:00 until the end of the coming night", () => {
+    // 20:59 in Moscow: not yet.
+    expect(
+      eveningMailUntil(new Date("2026-09-23T17:59:00.000Z"), "Europe/Moscow")
+    ).toBeUndefined();
+    // 21:00 and 21:59: until 08:00 tomorrow.
+    for (const at of ["2026-09-23T18:00:00.000Z", "2026-09-23T18:59:30.000Z"]) {
+      expect(eveningMailUntil(new Date(at), "Europe/Moscow")).toEqual(
+        new Date("2026-09-24T05:00:00.000Z")
+      );
+    }
+    // From 22:00 the quiet hours themselves hold it.
+    expect(
+      eveningMailUntil(new Date("2026-09-23T19:00:00.000Z"), "Europe/Moscow")
+    ).toBeUndefined();
   });
 });

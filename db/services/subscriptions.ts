@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { ScheduledRunOutcome } from "@shared/schedules/outcome";
+import type { FlightSource, FlightState } from "@shared/subscriptions/flight";
 import type {
   PriceCondition,
   PriceSource,
@@ -10,6 +11,13 @@ import { db, scheduledAgentJobs, scheduledAgentRuns, subscriptions } from "@db";
 
 /** The statuses of a watch still checked, or able to be resumed. */
 const liveStatuses = ["active", "paused"] as const;
+
+/**
+ * The watches the person set up and manages (`watch-create`): their own
+ * hidden job carries the reports. A flight's watch is Bro's own, on the
+ * proactive job, and is neither listed nor changed by the person's tools.
+ */
+const personTemplate = "price";
 
 /** Failed checks in a row after which a watch stops and the person hears. */
 export const maximumSubscriptionFailures = 3;
@@ -28,7 +36,7 @@ export interface NewSubscription {
   readonly replyAnchorMessageId?: string;
   readonly source: PriceSource;
   readonly state: PriceState;
-  readonly template: (typeof subscriptions.$inferSelect)["template"];
+  readonly template: typeof personTemplate;
 }
 
 /**
@@ -158,6 +166,7 @@ export async function claimDueSubscriptions(options: {
       .set({ status: "expired", updatedAt: options.now })
       .where(
         and(
+          eq(subscriptions.template, personTemplate),
           eq(subscriptions.status, "paused"),
           lte(subscriptions.expiresAt, options.now)
         )
@@ -174,11 +183,14 @@ export async function claimDueSubscriptions(options: {
           )
         );
     }
+    // Only the person's watches are checked here; a flight's reminders go
+    // with the proactive check (`agent/schedules/proactive.ts`).
     const due = await transaction
       .select()
       .from(subscriptions)
       .where(
         and(
+          eq(subscriptions.template, personTemplate),
           eq(subscriptions.status, "active"),
           lte(subscriptions.nextCheckAt, options.now)
         )
@@ -253,7 +265,10 @@ export async function settleSubscriptionCheck(
 ) {
   return db.transaction(async (transaction) => {
     const [current] = await transaction
-      .select({ failures: subscriptions.failures })
+      .select({
+        failures: subscriptions.failures,
+        template: subscriptions.template,
+      })
       .from(subscriptions)
       .where(
         and(
@@ -276,12 +291,17 @@ export async function settleSubscriptionCheck(
         .update(subscriptions)
         .set({ status: "expired", updatedAt: now })
         .where(eq(subscriptions.id, claim.id));
-      await transaction
-        .update(scheduledAgentJobs)
-        .set({ status: "completed", updatedAt: now })
-        .where(eq(scheduledAgentJobs.id, claim.jobId));
+      // A flight's job is the proactive one, which goes on.
+      if (current.template === personTemplate) {
+        await transaction
+          .update(scheduledAgentJobs)
+          .set({ status: "completed", updatedAt: now })
+          .where(eq(scheduledAgentJobs.id, claim.jobId));
+      }
       return "lapsed" as const;
     }
+    // Only a person's watch reports through its own job.
+    if (current.template !== personTemplate) return undefined;
     const counted = {
       checks: sql`${subscriptions.checks} + 1`,
       lastCheckedAt: now,
@@ -367,6 +387,7 @@ export async function listLiveSubscriptions(scope: AccessScope) {
       and(
         eq(subscriptions.workspaceId, scope.workspaceId),
         eq(subscriptions.createdByUserId, scope.userId),
+        eq(subscriptions.template, personTemplate),
         inArray(subscriptions.status, [...liveStatuses])
       )
     )
@@ -393,6 +414,7 @@ export async function setSubscriptionStatus(
           eq(subscriptions.id, id),
           eq(subscriptions.workspaceId, scope.workspaceId),
           eq(subscriptions.createdByUserId, scope.userId),
+          eq(subscriptions.template, personTemplate),
           inArray(subscriptions.status, [...liveStatuses])
         )
       )
@@ -424,4 +446,221 @@ export async function readSubscriptionWake(jobId: string) {
     .where(eq(subscriptions.jobId, jobId))
     .limit(1);
   return row?.wake ?? "day_only";
+}
+
+/** A flight's watch key: its event and start, as its reminders' keys begin. */
+function flightKey(flight: Pick<FlightSource, "eventId" | "start">) {
+  return `${flight.eventId}@${flight.start}`;
+}
+
+/**
+ * A flight's watch is never due for the subscriptions tick: its reminders
+ * go with the proactive check. So a release that does not know flights
+ * (#277) never takes one for a price watch either.
+ */
+const flightNeverDue = new Date("9999-12-31T00:00:00.000Z");
+
+/** A flight watch's hidden job: it carries no runs; it only owns the row. */
+const flightJobPrompt =
+  "Напомнить о рейсе из календаря накануне и к открытию регистрации.";
+
+/**
+ * Keeps one watch per upcoming flight the proactive check read from the
+ * calendar (`agent/schedules/proactive.ts`), each on a hidden job of its
+ * own, never the proactive one: a flight without a watch, live or ended,
+ * gets one. A watch of a flight already gone ends; a watched flight the
+ * calendar no longer shows before `seenUntil` (what the read fully covered)
+ * was moved or cancelled, and goes with its job: should it come back — an
+ * edit undone, a page that left it out — it gets a new one, and reminders
+ * already handed over are not handed over again (`proactive_signals`).
+ * Returns how many watches started and ended.
+ */
+export async function syncFlightWatches(input: {
+  readonly flights: readonly FlightSource[];
+  readonly now: Date;
+  readonly scope: AccessScope;
+  /** Until when the calendar read covered: a flight from it on is not gone. */
+  readonly seenUntil: Date;
+}) {
+  return db.transaction(async (transaction) => {
+    // Two checks of one workspace keep its watches one at a time.
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`flight-watches:${input.scope.workspaceId}`}, 0))`
+    );
+    const departed = await transaction
+      .update(subscriptions)
+      .set({
+        status: sql`CASE WHEN jsonb_array_length(${subscriptions.state}->'done') > 0 THEN 'fired' ELSE 'expired' END`,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(subscriptions.workspaceId, input.scope.workspaceId),
+          eq(subscriptions.template, "flight"),
+          eq(subscriptions.status, "active"),
+          lte(subscriptions.expiresAt, input.now)
+        )
+      )
+      .returning({ jobId: subscriptions.jobId });
+    if (departed.length > 0) {
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ status: "completed", updatedAt: input.now })
+        .where(
+          inArray(
+            scheduledAgentJobs.id,
+            departed.map((watch) => watch.jobId)
+          )
+        );
+    }
+    // Every watch of a flight not yet gone, ended ones too: a flight whose
+    // reminders all went out keeps its watch, and gets no new one.
+    const known = await transaction
+      .select({
+        dedupeKey: subscriptions.dedupeKey,
+        expiresAt: subscriptions.expiresAt,
+        jobId: subscriptions.jobId,
+        status: subscriptions.status,
+      })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.workspaceId, input.scope.workspaceId),
+          eq(subscriptions.template, "flight"),
+          gt(subscriptions.expiresAt, input.now)
+        )
+      );
+    const keys = new Set(input.flights.map(flightKey));
+    const gone = known.filter(
+      (watch) =>
+        watch.status === "active" &&
+        !keys.has(watch.dedupeKey) &&
+        watch.expiresAt.getTime() < input.seenUntil.getTime()
+    );
+    if (gone.length > 0) {
+      // The row goes with its job.
+      await transaction.delete(scheduledAgentJobs).where(
+        inArray(
+          scheduledAgentJobs.id,
+          gone.map((watch) => watch.jobId)
+        )
+      );
+    }
+    const watched = new Set(known.map((watch) => watch.dedupeKey));
+    const fresh = input.flights.filter(
+      (flight) =>
+        !watched.has(flightKey(flight)) &&
+        Date.parse(flight.start) > input.now.getTime()
+    );
+    for (const flight of fresh) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each watch needs its own job first.
+      const [job] = await transaction
+        .insert(scheduledAgentJobs)
+        .values({
+          conversationChannel: "eve",
+          conversationId: `flight:${flightKey(flight)}`,
+          createdAt: input.now,
+          createdByUserId: input.scope.userId,
+          kind: "subscription",
+          missedRunPolicy: "skip",
+          nextRunAt: null,
+          prompt: flightJobPrompt,
+          status: "active",
+          timing: { at: flight.start, kind: "once" },
+          updatedAt: input.now,
+          workspaceId: input.scope.workspaceId,
+        })
+        .returning({ id: scheduledAgentJobs.id });
+      if (!job) throw new Error("The flight's job could not be created.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The row needs the job just made.
+      await transaction.insert(subscriptions).values({
+        action: "worker",
+        checkEverySeconds: 60 * 60,
+        condition: { kind: "reminders" },
+        createdAt: input.now,
+        createdByUserId: input.scope.userId,
+        dedupeKey: flightKey(flight),
+        expiresAt: new Date(flight.start),
+        jobId: job.id,
+        nextCheckAt: flightNeverDue,
+        source: flight,
+        state: { done: [] },
+        template: "flight",
+        updatedAt: input.now,
+        // For the record only: a flight's reminders are proactive runs,
+        // timed as those (`proactiveReportTiming`).
+        wake: "urgent_at_night",
+        workspaceId: input.scope.workspaceId,
+      });
+    }
+    return { ended: gone.length + departed.length, started: fresh.length };
+  });
+}
+
+/** A workspace's live flight watches, for the reminders due now. */
+export async function listLiveFlightWatches(workspaceId: string) {
+  return db
+    .select()
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.workspaceId, workspaceId),
+        eq(subscriptions.template, "flight"),
+        eq(subscriptions.status, "active")
+      )
+    );
+}
+
+/**
+ * Writes what the proactive check learned of its flights' watches: the
+ * reminders handed to a run, the drive it measured. Only a live watch.
+ */
+export async function recordFlightWatch(
+  id: string,
+  state: FlightState,
+  now = new Date()
+) {
+  await db
+    .update(subscriptions)
+    .set({
+      checks: sql`${subscriptions.checks} + 1`,
+      lastCheckedAt: now,
+      state,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(subscriptions.id, id),
+        eq(subscriptions.template, "flight"),
+        eq(subscriptions.status, "active")
+      )
+    );
+}
+
+/**
+ * The watches of a workspace's flights by event id, for the facts of a
+ * proactive run's reminders: the flight as the calendar gave it and the
+ * drive the check measured.
+ */
+export async function listFlightWatches(
+  workspaceId: string,
+  eventIds: readonly string[]
+) {
+  if (eventIds.length === 0) return [];
+  return db
+    .select({
+      condition: subscriptions.condition,
+      source: subscriptions.source,
+      state: subscriptions.state,
+      template: subscriptions.template,
+    })
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.workspaceId, workspaceId),
+        eq(subscriptions.template, "flight"),
+        inArray(sql<string>`${subscriptions.source}->>'eventId'`, [...eventIds])
+      )
+    )
+    .orderBy(desc(subscriptions.createdAt));
 }

@@ -151,11 +151,12 @@ export function unsafeMemoryRanges(value: string) {
     const around = before + match[0] + value.slice(end, end + codeContextChars);
     const digits = match.indices?.[2] ?? ([match.index, end] as const);
     // A bare «код 482913» of four to eight digits is one-time too, unless
-    // its clause is about a door («код 7788 от подъезда»).
+    // the note speaks of a door anywhere: «Домофон 45, потом код 1234» names
+    // the door in another clause.
     const bare =
       bareGap.test(gap) &&
       /^\d{4,8}$/u.test((match[2] ?? "").replaceAll(/[ -]/gu, "")) &&
-      !doorWords.test(clauseAround(value, digits));
+      !doorWords.test(value);
     // A service names its code before «код» as well: «в Ozon код 1234».
     if (
       bare ||

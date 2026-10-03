@@ -1,9 +1,7 @@
-import type {
-  ClaimedSubscription,
-  SubscriptionCheck,
-} from "@db/services/subscriptions";
+import type { SubscriptionCheck } from "@db/services/subscriptions";
 import type { PageRead } from "./page";
 import { conditionLabel, conditionMet, priceLabel, sameProduct } from "./price";
+import type { PriceWatch } from "./watches";
 
 /**
  * What a failed check could not do, in the person's terms; the log keeps
@@ -43,7 +41,7 @@ const maximumBackoffMs = 24 * 60 * 60_000;
  */
 export function judgePriceCheck(
   subscription: Pick<
-    ClaimedSubscription,
+    PriceWatch,
     | "checkEverySeconds"
     | "condition"
     | "expiresAt"

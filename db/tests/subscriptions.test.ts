@@ -1,6 +1,7 @@
 /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must be applied in order. */
 import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NewSubscription } from "@db/services/subscriptions";
@@ -17,6 +18,8 @@ afterEach(async () => {
 
 const alice = { userId: "alice", workspaceId: "workspace:alice" };
 const now = new Date("2026-10-02T10:00:00.000Z");
+/** What a check of the calendar saw: a day ahead and more. */
+const seen = (at: Date) => new Date(at.getTime() + 26 * 60 * 60_000);
 const sixHours = 6 * 60 * 60;
 
 function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
@@ -40,6 +43,14 @@ function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
     ...overrides,
   };
 }
+
+const dp405 = {
+  eventId: "dp405",
+  location: "Аэропорт Внуково (VKO), терминал A",
+  start: "2026-10-03T07:05:00+03:00",
+  summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  timeZone: "Europe/Moscow",
+};
 
 const hitOutcome = {
   kind: "result" as const,
@@ -385,6 +396,153 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
       status: "expired",
     });
     expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
+  });
+
+  it("keeps one watch per flight, each on a job of its own, and lets a moved one go", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const sync = (flights: readonly (typeof dp405)[], at = now) =>
+      subscriptions.syncFlightWatches({
+        flights,
+        now: at,
+        scope: alice,
+        seenUntil: new Date(at.getTime() + 26 * 60 * 60_000),
+      });
+    expect(await sync([dp405])).toEqual({ ended: 0, started: 1 });
+    // The next check sees the same flight: nothing new.
+    expect(await sync([dp405])).toEqual({ ended: 0, started: 0 });
+    const [started] = await db.query.subscriptions.findMany();
+    expect(started).toMatchObject({
+      action: "worker",
+      dedupeKey: "dp405@2026-10-03T07:05:00+03:00",
+      expiresAt: new Date("2026-10-03T04:05:00.000Z"),
+      // Never due for the subscriptions tick.
+      nextCheckAt: new Date("9999-12-31T00:00:00.000Z"),
+      state: { done: [] },
+      template: "flight",
+    });
+    expect(await db.query.scheduledAgentJobs.findMany()).toEqual([
+      expect.objectContaining({
+        id: started?.jobId,
+        kind: "subscription",
+        nextRunAt: null,
+      }),
+    ]);
+    // The flight moved to 09:00: the old watch goes with its job, a new one
+    // starts.
+    const moved = { ...dp405, start: "2026-10-03T09:00:00+03:00" };
+    expect(await sync([moved])).toEqual({ ended: 1, started: 1 });
+    expect(
+      (await db.query.subscriptions.findMany()).map(
+        ({ dedupeKey }) => dedupeKey
+      )
+    ).toEqual(["dp405@2026-10-03T09:00:00+03:00"]);
+    expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
+    // Moved back, it is watched again; its reminders' own dedupe keeps them
+    // from going out twice.
+    expect(await sync([dp405, moved])).toEqual({ ended: 0, started: 1 });
+    await sync([moved]);
+    // A flight from where the calendar read stopped on is not taken as gone.
+    const far = {
+      ...dp405,
+      eventId: "far",
+      start: "2026-10-03T13:00:00+03:00",
+    };
+    await sync([moved, far]);
+    expect(
+      await subscriptions.syncFlightWatches({
+        flights: [moved],
+        now,
+        scope: alice,
+        seenUntil: new Date("2026-10-03T10:00:00.000Z"),
+      })
+    ).toEqual({ ended: 0, started: 0 });
+    // A flight whose reminders all went out gets no new watch.
+    await db
+      .update(schema.subscriptions)
+      .set({ status: "fired" })
+      .where(eq(schema.subscriptions.status, "active"));
+    expect(await sync([moved, far])).toEqual({ ended: 0, started: 0 });
+    // A flight already gone gets no watch.
+    expect(
+      await sync([{ ...dp405, eventId: "past", start: "2026-10-01T09:00:00Z" }])
+    ).toMatchObject({ started: 0 });
+  });
+
+  it("closes a departed flight's watch, and remembers what went", async () => {
+    const { db, subscriptions } = await openDatabase();
+    await subscriptions.syncFlightWatches({
+      flights: [dp405, { ...dp405, eventId: "quiet" }],
+      now,
+      scope: alice,
+      seenUntil: seen(now),
+    });
+    const live = await subscriptions.listLiveFlightWatches(alice.workspaceId);
+    expect(live).toHaveLength(2);
+    const reminded = live.find((row) => row.dedupeKey.startsWith("dp405@"));
+    if (!reminded) throw new Error("Expected the flight's watch.");
+    await subscriptions.recordFlightWatch(
+      reminded.id,
+      {
+        done: ["checkin"],
+        travel: {
+          from: "home",
+          kind: "drive",
+          km: 31.4,
+          minutes: 42,
+          to: "Внуково",
+        },
+      },
+      now
+    );
+    expect(
+      await subscriptions.listFlightWatches(alice.workspaceId, ["dp405"])
+    ).toMatchObject([
+      { state: { done: ["checkin"], travel: { minutes: 42 } } },
+    ]);
+    // After departure the next check closes both: one reminded, one not.
+    const after = new Date("2026-10-03T05:00:00.000Z");
+    expect(
+      await subscriptions.syncFlightWatches({
+        flights: [],
+        now: after,
+        scope: alice,
+        seenUntil: seen(after),
+      })
+    ).toEqual({ ended: 2, started: 0 });
+    expect(
+      (await db.query.subscriptions.findMany())
+        .map(
+          ({ dedupeKey, status }) =>
+            `${dedupeKey.slice(0, dedupeKey.indexOf("@"))}:${status}`
+        )
+        .toSorted((a, b) => a.localeCompare(b))
+    ).toEqual(["dp405:fired", "quiet:expired"]);
+    expect(
+      (await db.query.scheduledAgentJobs.findMany()).map((job) => job.status)
+    ).toEqual(["completed", "completed"]);
+  });
+
+  it("keeps Bro's flights out of the price watches' tick and the person's tools", async () => {
+    const { db, subscriptions } = await openDatabase();
+    await subscriptions.syncFlightWatches({
+      flights: [dp405],
+      now,
+      scope: alice,
+      seenUntil: new Date(now.getTime() + 26 * 60 * 60_000),
+    });
+    const [flight] = await db.query.subscriptions.findMany();
+    if (!flight) throw new Error("Expected the flight's watch.");
+    expect(
+      await subscriptions.claimDueSubscriptions({
+        leaseForMs: 10 * 60_000,
+        limit: 10,
+        now: new Date("9999-12-31T00:00:00.000Z"),
+      })
+    ).toEqual([]);
+    expect(await subscriptions.listLiveSubscriptions(alice)).toEqual([]);
+    expect(
+      await subscriptions.setSubscriptionStatus(alice, flight.id, "deleted")
+    ).toBeUndefined();
   });
 
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {
