@@ -85,7 +85,10 @@ const routerAiDeepSeekOrder = ["deepinfra"];
  * picks may be served by one of them alone, and ignoring it there would
  * leave no endpoint at all.
  */
-function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
+function skippedHosts(
+  modelId: string,
+  endpoint: Pick<ModelEndpoint, "provider">
+) {
   if (!modelId.startsWith("deepseek/")) return [];
   return [
     ...(endpoint.provider === "routerai" ? routerAiDeepSeekSkipped : []),
@@ -102,7 +105,10 @@ function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
  * hosts above either way, and ROUTERAI_PROVIDER_IGNORE adds hosts to skip
  * for every model; a pinned host stays pinned.
  */
-export function providerRouting(modelId: string, endpoint: ModelEndpoint) {
+export function providerRouting(
+  modelId: string,
+  endpoint: Pick<ModelEndpoint, "provider" | "providerIgnore" | "providerOrder">
+) {
   const order =
     endpoint.providerOrder ??
     (endpoint.provider === "routerai" && modelId.startsWith("deepseek/")
