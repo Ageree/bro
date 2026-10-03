@@ -91,20 +91,27 @@ describe("which old history a step may trim", () => {
     }
   });
 
-  it("never trims an id the history holds twice", () => {
+  it("never trims an id the old part holds twice", () => {
     const history = [
       // OpenRouter's hosts numbered each step's calls from `call_0`.
       ...turn(0, "call_0"),
       ...turn(1, "call_0"),
-      ...turn(2, "call-repeat"),
-      ...turns(15).slice(9),
-      ...turn(20, "call-repeat"),
+      ...turns(15).slice(6),
     ];
     const trim = eligibleHistory(history);
 
     expect(trim?.results.has("call_0")).toBe(false);
-    expect(trim?.results.has("call-repeat")).toBe(false);
     expect(trim?.results.has("call-3")).toBe(true);
+  });
+
+  it("keeps the set when a later turn uses an old id again", () => {
+    // The old part is the same between two moves of the cut; an id a kept
+    // turn reuses must not bring its old result back whole.
+    const before = eligibleHistory(turns(13));
+    const after = eligibleHistory([...turns(13), ...turn(13, "call-3")]);
+
+    expect(before?.results.has("call-3")).toBe(true);
+    expect(after?.results).toEqual(before?.results);
   });
 
   it("does not count context and memory messages as turns", () => {
@@ -154,7 +161,7 @@ describe("which old history a step may trim", () => {
     expect([...(eligibleHistory(history)?.results ?? [])]).toEqual(ids(8));
   });
 
-  it("takes old browser reports and long errands, not the kept ones", () => {
+  it("takes old browser reports and long errands", () => {
     const old = report("run-old");
     const repeated = report("run-repeated");
     const longTask = "найди билет ".repeat(200);
@@ -179,6 +186,10 @@ describe("which old history a step may trim", () => {
     const trim = eligibleHistory(history);
 
     expect(trim?.inputs).toEqual(new Set(["call-long", "call-json"]));
-    expect(trim?.openers).toEqual(new Set([reportDigest(old)]));
+    // The copy in the kept turns goes whole: `trimPrompt` shortens only the
+    // first part with a report's text.
+    expect(trim?.openers).toEqual(
+      new Set([reportDigest(old), reportDigest(repeated)])
+    );
   });
 });

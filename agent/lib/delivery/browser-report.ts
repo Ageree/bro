@@ -11,7 +11,7 @@ import {
  * (`agent/lib/browser-use/completion.ts`). The report opens with the
  * background-turn marker, and this line follows it.
  */
-const reportedRunLine = /^Browser run (\S+) finished\.$/mu;
+export const reportedRunLine = /^Browser run (\S+) finished\.$/mu;
 
 /**
  * The paragraph after that line: everything below it in the report — the

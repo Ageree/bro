@@ -78,11 +78,7 @@ const rememberedVerdicts = 1000;
 const turnVerdicts = new Map<string, Promise<boolean>>();
 const sessionVerdicts = new Map<string, boolean>();
 
-/**
- * Keeps `value` under `key` at the newest end of `map`, which holds the last
- * thousand used: what a turn of each session remembers between its steps.
- */
-export function remember<T>(map: Map<string, T>, key: string, value: T) {
+function remember<T>(map: Map<string, T>, key: string, value: T) {
   map.delete(key);
   map.set(key, value);
   if (map.size <= rememberedVerdicts) return;
@@ -91,7 +87,7 @@ export function remember<T>(map: Map<string, T>, key: string, value: T) {
 }
 
 /** A remembered value, moved to the newest end as it is used. */
-export function recall<T>(map: Map<string, T>, key: string) {
+function recall<T>(map: Map<string, T>, key: string) {
   const known = map.get(key);
   if (known !== undefined) remember(map, key, known);
   return known;

@@ -4,7 +4,6 @@ import { z } from "zod";
 import { reportedRunOf } from "@agent/lib/delivery/browser-report";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import type { StepIdentity } from "@agent/lib/turn-kind/step";
-import { recall, remember } from "@agent/lib/workspace-list";
 
 /**
  * The old parts of a conversation a step's prompt sends as a short trace
@@ -76,7 +75,13 @@ function toolParts(message: ModelMessage) {
   );
 }
 
-/** How many times each id is called and answered in the whole history. */
+/**
+ * Whether an id is called and answered once in `messages`, the old part of
+ * the history. Only the old part counts: it stays the same between two moves
+ * of the cut, and a later step that reuses an id must not bring an old
+ * result back whole in the middle of them (`trimPrompt` shortens only the
+ * first part with the id, which is the old one).
+ */
 function idCounts(messages: readonly ModelMessage[]) {
   const calls = new Map<string, number>();
   const results = new Map<string, number>();
@@ -106,21 +111,21 @@ function oldPartEnd(messages: readonly ModelMessage[]) {
 
 /**
  * What of `messages`, eve's history at a step, is old enough to trim. A
- * call id that occurs more than once — OpenRouter's hosts and RouterAI's
- * before 01.10 numbered every step's calls from `call_0` — is never
- * trimmed: it cannot tell which result is which. A report whose very text
- * comes again in the kept turns stays whole too.
+ * call id that occurs more than once in the old part — OpenRouter's hosts
+ * and RouterAI's before 01.10 numbered every step's calls from `call_0` —
+ * is never trimmed: it cannot tell which result is which.
  */
 function computedHistoryTrim(
   messages: readonly ModelMessage[]
 ): Omit<HistoryTrim, "step"> | undefined {
   const end = oldPartEnd(messages);
   if (end === undefined) return undefined;
-  const unique = idCounts(messages);
+  const old = messages.slice(0, end);
+  const unique = idCounts(old);
   const results = new Set<string>();
   const inputs = new Set<string>();
   const openers = new Set<string>();
-  for (const message of messages.slice(0, end)) {
+  for (const message of old) {
     for (const part of toolParts(message)) {
       if (!unique(part.toolCallId)) continue;
       if (part.type === "tool-result") {
@@ -139,22 +144,38 @@ function computedHistoryTrim(
       if (reportedRunOf(text) !== undefined) openers.add(reportDigest(text));
     }
   }
-  for (const message of messages.slice(end)) {
-    for (const text of textsOf(message)) openers.delete(reportDigest(text));
-  }
   if (results.size + inputs.size + openers.size === 0) return undefined;
   return { inputs, openers, results };
 }
 
 /**
- * The trim each turn settled on at its first step. A person's message
- * steered into a running turn opens a turn of its own in the history, and
- * would move the cut between two steps of one turn.
+ * The trim each turn settled on at its first step, for the last
+ * `rememberedTurns` turns used. A person's message steered into a running
+ * turn opens a turn of its own in the history, and would move the cut
+ * between two steps of one turn.
  */
 const turnTrims = new Map<
   string,
   { readonly trim: Omit<HistoryTrim, "step"> | undefined }
 >();
+
+/**
+ * Enough for every turn running on an instance at once: a turn that drops
+ * out between its steps works its trim out again from a longer history.
+ */
+const rememberedTurns = 1000;
+
+function rememberedTrim(key: string, messages: readonly ModelMessage[]) {
+  const known = turnTrims.get(key) ?? { trim: computedHistoryTrim(messages) };
+  // Moved to the newest end as it is used; the oldest goes first.
+  turnTrims.delete(key);
+  turnTrims.set(key, known);
+  if (turnTrims.size > rememberedTurns) {
+    const oldest = turnTrims.keys().next().value;
+    if (oldest !== undefined) turnTrims.delete(oldest);
+  }
+  return known.trim;
+}
 
 /**
  * What a step's prompt sends as a short trace (`HistoryTrim`), the same for
@@ -165,16 +186,11 @@ export function eligibleHistory(
   messages: readonly ModelMessage[],
   step?: StepIdentity
 ): HistoryTrim | undefined {
-  let trim: Omit<HistoryTrim, "step"> | undefined;
-  if (step?.turnId === undefined) {
-    trim = computedHistoryTrim(messages);
-  } else {
-    // eve numbers turns per session, so the key needs both.
-    const key = `${step.sessionId}\n${step.turnId}`;
-    const known = recall(turnTrims, key);
-    trim = known ? known.trim : computedHistoryTrim(messages);
-    if (!known) remember(turnTrims, key, { trim });
-  }
+  const trim =
+    step?.turnId === undefined
+      ? computedHistoryTrim(messages)
+      : // eve numbers turns per session, so the key needs both.
+        rememberedTrim(`${step.sessionId}\n${step.turnId}`, messages);
   if (trim === undefined) return undefined;
   return step === undefined ? trim : { ...trim, step };
 }

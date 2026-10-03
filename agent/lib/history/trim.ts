@@ -1,9 +1,15 @@
-import type { LanguageModelMiddleware } from "ai";
 import { z } from "zod";
+import { parsedMetadataHeader } from "@agent/lib/browser-use/outcome";
 import {
   browserReportFraming,
+  reportedRunLine,
   reportImagesHeading,
 } from "@agent/lib/delivery/browser-report";
+import type {
+  Prompt,
+  PromptMessage,
+  ToolOutput,
+} from "@agent/lib/model/prompt";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import {
   errandInputSchema,
@@ -12,19 +18,6 @@ import {
   longErrandChars,
   reportDigest,
 } from "./eligible";
-
-/** A model call's prompt, as middleware sees it. */
-type Prompt = Parameters<
-  NonNullable<LanguageModelMiddleware["transformParams"]>
->[0]["params"]["prompt"];
-
-type PromptMessage = Prompt[number];
-
-/** A tool's result in the prompt. */
-type ToolOutput = Extract<
-  Extract<PromptMessage, { role: "tool" }>["content"][number],
-  { type: "tool-result" }
->["output"];
 
 /**
  * Tools whose results always go whole: what was said to the person, their
@@ -83,8 +76,48 @@ function clip(text: string, length: number, tail = "…") {
   return `${text.slice(0, end)}${tail}`;
 }
 
-function shortenedNote(chars: number, toolName: string) {
-  return `[Shortened by Bro: an older result of ${String(chars)} characters. Call ${toolName} again for the full text.]`;
+/**
+ * Tools that only read: calling one again costs a read and changes nothing,
+ * so an old result's trace may send the model back to it. `apps` reads too
+ * unless its run wrote (`wroteSchema`).
+ */
+const readingTools = new Set([
+  "calculate",
+  "calendar-check-availability",
+  "calendar-list-events",
+  "contacts-search",
+  "drive-read",
+  "drive-search",
+  "find_images",
+  "gmail-attachment",
+  "gmail-read-thread",
+  "gmail-search",
+  "list_orders",
+  "notion-read",
+  "notion-search",
+  "route_time",
+  "slack-read",
+  "slack-search",
+  "web_fetch",
+  "web_search",
+]);
+
+const wroteSchema = z.object({ wrote: z.literal(true) });
+
+/**
+ * The sentence every trace ends with. Only a read is worth calling again:
+ * a call that sent, booked or wrote must not run twice for the model to see
+ * its result.
+ */
+function shortenedNote(chars: number, toolName: string, output: ToolOutput) {
+  const reads =
+    readingTools.has(toolName) ||
+    (toolName === "apps" && parsedOutput(wroteSchema, output) === undefined);
+  return `[Shortened by Bro: an older result of ${String(chars)} characters. ${
+    reads
+      ? `Call ${toolName} again for the full text.`
+      : "This call already ran: do not call it again to see this result."
+  }]`;
 }
 
 /** A result read by `schema`, whether kept as JSON or as its text. */
@@ -120,6 +153,42 @@ const threadSchema = z.object({
 });
 
 const searchSchema = z.object({ messages: z.array(letterSchema) });
+
+/** A short top-level value of a JSON result: a status, a flag, an id. */
+const scalarSchema = z.union([
+  z.string().max(200),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
+
+const fieldsSchema = z.record(z.string(), z.unknown());
+
+/**
+ * The short top-level values of a JSON object result in key order — whether
+ * an `apps` run wrote, how it ended — which a clip of a long result whose
+ * payload comes first would cut off. Undefined for any other result.
+ */
+function scalarFields(output: ToolOutput) {
+  const fields = parsedOutput(fieldsSchema, output);
+  if (!fields) return undefined;
+  const scalars = Object.keys(fields)
+    .toSorted()
+    .flatMap((key) => {
+      const value = scalarSchema.safeParse(fields[key]);
+      return value.success ? [[key, value.data] as const] : [];
+    });
+  return scalars.length > 0
+    ? JSON.stringify(Object.fromEntries(scalars))
+    : undefined;
+}
+
+/** A long result of a tool without a trace of its own: how it opens. */
+function genericTrace(serialized: string, output: ToolOutput) {
+  const opening = clip(serialized, genericChars);
+  const fields = scalarFields(output);
+  return fields === undefined ? opening : `${fields}\n${opening}`;
+}
 
 const runSchema = z.object({
   outcome: z.string().nullish(),
@@ -179,18 +248,28 @@ function webSearchTrace(output: ToolOutput) {
   return headings.length > 0 ? headings.join("\n\n") : undefined;
 }
 
+/**
+ * How a run's outcome opens (`browserOutcomeSummary` in
+ * `agent/lib/browser-use/outcome.ts`). With the page's report in it the
+ * opening is the parsed facts under their untrusted label: the label is the
+ * last one, below the page's words, and the page cannot add a later one
+ * without the parsed facts still following it. Without the report the
+ * outcome opens with those facts.
+ */
+function outcomeOpening(outcome: string) {
+  const at = outcome.lastIndexOf(`${parsedMetadataHeader}\n\n`);
+  if (at === -1) return clip(outcome, outcomeChars);
+  const facts = outcome.slice(at + parsedMetadataHeader.length + 2);
+  return `${parsedMetadataHeader}\n\n${clip(facts, outcomeChars)}`;
+}
+
 /** A browser run's answer: its id, status and how its outcome opens. */
 function browserTaskTrace(output: ToolOutput) {
   const run = parsedOutput(runSchema, output);
   if (!run) return undefined;
-  const result = run.outcome
-    ?.split("\n")
-    .find((line) => line.startsWith("Result: "));
   // JSON leaves out an outcome the run has not got.
   return JSON.stringify({
-    outcome: run.outcome
-      ? clip(result ?? run.outcome, outcomeChars)
-      : undefined,
+    outcome: run.outcome ? outcomeOpening(run.outcome) : undefined,
     runId: run.runId,
     shortened: `browser_task status ${run.runId} returns the full outcome`,
     status: run.status,
@@ -233,8 +312,8 @@ function resultTrace(toolName: string, output: ToolOutput) {
   ) {
     return undefined;
   }
-  const trace = toolTrace(toolName, output) ?? clip(serialized, genericChars);
-  const text = `${trace}\n\n${shortenedNote(serialized.length, toolName)}`;
+  const trace = toolTrace(toolName, output) ?? genericTrace(serialized, output);
+  const text = `${trace}\n\n${shortenedNote(serialized.length, toolName, output)}`;
   return text.length < serialized.length
     ? { chars: serialized.length, text }
     : undefined;
@@ -262,14 +341,14 @@ function shortenedErrandInput(
   return object ? shortened : JSON.stringify(shortened);
 }
 
-const reportedRunLine = /^Browser run (\S+) finished\.$/u;
-
 /**
  * An old browser report (`browserRunReport` in
  * `agent/lib/browser-use/completion.ts`) as its trace: the marker, the run
  * line, the line framing what follows as untrusted, then the opening of the
- * report and the images the run saved — the page's words stay below the
- * framing. Undefined for a text of another shape.
+ * run's outcome and the images the run saved — the page's words stay below
+ * the framing. The errand, the live view and Bro's instructions for that
+ * turn are left out: cut short, an instruction could read otherwise.
+ * Undefined for a text of another shape.
  */
 function reportTrace(text: string) {
   const [marker, runLine, framing] = text.split("\n\n", 3);
@@ -277,6 +356,8 @@ function reportTrace(text: string) {
   if (
     marker !== backgroundTurnMarker ||
     runId === undefined ||
+    // The pattern reads one line of a whole report; here it is the paragraph.
+    runLine !== `Browser run ${runId} finished.` ||
     framing !== browserReportFraming
   ) {
     return undefined;
@@ -286,10 +367,13 @@ function reportTrace(text: string) {
   const imagesAt = rest.lastIndexOf(`\n\n${reportImagesHeading}`);
   const images =
     imagesAt === -1 ? undefined : rest.slice(imagesAt + 2).split("\n\n")[0];
-  const opening = clip(
-    imagesAt === -1 ? rest : rest.slice(0, imagesAt),
-    reportChars
-  );
+  // The outcome ends where the errand begins. A page that writes an errand
+  // paragraph of its own only makes the opening shorter.
+  const errandAt = rest.indexOf("\n\nErrand: ");
+  let end = rest.length;
+  if (errandAt !== -1) end = errandAt;
+  else if (imagesAt !== -1) end = imagesAt;
+  const opening = clip(rest.slice(0, end), reportChars);
   const trace = [
     head,
     opening,
@@ -301,30 +385,30 @@ function reportTrace(text: string) {
   return trace.length < text.length ? trace : undefined;
 }
 
-/** How many tool-call and tool-result parts of the prompt carry each id. */
-function promptIdCounts(prompt: Prompt) {
-  const calls = new Map<string, number>();
-  const results = new Map<string, number>();
-  for (const message of prompt) {
-    if (message.role !== "assistant" && message.role !== "tool") continue;
-    for (const part of message.content) {
-      if (part.type !== "tool-call" && part.type !== "tool-result") continue;
-      const counts = part.type === "tool-call" ? calls : results;
-      counts.set(part.toolCallId, (counts.get(part.toolCallId) ?? 0) + 1);
-    }
-  }
-  return { calls, results };
+/**
+ * Whether `key` comes for the first time in a walk through the prompt. The
+ * old part of the history opens the prompt's conversation, so the first
+ * part with an old id or an old report's text is the old one; a later step
+ * that uses the id again, or a report given again, is in the kept turns and
+ * goes whole. Deciding by the first part, not by how many there are, keeps
+ * the old part's trace the same bytes when such a repeat comes.
+ */
+function firstSeen(seen: Set<string>, key: string) {
+  if (seen.has(key)) return false;
+  seen.add(key);
+  return true;
 }
 
 /**
- * The prompt with the old parts `trim` names as their traces. Only those
- * parts change, and only when the prompt holds their id once — a prompt
- * built after a compaction, or with ids repeated, keeps what it cannot
- * place. System messages, the person's words, memory, assistant text and
- * every part of the kept turns go as they are.
+ * The prompt with the old parts `trim` names as their traces. Only the first
+ * part with each named id or report changes. System messages, the person's
+ * words, memory, assistant text and every part of the kept turns go as they
+ * are.
  */
 export function trimPrompt(prompt: Prompt, trim: HistoryTrim) {
-  const counts = promptIdCounts(prompt);
+  const seenResults = new Set<string>();
+  const seenCalls = new Set<string>();
+  const seenOpeners = new Set<string>();
   // What the prompt lost to the trim, for the log.
   const trimmed = { inputs: 0, openers: 0, results: 0, savedChars: 0 };
   const shortResult = <
@@ -333,8 +417,8 @@ export function trimPrompt(prompt: Prompt, trim: HistoryTrim) {
     part: Part
   ): Part => {
     if (
-      !trim.results.has(part.toolCallId) ||
-      counts.results.get(part.toolCallId) !== 1
+      !firstSeen(seenResults, part.toolCallId) ||
+      !trim.results.has(part.toolCallId)
     ) {
       return part;
     }
@@ -352,9 +436,12 @@ export function trimPrompt(prompt: Prompt, trim: HistoryTrim) {
           content: message.content.map((part) => {
             if (
               part.type !== "text" ||
-              !part.text.startsWith(backgroundTurnMarker) ||
-              !trim.openers.has(reportDigest(part.text))
+              !part.text.startsWith(backgroundTurnMarker)
             ) {
+              return part;
+            }
+            const digest = reportDigest(part.text);
+            if (!firstSeen(seenOpeners, digest) || !trim.openers.has(digest)) {
               return part;
             }
             const trace = reportTrace(part.text);
@@ -371,9 +458,9 @@ export function trimPrompt(prompt: Prompt, trim: HistoryTrim) {
             if (part.type === "tool-result") return shortResult(part);
             if (
               part.type !== "tool-call" ||
+              !firstSeen(seenCalls, part.toolCallId) ||
               part.toolName !== "browser_task" ||
-              !trim.inputs.has(part.toolCallId) ||
-              counts.calls.get(part.toolCallId) !== 1
+              !trim.inputs.has(part.toolCallId)
             ) {
               return part;
             }

@@ -22,6 +22,7 @@ import {
 } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
 import { modelEndpoint } from "./endpoint";
+import type { PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
 import { watchedModelFetch } from "./stream-watchdog";
 
@@ -542,22 +543,11 @@ function stepToolsMiddleware(
   };
 }
 
-/** One message of a model call's prompt, as middleware sees it. */
-type PromptMessage = Parameters<
-  NonNullable<LanguageModelMiddleware["transformParams"]>
->[0]["params"]["prompt"][number];
-
 /** A file's data: only an inline text document carries text. */
 type FileData = Extract<
   Extract<PromptMessage, { role: "user" }>["content"][number],
   { type: "file" }
 >["data"];
-
-/** A tool's result, JSON or text. */
-type ToolOutput = Extract<
-  Extract<PromptMessage, { role: "tool" }>["content"][number],
-  { type: "tool-result" }
->["output"];
 
 /** What defuses the tags of Bro's own word in one piece of text. */
 type Defuse = (text: string) => string;
