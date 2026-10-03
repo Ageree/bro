@@ -73,13 +73,10 @@ registerHooks({
     };
   },
   resolve(specifier, context, nextResolve) {
-    if (!specifier.endsWith("?raw") || context.parentURL === undefined) {
-      return nextResolve(specifier, context);
-    }
-    return {
-      shortCircuit: true,
-      url: new URL(specifier, context.parentURL).href,
-    };
+    if (!specifier.endsWith("?raw")) return nextResolve(specifier, context);
+    // Relative or through an alias, the file resolves as any module does.
+    const resolved = nextResolve(specifier.slice(0, -4), context);
+    return { ...resolved, shortCircuit: true, url: `${resolved.url}?raw` };
   },
 });
 
@@ -87,11 +84,32 @@ const root = new URL("../../", import.meta.url);
 const content = (path: string) =>
   readFileSync(new URL(`agent/instructions/content/${path}`, root), "utf8");
 
+const measureSkills = process.argv.includes("--skills");
+// The skills pilot (`SKILLS_WORKSPACES`) for `load_skill` and the core; the
+// tables of today leave both out.
+if (measureSkills) {
+  // oxlint-disable-next-line eslint/no-restricted-properties -- this measurement sets its own process's pilot before any module reads it
+  Object.assign(process.env, { SKILLS_WORKSPACES: "*" });
+}
+
+const catalog = await import("../../agent/lib/skills/catalog.ts");
+
+/** Instruction texts, those left blank in the core dropped. */
+function joined(...texts: readonly string[]) {
+  return texts.filter((part) => part.trim().length > 0).join("\n");
+}
+
 type Mode =
   | "interactive"
   | "proactive-worker"
   | "scheduled-report"
   | "scheduled-worker";
+
+/**
+ * What the measured deployment has (`skillSetup`): the browser and drawing,
+ * as the placeholders set up, and no task agent.
+ */
+const skillSetup = { browser: true, images: true } as const;
 
 /** A kind of turn: who opens it, where, and what its first step withholds. */
 interface Kind {
@@ -197,7 +215,11 @@ function contextOf(kind: Kind) {
  * zone, spend limit, form of address, acquaintance) take their usual shape
  * for a person with no limit and «ты».
  */
-async function instructionParts(mode: Mode, pilot = false) {
+async function instructionParts(
+  mode: Mode,
+  pilot = false,
+  layout: "core" | "full" = "full"
+) {
   const [
     { localTimeInstructions },
     { spendLimitInstructions },
@@ -211,6 +233,10 @@ async function instructionParts(mode: Mode, pilot = false) {
   ]);
   const interactive = mode === "interactive";
   const worker = mode === "scheduled-worker";
+  // The core is the interactive turn's alone (`skillsLayout`).
+  const text = (source: Parameters<typeof catalog.instructionText>[0]) =>
+    catalog.instructionText(source, interactive ? layout : "full");
+  const { skillIndex } = await import("../../agent/lib/skills/render.ts");
   const parts: (readonly [string, string | null])[] = [
     [
       "instructions.md",
@@ -218,39 +244,37 @@ async function instructionParts(mode: Mode, pilot = false) {
     ],
     [
       "10 execution-safety",
-      interactive || worker ? content("execution-safety.md") : null,
+      interactive || worker ? text("execution-safety") : null,
     ],
     [
       "15 autonomy (+ follow-through, лимит)",
       interactive || worker
         ? [
-            content("autonomy.md"),
-            interactive ? content("follow-through.md") : null,
+            text("autonomy"),
+            interactive ? text("follow-through") : null,
             spendLimitInstructions(undefined, []),
           ]
-            .filter((part) => part !== null)
+            .filter((part) => part !== null && part.trim().length > 0)
             .join("\n")
         : null,
     ],
-    ["20 role", content(`role/${mode}.md`)],
+    [
+      "20 role",
+      interactive ? text("role/interactive") : content(`role/${mode}.md`),
+    ],
     [
       "25 recommendations",
-      interactive || worker ? content("recommendations.md") : null,
+      interactive || worker ? text("recommendations") : null,
     ],
     [
       "30 message-style",
-      interactive || mode === "scheduled-report"
-        ? content("message-style.md")
-        : null,
+      interactive || mode === "scheduled-report" ? text("message-style") : null,
     ],
-    [
-      "40 browser",
-      interactive || worker ? content("browser/available.md") : null,
-    ],
+    ["40 browser", interactive || worker ? text("browser/available") : null],
     [
       "45 public-services",
       interactive
-        ? `${content("meter-readings.md")}\n${content("public-services.md")}`
+        ? joined(text("meter-readings"), text("public-services"))
         : null,
     ],
     [
@@ -271,12 +295,12 @@ async function instructionParts(mode: Mode, pilot = false) {
     [
       "60 creative",
       interactive
-        ? `${content("creative/images.md")}\n${content("creative/games.md")}`
+        ? joined(text("creative/images"), text("creative/games"))
         : null,
     ],
     [
       "60 hard-constraints",
-      interactive || worker ? content("hard-constraints.md") : null,
+      interactive || worker ? text("hard-constraints") : null,
     ],
     [
       "70 acquaintance",
@@ -284,9 +308,15 @@ async function instructionParts(mode: Mode, pilot = false) {
         ? "Вы с этим человеком уже знакомы по другим разговорам. Новый чат — не новое знакомство: не представляйся и не перечисляй, что умеешь, пока он сам не спросит."
         : null,
     ],
+    [
+      "80 skills",
+      interactive && layout === "core"
+        ? (skillIndex(skillSetup) ?? null)
+        : null,
+    ],
   ];
-  return parts.flatMap(([name, text]) =>
-    text === null ? [] : [[name, text] as const]
+  return parts.flatMap(([name, part]) =>
+    part === null || part.trim().length === 0 ? [] : [[name, part] as const]
   );
 }
 
@@ -449,6 +479,9 @@ const measured = await Promise.all(
       instructionParts(kind.mode, true),
       toolsOf(kind),
     ]);
+    // The skills pilot's own tool is measured with the skills (`--skills`).
+    const loadSkill = tools.get("load_skill");
+    tools.delete("load_skill");
     if (dumpDirectory) {
       const base = `${dumpDirectory}/${kind.authenticator}-${kind.mode}`;
       writeFileSync(
@@ -510,6 +543,7 @@ const measured = await Promise.all(
         replyTool: toolTokensOf((name) => name === "send_message"),
         stepTools: withheld.size > 0 ? firstStepTokens : toolTokens,
       },
+      loadSkill,
       row: [
         kind.label,
         thousands(instructionTokens),
@@ -636,6 +670,215 @@ if (process.argv.includes("--tools")) {
     );
   }
 }
+
+const toTokens = (text: string) =>
+  tokens(text.length, charsPerToken.instructions);
+
+/** A system prompt from its parts, as eve joins them. */
+function promptOf(parts: Awaited<ReturnType<typeof instructionParts>>) {
+  return parts.map(([, text]) => text).join("\n\n");
+}
+
+function quantile(sorted: readonly number[], q: number) {
+  return (
+    sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0
+  );
+}
+
+/**
+ * The skills pilot (docs/roadmap.md, item 24): the core instructions by
+ * mode, the index, each skill's block and `load_skill`'s schema, and the
+ * benchmark messages replayed through the triggers — what a turn would
+ * attach, and what its steps would then send without history. A block is
+ * read at full price in the step that attaches it and from the cache after.
+ */
+async function reportSkills() {
+  const [
+    { skillNames },
+    { skillIndex, skillRecord, skillStub },
+    { skillsForTurn },
+  ] = await Promise.all([
+    import("../../agent/lib/skills/catalog.ts"),
+    import("../../agent/lib/skills/render.ts"),
+    import("../../agent/lib/skills/triggers.ts"),
+  ]);
+
+  console.log(
+    "\nНавыки (SKILLS_WORKSPACES): инструкции по режимам, тыс. токенов:"
+  );
+  console.log("| Режим | Полные | Ядро | Ядро без индекса |");
+  console.log("| --- | --- | --- | --- |");
+  const cores = new Map<Mode, number>();
+  for (const mode of modes) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- four modes, printed in order
+    const [full, core] = await Promise.all([
+      instructionParts(mode),
+      instructionParts(mode, false, "core"),
+    ]);
+    const coreTokens = toTokens(promptOf(core));
+    cores.set(mode, coreTokens);
+    const index = core.find(([name]) => name === "80 skills")?.[1] ?? "";
+    console.log(
+      `| ${mode} | ${thousands(toTokens(promptOf(full)))} | ${thousands(coreTokens)} | ${thousands(coreTokens - toTokens(index))} |`
+    );
+  }
+  const index = skillIndex(skillSetup);
+  console.log(
+    `\nИндекс навыков: ${String(index === undefined ? 0 : toTokens(index))} токенов.`
+  );
+  const loadSkill = measured[0]?.loadSkill;
+  console.log(
+    `Схема load_skill: ${loadSkill === undefined ? "нет (навыков нет или пилот выключен)" : `${String(tokens(loadSkill.length, charsPerToken.tools))} токенов`}.`
+  );
+  const blocks = new Map(
+    skillNames.flatMap((name) => {
+      const block = skillRecord(name, skillSetup);
+      return block === undefined ? [] : [[name, toTokens(block)] as const];
+    })
+  );
+  console.log(
+    `Блоки навыков, токенов: ${
+      [...blocks].map(([name, size]) => `${name} ${String(size)}`).join(", ") ||
+      "нет — инструкции ещё не размечены"
+    }.`
+  );
+
+  // Records stay in the session: a long one ends up holding every block it
+  // ever needed, all of them at worst.
+  const allBlocks = [...blocks.values()].reduce((sum, size) => sum + size, 0);
+  console.log(
+    `Все блоки вместе: ${thousands(allBlocks)} тыс.; ядро и все блоки — ${thousands((cores.get("interactive") ?? 0) + allBlocks)} тыс.`
+  );
+  const { caseTurns } = await import("../bench/cases.ts");
+  const replay = (await caseTurns()).map(({ id, text }) => {
+    const names = skillsForTurn({
+      browserReport: false,
+      history: [],
+      input: [{ content: text, role: "user" }],
+    });
+    return {
+      attached: names.reduce((sum, name) => sum + (blocks.get(name) ?? 0), 0),
+      id,
+      names,
+    };
+  });
+  const attached = replay
+    .map(({ attached: size }) => size)
+    .toSorted((a, b) => a - b);
+  const counts = new Map<string, number>();
+  for (const { names } of replay) {
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  console.log(
+    `\nСообщения бенчмарков (${String(replay.length)}): приложено навыков — ${[
+      ...counts,
+    ]
+      .toSorted((a, b) => b[1] - a[1])
+      .map(([name, count]) => `${name} ${String(count)}`)
+      .join(", ")}.`
+  );
+  console.log(
+    `Приложено токенов за ход: p25 ${String(quantile(attached, 0.25))}, медиана ${String(quantile(attached, 0.5))}, p75 ${String(quantile(attached, 0.75))}, p90 ${String(quantile(attached, 0.9))}, макс ${String(attached.at(-1) ?? 0)}; ничего — ${String(attached.filter((size) => size === 0).length)}.`
+  );
+  const interactiveCore = cores.get("interactive") ?? 0;
+  console.log(
+    `Инструкции 1-го шага (ядро + приложенное), медиана: ${thousands(interactiveCore + quantile(attached, 0.5))} тыс. против ${thousands(toTokens(promptOf(await instructionParts("interactive"))))} сейчас.`
+  );
+
+  // Records stay in a session until compaction folds the ones its turn does
+  // not need to a stub: between compactions a session carries every block
+  // it attached. A case of several messages is one session.
+  type Skill = (typeof skillNames)[number];
+  const blocksOf = (names: Iterable<Skill>) =>
+    [...names].reduce((sum, name) => sum + (blocks.get(name) ?? 0), 0);
+  const sessions = new Map<string, Set<Skill>>();
+  for (const { id, names } of replay) {
+    const session = id.split("#")[0] ?? id;
+    const held = sessions.get(session) ?? new Set<Skill>();
+    for (const name of names) held.add(name);
+    sessions.set(session, held);
+  }
+  const held = [...sessions.values()]
+    .map((names) => blocksOf(names))
+    .toSorted((a, b) => a - b);
+  console.log(
+    `Накоплено к последнему сообщению кейса (${String(sessions.size)} кейсов): медиана ${String(quantile(held, 0.5))}, p90 ${String(quantile(held, 0.9))}, макс ${String(held.at(-1) ?? 0)} токенов.`
+  );
+  // The whole suite as one long session without a compaction: the worst
+  // a session drifts to, the union of every block its messages needed.
+  const union = new Set<Skill>();
+  const growth: string[] = [];
+  for (const [sent, { names }] of replay.entries()) {
+    for (const name of names) union.add(name);
+    if ([10, 25, 50, 100].includes(sent + 1) || sent === replay.length - 1) {
+      growth.push(`${String(sent + 1)} — ${thousands(blocksOf(union))}`);
+    }
+  }
+  const stubTokens = Math.max(
+    ...skillNames.map((name) => toTokens(skillStub(name)))
+  );
+  console.log(
+    `Весь набор одной сессией без сжатия, тыс. токенов блоков после сообщений: ${growth.join(", ")}; ядро и все они — ${thousands(interactiveCore + blocksOf(union))} тыс. После сжатия остаются блоки хода и заглушки остальных (до ${String(stubTokens)} токенов каждая).`
+  );
+
+  // A person's step in the web without history, as input / of it at full
+  // price, in four layouts: today, the step-context pilot alone, and the
+  // skills pilot with and without it. The step-context pilot moves the
+  // clock out of the instructions, so the core is measured with it too.
+  const web = measured[0]?.cache;
+  if (!web) return;
+  const [coreParts, pilotCoreParts] = await Promise.all([
+    instructionParts("interactive", false, "core"),
+    instructionParts("interactive", true, "core"),
+  ]);
+  const clockIndex = coreParts.findIndex(([name]) => name === "50 local-time");
+  const coreBeforeClock = toTokens(promptOf(coreParts.slice(0, clockIndex)));
+  const pilotCore = toTokens(promptOf(pilotCoreParts));
+  const loadSkillTokens =
+    loadSkill === undefined ? 0 : tokens(loadSkill.length, charsPerToken.tools);
+  const median = quantile(attached, 0.5);
+  const note = replyNoteTokens;
+  const cell = (input: number, full: number) =>
+    `${thousands(input)} / ${thousands(full)}`;
+  // Today the clock breaks the prefix inside the instructions: the rest of
+  // them, the schemas and the history are paid in full on every step.
+  const today = web.instructions + web.stepTools + note;
+  const nowCell = cell(today, today - web.beforeClock);
+  const stepPilot = web.pilotInstructions + web.stepTools + note + web.clock;
+  const skills = interactiveCore + loadSkillTokens + web.stepTools + note;
+  const skillsCell = cell(skills + median, skills + median - coreBeforeClock);
+  const both = pilotCore + loadSkillTokens + web.stepTools + note + web.clock;
+  console.log(
+    "\nШаг в вебе без истории, тыс. токенов: вход / из них полной ценой. В пилоте шага первый шаг хода перечитывает схему send_message; блоки навыков — в истории, их первый шаг читает полной ценой."
+  );
+  console.log(
+    "| Шаг | Сейчас | Пилот шага | Навыки без пилота шага | Навыки и пилот шага |"
+  );
+  console.log("| --- | --- | --- | --- | --- |");
+  console.log(
+    `| 1-й шаг хода, блоки приложены (медиана) | ${nowCell} | ${cell(stepPilot, web.replyTool + note + web.clock)} | ${skillsCell} | ${cell(both + median, web.replyTool + median + note + web.clock)} |`
+  );
+  console.log(
+    `| 1-й шаг хода, блоки уже были | ${nowCell} | ${cell(stepPilot, web.replyTool + note + web.clock)} | ${skillsCell} | ${cell(both + median, web.replyTool + note + web.clock)} |`
+  );
+  console.log(
+    `| следующие шаги | ${nowCell} | ${cell(stepPilot, note + web.clock)} | ${skillsCell} | ${cell(both + median, note + web.clock)} |`
+  );
+  if (dumpDirectory) {
+    writeFileSync(
+      `${dumpDirectory}/skills-core.system.md`,
+      promptOf(coreParts)
+    );
+    for (const name of skillNames) {
+      const block = skillRecord(name, skillSetup);
+      if (block !== undefined) {
+        writeFileSync(`${dumpDirectory}/skill-${name}.md`, block);
+      }
+    }
+  }
+}
+
+if (measureSkills) await reportSkills();
 
 // Pools opened by an imported module would keep the process alive.
 process.exit(0);

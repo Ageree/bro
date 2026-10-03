@@ -693,6 +693,21 @@ export const env = createEnv({
     // duplicate memories the digest folds together. Unset, it only cuts
     // one-time codes out of memory and trims history, for everyone.
     MEMORY_DIGEST_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of skills chosen by the server (docs/roadmap.md, item 24):
+    // workspace ids, or `*` for every workspace, whose interactive turns get
+    // the core instructions and a skill's rules only when the turn needs
+    // them (`agent/lib/skills/`). No owners' emails: the instructions, the
+    // `skills` memory slot and `load_skill` must reach the same verdict
+    // without a lookup. Only with the direct model (RouterAI or OpenRouter).
+    // Independent of STEP_CONTEXT_WORKSPACES, but it pays off with it: without
+    // it the clock in the instructions puts the index and every attached
+    // block at full price on every step (scripts/costs/step-context.ts).
+    SKILLS_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SKILLS_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the cache-friendly step (docs/agent-costs.md, 3.2):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // steps keep per-step notes after the history and whose browser report

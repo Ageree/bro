@@ -2,6 +2,8 @@ import { defineDynamic, defineInstructions } from "eve/instructions";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { instructionText } from "@agent/lib/skills/catalog";
+import { skillsLayout } from "@agent/lib/skills/pilot";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { localMonthKey } from "@shared/calendar/local-period";
@@ -17,8 +19,6 @@ import {
   spentUnderRule,
   standingActionOverridden,
 } from "@shared/spending/limit";
-import autonomy from "./content/autonomy.md?raw";
-import followThrough from "./content/follow-through.md?raw";
 
 /**
  * The person's monthly spending budget and standing permissions. Neither
@@ -133,12 +133,18 @@ export default defineDynamic({
           : undefined;
       // Setting up the later step of an errand is the conversation's: a
       // scheduled worker has no schedule tools and must not say it set one.
+      const layout = skillsLayout(context);
       const followThroughRules = resolveModeValue(context, {
-        interactive: followThrough,
+        interactive: instructionText("follow-through", layout),
       });
       return defineInstructions({
-        content: [autonomy, followThroughRules, limit]
+        content: [
+          instructionText("autonomy", layout),
+          followThroughRules,
+          limit,
+        ]
           .filter((part) => part !== null && part !== undefined)
+          .filter((part) => part.trim().length > 0)
           .join("\n"),
       });
     },
