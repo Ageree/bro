@@ -60,3 +60,64 @@ export async function listsWorkspaceRemembered(
   verdicts.set(key, { expiresAt: now + verdictLifetimeMs, listed });
   return listed;
 }
+
+/** The step a pilot is asked in: its session and turn (`turn-kind/step.ts`). */
+interface PilotTurn {
+  readonly sessionId: string;
+  readonly turnId?: string;
+}
+
+/**
+ * How many turns and sessions keep their verdicts in one process. The maps
+ * go by last use: every step of a turn moves its verdict to the newest end,
+ * so a turn that is still running loses it only when a thousand other turns
+ * asked between two of its steps.
+ */
+const rememberedVerdicts = 1000;
+
+const turnVerdicts = new Map<string, Promise<boolean>>();
+const sessionVerdicts = new Map<string, boolean>();
+
+function remember<T>(map: Map<string, T>, key: string, value: T) {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size <= rememberedVerdicts) return;
+  const oldest = map.keys().next().value;
+  if (oldest !== undefined) map.delete(oldest);
+}
+
+/** A remembered value, moved to the newest end as it is used. */
+function recall<T>(map: Map<string, T>, key: string) {
+  const known = map.get(key);
+  if (known !== undefined) remember(map, key, known);
+  return known;
+}
+
+/**
+ * A pilot's verdict, the same for every step of a turn: a pilot that flips
+ * between steps changes what the step sends (its notes, its tools) and
+ * breaks the prompt cache of the whole turn. `lookup` answers undefined when
+ * it failed; the turn then keeps the session's last verdict, or stays out of
+ * the pilot. Without a turn id the lookup is asked as it is.
+ */
+export async function pilotVerdictOfTurn(
+  pilot: string,
+  turn: PilotTurn | undefined,
+  lookup: () => Promise<boolean | undefined>
+) {
+  if (turn?.turnId === undefined) return (await lookup()) ?? false;
+  // eve numbers turns per session (`turn_0`, `turn_1`…), so a turn id alone
+  // names a turn of every session in the process.
+  const key = `${pilot}\n${turn.sessionId}\n${turn.turnId}`;
+  const known = recall(turnVerdicts, key);
+  if (known) return known;
+  const sessionKey = `${pilot}\n${turn.sessionId}`;
+  const verdict = lookup().then((found) => {
+    if (found === undefined)
+      return recall(sessionVerdicts, sessionKey) ?? false;
+    remember(sessionVerdicts, sessionKey, found);
+    return found;
+  });
+  remember(turnVerdicts, key, verdict);
+  return verdict;
+}

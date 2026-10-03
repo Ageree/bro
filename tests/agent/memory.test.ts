@@ -245,6 +245,23 @@ describe("forgetting a memory without the person's word", () => {
         }
       )
     ).toBe("not-applicable");
+    // Named with another text, it is another record, whatever its index says.
+    const misnamed = await memoryRemovalApproval(
+      alice,
+      "scope-a",
+      personTurn("this-session"),
+      { index: 1, text: "Любит суши." }
+    );
+    expect(misnamed).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(misnamed)).toContain("«Живёт в Казани.»");
+    expect(
+      await memoryRemovalApproval(
+        alice,
+        "scope-a",
+        personTurn("this-session"),
+        { index: 1, text: "живёт в казани." }
+      )
+    ).toBe("not-applicable");
     // «Удали всё, что ты запомнил в этом разговоре»: a memory from another
     // conversation is not forgotten on the model's reading of that.
     const unnamed = await memoryRemovalApproval(

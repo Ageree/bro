@@ -43,6 +43,7 @@ import {
   usualVoices,
 } from "@agent/lib/google-workspace/turn-reads";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
+import { skillsLayout } from "@agent/lib/skills/pilot";
 import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import {
@@ -50,6 +51,8 @@ import {
   maximumAttachmentBytes,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { stepContextPilotOfCaller } from "@agent/lib/step-context/pilot";
+import { stepStartedEventSchema } from "@agent/lib/turn-kind/step";
 import {
   findGmailAttachmentArtifact,
   saveGmailAttachmentArtifact,
@@ -395,7 +398,8 @@ function voiceUnfollowed(
  */
 function defineGmailSend(
   readMessageIds: readonly string[] | null,
-  voices: Parameters<typeof voiceUnfollowed>[1]
+  voices: Parameters<typeof voiceUnfollowed>[1],
+  short = false
 ) {
   return defineTool({
     approval: async (ctx) => {
@@ -413,7 +417,11 @@ function defineGmailSend(
             access)
         : access;
     },
-    description: `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. In a turn Bro opened itself (a browser report), the person decides on a card instead. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. If the person declines a card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
+    // The skills pilot's turns read it in a few lines: the rest is in the
+    // google skill's body, which comes with the tool.
+    description: short
+      ? `Send an email from the user's Gmail. «Ответь …», «напиши ей по письму, что …» mean this tool. Asked for in the person's own message, it goes at once: no card, never ask «отправить?»; in a turn Bro opened (a browser report) they decide on a card. Put the exact recipients, subject and full text in the call. For a reply, read the thread with gmail-read-thread \`forReply: true\` first and write in the person's voice from its \`yourEarlierEmails\`. A rule the person saved outranks this. A declined card: save the same email with gmail-draft. ${replyFlow}`
+      : `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. In a turn Bro opened itself (a browser report), the person decides on a card instead. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. If the person declines a card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
     inputSchema: gmailComposeSchema,
     async execute(input, ctx) {
       const sent = await sendGmail(ctx, input);
@@ -431,7 +439,9 @@ export const gmailSend = defineGmailSend(null, null);
 
 /**
  * `afterDeclinedSend` is set when the person declined a gmail-send card in
- * this turn: the declined email is what this tool saves next.
+ * this turn: the declined email is what this tool saves next. In the pilot
+ * of the cache-friendly step it is never set, and the step's note says it
+ * instead (`declinedGmailSendNote`).
  */
 function defineGmailDraft(
   afterDeclinedSend: boolean,
@@ -469,7 +479,7 @@ export default defineDynamic({
     // Resolved before every model step, so the read tools know what the
     // current turn already asked Google. Without Google on the deployment
     // there are none: their presence would read as a connected mailbox.
-    "step.started": (_event, context) => {
+    "step.started": async (event, context) => {
       if (!googleWorkspaceConfigured()) return null;
       const reads = turnReads(
         context.messages,
@@ -493,13 +503,21 @@ export default defineDynamic({
         interactive: {
           "gmail-attachment": gmailAttachment,
           "gmail-draft": defineGmailDraft(
-            turnDeclinedGmailSend(context.messages),
+            turnDeclinedGmailSend(context.messages) &&
+              !(await stepContextPilotOfCaller(
+                context,
+                stepStartedEventSchema.safeParse(event).data
+              )),
             readMessageIds,
             voices
           ),
           "gmail-read-thread": gmailReadThreadTool,
           "gmail-search": gmailSearchTool,
-          "gmail-send": defineGmailSend(readMessageIds, voices),
+          "gmail-send": defineGmailSend(
+            readMessageIds,
+            voices,
+            skillsLayout(context) === "core"
+          ),
           "gmail-update": defineGmailUpdate(turnGmailUpdates(context.messages)),
         },
         "proactive-worker": {

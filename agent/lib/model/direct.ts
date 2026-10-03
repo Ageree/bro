@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
   generateId,
@@ -9,6 +10,10 @@ import {
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import type { SkillName } from "@agent/lib/skills/catalog";
+import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
+import { toolGroup, toolGroups, toolOffered } from "@agent/lib/skills/tools";
+import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import {
   defuseStepNoteTag,
   taggedStepNote,
@@ -80,7 +85,10 @@ const routerAiDeepSeekOrder = ["deepinfra"];
  * picks may be served by one of them alone, and ignoring it there would
  * leave no endpoint at all.
  */
-function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
+function skippedHosts(
+  modelId: string,
+  endpoint: Pick<ModelEndpoint, "provider">
+) {
   if (!modelId.startsWith("deepseek/")) return [];
   return [
     ...(endpoint.provider === "routerai" ? routerAiDeepSeekSkipped : []),
@@ -97,7 +105,10 @@ function skippedHosts(modelId: string, endpoint: ModelEndpoint) {
  * hosts above either way, and ROUTERAI_PROVIDER_IGNORE adds hosts to skip
  * for every model; a pinned host stays pinned.
  */
-export function providerRouting(modelId: string, endpoint: ModelEndpoint) {
+export function providerRouting(
+  modelId: string,
+  endpoint: Pick<ModelEndpoint, "provider" | "providerIgnore" | "providerOrder">
+) {
   const order =
     endpoint.providerOrder ??
     (endpoint.provider === "routerai" && modelId.startsWith("deepseek/")
@@ -307,23 +318,6 @@ function hostSchema(schema: JSONSchema7): JSONSchema7 {
   );
 }
 
-/** Every function tool of a step with its input schema as `hostSchema`. */
-function toolSchemaMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.map((tool) =>
-          tool.type === "function"
-            ? { ...tool, inputSchema: hostSchema(tool.inputSchema) }
-            : tool
-        ),
-      };
-    },
-  };
-}
-
 /** The tool that reaches the person, which a forced step exists to call. */
 const replyToolName = "send_message";
 
@@ -365,51 +359,6 @@ function forcedReplySchema(schema: JSONSchema7): JSONSchema7 {
 }
 
 /**
- * A forced step's `send_message` with the message's `text` required. Hosts
- * that decode a forced tool call with a grammar (DeepInfra, OpenInference,
- * Krea, AtlasCloud, SiliconFlow on 25.09) keep the schema's key order and let
- * any optional key be skipped: a model that wrote another key where the text
- * belongs could only close the call without it, and did so again at every
- * forced step. Required, the text is the one key the grammar cannot skip.
- * Only what the host decodes changes: the tool still takes an attachment
- * without text, and a step left to the model (`auto`) is not touched.
- */
-function forcedReplyTextMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.map((tool) =>
-          tool.type === "function" && tool.name === replyToolName
-            ? { ...tool, inputSchema: forcedReplySchema(tool.inputSchema) }
-            : tool
-        ),
-      };
-    },
-  };
-}
-
-/**
- * Takes tools out of one step's offer. The history keeps its earlier calls
- * of them; the model just cannot make another. A call without tools, such as
- * compaction, is left alone.
- */
-function withheldToolsMiddleware(
-  names: readonly string[]
-): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.filter((tool) => !names.includes(tool.name)),
-      };
-    },
-  };
-}
-
-/**
  * Appends the reply note (language, Bro's voice, how to address the person,
  * `agent/lib/delivery/language.ts`) as the last system message of the prompt.
  * At the end it does not break the cached prefix, and it is the freshest thing
@@ -428,41 +377,138 @@ function replyNoteMiddleware(note: string): LanguageModelMiddleware {
   };
 }
 
+/** The tools of one model call, as middleware sees them. */
+type StepTools = NonNullable<
+  Parameters<
+    NonNullable<LanguageModelMiddleware["transformParams"]>
+  >[0]["params"]["tools"]
+>;
+
 /**
- * Keeps only the tools a step is offered. Like `withheldToolsMiddleware`, the
- * history keeps earlier calls of the rest; a call without tools is left alone.
+ * Tools whose presence changes from turn to turn, or within one: drawing
+ * comes only when a picture was asked for (`agent/tools/generate_image.ts`),
+ * `schedules-answer` only when a schedule's question waits for the person's
+ * answer, `send_message`'s schema changed between forced and free steps
+ * before the pilot kept it the same, and `ask_question` goes once the turn
+ * asked its question. In the pilot they come last, in this order, so a
+ * change among them leaves every schema before them in the cached prefix.
  */
-function offeredToolsMiddleware(
-  names: readonly string[]
+const volatileTools = [
+  "generate_image",
+  "schedules-answer",
+  replyToolName,
+  "ask_question",
+];
+
+/**
+ * The tools in their order: the core ones as eve gives them, then each
+ * group that follows a skill (`toolGroups`), then the volatile ones
+ * (`volatileTools`). A group offered later joins after the core, and a
+ * change among the volatile tools leaves everything before them as it was.
+ */
+function stableOrder(tools: StepTools): StepTools {
+  const volatile = (name: string) => volatileTools.includes(name);
+  return [
+    ...tools.filter(
+      (tool) => !volatile(tool.name) && toolGroup(tool.name) === undefined
+    ),
+    ...toolGroups.flatMap((group) =>
+      tools.filter(
+        (tool) => !volatile(tool.name) && toolGroup(tool.name) === group
+      )
+    ),
+    ...volatileTools.flatMap((name) =>
+      tools.filter((tool) => tool.name === name)
+    ),
+  ];
+}
+
+/**
+ * The tools one step sends, from every tool of its turn. Every function
+ * tool's schema is as a host should decode it (`hostSchema`). A forced step
+ * (`forcedReply`) gets `send_message` with the message's `text` required:
+ * hosts that decode a forced tool call with a grammar (DeepInfra,
+ * OpenInference, Krea, AtlasCloud, SiliconFlow on 25.09) keep the schema's
+ * key order and let any optional key be skipped, so a model that wrote
+ * another key where the text belongs could only close the call without it,
+ * and did so again at every forced step. Required, the text is the one key
+ * the grammar cannot skip; the tool itself still takes an attachment
+ * without text. Then the step's `withheld` tools go, and only its `offered`
+ * ones stay; the history keeps earlier calls of the rest.
+ *
+ * In the pilot of the cache-friendly step (`stableContext`) the tool block
+ * is the same in every step of a turn: `send_message` has its text required
+ * in every step, forced or not, since its schema flipping after the reply
+ * made the next step re-read the whole history at full price, and the
+ * volatile tools come last (`volatileTools`). A message of attachments
+ * alone then needs a caption.
+ *
+ * In the skills pilot a person's step leaves out the tools of the groups no
+ * skill of the conversation offers (`groups`); in the pilot of the step
+ * they come after the core tools, group by group.
+ */
+export function stepToolsTransform(
+  tools: StepTools,
+  options: {
+    readonly forcedReply: boolean;
+    /**
+     * In the skills pilot, the skills whose tools a person's step is
+     * offered (`offeredSkills`): a tool of a group none of them offers is
+     * left out (`agent/lib/skills/tools.ts`). Undefined, no tool is.
+     */
+    readonly groups?: readonly SkillName[];
+    readonly offered?: readonly string[];
+    readonly stableContext?: boolean;
+    readonly withheld: readonly string[];
+  }
+): StepTools {
+  const forced = options.forcedReply || options.stableContext === true;
+  const kept = tools
+    .map((tool) => {
+      if (tool.type !== "function") return tool;
+      const schema = hostSchema(tool.inputSchema);
+      return {
+        ...tool,
+        inputSchema:
+          forced && tool.name === replyToolName
+            ? forcedReplySchema(schema)
+            : schema,
+      };
+    })
+    .filter((tool) => !options.withheld.includes(tool.name))
+    .filter((tool) => options.offered?.includes(tool.name) ?? true)
+    .filter(
+      (tool) =>
+        options.groups === undefined || toolOffered(tool.name, options.groups)
+    );
+  return options.stableContext ? stableOrder(kept) : kept;
+}
+
+/**
+ * The tools of every step as `stepToolsTransform` builds them. A call
+ * without tools, such as compaction, is left alone. In the pilot each step
+ * logs a digest of its tool block, which must not change within a turn but
+ * at the allowed points (docs/agent-costs.md, 3.2).
+ */
+function stepToolsMiddleware(
+  options: Parameters<typeof stepToolsTransform>[1],
+  step: StepIdentity | undefined
 ): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: params.tools.filter((tool) => names.includes(tool.name)),
-      };
-    },
-  };
-}
-
-/**
- * `send_message` last among the tools. Its schema is the one that changes
- * inside a turn — `text` is required in a forced step and not after it
- * (`forcedReplyTextMiddleware`) — so every schema before it stays in the
- * cached prefix when it does. Only the order changes.
- */
-function replyToolLastMiddleware(): LanguageModelMiddleware {
-  return {
-    async transformParams({ params }) {
-      if (!params.tools?.length) return params;
-      return {
-        ...params,
-        tools: [
-          ...params.tools.filter((tool) => tool.name !== replyToolName),
-          ...params.tools.filter((tool) => tool.name === replyToolName),
-        ],
-      };
+      const tools = stepToolsTransform(params.tools, options);
+      if (options.stableContext) {
+        console.info("[tools]", {
+          ...step,
+          count: tools.length,
+          digest: createHash("sha256")
+            .update(JSON.stringify(tools))
+            .digest("hex")
+            .slice(0, 16),
+        });
+      }
+      return { ...params, tools };
     },
   };
 }
@@ -484,53 +530,208 @@ type ToolOutput = Extract<
   { type: "tool-result" }
 >["output"];
 
-/** A JSON value with the step note's tag defused in every string. */
-const jsonWithDefusedTags: z.ZodType<JSONValue> = z.lazy(() =>
-  z.union([
-    z.string().transform(defuseStepNoteTag),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonWithDefusedTags),
-    z.record(z.string(), jsonWithDefusedTags.optional()),
-  ])
-);
+/** What defuses the tags of Bro's own word in one piece of text. */
+type Defuse = (text: string) => string;
 
-function defusedJson(value: JSONValue): JSONValue {
-  const parsed = jsonWithDefusedTags.safeParse(value);
+/** A JSON value with the tags defused in every string, by defuser. */
+const defusingJsonSchemas = new Map<Defuse, z.ZodType<JSONValue>>();
+
+function defusingJson(defuse: Defuse) {
+  const known = defusingJsonSchemas.get(defuse);
+  if (known) return known;
+  const schema: z.ZodType<JSONValue> = z.lazy(() =>
+    z.union([
+      z.string().transform(defuse),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(schema),
+      z.record(z.string(), schema.optional()),
+    ])
+  );
+  defusingJsonSchemas.set(defuse, schema);
+  return schema;
+}
+
+function defusedJson(value: JSONValue, defuse: Defuse): JSONValue {
+  const parsed = defusingJson(defuse).safeParse(value);
   // What is not plain JSON goes on as its defused text rather than as is.
-  return parsed.success
-    ? parsed.data
-    : defuseStepNoteTag(JSON.stringify(value));
+  return parsed.success ? parsed.data : defuse(JSON.stringify(value));
 }
 
-function defusedFileData(data: FileData): FileData {
-  return data.type === "text"
-    ? { ...data, text: defuseStepNoteTag(data.text) }
-    : data;
+/** A file's bytes, sent as base64 or as they are. */
+const fileBytesSchema = z.union([
+  z.string().transform((base64) => ({
+    base64: true,
+    bytes: Buffer.from(base64, "base64"),
+  })),
+  z.instanceof(Uint8Array).transform((bytes) => ({ base64: false, bytes })),
+]);
+
+/** Media types whose bytes are text the model reads. */
+const textMediaType =
+  /^text(?:\/|$)|^application\/(?:[\w.-]+\+)?(?:json|xml|csv)$/iu;
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * The second byte's range and the sequence's length that a lead byte of
+ * UTF-8 takes (the WHATWG decoder's: no overlong form, no surrogate,
+ * nothing past U+10FFFF), or none for a byte that leads nothing.
+ */
+function utf8Lead(lead: number) {
+  if (lead >= 0xc2 && lead <= 0xdf) return { high: 0xbf, length: 2, low: 0x80 };
+  if (lead === 0xe0) return { high: 0xbf, length: 3, low: 0xa0 };
+  if (lead === 0xed) return { high: 0x9f, length: 3, low: 0x80 };
+  if (lead >= 0xe1 && lead <= 0xef) return { high: 0xbf, length: 3, low: 0x80 };
+  if (lead === 0xf0) return { high: 0xbf, length: 4, low: 0x90 };
+  if (lead >= 0xf1 && lead <= 0xf3) return { high: 0xbf, length: 4, low: 0x80 };
+  if (lead === 0xf4) return { high: 0x8f, length: 4, low: 0x80 };
+  return undefined;
 }
 
-function defusedToolOutput(output: ToolOutput): ToolOutput {
+/** How many bytes of UTF-8 the character at `at` takes; 0 when none. */
+function utf8Length(bytes: Uint8Array, at: number) {
+  const lead = bytes[at] ?? 0;
+  if (lead < 0x80) return 1;
+  const sequence = utf8Lead(lead);
+  if (sequence === undefined) return 0;
+  const second = bytes[at + 1] ?? 0;
+  if (second < sequence.low || second > sequence.high) return 0;
+  for (let next = at + 2; next < at + sequence.length; next += 1) {
+    const byte = bytes[next] ?? 0;
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return sequence.length;
+}
+
+/** How many bytes a window of a non-UTF-8 document's reading spans. */
+const windowBytes = 1 << 16;
+
+/** How many bytes not of UTF-8 one string of escapes takes at most. */
+const escapeRun = 1 << 12;
+
+/**
+ * A text document's bytes as text. A byte that is no part of UTF-8 — the
+ * whole of a `.csv` saved in Windows-1251, or one stray byte — becomes a
+ * lone surrogate of its own (U+DC80–U+DCFF, as Python's `surrogateescape`):
+ * the UTF-8 around it is still read, forged tags and all, and the text
+ * encodes back to the very same bytes (`documentBytes`). The bytes are read
+ * a window at a time, a run of escapes as one string, so a large file not
+ * in UTF-8 holds a few strings per window, not a few per byte.
+ */
+function documentText(bytes: Uint8Array) {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    // Not UTF-8 throughout: read it run by run.
+  }
+  const windows: string[] = [];
+  let parts: string[] = [];
+  let run = 0;
+  let at = 0;
+  let windowStart = 0;
+  while (at < bytes.length) {
+    const length = utf8Length(bytes, at);
+    if (length > 0) {
+      at += length;
+    } else {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      const units: number[] = [];
+      while (
+        at < bytes.length &&
+        units.length < escapeRun &&
+        utf8Length(bytes, at) === 0
+      ) {
+        units.push(0xdc00 + (bytes[at] ?? 0));
+        at += 1;
+      }
+      parts.push(String.fromCharCode(...units));
+      run = at;
+    }
+    if (at - windowStart >= windowBytes) {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      windows.push(parts.join(""));
+      parts = [];
+      run = at;
+      windowStart = at;
+    }
+  }
+  parts.push(strictUtf8.decode(bytes.subarray(run)));
+  windows.push(parts.join(""));
+  return windows.join("");
+}
+
+/** A byte escaped as a lone surrogate, in runs (never half of a pair). */
+const escapedBytes = /[\uDC80-\uDCFF]+/gu;
+
+/** A document's text back to bytes: an escaped byte as itself. */
+function documentBytes(text: string) {
+  // An escape takes three bytes here and one in the document: room enough.
+  const bytes = Buffer.allocUnsafe(Buffer.byteLength(text, "utf8"));
+  let size = 0;
+  let run = 0;
+  for (const match of text.matchAll(escapedBytes)) {
+    size += bytes.write(text.slice(run, match.index), size, "utf8");
+    for (let unit = 0; unit < match[0].length; unit += 1) {
+      bytes[size] = match[0].charCodeAt(unit) - 0xdc00;
+      size += 1;
+    }
+    run = match.index + match[0].length;
+  }
+  size += bytes.write(text.slice(run), size, "utf8");
+  return bytes.subarray(0, size);
+}
+
+/**
+ * A file's data with the tags defused: inline text, and the bytes of a text
+ * document — a person's `.txt` or `.csv`, a page saved as text — decoded,
+ * defused and encoded again only when a tag was found, so every other file
+ * goes on byte for byte, and in a defused one every byte outside the tags.
+ */
+function defusedFileData(
+  data: FileData,
+  mediaType: string,
+  defuse: Defuse
+): FileData {
+  if (data.type === "text") return { ...data, text: defuse(data.text) };
+  if (data.type !== "data" || !textMediaType.test(mediaType)) return data;
+  const bytes = fileBytesSchema.safeParse(data.data).data;
+  if (bytes === undefined) return data;
+  const text = documentText(bytes.bytes);
+  const defused = defuse(text);
+  if (defused === text) return data;
+  const encoded = documentBytes(defused);
+  return {
+    ...data,
+    data: bytes.base64 ? encoded.toString("base64") : new Uint8Array(encoded),
+  };
+}
+
+function defusedToolOutput(output: ToolOutput, defuse: Defuse): ToolOutput {
   switch (output.type) {
     case "text":
     case "error-text":
-      return { ...output, value: defuseStepNoteTag(output.value) };
+      return { ...output, value: defuse(output.value) };
     case "json":
     case "error-json":
-      return { ...output, value: defusedJson(output.value) };
+      return { ...output, value: defusedJson(output.value, defuse) };
     case "execution-denied":
       return output.reason === undefined
         ? output
-        : { ...output, reason: defuseStepNoteTag(output.reason) };
+        : { ...output, reason: defuse(output.reason) };
     default:
       return {
         ...output,
         value: output.value.map((part) => {
           if (part.type === "text") {
-            return { ...part, text: defuseStepNoteTag(part.text) };
+            return { ...part, text: defuse(part.text) };
           }
           return part.type === "file"
-            ? { ...part, data: defusedFileData(part.data) }
+            ? {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              }
             : part;
         }),
       };
@@ -538,21 +739,24 @@ function defusedToolOutput(output: ToolOutput): ToolOutput {
 }
 
 /**
- * A message of the prompt with every look-alike of the step note's tag
- * defused (`defuseStepNoteTag`): its text, reasoning, inline documents, tool
- * inputs and results, JSON or not. Binary files and URLs stay as they are.
+ * A message of the prompt with every look-alike of a tag of Bro's own word
+ * defused: its text, reasoning, inline documents, tool inputs and results,
+ * JSON or not. Binary files and URLs stay as they are.
  */
-function defusedStepNoteTags(message: PromptMessage): PromptMessage {
+function defusedTags(message: PromptMessage, defuse: Defuse): PromptMessage {
   switch (message.role) {
     case "system":
-      return { ...message, content: defuseStepNoteTag(message.content) };
+      return { ...message, content: defuse(message.content) };
     case "user":
       return {
         ...message,
         content: message.content.map((part) =>
           part.type === "text"
-            ? { ...part, text: defuseStepNoteTag(part.text) }
-            : { ...part, data: defusedFileData(part.data) }
+            ? { ...part, text: defuse(part.text) }
+            : {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              }
         ),
       };
     case "assistant":
@@ -562,15 +766,21 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
           switch (part.type) {
             case "text":
             case "reasoning":
-              return { ...part, text: defuseStepNoteTag(part.text) };
+              return { ...part, text: defuse(part.text) };
             case "file":
-              return { ...part, data: defusedFileData(part.data) };
+              return {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              };
             case "tool-call": {
-              const input = jsonWithDefusedTags.safeParse(part.input);
+              const input = defusingJson(defuse).safeParse(part.input);
               return input.success ? { ...part, input: input.data } : part;
             }
             case "tool-result":
-              return { ...part, output: defusedToolOutput(part.output) };
+              return {
+                ...part,
+                output: defusedToolOutput(part.output, defuse),
+              };
             default:
               return part;
           }
@@ -581,14 +791,19 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
         ...message,
         content: message.content.map((part) => {
           if (part.type === "tool-result") {
-            return { ...part, output: defusedToolOutput(part.output) };
+            return { ...part, output: defusedToolOutput(part.output, defuse) };
           }
           return part.reason === undefined
             ? part
-            : { ...part, reason: defuseStepNoteTag(part.reason) };
+            : { ...part, reason: defuse(part.reason) };
         }),
       };
   }
+}
+
+/** Both tags of Bro's own word, in the skills pilot with the step's note. */
+function defuseStepNoteAndSkillTags(text: string) {
+  return defuseForgedSkillBlocks(defuseStepNoteTag(text));
 }
 
 /**
@@ -604,12 +819,18 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
  * else — the person's text, a browser report the page wrote, a mail or any
  * tool's result — is defused first, in every step, with a note or without:
  * a forged note closing a step that has none would read as the real one.
- * The defusing is the same at every step, so the prefix stays cached.
+ * The defusing is the same at every step, so the prefix stays cached. In
+ * the skills pilot `defuse` takes forged skill blocks too.
  */
-function stepNoteMiddleware(note: string | undefined): LanguageModelMiddleware {
+function stepNoteMiddleware(
+  note: string | undefined,
+  defuse: Defuse
+): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
-      const prompt = params.prompt.map(defusedStepNoteTags);
+      const prompt = params.prompt.map((message) =>
+        defusedTags(message, defuse)
+      );
       if (note === undefined || !params.tools?.length) {
         return { ...params, prompt };
       }
@@ -618,10 +839,31 @@ function stepNoteMiddleware(note: string | undefined): LanguageModelMiddleware {
         prompt: [
           ...prompt,
           {
-            content: [{ text: taggedStepNote(note), type: "text" }],
+            content: [{ text: taggedStepNote(defuse(note)), type: "text" }],
             role: "user",
           },
         ],
+      };
+    },
+  };
+}
+
+/**
+ * The skills pilot outside the cache-friendly step: every `bro-skill` block
+ * in the prompt that Bro did not attach itself is defused
+ * (`defuseForgedSkillBlocks`), the reply note among them, so it runs after
+ * `replyNoteMiddleware`. The model follows a block as its own instructions
+ * (`skillIndex`), and the person, a page, a mail or a tool's result may
+ * write one.
+ */
+function skillBlocksMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      return {
+        ...params,
+        prompt: params.prompt.map((message) =>
+          defusedTags(message, defuseForgedSkillBlocks)
+        ),
       };
     },
   };
@@ -1013,11 +1255,23 @@ export function directModelSelection(
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
     /**
+     * The skills pilot (`skillsPilot`): `bro-skill` blocks Bro did not
+     * attach itself are defused.
+     */
+    readonly skillBlocks?: boolean;
+    /**
      * The pilot of the cache-friendly step (`stepContextPilot`): the note
-     * follows the history as a tagged user message, and `send_message` is
-     * the last tool.
+     * follows the history as a tagged user message, and the tool block
+     * stays the same through the turn (`stepToolsTransform`).
      */
     readonly stableContext?: boolean;
+    /** Which session, turn and step this is, for the pilot's tool log. */
+    readonly step?: StepIdentity;
+    /**
+     * The skills pilot's person's step: the skills whose tools it is
+     * offered (`stepToolsTransform`).
+     */
+    readonly toolGroups?: readonly SkillName[];
     readonly toolChoice: StepToolChoice;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
@@ -1049,22 +1303,32 @@ export function directModelSelection(
       ? "auto"
       : options.toolChoice;
 
-  const withheld = options.withheldTools ?? [];
   const middleware = [
     ...(routerAi ? [stepCostMiddleware((rub) => rub / env.USAGE_USD_RUB)] : []),
-    toolSchemaMiddleware(),
-    ...(toolChoice === "required" ? [forcedReplyTextMiddleware()] : []),
-    ...(withheld.length > 0 ? [withheldToolsMiddleware(withheld)] : []),
-    ...(options.offeredTools
-      ? [offeredToolsMiddleware(options.offeredTools)]
-      : []),
-    ...(options.stableContext ? [replyToolLastMiddleware()] : []),
+    stepToolsMiddleware(
+      {
+        forcedReply: toolChoice === "required",
+        groups: options.toolGroups,
+        offered: options.offeredTools,
+        stableContext: options.stableContext,
+        withheld: options.withheldTools ?? [],
+      },
+      options.step
+    ),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.stableContext
-      ? [stepNoteMiddleware(options.replyNote)]
-      : options.replyNote
-        ? [replyNoteMiddleware(options.replyNote)]
-        : []),
+      ? [
+          stepNoteMiddleware(
+            options.replyNote,
+            options.skillBlocks ? defuseStepNoteAndSkillTags : defuseStepNoteTag
+          ),
+        ]
+      : [
+          ...(options.replyNote
+            ? [replyNoteMiddleware(options.replyNote)]
+            : []),
+          ...(options.skillBlocks ? [skillBlocksMiddleware()] : []),
+        ]),
     ...(options.silent
       ? [silentEndMiddleware()]
       : options.delivered

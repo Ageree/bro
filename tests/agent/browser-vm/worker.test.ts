@@ -244,6 +244,60 @@ describe("browser VM worker client", () => {
     });
   });
 
+  it("sends the run's tuning with its routing, and refuses a host the worker would", async () => {
+    const { worker } = await loadWorker();
+    const calls = stubWorker(
+      Response.json(
+        { id: runId, sessionId, status: "queued" },
+        { status: 202 }
+      ),
+      Response.json({ runId, sessionId, status: "started" })
+    );
+    const tuning = {
+      maxActionsPerStep: 8,
+      provider: {
+        ignore: ["deepseek", "deepinfra/fp8"],
+        order: ["deepinfra"],
+        requireParameters: true,
+      },
+      reasoning: "none" as const,
+    };
+
+    await worker.startBrowserVmWorkerRun(vm, {
+      id: runId,
+      llm,
+      task: "Найди чайник",
+      tuning,
+    });
+    await worker.sendBrowserVmWorkerMessage(vm, sessionId, {
+      llm,
+      runId,
+      text: "123456",
+      tuning,
+    });
+
+    expect(
+      calls.map(
+        (call) =>
+          z.object({ tuning: z.unknown() }).parse(JSON.parse(call.body)).tuning
+      )
+    ).toEqual([tuning, tuning]);
+    for (const provider of [
+      { order: ["DeepInfra"] },
+      { ignore: Array.from({ length: 33 }, (_, i) => `host${String(i)}`) },
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each refusal is checked before the next call.
+      await expect(
+        worker.sendBrowserVmWorkerMessage(vm, sessionId, {
+          llm,
+          text: "123456",
+          tuning: { provider },
+        })
+      ).rejects.toBeInstanceOf(z.ZodError);
+    }
+    expect(calls).toHaveLength(2);
+  });
+
   it("names the run that holds the browser when a start is refused as busy", async () => {
     const { worker } = await loadWorker();
     stubWorker(

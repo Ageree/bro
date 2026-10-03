@@ -50,6 +50,18 @@ async function loadBackend(settings = {}) {
 }
 
 describe("browser VM backend choice", () => {
+  it("names the service the VM's model is called at by its address, and no other", async () => {
+    expect((await loadBackend()).browserVmLlmService()).toBe("routerai");
+    const openRouter = await loadBackend({
+      BROWSER_VM_LLM_BASE_URL: "https://openrouter.ai/api/v1",
+    });
+    expect(openRouter.browserVmLlmService()).toBe("openrouter");
+    const mirror = await loadBackend({
+      BROWSER_VM_LLM_BASE_URL: "https://routerai.ru.example.test/api/v1",
+    });
+    expect(mirror.browserVmLlmService()).toBeUndefined();
+  });
+
   it("is configured only with every key, the image, the proxy and the model key", async () => {
     expect((await loadBackend()).browserVmConfigured()).toBe(true);
     const names = Object.keys(browserVmTestEnvironment);

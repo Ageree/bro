@@ -90,10 +90,17 @@ export function ownTurnApproval(context: AgentModeContext) {
     : ("user-approval" as const);
 }
 
+/**
+ * The instructions of this turn's mode. A text left blank — a file all of
+ * whose rules a skill took out of the core (`agent/lib/skills/catalog.ts`)
+ * — is no instruction at all.
+ */
 export function resolveModeInstructions(
   context: DynamicResolveContext,
   contentByMode: Partial<Record<AgentMode, string>>
 ) {
   const content = resolveModeValue(context, contentByMode);
-  return content === null ? null : defineInstructions({ content });
+  return content === null || content.trim().length === 0
+    ? null
+    : defineInstructions({ content });
 }
