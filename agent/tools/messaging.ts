@@ -9,7 +9,7 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { isSharedFileLink } from "../lib/sandbox/files";
-import { conversationHoldsFiles } from "../lib/sandbox/pilot";
+import { reportTurnHoldsFiles } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
 import {
@@ -74,7 +74,7 @@ type SentMessage = z.infer<typeof sendMessageOutputSchema>;
  * (`agent/channels/telegram.ts`). Only the links of the task agent's own
  * files stay attachments (`isSharedFileLink`): they lead to Bro alone.
  * Applied wherever the conversation may hold the files
- * (`conversationHoldsFiles`).
+ * (`reportTurnHoldsFiles`).
  */
 function withoutFetchedUrls(message: SentMessage): SentMessage {
   if (message.kind === "link") {
@@ -195,7 +195,7 @@ export default defineDynamic({
         // By the conversation's mark, not the files pilot alone: a report
         // carries the files' content after the flag is cleared too.
         turnOpenedByBackgroundTask(context.messages) &&
-          (await conversationHoldsFiles(context))
+          (await reportTurnHoldsFiles(context))
       );
       const messageOnly = { send_message };
       const interactive = delivery

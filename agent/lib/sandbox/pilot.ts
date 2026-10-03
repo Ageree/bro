@@ -8,7 +8,10 @@ import {
 } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
 import { sandboxHostConfigured } from "./host";
-import { conversationHoldsPersonFiles } from "./inbox";
+import {
+  conversationHoldsPersonFiles,
+  workspaceHoldsPersonFiles,
+} from "./inbox";
 
 /**
  * Whether a workspace's Bro may hand jobs to the task agent
@@ -92,6 +95,14 @@ const userCallerSchema = z.object({
   principalType: z.literal("user"),
 });
 
+/** The workspace of the caller that holds the turn, if it has one. */
+function callerWorkspaceId(context: {
+  readonly session: Pick<SessionContext["session"], "auth">;
+}) {
+  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  return userCallerSchema.safeParse(caller).data?.attributes.workspaceId;
+}
+
 /**
  * `taskFilesEnabled` for the workspace of the caller that holds the turn: a
  * person signed in to a channel, or Bro's own caller in a subagent, which
@@ -100,10 +111,7 @@ const userCallerSchema = z.object({
 export function taskFilesOfCaller(context: {
   readonly session: Pick<SessionContext["session"], "auth">;
 }) {
-  const caller = context.session.auth.current ?? context.session.auth.initiator;
-  return taskFilesEnabled(
-    userCallerSchema.safeParse(caller).data?.attributes.workspaceId
-  );
+  return taskFilesEnabled(callerWorkspaceId(context));
 }
 
 /**
@@ -120,36 +128,72 @@ export function taskFilesGuarded() {
   return objectStorageConfigured();
 }
 
-/** A send waits on the conversation's mark at most this long. */
+/** A send waits on the marks at most this long. */
 const sendCheckMs = 5000;
+/**
+ * After a mark could not be read, every send counts as one of a
+ * conversation with the files for this long without asking again: while
+ * Object Storage is down or slow, only one send a minute waits on it.
+ */
+const unreadableHoldMs = 60_000;
+let unreadableUntil = 0;
 
 /**
  * Whether what Bro sends in this conversation must carry no URL a server
  * fetches before the person reads it (a report turn's links and
  * attachments, `agent/tools/messaging.ts`; Telegram's previews): the
  * person's files reach the task agent here, or some task agent of this
- * conversation was given them (its mark, `markSandboxHoldsPersonFiles`),
- * whatever TASK_FILES_WORKSPACES says now. Clearing the flag leaves the
- * files' content in the conversation's history and in reports still to
- * come. A mark that cannot be read counts as there; without Object Storage
- * no file ever moved.
+ * conversation was given them, whatever the pilots say now. Clearing
+ * TASK_FILES_WORKSPACES, dropping the workspace from SANDBOX_WORKSPACES or
+ * leaving the direct model leaves the files' content in the conversation's
+ * history and in reports still to come, so only the marks decide
+ * (`markSandboxHoldsPersonFiles`): the workspace's first, a listing of its
+ * conversations' marks remembered, so a workspace that never gave a task
+ * agent a file asks Object Storage once every few seconds at most
+ * (`workspaceHoldsPersonFiles`), then the conversation's own mark. A
+ * mark that cannot be read counts as there, and so does every send for a
+ * minute after. Without Object Storage no mark can be read, and no file
+ * moved through this deployment: the files go only through it. A rollback
+ * to Vercel runs on the world of its own, whose histories never held them;
+ * a deployment that lost its Object Storage settings keeps the previews,
+ * and its report turns still carry no fetched URL
+ * ({@link reportTurnHoldsFiles}).
  */
 export async function conversationHoldsFiles(context: {
   readonly session: Pick<SessionContext["session"], "auth" | "id">;
 }) {
   if (taskFilesOfCaller(context)) return true;
   if (!taskFilesGuarded()) return false;
-  const caller = context.session.auth.current ?? context.session.auth.initiator;
-  const workspaceId =
-    userCallerSchema.safeParse(caller).data?.attributes.workspaceId;
+  const workspaceId = callerWorkspaceId(context);
   // Bro's hook moves only the files of a caller with a workspace.
   if (workspaceId === undefined) return false;
-  // Only the task agent's pilot ever had a helper to hand files to: every
-  // other workspace's send reads no mark (`taskAgentPilot` is remembered).
-  if (!(await taskAgentPilot({ workspaceId }))) return false;
-  return await conversationHoldsPersonFiles(
-    workspaceId,
-    context.session.id,
-    AbortSignal.timeout(sendCheckMs)
-  ).catch(() => true);
+  if (Date.now() < unreadableUntil) return true;
+  const signal = AbortSignal.timeout(sendCheckMs);
+  try {
+    return (
+      (await workspaceHoldsPersonFiles(workspaceId, signal)) &&
+      (await conversationHoldsPersonFiles(
+        workspaceId,
+        context.session.id,
+        signal
+      ))
+    );
+  } catch (error) {
+    unreadableUntil = Date.now() + unreadableHoldMs;
+    console.warn("[sandbox] person files marks unread", {
+      error: error instanceof Error ? error.name : "unknown",
+    });
+    return true;
+  }
+}
+
+/**
+ * {@link conversationHoldsFiles} for a turn the task agent's report opened.
+ * Only a conversation that ran a task agent has one, so without Object
+ * Storage, where no mark can say, its sends count as carrying the files.
+ */
+export async function reportTurnHoldsFiles(context: {
+  readonly session: Pick<SessionContext["session"], "auth" | "id">;
+}) {
+  return !taskFilesGuarded() || (await conversationHoldsFiles(context));
 }

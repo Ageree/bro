@@ -395,6 +395,155 @@ describe("the sandbox tool router", () => {
     );
   });
 
+  it("fetches none of Bro's own links through a proxy reader", async () => {
+    network.fetchPublic.mockResolvedValue(
+      new Response("secret,table", { headers: { "content-type": "text/csv" } })
+    );
+    const { ask, shareLink } = await router();
+    const share = shareLink("https://bro.example.test");
+    const once = encodeURIComponent(share);
+    const twice = encodeURIComponent(once);
+    let eightTimes = share;
+    for (let round = 0; round < 8; round += 1) {
+      eightTimes = encodeURIComponent(eightTimes);
+    }
+    for (const url of [
+      // A reader that takes the address in its query, decoded once.
+      `https://api.allorigins.win/raw?url=${once}`,
+      `https://corsproxy.io/?url=${once}`,
+      // In its path, as written or encoded twice.
+      `https://r.jina.ai/${share}`,
+      `https://r.jina.ai/${twice}`,
+      // Encoded three times, and eight, the deepest the router decodes:
+      // until the last decoding the host follows an escape's letter.
+      `https://r.jina.ai/${encodeURIComponent(twice)}`,
+      `https://r.jina.ai/${eightTimes}`,
+      // A reader of a reader: one more decoding per hop.
+      `https://r.jina.ai/https://api.allorigins.win/raw?url=${twice}`,
+      // Bro's host itself, without the files' path, and written otherwise.
+      `https://api.allorigins.win/raw?url=${encodeURIComponent("https://bro.example.test/api/health")}`,
+      "https://r.jina.ai/https://bro%E3%80%82example%E3%80%82test/x",
+      "https://r.jina.ai/https://\uff42\uff52\uff4f.example.test/x",
+      "https://r.jina.ai/https://BRO.EXAMPLE.TEST./x",
+      // Bro's host after a longer name that ends like it.
+      "https://r.jina.ai/https://notbro.example.test/https://bro.example.test/api/x",
+      // Every letter of the host escaped, in a run no UTF-8 decodes.
+      "https://r.jina.ai/https://%62%72%6f%2e%65%78%61%6d%70%6c%65%2e%74%65%73%74%ff/x",
+      "https://r.jina.ai/https:%5C%5Cbro-state-test.s3.cloud.ru%5Csandbox%5Cfiles%5Cx",
+      // The files' path on another host, its slashes written as backslashes.
+      "https://r.jina.ai/https:%5C%5Celsewhere.example%5Ceve%5Cv1%5Csandbox-files%5Cx",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each link is its own case.
+      const answer = await executed(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await ask(execute, { input: { url }, name: "web_fetch" })
+      );
+      expect(answer.ok, `web_fetch ${url}`).toBe(false);
+      expect(answer.error, `web_fetch ${url}`).toMatch(/Bro's own links/u);
+    }
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+  });
+
+  it("reads through a proxy reader what is not Bro's", async () => {
+    network.fetchPublic.mockImplementation(async () =>
+      Promise.resolve(
+        new Response("ok", { headers: { "content-type": "text/plain" } })
+      )
+    );
+    const { ask } = await router();
+    for (const url of [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent("https://example.com/eve/v1/sandbox")}`,
+      // A longer name that only begins or ends like Bro's is another host.
+      "https://r.jina.ai/https://bro.example.testing.example/",
+      "https://r.jina.ai/https://notbro.example.test/",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each link is its own case.
+      const answer = await executed(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await ask(execute, { input: { url }, name: "web_fetch" })
+      );
+      expect(answer.ok, `web_fetch ${url}`).toBe(true);
+    }
+  });
+
+  it("follows no redirect to a proxy reader of Bro's links", async () => {
+    const { ask, shareLink } = await router();
+    network.fetchPublic.mockImplementation(async (url: URL) =>
+      Promise.resolve(
+        url.hostname === "short.example.test"
+          ? new Response(null, {
+              headers: {
+                location: `https://api.allorigins.win/raw?url=${encodeURIComponent(shareLink("https://bro.example.test"))}`,
+              },
+              status: 302,
+            })
+          : new Response("secret,table", {
+              headers: { "content-type": "text/csv" },
+            })
+      )
+    );
+    const answer = await executed(
+      await ask(execute, {
+        input: { url: "https://short.example.test/x" },
+        name: "download",
+      })
+    );
+
+    expect(answer.ok).toBe(false);
+    expect(network.fetchPublic.mock.calls.map(([url]) => url.hostname)).toEqual(
+      ["short.example.test"]
+    );
+  });
+
+  it("knows each of Bro's own names, however the settings write them", async () => {
+    network.fetchPublic.mockResolvedValue(
+      new Response("ok", { headers: { "content-type": "text/plain" } })
+    );
+    const { ask } = await router({
+      SANDBOX_TOOLS_URL: "https://Tools.Example.Test./eve/v1/sandbox-tools",
+      VERCEL_BRANCH_URL: "bro-next-git-x.vercel.app",
+      VERCEL_PROJECT_PRODUCTION_URL: "BRO-NEXT.vercel.app.",
+      VERCEL_URL: "bro-next-abc123.vercel.app",
+    });
+    for (const url of [
+      "https://bro.example.test./",
+      "https://tools.example.test/x",
+      "https://bro-next-git-x.vercel.app/",
+      "https://bro-next.vercel.app/",
+      "https://bro-next-abc123.vercel.app/",
+      // A shared file's path on any host, its slashes doubled anywhere.
+      "https://elsewhere.example/eve//v1///sandbox-files/x/y",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each link is its own case.
+      const answer = await executed(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+        await ask(execute, { input: { url }, name: "web_fetch" })
+      );
+      expect(answer.ok, `web_fetch ${url}`).toBe(false);
+      expect(answer.error, `web_fetch ${url}`).toMatch(/Bro's own links/u);
+    }
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+  });
+
+  it("refuses the web while the mark cannot be read, the files flag off", async () => {
+    // The owner's setup: Object Storage configured, TASK_FILES_WORKSPACES
+    // cleared, Object Storage failing.
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
+    const { ask } = await router({ TASK_FILES_WORKSPACES: "" });
+    const pending = ask(execute, {
+      input: { query: "курс евро" },
+      name: "web_search",
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const answer = await executed(await pending);
+
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toMatch(/could not be checked/u);
+    expect(storage.answer).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses the web while the mark cannot be read", async () => {
     vi.useFakeTimers();
     storage.answer.mockResolvedValue(new Response(null, { status: 503 }));

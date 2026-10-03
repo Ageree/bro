@@ -6,9 +6,10 @@ const taskFiles = vi.hoisted(() => ({
   here: vi.fn<() => boolean>(() => false),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
-  // Whether the conversation may hold the person's files: the files pilot
-  // or the mark of one of its task agents (`conversationHoldsFiles`).
-  conversationHoldsFiles: async () => await Promise.resolve(taskFiles.here()),
+  // Whether the report's conversation may hold the person's files: the
+  // files pilot or the mark of one of its task agents
+  // (`reportTurnHoldsFiles`).
+  reportTurnHoldsFiles: async () => await Promise.resolve(taskFiles.here()),
 }));
 /** A link `share_file` made: Bro's own origin, signed for the task agent's file. */
 const sharedFile =

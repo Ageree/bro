@@ -263,14 +263,20 @@ function taskAgent(
         parentTurnId: parent.turn.id,
       }).identity.id;
     },
-    /** One message opening a turn of the task agent's own. */
-    async receive(message: string) {
-      const data = {
-        message,
+    /**
+     * One message opening a turn of the task agent's own, the next by
+     * default, or the one named: eve numbers turns from `turn_0` again in a
+     * successor run, while their sequence goes on.
+     */
+    async receive(
+      message: string,
+      turn: { readonly id: string; readonly sequence: number } = {
+        id: `turn_${String(turns)}`,
         sequence: turns,
-        turnId: `turn_${String(turns)}`,
-      };
-      turns += 1;
+      }
+    ) {
+      const data = { message, sequence: turn.sequence, turnId: turn.id };
+      turns = turn.sequence + 1;
       const state = ownState();
       replay = async () => {
         for (const [key] of ownState()) session.values.delete(key);
@@ -372,6 +378,73 @@ describe("the person's sends as the task agent reads them", () => {
     await helper.receive("Добавь курс юаня");
 
     expect(offWeb("sb-b")).toBe(true);
+  });
+
+  it("tells a successor run's message from the one its turn id repeats", async () => {
+    const hooks = await load();
+    const turn3 = { id: "turn_3", sequence: 3 };
+    await broTurn(hooks, turn3, "person", [
+      [{ callId: "call_b", message: "Найди курсы валют" }],
+    ]);
+    const helper = taskAgent(hooks, "sb-b", { callId: "call_b", turn: turn3 });
+    await helper.receive(firstMessage("Найди курсы валют"));
+    const agentId = await helper.agentId();
+    await broTurn(hooks, { id: "turn_4", sequence: 4 }, "person", [
+      [{ agentId, callId: "call_0", message: "Добавь курс юаня" }],
+    ]);
+    await conversationGaveFilesAway(hooks);
+    // `turn_1`, sequence 1, takes the person's continuation.
+    await helper.receive("Добавь курс юаня");
+    expect(online(hooks, "sb-b")).toBe(true);
+
+    // The helper's session goes on in a successor run, its turns numbered
+    // from `turn_0` again; the person continues it once more.
+    await broTurn(hooks, { id: "turn_5", sequence: 5 }, "person", [
+      [{ agentId, callId: "call_0", message: "Продолжай" }],
+    ]);
+    await helper.receive("Продолжай", { id: "turn_0", sequence: 2 });
+    expect(online(hooks, "sb-b")).toBe(true);
+    // A report's turn sends the text `turn_1` took into the successor's own
+    // `turn_1`: the claim names the other message, by its sequence.
+    await broTurn(hooks, { id: "turn_6", sequence: 6 }, "report", [
+      [{ agentId, callId: "call_0", message: "Добавь курс юаня" }],
+    ]);
+    await helper.receive("Добавь курс юаня", { id: "turn_1", sequence: 3 });
+
+    expect(offWeb("sb-b")).toBe(true);
+  });
+
+  it("refuses the helper's steps while Object Storage fails, the files flag off", async () => {
+    // The owner's setup: Object Storage configured, TASK_FILES_WORKSPACES
+    // cleared, and every request to it failing.
+    vi.useFakeTimers();
+    try {
+      const hooks = await load();
+      flag.on = false;
+      vi.stubGlobal("fetch", async () =>
+        Promise.resolve(new Response(null, { status: 503 }))
+      );
+      const turn3 = { id: "turn_3", sequence: 3 };
+      const recorded = broTurn(hooks, turn3, "person", [
+        [{ callId: "call_0", message: "Найди курс евро" }],
+      ]);
+      await vi.advanceTimersByTimeAsync(5000);
+      await recorded;
+      const helper = taskAgent(hooks, "sb-1", {
+        callId: "call_0",
+        turn: turn3,
+      });
+      const received = helper.receive(firstMessage("Найди курс евро"));
+      await vi.advanceTimersByTimeAsync(5000);
+      await received;
+
+      // Nothing marked on a guess; its model refuses until a check reads.
+      expect(offWeb("sb-1")).toBe(false);
+      session.current = "sb-1";
+      expect(hooks.offline.offlineRefusal()).toBe("unchecked");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the web of a continuation the person's turn sends anew", async () => {
