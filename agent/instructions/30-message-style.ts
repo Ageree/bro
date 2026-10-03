@@ -3,12 +3,17 @@ import { z } from "zod";
 import { chosenFormOfAddress } from "@agent/lib/delivery/language";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { instructionText } from "@agent/lib/skills/catalog";
+import { skillsLayout } from "@agent/lib/skills/pilot";
 import { getFormOfAddress } from "@db/services/settings";
-import messageStyle from "./content/message-style.md?raw";
 
 export default defineDynamic({
   events: {
     async "turn.started"(_event, context) {
+      const messageStyle = instructionText(
+        "message-style",
+        skillsLayout(context)
+      );
       const style = resolveModeValue(context, {
         interactive: messageStyle,
         "scheduled-report": messageStyle,
