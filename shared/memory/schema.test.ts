@@ -62,6 +62,7 @@ describe("what memory may keep", () => {
     "Your code 123456",
     "Your code is 123456",
     "Карта 4276-1234-5678-9012, до 12/28",
+    "Номер карты лояльности 1234567890123456",
   ])("refuses «%s»", (text) => {
     expect(isSafeMemoryText(text)).toBe(false);
   });
@@ -113,6 +114,9 @@ describe("what memory may keep", () => {
     "Код от почтового ящика 123",
     "Код от почтового ящика 4512",
     "Код 7788 от подъезда",
+    // The door named in another clause of the note.
+    "Домофон 45, потом код 1234",
+    "У мамы домофон 45, код 1234",
     // A long number is no card: an account, a policy, a parcel.
     "Счёт 40817810099910004312",
     "р/с 40817810099910004312",
