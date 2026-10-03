@@ -5,20 +5,20 @@ const lookupTimeoutMs = 3_000;
 
 const resolverErrorSchema = z.object({ code: z.string() });
 
+/** A site named as an origin, an address or a bare domain, as a URL. */
+export function siteUrl(site: string) {
+  const trimmed = site.trim();
+  return (
+    URL.parse(
+      /^[a-z][a-z\d+.-]*:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`
+    ) ?? undefined
+  );
+}
+
 /** The host of a site named as an origin or as a bare domain. */
 export function siteHostname(site: string) {
-  const trimmed = site.trim();
-  try {
-    return (
-      new URL(
-        /^[a-z][a-z\d+.-]*:\/\//iu.test(trimmed)
-          ? trimmed
-          : `https://${trimmed}`
-      ).hostname || undefined
-    );
-  } catch {
-    return undefined;
-  }
+  const hostname = siteUrl(site)?.hostname;
+  return hostname === "" ? undefined : hostname;
 }
 
 /**

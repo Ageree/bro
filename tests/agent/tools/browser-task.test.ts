@@ -7766,6 +7766,35 @@ describe("browser_task takes an errand the person asked to be done to its last s
       });
     }
 
+    const phoneMark = "[телефон человека не передаётся]";
+    const emailMark = "[почта человека не передаётся]";
+
+    /** A follow-up in the person's own turn, in which they wrote `said`. */
+    async function followUp(
+      row: ReturnType<typeof browserRunRow>,
+      said: string,
+      task: string,
+      personWants: "done" | "look" = "look"
+    ) {
+      readBrowserRunForScope.mockResolvedValue(row);
+      const tool = await resolvedBrowserTask([], said);
+      return tool.execute(
+        {
+          action: "continue",
+          personWants,
+          personSaid: said,
+          runId: row.id,
+          task,
+        },
+        toolContext("better-auth:alice")
+      );
+    }
+
+    /** What the run's session was sent as a message. */
+    function queuedMessage() {
+      return String(queueBrowserUseSessionMessage.mock.calls[0]?.[1]);
+    }
+
     /** What the run was handed, and what the errand's row keeps. */
     function sent() {
       return [
@@ -7792,6 +7821,12 @@ describe("browser_task takes an errand the person asked to be done to its last s
       "+7(999)000 00 01",
       "89990000001",
       "999.000.00.01",
+      "(+7) 999 000-00-01",
+      "(999) 000-00-01",
+      "999 / 000 / 00 / 01",
+      "999_000_00_01",
+      "999 -- 000 -- 00 -- 01",
+      "９９９ ０００ ００ ０１",
     ])("knows the phone written as «%s»", async (written) => {
       const { withoutOwnContacts } =
         await import("@agent/lib/browser-use/facts");
@@ -7801,9 +7836,47 @@ describe("browser_task takes an errand the person asked to be done to its last s
           emails: [],
           phones: ["+79990000001"],
         })
-      ).toBe(
-        "звонить на [телефон человека не передаётся], не на +7 999 000-00-02"
-      );
+      ).toEqual({
+        email: false,
+        phone: true,
+        text: `звонить на ${phoneMark}, не на +7 999 000-00-02`,
+      });
+    });
+
+    it("takes every number a free-text phone field holds", async () => {
+      const { withoutOwnContacts } =
+        await import("@agent/lib/browser-use/facts");
+      const text =
+        "звонить на 8 999 000 00 01 или +7 (495) 123-45-67, после 18:00";
+
+      expect(
+        withoutOwnContacts(text, {
+          emails: [],
+          phones: ["+7 999 000-00-01, рабочий +7 495 123-45-67 (доб. 123)"],
+        }).text
+      ).toBe(`звонить на ${phoneMark} или ${phoneMark}, после 18:00`);
+      expect(
+        withoutOwnContacts(text, {
+          emails: [],
+          phones: ["+7 999 000-00-01 после 18:00"],
+        }).text
+      ).toBe(`звонить на ${phoneMark} или +7 (495) 123-45-67, после 18:00`);
+    });
+
+    it("knows the email in a link and the mailbox's plus-addresses", async () => {
+      const { withoutOwnContacts } =
+        await import("@agent/lib/browser-use/facts");
+
+      expect(
+        withoutOwnContacts(
+          "https://shop.example/?mail=IVAN.PETROV%40example.com, ivan.petrov+shop@Example.com; не ivan.petrov@example.com.au и не ivan.petrova@example.com",
+          { emails: ["ivan.petrov@example.com"], phones: [] }
+        )
+      ).toEqual({
+        email: true,
+        phone: false,
+        text: `https://shop.example/?mail=${emailMark}, ${emailMark}; не ivan.petrov@example.com.au и не ivan.petrova@example.com`,
+      });
     });
 
     it("cuts them from an errand a report turn starts", async () => {
@@ -7814,10 +7887,11 @@ describe("browser_task takes an errand the person asked to be done to its last s
       expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
     });
 
-    it("cuts them from a report turn's follow-up and the errand it repeats", async () => {
+    it("cuts them from a report turn's follow-up, the errand it repeats and its site", async () => {
       ownContacts();
       readBrowserRunForScope.mockResolvedValue({
         ...browserRunRow(new Date(), "Needs: none"),
+        site: "https://www.ozon.ru/search/?text=korm&phone=79990000001",
         task: errand,
       });
       const tool = await resolvedBrowserTask([], reportOpening);
@@ -7833,6 +7907,212 @@ describe("browser_task takes an errand the person asked to be done to its last s
       );
 
       expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
+    });
+
+    it("tells Bro what it cut, so the person hears why", async () => {
+      ownContacts();
+      const looks = await resolvedBrowserTask(
+        [],
+        "сколько стоит сапсан в питер в пятницу?"
+      );
+      const looked = await looks.execute(
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://2gis.ru",
+          task: errand,
+        },
+        toolContext("better-auth:alice")
+      );
+      const does = await resolvedBrowserTask(
+        [],
+        "возьми мне сапсан в питер на пятницу"
+      );
+      const done = await does.execute(
+        {
+          action: "start",
+          personWants: "done",
+          site: "https://2gis.ru",
+          task: errand,
+        },
+        toolContext("better-auth:alice")
+      );
+
+      expect(continuationNote(looked)).toContain(
+        "The user's own phone number and email were cut from what you wrote for this run"
+      );
+      expect(continuationNote(looked)).toContain(
+        'ask whether to do the errand in their name (personWants "done" in their own turn)'
+      );
+      expect(continuationNote(done)).not.toContain("were cut");
+    });
+
+    it("stores a queued errand without them", async () => {
+      ownContacts();
+      createBrowserUseRun.mockRejectedValueOnce(busy());
+
+      await startFor("сколько стоит сапсан в питер в пятницу?", errand, "look");
+
+      const [, queued] = createQueuedBrowserRun.mock.calls[0] ?? [];
+      expect(
+        [queued?.task, queued?.pendingTask].map((text) =>
+          contactsIn(String(text))
+        )
+      ).toEqual([contactsCut, contactsCut]);
+    });
+
+    it("cuts them from the site's address, which stays an address on its host", async () => {
+      ownContacts();
+      const tool = await resolvedBrowserTask(
+        [],
+        "сколько стоит корм на озоне?"
+      );
+
+      const result = await tool.execute(
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://www.ozon.ru/search/?text=korm&phone=79990000001",
+          task: "Найти корм коту",
+        },
+        toolContext("better-auth:alice")
+      );
+
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain(
+        "Site: https://www.ozon.ru/search/?text=korm&phone="
+      );
+      expect(contactsIn(task).phone).toBe(false);
+      const site = String(createBrowserRun.mock.calls[0]?.[1].site);
+      expect(URL.parse(site)?.hostname).toBe("www.ozon.ru");
+      expect(contactsIn(site).phone).toBe(false);
+      expect(continuationNote(result)).toContain(
+        "The user's own phone number was cut"
+      );
+    });
+
+    it("refuses a site whose host is the person's phone", async () => {
+      ownContacts();
+      const tool = await resolvedBrowserTask([], "найди что-нибудь");
+
+      await expect(
+        tool.execute(
+          {
+            action: "start",
+            personWants: "look",
+            site: "https://79990000001.example.ru",
+            task: "Найти что-нибудь",
+          },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow(
+        "the site's address carries the user's own phone number or email"
+      );
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+      expect(createQueuedBrowserRun).not.toHaveBeenCalled();
+    });
+
+    it("passes on the person's own words as they wrote them", async () => {
+      // A quote of the person with a mark inside was not what they wrote,
+      // and Bro could not tell them why their number went nowhere.
+      ownContacts();
+      const said = "мой номер 8 999 000 00 01";
+
+      const result = await followUp(browserRunRow(), said, said);
+
+      expect(queuedMessage()).toContain(`Человек написал: «${said}»`);
+      expect(continuationNote(result)).not.toContain("was cut");
+    });
+
+    it("cuts what Bro adds to a live run's message and the errand it repeats", async () => {
+      ownContacts();
+      const said = "проверь, записали ли меня";
+
+      const result = await followUp(
+        { ...browserRunRow(), task: errand },
+        said,
+        "Если просят контакт — Ivan.Petrov@Example.com"
+      );
+
+      expect(queuedMessage()).toContain(`Человек написал: «${said}»`);
+      expect(queuedMessage()).toContain(`Если просят контакт — ${emailMark}`);
+      expect(contactsIn(queuedMessage())).toEqual(contactsCut);
+      expect(continuationNote(result)).toContain(
+        "The user's own phone number and email were cut"
+      );
+    });
+
+    it("cuts them from a message a busy session queues", async () => {
+      ownContacts();
+      readBrowserUseRunStatus.mockResolvedValue("failed");
+      createBrowserUseRun.mockRejectedValue(
+        new BrowserUseError(
+          409,
+          "/runs",
+          "The session already has an active run"
+        )
+      );
+
+      await followUp(
+        { ...browserRunRow(), task: errand },
+        "проверь, записали ли меня",
+        "Если просят контакт — Ivan.Petrov@Example.com"
+      );
+
+      expect(queuedMessage()).toContain(`Если просят контакт — ${emailMark}`);
+      expect(contactsIn(queuedMessage())).toEqual(contactsCut);
+    });
+
+    it("cuts them from an update to an errand still queued", async () => {
+      ownContacts();
+
+      const result = await followUp(
+        {
+          ...browserRunRow(),
+          id: "queued:errand-1",
+          pendingTask: "Найти Сапсан на пятницу",
+          sessionId: null,
+          status: "queued",
+          task: errand,
+        },
+        "проверь, записали ли меня",
+        "Если просят контакт — Ivan.Petrov@Example.com"
+      );
+
+      const [, update] = updateQueuedBrowserRun.mock.calls[0] ?? [];
+      expect(contactsIn(String(update?.pendingTask))).toEqual({
+        ...contactsCut,
+        phoneCut: false,
+      });
+      expect(continuationNote(result)).toContain(
+        "The user's own email was cut"
+      );
+    });
+
+    it("cuts them once what the person allowed is done, whatever they want of it", async () => {
+      ownContacts();
+
+      await followUp(
+        browserRunRow(new Date(), "Needs: none", cardSubmission),
+        "проверь, что записали",
+        "Если просят контакт — +7 999 000-00-01",
+        "done"
+      );
+
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(contactsIn(task)).toMatchObject({ phone: false, phoneCut: true });
+    });
+
+    it("keeps them on an errand the person already confirmed", async () => {
+      ownContacts();
+
+      await followUp(
+        browserRunRow(null, null, cardSubmission),
+        "проверь, что записали",
+        "Если просят контакт — Ivan.Petrov@Example.com"
+      );
+
+      expect(queuedMessage()).toContain("Ivan.Petrov@Example.com");
     });
   });
 

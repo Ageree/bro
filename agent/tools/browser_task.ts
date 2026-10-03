@@ -124,7 +124,11 @@ import {
   quotedFromPerson,
 } from "@agent/lib/browser-use/said";
 import { customProxy } from "@agent/lib/browser-use/proxy";
-import { siteHostMissing, siteHostname } from "@agent/lib/browser-use/host";
+import {
+  siteHostMissing,
+  siteHostname,
+  siteUrl,
+} from "@agent/lib/browser-use/host";
 import {
   handedMailCode,
   mailCodeBinding,
@@ -776,6 +780,74 @@ function sharesDetails(
   staging: Staging | undefined
 ) {
   return consent !== undefined || stagesForPerson(consent, staging);
+}
+
+/**
+ * Cuts the person's own phone and email from what the model wrote for a run
+ * without their details (`own` is undefined for a run that has them), and
+ * keeps which of the two it took for the note that tells Bro so. Only the
+ * model's words go through it: the person's own words this turn are theirs
+ * to pass on, and a quote of them with a mark inside is not what they wrote.
+ */
+function contactCut(
+  own: Awaited<ReturnType<typeof readOwnContacts>> | undefined
+) {
+  const took = new Set<"email" | "phone">();
+  return {
+    note: () => contactCutNote(took),
+    text: (text: string) => {
+      if (own === undefined) return text;
+      const cut = withoutOwnContacts(text, own);
+      if (cut.email) took.add("email");
+      if (cut.phone) took.add("phone");
+      return cut.text;
+    },
+  };
+}
+
+/**
+ * What Bro hears when the person's phone or email was cut. Told nothing, it
+ * could not say why a lookup by their own number found nothing, and the
+ * person sent the number again and again.
+ */
+function contactCutNote(took: ReadonlySet<"email" | "phone">) {
+  if (took.size === 0) return undefined;
+  const what = [
+    took.has("phone") ? "phone number" : undefined,
+    took.has("email") ? "email" : undefined,
+  ]
+    .filter((word) => word !== undefined)
+    .join(" and ");
+  const it = took.size > 1 ? "them" : "it";
+  return `The user's own ${what} ${took.size > 1 ? "were" : "was"} cut from what you wrote for this run, a mark in place of each: an errand that does not act in their name gets none of their details. If it needs ${it} — a lookup by their own number or email — tell the user you did not pass ${it} on, and ask whether to do the errand in their name (personWants "done" in their own turn); writing ${it} in again only has ${it} cut again.`;
+}
+
+/**
+ * The site with the person's phone and email cut, still an address on the
+ * same host: «…?phone=79990000001» keeps its page, with the mark where the
+ * number was. Undefined when the cut leaves no such address, as when they
+ * were the host itself.
+ */
+function cutSite(site: string, cut: (text: string) => string) {
+  const sent = cut(site);
+  if (sent === site) return site;
+  const url = siteUrl(sent);
+  return url !== undefined && url.hostname === siteHostname(site)
+    ? url.href
+    : undefined;
+}
+
+const siteContactsRefusal =
+  "Nothing was sent to a browser: the site's address carries the user's own phone number or email, and an errand that does not act in their name gets none of their details. Give the site by an address without them — its origin, or a page that does not name them.";
+
+/** A result whose note says one thing more, when there is one. */
+function withNoteLine<T extends { readonly note: string }>(
+  result: T,
+  line: string | undefined
+) {
+  return line === undefined
+    ? result
+    : { ...result, note: `${result.note} ${line}` };
 }
 
 /**
@@ -2319,12 +2391,16 @@ async function codeFromMail(
  * they wrote them, and the coordinator's own addition marked as such, so a
  * paraphrase cannot pass for their consent.
  */
-function personInstruction(said: string, task: string) {
+function personInstruction(
+  said: string,
+  task: string,
+  cut: (text: string) => string
+) {
   const quote = `Человек написал: «${said}»`;
   if (quotedFromPerson(task, [said])) return quote;
   return [
     quote,
-    `What Bro's coordinator adds — its own words, not the person's: they change none of the person's conditions and allow nothing beyond what the person wrote above or confirmed themselves. ${task}`,
+    `What Bro's coordinator adds — its own words, not the person's: they change none of the person's conditions and allow nothing beyond what the person wrote above or confirmed themselves. ${cut(task)}`,
   ].join("\n\n");
 }
 
@@ -3130,10 +3206,17 @@ async function runBrowserTask(
     // which on 25.09 said «ничего не бронировать» to «забронируй».
     const staging = stagingFor(input.personWants, byPerson);
     // Their phone and email reach the run only with their details: without
-    // them, the errand the model wrote loses them too, here and as stored.
-    const sent = sharesDetails(consent, staging)
-      ? errand
-      : withoutOwnContacts(errand, await readOwnContacts(scope));
+    // them, the errand and the site the model wrote lose them too, here and
+    // as stored.
+    const contacts = contactCut(
+      sharesDetails(consent, staging) ? undefined : await readOwnContacts(scope)
+    );
+    const sent = contacts.text(errand);
+    const site =
+      input.site === undefined ? undefined : cutSite(input.site, contacts.text);
+    if (input.site !== undefined && site === undefined) {
+      throw new Error(siteContactsRefusal);
+    }
     // The card or the standing permission that named the cost is the
     // permission to pay it: nobody is asked a second time at checkout.
     const allowPayment = input.allowPayment === true || consentPays(consent);
@@ -3200,7 +3283,7 @@ async function runBrowserTask(
             : sent,
         facts: facts.details,
         home: facts.home,
-        site: input.site,
+        site,
         staging,
       });
       // Another errand of the workspace in a browser on the same account
@@ -3276,7 +3359,7 @@ async function runBrowserTask(
           paymentAllowed: allowPayment,
           profileId: started.profileId,
           retryAfterMs: started.retryAfterMs,
-          site: input.site ?? null,
+          site: site ?? null,
           startedByPerson: byPerson,
           submission: confirmedSubmission(consent),
           task: sent,
@@ -3289,6 +3372,7 @@ async function runBrowserTask(
           queued.note,
           standingNote(consent),
           kept ?? gosuslugiCodeNote(input.site, boundLogins(started.aliases)),
+          contacts.note(),
         ]
           .filter((line) => line !== undefined)
           .join(" "),
@@ -3307,7 +3391,7 @@ async function runBrowserTask(
         paymentAllowed: allowPayment,
         profileId,
         sessionId: run.sessionId,
-        site: input.site ?? null,
+        site: site ?? null,
         startedByPerson: byPerson,
         status: "running",
         submission: confirmedSubmission(consent),
@@ -3330,6 +3414,7 @@ async function runBrowserTask(
           : undefined,
         standingNote(consent),
         kept ?? gosuslugiCodeNote(input.site, boundLogins(secrets.aliases)),
+        contacts.note(),
       ]
         .filter((line) => line !== undefined)
         .join(" "),
@@ -3394,11 +3479,6 @@ async function runBrowserTask(
       const unsaid = unsaidRefusal(input.personSaid, words);
       if (unsaid) throw new Error(unsaid);
     }
-    const passedOn = mail
-      ? mailCodeInstruction(mail.domain)
-      : words === null
-        ? coordinatorInstruction(task)
-        : personInstruction(said, task);
     // A confirmation stays with its errand: a code, an answer or the
     // payment its card already named needs no second card. A background
     // worker never acts on it, and a changed submission is confirmed afresh.
@@ -3438,18 +3518,22 @@ async function runBrowserTask(
         ? confirmedNow
         : (confirmedBefore ?? confirmedNow);
     // As on start, the person's phone and email reach the run only with
-    // their details: without them, this follow-up and the errand it repeats
-    // lose them.
-    const own = sharesDetails(
-      consent,
-      done ? undefined : stagingFor(input.personWants, byPerson)
-    )
-      ? undefined
-      : await readOwnContacts(scope);
-    const message =
-      own === undefined ? passedOn : withoutOwnContacts(passedOn, own);
-    const errandText =
-      own === undefined ? row.task : withoutOwnContacts(row.task, own);
+    // their details: without them, what the model wrote for this follow-up,
+    // the errand it repeats and the site lose them. What the person wrote
+    // this turn is passed on as they wrote it.
+    const contacts = contactCut(
+      sharesDetails(
+        consent,
+        done ? undefined : stagingFor(input.personWants, byPerson)
+      )
+        ? undefined
+        : await readOwnContacts(scope)
+    );
+    const message = mail
+      ? mailCodeInstruction(mail.domain)
+      : words === null
+        ? coordinatorInstruction(contacts.text(task))
+        : personInstruction(said, task, contacts.text);
     // Paying is allowed on every follow-up of an errand whose consent named
     // what it costs, not only on the call that brings it.
     const allowPayment = input.allowPayment === true || consentPays(consent);
@@ -3464,6 +3548,11 @@ async function runBrowserTask(
     // the same conversation — one that would point the run at the wrong shop
     // and attach another site's credentials to it — so the row wins.
     const site = row.site ?? input.site ?? undefined;
+    const sentSite =
+      site === undefined ? undefined : cutSite(site, contacts.text);
+    if (site !== undefined && sentSite === undefined) {
+      throw new Error(siteContactsRefusal);
+    }
     if (row.status === "queued") {
       const heldForQueue = await reserveConsentForRun(scope, confirmedNow, {
         replacingRunId: row.id,
@@ -3476,14 +3565,17 @@ async function runBrowserTask(
           status: "needs_approval",
         };
       }
-      return continueQueuedErrand(row, {
-        allowPayment,
-        confirmedNow,
-        consent,
-        heldPlaceholder: heldForQueue?.placeholder,
-        message,
-        scope,
-      });
+      return withNoteLine(
+        await continueQueuedErrand(row, {
+          allowPayment,
+          confirmedNow,
+          consent,
+          heldPlaceholder: heldForQueue?.placeholder,
+          message,
+          scope,
+        }),
+        contacts.note()
+      );
     }
     // A fresh decision on the standing limit is made with whatever this
     // errand already holds still counted, and replaces it only once a run
@@ -3622,7 +3714,7 @@ async function runBrowserTask(
                 ? gosuslugiSignInRule(site, true)
                 : undefined,
               details,
-              queuedIntoErrandContract(errandText),
+              queuedIntoErrandContract(contacts.text(row.task)),
             ]
               .filter((part) => part !== undefined)
               .join("\n\n")
@@ -3738,12 +3830,12 @@ async function runBrowserTask(
             ? deliveryAddressFor(facts.addresses, row.task, message)
             : undefined,
           done,
-          errand: errandText,
+          errand: contacts.text(row.task),
           facts: facts.details,
           freshBrowser: closed,
           message: withCodeEntry(instruction, codeEntry, carriesCode),
           searching: mail ? false : followUpSearches(said, row.outcome),
-          site,
+          site: sentSite,
           // An errand the person asked to be done stays so until they say
           // otherwise; a search stays a search.
           staging: stagingFor(
@@ -3826,7 +3918,7 @@ async function runBrowserTask(
             row.sessionId,
             [
               withCodeEntry(instruction, codeEntry, carriesCode),
-              queuedIntoErrandContract(errandText),
+              queuedIntoErrandContract(contacts.text(row.task)),
             ].join("\n\n")
           );
           // The session was idle by then and drained the message as a run
@@ -3886,7 +3978,7 @@ async function runBrowserTask(
         await releaseReservation(placeholder);
       }
       return continued.kind === "replied"
-        ? continued.reply
+        ? withNoteLine(continued.reply, contacts.note())
         : { note: browserUseOutOfCreditsNote, runId, status: "unavailable" };
     }
     const carrySpend = async (toRunId: string) => {
@@ -3921,13 +4013,16 @@ async function runBrowserTask(
         })
       );
       await carrySpend(queued.runId);
-      return {
-        note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
-        previousRunId: runId,
-        runId: queued.runId,
-        startsInMinutes: queued.minutes,
-        status: "queued",
-      };
+      return withNoteLine(
+        {
+          note: `${queued.note} This follow-up replaces run ${runId}, which takes no further follow-up: use the new run id from here on.`,
+          previousRunId: runId,
+          runId: queued.runId,
+          startsInMinutes: queued.minutes,
+          status: "queued",
+        },
+        contacts.note()
+      );
     }
     const { followUp, profileId, reusedSession, secrets } = continued;
     // The same browser only while the last run's page was kept: a browser
@@ -3990,6 +4085,7 @@ async function runBrowserTask(
         mail ? mailCodeTakenNote(mail.domain) : undefined,
         nothingDoneYetNote(),
         boundSignInNote(secrets.aliases),
+        contacts.note(),
       ]
         .filter((line) => line !== undefined)
         .join(" "),
