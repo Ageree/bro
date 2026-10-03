@@ -346,7 +346,12 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
 
   it("holds a watch without counting a check, and lets a held one lapse quietly", async () => {
     const { db, subscriptions } = await openDatabase();
-    await subscriptions.createSubscription(alice, priceWatch(), now);
+    // Its term ends between the held check and the next one.
+    await subscriptions.createSubscription(
+      alice,
+      priceWatch({ expiresAt: new Date(now.getTime() + 7 * 60 * 60_000) }),
+      now
+    );
     const due = new Date(now.getTime() + sixHours * 1_000);
     const lease = { leaseForMs: 10 * 60_000, limit: 10, now: due };
     const [claim] = await subscriptions.claimDueSubscriptions(lease);

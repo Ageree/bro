@@ -382,7 +382,28 @@ interface HtmlTag {
 }
 
 /**
- * The page's tags in one pass of `indexOf`, as `pageText` reads a page
+ * Where a tag opened at `open` ends: the first `>` outside a quoted value
+ * (`content="a > b"` is one value) within the tag's first 4 KB, or -1 when
+ * a quote does not close or no `>` stands outside one there.
+ */
+function quotedTagEnd(html: string, open: number) {
+  const stop = Math.min(html.length, open + 1 + maximumTagLength);
+  let quote = "";
+  for (let index = open + 1; index < stop; index += 1) {
+    const character = html[index];
+    if (quote !== "") {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The page's tags in one linear pass, as `pageText` reads a page
  * (`agent/lib/sandbox/router.ts`): a page is a stranger's text, and one made
  * to stall a regular expression would stall the whole process, since a
  * deadline cannot stop synchronous code. A comment is skipped; a script's
@@ -392,6 +413,9 @@ function htmlTags(html: string) {
   const lower = asciiLower(html);
   const tags: HtmlTag[] = [];
   let at = 0;
+  // Where quotes are no longer followed: a window whose quotes did not end
+  // the tag is never scanned for them again, so no character is twice.
+  let plainUntil = 0;
   while (at < html.length) {
     const open = html.indexOf("<", at);
     if (open === -1) break;
@@ -401,7 +425,12 @@ function htmlTags(html: string) {
       at = end + 3;
       continue;
     }
-    const close = html.indexOf(">", open + 1);
+    let close = open < plainUntil ? -1 : quotedTagEnd(html, open);
+    if (close === -1) {
+      // An unclosed quote, or every `>` in one: the first `>` ends the tag.
+      plainUntil = Math.max(plainUntil, open + 1 + maximumTagLength);
+      close = html.indexOf(">", open + 1);
+    }
     // No tag after this one closes either.
     if (close === -1) break;
     at = close + 1;

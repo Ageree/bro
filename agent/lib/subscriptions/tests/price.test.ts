@@ -13,6 +13,18 @@ function jsonLd(data: Parameters<typeof JSON.stringify>[0]) {
   return `<html><head><script type="application/ld+json">${JSON.stringify(data)}</script></head><body>Купить</body></html>`;
 }
 
+/** The best of three reads of a page: a pause of the machine is no parser's time. */
+function timed(html: string) {
+  return Math.min(
+    ...[0, 1, 2].map(() => {
+      const started = performance.now();
+      readPrice(html);
+      pageTitle(html);
+      return performance.now() - started;
+    })
+  );
+}
+
 describe("reading a price", () => {
   it("parses amounts the way shops write them", () => {
     expect(amountFromText("7 490,00 ₽")).toBe(7_490);
@@ -287,26 +299,49 @@ describe("reading a price", () => {
     });
   });
 
-  it("reads a stranger's hostile 2 MB page in time", () => {
-    const size = 2 * 1024 * 1024;
+  it("reads a stranger's hostile page in time linear in its size", () => {
+    // Each page at a size: a parser that backtracks or rescans is
+    // quadratic, and eight times the page takes some 64 times as long.
     const pages = {
-      "a long attribute": `<meta ${"a".repeat(size)}>`,
-      "a meta never closed": "<meta ".repeat(size / 6),
-      "a script never closed": "<script type=".repeat(size / 13),
-      "a title never closed": `<title${"x".repeat(size)}`,
-      "an itemprop never closed": `<span itemprop=${"=".repeat(size)}`,
-      "many unclosed tags": "<a".repeat(size / 2),
-      "many tags": "<a b=c>".repeat(size / 7),
-      "unclosed quotes": `<meta content="${"x ".repeat(size / 2)}>`,
+      "a long attribute": (size: number) => `<meta ${"a".repeat(size)}>`,
+      "a meta never closed": (size: number) => "<meta ".repeat(size / 6),
+      "a script never closed": (size: number) =>
+        "<script type=".repeat(size / 13),
+      "a title never closed": (size: number) => `<title${"x".repeat(size)}`,
+      "an itemprop never closed": (size: number) =>
+        `<span itemprop=${"=".repeat(size)}`,
+      "many unclosed tags": (size: number) => "<a".repeat(size / 2),
+      "many tags": (size: number) => "<a b=c>".repeat(size / 7),
+      "quotes never closed": (size: number) => '<a "'.repeat(size / 4),
+      // Every \`>\` stands inside a quote: a scan for the end outside quotes
+      // would run to the end of the page from every tag.
+      "every end inside a quote": (size: number) => '<">"'.repeat(size / 4),
+      "a quote never closed before many ends": (size: number) =>
+        `<meta content="${">".repeat(size)}`,
+      "unclosed quotes": (size: number) =>
+        `<meta content="${"x ".repeat(size / 2)}>`,
     };
-    const slow = Object.entries(pages).flatMap(([kind, html]) => {
-      const started = performance.now();
-      readPrice(html);
-      pageTitle(html);
-      const ms = performance.now() - started;
-      return ms < 500 ? [] : [`${kind}: ${String(Math.round(ms))} ms`];
+    const small = 256 * 1024;
+    const slow = Object.entries(pages).flatMap(([kind, page]) => {
+      const smallMs = timed(page(small));
+      const largeMs = timed(page(small * 8));
+      // Linear is about 8x; under 50 ms the ratio is only noise.
+      const linear = largeMs < 50 || largeMs < 24 * Math.max(smallMs, 1);
+      return largeMs < 2_000 && linear
+        ? []
+        : [
+            `${kind}: ${String(Math.round(smallMs))} → ${String(Math.round(largeMs))} ms`,
+          ];
     });
     expect(slow).toEqual([]);
+  });
+
+  it("does not end a tag at a > inside a quoted value", () => {
+    expect(
+      readPrice(
+        '<meta property="product:price:amount" data-note="от 1 шт > опт" content="1990">'
+      )
+    ).toMatchObject({ amount: 1_990, extractor: "meta" });
   });
 
   it("finds the JSON-LD block and meta tags however their attributes are written", () => {
