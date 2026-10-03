@@ -180,9 +180,9 @@ async function pilotFlights(
     userId: watch.createdByUserId,
     workspaceId: watch.workspaceId,
   };
-  const failed = (step: string) => (error: unknown) => {
+  const failed = (step: string, name: string) => {
     console.warn("[proactive] flight watches", {
-      name: error instanceof Error ? error.name : "error",
+      name,
       step,
       workspaceId: watch.workspaceId,
     });
@@ -199,7 +199,7 @@ async function pilotFlights(
     }
     due = flightReminderSignals([...watches.values()], now, timeZone);
   } catch (error) {
-    failed("sync")(error);
+    failed("sync", error instanceof Error ? error.name : "error");
   }
   const handedOver = (unseen: readonly ProactiveSignal[]) => {
     const keys = new Set(unseen.map((signal) => signal.dedupeKey));
@@ -235,7 +235,7 @@ async function pilotFlights(
           await recordFlightWatch(flight.id, state, now);
         }
       } catch (error) {
-        failed("drive")(error);
+        failed("drive", error instanceof Error ? error.name : "error");
       }
     },
     /**
@@ -262,7 +262,7 @@ async function pilotFlights(
           );
         }
       } catch (error) {
-        failed("record")(error);
+        failed("record", error instanceof Error ? error.name : "error");
       }
     },
   };

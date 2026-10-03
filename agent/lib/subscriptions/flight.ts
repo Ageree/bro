@@ -96,10 +96,7 @@ export function dueFlightStages(input: {
 }
 
 /** A watched flight's zone: the event's own, else the person's. */
-function flightZoneOf(
-  watch: Pick<FlightWatch, "source">,
-  personZone: string
-) {
+function flightZoneOf(watch: Pick<FlightWatch, "source">, personZone: string) {
   return watch.source.timeZone ?? personZone;
 }
 

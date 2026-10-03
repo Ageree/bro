@@ -291,7 +291,7 @@
   `aeroway:aerodrome` и только для уходящего напоминания.
 - Откат релиза до #277 при живых слежках рейсов: сначала удалить их задания
   (`DELETE FROM scheduled_agent_jobs WHERE id IN (SELECT job_id FROM
-  subscriptions WHERE template = 'flight')`, строки уйдут каскадом): код #277
+subscriptions WHERE template = 'flight')`, строки уйдут каскадом): код #277
   иначе покажет их в `schedules-list` как слежки за ценой. Проактивное задание
   они не трогают.
 - Вечерняя почта в пилоте: с 21:00 проверка идёт как ночная

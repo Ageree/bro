@@ -282,7 +282,7 @@ const googleEventSchema = z.object({
 
 type GoogleEvent = z.infer<typeof googleEventSchema>;
 
-export const calendarEventListSchema = z.object({
+const calendarEventListSchema = z.object({
   items: z.array(googleEventSchema).optional(),
 });
 

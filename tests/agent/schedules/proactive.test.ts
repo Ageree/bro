@@ -435,14 +435,11 @@ describe("proactive schedule", () => {
     // The drive is measured once, for the reminder that goes, and then the
     // watch remembers it went.
     expect(flights.drive).toHaveBeenCalledOnce();
-    expect(flights.record).toHaveBeenLastCalledWith(
+    expect(flights.record.mock.lastCall).toMatchObject([
       "watch-1",
-      {
-        done: ["checkin"],
-        travel: expect.objectContaining({ minutes: 42 }),
-      },
-      afternoon
-    );
+      { done: ["checkin"], travel: { minutes: 42 } },
+      afternoon,
+    ]);
     expect(console.info).toHaveBeenCalledWith(
       "[proactive] check",
       expect.objectContaining({ flights: { ended: 0, started: 1 } })
@@ -462,11 +459,12 @@ describe("proactive schedule", () => {
 
     await runSchedule(vi.fn<ScheduleToFn>());
     // Only the drive was written: the reminder is still due.
-    expect(flights.record).toHaveBeenCalledExactlyOnceWith(
+    expect(flights.record).toHaveBeenCalledOnce();
+    expect(flights.record.mock.calls[0]).toMatchObject([
       "watch-1",
-      { done: [], travel: expect.objectContaining({ kind: "drive" }) },
-      afternoon
-    );
+      { done: [], travel: { kind: "drive" } },
+      afternoon,
+    ]);
 
     // A run had it before: it is marked, nothing is measured or queued.
     flights.record.mockClear();

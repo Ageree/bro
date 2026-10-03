@@ -18,6 +18,8 @@ afterEach(async () => {
 
 const alice = { userId: "alice", workspaceId: "workspace:alice" };
 const now = new Date("2026-10-02T10:00:00.000Z");
+/** What a check of the calendar saw: a day ahead and more. */
+const seen = (at: Date) => new Date(at.getTime() + 26 * 60 * 60_000);
 const sixHours = 6 * 60 * 60;
 
 function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
@@ -468,7 +470,6 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
 
   it("closes a departed flight's watch, and remembers what went", async () => {
     const { db, subscriptions } = await openDatabase();
-    const seen = (at: Date) => new Date(at.getTime() + 26 * 60 * 60_000);
     await subscriptions.syncFlightWatches({
       flights: [dp405, { ...dp405, eventId: "quiet" }],
       now,
@@ -510,12 +511,12 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     ).toEqual({ ended: 2, started: 0 });
     expect(
       (await db.query.subscriptions.findMany())
-        .map(({ dedupeKey, status }) => [dedupeKey.split("@")[0], status])
-        .toSorted()
-    ).toEqual([
-      ["dp405", "fired"],
-      ["quiet", "expired"],
-    ]);
+        .map(
+          ({ dedupeKey, status }) =>
+            `${dedupeKey.slice(0, dedupeKey.indexOf("@"))}:${status}`
+        )
+        .toSorted((a, b) => a.localeCompare(b))
+    ).toEqual(["dp405:fired", "quiet:expired"]);
     expect(
       (await db.query.scheduledAgentJobs.findMany()).map((job) => job.status)
     ).toEqual(["completed", "completed"]);
