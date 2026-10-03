@@ -294,7 +294,7 @@ describe("Telegram media turn", () => {
         document: {
           file_id: "x",
           file_name: "Бюджет.xlsx",
-          file_size: 32,
+          file_size: xlsx.byteLength,
           mime_type: xlsxType,
         },
       },

@@ -239,7 +239,12 @@ describe("Photon inbound media", () => {
     const message = () =>
       photonMessage({
         attachments: [
-          { mimeType: xlsxType, name: "Бюджет.xlsx", size: 32, type: "file" },
+          {
+            mimeType: xlsxType,
+            name: "Бюджет.xlsx",
+            size: xlsx.byteLength,
+            type: "file",
+          },
         ],
         raw: {
           content: {
