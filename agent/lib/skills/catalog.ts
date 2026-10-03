@@ -288,7 +288,9 @@ export function instructionText(
  * The files an interactive turn reads in this setup, in the system prompt's
  * order (as `agent/instructions/*.ts` picks them).
  */
-function interactiveSources(setup: SkillSetup): readonly InstructionSource[] {
+export function interactiveSources(
+  setup: SkillSetup
+): readonly InstructionSource[] {
   return [
     "execution-safety",
     "autonomy",

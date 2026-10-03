@@ -13,10 +13,12 @@ import { attachedSkills, skillRecord } from "@agent/lib/skills/render";
  * only in the pilot's interactive turns, where the instructions are the
  * core. The result is the same block the slot attaches, so it is defused
  * like none other (`agent/lib/model/direct.ts`) and counts as attached.
+ * Resolved before every step, so a block an earlier step of the turn loaded
+ * counts as attached too.
  */
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) => {
+    "step.started": (_event, context) => {
       if (
         !skillsPilot(context) ||
         resolveModeValue(context, { interactive: true }) !== true
@@ -31,7 +33,12 @@ export default defineDynamic({
         description:
           "Load the rules of one skill from the index in your instructions, when the turn needs them and their bro-skill block is not already in the conversation. Call it before the first action of that kind; the rules come back as the block, and the skill's own tools (google: mail, Drive, calendar changes; apps; money; schedules: creating and changing one) join yours from the next step.",
         inputSchema: z.object({
-          name: z.string().describe(`The skill's name: ${names.join(", ")}.`),
+          name: z
+            .string()
+            .trim()
+            .min(1)
+            .max(64)
+            .describe(`The skill's name: ${names.join(", ")}.`),
         }),
         execute: ({ name }) => {
           const known = names.find((skill) => skill === name.trim());

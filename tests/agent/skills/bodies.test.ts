@@ -1,11 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  availableSkills,
   type InstructionSource,
   instructionText,
+  interactiveSources,
   type SkillName,
   skillBody,
   skillNames,
+  skillSetups,
 } from "@agent/lib/skills/catalog";
 
 /**
@@ -25,20 +28,7 @@ const contentDirectory = new URL(
 );
 
 /** The marked files an interactive turn of this setup reads, in order. */
-const sources = [
-  "execution-safety",
-  "autonomy",
-  "follow-through",
-  "role/interactive",
-  "recommendations",
-  "message-style",
-  "browser/available",
-  "meter-readings",
-  "public-services",
-  "creative/images",
-  "creative/games",
-  "hard-constraints",
-] as const satisfies readonly InstructionSource[];
+const sources = interactiveSources(setup);
 
 const core = sources
   .map((source) => instructionText(source, "core"))
@@ -211,7 +201,9 @@ const moved: Partial<Record<SkillName, readonly string[]>> = {
     "Без отдельного согласия на точный платёж никогда не оплачивай подписку или автопродление",
     "`clear` не вызывай, только если в конце инструкций сказано, что нет ни лимита, ни платных постоянных разрешений",
   ],
-  schedules: ["Момент узнай, а не угадывай"],
+  schedules: [
+    "одним `web_search` по правилам этой авиакомпании или поставщика",
+  ],
   images: [
     "передай их в `gmail-attachment`",
     "зови `generate_image`",
@@ -249,6 +241,10 @@ const kept = [
   "# Самостоятельность",
   "# Дело до конца",
   "кроме одного адреса доставки в выборе адреса на сайте для поручения о доставке",
+  // The core's condensed form of a rule a skill holds in full.
+  "Момент узнай, а не угадывай; не узнать — ставь самый ранний разумный и так и скажи.",
+  "нет письма — проси человека",
+  "На `Needs: password` дай ссылку `request_vault_setup`.",
 ];
 
 /**
@@ -419,5 +415,22 @@ describe("the skills of the marked instructions", () => {
     expect(skillBody("meter-readings", bare)).not.toContain(
       "дойди до кнопки передачи"
     );
+    expect(skillBody("money", bare)).not.toContain("навыке browser");
+  });
+
+  it("point only to skills the setup has", () => {
+    const pointers = skillSetups.flatMap((each) =>
+      availableSkills(each).flatMap((name) =>
+        Array.from(
+          (skillBody(name, each) ?? "").matchAll(
+            /навык\p{L}* (?<to>[a-z-]+)/gu
+          ),
+          (match) => match.groups?.to ?? ""
+        )
+          .filter((to) => !availableSkills(each).some((skill) => skill === to))
+          .map((to) => `${name} → ${to} (browser: ${String(each.browser)})`)
+      )
+    );
+    expect(pointers).toEqual([]);
   });
 });

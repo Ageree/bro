@@ -6,10 +6,12 @@ import {
 } from "eve/memory";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { resolveModeValue } from "@agent/lib/mode";
+import type { SkillName, SkillSetup } from "@agent/lib/skills/catalog";
 import { skillSetup, skillsPilot } from "@agent/lib/skills/pilot";
 import {
   loadedSkills,
   recordedSkills,
+  skillGone,
   skillRecord,
   skillStub,
 } from "@agent/lib/skills/render";
@@ -25,7 +27,9 @@ import { skillsForTurn } from "@agent/lib/skills/triggers";
  *
  * - A record stays: a later turn that needs it again returns the same text,
  *   which eve leaves where it was. A record whose rules changed since, or
- *   that compaction folded to a stub, is replaced once, under its id.
+ *   that compaction folded to a stub, is replaced once, under its id. So is
+ *   the record of a skill the setup no longer has, such as the browser's
+ *   once the deployment has none: a few words that it is gone replace it.
  * - Compaction folds the rules no turn after it needs to a stub of a few
  *   words, so a long conversation does not carry every skill it ever used.
  * - The file's name sorts the slot before the profile's: eve inserts a
@@ -53,6 +57,18 @@ function neededSkills(
   });
 }
 
+/**
+ * Whether a record reads as this setup would attach it today: the rules or
+ * their stub, or, for a skill the setup has no rules of, the word that it is
+ * gone.
+ */
+function recordIsCurrent(name: SkillName, text: string, setup: SkillSetup) {
+  const record = skillRecord(name, setup);
+  return record === undefined
+    ? text === skillGone(name)
+    : text === record || text === skillStub(name);
+}
+
 async function recallSkills(context: MemoryTurnStartedContext) {
   try {
     if (resolveModeValue(context, { interactive: true }) !== true) return null;
@@ -62,17 +78,18 @@ async function recallSkills(context: MemoryTurnStartedContext) {
     const loaded = loadedSkills(context.messages, setup);
     const records = recordedSkills(context.messages);
     // Rules changed since their record was attached: today's replace them,
-    // or the defuser would show the old block as a forgery.
+    // or the defuser would show the old block as a forgery. Rules of a skill
+    // this setup has none of give way to the word that it is gone, or the
+    // model would follow them.
     const stale = [...records].flatMap(([name, text]) =>
-      text === skillRecord(name, setup) || text === skillStub(name)
-        ? []
-        : [name]
+      recordIsCurrent(name, text, setup) ? [] : [name]
     );
     const wanted = new Set([...neededSkills(context), ...stale]);
     const messages = [...wanted].flatMap((name) => {
       const content = loaded.includes(name)
         ? undefined
-        : skillRecord(name, setup);
+        : (skillRecord(name, setup) ??
+          (records.has(name) ? skillGone(name) : undefined));
       return content === undefined ? [] : [{ content, id: `skill:${name}` }];
     });
     return messages.length > 0 ? { messages } : null;
@@ -86,19 +103,22 @@ async function recallSkills(context: MemoryTurnStartedContext) {
 
 /**
  * After compaction: the rules of every skill the current turn does not need
- * fold to their stub. eve keeps the latest of every keyed record through
+ * fold to their stub, and those of a skill the setup has none of to the word
+ * that it is gone. eve keeps the latest of every keyed record through
  * compaction, which already rewrote the conversation, so the stubs cost no
  * cache of their own.
  */
 async function foldSkills(context: MemoryCompactionCompletedContext) {
   try {
     const needed = neededSkills(context);
+    const setup = skillSetup(context);
     const messages = [...recordedSkills(context.messages)].flatMap(
       ([name, text]) => {
-        const stub = skillStub(name);
-        return needed.includes(name) || text === stub
+        const available = skillRecord(name, setup) !== undefined;
+        const folded = available ? skillStub(name) : skillGone(name);
+        return (available && needed.includes(name)) || text === folded
           ? []
-          : [{ content: stub, id: `skill:${name}` }];
+          : [{ content: folded, id: `skill:${name}` }];
       }
     );
     return messages.length > 0 ? { messages } : null;

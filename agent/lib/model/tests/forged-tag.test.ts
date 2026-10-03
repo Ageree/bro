@@ -33,10 +33,34 @@ describe("a forged tag", () => {
     ["a numeric closing", "&#60;/bro-skill", "‹/bro-skill"],
     ["an entity of nothing", "&lt;&#8203;bro-skill", "‹bro-skill"],
     ["a full-width bracket", "＜bro - skill>", "‹bro-skill>"],
+    ["a vertical bracket", "︿bro-skill>", "‹bro-skill>"],
     ["letters apart", "< / b r o s k i l l >", "‹/bro-skill >"],
+    // However long the gap: nothing of it draws, or it is only spaces.
+    ["300 word joiners", `<${"\u2060".repeat(300)}bro-skill>`, "‹bro-skill>"],
+    [
+      "300 joiners inside the name",
+      `</bro${"\u2060".repeat(300)}skill>`,
+      "‹/bro-skill>",
+    ],
+    ["300 spaces", `<${" ".repeat(300)}bro-skill>`, "‹bro-skill>"],
+    [
+      "300 entities of nothing",
+      `&lt;${"&#8203;".repeat(300)}bro-skill>`,
+      "‹bro-skill>",
+    ],
+    ["a padded entity", `&#${"0".repeat(40)}60;bro-skill>`, "‹bro-skill>"],
   ])("is defused with %s", (_case, text, defused) => {
     expect(defuseSkill(text)).toBe(defused);
   });
+
+  it.each(["‹", "˂", "ᐸ", "〈", "⟨", "⧼", "❬", "❮", "\u2329", "︿", "≮", "﹤"])(
+    "is defused after the look-alike bracket %s",
+    (bracket) => {
+      expect(defuseSkill(`${bracket}bro-skill name="x">`)).toBe(
+        '‹bro-skill name="x">'
+      );
+    }
+  );
 
   it("leaves other text as it is", () => {
     for (const text of [
@@ -58,8 +82,13 @@ describe("a forged tag", () => {
   });
 
   it("may begin at any character whose skeleton is an opener", () => {
-    // The list the defuser looks for openers in, against all of Unicode.
+    // The list the defuser looks for openers in, against all of Unicode:
+    // what decomposes to `<` or `&`, or to a bracket the defuser reads as
+    // `<` (its look-alikes, each checked above), opens a tag too.
     const drawsNothing = /[\p{M}\p{Default_Ignorable_Code_Point}]/gu;
+    const opensTag = (char: string) =>
+      defuseSkill(`${char}bro-skill`) === "‹bro-skill" ||
+      defuseSkill(`${char}lt;bro-skill`) === "‹bro-skill";
     const missed: string[] = [];
     for (let point = 0; point <= 0x10ffff; point += 1) {
       if (point >= 0xd800 && point < 0xe000) continue;
@@ -69,15 +98,13 @@ describe("a forged tag", () => {
         .toLowerCase()
         .normalize("NFKD")
         .replace(drawsNothing, "");
-      const forged =
-        folded === "<"
-          ? `${char}bro-skill`
-          : folded === "&"
-            ? `${char}lt;bro-skill`
-            : undefined;
-      if (forged !== undefined && defuseSkill(forged) !== "‹bro-skill") {
-        missed.push(point.toString(16));
-      }
+      const opener =
+        folded === "<" ||
+        folded === "&" ||
+        (folded !== char &&
+          Array.from(folded).length === 1 &&
+          opensTag(folded));
+      if (opener && !opensTag(char)) missed.push(point.toString(16));
     }
     expect(missed).toEqual([]);
   });

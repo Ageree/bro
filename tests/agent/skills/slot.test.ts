@@ -55,6 +55,7 @@ async function load(
     language: language.personLanguage,
     loadSkill: tool.default,
     personWordsThisTurn: said.personWordsThisTurn,
+    skillGone: render.skillGone,
     skillRecord: render.skillRecord,
     skillStub: render.skillStub,
     skills: slot.default,
@@ -63,6 +64,7 @@ async function load(
 
 afterEach(() => {
   for (const name of variables) vi.stubEnv(name, undefined);
+  vi.restoreAllMocks();
 });
 
 function person(text: string): ModelMessage {
@@ -280,6 +282,55 @@ describe("the skills memory slot", () => {
     });
   });
 
+  it("replaces the rules of a skill the setup no longer has", async () => {
+    // The browser's block from before, in a deployment without a browser.
+    const { skillRecord } = await load();
+    const browser =
+      skillRecord("browser", { browser: true, images: false }) ?? "";
+    const { skillGone, skillStub, skills } = await load({
+      OPENROUTER_API_KEY: "test-openrouter-key",
+      SKILLS_WORKSPACES: workspaceId,
+    });
+    const recall = skills.provider.recall["turn.started"];
+    const gone = { content: skillGone("browser"), id: "skill:browser" };
+    // Its rules or their stub, in a turn that needs them or not.
+    const recalled = await Promise.all(
+      [browser, skillStub("browser")].flatMap((text) =>
+        ["спасибо", "купи билет на сапсан"].map(async (words) =>
+          recalledSchema.parse(
+            await recall(
+              turnContext({ history: [record(text)], input: [person(words)] })
+            )
+          )
+        )
+      )
+    );
+    expect(recalled).toEqual(recalled.map(() => ({ messages: [gone] })));
+    // Once gone it stays so, and no turn brings the rules back.
+    expect(
+      await recall(
+        turnContext({
+          history: [record(skillGone("browser"))],
+          input: [person("спасибо")],
+        })
+      )
+    ).toBeNull();
+    expect(skillGone("browser")).not.toContain("вызови");
+    // Compaction folds it so too.
+    const fold = skills.provider.recall["compaction.completed"];
+    expect(
+      recalledSchema.parse(
+        await fold({
+          ...turnContext({
+            history: [record(browser)],
+            input: [person("купи билет на сапсан")],
+          }),
+          compaction: { modelId: "deepseek/deepseek-v4.1-flash" },
+        })
+      )
+    ).toEqual({ messages: [gone] });
+  });
+
   it("adds no record for rules `load_skill` already brought", async () => {
     const { skillRecord, skills } = await load();
     const games = skillRecord("games", { browser: true, images: false }) ?? "";
@@ -460,7 +511,7 @@ async function resolveTool(
   loaded: Awaited<ReturnType<typeof load>>,
   context = turnContext()
 ) {
-  const resolve = loaded.loadSkill.events["turn.started"];
+  const resolve = loaded.loadSkill.events["step.started"];
   return resolve ? await resolve({}, context) : null;
 }
 
@@ -516,5 +567,54 @@ describe("load_skill", () => {
       turnContext({ history: [person("сыграем"), record(games ?? "")] })
     );
     expect(run(tool, "games")).toContain("already above");
+  });
+
+  it("counts a block an earlier step of the turn loaded", async () => {
+    const loaded = await load();
+    const games =
+      loaded.skillRecord("games", { browser: true, images: false }) ?? "";
+    const tool = await resolveTool(
+      loaded,
+      turnContext({
+        history: [
+          person("сыграем"),
+          {
+            content: [
+              {
+                input: { name: "games" },
+                toolCallId: "load-1",
+                toolName: "load_skill",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: { type: "text", value: games },
+                toolCallId: "load-1",
+                toolName: "load_skill",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+      })
+    );
+    expect(run(tool, "games")).toContain("already above");
+  });
+
+  it("takes a short name, trimmed", async () => {
+    const schema = z.object({
+      inputSchema: z.custom<z.ZodType>((value) => value instanceof z.ZodType),
+    });
+    const { inputSchema } = schema.parse(await resolveTool(await load()));
+    expect(inputSchema.safeParse({ name: " games " }).data).toEqual({
+      name: "games",
+    });
+    expect(inputSchema.safeParse({ name: "x".repeat(65) }).success).toBe(false);
+    expect(inputSchema.safeParse({ name: "  " }).success).toBe(false);
   });
 });

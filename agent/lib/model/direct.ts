@@ -566,11 +566,122 @@ const fileBytesSchema = z.union([
 const textMediaType =
   /^text(?:\/|$)|^application\/(?:[\w.-]+\+)?(?:json|xml|csv)$/iu;
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * The second byte's range and the sequence's length that a lead byte of
+ * UTF-8 takes (the WHATWG decoder's: no overlong form, no surrogate,
+ * nothing past U+10FFFF), or none for a byte that leads nothing.
+ */
+function utf8Lead(lead: number) {
+  if (lead >= 0xc2 && lead <= 0xdf) return { high: 0xbf, length: 2, low: 0x80 };
+  if (lead === 0xe0) return { high: 0xbf, length: 3, low: 0xa0 };
+  if (lead === 0xed) return { high: 0x9f, length: 3, low: 0x80 };
+  if (lead >= 0xe1 && lead <= 0xef) return { high: 0xbf, length: 3, low: 0x80 };
+  if (lead === 0xf0) return { high: 0xbf, length: 4, low: 0x90 };
+  if (lead >= 0xf1 && lead <= 0xf3) return { high: 0xbf, length: 4, low: 0x80 };
+  if (lead === 0xf4) return { high: 0x8f, length: 4, low: 0x80 };
+  return undefined;
+}
+
+/** How many bytes of UTF-8 the character at `at` takes; 0 when none. */
+function utf8Length(bytes: Uint8Array, at: number) {
+  const lead = bytes[at] ?? 0;
+  if (lead < 0x80) return 1;
+  const sequence = utf8Lead(lead);
+  if (sequence === undefined) return 0;
+  const second = bytes[at + 1] ?? 0;
+  if (second < sequence.low || second > sequence.high) return 0;
+  for (let next = at + 2; next < at + sequence.length; next += 1) {
+    const byte = bytes[next] ?? 0;
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return sequence.length;
+}
+
+/** How many bytes a window of a non-UTF-8 document's reading spans. */
+const windowBytes = 1 << 16;
+
+/** How many bytes not of UTF-8 one string of escapes takes at most. */
+const escapeRun = 1 << 12;
+
+/**
+ * A text document's bytes as text. A byte that is no part of UTF-8 — the
+ * whole of a `.csv` saved in Windows-1251, or one stray byte — becomes a
+ * lone surrogate of its own (U+DC80–U+DCFF, as Python's `surrogateescape`):
+ * the UTF-8 around it is still read, forged tags and all, and the text
+ * encodes back to the very same bytes (`documentBytes`). The bytes are read
+ * a window at a time, a run of escapes as one string, so a large file not
+ * in UTF-8 holds a few strings per window, not a few per byte.
+ */
+function documentText(bytes: Uint8Array) {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    // Not UTF-8 throughout: read it run by run.
+  }
+  const windows: string[] = [];
+  let parts: string[] = [];
+  let run = 0;
+  let at = 0;
+  let windowStart = 0;
+  while (at < bytes.length) {
+    const length = utf8Length(bytes, at);
+    if (length > 0) {
+      at += length;
+    } else {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      const units: number[] = [];
+      while (
+        at < bytes.length &&
+        units.length < escapeRun &&
+        utf8Length(bytes, at) === 0
+      ) {
+        units.push(0xdc00 + (bytes[at] ?? 0));
+        at += 1;
+      }
+      parts.push(String.fromCharCode(...units));
+      run = at;
+    }
+    if (at - windowStart >= windowBytes) {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      windows.push(parts.join(""));
+      parts = [];
+      run = at;
+      windowStart = at;
+    }
+  }
+  parts.push(strictUtf8.decode(bytes.subarray(run)));
+  windows.push(parts.join(""));
+  return windows.join("");
+}
+
+/** A byte escaped as a lone surrogate, in runs (never half of a pair). */
+const escapedBytes = /[\uDC80-\uDCFF]+/gu;
+
+/** A document's text back to bytes: an escaped byte as itself. */
+function documentBytes(text: string) {
+  // An escape takes three bytes here and one in the document: room enough.
+  const bytes = Buffer.allocUnsafe(Buffer.byteLength(text, "utf8"));
+  let size = 0;
+  let run = 0;
+  for (const match of text.matchAll(escapedBytes)) {
+    size += bytes.write(text.slice(run, match.index), size, "utf8");
+    for (let unit = 0; unit < match[0].length; unit += 1) {
+      bytes[size] = match[0].charCodeAt(unit) - 0xdc00;
+      size += 1;
+    }
+    run = match.index + match[0].length;
+  }
+  size += bytes.write(text.slice(run), size, "utf8");
+  return bytes.subarray(0, size);
+}
+
 /**
  * A file's data with the tags defused: inline text, and the bytes of a text
  * document — a person's `.txt` or `.csv`, a page saved as text — decoded,
  * defused and encoded again only when a tag was found, so every other file
- * goes on byte for byte.
+ * goes on byte for byte, and in a defused one every byte outside the tags.
  */
 function defusedFileData(
   data: FileData,
@@ -581,13 +692,13 @@ function defusedFileData(
   if (data.type !== "data" || !textMediaType.test(mediaType)) return data;
   const bytes = fileBytesSchema.safeParse(data.data).data;
   if (bytes === undefined) return data;
-  const text = new TextDecoder().decode(bytes.bytes);
+  const text = documentText(bytes.bytes);
   const defused = defuse(text);
   if (defused === text) return data;
-  const encoded = new TextEncoder().encode(defused);
+  const encoded = documentBytes(defused);
   return {
     ...data,
-    data: bytes.base64 ? Buffer.from(encoded).toString("base64") : encoded,
+    data: bytes.base64 ? encoded.toString("base64") : new Uint8Array(encoded),
   };
 }
 
