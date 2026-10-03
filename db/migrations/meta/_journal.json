@@ -309,6 +309,13 @@
       "when": 1790925251469,
       "tag": "0043_abandoned_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790980299183,
+      "tag": "0044_cloudy_stardust",
+      "breakpoints": true
     }
   ]
 }
