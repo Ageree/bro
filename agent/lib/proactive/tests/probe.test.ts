@@ -11,7 +11,13 @@ vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: settings.access,
 }));
 
-import { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
+import {
+  probeFailure,
+  probeGoogleSignals,
+  rankMail,
+} from "@agent/lib/proactive/probe";
+import { GoogleApiError } from "@agent/lib/google-workspace/client";
+import { ComposioError } from "@shared/composio/api";
 
 const scope = accessScopeForUser("better-auth:user-1");
 const now = new Date("2026-09-24T09:00:00.000Z");
@@ -22,6 +28,10 @@ const window = {
 };
 
 let composio: FakeComposio;
+
+function requestUrl(input: string | URL | Request) {
+  return input instanceof Request ? input.url : input.toString();
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -78,6 +88,79 @@ describe("probeGoogleSignals", () => {
         .find(({ url }) => url.hostname === "gmail.googleapis.com")
         ?.url.searchParams.get("q")
     ).toContain("in:inbox after:");
+  });
+
+  it("asks Composio once more when it refused with a bare 403", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const answer = composio.fetch.getMockImplementation();
+    if (!answer) throw new Error("Expected the fake Composio.");
+    let refused = 0;
+    composio.fetch.mockImplementation(async (input, init) => {
+      if (refused < 2 && requestUrl(input).includes("/tools/execute/proxy")) {
+        refused += 1;
+        return new Response("<html>403 Forbidden</html>", {
+          headers: { server: "ddos-guard" },
+          status: 403,
+        });
+      }
+      return answer(input, init);
+    });
+
+    await expect(probeGoogleSignals(scope, window)).resolves.toMatchObject({
+      state: "connected",
+    });
+    expect(refused).toBe(2);
+  }, 15_000);
+
+  it("does not ask again for an account Composio no longer has", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const answer = composio.fetch.getMockImplementation();
+    if (!answer) throw new Error("Expected the fake Composio.");
+    composio.fetch.mockImplementation(async (input, init) =>
+      requestUrl(input).includes("/tools/execute/proxy")
+        ? new Response(
+            JSON.stringify({
+              error: { message: "gone", slug: "ConnectedAccount_NotFound" },
+            }),
+            { status: 404 }
+          )
+        : answer(input, init)
+    );
+
+    await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
+      state: "disconnected",
+    });
+  });
+
+  it("names who refused a failed check, never the mail", () => {
+    expect(
+      probeFailure(
+        new ComposioError(403, undefined, "Composio answered 403.", {
+          bodyStart: "<html>403 Forbidden</html>",
+          server: "ddos-guard",
+        })
+      )
+    ).toEqual({
+      bodyStart: "<html>403 Forbidden</html>",
+      by: "composio",
+      server: "ddos-guard",
+      slug: undefined,
+      status: 403,
+    });
+    expect(
+      probeFailure(
+        new GoogleApiError(403, {
+          details: [],
+          errors: [{ reason: "rateLimitExceeded" }],
+          message: "Rate Limit Exceeded",
+        })
+      )
+    ).toEqual({
+      by: "google",
+      rateLimited: true,
+      reason: "rateLimitExceeded",
+      status: 403,
+    });
   });
 
   it("keeps only what may not wait for the morning at night", async () => {

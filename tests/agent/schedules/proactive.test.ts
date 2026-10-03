@@ -52,6 +52,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   setScheduledRunSession: jobs.setSession,
 }));
 vi.mock("@agent/lib/proactive/probe", () => ({
+  probeFailure: () => ({ by: "composio", status: 403 }),
   probeGoogleSignals: probe,
   rankMail: rank,
 }));
@@ -297,12 +298,20 @@ describe("proactive schedule", () => {
     probe
       .mockRejectedValueOnce(new Error("Gmail is down"))
       .mockResolvedValueOnce({ signals: [flight], state: "connected" });
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspaceId: "workspace:bob" })
+    );
+    // The log line says who refused, so a Composio 403 is told from Google.
+    expect(warn).toHaveBeenCalledWith(
+      "[proactive] check",
+      expect.objectContaining({
+        failure: { by: "composio", status: 403 },
+        outcome: "failed",
+      })
     );
   });
 
