@@ -49,7 +49,6 @@ const contrastWords = new Set([
   "when",
   "if",
   "unless",
-  "while",
 ]);
 const clauseBreak = /[,;:.!?()—–]/u;
 /**

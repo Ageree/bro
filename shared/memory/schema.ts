@@ -58,10 +58,10 @@ const credentialPatterns = [
     "dgiu"
   ),
   // An SMS code has four digits or more: «смс 482193», «смс от банка: 1234»,
-  // «смс для входа 482193»,
+  // «смс для входа 482193» — not «смс для домофона 4512»,
   // not «рейс SMS 123».
   new RegExp(
-    String.raw`${notAfterWord}(?:смс|sms)${notBeforeLetter}${codeGap}(?:(?:от|из|с|для|from|for)\s+[^\s\d]+${codeGap})?(?=\d(?:[ -]?\d){3})${codeDigits}`,
+    String.raw`${notAfterWord}(?:смс|sms)${notBeforeLetter}${codeGap}(?:(?:от|из|с|from)\s+[^\s\d]+${codeGap}|(?:для|for)\s+(?:вход\p{L}*|авториз\p{L}*|подтвержд\p{L}*|верификац\p{L}*|регистрац\p{L}*|login|sign[- ]?in|verification|confirmation)${codeGap})?(?=\d(?:[ -]?\d){3})${codeDigits}`,
     "dgiu"
   ),
 ];
