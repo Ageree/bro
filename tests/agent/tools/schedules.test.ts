@@ -21,9 +21,11 @@ import type {
   setSubscriptionStatus,
 } from "@db/services/subscriptions";
 import type { readWorkspaceTimeZone } from "@db/services/user-profile";
+import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 
 const watches = vi.hoisted(() => ({
   list: vi.fn<typeof listLiveSubscriptions>(() => Promise.resolve([])),
+  pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
   setStatus: vi.fn<typeof setSubscriptionStatus>(),
 }));
 
@@ -48,6 +50,9 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   reportConversations: services.report,
   submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
+}));
+vi.mock("@agent/lib/subscriptions/pilot", () => ({
+  subscriptionsPilot: watches.pilot,
 }));
 vi.mock("@db/services/subscriptions", () => ({
   listLiveSubscriptions: watches.list,
@@ -795,6 +800,32 @@ describe("schedule tools", () => {
         toolContext("schedules-update")
       )
     ).rejects.toThrow(/can only be paused, resumed or deleted/u);
+
+    // Outside the pilot the tick holds it: it is not resumed, only paused
+    // or deleted, and nothing points at a tool the turn does not have.
+    watches.pilot.mockResolvedValue(false);
+    watches.setStatus.mockClear();
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "active" },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/watches are switched off here now/u);
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, prompt: "ниже 7000" },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/^(?!.*watch-create).*switched off/u);
+    expect(watches.setStatus).not.toHaveBeenCalled();
+    watches.setStatus.mockResolvedValue({ ...watch, status: "paused" });
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "paused" },
+        toolContext("schedules-update")
+      )
+    ).resolves.toMatchObject({ status: "paused" });
+    watches.pilot.mockResolvedValue(true);
   });
 
   it("updates a schedule without carrying an action discriminator", async () => {

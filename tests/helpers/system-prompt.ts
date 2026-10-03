@@ -93,6 +93,7 @@ export function stubDeployment(environment: Record<string, string>) {
     ...Object.keys(fullDeployment),
     ...Object.keys(taskAgentDeployment),
     "SKILLS_WORKSPACES",
+    "SUBSCRIPTIONS_WORKSPACES",
     ...Object.keys(environment),
   ])) {
     vi.stubEnv(name, environment[name]);

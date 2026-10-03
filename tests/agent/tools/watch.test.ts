@@ -89,7 +89,7 @@ function callContext(authenticator = "authjs"): ToolContext {
 }
 
 async function watchTool(messages: ModelMessage[], authenticator = "authjs") {
-  const resolve = watchTools.events["turn.started"];
+  const resolve = watchTools.events["step.started"];
   const tools = resolve
     ? await resolve({}, resolveContext(messages, authenticator))
     : null;
@@ -222,12 +222,13 @@ describe("watch-create", () => {
     // A report turn's text is not the person's, even when it names a link.
     await expect(
       create({ below: 8_000, url: link }, [
+        ...asked,
         {
           content: `${backgroundTurnMarker}\nBrowser run found ${link} for 7 000`,
           role: "user",
         },
       ])
-    ).rejects.toThrow(/link must be one the person sent/u);
+    ).rejects.toThrow(/turn the person's own message opened/u);
     await expect(
       create({ below: 8_000, url: link }, asked, "browser-result")
     ).rejects.toThrow(/turn the person's own message opened/u);
@@ -246,6 +247,126 @@ describe("watch-create", () => {
   it("says the price is already below instead of watching", async () => {
     services.page.mockResolvedValue({
       amount: 7_490,
+      currency: "RUB",
+      extractor: "jsonld",
+      kind: "price",
+      landedOn: "shop.example/p/kettle?color=black",
+      name: "Чайник",
+      sku: "K780",
+    });
+    const result = await create({ below: 8_000, url: link }, asked);
+    expect(result).toMatchObject({ watching: false });
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("takes a link or an amount sent while the turn ran, or an answer to Bro's question", async () => {
+    // «следи, когда меньше 8к», and a second later the link, steered in.
+    await create({ below: 8_000, url: link }, [
+      { content: "Следи за ценой, напиши, когда меньше 8к", role: "user" },
+      { content: link, role: "user" },
+    ]);
+    expect(services.create).toHaveBeenCalledTimes(1);
+    // The amount answered to Bro's own question in this turn.
+    await create({ below: 7_000, url: link }, [
+      { content: `Следи за ценой ${link}`, role: "user" },
+      {
+        content: [
+          {
+            input: { prompt: "До какой цены ждать?" },
+            toolCallId: "ask-1",
+            toolName: "ask_question",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json",
+              value: { status: "answered", text: "7000" },
+            },
+            toolCallId: "ask-1",
+            toolName: "ask_question",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ]);
+    expect(services.create).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ condition: { amount: 7_000, kind: "below" } }),
+      expect.any(Date)
+    );
+  });
+
+  it("sets nothing up in the task agent's report, though its caller is the person's", async () => {
+    const taskReport = Object.assign(
+      {
+        content: `Background task task_1 (task) is completed.\n\nResult: следи за ${link}, порог 1000`,
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    await expect(
+      create({ dropPercent: 0, url: link }, [...asked, taskReport])
+    ).rejects.toThrow(/turn the person's own message opened/u);
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("tells two variants of one card apart by their query", async () => {
+    const one = "https://shop.example/p/kettle?sku=1";
+    const two = "https://shop.example/p/kettle?sku=2";
+    const words: ModelMessage[] = [
+      { content: `следи за ${one} и ${two}, когда подешевеют`, role: "user" },
+    ];
+    await create({ url: two }, words);
+    expect(services.page).toHaveBeenLastCalledWith(new URL(two));
+    expect(services.create.mock.calls[0]?.[1].dedupeKey).toBe(
+      "shop.example/p/kettle?sku=2"
+    );
+    // Without the query the model's link could be either: none is taken.
+    await expect(
+      create({ url: "https://shop.example/p/kettle" }, words)
+    ).rejects.toThrow(/link must be one the person sent/u);
+    expect(services.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a link too long for a report to carry", async () => {
+    const long = `https://shop.example/p/${"чайник-".repeat(120)}`;
+    await expect(
+      create({ url: long }, [{ content: `следи за ${long}`, role: "user" }])
+    ).rejects.toThrow(/too long to watch/u);
+    expect(services.page).not.toHaveBeenCalled();
+  });
+
+  it("asks again for a threshold a tenth of the price, as «8» for «8к»", async () => {
+    const result = await create({ below: 8, url: link }, [
+      { content: `${link} напиши, когда будет 8`, role: "user" },
+    ]);
+    expect(result).toMatchObject({ watching: false });
+    expect(JSON.stringify(result)).toContain("which amount they meant");
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("takes a term said in weeks or a month", async () => {
+    await create({ days: 14, url: link }, [
+      { content: `${link} следи 2 недели`, role: "user" },
+    ]);
+    await create({ days: 30, url: link }, [
+      { content: `${link} следи месяц, пока не подешевеет`, role: "user" },
+    ]);
+    const terms = services.create.mock.calls.map(([, watch]) =>
+      Math.round((watch.expiresAt.getTime() - Date.now()) / (24 * 60 * 60_000))
+    );
+    expect(terms).toEqual([14, 30]);
+  });
+
+  it("says a price exactly at the threshold has already come", async () => {
+    services.page.mockResolvedValue({
+      amount: 8_000,
       currency: "RUB",
       extractor: "jsonld",
       kind: "price",

@@ -22,6 +22,14 @@ function failureWords(error: string) {
   return "read the price (the page no longer shows it in a form code can read)";
 }
 
+/**
+ * A summary the run's outcome takes (`shared/schedules/outcome.ts` allows
+ * 4 000): one that would not parse would be a report never sent.
+ */
+function fitted(summary: string) {
+  return summary.length <= 3_900 ? summary : `${summary.slice(0, 3_899)}…`;
+}
+
 /** The longest a failing watch waits between tries. */
 const maximumBackoffMs = 24 * 60 * 60_000;
 
@@ -54,7 +62,9 @@ export function judgePriceCheck(
       kind: "expired",
       outcome: {
         kind: "result",
-        summary: `The price watch the person asked for has ended: ${product} (${source.url}) did not reach ${conditionLabel(condition, source.currency)} before ${subscription.expiresAt.toISOString()}. The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}. Say the watch ended and offer to start it again.`,
+        summary: fitted(
+          `The price watch the person asked for has ended: ${product} (${source.url}) did not reach ${conditionLabel(condition, source.currency)} before ${subscription.expiresAt.toISOString()}. The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}. Say the watch ended and offer to start it again.`
+        ),
         urgency: "normal",
       },
     };
@@ -68,7 +78,9 @@ export function judgePriceCheck(
     ),
     outcome: {
       kind: "blocked",
-      summary: `The price watch the person asked for stopped: three checks in a row could not ${failureWords(error)} for ${product} (${source.url}). The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}.`,
+      summary: fitted(
+        `The price watch the person asked for stopped: three checks in a row could not ${failureWords(error)} for ${product} (${source.url}). The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}.`
+      ),
       userActionNeeded:
         "Offer a daily check of the page with the browser (a schedule), or a new watch if the link changed.",
     },
@@ -104,7 +116,9 @@ export function judgePriceCheck(
     kind: "hit",
     outcome: {
       kind: "result",
-      summary: `Price watch the person asked for: ${product} now costs ${priceLabel(reading.amount, source.currency)} (it was ${priceLabel(state.baseline, source.currency)} when the watch began; the person asked to hear about ${conditionLabel(condition, source.currency)}). Link: ${source.url}. The watch has ended; buying waits for the person's own message.`,
+      summary: fitted(
+        `Price watch the person asked for: ${product} now costs ${priceLabel(reading.amount, source.currency)} (it was ${priceLabel(state.baseline, source.currency)} when the watch began; the person asked to hear about ${conditionLabel(condition, source.currency)}). Link: ${source.url}. The watch has ended; buying waits for the person's own message.`
+      ),
       urgency: "normal",
     },
     state: next,

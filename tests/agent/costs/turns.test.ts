@@ -133,6 +133,21 @@ describe("whose turn a model step is", () => {
         )
       ).runId
     ).toBe("run-8");
+    // eve's later turn in a session a report opened ([Task state]) is not
+    // that report's run.
+    expect(
+      turnCostSource(
+        auth(
+          caller("scheduled-result"),
+          caller("scheduled-result", { scheduledRunId: "run-9" })
+        )
+      )
+    ).toEqual({ runId: undefined, source: "background" });
+    expect(
+      turnCostSource(
+        auth(null, caller("scheduled-worker", { scheduledRunId: "run-8" }))
+      ).runId
+    ).toBe("run-8");
   });
 
   it("finds the workspace on the caller, or on the one who opened the session", () => {

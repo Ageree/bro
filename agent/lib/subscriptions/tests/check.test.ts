@@ -113,6 +113,26 @@ describe("judging a price check", () => {
     expect(summary).toContain("same product");
   });
 
+  it("keeps a report short enough for its run to take it", () => {
+    const check = judgePriceCheck(
+      {
+        ...watch,
+        source: {
+          ...watch.source,
+          url: `https://shop.example/${"x".repeat(5_000)}`,
+        },
+      },
+      { ...reading, amount: 7_000 },
+      now
+    );
+    const summary =
+      check.kind === "hit" && check.outcome.kind === "result"
+        ? check.outcome.summary
+        : "";
+    expect(summary.length).toBeGreaterThan(3_000);
+    expect(summary.length).toBeLessThanOrEqual(4_000);
+  });
+
   it("ends a watch whose term ran out, whatever the page says", () => {
     const check = judgePriceCheck(
       { ...watch, expiresAt: new Date("2026-10-05T11:00:00.000Z") },

@@ -1,6 +1,7 @@
 import type { ScheduleHandlerArgs } from "eve/schedules";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { readPricePage } from "@agent/lib/subscriptions/page";
+import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import type { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import type {
   ClaimedSubscription,
@@ -12,6 +13,7 @@ const services = vi.hoisted(() => ({
   claim: vi.fn<typeof claimDueSubscriptions>(),
   enabled: vi.fn<typeof schedulesEnabled>(() => true),
   page: vi.fn<typeof readPricePage>(),
+  pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
   settle: vi.fn<typeof settleSubscriptionCheck>(),
 }));
 vi.mock("@agent/lib/schedules/enabled", () => ({
@@ -19,6 +21,9 @@ vi.mock("@agent/lib/schedules/enabled", () => ({
 }));
 vi.mock("@agent/lib/subscriptions/page", () => ({
   readPricePage: services.page,
+}));
+vi.mock("@agent/lib/subscriptions/pilot", () => ({
+  subscriptionsPilot: services.pilot,
 }));
 vi.mock("@db/services/subscriptions", () => ({
   claimDueSubscriptions: services.claim,
@@ -152,6 +157,31 @@ describe("the subscription checks", () => {
       error: "unreachable: TypeError",
       kind: "failed",
     });
+  });
+
+  it("holds a watch outside the pilot: no page, no news, a quiet end", async () => {
+    services.pilot.mockResolvedValue(false);
+    services.claim.mockResolvedValue([
+      watch("w1", "https://shop.example/p/1"),
+      watch("w2", "https://shop.example/p/2", {
+        expiresAt: new Date("2026-10-01T00:00:00.000Z"),
+      }),
+    ]);
+    services.settle.mockResolvedValue("held");
+    const before = Date.now();
+    await runSchedule();
+    expect(services.page).not.toHaveBeenCalled();
+    expect(services.pilot).toHaveBeenCalledWith({
+      userId: "alice",
+      workspaceId: "workspace:alice",
+    });
+    const [held, lapsed] = services.settle.mock.calls.map(([, check]) => check);
+    expect(lapsed).toEqual({ kind: "lapsed" });
+    expect(held?.kind).toBe("held");
+    // Back in the pilot, it goes on a period later.
+    const next = held?.kind === "held" ? held.nextCheckAt.getTime() : 0;
+    expect(next - before).toBeGreaterThanOrEqual(6 * 60 * 60_000);
+    services.pilot.mockResolvedValue(true);
   });
 
   it("does nothing where schedules are off", async () => {

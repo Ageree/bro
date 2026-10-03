@@ -9,6 +9,8 @@ const workspaceCallerSchema = z.object({
   attributes: z.object({ workspaceId: z.string().min(1) }),
 });
 
+const callerSchema = z.object({ authenticator: z.string() });
+
 const scheduledCallerSchema = z.object({
   attributes: z.object({ scheduledRunId: z.string().min(1) }),
 });
@@ -30,14 +32,21 @@ export function turnCostSource(auth: SessionAuth) {
   if (startedByPerson({ session: { auth } })) {
     return { runId: undefined, source: "chat" as const };
   }
+  // A resumed worker's turn may carry its run only on the caller that
+  // opened the session. Any other turn — eve's `[Task state]` delivery in a
+  // session a report opened — is not that run's, and carries none.
+  const resumedWorker =
+    !auth.current ||
+    callerSchema.safeParse(auth.current).data?.authenticator ===
+      "scheduled-input";
   return {
-    // A resumed worker's turn may carry its run only on the caller that
-    // opened the session.
     runId:
       scheduledCallerSchema.safeParse(auth.current).data?.attributes
         .scheduledRunId ??
-      scheduledCallerSchema.safeParse(auth.initiator).data?.attributes
-        .scheduledRunId,
+      (resumedWorker
+        ? scheduledCallerSchema.safeParse(auth.initiator).data?.attributes
+            .scheduledRunId
+        : undefined),
     source: "background" as const,
   };
 }

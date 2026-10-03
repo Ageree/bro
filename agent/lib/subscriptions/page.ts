@@ -51,6 +51,20 @@ export function pageKey(url: URL) {
 const blockingStatuses = new Set(["http 401", "http 403", "http 429"]);
 
 /**
+ * The start of the page's `<title>`, found by `indexOf`: a regular expression
+ * over a stranger's 2 MB could stall the process (`htmlTags` in `price.ts`).
+ */
+export function pageTitle(html: string) {
+  const open = html.search(/<title/iu);
+  if (open === -1) return "";
+  const close = html.indexOf(">", open);
+  if (close === -1) return "";
+  const text = html.slice(close + 1, close + 301);
+  const end = text.indexOf("<");
+  return end === -1 ? text : text.slice(0, end);
+}
+
+/**
  * Reads the price on a public product page with one plain HTTPS request:
  * every hop goes only to an address checked public (`fetchPublic`), each
  * redirect is checked before it is followed, and the body stops at 2 MB.
@@ -85,8 +99,7 @@ export async function readPricePage(url: URL): Promise<PageRead> {
     return { ...reading, landedOn: pageKey(landedOn) };
   }
   if (reading.kind !== "no-price") return reading;
-  const title = /<title[^>]*>([^<]{0,300})/iu.exec(html)?.[1] ?? "";
-  return botCheckWording.test(title)
+  return botCheckWording.test(pageTitle(html))
     ? { kind: "blocked", reason: "bot-check" }
     : reading;
 }

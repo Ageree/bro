@@ -3,8 +3,10 @@ import { within } from "@agent/lib/browser-use/deadline";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
 import { readPricePage } from "@agent/lib/subscriptions/page";
+import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import {
   type ClaimedSubscription,
+  type SubscriptionCheck,
   claimDueSubscriptions,
   settleSubscriptionCheck,
 } from "@db/services/subscriptions";
@@ -97,6 +99,37 @@ async function checkInTurn(
   }
 }
 
+/**
+ * The check a watch gets. Outside the pilot (SUBSCRIPTIONS_WORKSPACES taken
+ * back, or a lookup that failed) it is held: no page is read, no news is
+ * sent, and one whose term ran out ends quietly. Back in the pilot, it goes
+ * on from where it was.
+ */
+async function decideCheck(
+  subscription: ClaimedSubscription
+): Promise<SubscriptionCheck> {
+  const now = new Date();
+  const expired = subscription.expiresAt.getTime() <= now.getTime();
+  const inPilot = await subscriptionsPilot({
+    userId: subscription.createdByUserId,
+    workspaceId: subscription.workspaceId,
+  });
+  if (!inPilot) {
+    return expired
+      ? { kind: "lapsed" }
+      : {
+          kind: "held",
+          nextCheckAt: new Date(
+            now.getTime() + subscription.checkEverySeconds * 1_000
+          ),
+        };
+  }
+  const reading = expired
+    ? ({ kind: "no-price" } as const)
+    : await readSafely(subscription.source.url);
+  return judgePriceCheck(subscription, reading, new Date());
+}
+
 /** One check, logged as one line with its outcome and never the page. */
 async function checkSubscription(subscription: ClaimedSubscription) {
   const logged = {
@@ -105,12 +138,7 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     workspaceId: subscription.workspaceId,
   };
   try {
-    const now = new Date();
-    const expired = subscription.expiresAt.getTime() <= now.getTime();
-    const reading = expired
-      ? ({ kind: "no-price" } as const)
-      : await readSafely(subscription.source.url);
-    const check = judgePriceCheck(subscription, reading, new Date());
+    const check = await decideCheck(subscription);
     const outcome = await settleSubscriptionCheck(subscription, check);
     console.info("[subscriptions] check", {
       ...logged,

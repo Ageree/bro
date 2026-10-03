@@ -294,6 +294,94 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     ).toBe(true);
   });
 
+  it("sends the news of a watch set up again to the chat it was asked in last", async () => {
+    const { db, subscriptions } = await openDatabase();
+    await subscriptions.createSubscription(
+      alice,
+      priceWatch({ replyAnchorMessageId: "message-1" }),
+      now
+    );
+    await subscriptions.createSubscription(
+      alice,
+      priceWatch({
+        conversation: { conversationChannel: "eve", conversationId: "chat-2" },
+      }),
+      now
+    );
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      conversationChannel: "eve",
+      conversationId: "chat-2",
+      replyAnchorMessageId: null,
+    });
+  });
+
+  it("ends a paused watch whose term ran out, without a word", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const { subscription } = await subscriptions.createSubscription(
+      alice,
+      priceWatch(),
+      now
+    );
+    await subscriptions.setSubscriptionStatus(
+      alice,
+      subscription.id,
+      "paused",
+      now
+    );
+    expect(
+      await subscriptions.claimDueSubscriptions({
+        leaseForMs: 10 * 60_000,
+        limit: 10,
+        now: new Date("2026-12-30T00:00:00.000Z"),
+      })
+    ).toEqual([]);
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      status: "expired",
+    });
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      status: "completed",
+    });
+    expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
+  });
+
+  it("holds a watch without counting a check, and lets a held one lapse quietly", async () => {
+    const { db, subscriptions } = await openDatabase();
+    await subscriptions.createSubscription(alice, priceWatch(), now);
+    const due = new Date(now.getTime() + sixHours * 1_000);
+    const lease = { leaseForMs: 10 * 60_000, limit: 10, now: due };
+    const [claim] = await subscriptions.claimDueSubscriptions(lease);
+    if (!claim) throw new Error("Expected a due watch.");
+    const later = new Date(due.getTime() + sixHours * 1_000);
+    expect(
+      await subscriptions.settleSubscriptionCheck(
+        claim,
+        { kind: "held", nextCheckAt: later },
+        due
+      )
+    ).toBe("held");
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      checks: 0,
+      nextCheckAt: later,
+      status: "active",
+    });
+    const [again] = await subscriptions.claimDueSubscriptions({
+      ...lease,
+      now: later,
+    });
+    if (!again) throw new Error("Expected the held watch again.");
+    expect(
+      await subscriptions.settleSubscriptionCheck(
+        again,
+        { kind: "lapsed" },
+        later
+      )
+    ).toBe("lapsed");
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      status: "expired",
+    });
+    expect(await db.query.scheduledAgentRuns.findMany()).toEqual([]);
+  });
+
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {
     const { subscriptions } = await openDatabase();
     await expect(

@@ -14,6 +14,7 @@ import {
   scheduleScope,
   scheduleSummary,
 } from "@agent/lib/schedules/tools";
+import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import {
   localRunLabel,
@@ -185,6 +186,9 @@ function watchSummary(
 
 const watchChangeRefusal =
   "That is a price watch: it can only be paused, resumed or deleted (status). For a new threshold or term, call watch-create again with the same link.";
+/** For a workspace whose watches are switched off (no `watch-create`). */
+const heldWatchRefusal =
+  "That is a price watch, and watches are switched off here now: it is not checked, and can only be paused or deleted (status). Say so plainly; offer a daily browser check (schedules-create) instead.";
 
 /**
  * A change to one of the person's price watches, which schedules-update
@@ -197,7 +201,11 @@ async function updateWatch(
 ) {
   const watches = await listLiveSubscriptions(scope);
   if (!watches.some((watch) => watch.id === id)) return undefined;
-  if (status === undefined) throw new Error(watchChangeRefusal);
+  // Outside the pilot a watch is held by the tick, and stays so.
+  const inPilot = await subscriptionsPilot(scope);
+  if (status === undefined || (status === "active" && !inPilot)) {
+    throw new Error(inPilot ? watchChangeRefusal : heldWatchRefusal);
+  }
   const [watch, timeZone] = await Promise.all([
     setSubscriptionStatus(scope, id, status),
     readWorkspaceTimeZone(scope),

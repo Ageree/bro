@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { pageTitle } from "@agent/lib/subscriptions/page";
 import {
   amountsSaid,
   conditionMet,
   amountFromText,
+  daysSaid,
   readPrice,
   sameProduct,
 } from "@agent/lib/subscriptions/price";
@@ -64,14 +66,15 @@ describe("reading a price", () => {
         ])
       )
     ).toMatchObject({ amount: 6_990, currency: "RUB" });
-    // Sold out or used offers are not the product's price.
+    // A used offer is not the product's price; a sold-out one of the same
+    // price leaves the one in stock.
     expect(
       readPrice(
         jsonLd({
           ...product,
           offers: [
+            { availability: "https://schema.org/OutOfStock", price: "8 100" },
             { availability: "https://schema.org/InStock", price: "8 100" },
-            { availability: "https://schema.org/OutOfStock", price: "5 000" },
             { itemCondition: "https://schema.org/UsedCondition", price: 4_000 },
           ],
         })
@@ -89,6 +92,68 @@ describe("reading a price", () => {
         })
       )
     ).toEqual({ kind: "several-products" });
+  });
+
+  it("gives no price for sizes at several prices, whichever is in stock", () => {
+    const sizes = (small: string, medium: string) =>
+      jsonLd({
+        "@type": "Product",
+        name: "Футболка",
+        offers: [
+          { availability: `https://schema.org/${small}`, price: 5_000 },
+          { availability: `https://schema.org/${medium}`, price: 7_000 },
+        ],
+      });
+    // Else «M in stock at 7 000», then «S back at 5 000» reads as a drop.
+    expect(readPrice(sizes("OutOfStock", "InStock"))).toEqual({
+      kind: "several-products",
+    });
+    expect(readPrice(sizes("InStock", "OutOfStock"))).toEqual({
+      kind: "several-products",
+    });
+  });
+
+  it("takes an aggregate offer's low price only when it is its one price", () => {
+    const aggregate = (offers: Readonly<Record<string, number | string>>) =>
+      readPrice(
+        jsonLd({ "@type": "Product", name: "Чайник", offers, sku: "K780" })
+      );
+    expect(
+      aggregate({ highPrice: 9_000, lowPrice: 5_000, offerCount: 12 })
+    ).toEqual({ kind: "several-products" });
+    expect(aggregate({ lowPrice: 5_000, offerCount: 12 })).toEqual({
+      kind: "several-products",
+    });
+    expect(aggregate({ highPrice: 5_000, lowPrice: 5_000 })).toMatchObject({
+      amount: 5_000,
+    });
+    expect(aggregate({ lowPrice: 5_000, offerCount: "1" })).toMatchObject({
+      amount: 5_000,
+    });
+  });
+
+  it("reads a JSON-LD dot as schema.org's decimal point", () => {
+    const priced = (price: string) =>
+      readPrice(
+        jsonLd({ "@type": "Product", name: "Чайник", offers: { price } })
+      );
+    expect(priced("990.000")).toMatchObject({ amount: 990 });
+    expect(priced("7490.00")).toMatchObject({ amount: 7_490 });
+    // A price a shop formatted is read as it writes it.
+    expect(priced("7 490,00 ₽")).toMatchObject({ amount: 7_490 });
+  });
+
+  it("cuts links, domains and phone numbers out of a seller's name", () => {
+    const reading = readPrice(
+      jsonLd({
+        "@type": "Product",
+        name: "Чайник K780 1.7 л — пишите https://evil.example/x, shop-deals.ru или +7 (999) 123-45-67",
+        offers: { price: 1 },
+      })
+    );
+    const name = reading.kind === "price" ? reading.name : null;
+    expect(name).toContain("Чайник K780 1.7 л");
+    expect(name).not.toMatch(/evil|shop-deals|999|123/u);
   });
 
   it("does not read the products a page recommends", () => {
@@ -211,9 +276,53 @@ describe("reading a price", () => {
         '<span itemprop="price" content="100"></span><span itemprop="price" content="200"></span>'
       )
     ).toEqual({ kind: "several-products" });
+    // Every price meta tag counts, not the first one.
+    expect(
+      readPrice(
+        '<meta property="product:price:amount" content="5990"><meta property="og:price:amount" content="4990">'
+      )
+    ).toEqual({ kind: "several-products" });
     expect(readPrice("<html><title>Just a moment...</title></html>")).toEqual({
       kind: "no-price",
     });
+  });
+
+  it("reads a stranger's hostile 2 MB page in time", () => {
+    const size = 2 * 1024 * 1024;
+    const pages = {
+      "a long attribute": `<meta ${"a".repeat(size)}>`,
+      "a meta never closed": "<meta ".repeat(size / 6),
+      "a script never closed": "<script type=".repeat(size / 13),
+      "a title never closed": `<title${"x".repeat(size)}`,
+      "an itemprop never closed": `<span itemprop=${"=".repeat(size)}`,
+      "many unclosed tags": "<a".repeat(size / 2),
+      "many tags": "<a b=c>".repeat(size / 7),
+      "unclosed quotes": `<meta content="${"x ".repeat(size / 2)}>`,
+    };
+    const slow = Object.entries(pages).flatMap(([kind, html]) => {
+      const started = performance.now();
+      readPrice(html);
+      pageTitle(html);
+      const ms = performance.now() - started;
+      return ms < 500 ? [] : [`${kind}: ${String(Math.round(ms))} ms`];
+    });
+    expect(slow).toEqual([]);
+  });
+
+  it("finds the JSON-LD block and meta tags however their attributes are written", () => {
+    expect(
+      readPrice(
+        `<SCRIPT TYPE='application/ld+json' nonce=x>${JSON.stringify({ "@type": "Product", name: "Чайник", offers: { price: 10 } })}</SCRIPT >`
+      )
+    ).toMatchObject({ amount: 10, extractor: "jsonld" });
+    expect(
+      readPrice(
+        "<!-- <meta property=product:price:amount content=1> --><META Content=990 PROPERTY=product:price:amount>"
+      )
+    ).toMatchObject({ amount: 990, extractor: "meta" });
+    expect(pageTitle("<html><title lang=ru>Just a moment...</title>")).toBe(
+      "Just a moment..."
+    );
   });
 
   it("keeps a page's name and SKU short and plain", () => {
@@ -256,6 +365,19 @@ describe("a watch's product and condition", () => {
     expect(sameProduct(source, { ...reading, currency: "USD" })).toBe(false);
     expect(sameProduct(source, { ...reading, extractor: "meta" })).toBe(false);
     expect(sameProduct(source, { ...reading, name: "Фильтр" })).toBe(false);
+    // A page title carries the price, so it pins no meta reading.
+    const titled = {
+      ...source,
+      extractor: "meta" as const,
+      name: "Чайник — купить по цене 8 990 ₽",
+    };
+    expect(
+      sameProduct(titled, {
+        ...reading,
+        extractor: "meta",
+        name: "Чайник — купить по цене 7 490 ₽",
+      })
+    ).toBe(true);
     expect(
       sameProduct({ ...source, sku: null }, { ...reading, sku: null })
     ).toBe(true);
@@ -265,7 +387,11 @@ describe("a watch's product and condition", () => {
     expect(conditionMet({ amount: 8_000, kind: "below" }, 7_990, 9_000)).toBe(
       true
     );
+    // «до 8000»: exactly 8 000 is met.
     expect(conditionMet({ amount: 8_000, kind: "below" }, 8_000, 9_000)).toBe(
+      true
+    );
+    expect(conditionMet({ amount: 8_000, kind: "below" }, 8_001, 9_000)).toBe(
       false
     );
     expect(conditionMet({ kind: "drop", percent: 0 }, 8_999, 9_000)).toBe(true);
@@ -306,6 +432,25 @@ describe("amounts in the person's words", () => {
     // «10%» is no price of 10.
     expect(amounts.has(10)).toBe(false);
     expect([...percents].toSorted((a, b) => a - b)).toEqual([10, 15]);
+  });
+
+  it("never takes the bare number of «8к» or «7,490»", () => {
+    const { amounts } = amountsSaid(["меньше 8к", "или до 7,490", "или 12,5"]);
+    expect([...amounts].toSorted((a, b) => a - b)).toEqual([
+      12.5, 7_490, 8_000,
+    ]);
+  });
+
+  it("reads a term in days, weeks or months", () => {
+    expect(
+      [
+        ...daysSaid([
+          "следи 2 недели",
+          "или неделю, или на месяц, или 10 дней, или 3 месяца",
+        ]),
+      ].toSorted((a, b) => a - b)
+    ).toEqual([7, 10, 14, 30, 90]);
+    expect(daysSaid(["8000р, https://shop.example/30-days"]).size).toBe(0);
   });
 
   it("does not take the digits of a link as an amount", () => {

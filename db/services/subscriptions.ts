@@ -83,9 +83,17 @@ export async function createSubscription(
         })
         .where(eq(subscriptions.id, existing.id))
         .returning();
+      // The news goes where the person asked last, in reply to that ask.
       await transaction
         .update(scheduledAgentJobs)
-        .set({ prompt: input.description, status: "active", updatedAt: now })
+        .set({
+          conversationChannel: input.conversation.conversationChannel,
+          conversationId: input.conversation.conversationId,
+          prompt: input.description,
+          replyAnchorMessageId: input.replyAnchorMessageId ?? null,
+          status: "active",
+          updatedAt: now,
+        })
         .where(eq(scheduledAgentJobs.id, existing.jobId));
       if (!updated) throw new Error("The watch could not be updated.");
       return { created: false, subscription: updated };
@@ -136,7 +144,8 @@ export async function createSubscription(
  * Leases the watches due for a check. The lease is the next check time
  * itself, so a crashed tick retries after `leaseForMs`; each claim carries it
  * as `leaseUntil`, which the check's own result must still find
- * (`settleSubscriptionCheck`).
+ * (`settleSubscriptionCheck`). A paused watch whose term ran out ends here
+ * quietly: the person paused it, so no news of it is owed.
  */
 export async function claimDueSubscriptions(options: {
   readonly leaseForMs: number;
@@ -144,6 +153,27 @@ export async function claimDueSubscriptions(options: {
   readonly now: Date;
 }) {
   return db.transaction(async (transaction) => {
+    const lapsed = await transaction
+      .update(subscriptions)
+      .set({ status: "expired", updatedAt: options.now })
+      .where(
+        and(
+          eq(subscriptions.status, "paused"),
+          lte(subscriptions.expiresAt, options.now)
+        )
+      )
+      .returning({ jobId: subscriptions.jobId });
+    if (lapsed.length > 0) {
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ status: "completed", updatedAt: options.now })
+        .where(
+          inArray(
+            scheduledAgentJobs.id,
+            lapsed.map((watch) => watch.jobId)
+          )
+        );
+    }
     const due = await transaction
       .select()
       .from(subscriptions)
@@ -184,6 +214,9 @@ export type ClaimedSubscription = Awaited<
  *   row ends the watch with `outcome`, so the person hears once.
  * - `hit`: news for the person (`outcome`); the watch has done its job.
  * - `expired`: the term ran out; `outcome` tells the person.
+ * - `held`: not checked now (the workspace left the pilot); the next check
+ *   is at `nextCheckAt`, and nothing else changes.
+ * - `lapsed`: the term ran out while held; it ends without a word.
  */
 export type SubscriptionCheck =
   | {
@@ -201,7 +234,9 @@ export type SubscriptionCheck =
       readonly kind: "quiet";
       readonly nextCheckAt: Date;
       readonly state: PriceState;
-    };
+    }
+  | { readonly kind: "held"; readonly nextCheckAt: Date }
+  | { readonly kind: "lapsed" };
 
 /**
  * Writes a check's result. It lands only while the claim's lease is still
@@ -229,6 +264,24 @@ export async function settleSubscriptionCheck(
       )
       .for("update");
     if (!current) return undefined;
+    if (check.kind === "held") {
+      await transaction
+        .update(subscriptions)
+        .set({ nextCheckAt: check.nextCheckAt, updatedAt: now })
+        .where(eq(subscriptions.id, claim.id));
+      return "held" as const;
+    }
+    if (check.kind === "lapsed") {
+      await transaction
+        .update(subscriptions)
+        .set({ status: "expired", updatedAt: now })
+        .where(eq(subscriptions.id, claim.id));
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ status: "completed", updatedAt: now })
+        .where(eq(scheduledAgentJobs.id, claim.jobId));
+      return "lapsed" as const;
+    }
     const counted = {
       checks: sql`${subscriptions.checks} + 1`,
       lastCheckedAt: now,
