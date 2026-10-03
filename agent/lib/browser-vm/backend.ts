@@ -105,8 +105,9 @@ export function browserVmCaptcha() {
 
 /**
  * The service the VM's agent calls its model at, by the host of
- * BROWSER_VM_LLM_BASE_URL: RouterAI and OpenRouter bill and route alike,
- * another OpenAI-compatible service (a mirror, a proxy) is neither.
+ * BROWSER_VM_LLM_BASE_URL: RouterAI and OpenRouter take the same
+ * `provider` routing (only RouterAI bills in roubles); another
+ * OpenAI-compatible service (a mirror, a proxy) is neither.
  */
 export function browserVmLlmService(): ReturnType<typeof directModelProvider> {
   switch (URL.parse(env.BROWSER_VM_LLM_BASE_URL)?.hostname) {

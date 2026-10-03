@@ -565,7 +565,7 @@ def provider_routing(value):
         if hosts is None:
             continue
         if (not isinstance(hosts, list) or len(hosts) > PROVIDER_HOSTS_MAX
-                or not all(isinstance(host, str) and PROVIDER_SLUG.match(host) for host in hosts)):
+                or not all(isinstance(host, str) and PROVIDER_SLUG.fullmatch(host) for host in hosts)):
             raise web.HTTPBadRequest(text=f"tuning.provider.{key} must be a list of up to "
                                           f"{PROVIDER_HOSTS_MAX} host slugs")
         if hosts:

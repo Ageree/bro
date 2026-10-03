@@ -480,7 +480,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         for tuning in ({"maxActionsPerStep": 50}, {"flashMode": "yes"}, {"reasoning": "lots"},
                        {"maxActionsPerStep": True}, [], {"provider": "deepinfra"}, {"provider": []},
                        {"provider": {"order": "deepinfra"}}, {"provider": {"order": [1]}},
-                       {"provider": {"order": ["Deep Infra"]}}, {"provider": {"ignore": [""]}},
+                       {"provider": {"order": ["Deep Infra"]}}, {"provider": {"ignore": [""]}}, {"provider": {"order": ["deepinfra\n"]}},
                        {"provider": {"ignore": [f"host{i}" for i in range(33)]}},
                        {"provider": {"requireParameters": "yes"}}, {"provider": {"requireParameters": 1}}):
             with self.subTest(tuning=tuning):
