@@ -199,3 +199,40 @@ export function parseSuites(values: readonly string[]) {
     ? suites
     : values.map((value) => suiteSchema.parse(value));
 }
+
+/**
+ * A send as a channel hands it to the model, for measuring a turn without
+ * running it: «[3 фото: …]» and «[фото …]» are bare `[фото]` notes, one
+ * per photo, and «[ссылка]» a link.
+ */
+function deliveredText(send: string) {
+  return send
+    .replace(/\[(\d+) фото[^\]]*\]/gu, (_match, count: string) =>
+      Array.from({ length: Number(count) }, () => "[фото]").join("\n")
+    )
+    .replace(/\[фото[^\]]*\]/gu, "[фото]")
+    .replaceAll("[ссылка]", "https://example.ru/item");
+}
+
+/**
+ * What every case says to Bro, send by send, as the model reads it
+ * (`deliveredText`): the skills' triggers are tested and measured on these
+ * (`agent/lib/skills/tests/triggers.test.ts`, `scripts/costs/step-context.ts`).
+ * A leading stage direction «(…)» is the tester's, not the person's, and a
+ * send that is nothing else says nothing. A case of several sends numbers
+ * them from 1 (`d13-memory#2`); English ids start with `en:`.
+ */
+export async function caseTurns() {
+  const cases = await loadCases();
+  return cases.flatMap(({ id, script, suite }) => {
+    const texts = script.flatMap(({ send }) => {
+      const text = (send ?? "").replace(/^\([^)]*\)\s*/u, "");
+      return text.length > 0 ? [deliveredText(text)] : [];
+    });
+    const name = suite === "en" ? `en:${id}` : id;
+    return texts.map((text, index) => ({
+      id: texts.length > 1 ? `${name}#${String(index + 1)}` : name,
+      text,
+    }));
+  });
+}
