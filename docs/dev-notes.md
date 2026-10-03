@@ -50,6 +50,8 @@
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
+- `drizzle-kit generate` пишет `db/migrations/meta/*.json` не в формате
+  `oxfmt`: после генерации — `pnpm exec oxfmt db/migrations/meta`.
 - Формат проверяет `oxfmt` (`pnpm format:check`), не Prettier: `npx prettier`
   переформатирует TypeScript иначе, и CI падает. Чините `pnpm exec oxfmt <файлы>`.
 - Перед последовательным `pnpm check --concurrency=1` запустите
