@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { browserHostReserveMb } from "@agent/lib/browser-pool/host";
+import { browserVmLlmService } from "@agent/lib/browser-vm/backend";
 import type { readBrowserVmWorkerRun } from "@agent/lib/browser-vm/worker";
 import {
   proxyTrafficRub,
@@ -24,6 +25,15 @@ const workerUsageSchema = z.object({
    * 2026-10-01.1.
    */
   billed: z.number().nonnegative().nullish(),
+  /**
+   * How many of the run's answers each upstream host served, by the name
+   * the service gives it (`Billed.hosts`). Absent from a worker older than
+   * 2026-10-03.1; a malformed one is dropped, not the run's cost.
+   */
+  hosts: z
+    .record(z.string().min(1).max(64), z.number().int().nonnegative())
+    .optional()
+    .catch(undefined),
   total_completion_tokens: z.number().nonnegative().nullish(),
   total_cost: z.number().nonnegative().nullish(),
   total_prompt_cached_tokens: z.number().nonnegative().nullish(),
@@ -58,7 +68,7 @@ export async function recordBrowserVmRunCosts(
     };
     const model = env.BROWSER_VM_MODEL;
     const billedRub =
-      URL.parse(env.BROWSER_VM_LLM_BASE_URL)?.hostname === "routerai.ru"
+      browserVmLlmService() === "routerai"
         ? (usage.billed ?? undefined)
         : undefined;
     const priced = billedRub ?? routerAiTokensRub(model, tokens);
@@ -84,6 +94,7 @@ export async function recordBrowserVmRunCosts(
         model,
         steps: run.stepCount,
         unpriced,
+        ...(usage.hosts === undefined ? {} : { hosts: usage.hosts }),
       },
       workspaceId,
     });

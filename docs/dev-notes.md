@@ -432,6 +432,12 @@
 - DeepSeek на RouterAI по умолчанию думает: в JSON шага тогда течёт
   `｜｜DSML｜｜`, шаг пропадает, а вызов оплачен. Бро выключает это
   (`runTuning` в `agent/lib/browser-vm/runs.ts`, `tuning` worker).
+- Хост DeepSeek worker пула закрепляет так же, как основной агент
+  (`providerRouting`, `deepinfra`): сам RouterAI брал хосты без
+  `structured_outputs`, и строгая схема browser-use валила шаги («validation
+  error for AgentOutput»). `require_parameters` RouterAI принимает, но не
+  фильтрует — такие хосты названы в `ignore` (`runs.ts`); продолжение несёт
+  `tuning` (worker после рестарта его забывает), хост ответа — `units.hosts`.
 - «accepted» от `attachSession(...).send` — не доставка: итог доставлен, когда
   ход-отчёт отправил сообщение, вызвал `browser_task` или закончился
   (`agent/hooks/browser-run-report.ts`). Аренду итога (10 минут) не

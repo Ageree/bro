@@ -1,5 +1,6 @@
 import { listsWorkspace } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
+import type { directModelProvider } from "@shared/model/provider";
 
 /**
  * Whether this deployment can run browser errands on Cloud.ru VMs at all:
@@ -96,16 +97,32 @@ export async function usesBrowserVm(scope: {
   return listsWorkspace(env.BROWSER_VM_WORKSPACES, scope);
 }
 
-/**
- * The model the VM's agent runs on. It goes with every run and follow-up,
- * since the VM keeps no key on its disk.
- */
 /** The 2Captcha key a run takes to its worker, when this deployment has one. */
 export function browserVmCaptcha() {
   const twoCaptchaKey = env.BROWSER_VM_TWOCAPTCHA_API_KEY;
   return twoCaptchaKey === undefined ? undefined : { twoCaptchaKey };
 }
 
+/**
+ * The service the VM's agent calls its model at, by the host of
+ * BROWSER_VM_LLM_BASE_URL: RouterAI and OpenRouter bill and route alike,
+ * another OpenAI-compatible service (a mirror, a proxy) is neither.
+ */
+export function browserVmLlmService(): ReturnType<typeof directModelProvider> {
+  switch (URL.parse(env.BROWSER_VM_LLM_BASE_URL)?.hostname) {
+    case "routerai.ru":
+      return "routerai";
+    case "openrouter.ai":
+      return "openrouter";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The model the VM's agent runs on. It goes with every run and follow-up,
+ * since the VM keeps no key on its disk.
+ */
 export function browserVmLlm() {
   const apiKey = env.BROWSER_VM_LLM_API_KEY;
   if (apiKey === undefined) {
