@@ -116,20 +116,44 @@ describe("probeGoogleSignals", () => {
     composio.connect({ id: "ca_google", toolkit: "googlesuper" });
     const answer = composio.fetch.getMockImplementation();
     if (!answer) throw new Error("Expected the fake Composio.");
-    composio.fetch.mockImplementation(async (input, init) =>
-      requestUrl(input).includes("/tools/execute/proxy")
-        ? new Response(
-            JSON.stringify({
-              error: { message: "gone", slug: "ConnectedAccount_NotFound" },
-            }),
-            { status: 404 }
-          )
-        : answer(input, init)
-    );
+    let proxied = 0;
+    composio.fetch.mockImplementation(async (input, init) => {
+      if (!requestUrl(input).includes("/tools/execute/proxy")) {
+        return answer(input, init);
+      }
+      proxied += 1;
+      return new Response(
+        JSON.stringify({
+          error: { message: "gone", slug: "ConnectedAccount_NotFound" },
+        }),
+        { status: 404 }
+      );
+    });
 
     await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
       state: "disconnected",
     });
+    // One request per read, the mail list and the calendar: none repeated.
+    expect(proxied).toBe(2);
+  });
+
+  it("does not ask again once the check's deadline has passed", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const answer = composio.fetch.getMockImplementation();
+    if (!answer) throw new Error("Expected the fake Composio.");
+    let proxied = 0;
+    composio.fetch.mockImplementation(async (input, init) => {
+      if (!requestUrl(input).includes("/tools/execute/proxy")) {
+        return answer(input, init);
+      }
+      proxied += 1;
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+
+    await expect(probeGoogleSignals(scope, window)).rejects.toThrow(
+      /timed out/u
+    );
+    expect(proxied).toBe(2);
   });
 
   it("names who refused a failed check, never the mail", () => {

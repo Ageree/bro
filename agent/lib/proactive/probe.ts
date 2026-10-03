@@ -88,10 +88,19 @@ const composioRetryMs = 3_000;
 /**
  * Whether Composio's refusal may pass on a second try: its 403 that names no
  * gone account (a firewall's or a passing one), its throttling or outage, a
- * network error. A missing key or account stays as it is.
+ * network error. A missing key or account stays as it is, and so does a
+ * call cut off by the check's deadline.
  */
 function composioMayPass(cause: unknown) {
   if (isMissingConnectedAccount(cause)) return false;
+  // The check's own deadline passed: its signal stays aborted, and a second
+  // call would fail at once after the pause.
+  if (
+    cause instanceof DOMException &&
+    (cause.name === "TimeoutError" || cause.name === "AbortError")
+  ) {
+    return false;
+  }
   return (
     (cause instanceof ComposioError && cause.status === 403) ||
     isTransientComposioFailure(cause)

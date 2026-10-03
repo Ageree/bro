@@ -52,7 +52,10 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   setScheduledRunSession: jobs.setSession,
 }));
 vi.mock("@agent/lib/proactive/probe", () => ({
-  probeFailure: () => ({ by: "composio", status: 403 }),
+  // Says which failure it was handed, so the log line is seen to carry it.
+  probeFailure: (cause: unknown) => ({
+    by: cause instanceof Error ? cause.message : "unknown",
+  }),
   probeGoogleSignals: probe,
   rankMail: rank,
 }));
@@ -305,11 +308,11 @@ describe("proactive schedule", () => {
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspaceId: "workspace:bob" })
     );
-    // The log line says who refused, so a Composio 403 is told from Google.
+    // The log line names the failure, so a Composio 403 is told from Google.
     expect(warn).toHaveBeenCalledWith(
       "[proactive] check",
       expect.objectContaining({
-        failure: { by: "composio", status: 403 },
+        failure: { by: "Gmail is down" },
         outcome: "failed",
       })
     );
