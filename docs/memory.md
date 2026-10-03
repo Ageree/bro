@@ -55,7 +55,7 @@ back to the old file provider after cutover would hide post-cutover changes.
 Every revision of a profile record is appended to `memory_revisions` in the
 transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 `system`) and what it did (save, update, forget, expire, import, and the
-digest's merge, correction and purge). Existing records with content start
+digest's merge, correction, one-off and purge). Existing records with content start
 their history with one `import` revision, and the hourly pass gives one to
 each record saved by a release that did not write history. The history is for the person to see
 and undo changes on the memory screen in the cabinet (planned: roadmap item
@@ -89,6 +89,22 @@ stays restorable from history for 30 days. A record the conversation changed
 since the digest read it is left for the next day. Saving a profile memory
 refuses a text with a code for everyone, as before; a workstream save does
 not filter its notes, so outside the pilot a code in one stays.
+For the pilot, and only with a direct model provider, the digest also asks a
+cheap model which memories are one-off task details, duplicates in other
+words, or facts a newer one corrects — only when memory changed since the
+start of the last digest that asked it. The model is the digest's own:
+`MEMORY_DIGEST_MODEL`, or `deepseek/deepseek-v4-flash` when unset (a third of
+the main default's price on RouterAI), never the main agent's or the
+workspace's model; reasoning off, 400 output tokens. It never sees a rule, a
+preference or a local-only memory. The model returns indexes only; code keeps
+a proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
+one-off is a fact, decision or organization without a validity date that the
+model read in full; a duplicate's every word is in the record it folds into,
+in the same order; a correction goes from an older to a newer fact, person or
+organization, and code writes its dated text («… (с 01.10; раньше: …)»). At
+most three of each kind and a fifth of the memories change in a day; a failed
+call changes nothing. Its cost is a `usage_costs` row with the source
+`memory`.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat

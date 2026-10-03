@@ -1,6 +1,7 @@
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
+import { memoryDigestModelId } from "@agent/lib/memory/digest/classifier";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
@@ -37,7 +38,10 @@ export function keptData() {
  * The judges of RU d14 (25.09) missed the language model's provider and the
  * cloud browser, which Bro never named.
  */
-export function dataProcessors(modelId: string) {
+export function dataProcessors(
+  modelId: string,
+  { memoryDigest = false }: { readonly memoryDigest?: boolean } = {}
+) {
   const direct = directModelProviderName();
   return [
     direct !== undefined
@@ -68,6 +72,11 @@ export function dataProcessors(modelId: string) {
     ...(supermemoryConfigured()
       ? [
           "Записи памяти, кроме помеченных как только локальные, могут индексироваться в Supermemory для поиска по смыслу; забытое оттуда тоже удаляется.",
+        ]
+      : []),
+    ...(direct !== undefined && memoryDigest
+      ? [
+          `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил, предпочтений и записей, помеченных как только локальные) модели ${memoryDigestModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
         ]
       : []),
     "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",

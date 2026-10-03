@@ -6,9 +6,13 @@ import type { AccessScope } from "@shared/identity/access-scope";
  * Whether the digest touches a workspace's memory at all:
  * MEMORY_DIGEST_WORKSPACES names the pilot by workspace id or owner's email,
  * as BROWSER_VM_WORKSPACES does, or everyone with `*`. A failed lookup of
- * the email keeps the workspace out for the day.
+ * the email keeps the workspace out for the day; a caller that discloses
+ * what the digest does asks for `whenUnknown: true` and says more, not less.
  */
-export async function memoryDigestPilot(scope: AccessScope) {
+export async function memoryDigestPilot(
+  scope: AccessScope,
+  { whenUnknown = false }: { readonly whenUnknown?: boolean } = {}
+) {
   const list = env.MEMORY_DIGEST_WORKSPACES ?? [];
   if (list.includes("*")) return true;
   try {
@@ -18,7 +22,7 @@ export async function memoryDigestPilot(scope: AccessScope) {
     console.warn("[memory-digest] pilot lookup failed", {
       errorCode: error instanceof Error ? error.name : "unknown",
     });
-    return false;
+    return whenUnknown;
   }
 }
 

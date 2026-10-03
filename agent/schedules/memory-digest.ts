@@ -4,7 +4,9 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 
 // Once an hour, the daily memory digest of each workspace whose night is
 // over (`agent/lib/memory/digest/run.ts`). It opens no conversation and
-// calls no model.
+// never calls the main agent's model; for the pilot
+// (MEMORY_DIGEST_WORKSPACES) with a direct provider, it asks its own cheap
+// model about memory that changed (`MEMORY_DIGEST_MODEL`, a `memory` cost).
 export default defineSchedule({
   cron: "41 * * * *",
   run({ waitUntil }) {

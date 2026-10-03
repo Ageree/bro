@@ -693,6 +693,11 @@ export const env = createEnv({
     // cleans (codes cut out, duplicates folded, history trimmed). Unset, the
     // digest runs for no one: it changes what people saved.
     MEMORY_DIGEST_WORKSPACES: workspaceListSchema.optional(),
+    // The model the pilot's daily memory digest asks which memories are
+    // one-off, duplicates or corrected, through the same direct provider;
+    // unset, `deepseek/deepseek-v4-flash` (agent/lib/memory/digest/
+    // classifier.ts) — never the main agent's or the workspace's model.
+    MEMORY_DIGEST_MODEL: trimmedValue.optional(),
     // The pilot of skills chosen by the server (docs/roadmap.md, item 24):
     // workspace ids, or `*` for every workspace, whose interactive turns get
     // the core instructions and a skill's rules only when the turn needs
