@@ -7653,6 +7653,32 @@ describe("browser_task passes on a code to enter first", () => {
   });
 });
 
+/**
+ * How a text carries Alice's phone and email: shown, in any formatting
+ * («+7 999 000-00-01», «8 (999) 000 00 01»), or cut to their marks.
+ */
+function contactsIn(text: string) {
+  return {
+    email: /ivan\.petrov@example\.com/iu.test(text),
+    emailCut: text.includes("[почта человека не передаётся]"),
+    phone: text.replaceAll(/[\s().-]/gu, "").includes("9990000001"),
+    phoneCut: text.includes("[телефон человека не передаётся]"),
+  };
+}
+
+const contactsShown = {
+  email: true,
+  emailCut: false,
+  phone: true,
+  phoneCut: false,
+};
+const contactsCut = {
+  email: false,
+  emailCut: true,
+  phone: false,
+  phoneCut: true,
+};
+
 describe("browser_task takes an errand the person asked to be done to its last step", () => {
   const staged =
     "The person asked for this to be done — booked, bought, ordered or signed up for — not only found.";
@@ -7725,6 +7751,89 @@ describe("browser_task takes an errand the person asked to be done to its last s
     );
     expect(search).not.toContain("Known details you may type into forms:");
     expect(search).not.toContain("+79990000001");
+  });
+
+  describe("the person's phone and email in the model's own words", () => {
+    const errand =
+      "Найти Сапсан на пятницу. Телефон для связи: +7 999 000-00-01, почта Ivan.Petrov@Example.com";
+    const reportOpening = `${backgroundTurnMarker}\nBrowser run ${runId} finished.`;
+
+    function ownContacts() {
+      readAccountPhoneNumber.mockResolvedValue("+79990000001");
+      readUserProfile.mockResolvedValue({
+        ...emptyUserProfile,
+        email: "ivan.petrov@example.com",
+      });
+    }
+
+    /** What the run was handed, and what the errand's row keeps. */
+    function sent() {
+      return [
+        String(createBrowserUseRun.mock.calls[0]?.[0].task),
+        String(createBrowserRun.mock.calls[0]?.[1].task),
+      ];
+    }
+
+    it("keeps them where the person asked it done, and cuts them where they only look", async () => {
+      ownContacts();
+
+      await startFor("возьми мне сапсан в питер на пятницу", errand, "done");
+      expect(sent().map(contactsIn)).toEqual([contactsShown, contactsShown]);
+
+      createBrowserUseRun.mockClear();
+      createBrowserRun.mockClear();
+      await startFor("сколько стоит сапсан в питер в пятницу?", errand, "look");
+      expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
+    });
+
+    it.each([
+      "+7 999 000-00-01",
+      "8 (999) 000-00-01",
+      "+7(999)000 00 01",
+      "89990000001",
+      "999.000.00.01",
+    ])("knows the phone written as «%s»", async (written) => {
+      const { withoutOwnContacts } =
+        await import("@agent/lib/browser-use/facts");
+
+      expect(
+        withoutOwnContacts(`звонить на ${written}, не на +7 999 000-00-02`, {
+          emails: [],
+          phones: ["+79990000001"],
+        })
+      ).toBe(
+        "звонить на [телефон человека не передаётся], не на +7 999 000-00-02"
+      );
+    });
+
+    it("cuts them from an errand a report turn starts", async () => {
+      ownContacts();
+
+      await startFor(reportOpening, errand, "done", "browser-result");
+
+      expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
+    });
+
+    it("cuts them from a report turn's follow-up and the errand it repeats", async () => {
+      ownContacts();
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), "Needs: none"),
+        task: errand,
+      });
+      const tool = await resolvedBrowserTask([], reportOpening);
+
+      await tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          runId,
+          task: "Если просят контакт — 8 (999) 000 00 01, IVAN.PETROV@example.com",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
+    });
   });
 
   it("types no document number, and picks one the account saved", async () => {

@@ -306,6 +306,79 @@ export async function browserRunFacts(scope: AccessScope) {
   };
 }
 
+/** A value a form gave, if it gave one. */
+function present(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? [trimmed] : [];
+}
+
+/**
+ * The person's own phones and email: the phone in Personal Info and the one
+ * they signed in to Bro with, and Personal Info's email. A vault contact
+ * card's may be someone else's. Names are not here: «Иван», «Роза» or
+ * «Лебедев» is a street, a shop or a hotel as often as the person.
+ */
+export async function readOwnContacts(scope: AccessScope) {
+  const [profile, accountPhone] = await Promise.all([
+    readUserProfile(scope),
+    safeAccountPhoneNumber(scope),
+  ]);
+  return {
+    emails: present(profile.email),
+    phones: [profile.phone, accountPhone].flatMap(present),
+  };
+}
+
+const ownPhonePlaceholder = "[телефон человека не передаётся]";
+const ownEmailPlaceholder = "[почта человека не передаётся]";
+
+/** Spaces, brackets, dots and dashes people put between a phone's digits. */
+const phoneSeparator = String.raw`[\s().\-\u2010-\u2015\u2212]{0,3}`;
+
+/**
+ * A phone as people write it, by its last ten digits: «+7 999 000-00-01»,
+ * «8 (999) 000 00 01» and «9990000001» are all «+79990000001».
+ */
+function phonePattern(phone: string) {
+  const digits = phone.replaceAll(/\D/gu, "").slice(-10);
+  if (digits.length < 7) return undefined;
+  const spaced = digits.replaceAll(/(?<=\d)(?=\d)/gu, phoneSeparator);
+  return new RegExp(
+    String.raw`(?<!\d)(?:\+?\d{1,3}${phoneSeparator})?${spaced}(?!\d)`,
+    "gu"
+  );
+}
+
+/** An email in any case, and not inside a longer address. */
+function emailPattern(email: string) {
+  const escaped = email.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+  return new RegExp(
+    String.raw`(?<![\p{L}\p{N}._%+\-])${escaped}(?![\p{L}\p{N}_\-]|\.[\p{L}\p{N}])`,
+    "giu"
+  );
+}
+
+/**
+ * The model's own words for a run without the person's phone and email in
+ * them. A run that may not type their details is told so, but a number in
+ * the errand text is text the run hands to any page (`signin_phone` exists
+ * so that the phone it signs in with is bound to one site only). Emails go
+ * first: «79990000001@mail.ru» is an address, not a phone.
+ */
+export function withoutOwnContacts(
+  text: string,
+  own: Awaited<ReturnType<typeof readOwnContacts>>
+) {
+  const withoutEmails = own.emails.reduce(
+    (cut, email) => cut.replaceAll(emailPattern(email), ownEmailPlaceholder),
+    text
+  );
+  return own.phones.reduce((cut, phone) => {
+    const pattern = phonePattern(phone);
+    return pattern ? cut.replaceAll(pattern, ownPhonePlaceholder) : cut;
+  }, withoutEmails);
+}
+
 /**
  * The person's own phone, to sign in with where the site sends a code: the
  * one in Personal Info, else the one they signed in to Bro with.
