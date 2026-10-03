@@ -114,6 +114,7 @@ OpenRouter и RouterAI.
 | `browser-run`    | модель агента в браузере                             | VM: токены из `usage` worker по цене RouterAI в рублях (`shared/costs/prices.ts`); Browser Use Cloud: `totalCostUsd` при завершении × курс              |
 | `browser-vm`     | время включённой VM                                  | `browser_vms.powered_on_at` → запись при `stopped` или удалении, по часовой цене флейвора (`gen-2-4` — 2,97 ₽/ч с НДС), поровну на запуски за это время |
 | `proxy`          | трафик домашнего прокси                              | байты запуска из worker (`traffic` в записи запуска) × `BROWSER_VM_PROXY_RUB_PER_GB`                                                                    |
+| `memory`         | ежедневная сводка памяти пилота, вне хода            | `agent/lib/memory/digest/classifier.ts`: строка на вызов модели `MEMORY_DIGEST_MODEL` — `usage.cost` провайдера (RouterAI в рублях, OpenRouter × курс)  |
 
 Песочница пула пишет `browser-vm` с ключом `browser-sandbox:…`: время на
 хосте (`powered_on_at` — от старта до парковки, потери хоста или удаления) по

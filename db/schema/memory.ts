@@ -3,6 +3,7 @@ import {
   boolean,
   bigint,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -182,6 +183,48 @@ export const memoryRevisions = pgTable(
     ),
     check("memory_revisions_index_check", sql`${table.recordIndex} >= 0`),
     check("memory_revisions_revision_check", sql`${table.revision} > 0`),
+  ]
+);
+
+/**
+ * One row per workspace and local day the daily memory digest ran for
+ * (`agent/lib/memory/digest/run.ts`): the day's claim, so a tick does it once,
+ * and its outcome — counts only, never memory text.
+ */
+export const memoryDigestRuns = pgTable(
+  "memory_digest_runs",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    localDate: date("local_date", { mode: "string" }).notNull(),
+    status: text("status", { enum: ["running", "done", "failed"] }).notNull(),
+    leaseUntil: timestamp("lease_until", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    startedAt: timestamp("started_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    finishedAt: timestamp("finished_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    outcome: jsonb("outcome").$type<Record<string, number>>(),
+    errorCode: text("error_code"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.localDate] }),
+    // The hourly tick reads the days done since yesterday, for everyone.
+    index("memory_digest_runs_day_idx").on(table.localDate, table.status),
+    check(
+      "memory_digest_runs_status_check",
+      sql`${table.status} IN ('running', 'done', 'failed')`
+    ),
   ]
 );
 

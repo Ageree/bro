@@ -17,6 +17,14 @@ function cabinetPage(path: string, name: string) {
 }
 
 /**
+ * How the person removes memory: by asking, or one record at a time on the
+ * cabinet's memory screen. Either way the text is wiped at once.
+ */
+export function memoryRemoval() {
+  return `Память и сохранённые дела — «удали всё, что ты про меня помнишь» или «забудь …»; отдельные записи — в кабинете, ${cabinetPage("/workspace/memory", "раздел «Память»")}: стираются сразу.`;
+}
+
+/**
  * How the person removes each kind of data that is not a memory record, said
  * the same way after «удали всё, что ты про меня помнишь» and on «где мои
  * данные». On 25.09 (RU d14) Bro answered both without naming the Google

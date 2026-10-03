@@ -24,6 +24,10 @@ import {
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readUserProfile } from "@db/services/user-profile";
 import { listVaultItems } from "@db/services/vault";
+import {
+  listCurrentMemories,
+  readCabinetMemoryScopeKey,
+} from "@db/services/memory/records";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { cabinetAppSchema, connectedAppNames } from "@shared/composio/catalog";
 import {
@@ -93,6 +97,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     vaultItems,
     spendLimit,
     appConnections,
+    memories,
   ] = await Promise.all([
     getAuthSession(requestHeaders),
     getGoogleWorkspaceAccess(scope).then(async (access) =>
@@ -109,6 +114,9 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         app,
         connection: await readConnectedApp(app, scope.userId),
       }))
+    ),
+    readCabinetMemoryScopeKey(scope.workspaceId).then(async (scopeKey) =>
+      scopeKey === null ? [] : listCurrentMemories(scope, scopeKey)
     ),
   ]);
   if (google === "connected" && googleWorkspace.state === "connected") {
@@ -188,6 +196,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         logins={vaultItems.filter((item) => item.kind === "login")}
       />
       <VaultSection items={vaultItems} />
+      <MemorySection count={memories.length} />
       <TimeZoneSection timeZone={timeZone} />
 
       <Section headingId="connections-heading" title="Подключения">
@@ -570,6 +579,27 @@ function VaultSection({
         </Link>
         <Link className="type-act bro-link" href="/vault">
           перейти в сейф
+        </Link>
+      </Actions>
+    </Section>
+  );
+}
+
+function MemorySection({ count }: { readonly count: number }) {
+  return (
+    <Section
+      headingId="memory-heading"
+      state={count > 0 ? `Записей: ${String(count)}` : "Пусто"}
+      title="Память"
+    >
+      <p className="type-fine text-muted-foreground">
+        Что Бро помнит о тебе: правила, предпочтения и факты. Записи можно
+        исправить, удалить или вернуть их прежний текст; правила — только
+        удалить, задаются они в разговоре.
+      </p>
+      <Actions>
+        <Link className="type-act bro-link" href="/workspace/memory">
+          открыть память
         </Link>
       </Actions>
     </Section>

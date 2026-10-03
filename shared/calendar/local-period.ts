@@ -33,3 +33,21 @@ export function localMonthKey(now: Date, timeZone: string) {
   const { month, year } = calendarParts(now, timeZone);
   return `${year}-${month}`;
 }
+
+const hourFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** The hour, 0–23, on the workspace's own wall clock. */
+export function localHour(now: Date, timeZone: string) {
+  let formatter = hourFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      hourCycle: "h23",
+      timeZone,
+    });
+    hourFormatters.set(timeZone, formatter);
+  }
+  return Number(
+    formatter.formatToParts(now).find((part) => part.type === "hour")?.value
+  );
+}

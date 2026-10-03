@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Chats from "@db/services/chats";
+import * as MemoryRecords from "@db/services/memory/records";
 import * as Settings from "@db/services/settings";
 import * as ConnectedApps from "@shared/composio/connected-apps";
 import * as GoogleWorkspace from "@shared/google-workspace/connection";
@@ -30,10 +31,30 @@ const readAppMock = vi.spyOn(ConnectedApps, "readConnectedApp");
 const startAppMock = vi.spyOn(ConnectedApps, "startConnectedAppAuthorization");
 const disconnectAppMock = vi.spyOn(ConnectedApps, "disconnectConnectedApp");
 
+const scopeKeysMock = vi.spyOn(MemoryRecords, "listMemoryScopeKeys");
+const listMemoriesMock = vi.spyOn(MemoryRecords, "listCurrentMemories");
+const updateMemoryMock = vi.spyOn(MemoryRecords, "updateMemory");
+const restoreMemoryMock = vi.spyOn(MemoryRecords, "restoreMemory");
+
 const scope = {
   userId: "user-1",
   workspaceId: "workspace-1",
 } satisfies AccessScope;
+
+/** A profile memory as the cabinet lists it. */
+const memory = (category: "fact" | "rule", revision = 2) => ({
+  content: {
+    aliases: [],
+    category,
+    localOnly: false,
+    relatedIndexes: [],
+    text: category === "rule" ? "Не платить без моего ок." : "Живёт в Казани.",
+    validUntil: null,
+  },
+  index: 3,
+  revision,
+  updatedAt: "2026-10-02T10:00:00.000Z",
+});
 
 describe("appRouter", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -188,5 +209,135 @@ describe("appRouter", () => {
         // @ts-expect-error -- Todoist connects in chat, not from the cabinet.
         .connectedApps.update({ action: "connect", app: "todoist" })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  describe("memory in the cabinet", () => {
+    const caller = () =>
+      appRouter.createCaller({ origin: "https://example.com", scope });
+    beforeEach(() => {
+      scopeKeysMock.mockResolvedValue(["other-key", "scope-key"]);
+    });
+
+    it("corrects a fact as the person, in the scope Bro reads", async () => {
+      listMemoriesMock.mockResolvedValue([memory("fact")]);
+      updateMemoryMock.mockResolvedValue({ index: 3, revision: 3 });
+
+      await caller().memory.update({
+        expectedRevision: 2,
+        index: 3,
+        scopeKey: "scope-key",
+        text: "Живёт в Самаре.",
+      });
+
+      expect(updateMemoryMock).toHaveBeenCalledOnce();
+      const [calledScope, scopeKey, update, operation, origin] =
+        updateMemoryMock.mock.calls[0] ?? [];
+      expect([calledScope, scopeKey, origin]).toEqual([
+        scope,
+        "scope-key",
+        { action: "update", actor: "person" },
+      ]);
+      expect(operation).toMatch(/^cabinet:/u);
+      // The old aliases named what the person corrected away.
+      expect(update).toMatchObject({
+        content: { aliases: [], category: "fact", text: "Живёт в Самаре." },
+        expectedRevision: 2,
+      });
+    });
+
+    it("never edits a rule: it is changed only in a conversation", async () => {
+      listMemoriesMock.mockResolvedValue([memory("rule")]);
+
+      await expect(
+        caller().memory.update({
+          expectedRevision: 2,
+          index: 3,
+          scopeKey: "scope-key",
+          text: "Платить без ок.",
+        })
+      ).rejects.toThrow("only in a conversation");
+      expect(updateMemoryMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses a one-time code and a stale page", async () => {
+      listMemoriesMock.mockResolvedValue([memory("fact", 5)]);
+
+      await expect(
+        caller().memory.update({
+          expectedRevision: 5,
+          index: 3,
+          scopeKey: "scope-key",
+          text: "Код из смс 482193",
+        })
+      ).rejects.toThrow("one-time codes");
+      await expect(
+        caller().memory.update({
+          expectedRevision: 2,
+          index: 3,
+          scopeKey: "scope-key",
+          text: "Живёт в Самаре.",
+        })
+      ).rejects.toThrow("Memory changed");
+      expect(updateMemoryMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps an unexpected failure internal, its message unseen", async () => {
+      restoreMemoryMock.mockRejectedValue(
+        new Error(
+          'Failed query: update "memory_records" params: Живёт в Казани.'
+        )
+      );
+
+      await expect(
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "scope-key",
+        })
+      ).rejects.toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Memory could not be changed.",
+      });
+      restoreMemoryMock.mockRejectedValue(new Error("Profile memory is full."));
+      await expect(
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "scope-key",
+        })
+      ).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+        message: "Profile memory is full.",
+      });
+    });
+
+    it("writes only to a scope of this workspace, the one the page showed", async () => {
+      restoreMemoryMock.mockResolvedValue({ index: 3, revision: 4 });
+
+      await expect(
+        caller().memory.restore({
+          expectedRevision: 3,
+          index: 3,
+          revision: 1,
+          scopeKey: "someone-else",
+        })
+      ).rejects.toThrow("No such memory");
+      expect(restoreMemoryMock).not.toHaveBeenCalled();
+
+      await caller().memory.restore({
+        expectedRevision: 3,
+        index: 3,
+        revision: 1,
+        scopeKey: "other-key",
+      });
+      expect(restoreMemoryMock).toHaveBeenCalledWith(
+        scope,
+        "other-key",
+        { expectedRevision: 3, index: 3, revision: 1 },
+        expect.stringMatching(/^cabinet:/u)
+      );
+    });
   });
 });

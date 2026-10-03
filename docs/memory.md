@@ -55,13 +55,13 @@ back to the old file provider after cutover would hide post-cutover changes.
 Every revision of a profile record is appended to `memory_revisions` in the
 transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 `system`) and what it did (save, update, forget, expire, import, and the
-digest's merge, correction and purge). Existing records with content start
+digest's merge, correction, one-off and purge). Existing records with content start
 their history with one `import` revision, and the hourly pass gives one to
 each record saved by a release that did not write history. The history is for the person to see
-and undo changes on the memory screen in the cabinet (planned: roadmap item
-31, its last PR); it never enters the model's context. Forgetting — at the person's
+and undo changes on the memory screen in the cabinet (`/workspace/memory`);
+it never enters the model's context. Forgetting — at the person's
 word or by the model — wipes the text of every earlier revision of that record
-at once. The text of a record that expired or that the digest merged,
+at once. A live record keeps its earlier texts up to its last ten revisions. The text of a record that expired or that the digest merged,
 corrected or found one-off stays readable for 30 days, to be restored, and
 then the hourly `agent/schedules/memory-history.ts` wipes it; the same pass
 wipes the history of a record forgotten by a release that writes no revisions
@@ -69,6 +69,63 @@ wipes the history of a record forgotten by a release that writes no revisions
 also deletes the history of records that expired or were removed earlier.
 `memory_scopes.last_recalled_at` marks, at most hourly, the scope key Bro's
 conversations read, so the cabinet can show that scope's memory.
+
+A daily digest (`agent/schedules/memory-digest.ts`, every hour at :41, each
+workspace once per local day from 04:00) runs without a conversation and
+without the main agent's model, and only for the pilot
+(`MEMORY_DIGEST_WORKSPACES`): it changes what people saved, so with the
+variable unset it runs for no one. `memory_digest_runs` holds each workspace's
+day: the claim with its lease and the outcome in counts, never text. It cuts
+one-time codes and credentials out of memory (`isSafeMemoryText`, in Russian
+and English; a door's code, a phone number and a reference number such as a
+client's or a bank's stay): the code itself is replaced by «[удалено]» and
+the record keeps the rest; one that said nothing but the code is forgotten.
+Workstream notes are redacted the same way, and any revision text with one is
+wiped. It keeps the last ten revisions of each memory, and folds memories that
+say the same words, or whose words another memory of the same category,
+validity and `localOnly` says in full as a sentence of its own, into the one
+that stays, with their aliases; rules are never folded, and what was folded
+stays restorable from history for 30 days. A record the conversation changed
+since the digest read it is left for the next day. Saving a profile memory
+refuses a text with a code for everyone, as before; a workstream save does
+not filter its notes, so outside the pilot a code in one stays.
+For the pilot, and only with a direct model provider, the digest also asks a
+cheap model which memories are one-off task details, duplicates in other
+words, or facts a newer one corrects — only when memory changed since the
+start of the last digest that asked it. The model is the digest's own:
+`MEMORY_DIGEST_MODEL`, or `deepseek/deepseek-v4-flash` when unset (a third of
+the main default's price on RouterAI), never the main agent's or the
+workspace's model; reasoning off, 400 output tokens. It never sees a rule, a
+preference or a local-only memory. The model returns indexes only; code keeps
+a proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
+one-off is a fact, decision or organization without a validity date that the
+model read in full; a duplicate's every word is in the record it folds into,
+in the same order; a correction goes from an older to a newer fact, person or
+organization, and code writes its dated text («… (с 01.10; раньше: …)»). At
+most three of each kind and a fifth of the memories change in a day; a failed
+call changes nothing. Its cost is a `usage_costs` row with the source
+`memory`.
+
+The memory screen (`/workspace/memory`, tRPC `memory.*` in
+`web/trpc/router.ts`) shows the scope Bro's conversations last read, or,
+before any recall was marked (a scope from before the mark), the one written
+last: rules,
+preferences and the rest, and a timeline of the last changes. The person
+edits a record's text (checked by `memoryTextSchema`, refused on a stale
+revision), deletes it (history wiped as when Bro forgets it), and brings back
+an earlier revision from the record's history (`restoreMemory`, written as
+`restore` by `person`); a memory the digest removed or that expired comes
+back from the timeline while its text is kept. A revision whose text the
+filter now refuses is shown without it. Rules are only deleted there: they are set and changed
+in the conversation, where a rule write needs the person's own turn.
+Every call names the scope key the page showed, checked against the
+workspace's own, so a conversation that recalls another scope meanwhile
+does not redirect a delete; restore and edit refuse a stale revision, and an
+edit drops the old aliases. Forgetting a record, here or in a conversation,
+also wipes the history of the gone records the digest folded into it — every
+word of their text is in the forgotten one — so a merged duplicate or a
+corrected older fact does not stay restorable after the person deleted what
+held it.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat

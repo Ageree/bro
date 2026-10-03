@@ -58,6 +58,7 @@ const optionalServices = [
   "CLOUDRU_S3_TENANT_ID",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "MEMORY_DIGEST_MODEL",
   "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
   "ROUTERAI_API_KEY",
@@ -128,6 +129,7 @@ describe("privacy", () => {
     expect(remove).toContain("В самом Google ничего не удаляется");
     expect(remove).toContain("https://example.com/personal-info");
     expect(remove).toContain("https://example.com/vault");
+    expect(remove).toContain("https://example.com/workspace/memory");
     expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
     // The sign-ins Bro keeps, the visits it makes on its own, and how both
@@ -158,6 +160,23 @@ describe("privacy", () => {
     expect(processors).toContain("веб-поиска RouterAI передаёт поисковикам");
     expect(processors).not.toContain("OpenRouter");
     expect(processors).not.toContain("Vercel AI Gateway");
+  });
+
+  it("names the memory digest's own model and what it never sends", async () => {
+    const { facts } = await withServices({
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    const digest = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash", { memoryDigest: true })
+      .find((line) => line.startsWith("Раз в сутки сводка памяти"));
+
+    expect(digest).toContain(
+      "модели deepseek/deepseek-v4-flash через RouterAI"
+    );
+    expect(digest).toContain(
+      "кроме правил, предпочтений и записей, помеченных как только локальные"
+    );
   });
 
   it("names Cloud.ru as the keeper of files once the bucket is configured", async () => {

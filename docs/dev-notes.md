@@ -50,6 +50,8 @@
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
+- `drizzle-kit generate` пишет `db/migrations/meta/*.json` не в формате
+  `oxfmt`: после генерации — `pnpm exec oxfmt db/migrations/meta`.
 - oxlint `anti-slop` запрещает `typeof`-ветвления, параметры `unknown` и
   `Record<string, unknown>`: внешнее разбирайте схемой zod, варианты — по `kind`.
 - Формат проверяет `oxfmt` (`pnpm format:check`), не Prettier: `npx prettier`
@@ -696,6 +698,16 @@
   `agent/lib/memory/profile.ts`): правило по источнику записи, а не «одно
   удаление за ход», — параллельные вызовы шага политика не видит.
 - Правила, лимит и разрешения меняет лишь ход человека (`ruleWriteRefusal`).
+- Сводка памяти (`agent/lib/memory/digest/`) — расписание без хода и без
+  основной модели: субагента зовёт только ход основной модели, а пилоту
+  сводка зовёт свою (`MEMORY_DIGEST_MODEL`, без неё — `deepseek-v4-flash`)
+  напрямую. Правило владельца: всё, что меняет сохранённое людьми, — только
+  за флагом (`MEMORY_DIGEST_WORKSPACES`, без него сводка не идёт ни у кого).
+  Записи меняет только через `db/services/memory/records.ts` (замок, ревизия,
+  история); код вырезает из записи, а забывает лишь запись, где кроме кода
+  ничего нет. Пилот фильтрует список в SQL (`listMemoryDigestWorkspaces`):
+  иначе остальные воркспейсы проверялись на каждом тике. Сбой записи «Memory
+  changed» — пропуск.
 - В системный промпт профиль не достать: ключ области памяти есть лишь у
   провайдера, а документ профиля eve дописывает в историю лишь при изменении.
 - У слотов памяти — явный `namespace`: умолчание eve зависит от проекта Vercel
