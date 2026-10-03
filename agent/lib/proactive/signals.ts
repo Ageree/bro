@@ -1,8 +1,8 @@
-import type { z } from "zod";
-import type { calendarEventListSchema } from "@agent/lib/google-workspace/calendar";
+import { z } from "zod";
 import { localMinuteOfDay } from "@agent/lib/proactive/quiet-hours";
 import { urgentHandoverMarker } from "@agent/lib/schedules/outcome";
 import type { ProactiveSignal } from "@db/services/proactive";
+import type { FlightSource } from "@shared/subscriptions/flight";
 import type { UserProfile } from "@shared/user-profile/schema";
 
 /** How far ahead a check looks for events: tomorrow's flight plus slack. */
@@ -119,15 +119,129 @@ const flightWords =
 // «SU 1234», «DP405»: an airline code and a number.
 const flightNumber = /\b[A-Z]{2} ?\d{2,4}\b/u;
 
-type CalendarEventFacts = Pick<
-  NonNullable<z.output<typeof calendarEventListSchema>["items"]>[number],
-  "id" | "location" | "start" | "status" | "summary"
->;
+/**
+ * The events a check reads: what it acts on, and whose they are — an
+ * invitation from someone else is not the person's flight.
+ */
+export const proactiveEventListSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        attendees: z
+          .array(
+            z.object({
+              responseStatus: z.string().optional(),
+              self: z.boolean().optional(),
+            })
+          )
+          .optional(),
+        eventType: z.string().optional(),
+        id: z.string().optional(),
+        location: z.string().optional(),
+        organizer: z.object({ self: z.boolean().optional() }).optional(),
+        start: z
+          .object({
+            date: z.string().optional(),
+            dateTime: z.string().optional(),
+            timeZone: z.string().optional(),
+          })
+          .optional(),
+        status: z.string().optional(),
+        summary: z.string().optional(),
+      })
+    )
+    .optional(),
+});
+
+/** The fields the check asks Google for, to fit `proactiveEventListSchema`. */
+export const proactiveEventFields =
+  "items(id,status,start,summary,location,eventType,organizer(self),attendees(self,responseStatus))";
+
+type CalendarEventFacts = NonNullable<
+  z.output<typeof proactiveEventListSchema>["items"]
+>[number];
 
 /** Whether an event is a flight, by its title or place. */
 function isFlight(event: CalendarEventFacts) {
   const text = [event.summary, event.location].filter(Boolean).join(" ");
   return flightWords.test(text) || flightNumber.test(event.summary ?? "");
+}
+
+/** An airline code and a number: «SU 1234», «DP405», «S7 2513», «U6 101». */
+const ownFlightNumber =
+  /(?<![\p{L}\d])(?:[A-Z]{2}|[A-Z]\d|\d[A-Z]) ?\d{2,4}(?![\p{L}\d])/u;
+/** A place that is an airport, not a metro station or a street named so. */
+const airportPlace =
+  /аэропорт(?!овск)|airport|шереметьев|внуков|домодедов|пулков|кольцов|толмач|aeroporto|flughafen/iu;
+const airportCode = /\([A-Z]{3}\)/u;
+const notAirportPlace =
+  /(?:(?<![\p{L}\d])м\.|метро|станци\p{L}*)\s*«?\s*аэропорт/iu;
+
+/**
+ * Whether an event is the person's own flight, strictly: it is theirs (they
+ * made it, accepted it, or Gmail put it there from a booking), its title has
+ * a flight number, and it leaves from an airport — Gmail's own events name
+ * one in their own way. «Ревью PR 292», «Созвон по MS 365» or «м.
+ * Аэропорт» are no flights, and someone else's invitation is not the
+ * person's trip.
+ */
+function isOwnFlight(event: CalendarEventFacts) {
+  const fromGmail = event.eventType === "fromGmail";
+  const theirs =
+    fromGmail ||
+    event.organizer?.self === true ||
+    (event.attendees ?? []).some(
+      (attendee) =>
+        attendee.self === true && attendee.responseStatus === "accepted"
+    );
+  const place = event.location ?? "";
+  const atAirport =
+    (airportPlace.test(place) || airportCode.test(place)) &&
+    !notAirportPlace.test(place);
+  return (
+    theirs &&
+    ownFlightNumber.test(event.summary ?? "") &&
+    (atAirport || fromGmail)
+  );
+}
+
+/**
+ * The person's flights ahead in the events a check read, as their watches
+ * keep them (`syncFlightWatches`): timed ones, not cancelled, not gone, in
+ * the zone they leave from.
+ */
+export function flightEvents(
+  events: readonly CalendarEventFacts[],
+  now: Date
+): FlightSource[] {
+  return events.flatMap((event) => {
+    const start = event.start?.dateTime;
+    if (!event.id || !start || event.status === "cancelled") return [];
+    if (!isOwnFlight(event) || !(Date.parse(start) > now.getTime())) {
+      return [];
+    }
+    return [
+      {
+        eventId: event.id,
+        location: event.location?.slice(0, 200) ?? null,
+        start,
+        summary: event.summary?.slice(0, 200) ?? null,
+        timeZone: event.start?.timeZone ?? null,
+      },
+    ];
+  });
+}
+
+/** How soon an event must start for an evening check to hand it over. */
+const eveningEventHorizonMs = 12 * 60 * 60_000;
+
+/**
+ * Whether an evening check hands a new event over at once: one that starts
+ * within twelve hours. The rest waits for the morning with the mail.
+ */
+export function isEveningEvent(event: CalendarEventFacts, now: Date) {
+  const start = Date.parse(event.start?.dateTime ?? "");
+  return start - now.getTime() <= eveningEventHorizonMs;
 }
 
 /**
@@ -141,25 +255,38 @@ export function isNightFlight(event: CalendarEventFacts, now: Date) {
 }
 
 /** Most airlines open online check-in this long before departure. */
-const checkInOpensMs = 24 * 60 * 60_000;
+export const checkInOpensMs = 24 * 60 * 60_000;
 /** Closer to departure than this the person is on the way; no check-in nudge. */
-const checkInNudgeUntilMs = 3 * 60 * 60_000;
+export const checkInNudgeUntilMs = 3 * 60 * 60_000;
 /**
  * Tonight's reminder is for a flight tomorrow before noon: leaving home for
  * it falls into the night or right after it, before the first morning check.
  */
-const eveningFlightBeforeMinute = 12 * 60;
+export const eveningFlightBeforeMinute = 12 * 60;
 /**
  * Tonight's reminder goes out from 18:00 until 23:00 local. Bro's quiet hours
  * start at 22:00, but people are still up then, and a flight at dawn is worth
  * one late message; past 23:00 it would wake them.
  */
-const eveningFromMinute = 18 * 60;
-const eveningUntilMinute = 23 * 60;
+export const eveningFromMinute = 18 * 60;
+export const eveningUntilMinute = 23 * 60;
 
 const reminderKinds = ["checkin", "evening"] as const;
 
 type FlightReminder = (typeof reminderKinds)[number];
+
+/**
+ * A flight reminder's dedupe key: the event, its start and the kind. A
+ * flight's watch (`agent/schedules/subscriptions.ts`) hands its reminders
+ * over by the same key, so one handed over by either is not handed again.
+ */
+export function flightReminderKey(
+  eventId: string,
+  start: string,
+  reminder: FlightReminder
+) {
+  return `${eventId}@${start}#${reminder}`;
+}
 
 /** Which timed reminder a calendar signal is, if it is one. */
 export function reminderOf(dedupeKey: string) {
@@ -216,7 +343,7 @@ export function flightReminders(
     }
     const itemId = event.id;
     return due.map((reminder) => ({
-      dedupeKey: `${itemId}@${start}#${reminder}`,
+      dedupeKey: flightReminderKey(itemId, start, reminder),
       itemId,
       source: "calendar",
       threadId: null,
@@ -320,6 +447,17 @@ function homeLine(
     : "Home address: not in Personal Info; take it from memory if it is there, otherwise count a leave-by time from the city centre and say so.";
 }
 
+/**
+ * What the worker is to say about a flight when its watch counted the
+ * facts: check-in only usually opens 24 hours before, so nothing is said to
+ * be open for certain.
+ */
+const countedReminderTasks = {
+  checkin:
+    "online check-in usually opens about now (24 hours before departure for most airlines): say when it opens by the facts below and to check the booking letter or the airline, and offer to check in and pick a seat as soon as the person says yes.",
+  evening: `it leaves tomorrow morning, and this is tonight's reminder, before the person goes to sleep: when to leave home and how at that hour, by the facts below, an alarm, check-in, documents. Make ${urgentHandoverMarker} the first line of your handover: it has to reach the person tonight, even if their quiet hours begin before you finish.`,
+} satisfies Record<FlightReminder, string>;
+
 /** What the worker is to say about a flight for each timed reminder. */
 const reminderTasks = {
   checkin:
@@ -330,10 +468,13 @@ const reminderTasks = {
 /**
  * The flights with a reminder due, one line each. Earlier checks may have
  * looked at these flights already and handed nothing over; the reminder is
- * new, and the worker would otherwise skip a flight it was told is not.
+ * new, and the worker would otherwise skip a flight it was told is not. A
+ * flight's facts counted by code (`flightFacts`), when its watch has them,
+ * follow its line.
  */
 function reminderLines(
-  signals: readonly Pick<ProactiveSignal, "dedupeKey" | "itemId">[]
+  signals: readonly Pick<ProactiveSignal, "dedupeKey" | "itemId">[],
+  facts: ReadonlyMap<string, string>
 ) {
   const due = new Map<string, FlightReminder[]>();
   for (const signal of signals) {
@@ -344,15 +485,25 @@ function reminderLines(
   if (due.size === 0) return undefined;
   return [
     "Flight reminders due now. Earlier checks may have seen these flights; what is new is the time. Hand each over as a flight, even when nothing about it changed:",
-    ...[...due].map(
-      ([itemId, reminders]) =>
-        `- ${itemId}: ${reminders.map((reminder) => reminderTasks[reminder]).join(" Also, ")}`
-    ),
+    ...[...due].map(([itemId, reminders]) => {
+      const counted = facts.get(itemId);
+      const tasks = counted ? countedReminderTasks : reminderTasks;
+      return [
+        `- ${itemId}: ${reminders.map((reminder) => tasks[reminder]).join(" Also, ")}`,
+        counted
+          ? `  Counted by code from the calendar (estimates where they say so): ${counted}`
+          : undefined,
+      ]
+        .filter((line) => line !== undefined)
+        .join("\n");
+    }),
   ].join("\n");
 }
 
 /** The worker's task: exactly which items are new, and how to read them. */
 export function proactiveRunPrompt(input: {
+  /** A flight's facts counted by code, by event id (`flightFacts`). */
+  readonly flightFacts?: ReadonlyMap<string, string>;
   readonly home: Parameters<typeof homeLine>[0];
   /** When the person's night ends, if the check runs during it. */
   readonly quietUntil?: string;
@@ -379,7 +530,7 @@ export function proactiveRunPrompt(input: {
       )
     ),
   ];
-  const reminders = reminderLines(calendar);
+  const reminders = reminderLines(calendar, input.flightFacts ?? new Map());
   const horizon = new Date(input.scheduledFor.getTime() + calendarHorizonMs);
   const calendarLookup = `call calendar-list-events once with timeMin ${input.scheduledFor.toISOString()} and timeMax ${horizon.toISOString()}`;
   return [

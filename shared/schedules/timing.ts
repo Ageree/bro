@@ -632,6 +632,28 @@ function twoDigits(value: number) {
 }
 
 /**
+ * The instant it is `hour:minute` on the person's clock, `days` local days
+ * after the day `at` falls on there: «18:00 the evening before a flight».
+ */
+export function localClockInstant(
+  at: Date,
+  timeZone: string,
+  days: number,
+  hour: number,
+  minute: number
+) {
+  const parts = zonedParts(at.getTime(), timeZone);
+  return new Date(
+    fromWallClock(
+      timeZone,
+      civilDate(parts.year, parts.month, parts.day + days),
+      hour,
+      minute
+    )
+  );
+}
+
+/**
  * A run's moment on the person's clock, for the reply that names it: the
  * model counting «завтра» from a UTC instant named the wrong day.
  */

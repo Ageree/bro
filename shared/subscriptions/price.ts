@@ -14,7 +14,7 @@ export const priceExtractorSchema = z.enum(["jsonld", "meta", "itemprop"]);
  * SKU. Otherwise the shop changed the page, and a price off it may be
  * another product's.
  */
-const priceSourceSchema = z.strictObject({
+export const priceSourceSchema = z.strictObject({
   currency: z.string().nullable(),
   extractor: priceExtractorSchema,
   // The page the link led to after redirects (`pageKey`): a shop that sends
@@ -29,7 +29,7 @@ const priceSourceSchema = z.strictObject({
  * What counts as news: the price below an amount the person named, or any
  * drop (or one of at least `percent`) from the price when the watch began.
  */
-const priceConditionSchema = z.discriminatedUnion("kind", [
+export const priceConditionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ amount: z.number().positive(), kind: z.literal("below") }),
   z.strictObject({
     kind: z.literal("drop"),
@@ -38,7 +38,7 @@ const priceConditionSchema = z.discriminatedUnion("kind", [
 ]);
 
 /** The first and the latest reading. */
-const priceStateSchema = z.strictObject({
+export const priceStateSchema = z.strictObject({
   baseline: z.number().positive(),
   last: z.number().positive(),
   lastSeenAt: z.iso.datetime({ offset: true }),

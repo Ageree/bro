@@ -16,6 +16,14 @@ import type {
   releaseScheduledAgentRun,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
+import type * as flightModule from "@agent/lib/subscriptions/flight";
+import type {
+  listFlightWatches,
+  listLiveFlightWatches,
+  recordFlightWatch,
+  syncFlightWatches,
+} from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
 import { emptyUserProfile } from "@shared/user-profile/schema";
 
@@ -36,6 +44,14 @@ const jobs = vi.hoisted(() => ({
 const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
 const rank = vi.hoisted(() => vi.fn<typeof rankMail>());
 const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
+const flights = vi.hoisted(() => ({
+  drive: vi.fn<typeof flightModule.measureDrive>(),
+  list: vi.fn<typeof listFlightWatches>(() => Promise.resolve([])),
+  live: vi.fn<typeof listLiveFlightWatches>(() => Promise.resolve([])),
+  pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(false)),
+  record: vi.fn<typeof recordFlightWatch>(),
+  sync: vi.fn<typeof syncFlightWatches>(),
+}));
 
 vi.mock("@db/services/proactive", () => ({
   advanceProactiveWatermark: proactive.advance,
@@ -60,6 +76,19 @@ vi.mock("@agent/lib/proactive/probe", () => ({
   rankMail: rank,
 }));
 vi.mock("@db/services/user-profile", () => ({ readUserProfile: profile }));
+vi.mock("@agent/lib/subscriptions/pilot", () => ({
+  subscriptionsPilot: flights.pilot,
+}));
+vi.mock("@db/services/subscriptions", () => ({
+  listFlightWatches: flights.list,
+  listLiveFlightWatches: flights.live,
+  recordFlightWatch: flights.record,
+  syncFlightWatches: flights.sync,
+}));
+vi.mock("@agent/lib/subscriptions/flight", async (importOriginal) => ({
+  ...(await importOriginal<typeof flightModule>()),
+  measureDrive: flights.drive,
+}));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -68,6 +97,8 @@ import proactiveSchedule from "@agent/schedules/proactive";
 
 // 15:00 in Moscow: outside quiet hours.
 const afternoon = new Date("2026-09-23T12:00:00.000Z");
+/** The calendar read covered 26 hours ahead. */
+const seenUntil = new Date("2026-09-24T14:00:00.000Z");
 const flight = {
   dedupeKey: "flight@2026-09-24T07:40:00+03:00",
   itemId: "flight",
@@ -96,6 +127,17 @@ describe("proactive schedule", () => {
       timezone: "Europe/Moscow",
     });
     vi.spyOn(console, "info").mockImplementation(() => undefined);
+    flights.pilot.mockResolvedValue(false);
+    flights.list.mockResolvedValue([]);
+    flights.live.mockResolvedValue([]);
+    flights.sync.mockResolvedValue({ ended: 0, started: 0 });
+    flights.drive.mockResolvedValue({
+      from: "home",
+      kind: "drive",
+      km: 31.4,
+      minutes: 42,
+      to: "Внуково",
+    });
   });
 
   afterEach(() => {
@@ -103,13 +145,19 @@ describe("proactive schedule", () => {
   });
 
   it("queues one run with the new signals and moves the watermark", async () => {
-    probe.mockResolvedValue({ signals: [flight], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(probe).toHaveBeenCalledExactlyOnceWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
       {
+        flightReminders: true,
         mailAfter: new Date("2026-09-23T11:35:00.000Z"),
         now: afternoon,
         timeZone: "Europe/Moscow",
@@ -152,7 +200,12 @@ describe("proactive schedule", () => {
       source: "gmail" as const,
       threadId: id,
     }));
-    probe.mockResolvedValue({ signals: mail, state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: mail,
+      state: "connected",
+    });
     rank.mockResolvedValue(
       new Map([
         ...mail.map(({ itemId }) => [itemId, 3] as const),
@@ -185,7 +238,12 @@ describe("proactive schedule", () => {
   });
 
   it("does not rank mail that fits one run", async () => {
-    probe.mockResolvedValue({ signals: [flight], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
@@ -204,7 +262,12 @@ describe("proactive schedule", () => {
       ...flight,
       dedupeKey: "flight@2026-09-24T07:05:00+03:00#evening",
     };
-    probe.mockResolvedValue({ signals: [seen, reminder], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [seen, reminder],
+      state: "connected",
+    });
     proactive.filterUnseen.mockResolvedValue([reminder]);
 
     await runSchedule(vi.fn<ScheduleToFn>());
@@ -215,7 +278,12 @@ describe("proactive schedule", () => {
   });
 
   it("starts no model run when every signal was already handled", async () => {
-    probe.mockResolvedValue({ signals: [flight], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
     proactive.filterUnseen.mockResolvedValue([]);
 
     await runSchedule(vi.fn<ScheduleToFn>());
@@ -234,13 +302,19 @@ describe("proactive schedule", () => {
     proactive.claimWatches.mockResolvedValue([
       { ...watch(), leaseUntil: new Date("2026-09-23T20:45:00.000Z") },
     ]);
-    probe.mockResolvedValue({ signals: [flight], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
     expect(probe).toHaveBeenCalledExactlyOnceWith(
       { userId: "better-auth:alice", workspaceId: "workspace:alice" },
       {
+        flightReminders: true,
         // Subjects only of mail since the previous night check, not of
         // everything since the evening watermark again.
         mailAfter: new Date("2026-09-23T20:05:00.000Z"),
@@ -269,7 +343,12 @@ describe("proactive schedule", () => {
       leaseUntil: new Date("2026-09-24T05:05:00.000Z"),
     };
     proactive.claimWatches.mockResolvedValue([leased]);
-    probe.mockResolvedValue({ signals: [], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
 
     await runSchedule(vi.fn<ScheduleToFn>());
 
@@ -300,7 +379,12 @@ describe("proactive schedule", () => {
     ]);
     probe
       .mockRejectedValueOnce(new Error("Gmail is down"))
-      .mockResolvedValueOnce({ signals: [flight], state: "connected" });
+      .mockResolvedValueOnce({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: [flight],
+        state: "connected",
+      });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await runSchedule(vi.fn<ScheduleToFn>());
@@ -318,8 +402,209 @@ describe("proactive schedule", () => {
     );
   });
 
+  it("keeps a watch per flight in the pilot, and hands its due reminder over with the run", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.sync.mockResolvedValue({ ended: 0, started: 1 });
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [dp405],
+      signals: [mailSignal],
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({ flightReminders: false })
+    );
+    expect(flights.sync).toHaveBeenCalledExactlyOnceWith({
+      flights: [dp405],
+      now: afternoon,
+      scope: { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      seenUntil,
+    });
+    // Check-in opened at 07:05 today: it goes with the run, keyed as the
+    // check's own reminder, with the mail.
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        signals: [checkinSignal, mailSignal],
+      })
+    );
+    // The drive is measured once, for the reminder that goes, and then the
+    // watch remembers it went.
+    expect(flights.drive).toHaveBeenCalledOnce();
+    expect(flights.record.mock.lastCall).toMatchObject([
+      "watch-1",
+      { done: ["checkin"], travel: { minutes: 42 } },
+      afternoon,
+    ]);
+    expect(console.info).toHaveBeenCalledWith(
+      "[proactive] check",
+      expect.objectContaining({ flights: { ended: 0, started: 1 } })
+    );
+  });
+
+  it("keeps a flight's reminder due while the job is busy, and measures nothing for one already sent", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    proactive.queue.mockResolvedValue({ status: "busy" });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+    // Only the drive was written: the reminder is still due.
+    expect(flights.record).toHaveBeenCalledOnce();
+    expect(flights.record.mock.calls[0]).toMatchObject([
+      "watch-1",
+      { done: [], travel: { kind: "drive" } },
+      afternoon,
+    ]);
+
+    // A run had it before: it is marked, nothing is measured or queued.
+    flights.record.mockClear();
+    flights.drive.mockClear();
+    proactive.queue.mockClear();
+    proactive.filterUnseen.mockResolvedValue([]);
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(proactive.queue).not.toHaveBeenCalled();
+    expect(flights.drive).not.toHaveBeenCalled();
+    expect(flights.record).toHaveBeenCalledExactlyOnceWith(
+      "watch-1",
+      { done: ["checkin"] },
+      afternoon
+    );
+  });
+
+  it("goes on checking when the flight watches cannot be kept", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.sync.mockRejectedValue(new Error("database down"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(proactive.queue).toHaveBeenCalledOnce();
+  });
+
+  it("holds the evening's ordinary mail for the morning from 21:00 in the pilot", async () => {
+    // 21:30 in Moscow.
+    const evening = new Date("2026-09-23T18:30:00.000Z");
+    vi.setSystemTime(evening);
+    proactive.claimWatches.mockResolvedValue([
+      { ...watch(), leaseUntil: new Date("2026-09-23T18:45:00.000Z") },
+    ]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+
+    flights.pilot.mockResolvedValue(false);
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(probe).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ nightOnly: true })
+    );
+
+    flights.pilot.mockResolvedValue(true);
+    await runSchedule(vi.fn<ScheduleToFn>());
+    // Only what cannot wait starts a run; the watermark stays for the
+    // morning, which reads the whole evening as one batch.
+    expect(probe).toHaveBeenLastCalledWith(
+      expect.anything(),
+      // An event within hours or important mail still starts a run.
+      expect.objectContaining({
+        evening: true,
+        // An hour back: an urgent letter a busy job left is read again.
+        mailAfter: new Date("2026-09-23T17:30:00.000Z"),
+        nightOnly: true,
+      })
+    );
+    expect(proactive.advance).toHaveBeenCalledOnce();
+    expect(proactive.defer).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenLastCalledWith(
+      "[proactive] check",
+      expect.objectContaining({ evening: true, night: false })
+    );
+  });
+
+  it("gives the worker the times a flight's watch counted", async () => {
+    flights.pilot.mockResolvedValue(true);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    proactive.listSignals.mockResolvedValue([
+      { ...flight, dedupeKey: `${flight.dedupeKey}#evening` },
+    ]);
+    flights.list.mockResolvedValue([
+      {
+        condition: { kind: "reminders" },
+        source: {
+          eventId: "flight",
+          location: "Аэропорт Внуково",
+          start: "2026-09-24T07:40:00+03:00",
+          summary: "Рейс DP 405",
+          timeZone: "Europe/Moscow",
+        },
+        state: {
+          done: ["evening"],
+          travel: {
+            from: "home",
+            kind: "drive",
+            km: 31.4,
+            minutes: 42,
+            to: "Внуково",
+          },
+        },
+        template: "flight",
+      },
+    ]);
+    jobs.claimRuns.mockResolvedValue([proactiveClaim()]);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+
+    await runSchedule(vi.fn<ScheduleToFn>(() => ({ send })));
+
+    expect(flights.list).toHaveBeenCalledExactlyOnceWith("workspace:alice", [
+      "flight",
+    ]);
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "Counted by code from the calendar (estimates where they say so): Departs 2026-09-24 07:40, Thursday (Europe/Moscow)."
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "A leave-by estimate: about 2026-09-24 04:58"
+    );
+
+    // Outside the pilot the check reminds by itself: no watch is read.
+    flights.pilot.mockResolvedValue(false);
+    flights.list.mockClear();
+    await runSchedule(vi.fn<ScheduleToFn>(() => ({ send })));
+    expect(flights.list).not.toHaveBeenCalled();
+  });
+
   it("dispatches a claimed run as a proactive worker with its signals", async () => {
-    probe.mockResolvedValue({ signals: [], state: "connected" });
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
     proactive.listSignals.mockResolvedValue([flight]);
     const claim = proactiveClaim();
     jobs.claimRuns.mockResolvedValue([claim]);
@@ -454,5 +739,59 @@ function workerSession(): Session {
     reset: vi.fn<Session["reset"]>(),
     respond: vi.fn<Session["respond"]>(),
     send: vi.fn<Session["send"]>(),
+  };
+}
+
+/** DP 405 tomorrow at 07:05 Moscow, as the calendar read gives it. */
+const dp405 = {
+  eventId: "dp405",
+  location: "Аэропорт Внуково (VKO), терминал A",
+  start: "2026-09-24T07:05:00+03:00",
+  summary: "Рейс DP 405 Москва (Внуково) — Сочи",
+  timeZone: "Europe/Moscow",
+};
+
+const mailSignal = {
+  dedupeKey: "m1",
+  itemId: "m1",
+  source: "gmail" as const,
+  threadId: "t1",
+};
+
+const checkinSignal = {
+  dedupeKey: "dp405@2026-09-24T07:05:00+03:00#checkin",
+  itemId: "dp405",
+  source: "calendar" as const,
+  threadId: null,
+};
+
+/** DP 405's watch, nothing handed over yet. */
+function flightWatchRow(): Awaited<
+  ReturnType<typeof listLiveFlightWatches>
+>[number] {
+  return {
+    action: "worker",
+    checkEverySeconds: 3600,
+    checks: 0,
+    condition: { kind: "reminders" },
+    createdAt: afternoon,
+    createdByUserId: "better-auth:alice",
+    dedupeKey: "dp405@2026-09-24T07:05:00+03:00",
+    expiresAt: new Date("2026-09-24T04:05:00.000Z"),
+    failures: 0,
+    hits: 0,
+    id: "watch-1",
+    jobId: "flight-job",
+    lastCheckedAt: null,
+    lastError: null,
+    lastHitAt: null,
+    nextCheckAt: new Date("9999-12-31T00:00:00.000Z"),
+    source: dp405,
+    state: { done: [] },
+    status: "active",
+    template: "flight",
+    updatedAt: afternoon,
+    wake: "urgent_at_night",
+    workspaceId: "workspace:alice",
   };
 }

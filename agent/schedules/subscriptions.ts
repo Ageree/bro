@@ -4,6 +4,7 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
 import { readPricePage } from "@agent/lib/subscriptions/page";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
+import { priceWatchOf } from "@agent/lib/subscriptions/watches";
 import {
   type ClaimedSubscription,
   type SubscriptionCheck,
@@ -80,7 +81,8 @@ function byHost(due: readonly ClaimedSubscription[]) {
 }
 
 function hostOf(subscription: ClaimedSubscription) {
-  return URL.parse(subscription.source.url)?.hostname ?? subscription.id;
+  const url = priceWatchOf(subscription)?.source.url;
+  return (url && URL.parse(url)?.hostname) ?? subscription.id;
 }
 
 /**
@@ -100,34 +102,51 @@ async function checkInTurn(
 }
 
 /**
- * The check a watch gets. Outside the pilot (SUBSCRIPTIONS_WORKSPACES taken
- * back, or a lookup that failed) it is held: no page is read, no news is
- * sent, and one whose term ran out ends quietly. Back in the pilot, it goes
- * on from where it was.
+ * A watch outside the pilot (SUBSCRIPTIONS_WORKSPACES taken back, or a
+ * lookup that failed) is held: nothing is read and nothing is sent, and one
+ * whose term ran out ends quietly. Back in the pilot, it goes on from where
+ * it was. Undefined for a watch of the pilot.
  */
-async function decideCheck(
-  subscription: ClaimedSubscription
-): Promise<SubscriptionCheck> {
-  const now = new Date();
-  const expired = subscription.expiresAt.getTime() <= now.getTime();
+async function heldCheck(
+  subscription: ClaimedSubscription,
+  now: Date
+): Promise<SubscriptionCheck | undefined> {
   const inPilot = await subscriptionsPilot({
     userId: subscription.createdByUserId,
     workspaceId: subscription.workspaceId,
   });
-  if (!inPilot) {
-    return expired
-      ? { kind: "lapsed" }
-      : {
-          kind: "held",
-          nextCheckAt: new Date(
-            now.getTime() + subscription.checkEverySeconds * 1_000
-          ),
-        };
-  }
-  const reading = expired
-    ? ({ kind: "no-price" } as const)
-    : await readSafely(subscription.source.url);
-  return judgePriceCheck(subscription, reading, new Date());
+  if (inPilot) return undefined;
+  return subscription.expiresAt.getTime() <= now.getTime()
+    ? { kind: "lapsed" }
+    : {
+        kind: "held",
+        nextCheckAt: new Date(
+          now.getTime() + subscription.checkEverySeconds * 1_000
+        ),
+      };
+}
+
+/** A price watch's check: the page read by code, judged by code. */
+async function checkPrice(subscription: ClaimedSubscription) {
+  const now = new Date();
+  const held = await heldCheck(subscription, now);
+  if (held) return { check: held, outcome: await settle(subscription, held) };
+  const watch = priceWatchOf(subscription);
+  // A row whose JSON no longer reads as a price watch ends without a word.
+  const check: SubscriptionCheck = watch
+    ? judgePriceCheck(
+        watch,
+        watch.expiresAt.getTime() <= now.getTime()
+          ? { kind: "no-price" }
+          : await readSafely(watch.source.url),
+        new Date()
+      )
+    : { kind: "lapsed" };
+  return { check, outcome: await settle(subscription, check) };
+}
+
+function settle(subscription: ClaimedSubscription, check: SubscriptionCheck) {
+  return settleSubscriptionCheck(subscription, check);
 }
 
 /** One check, logged as one line with its outcome and never the page. */
@@ -138,8 +157,7 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     workspaceId: subscription.workspaceId,
   };
   try {
-    const check = await decideCheck(subscription);
-    const outcome = await settleSubscriptionCheck(subscription, check);
+    const { check, outcome } = await checkPrice(subscription);
     console.info("[subscriptions] check", {
       ...logged,
       outcome: outcome ?? "lease_lost",
