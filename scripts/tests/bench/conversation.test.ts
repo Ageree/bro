@@ -1256,10 +1256,16 @@ describe("a way out to eve that drops requests", () => {
 
   /**
    * Cuts the first stream read that starts at `startIndex` (null: at the
-   * first event) after `lines` events. Returns where every stream read
+   * first event) after `lines` events; with `turnOnly`, only a read that
+   * follows a turn, not a catch-up read (which asks for the tail index).
+   * `onCut` runs once the cut is made. Returns where every stream read
    * started, in order.
    */
-  function cutStreamRead(startIndex: string | null, lines: number) {
+  function cutStreamRead(
+    startIndex: string | null,
+    lines: number,
+    options: { readonly turnOnly?: boolean; readonly onCut?: () => void } = {}
+  ) {
     const starts: (string | null)[] = [];
     let cut = false;
     interceptFetch(async (url, _init, pass) => {
@@ -1267,8 +1273,12 @@ describe("a way out to eve that drops requests", () => {
       if (!url.pathname.endsWith("/stream")) return response;
       const start = url.searchParams.get("startIndex");
       starts.push(start);
-      if (cut || start !== startIndex) return response;
+      const catchUp = url.searchParams.has("includeTailIndex");
+      if (cut || start !== startIndex || (options.turnOnly && catchUp)) {
+        return response;
+      }
       cut = true;
+      options.onCut?.();
       return await cutAfter(response, lines);
     });
     return starts;
@@ -1526,4 +1536,130 @@ describe("a way out to eve that drops requests", () => {
       { sessionId: "wrun_fake", streamIndex: 0 },
     ]);
   });
+
+  it("reads an accepted turn on past a background turn that landed first", async () => {
+    const fake = await startFakeEve((post) => {
+      if (post.route === "create") return turn(delivered("привет!"));
+      // A browser report's turn lands between the cursor and the hint's.
+      fake.append(turn(delivered("отчёт поручения")));
+      return turn(delivered("вот что нашёл"));
+    });
+    stopFake = () => fake.close();
+    // Short enough that a read that never stops fails the test in time.
+    const settings = { ...(await settingsFor(fake.url)), turnTimeoutMs: 8000 };
+    const client = new Client({ host: fake.url });
+    const first = await runCase(client, benchCase, [step], [], settings);
+    const cursor = first.driver.sessions[0]?.streamIndex ?? 0;
+    // The hint's own stream breaks inside the background turn, before any
+    // event of the hint's turn.
+    cutStreamRead(String(cursor), 1, { turnOnly: true });
+
+    const record = await continueCase(client, first, settings, {
+      code: undefined,
+      kind: "hint",
+      respond: () => undefined,
+      text: "ну что там?",
+    });
+
+    expect(record.driver.status).toBe("completed");
+    const hintTurn = fake.events.filter(
+      (event) => event.meta.deliveryIds !== undefined
+    );
+    expect(hintTurn).toHaveLength(4);
+    const journaled = await journaledIds(settings.outDir);
+    for (const event of hintTurn) expect(journaled).toContain(event.meta.id);
+    expect(new Set(journaled).size).toBe(journaled.length);
+    expect(await readLog(settings.outDir)).toContain("<- Бро: вот что нашёл");
+  }, 20_000);
+
+  it("waits out an accepted turn that goes quiet for longer than eve's idle reconnects", async () => {
+    const restOfTheTurn = [
+      delivered("готово, три варианта"),
+      { data: { sequence: 0, turnId }, meta: meta(), type: "turn.completed" },
+      sessionWaiting(),
+    ] satisfies MessageStreamEvent[];
+    const fake = await startFakeEve(() => [
+      turnStarted(),
+      delivered("секунду, ищу"),
+    ]);
+    stopFake = () => fake.close();
+    const settings = {
+      ...(await settingsFor(fake.url)),
+      turnTimeoutMs: 60_000,
+    };
+    // eve's default gives up on a quiet stream after five empty reconnects,
+    // about 8 s; Bro answers after 12.
+    cutStreamRead(null, 2, {
+      onCut: () => {
+        setTimeout(() => {
+          fake.append(restOfTheTurn);
+        }, 12_000);
+      },
+    });
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      [step],
+      [],
+      settings
+    );
+
+    expect(record.driver.status).toBe("completed");
+    expect(await readLog(settings.outDir)).toContain(
+      "<- Бро: готово, три варианта"
+    );
+    expect(await journaledIds(settings.outDir)).toEqual(
+      fake.events.map((event) => event.meta.id)
+    );
+  }, 45_000);
+
+  it("does not take a turn read on past its deadline for a finished one", async () => {
+    const fake = await startFakeEve(() => [
+      turnStarted(),
+      delivered("секунду, ищу"),
+    ]);
+    stopFake = () => fake.close();
+    const settings = { ...(await settingsFor(fake.url)), turnTimeoutMs: 6000 };
+    cutStreamRead(null, 2);
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      benchCase,
+      [step],
+      [],
+      settings
+    );
+
+    // The boundary never came: the turn is not over, whatever was read.
+    expect(record.driver.status).toBe("timed-out");
+    expect(record.driver.statusDetail).toBe("No turn boundary within 6 s.");
+  }, 20_000);
+
+  it("recovers a failed case when the cut came after the turn completed", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create" ? failedTurn() : turn(delivered("получилось"))
+    );
+    stopFake = () => fake.close();
+    const settings = await settingsFor(fake.url);
+    const client = new Client({ host: fake.url });
+    const failed = await runCase(client, benchCase, [step], [], settings);
+    expect(failed.driver.status).toBe("failed");
+    const cursor = failed.driver.sessions[0]?.streamIndex ?? 0;
+    // The answer's stream breaks after `turn.completed`, before the
+    // boundary: the read on from the cursor sees only `session.waiting`.
+    cutStreamRead(String(cursor), 3, { turnOnly: true });
+
+    const record = await continueCase(client, failed, settings, {
+      code: undefined,
+      kind: "answer",
+      respond: () => undefined,
+      text: "попробуй ещё раз",
+    });
+
+    expect(record.driver.status).toBe("completed");
+    expect(await readLog(settings.outDir)).toContain(
+      "== драйвер: чтение разговора: сбой сети (ECONNRESET: read ECONNRESET)"
+    );
+  }, 15_000);
 });

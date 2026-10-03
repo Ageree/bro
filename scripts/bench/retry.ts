@@ -75,12 +75,26 @@ function causeChain(error: Error): Error[] {
   return chain;
 }
 
+/** The attempts of a connect that tried each address of the host. */
+const connectAttemptsSchema = z.array(z.instanceof(Error)).min(1);
+
 /**
  * What one link of the chain says about the request: it never left and a
  * repeat may pass (`unsent`), it never left and a repeat gets the same
  * answer (`refused`), it may have arrived (`uncertain`), or nothing.
  */
-function linkLoss(link: Error) {
+function linkLoss(link: Error): "refused" | "uncertain" | "unsent" | undefined {
+  // A host with several addresses that all failed to connect: Node's
+  // AggregateError carries the code but no syscall; each attempt has both.
+  if (link instanceof AggregateError) {
+    const attempts = connectAttemptsSchema.safeParse(link.errors);
+    if (
+      attempts.success &&
+      attempts.data.every((attempt) => linkLoss(attempt) === "unsent")
+    ) {
+      return "unsent";
+    }
+  }
   const { code, syscall } = errnoSchema.parse(link);
   const tunnel = proxyTunnel.exec(link.message);
   if (tunnel) {

@@ -3,9 +3,11 @@ import type {
   ClientSession,
   InputRequest,
   InputResponse,
+  MessageResponse,
   MessageStreamEvent,
 } from "eve/client";
 import { setTimeout as sleep } from "node:timers/promises";
+import { z } from "zod";
 import { decideInputRequest } from "./approvals.ts";
 import type { BenchCase } from "./cases.ts";
 import { isNight } from "./clock.ts";
@@ -356,15 +358,12 @@ async function readTurn(
   session: ClientSession,
   events: AsyncIterable<MessageStreamEvent>
 ) {
-  let completed = false;
   for await (const event of events) {
     await run.observe(session, event);
-    if (event.type === "turn.completed") completed = true;
     if (event.type === "session.waiting" && run.tracker.authorizationPending) {
       break;
     }
   }
-  return completed;
 }
 
 /** A request eve accepted whose turn could not be read: it must not go again. */
@@ -386,35 +385,90 @@ const turnBoundaries = new Set<MessageStreamEvent["type"]>([
   "session.waiting",
 ]);
 
-/** The session's events from its cursor up to the next turn boundary. */
-async function* restOfTurn(session: ClientSession, signal: AbortSignal) {
-  for await (const event of session.stream({ signal })) {
-    yield event;
-    if (turnBoundaries.has(event.type)) return;
-  }
+const deliveryIdSchema = z.string().min(1).optional();
+
+/**
+ * The id eve gave an accepted message, which tags the events of its turn.
+ * eve 0.62 keeps it on the response under a symbol it does not export
+ * (`getMessageResponseDeliveryId` is internal). A new conversation and a
+ * card answer have none, and eve's own stream does not filter their turns
+ * either. If an eve upgrade moves it, «reads an accepted turn on past a
+ * background turn» in `conversation.test.ts` fails.
+ */
+function acceptedDeliveryId(response: MessageResponse) {
+  const key = Object.getOwnPropertySymbols(response).find(
+    (symbol) => symbol.description === "acceptedDeliveryId"
+  );
+  return key === undefined
+    ? undefined
+    : deliveryIdSchema.parse(
+        Object.getOwnPropertyDescriptor(response, key)?.value
+      );
 }
 
 /**
  * Reads the turn eve accepted. eve reconnects a dropped stream itself; when
  * it gives up, the turn is read on from the session's cursor, which the cut
- * read moved past every event it saw, up to the turn's boundary. A turn that
- * cannot be read fails the case: the request was accepted and must not go
- * again.
+ * read moved past every event it saw, and picked out as eve's own response
+ * stream picks it: events of other turns are skipped until one carries this
+ * message's delivery id, and the read ends at the turn's boundary, however
+ * long Bro works. A turn that cannot be read fails the case: the request was
+ * accepted and must not go again. Returns whether the turn completed.
  */
 async function readAcceptedTurn(
   run: CaseRun,
   label: string,
   session: ClientSession,
-  events: AsyncIterable<MessageStreamEvent>,
+  response: MessageResponse,
   signal: AbortSignal
 ) {
+  const deliveryId = acceptedDeliveryId(response);
+  const ours = (event: MessageStreamEvent) =>
+    deliveryId !== undefined &&
+    event.meta.deliveryIds?.includes(deliveryId) === true;
+  // What the turn has shown, whichever read it came through.
+  let delivered = deliveryId === undefined;
   let completed = false;
-  let source = events;
+  async function* noted(events: AsyncIterable<MessageStreamEvent>) {
+    for await (const event of events) {
+      if (ours(event)) delivered = true;
+      if (event.type === "turn.completed") completed = true;
+      yield event;
+    }
+  }
+  async function* rest() {
+    for await (const event of session.stream({
+      signal,
+      // Waits out a turn that works long; the default gives up quietly
+      // after a few empty reconnects.
+      streamReconnectPolicy: {
+        streamIdleReconnectPolicy: { maxAttempts: Number.POSITIVE_INFINITY },
+      },
+    })) {
+      if (deliveryId !== undefined && !ours(event)) {
+        const ends =
+          event.type === "session.completed" || event.type === "session.failed";
+        if (ends && (!delivered || event.type === "session.completed")) {
+          throw new Error(
+            "the session ended before the accepted message reached its turn boundary"
+          );
+        }
+        if (!delivered || (!ends && event.meta.deliveryIds !== undefined)) {
+          continue;
+        }
+      }
+      yield event;
+      if (turnBoundaries.has(event.type)) return;
+    }
+    signal.throwIfAborted();
+    throw new Error("the stream ended before the turn's boundary");
+  }
+  let source: AsyncIterable<MessageStreamEvent> = response;
   try {
     await run.read(signal, async () => {
       const reading = source;
-      source = restOfTurn(session, signal);
-      if (await readTurn(run, session, reading)) completed = true;
+      source = rest();
+      await readTurn(run, session, noted(reading));
     });
   } catch (error) {
     if (signal.aborted || !(error instanceof Error)) throw error;
@@ -432,7 +486,7 @@ async function exchange(
   run: CaseRun,
   label: string,
   post: (signal: AbortSignal) => Promise<{
-    readonly events: AsyncIterable<MessageStreamEvent>;
+    readonly events: MessageResponse;
     readonly session: ClientSession;
   }>,
   recoverOnSuccess = false

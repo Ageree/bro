@@ -766,6 +766,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   обрыва — никогда (сообщение дважды меняет кейс). Туннель 403/407 и
   сертификат не повторяются вовсе. `read ECONNRESET` во время TLS не
   отличить от обрыва после запроса.
+- Ход принятого сообщения после обрыва драйвер дочитывает сам, отбирая
+  события по его `deliveryId`, как поток ответа eve: иначе ход-отчёт,
+  вклинившийся раньше, сошёл бы за ответ. eve 0.62 этот id не экспортирует —
+  драйвер берёт его у `MessageResponse` по символу `acceptedDeliveryId`
+  (`conversation.ts`); после обновления eve смотрите тест «past a background
+  turn».
 - `eve dev` без Docker ставит `just-bash`, и pnpm переписывает `pnpm-lock.yaml`
   и `pnpm-workspace.yaml`: откатите и `pnpm install --frozen-lockfile`.
 - Локально вход по телефону принимает любой код; Google у локального

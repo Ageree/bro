@@ -9,6 +9,7 @@ import {
   certificateRejected,
   connectionReset,
   connectTimeout,
+  everyAddressFailed,
   handshakeClosed,
   socketClosed,
   systemError,
@@ -90,6 +91,17 @@ describe("a request that never left", () => {
     ["a connect the system timed out", systemError("ETIMEDOUT", "connect")],
     ["a name that does not resolve", systemError("ENOTFOUND", "getaddrinfo")],
     ["a lookup that failed for now", systemError("EAI_AGAIN", "getaddrinfo")],
+    [
+      "every address of the host refused",
+      everyAddressFailed(
+        ["ECONNREFUSED", "connect"],
+        ["ECONNREFUSED", "connect"]
+      ),
+    ],
+    [
+      "every address of the host refused or timed out",
+      everyAddressFailed(["ECONNREFUSED", "connect"], ["ETIMEDOUT", "connect"]),
+    ],
   ])("is sent again even as a POST: %s", async (_name, failure) => {
     const fetchMock = failingOnce(failure, () => Response.json({}));
 
@@ -185,6 +197,10 @@ describe("a failure that does not prove the request never left", () => {
   it.each([
     ["a system error after the connect", systemError("EHOSTUNREACH", "read")],
     ["a refused connect without its syscall", systemError("ECONNREFUSED")],
+    [
+      "several addresses, one of them reset after the connect",
+      everyAddressFailed(["ECONNREFUSED", "connect"], ["EHOSTUNREACH", "read"]),
+    ],
     ["a failed lookup without its syscall", systemError("ENOTFOUND")],
     ["a failure that names nothing known", unknownFailure()],
   ])("is not sent again, as a POST or a read: %s", async (_name, failure) => {

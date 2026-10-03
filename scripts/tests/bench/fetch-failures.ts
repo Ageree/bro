@@ -32,6 +32,27 @@ export const systemError = (code: string, syscall?: string) =>
     )
   );
 
+/**
+ * A host with several addresses whose every connect failed: Node's
+ * AggregateError carries the first code and no syscall; each attempt, its
+ * own code and syscall (`[code, syscall]` per address).
+ */
+export const everyAddressFailed = (
+  ...attempts: readonly (readonly [string, string])[]
+) =>
+  failed(
+    Object.assign(
+      new AggregateError(
+        attempts.map(([code, syscall], index) =>
+          coded(`${syscall} ${code} 127.0.0.${String(index + 1)}:443`, code, {
+            syscall,
+          })
+        )
+      ),
+      { code: attempts[0]?.[0] ?? "ECONNREFUSED" }
+    )
+  );
+
 /** The proxy answered the tunnel request with `status`. */
 export const tunnelRefused = (status = 502) =>
   failed(
