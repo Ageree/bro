@@ -53,6 +53,8 @@ interface MemoryOrigin {
 type RevisionAction = (typeof memoryRevisions.$inferInsert)["action"];
 
 const modelOrigin: MemoryOrigin = { actor: "model" };
+/** A profile moved from the scope keys eve used before to the pinned one. */
+const adoption: MemoryOrigin = { actor: "system" };
 
 /**
  * Removals that keep the record's history readable for a while: what the
@@ -632,7 +634,9 @@ export async function importLegacyMemories(
  * record's origin and dates,
  * takes the target's next index (related indexes follow it), joins the
  * semantic index queue, and retires the source as forgetting would, so a
- * repeated call finds nothing to move. The number of records moved.
+ * repeated call finds nothing to move. History sees each step as `system`:
+ * an `import` in the target, a `merge` for the copy it folded and for the
+ * source it retired. The number of records moved.
  */
 export async function adoptMemoryRecords(
   scope: AccessScope,
@@ -767,6 +771,8 @@ export async function adoptMemoryRecords(
         .returning();
       if (!saved) throw new Error("Memory could not be adopted.");
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
+      await recordRevision(transaction, saved, adoption, "import");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
       await enqueueSync(transaction, saved);
     }
     // A record the target held, merged with its copy: saved as an update is.
@@ -790,6 +796,8 @@ export async function adoptMemoryRecords(
         .returning();
       if (!saved) throw new Error("Memory could not be adopted.");
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the update above.
+      await recordRevision(transaction, saved, adoption, "merge");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the update above.
       await transaction
         .update(memorySync)
         .set(syncRemoval(now))
@@ -807,9 +815,11 @@ export async function adoptMemoryRecords(
       .update(memoryScopes)
       .set({ lastAllocatedIndex: lastIndex, updatedAt: now })
       .where(scopeIdentity(scope, toKey));
+    // The text lives on in the target, so a source keeps its history as a
+    // merge does, for 30 days.
     await Promise.all(
-      retired.map((row) =>
-        transaction
+      retired.map(async (row) => {
+        const [gone] = await transaction
           .update(memoryRecords)
           .set({
             content: null,
@@ -825,7 +835,9 @@ export async function adoptMemoryRecords(
               eq(memoryRecords.revision, row.revision)
             )
           )
-      )
+          .returning();
+        if (gone) await recordRevision(transaction, gone, adoption, "merge");
+      })
     );
     await Promise.all(
       fromKeys.flatMap((key) => {

@@ -422,6 +422,33 @@ describe("adopting the profile saved after the move", () => {
       // oxlint-disable-next-line eslint/no-await-in-loop -- A handful of scopes, read in order.
       expect(await listCurrentMemories(alice, key)).toEqual([]);
     }
+    // Every move is in the history: what arrived, what merged, what left.
+    const history = await database.select().from(schema.memoryRevisions);
+    const pinnedHistory = history
+      .filter(({ scopeKey }) => scopeKey === pinnedProfileKey)
+      .map(({ action, actor, recordIndex, revision }) => [
+        recordIndex,
+        revision,
+        action,
+        actor,
+      ])
+      .toSorted((left, right) => String(left).localeCompare(String(right)));
+    expect(pinnedHistory).toEqual([
+      [0, 1, "save", "model"],
+      [0, 2, "merge", "system"],
+      [1, 1, "import", "system"],
+      [2, 1, "import", "system"],
+    ]);
+    const left = history.filter(
+      ({ revision, scopeKey }) => scopeKey !== pinnedProfileKey && revision > 1
+    );
+    expect(left).toHaveLength(4);
+    expect(
+      left.every(
+        ({ action, actor, content }) =>
+          action === "merge" && actor === "system" && content === null
+      )
+    ).toBe(true);
     expect(
       await adoptMemoryRecords(alice, vmProfileKeys, pinnedProfileKey)
     ).toBe(0);
