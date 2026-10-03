@@ -11,6 +11,7 @@ import { env } from "@shared/environment";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
+import { decodePage } from "@agent/lib/web-page/decode";
 import { searchWeb, webSearchInputSchema } from "@agent/lib/web-search/search";
 import { sandboxHoldsPersonFiles } from "./inbox";
 import { verifySandboxToolsToken } from "./keys";
@@ -183,24 +184,6 @@ export function pageText(html: string) {
     .replace(/ *\n */gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
-}
-
-/**
- * A page's text in its own encoding: many Russian sites still serve
- * windows-1251, named in the header or in a `<meta>` near the top.
- */
-export function decodePage(bytes: Uint8Array, mediaType: string | undefined) {
-  const head = Buffer.from(bytes.subarray(0, 2048)).toString("latin1");
-  const charset =
-    /charset=["']?([\w-]+)/iu.exec(mediaType ?? "")?.[1] ??
-    /<meta[^>]+charset=["']?([\w-]+)/iu.exec(head)?.[1] ??
-    /encoding=["']([\w-]+)["']/iu.exec(head)?.[1] ??
-    "utf-8";
-  try {
-    return new TextDecoder(charset.toLowerCase()).decode(bytes);
-  } catch {
-    return new TextDecoder("utf-8").decode(bytes);
-  }
 }
 
 async function fetchPage(input: z.infer<typeof webFetchInputSchema>) {

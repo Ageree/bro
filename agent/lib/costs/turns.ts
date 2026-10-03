@@ -10,6 +10,12 @@ const workspaceCallerSchema = z.object({
   attributes: z.object({ workspaceId: z.string().min(1) }),
 });
 
+const callerSchema = z.object({ authenticator: z.string() });
+
+const scheduledCallerSchema = z.object({
+  attributes: z.object({ scheduledRunId: z.string().min(1) }),
+});
+
 /**
  * Whose turn a model step belongs to, as the accounting splits it: the
  * person's own message on any channel, the report of a browser run, a turn
@@ -17,7 +23,9 @@ const workspaceCallerSchema = z.object({
  * or a step of the task agent Bro delegated to. A delegated session carries
  * the caller of the turn that delegated it, so it is told apart by its
  * parent first; the rest is decided by the caller that opened the turn, as
- * `startedByPerson` decides it for permissions.
+ * `startedByPerson` decides it for permissions. A turn of Bro's own carries
+ * its scheduled run as `runId`, so what a schedule or a watch cost the model
+ * is a sum over its job's runs: a watch that found nothing costs none.
  */
 export function turnCostSource(session: Pick<Session, "auth" | "parent">) {
   if (session.parent) return { runId: undefined, source: "task" as const };
@@ -29,7 +37,23 @@ export function turnCostSource(session: Pick<Session, "auth" | "parent">) {
   if (startedByPerson({ session: { auth } })) {
     return { runId: undefined, source: "chat" as const };
   }
-  return { runId: undefined, source: "background" as const };
+  // A resumed worker's turn may carry its run only on the caller that
+  // opened the session. Any other turn — eve's `[Task state]` delivery in a
+  // session a report opened — is not that run's, and carries none.
+  const resumedWorker =
+    !auth.current ||
+    callerSchema.safeParse(auth.current).data?.authenticator ===
+      "scheduled-input";
+  return {
+    runId:
+      scheduledCallerSchema.safeParse(auth.current).data?.attributes
+        .scheduledRunId ??
+      (resumedWorker
+        ? scheduledCallerSchema.safeParse(auth.initiator).data?.attributes
+            .scheduledRunId
+        : undefined),
+    source: "background" as const,
+  };
 }
 
 /**
