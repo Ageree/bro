@@ -117,7 +117,10 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`e-?mails?|inbox|mail|repl(y|ies)`,
     String.raw`draft\p{L}* (a |the )?(repl|email|response|outreach)|calendar`,
     String.raw`meeting|invite|block|slots?|spreadsheet|sheet|contacts?`,
-    String.raw`threads?|transcripts?`
+    String.raw`threads?|transcripts?`,
+    // Putting something in the calendar or moving it, without the word.
+    String.raw`(добавь|поставь|внеси)\s+(мне\s+)?на\s+(сегодня|завтра|послезавтра|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|\d)`,
+    String.raw`agenda|reschedule|move my \d|push the (sync|call|meeting)`
   ),
   apps: stems(
     String.raw`notion|ноушн|slack|слак|todoist|trello|linear|github|репо|repo`,
@@ -143,7 +146,9 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`карт\p{L}*\s*(мир|visa|в сейф|привяз)|привяж`,
     String.raw`сч[её]т (от|за|на оплату)|подписк|автоплат|автопродлен|списыва`,
     String.raw`бюджет|сбп|spend|budget|without asking|pay(?!\p{L})|payment`,
-    String.raw`card|charge|subscription|approve|within my range|points`
+    String.raw`card|charge|subscription|approve|within my range|points`,
+    // Taking a standing permission back must find its tool (`tools.ts`).
+    String.raw`спрашивай (меня )?(снова|опять)|ask me (again|first)`
   ),
   schedules: stems(
     String.raw`напомн|напомин|кажд\p{L}*|по будням|будн\p{L}* день|ежеднев`,
@@ -156,7 +161,17 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`each (day|week|morning|evening|monday)|daily|weekly|monthly`,
     String.raw`watch|keep an eye|monitor|the moment|when the window opens`,
     String.raw`schedule|recurring|bots?(?!\p{L})|repeat|follow up|ping me`,
-    String.raw`brief me`
+    String.raw`brief me`,
+    // So must stopping a schedule.
+    String.raw`хватит присыла|больше не (присылай|напоминай|надо)`,
+    String.raw`отключи напомин|stop (sending|reminding)`,
+    String.raw`не (надо|нужно) больше (присыла|напомина|писа)`,
+    String.raw`перестань (мне )?(писать|присылать|напоминать)`,
+    String.raw`(отмени|убери|удали|перенеси|измени|поменяй|выключи|отключи)\s+(\p{L}+\s+){0,2}(сводк|дайджест|рассылк|напоминан|уведомлени)`,
+    String.raw`(cancel|stop|pause|move)\s+(my |the )?(\p{L}+ )?(brief|digest|summary|updates|reminders?)`,
+    // A reminder said without the word.
+    String.raw`разбуди|пни меня|через (час|полчаса|\d+ мин)|скажи мне (в \d|позвон|напис|купи|сдела|забра)`,
+    String.raw`wake me|nudge me|in an hour`
   ),
   images: stems(
     String.raw`нарису|рисун|картинк|изображен|открытк|постер|стикер`,
@@ -306,6 +321,10 @@ const siteInputSchema = z.object({ site: z.string() });
 
 const sentTextSchema = z.object({ text: z.string() });
 
+const automationReplySchema = z.object({
+  replyTo: z.object({ kind: z.literal("automation") }),
+});
+
 /** The tools the conversation called, with their input. */
 function toolCalls(history: readonly ModelMessage[]) {
   return history.flatMap((message) =>
@@ -378,6 +397,7 @@ const implied: Partial<Record<SkillName, readonly SkillName[]>> = {
 /** The skills the conversation's tool calls and results keep. */
 function historySkills(history: readonly ModelMessage[]) {
   const wanted = new Set<SkillName>();
+  let lastSent: unknown;
   for (const { input, toolName } of toolCalls(history)) {
     for (const skill of toolSkills(toolName)) wanted.add(skill);
     if (toolName === "browser_task") {
@@ -394,6 +414,7 @@ function historySkills(history: readonly ModelMessage[]) {
     // that follows may answer a report turn about a worker's run) and its
     // ask for readings.
     if (toolName === "send_message") {
+      lastSent = input;
       const text = sentTextSchema.safeParse(input).data?.text ?? "";
       if (paymentQuestion.test(text)) {
         wanted.add("browser");
@@ -401,6 +422,11 @@ function historySkills(history: readonly ModelMessage[]) {
       }
       if (readingsQuestion.test(text)) wanted.add("meter-readings");
     }
+  }
+  // The person answers a schedule's report: «хватит», «перенеси на 8»
+  // change that schedule.
+  if (automationReplySchema.safeParse(lastSent).success) {
+    wanted.add("schedules");
   }
   for (const result of browserResults(history)) {
     if (result.includes("NEEDS: payment")) wanted.add("money");

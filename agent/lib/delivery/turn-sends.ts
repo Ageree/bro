@@ -77,6 +77,7 @@ type OutgoingMessage = z.infer<typeof sendMessageOutputSchema>;
 const skipReasonSchema = z.enum([
   "duplicate",
   "limit",
+  "past",
   "reported",
   "stale",
   "started",
@@ -132,6 +133,7 @@ const unseenDraft =
 const skipNotices = {
   duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
+  past: `${skippedPrefix} this browser report's turn is past its answer: the person already has your message about it, so no more messages go out in this turn. Do not say this one was sent. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing; otherwise end the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
   started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. If the person asked in this turn for something else you have not done yet — a calendar entry, a reminder — do it now with its tool, without announcing it first; otherwise end the turn now without calling any tool.`,
@@ -156,9 +158,28 @@ export function skippedSendNotice(reason: SkipReason) {
   return skipNotices[reason];
 }
 
-/** The tool result the model reads for a send it has to rewrite. */
-export function rewriteSendNotice(reason: RewriteReason) {
-  return `${rewriteNotices[reason]} ${unseenDraft}`;
+/**
+ * The rewrites that send the model to a tool, which in the skills pilot may
+ * not be offered yet: its group follows its skill (`agent/lib/skills/tools.ts`).
+ */
+const toolStepRewrites: ReadonlySet<RewriteReason> = new Set([
+  "announced",
+  "calendar",
+  "undone",
+]);
+
+const loadSkillHint =
+  "If that tool is not among your tools, call load_skill with its domain first — google for the calendar, mail and Drive, schedules for a reminder or schedule, apps for Notion and Slack — and use the tool in the next step.";
+
+/**
+ * The tool result the model reads for a send it has to rewrite. With
+ * `loadSkill` (the skills pilot) a rewrite that asks for a tool also says
+ * how to get it.
+ */
+export function rewriteSendNotice(reason: RewriteReason, loadSkill = false) {
+  return loadSkill && toolStepRewrites.has(reason)
+    ? `${rewriteNotices[reason]} ${loadSkillHint} ${unseenDraft}`
+    : `${rewriteNotices[reason]} ${unseenDraft}`;
 }
 
 /** The comparable form of a message `send_message` was asked to send. */

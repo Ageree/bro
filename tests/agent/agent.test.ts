@@ -7,6 +7,7 @@ import type {
 } from "@db/services/settings";
 import type * as ModelSelection from "@agent/lib/model/selection";
 import type * as Provider from "@shared/model/provider";
+import type * as SkillsPilot from "@agent/lib/skills/pilot";
 
 const services = vi.hoisted(() => ({
   browserRunReportDelivered: vi.fn<(runId: string) => Promise<boolean>>(),
@@ -15,6 +16,7 @@ const services = vi.hoisted(() => ({
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
   directModelActive: vi.fn<() => boolean>(),
+  skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
 }));
 
@@ -31,6 +33,10 @@ vi.mock("@db/services/settings", () => ({
 vi.mock("@shared/model/provider", async (importOriginal) => ({
   ...(await importOriginal<typeof Provider>()),
   directModelActive: services.directModelActive,
+}));
+vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
+  ...(await importOriginal<typeof SkillsPilot>()),
+  skillsLayout: services.skillsLayout,
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
@@ -72,6 +78,7 @@ beforeEach(() => {
   services.browserRunReportDelivered.mockResolvedValue(false);
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
+  services.skillsLayout.mockReturnValue("full");
 });
 
 function note(language: "en" | "ru" | undefined, answered = false) {
@@ -814,6 +821,37 @@ describe("interactive delivery enforcement", () => {
       "task",
       "task_cancel",
     ]);
+  });
+
+  it("offers a person's step the tools of its skills' groups in the skills pilot", async () => {
+    services.directModelActive.mockReturnValue(true);
+    for (let call = 0; call < 3; call += 1) {
+      services.modelSelection.mockReturnValueOnce(
+        "deepseek/deepseek-v4.1-flash"
+      );
+    }
+    const mail = [humanMessage("Ответь Лене на письмо про отпуск")];
+
+    await agent.model.events["step.started"]?.({}, interactiveContext(mail));
+    // Outside the pilot every tool stays.
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolGroups).toBe(
+      undefined
+    );
+
+    services.skillsLayout.mockReturnValue("core");
+    await agent.model.events["step.started"]?.({}, interactiveContext(mail));
+    const groups = services.modelSelection.mock.lastCall?.[1]?.toolGroups;
+    expect(groups).toContain("google");
+    expect(groups).not.toContain("money");
+
+    // A browser report's turn keeps its own set, whatever its words.
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(mail, "browser-result", reportAttributes)
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolGroups).toBe(
+      undefined
+    );
   });
 
   it("fails the task agent's report on the Gateway, which ignores the tool limit", async () => {

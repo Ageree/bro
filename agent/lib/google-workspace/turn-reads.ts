@@ -447,6 +447,15 @@ export function turnDeclinedGmailSend(messages: readonly ModelMessage[]) {
 }
 
 /**
+ * What the step after a declined `gmail-send` card is told in the pilot of
+ * the cache-friendly step, where `gmail-draft`'s description stays the same
+ * in every step: a description that changed after the card made the step
+ * re-read the whole history at full price.
+ */
+export const declinedGmailSendNote =
+  "The person just declined the gmail-send card: save that same email now with gmail-draft (the same to, cc, replyToMessageId, subject and body), then tell them in one message that it waits in their Gmail Drafts and ask what to change.";
+
+/**
  * Why a read must not reach Google, given the turn so far, or nothing when
  * it may run. A read that failed for another reason may be tried again.
  */

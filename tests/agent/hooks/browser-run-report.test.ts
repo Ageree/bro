@@ -1,4 +1,5 @@
 import type { HookContext } from "eve/hooks";
+import type { openReportTurn as openReportTurnType } from "@agent/lib/delivery/holds";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const finishBrowserRunReport = vi.hoisted(() =>
@@ -15,12 +16,18 @@ const reopenBrowserRunReport = vi.hoisted(() =>
 const keepBrowserVmAfterReport = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
 );
+const browserRunReportDelivered = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<boolean>>(() => Promise.resolve(false))
+);
+const openReportTurn = vi.hoisted(() => vi.fn<typeof openReportTurnType>());
 vi.mock("@db/services/browser-runs", () => ({
+  browserRunReportDelivered,
   finishBrowserRunReport,
   renewBrowserRunReportLease,
   reopenBrowserRunReport,
 }));
 vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmAfterReport }));
+vi.mock("@agent/lib/delivery/holds", () => ({ openReportTurn }));
 
 import reportHook from "@agent/hooks/browser-run-report";
 
@@ -114,6 +121,13 @@ describe("the browser report hook", () => {
     await emit("turn.started", {});
 
     expect(renewBrowserRunReportLease).toHaveBeenCalledExactlyOnceWith(runId);
+    // The turn's card tools learn that the report had not reached the
+    // person when the turn began.
+    expect(openReportTurn).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "session-1" }),
+      runId,
+      false
+    );
     // The report's path shows in the logs: its turn did start.
     expect(info).toHaveBeenCalledWith("[browser-use] report turn started", {
       runId,
