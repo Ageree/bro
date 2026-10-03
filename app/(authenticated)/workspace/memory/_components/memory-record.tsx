@@ -7,6 +7,7 @@ import { memoryTextSchema } from "@shared/memory/schema";
 import { Button } from "@web/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -77,24 +78,77 @@ export function MemoryRecordRow({
           scopeKey={scopeKey}
           timeZone={timeZone}
         />
-        <Button
-          aria-label={`Удалить: ${text}`}
-          disabled={remove.isPending}
-          onClick={() => {
+        <RemoveMemory
+          onRemove={() => {
             remove.mutate({
               expectedRevision: record.revision,
               index: record.index,
               scopeKey,
             });
           }}
-          size="act-sm"
-          type="button"
-          variant="act"
-        >
-          Удалить
-        </Button>
+          pending={remove.isPending}
+          text={text}
+        />
       </div>
     </li>
+  );
+}
+
+/**
+ * Forgets a memory once the person confirms it: its text and history go at
+ * once, and nothing brings them back.
+ */
+function RemoveMemory({
+  onRemove,
+  pending,
+  text,
+}: {
+  readonly onRemove: () => void;
+  readonly pending: boolean;
+  readonly text: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dialog onOpenChange={setOpen} open={open}>
+      <DialogTrigger
+        render={
+          <Button
+            aria-label={`Удалить: ${text}`}
+            disabled={pending}
+            size="act-sm"
+            type="button"
+            variant="act"
+          />
+        }
+      >
+        Удалить
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader className="pr-10 sm:pr-6">
+          <DialogTitle>Удалить запись?</DialogTitle>
+          <DialogDescription>
+            Бро забудет её сразу, вместе с историей. Вернуть её будет нельзя.
+          </DialogDescription>
+        </DialogHeader>
+        <p className="type-row wrap-break-word">{text}</p>
+        <DialogFooter className="mt-4">
+          <DialogClose render={<Button type="button" variant="act" />}>
+            Оставить
+          </DialogClose>
+          <Button
+            onClick={() => {
+              setOpen(false);
+              onRemove();
+            }}
+            type="button"
+            variant="act"
+          >
+            Удалить навсегда
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

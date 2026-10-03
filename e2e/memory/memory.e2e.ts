@@ -74,6 +74,10 @@ describe("memory with Bro", { tags: ["agent"], timeout: 420_000 }, () => {
       ).toBeVisible();
 
       await screen.getByRole("button", { name: /^Удалить: .*свинин/iu }).tap();
+      // Forgetting is for good, so it asks first.
+      const confirm = screen.getByRole("dialog", "Удалить запись?");
+      await expect(confirm).toBeVisible();
+      await confirm.getByRole("button", "Удалить навсегда").tap();
       await expect(
         screen.getByRole("button", { name: /^Удалить: .*свинин/iu })
       ).toHaveCount(0);
