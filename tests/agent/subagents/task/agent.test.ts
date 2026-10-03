@@ -5,7 +5,7 @@ const services = vi.hoisted(() => ({
     Promise.resolve("deepseek/deepseek-v4.1")
   ),
   modelSelection: vi.fn<(modelId: string) => string>((modelId) => modelId),
-  offlineOwed: vi.fn<() => boolean>(() => false),
+  offlineRefusal: vi.fn<() => "none" | "owed" | "unchecked">(() => "none"),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(() => Promise.resolve(true)),
 }));
 
@@ -16,7 +16,7 @@ vi.mock("@agent/lib/model/selection", () => ({
   modelSelection: services.modelSelection,
 }));
 vi.mock("@agent/lib/sandbox/offline", () => ({
-  offlineOwed: services.offlineOwed,
+  offlineRefusal: services.offlineRefusal,
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
@@ -52,7 +52,7 @@ async function resolveStep() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  services.offlineOwed.mockReturnValue(false);
+  services.offlineRefusal.mockReturnValue("none");
 });
 
 describe("the task agent's model", () => {
@@ -62,7 +62,15 @@ describe("the task agent's model", () => {
 
   it("refuses every step while its sandbox owes the off-the-web mark", async () => {
     // The tool router would still let this sandbox reach the web.
-    services.offlineOwed.mockReturnValue(true);
+    services.offlineRefusal.mockReturnValue("owed");
+
+    await expect(resolveStep()).rejects.toThrow(/taken off the web/u);
+    expect(services.modelSelection).not.toHaveBeenCalled();
+  });
+
+  it("refuses the steps of a message whose checks could not be read", async () => {
+    // Whether the person sent it is unknown: no mark yet, no web either.
+    services.offlineRefusal.mockReturnValue("unchecked");
 
     await expect(resolveStep()).rejects.toThrow(/taken off the web/u);
     expect(services.modelSelection).not.toHaveBeenCalled();

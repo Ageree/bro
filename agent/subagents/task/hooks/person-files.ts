@@ -1,4 +1,5 @@
-import { defineState } from "eve/context";
+import { createHash } from "node:crypto";
+import { defineState, type SessionParent } from "eve/context";
 import { defineHook, type HookContext } from "eve/hooks";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -7,14 +8,20 @@ import {
   getInbox,
   inboxKey,
   markSandboxHoldsPersonFiles,
+  markSandboxOffWeb,
   namedAttachmentPaths,
   pathMatchesBytes,
-  personCallFresh,
+  type PersonSend,
+  personSendFresh,
   sandboxHasFile,
   sandboxHoldsPersonFiles,
 } from "@agent/lib/sandbox/inbox";
-import { offlineOwed, recordOfflineOwed } from "@agent/lib/sandbox/offline";
+import {
+  offlineRefusal,
+  recordOfflineRefusal,
+} from "@agent/lib/sandbox/offline";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { taskAgentTool } from "@agent/lib/turn-kind/sets";
 
 /** What the task agent reads when a file Bro named is not there. */
 const notReceivedPath = "/workspace/attachments/NOT_RECEIVED.txt";
@@ -56,21 +63,61 @@ const lastMessage = defineState<{
   readonly turnId: string | null;
 }>("bro.task-files-message", () => ({ sequence: null, turnId: null }));
 
-/** Whether the message came into a turn that already had one. */
-function steeredIn(data: {
+/**
+ * How the message came: the task agent's first, which the call that started
+ * it brought; one that opens a later turn, a continuation; one into a turn
+ * that already had one, steered. Undefined when the record cannot be read.
+ */
+function arrivalOf(data: {
   readonly sequence: number;
   readonly turnId: string;
 }) {
   try {
-    let steered = false;
-    lastMessage.update((last) => {
-      steered = last.turnId === data.turnId && last.sequence === data.sequence;
-      return { sequence: data.sequence, turnId: data.turnId };
-    });
-    return steered;
+    const last = lastMessage.get();
+    lastMessage.update(() => ({
+      sequence: data.sequence,
+      turnId: data.turnId,
+    }));
+    if (last.turnId === null) return "first" as const;
+    return last.turnId === data.turnId && last.sequence === data.sequence
+      ? ("steered" as const)
+      : ("continued" as const);
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * The `agentId` Bro's `task` continues this task agent by: eve derives it
+ * from the call that started it, `ag_<name>:` and 12 hex of the sha256 of
+ * Bro's session, turn and call ids (`mintStartOperation` in
+ * `execution/dispatch-start-operation.js`), the very lineage
+ * `ctx.session.parent` keeps. Should eve derive it otherwise, no record of
+ * the person's matches, and the continuation only loses the web.
+ */
+function ownAgentId(parent: SessionParent) {
+  const operation = createHash("sha256")
+    .update(`${parent.sessionId}\0${parent.turn.id}\0${parent.callId}`)
+    .digest("hex");
+  return `ag_${taskAgentTool}:${operation.slice(0, 12)}`;
+}
+
+/**
+ * The person's send this message would be: the starting call for the first
+ * message, the task agent's `agentId` for a continuation, since
+ * `ctx.session.parent` stays the starting call's for good. None for a
+ * steered message, which eve hands over from inside `task` while Bro's hook
+ * may still be recording it, or for one whose arrival is unknown.
+ */
+function sendOf(
+  arrival: ReturnType<typeof arrivalOf>,
+  parent: SessionParent
+): PersonSend | undefined {
+  if (arrival === "first") return { callId: parent.callId, kind: "start" };
+  if (arrival === "continued") {
+    return { agentId: ownAgentId(parent), kind: "continue" };
+  }
+  return undefined;
 }
 
 /**
@@ -87,8 +134,8 @@ function steeredIn(data: {
  * router keeps the sandbox off the web from then on
  * (`agent/lib/sandbox/router.ts`); no mark, no file. Every message, files
  * or not, first goes through `keepOffWebUnlessSent`: in a conversation so
- * marked, a task agent the person's own turn did not just start goes off
- * the web too.
+ * marked, a task agent goes off the web too unless the person's own turn
+ * just sent it this message.
  *
  * `message.received` is part of the turn's preamble: eve emits it inside
  * the step's context scope, where the sandbox provider is bound and opens
@@ -96,7 +143,7 @@ function steeredIn(data: {
  * `context/providers/sandbox.js`), and awaits the hook before the turn's
  * first model call. A file already there as its path names it stays; one
  * the task agent changed is never overwritten. A file of a steered message
- * that is not there yet is asked for again for a while (`steeredIn`). What
+ * that is not there yet is asked for again for a while (`arrivalOf`). What
  * did not arrive is listed in NOT_RECEIVED.txt, rewritten for each message
  * that mentions the files, and the list goes once everything did. Nothing
  * fails the task.
@@ -108,7 +155,8 @@ export default defineHook({
         const { parent } = ctx.session;
         if (parent === undefined || !taskFilesOfCaller(ctx)) return;
         const { message } = event.data;
-        const steered = steeredIn(event.data);
+        const arrival = arrivalOf(event.data);
+        const steered = arrival === "steered";
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
@@ -119,9 +167,8 @@ export default defineHook({
         const sandbox = once(async () => await ctx.getSandbox());
         const relay = await keepOffWebUnlessSent({
           ...conversation,
-          callId: parent.callId,
           sandbox,
-          steered,
+          send: sendOf(arrival, parent),
         });
         const named = namedAttachmentPaths(message);
         const mentioned = message
@@ -140,6 +187,8 @@ export default defineHook({
               { ...conversation, sandboxId: open.id },
               signal
             );
+            // Off the web now, whatever this message's checks left owed.
+            settle();
           }),
           paths: named.slice(0, attachmentsPerMessage),
           sandbox: open,
@@ -193,57 +242,77 @@ function once<T>(run: (signal?: AbortSignal) => Promise<T>) {
  * another task agent the person's files and this message did not come from
  * the person's own turn. Such a task agent's report comes back to Bro as a
  * turn of its own (`[Task state]`), and an instruction hidden in a file can
- * have it ask Bro to pass the file's content on to a new helper, which
- * would send it out in a URL: the files' mark is per sandbox, text is not.
- * So a task agent of such a conversation stays on the web only when the
- * person's turn made the very `task` call that started it, within the last
- * minutes (`personCallFresh`, stored by Bro's hook); a message steered into
- * a busy one, a continuation the `task` call of which was not the person's
- * just now, and every check that fails take it off for good. A mark that
- * cannot be written is owed (`recordOfflineOwed`), and the task agent's
- * model refuses its steps until a later message writes it.
+ * have it ask Bro to pass the file's content on to a helper, new or
+ * continued, which would send it out in a URL: the files' mark is per
+ * sandbox, text is not. So a task agent of such a conversation stays on the
+ * web only when the person's turn sent this very message within the last
+ * minutes (`personSendFresh`, stored by Bro's hook): the `task` call that
+ * started it, or, for a continuation, a `task` call naming its `agentId`. A
+ * steered message and a continuation the person did not just send take it
+ * off for good, its sandbox alone (`markSandboxOffWeb`): only a file going
+ * in marks the conversation. A check that cannot be read marks nothing on a
+ * guess: the task agent's model refuses this message's steps
+ * (`recordOfflineRefusal`), and the next message checks again. A mark that
+ * cannot be written is owed, and the model refuses until a later message
+ * writes it.
  */
 async function keepOffWebUnlessSent(input: {
-  readonly callId: string;
   readonly parentSessionId: string;
   readonly sandbox: () => Promise<Sandbox>;
-  readonly steered: boolean;
+  /** The person's send this message would be; none for a steered one. */
+  readonly send: PersonSend | undefined;
   readonly workspaceId: string;
 }) {
   const signal = AbortSignal.timeout(relayBudgetMs);
-  const { callId, parentSessionId, workspaceId } = input;
-  const owed = offlineOwed();
+  const { parentSessionId, send, workspaceId } = input;
+  const owed = offlineRefusal() === "owed";
   const held =
     owed ||
     (await conversationHoldsPersonFiles(
       workspaceId,
       parentSessionId,
       signal
-    ).catch(() => true));
-  if (!held) return "online" as const;
+    ).catch(() => undefined));
+  if (held === false) {
+    settle();
+    return "online" as const;
+  }
   const sandbox = await input.sandbox();
+  // An unreadable mark is checked by the router itself, which then refuses.
   const marked =
     !owed &&
     (await sandboxHoldsPersonFiles(sandbox.id, signal).catch(() => false));
-  if (marked) return "offline" as const;
+  if (marked) {
+    settle();
+    return "offline" as const;
+  }
   const sent =
-    !owed &&
-    !input.steered &&
-    (await personCallFresh(workspaceId, parentSessionId, callId, signal).catch(
-      () => false
-    ));
-  if (sent) return "online" as const;
+    owed || send === undefined
+      ? false
+      : await personSendFresh(workspaceId, parentSessionId, send, signal).catch(
+          () => undefined
+        );
+  if (sent === true) {
+    settle();
+    return "online" as const;
+  }
+  if (held === undefined || sent === undefined) {
+    recordOfflineRefusal("unchecked");
+    return "unchecked" as const;
+  }
   try {
-    await markSandboxHoldsPersonFiles(
-      { parentSessionId, sandboxId: sandbox.id, workspaceId },
-      signal
-    );
-    if (owed) recordOfflineOwed(false);
+    await markSandboxOffWeb(sandbox.id, signal);
+    settle();
     return "taken-offline" as const;
   } catch {
-    recordOfflineOwed(true);
+    recordOfflineRefusal("owed");
     return "owed" as const;
   }
+}
+
+/** Lifts the refusal an earlier message left: this one settled the web. */
+function settle() {
+  if (offlineRefusal() !== "none") recordOfflineRefusal("none");
 }
 
 /**

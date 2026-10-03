@@ -361,7 +361,7 @@ describe("the mark of a sandbox that holds the person's files", () => {
   });
 });
 
-describe("the person's own task calls", () => {
+describe("the person's own sends to task agents", () => {
   it("are one object per call under the conversation's inbox, hiding the ids", async () => {
     const calls = stubStorage(
       new Response(null, { status: 200 }),
@@ -370,12 +370,11 @@ describe("the person's own task calls", () => {
         status: 200,
       })
     );
-    const { personCallFresh, putPersonCall } = await loadInbox();
+    const { personSendFresh, putPersonSend } = await loadInbox();
+    const start = { callId: "call-1", kind: "start" } as const;
 
-    await putPersonCall("workspace-1", "session-1", "call-1");
-    expect(await personCallFresh("workspace-1", "session-1", "call-1")).toBe(
-      true
-    );
+    await putPersonSend("workspace-1", "session-1", start);
+    expect(await personSendFresh("workspace-1", "session-1", start)).toBe(true);
     const [put, get] = calls;
     expect(put?.method).toBe("PUT");
     expect(put?.url.pathname).toMatch(
@@ -383,6 +382,22 @@ describe("the person's own task calls", () => {
     );
     expect(put?.url.pathname).not.toContain("call-1");
     expect(get?.url.pathname).toBe(put?.url.pathname);
+  });
+
+  it("keep a continuation apart, under the task agent's id", async () => {
+    // A call id and an agent id never name the same object, whatever they are.
+    const calls = stubStorage(
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 200 })
+    );
+    const { putPersonSend } = await loadInbox();
+
+    await putPersonSend("w", "s", { agentId: "same", kind: "continue" });
+    await putPersonSend("w", "s", { callId: "same", kind: "start" });
+    const [continued, started] = calls.map((call) => call.url.pathname);
+    expect(continued).toMatch(/\/agents\/[\da-f]{32}$/u);
+    expect(continued).not.toContain("same");
+    expect(started).toMatch(/\/calls\/[\da-f]{32}$/u);
   });
 
   it("count only while stored within the last five minutes", async () => {
@@ -394,11 +409,36 @@ describe("the person's own task calls", () => {
       new Response("1", { status: 200 }),
       new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
     );
-    const { personCallFresh } = await loadInbox();
+    const { personSendFresh } = await loadInbox();
+    const start = { callId: "call-1", kind: "start" } as const;
 
-    expect(await personCallFresh("w", "s", "call-1")).toBe(false);
+    expect(await personSendFresh("w", "s", start)).toBe(false);
     // No date reads as old.
-    expect(await personCallFresh("w", "s", "call-1")).toBe(false);
-    expect(await personCallFresh("w", "s", "call-2")).toBe(false);
+    expect(await personSendFresh("w", "s", start)).toBe(false);
+    expect(
+      await personSendFresh("w", "s", {
+        agentId: "ag_task:1",
+        kind: "continue",
+      })
+    ).toBe(false);
+  });
+});
+
+describe("a sandbox kept off the web without the person's files", () => {
+  it("marks the sandbox alone, never its conversation", async () => {
+    const calls = stubStorage(new Response(null, { status: 200 }));
+    const { markSandboxOffWeb } = await loadInbox();
+
+    await markSandboxOffWeb("sb-1");
+    expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      "PUT /bro-state-test/sandbox/person-files/sb-1",
+    ]);
+  });
+
+  it("fails when Object Storage refuses the mark", async () => {
+    stubStorage(new Response(null, { status: 403 }));
+    const { markSandboxOffWeb } = await loadInbox();
+
+    await expect(markSandboxOffWeb("sb-1")).rejects.toThrow(/403/u);
   });
 });

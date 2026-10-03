@@ -110,13 +110,9 @@ export function sharedFileLocation(input: {
   readonly name: string;
   readonly signature: string | null;
 }) {
-  if (!/^[\da-f]{24}$/u.test(input.id) || input.signature === null) {
-    return undefined;
-  }
-  const name = sharedFileName(input.name);
-  if (name !== input.name) return undefined;
-  const key = objectKey(input.id, name);
-  if (!sandboxFileLinkValid(key, input.signature)) return undefined;
+  const key = signedObjectKey(input);
+  if (key === undefined) return undefined;
+  const { name } = input;
   // Downloaded, never rendered on the storage's origin: an SVG or HTML the
   // task agent made must not run as a page.
   return presignStoredObject({
@@ -125,4 +121,57 @@ export function sharedFileLocation(input: {
     method: "GET",
     responseContentDisposition: `attachment; filename*=UTF-8''${extendedFileName(name)}`,
   });
+}
+
+/** The object a link names, when its signature opens it. */
+function signedObjectKey(input: {
+  readonly id: string;
+  readonly name: string;
+  readonly signature: string | null;
+}) {
+  if (!/^[\da-f]{24}$/u.test(input.id) || input.signature === null) {
+    return undefined;
+  }
+  if (sharedFileName(input.name) !== input.name) return undefined;
+  const key = objectKey(input.id, input.name);
+  return sandboxFileLinkValid(key, input.signature) ? key : undefined;
+}
+
+/**
+ * Whether a URL is a link {@link shareSandboxFile} made: on Bro's own origin,
+ * at a shared file's path, signed for its object. Such a link reaches only
+ * Bro and the file the task agent stored, so a channel may fetch it to
+ * upload the file, whatever the task agent's report asked for.
+ */
+export function isSharedFileLink(value: string) {
+  const url = URL.parse(value);
+  if (url?.protocol !== "https:" || url.username || url.password) return false;
+  let origin: string;
+  try {
+    origin = applicationOrigin();
+  } catch {
+    return false;
+  }
+  if (url.origin !== origin) return false;
+  const [id, segment, ...rest] = url.pathname
+    .slice(`${sandboxFilesPath}/`.length)
+    .split("/");
+  if (
+    !url.pathname.startsWith(`${sandboxFilesPath}/`) ||
+    id === undefined ||
+    segment === undefined ||
+    rest.length > 0
+  ) {
+    return false;
+  }
+  let name: string;
+  try {
+    name = decodeURIComponent(segment);
+  } catch {
+    return false;
+  }
+  return (
+    signedObjectKey({ id, name, signature: url.searchParams.get("sig") }) !==
+    undefined
+  );
 }

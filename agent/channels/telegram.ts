@@ -179,7 +179,9 @@ export default telegramChannel({
       const requestedText = output.text;
       if (!requestedText) {
         const prepared = await attachmentDelivery(session, attachments);
-        await uploadFiles(context, prepared.files, prepared.links);
+        await uploadFiles(context, prepared.files, prepared.links, {
+          preview: !taskFilesOfCaller(session),
+        });
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
@@ -441,7 +443,9 @@ async function deliverText(
             .join("\n\n");
     if (body) await sendText(context, body, { preview: !filesHere });
     const prepared = await attachmentDelivery(session, attachments);
-    await uploadFiles(context, prepared.files, prepared.links);
+    await uploadFiles(context, prepared.files, prepared.links, {
+      preview: !filesHere,
+    });
     return;
   }
 
@@ -469,7 +473,8 @@ async function deliverText(
     // An artifact has no public URL, so a failed upload has no link to fall
     // back to.
     [...delivery.files, ...prepared.files],
-    prepared.links
+    prepared.links,
+    { preview: !filesHere }
   );
 }
 
@@ -527,12 +532,13 @@ async function sendText(
  * Uploads every file of one reply and posts whatever is left as links. Photos
  * and videos ride in albums of up to ten so Telegram shows them as galleries;
  * anything else is uploaded on its own. A file that cannot be uploaded at all
- * falls back to its source link.
+ * falls back to its source link, posted as `sendText` posts it (`preview`).
  */
 async function uploadFiles(
   context: TelegramEventContext,
   files: readonly OutboundFile[],
-  links: readonly string[]
+  links: readonly string[],
+  options: { readonly preview: boolean }
 ) {
   const undelivered = [...links];
   if (files.length > 0) {
@@ -545,7 +551,7 @@ async function uploadFiles(
     }
   }
   if (undelivered.length > 0) {
-    await sendText(context, undelivered.join("\n"));
+    await sendText(context, undelivered.join("\n"), options);
   }
 }
 

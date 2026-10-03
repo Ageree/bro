@@ -50,7 +50,9 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   finalizeScheduledReport: scheduleDeliveryCapture.finalize,
   releaseScheduledReport: scheduleDeliveryCapture.release,
 }));
-const taskFiles = vi.hoisted(() => ({ here: vi.fn(() => false) }));
+const taskFiles = vi.hoisted(() => ({
+  here: vi.fn<() => boolean>(() => false),
+}));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskFilesEnabled: () => false,
   taskFilesOfCaller: taskFiles.here,
@@ -646,6 +648,36 @@ describe("Telegram message delivery", () => {
     expect(upload?.method).toBe("sendDocument");
     const document = upload?.form.get("document");
     expect(document instanceof File ? document.name : "").toBe("brief.pdf");
+  });
+
+  it("posts the links of attachments it could not download without a preview where the person's files reach the task agent", async () => {
+    // The fallback link is the attachment's URL: a preview would fetch it.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    stubNetwork({ download: () => new Response("", { status: 404 }) });
+    for (const text of ["Here it is.", undefined]) {
+      taskFiles.here.mockReturnValueOnce(true);
+      const { context, request } = handlerContext();
+
+      const attachments = [
+        { kind: "image" as const, url: "https://media.example/result.png" },
+      ];
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One delivery, then its checks.
+      await handleActionResult(
+        sendMessageResult(
+          text === undefined
+            ? { attachments, kind: "message" }
+            : { attachments, kind: "message", text }
+        ),
+        context,
+        sessionContext()
+      );
+
+      expect(request.mock.calls.at(-1)?.[1]).toMatchObject({
+        link_preview_options: { is_disabled: true },
+        text: "https://media.example/result.png",
+      });
+    }
+    warn.mockRestore();
   });
 
   it("delivers an attachment it could not download as a link", async () => {

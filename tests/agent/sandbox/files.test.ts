@@ -14,6 +14,63 @@ const files = async () =>
   await importWithSandbox(async () => await import("@agent/lib/sandbox/files"));
 
 describe("shared sandbox files", () => {
+  it("knows its own links from any other URL", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(new Response(null, { status: 200 }))
+    );
+    const { isSharedFileLink, shareSandboxFile } = await files();
+    const { url } = await shareSandboxFile({
+      bytes: new TextEncoder().encode("x"),
+      mediaType: "image/png",
+      name: "график (1).png",
+    });
+    const link = new URL(url);
+    const forged = (change: (copy: URL) => void) => {
+      const copy = new URL(link);
+      change(copy);
+      return copy.href;
+    };
+
+    expect(isSharedFileLink(url)).toBe(true);
+    // Another host, another signature, another file, another path: not ours.
+    expect(
+      isSharedFileLink(
+        forged((copy) => {
+          copy.host = "evil.example";
+        })
+      )
+    ).toBe(false);
+    expect(
+      isSharedFileLink(
+        forged((copy) => {
+          copy.searchParams.set("sig", "x");
+        })
+      )
+    ).toBe(false);
+    expect(
+      isSharedFileLink(
+        forged((copy) => {
+          copy.pathname = copy.pathname.replace(/[^/]+$/u, "other.png");
+        })
+      )
+    ).toBe(false);
+    expect(
+      isSharedFileLink(
+        forged((copy) => {
+          copy.pathname = `${copy.pathname}/more`;
+        })
+      )
+    ).toBe(false);
+    expect(
+      isSharedFileLink(
+        forged((copy) => {
+          copy.username = "user";
+        })
+      )
+    ).toBe(false);
+    expect(isSharedFileLink("not a url")).toBe(false);
+  });
+
   it("names a file the way a messenger shows it", async () => {
     const { sharedFileName } = await files();
     expect(sharedFileName("/workspace/out/Отчёт за сентябрь.pdf")).toBe(

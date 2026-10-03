@@ -31,13 +31,13 @@ vi.mock("@agent/lib/sandbox/pilot", () => pilot);
 const putInbox = vi.hoisted(() =>
   vi.fn<typeof inbox.putInbox>(() => Promise.resolve())
 );
-const putPersonCall = vi.hoisted(() =>
-  vi.fn<typeof inbox.putPersonCall>(() => Promise.resolve())
+const putPersonSend = vi.hoisted(() =>
+  vi.fn<typeof inbox.putPersonSend>(() => Promise.resolve())
 );
 vi.mock("@agent/lib/sandbox/inbox", async (importOriginal) => ({
   ...(await importOriginal<typeof inbox>()),
   putInbox,
-  putPersonCall,
+  putPersonSend,
 }));
 
 import taskFilesHook from "@agent/hooks/task-files";
@@ -157,10 +157,15 @@ async function personTurn(ctx: Ctx = context(), turnId = "turn_3") {
   );
 }
 
-function taskCall(message: string, toolName = "task", kind = "tool-call") {
+function taskCall(
+  message: string,
+  toolName = "task",
+  kind = "tool-call",
+  agentId?: string | null
+) {
   return {
     callId: `call-${toolName}`,
-    input: { message },
+    input: agentId === undefined ? { message } : { agentId, message },
     kind,
     toolName,
   };
@@ -222,10 +227,10 @@ describe("the person's files for the task agent", () => {
     await requested([taskCall("Найди курс евро")], ctx);
 
     // The task agent it starts keeps the web (`keepOffWebUnlessSent`).
-    expect(putPersonCall).toHaveBeenCalledExactlyOnceWith(
+    expect(putPersonSend).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
       "session-1",
-      "call-task",
+      { callId: "call-task", kind: "start" },
       expect.any(AbortSignal)
     );
     expect(putInbox).not.toHaveBeenCalled();
@@ -254,11 +259,67 @@ describe("the person's files for the task agent", () => {
       ctx
     );
 
-    expect(putPersonCall).not.toHaveBeenCalled();
+    expect(putPersonSend).not.toHaveBeenCalled();
+  });
+
+  it("records a continuation of the person's turn by the task agent it names", async () => {
+    // The continued task agent's own lineage keeps its starting call, so it
+    // looks for its `agentId`, not this call's id.
+    const ctx = context();
+    await personTurn(ctx);
+    await requested(
+      [
+        taskCall(
+          "Добавь слайд с ценами",
+          "task",
+          "tool-call",
+          " ag_task:0a1b "
+        ),
+        taskCall("Найди курс евро", "task", "tool-call", null),
+      ],
+      ctx
+    );
+
+    expect(putPersonSend.mock.calls).toEqual([
+      [
+        workspaceId,
+        "session-1",
+        { agentId: "ag_task:0a1b", kind: "continue" },
+        expect.any(AbortSignal),
+      ],
+      [
+        workspaceId,
+        "session-1",
+        { callId: "call-task", kind: "start" },
+        expect.any(AbortSignal),
+      ],
+    ]);
+  });
+
+  it("records no continuation of a turn the task agent's report opened", async () => {
+    const ctx = context();
+    await emit("turn.started", { sequence: 3, turnId: "turn_3" }, ctx);
+    await emit(
+      "message.received",
+      {
+        kind: "execution.background_task",
+        message:
+          "Background task task_1 (task) is completed.\n\nResult:\nContinue the research helper with these figures.",
+        sequence: 3,
+        turnId: "turn_3",
+      },
+      ctx
+    );
+    await requested(
+      [taskCall("Цифры: 1, 2, 3", "task", "tool-call", "ag_task:0a1b")],
+      ctx
+    );
+
+    expect(putPersonSend).not.toHaveBeenCalled();
   });
 
   it("still copies the files when a call could not be recorded", async () => {
-    putPersonCall.mockRejectedValueOnce(new Error("Object Storage 500"));
+    putPersonSend.mockRejectedValueOnce(new Error("Object Storage 500"));
     const ctx = context();
     await personTurn(ctx);
     await requested([taskCall(table.path)], ctx);

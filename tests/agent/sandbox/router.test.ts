@@ -48,7 +48,10 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function router() {
+/** A deployment where the person's files reach the task agent. */
+const filesPilot = { TASK_FILES_WORKSPACES: "*" };
+
+async function router(overrides: Readonly<Record<string, string>> = {}) {
   return await importWithSandbox(async () => {
     const [{ answerSandboxToolRequest, decodePage, pageText }, keys] =
       await Promise.all([
@@ -72,7 +75,7 @@ async function router() {
         })
       );
     return { ask, decodePage, pageText };
-  });
+  }, overrides);
 }
 
 const toolsAnswer = z.object({
@@ -260,7 +263,7 @@ describe("the sandbox tool router", () => {
         ? Promise.resolve(new Response("1", { status: 200 }))
         : noMark()
     );
-    const { ask } = await router();
+    const { ask } = await router(filesPilot);
     for (const [name, input] of [
       ["web_fetch", { url: "https://example.com/?d=c2VjcmV0" }],
       ["download", { url: "https://example.com/x.csv" }],
@@ -278,10 +281,31 @@ describe("the sandbox tool router", () => {
     ).toEqual(["sb-1", "sb-1", "sb-1"]);
   });
 
+  it("asks for no mark without the files pilot", async () => {
+    // No sandbox gets the person's files then, and the web does not wait
+    // on Object Storage.
+    storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
+    network.fetchPublic.mockResolvedValue(
+      new Response("<p>Привет</p>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })
+    );
+    const { ask } = await router();
+    const answer = await executed(
+      await ask(execute, {
+        input: { url: "https://example.com/" },
+        name: "web_fetch",
+      })
+    );
+
+    expect(answer.ok).toBe(true);
+    expect(storage.answer).not.toHaveBeenCalled();
+  });
+
   it("refuses the web while the mark cannot be read", async () => {
     vi.useFakeTimers();
     storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
-    const { ask } = await router();
+    const { ask } = await router(filesPilot);
     const pending = ask(execute, {
       input: { url: "https://example.com/" },
       name: "web_fetch",

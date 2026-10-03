@@ -197,7 +197,7 @@ function personFilesMarkerKey(sandboxId: string) {
  * The object that says some task agent of one conversation was given the
  * person's files: its report may carry their content back into the
  * conversation, so a task agent the conversation starts later keeps off the
- * web unless the person's own turn sent it (`personCallKey`). Hashed like
+ * web unless the person's own turn sent it (`personSendKey`). Hashed like
  * the inbox, and never removed either.
  */
 function conversationMarkerKey(workspaceId: string, parentSessionId: string) {
@@ -209,25 +209,33 @@ function conversationMarkerKey(workspaceId: string, parentSessionId: string) {
 }
 
 /**
- * The object that says the person's own turn made one `task` call: Bro's
- * hook stores it as the call streams in, before eve starts the task agent
- * (`agent/hooks/task-files.ts`), and the task agent that call started
- * checks it (`ctx.session.parent.callId`). Good for {@link inboxFreshMs},
- * like a file.
+ * The object that says the person's own turn sent one task agent its
+ * message: Bro's hook stores it as the `task` call streams in, before eve
+ * hands the message over (`agent/hooks/task-files.ts`). A new task agent is
+ * named by the call that starts it, which it reads as
+ * `ctx.session.parent.callId`; a continuation by the `agentId` the call
+ * names, since `ctx.session.parent` stays the starting call's for the
+ * child's whole life and a continuation's own call id reaches only eve's
+ * subagent channel state. Good for {@link inboxFreshMs}, like a file.
  */
-function personCallKey(
+function personSendKey(
   workspaceId: string,
   parentSessionId: string,
-  callId: string
+  send: PersonSend
 ) {
   return [
     "sandbox/inbox",
     sha256(workspaceId).slice(0, 16),
     sha256(parentSessionId).slice(0, 16),
-    "calls",
-    sha256(callId).slice(0, 32),
+    send.kind === "start" ? "calls" : "agents",
+    sha256(send.kind === "start" ? send.callId : send.agentId).slice(0, 32),
   ].join("/");
 }
+
+/** One message the person's turn sent a task agent: a start or a continuation. */
+export type PersonSend =
+  | { readonly callId: string; readonly kind: "start" }
+  | { readonly agentId: string; readonly kind: "continue" };
 
 async function putMark(key: string, signal: AbortSignal | undefined) {
   const response = await request(
@@ -266,7 +274,9 @@ async function markHeld(
  * sandbox off the network (`sandboxHoldsPersonFiles` in `./router.ts`), and
  * the conversation's later task agents follow unless the person sent them
  * (`conversationHoldsPersonFiles`). The conversation goes first; a failure
- * throws, and the task agent's hook then copies nothing.
+ * throws, and the task agent's hook then copies nothing. Only a file going
+ * in marks the conversation: a sandbox merely kept off the web is
+ * {@link markSandboxOffWeb}'s.
  */
 export async function markSandboxHoldsPersonFiles(
   target: {
@@ -282,6 +292,18 @@ export async function markSandboxHoldsPersonFiles(
     signal
   );
   await putMark(sandboxKey, signal);
+}
+
+/**
+ * Keeps the sandbox off the web for good, as if it held the person's files,
+ * without saying its conversation does: a task agent of a conversation
+ * already marked that the person did not send. A failure throws.
+ */
+export async function markSandboxOffWeb(
+  sandboxId: string,
+  signal?: AbortSignal
+) {
+  await putMark(personFilesMarkerKey(sandboxId), signal);
 }
 
 /**
@@ -309,25 +331,25 @@ export async function conversationHoldsPersonFiles(
   );
 }
 
-/** Records that the person's own turn made this `task` call. */
-export async function putPersonCall(
+/** Records that the person's own turn sent this message. */
+export async function putPersonSend(
   workspaceId: string,
   parentSessionId: string,
-  callId: string,
+  send: PersonSend,
   signal?: AbortSignal
 ) {
-  await putMark(personCallKey(workspaceId, parentSessionId, callId), signal);
+  await putMark(personSendKey(workspaceId, parentSessionId, send), signal);
 }
 
-/** Whether the person's own turn made this `task` call just now. */
-export async function personCallFresh(
+/** Whether the person's own turn sent this message just now. */
+export async function personSendFresh(
   workspaceId: string,
   parentSessionId: string,
-  callId: string,
+  send: PersonSend,
   signal?: AbortSignal
 ) {
   return await markHeld(
-    personCallKey(workspaceId, parentSessionId, callId),
+    personSendKey(workspaceId, parentSessionId, send),
     signal,
     { fresh: true }
   );

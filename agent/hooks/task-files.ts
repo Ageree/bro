@@ -11,7 +11,8 @@ import {
   namedAttachmentPaths,
   pathMatchesBytes,
   putInbox,
-  putPersonCall,
+  type PersonSend,
+  putPersonSend,
   readSandboxFileWithin,
 } from "@agent/lib/sandbox/inbox";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
@@ -47,8 +48,11 @@ const turnRecord = defineState<{
   turnId: null,
 }));
 
-/** The part of `task`'s input that names the files. */
-const taskInputSchema = z.object({ message: z.string() });
+/** The parts of `task`'s input that name the files and the task agent. */
+const taskInputSchema = z.object({
+  agentId: z.string().nullish(),
+  message: z.string(),
+});
 /** All files of one step's calls are copied within this, one after another. */
 const stepBudgetMs = 20_000;
 /** Recording the person's `task` calls of one event. */
@@ -90,14 +94,25 @@ function taskCalls(actions: HookEvent<"actions.requested">["data"]["actions"]) {
     // is eve's internal dispatch and never shows here
     // (`harness/coordination.js`).
     action.kind === "tool-call" && action.toolName === "task"
-      ? [
-          {
-            callId: action.callId,
-            message: taskInputSchema.safeParse(action.input).data?.message,
-          },
-        ]
+      ? [taskCall(action.callId, taskInputSchema.safeParse(action.input).data)]
       : []
   );
+}
+
+/**
+ * One `task` call: the message it sends and whom to. eve continues the task
+ * agent an `agentId` names, and starts a new one without it; a malformed
+ * input sends nothing, but is recorded as a start, which no task agent can
+ * mistake for its own continuation.
+ */
+function taskCall(
+  callId: string,
+  input: z.infer<typeof taskInputSchema> | undefined
+) {
+  const agentId = input?.agentId?.trim() ?? "";
+  const send: PersonSend =
+    agentId === "" ? { callId, kind: "start" } : { agentId, kind: "continue" };
+  return { message: input?.message, send };
 }
 
 /** The staged paths the calls name, each once. */
@@ -182,10 +197,10 @@ export default defineHook({
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
-        // The task agent each call starts stays on the web only when the
-        // person's turn made the call (`keepOffWebUnlessSent`).
-        const recorded = await recordPersonCalls({
-          callIds: calls.map(({ callId }) => callId),
+        // The task agent each call starts or continues stays on the web
+        // only when the person's turn made the call (`keepOffWebUnlessSent`).
+        const recorded = await recordPersonSends({
+          sends: calls.map(({ send }) => send),
           sessionId: ctx.session.id,
           workspaceId,
         });
@@ -218,16 +233,16 @@ export default defineHook({
   },
 });
 
-/** Records each call as the person's: how many were. */
-async function recordPersonCalls(input: {
-  readonly callIds: readonly string[];
+/** Records each call's message as the person's: how many were. */
+async function recordPersonSends(input: {
+  readonly sends: readonly PersonSend[];
   readonly sessionId: string;
   readonly workspaceId: string;
 }) {
   const signal = AbortSignal.timeout(callsBudgetMs);
   const results = await Promise.allSettled(
-    input.callIds.map(async (callId) => {
-      await putPersonCall(input.workspaceId, input.sessionId, callId, signal);
+    input.sends.map(async (send) => {
+      await putPersonSend(input.workspaceId, input.sessionId, send, signal);
     })
   );
   return results.filter((result) => result.status === "fulfilled").length;

@@ -7,6 +7,7 @@ import {
   visit,
 } from "graphql";
 import { z } from "zod";
+import { env } from "@shared/environment";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
@@ -36,13 +37,19 @@ import { fetchPublic } from "./public-fetch";
  *
  * The content can also leave as text: in the task agent's report, which
  * opens a turn of Bro's that may start or continue a task agent. So the
- * same mark goes on every later task agent of that conversation that the
- * person's own turn did not just start (`keepOffWebUnlessSent` in
- * `agent/subagents/task/hooks/person-files.ts`). What stays open: a later
- * turn of the person's may copy report text from the history into a task
- * agent with the web, or fetch with it itself; and a link in Bro's reply
- * that iMessage previews (where the files reach the task agent, Telegram
- * replies go without previews, `agent/channels/telegram.ts`).
+ * same mark goes on every task agent of that conversation that gets a
+ * message the person's own turn did not just send: a new one, a
+ * continuation (checked by its `agentId`, since `ctx.session.parent` stays
+ * the starting call's for the child's whole life), a steered message
+ * (`keepOffWebUnlessSent` in `agent/subagents/task/hooks/person-files.ts`).
+ * The report turn's own sends carry no URL a server fetches: a native link
+ * and every attachment but the task agent's own files go as plain text
+ * (`withoutFetchedUrls` in `agent/tools/messaging.ts`), and where the files
+ * reach the task agent Telegram posts text without previews
+ * (`agent/channels/telegram.ts`). What stays open: a later turn of the
+ * person's may copy report text from the history into a task agent with
+ * the web, or fetch with it itself; and a link in Bro's text that iMessage
+ * previews.
  */
 
 /** Under `/eve/v1/`, the only prefix that reaches eve in production. */
@@ -364,7 +371,9 @@ const rootValue = {
     if (tool === undefined) {
       return { error: `There is no tool ${args.name}.`, ok: false };
     }
-    if (tool.network) {
+    // Without the files pilot no sandbox gets the person's files, and a web
+    // call does not wait on Object Storage (`TASK_FILES_WORKSPACES`).
+    if (tool.network && (env.TASK_FILES_WORKSPACES ?? []).length > 0) {
       const refusal = await networkRefusal(context.sandboxId);
       if (refusal !== undefined) return { error: refusal, ok: false };
     }
