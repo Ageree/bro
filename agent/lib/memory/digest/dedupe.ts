@@ -1,5 +1,7 @@
-import { comparableMemoryText } from "@agent/lib/memory/profile";
-import type { MemoryContent } from "@shared/memory/schema";
+import {
+  comparableMemoryText,
+  type MemoryContent,
+} from "@shared/memory/schema";
 
 interface DigestRecord {
   readonly content: MemoryContent;

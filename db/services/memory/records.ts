@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   ilike,
+  inArray,
   isNotNull,
   lt,
   lte,
@@ -25,8 +26,10 @@ import {
 import { ensureScope } from "@db/services/scope";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
+  comparableMemoryText,
   findMemorySchema,
   isSafeMemoryText,
+  type MemoryContent,
   memoryContentSchema,
   saveMemorySchema,
   updateMemorySchema,
@@ -50,6 +53,8 @@ interface MemoryOrigin {
 type RevisionAction = (typeof memoryRevisions.$inferInsert)["action"];
 
 const modelOrigin: MemoryOrigin = { actor: "model" };
+/** A profile moved from the scope keys eve used before to the pinned one. */
+const adoption: MemoryOrigin = { actor: "system" };
 
 /**
  * Removals that keep the record's history readable for a while: what the
@@ -743,6 +748,292 @@ export async function importLegacyMemories(
       .where(scopeIdentity(scope, scopeKey));
     return true;
   });
+}
+
+/**
+ * Moves the current records of the scopes `fromKeys` (oldest first) into
+ * `toKey`: the profile a slot kept under other eve scope keys. A record the
+ * target already holds (same category and text, as `comparableMemoryText`
+ * reads it) is merged into it instead: the longer validity, both sets of
+ * aliases, and `localOnly` if either copy asked for it. Rules go first, and
+ * whatever does not fit under the cap stays put for a later call, while a
+ * copy of what a full profile holds still merges into it. Each move keeps the
+ * record's origin and dates,
+ * takes the target's next index (related indexes follow it), joins the
+ * semantic index queue, and retires the source as forgetting would, so a
+ * repeated call finds nothing to move. History sees each step as `system`:
+ * an `import` in the target, a `merge` for the copy it folded and for the
+ * source it retired. The number of records moved.
+ */
+export async function adoptMemoryRecords(
+  scope: AccessScope,
+  fromKeys: readonly string[],
+  toKey: string
+) {
+  const currentIn = (keys: readonly string[]) =>
+    and(
+      eq(memoryRecords.workspaceId, scope.workspaceId),
+      inArray(memoryRecords.scopeKey, [...keys]),
+      isNotNull(memoryRecords.content),
+      currentValidity()
+    );
+  // Nearly every call ends here: one indexed lookup.
+  const [pending] = await db
+    .select({ index: memoryRecords.index })
+    .from(memoryRecords)
+    .where(currentIn(fromKeys))
+    .limit(1);
+  if (!pending) return 0;
+  // Even a full target takes the transaction: a duplicate still merges into
+  // the record the target holds, `localOnly` included; only new records wait
+  // for room.
+  await ensureMemoryScope(scope, toKey);
+  return db.transaction(async (transaction) => {
+    await lockScope(transaction, scope, toKey);
+    await transaction
+      .select({ scopeKey: memoryScopes.scopeKey })
+      .from(memoryScopes)
+      .where(
+        and(
+          eq(memoryScopes.workspaceId, scope.workspaceId),
+          inArray(memoryScopes.scopeKey, [...fromKeys])
+        )
+      )
+      .for("update");
+    const current = (keys: readonly string[]) =>
+      transaction
+        .select()
+        .from(memoryRecords)
+        .where(currentIn(keys))
+        .orderBy(asc(memoryRecords.index));
+    const [sources, kept, [target]] = await Promise.all([
+      current(fromKeys),
+      current([toKey]),
+      transaction
+        .select()
+        .from(memoryScopes)
+        .where(scopeIdentity(scope, toKey))
+        .limit(1),
+    ]);
+    if (!target) throw new Error("Memory scope could not be initialized.");
+    type Row = (typeof sources)[number];
+    interface Held {
+      content: MemoryContent;
+      index: number;
+      row?: Row;
+    }
+    // Each memory once: what the target holds, then what moves into it.
+    const held = new Map(
+      kept.flatMap((row): [string, Held][] =>
+        row.content
+          ? [
+              [
+                sameAs(row.content),
+                { content: row.content, index: row.index, row },
+              ],
+            ]
+          : []
+      )
+    );
+    const indexes = new Map<string, number>();
+    const moved: { held: Held; row: Row }[] = [];
+    const retired: Row[] = [];
+    let room = maximumRecords - kept.length;
+    let lastIndex = target.lastAllocatedIndex;
+    const age = new Map(fromKeys.map((key, position) => [key, position]));
+    const ordered = sources.toSorted(
+      (left, right) =>
+        Number(isRule(right.content)) - Number(isRule(left.content)) ||
+        (age.get(left.scopeKey) ?? 0) - (age.get(right.scopeKey) ?? 0) ||
+        left.index - right.index
+    );
+    for (const row of ordered) {
+      if (!row.content) continue;
+      const same = held.get(sameAs(row.content));
+      if (same) {
+        indexes.set(sourceIndex(row.scopeKey, row.index), same.index);
+        same.content = mergedContent(same.content, row.content);
+        retired.push(row);
+        continue;
+      }
+      if (room <= 0) continue;
+      room -= 1;
+      lastIndex += 1;
+      const added = { content: row.content, index: lastIndex };
+      indexes.set(sourceIndex(row.scopeKey, row.index), lastIndex);
+      held.set(sameAs(row.content), added);
+      moved.push({ held: added, row });
+      retired.push(row);
+    }
+    if (retired.length === 0) return 0;
+
+    const now = new Date();
+    for (const { held: adopted, row } of moved) {
+      const relatedIndexes = [
+        ...new Set(
+          adopted.content.relatedIndexes.flatMap((related) => {
+            const index = indexes.get(sourceIndex(row.scopeKey, related));
+            return index === undefined || index === adopted.index
+              ? []
+              : [index];
+          })
+        ),
+      ];
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One transaction: its statements run one after another anyway.
+      const [saved] = await transaction
+        .insert(memoryRecords)
+        .values({
+          content: { ...adopted.content, relatedIndexes },
+          createdAt: row.createdAt,
+          generation: target.generation,
+          index: adopted.index,
+          lastOperationId: `adopt:${row.scopeKey}:${String(row.index)}`,
+          revision: 1,
+          scopeKey: toKey,
+          sourceSessionId: row.sourceSessionId,
+          sourceTurnId: row.sourceTurnId,
+          updatedAt: row.updatedAt,
+          workspaceId: scope.workspaceId,
+        })
+        .returning();
+      if (!saved) throw new Error("Memory could not be adopted.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
+      await recordRevision(transaction, saved, adoption, "import");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
+      await enqueueSync(transaction, saved);
+    }
+    // A record the target held, merged with its copy: saved as an update is.
+    for (const { content, index, row } of held.values()) {
+      if (!row || content === row.content) continue;
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One transaction: its statements run one after another anyway.
+      const [saved] = await transaction
+        .update(memoryRecords)
+        .set({
+          content,
+          lastOperationId: `adopt:merge:${String(index)}:${String(row.revision + 1)}`,
+          revision: row.revision + 1,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            recordIdentity(scope, toKey, index),
+            eq(memoryRecords.revision, row.revision)
+          )
+        )
+        .returning();
+      if (!saved) throw new Error("Memory could not be adopted.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the update above.
+      await recordRevision(transaction, saved, adoption, "merge");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the update above.
+      await transaction
+        .update(memorySync)
+        .set(syncRemoval(now))
+        .where(
+          and(
+            eq(memorySync.workspaceId, scope.workspaceId),
+            eq(memorySync.scopeKey, toKey),
+            eq(memorySync.recordIndex, index)
+          )
+        );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the update above.
+      await enqueueSync(transaction, saved);
+    }
+    await transaction
+      .update(memoryScopes)
+      .set({ lastAllocatedIndex: lastIndex, updatedAt: now })
+      .where(scopeIdentity(scope, toKey));
+    // The text lives on in the target, so a source keeps its history as a
+    // merge does, for 30 days.
+    await Promise.all(
+      retired.map(async (row) => {
+        const [gone] = await transaction
+          .update(memoryRecords)
+          .set({
+            content: null,
+            lastOperationId: `adopted:${toKey}:${String(row.index)}`,
+            revision: row.revision + 1,
+            sourceSessionId: null,
+            sourceTurnId: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              recordIdentity(scope, row.scopeKey, row.index),
+              eq(memoryRecords.revision, row.revision)
+            )
+          )
+          .returning();
+        if (gone) await recordRevision(transaction, gone, adoption, "merge");
+      })
+    );
+    await Promise.all(
+      fromKeys.flatMap((key) => {
+        const gone = retired.flatMap((row) =>
+          row.scopeKey === key ? [row.index] : []
+        );
+        return gone.length === 0
+          ? []
+          : transaction
+              .update(memorySync)
+              .set(syncRemoval(now))
+              .where(
+                and(
+                  eq(memorySync.workspaceId, scope.workspaceId),
+                  eq(memorySync.scopeKey, key),
+                  inArray(memorySync.recordIndex, gone)
+                )
+              );
+      })
+    );
+    return moved.length;
+  });
+}
+
+/** A record of one of the scopes being adopted: its scope key and index. */
+function sourceIndex(scopeKey: string, index: number) {
+  return `${scopeKey}\0${String(index)}`;
+}
+
+function isRule(content: MemoryContent | null) {
+  return content?.category === "rule";
+}
+
+/** What makes two records the same memory: category and comparable text. */
+function sameAs(content: MemoryContent) {
+  return `${content.category}\0${comparableMemoryText(content.text)}`;
+}
+
+/**
+ * One memory saved twice, as one record: `base` with the other copy's aliases
+ * added, the validity that lasts longer, and `localOnly` if either asked to
+ * keep it out of the semantic index. `base` itself when nothing changes.
+ */
+function mergedContent(base: MemoryContent, copy: MemoryContent) {
+  const aliases = [...new Set([...base.aliases, ...copy.aliases])].slice(0, 12);
+  const validUntil =
+    base.validUntil === null || copy.validUntil === null
+      ? null
+      : Date.parse(copy.validUntil) > Date.parse(base.validUntil)
+        ? copy.validUntil
+        : base.validUntil;
+  const localOnly = base.localOnly || copy.localOnly;
+  return aliases.length === base.aliases.length &&
+    validUntil === base.validUntil &&
+    localOnly === base.localOnly
+    ? base
+    : { ...base, aliases, localOnly, validUntil };
+}
+
+/** A semantic index entry queued to leave the index. */
+function syncRemoval(now: Date) {
+  return {
+    attempts: 0,
+    desiredPresent: false,
+    leaseUntil: null,
+    nextAttemptAt: now,
+    status: "pending" as const,
+    updatedAt: now,
+  };
 }
 
 export async function memoryScopeNeedsLegacyImport(

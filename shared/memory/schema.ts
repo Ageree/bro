@@ -119,6 +119,19 @@ export function isSafeMemoryText(value: string) {
   return unsafeMemoryRanges(value).length === 0;
 }
 
+/**
+ * A memory's text as a confirmation card compares it: a call that names the
+ * record with other quotes, case or spacing still names the same record.
+ */
+export function comparableMemoryText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replaceAll(/[«»"“”„]/gu, "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+}
+
 /** A memory's text as it is kept: one line, safe, at most 2 KB. */
 export const memoryTextSchema = z
   .string()
