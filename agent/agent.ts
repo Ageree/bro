@@ -8,7 +8,6 @@ import {
   wordlessLatestMessage,
 } from "@agent/lib/delivery/language";
 import {
-  actionsHeldForAnswer,
   heldForAnswerNote,
   turnAskedQuestion,
   turnAwaitsAnswer,
@@ -26,10 +25,9 @@ import {
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import {
-  cardToolsBeforeOutcome,
   cardToolsBeforeOutcomeNote,
+  cardToolsRefuseBeforeOutcomeNote,
   owedStepsNote,
-  reportToolsAfterOutcome,
 } from "@agent/lib/delivery/browser-report";
 import {
   declinedErrandNote,
@@ -39,30 +37,30 @@ import { browserRunReportDelivered } from "@db/services/browser-runs";
 import {
   approvedResendOwed,
   turnMustEnd,
-  turnOpenedByBackgroundTask,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
-import { readsMustEnd } from "@agent/lib/google-workspace/turn-reads";
+import {
+  declinedGmailSendNote,
+  readsMustEnd,
+  turnDeclinedGmailSend,
+} from "@agent/lib/google-workspace/turn-reads";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
-import { skillsPilot } from "@agent/lib/skills/pilot";
+import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
+import { offeredSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
+import { turnKind } from "@agent/lib/turn-kind/kind";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
+import { turnTools } from "@agent/lib/turn-kind/tools";
 import { directModelActive } from "@shared/model/provider";
 import { env } from "@shared/environment";
-
-/** The tool eve makes of the task agent (`agent/subagents/task`). */
-const taskAgentTool = "task";
-/** All a turn that delivers the task agent's report may call. */
-const backgroundTaskTurnTools = [
-  "react_to_message",
-  "send_message",
-  taskAgentTool,
-  "task_cancel",
-];
 
 /**
  * What a report turn is told when its report already reached the person in
@@ -82,7 +80,7 @@ export default defineAgent({
       : undefined,
   model: defineDynamic({
     events: {
-      "step.started": async (_event, ctx) => {
+      "step.started": async (event, ctx) => {
         const scheduledRun = scheduledRunIdentity(ctx.session.auth);
         if (
           scheduledRun &&
@@ -122,7 +120,8 @@ export default defineAgent({
         // eve delivers the task agent's report in a turn of its own that
         // keeps the previous turn's caller: after a browser report it would
         // pass for that report again, and be dropped as stale.
-        const backgroundTaskTurn = turnOpenedByBackgroundTask(ctx.messages);
+        const kind = turnKind(ctx);
+        const backgroundTaskTurn = kind === "background-task";
         // Such a turn is held to a few tools (below), and only the direct
         // model (RouterAI or OpenRouter) holds a step to them: a Gateway id would offer
         // every tool, those that act in the person's name too, to text the
@@ -132,9 +131,10 @@ export default defineAgent({
             "A background task's report needs the direct model (RouterAI or OpenRouter), which alone limits its tools."
           );
         }
-        const reportRunId = backgroundTaskTurn
-          ? undefined
-          : reportedBrowserRunId(ctx.session.auth.current);
+        const reportRunId =
+          kind === "browser-report"
+            ? reportedBrowserRunId(ctx.session.auth.current)
+            : undefined;
         const reportFirstStep =
           reportRunId !== undefined && turnTookNoStep(ctx.messages);
         const staleReport =
@@ -175,8 +175,7 @@ export default defineAgent({
         // waiting run and `continue` act on a confirmed errand. Answered
         // through `ask_question`, it would stay inside the report's turn.
         const reportTurn =
-          reportRunId !== undefined ||
-          resolveModeValue(ctx, { "scheduled-report": true }) === true;
+          kind === "browser-report" || kind === "scheduled-report";
         // A forced step whose send failed would be forced into the same
         // failed call again: from then on the model writes the reply itself.
         const sendFailed =
@@ -222,11 +221,17 @@ export default defineAgent({
         const clockOwed =
           caller.principalType === "user" &&
           resolveModeValue(ctx, clockModes) !== null;
+        // The pilots' verdicts hold for the whole turn: one that flipped
+        // between steps changed the step's notes and tools.
+        const step = stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          ctx.session.id
+        );
         const [modelId, formOfAddress, [stableContext, timeZone], taskAgent] =
           await Promise.all([
             getWorkspaceModelId(scope),
             writesToPerson ? getFormOfAddress(scope) : undefined,
-            stepContextPilot(scope).then(
+            stepContextPilot(scope, step).then(
               async (pilot) =>
                 [
                   pilot,
@@ -238,17 +243,10 @@ export default defineAgent({
             // The task agent works for the person's own requests; a report
             // or a worker never starts one.
             resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
-              ? taskAgentPilot(scope)
+              ? taskAgentPilot(scope, step)
               : false,
           ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
-        // Once a browser report's message is out, the rest of its turn
-        // needs only a few tools; the pilot offers just those.
-        const reportToolsOnly =
-          stableContext &&
-          reportRunId !== undefined &&
-          !staleReport &&
-          sends.delivered.length > 0;
         const notes = [
           timeZone === undefined ? undefined : localClock(new Date(), timeZone),
           formOfAddress
@@ -264,7 +262,11 @@ export default defineAgent({
               })
             : undefined,
           staleReport ? staleReportNote : undefined,
-          cardsHeld && !silent ? cardToolsBeforeOutcomeNote : undefined,
+          cardsHeld && !silent
+            ? stableContext
+              ? cardToolsRefuseBeforeOutcomeNote
+              : cardToolsBeforeOutcomeNote
+            : undefined,
           // A tool that vanished without a word is one the model says it
           // used anyway.
           heldForAnswer ? heldForAnswerNote : undefined,
@@ -273,7 +275,13 @@ export default defineAgent({
           writesToPerson && turnDeclinedErrand(ctx.messages)
             ? declinedErrandNote
             : undefined,
-          owedSteps.length > 0 ? owedStepsNote(owedSteps) : undefined,
+          // In the pilot `gmail-draft` keeps its description after the card.
+          stableContext && turnDeclinedGmailSend(ctx.messages)
+            ? declinedGmailSendNote
+            : undefined,
+          owedSteps.length > 0
+            ? owedStepsNote(owedSteps, stableContext)
+            : undefined,
           writesToPerson && sendFailed ? failedSendNote : undefined,
         ].filter((note) => note !== undefined);
         const selection: Parameters<typeof modelSelection>[1] = {
@@ -305,36 +313,43 @@ export default defineAgent({
           // except before a browser report's message.
           // A question sent as a message is answered in the person's next
           // message, so until then nothing it asked about is undone.
-          withheldTools: [
-            ...(reportTurn || turnAskedQuestion(ctx.messages)
-              ? ["ask_question"]
-              : []),
-            ...(reportPastAnswer ? ["react_to_message", "send_message"] : []),
-            ...(heldForAnswer ? actionsHeldForAnswer : []),
-            ...(cardsHeld ? cardToolsBeforeOutcome : []),
-            ...(taskAgent ? [] : [taskAgentTool]),
-          ],
-        };
-        // The task agent read web pages for its report, and that text now
-        // opens a turn that looks like the person's: it may only reach the
-        // person or go back to the task agent, never act in their name.
-        if (backgroundTaskTurn) {
-          return modelSelection(modelId, {
-            ...selection,
-            offeredTools: backgroundTaskTurnTools,
+          // In the skills pilot a person's step has a domain's tools once
+          // the conversation has its rules (`offeredSkills`).
+          toolGroups:
+            kind === "person" && skillsLayout(ctx) === "core"
+              ? offeredSkills(ctx.messages, skillSetup(ctx))
+              : undefined,
+          // In the pilot a turn keeps one tool set from its first step to
+          // its last (`turnTools`).
+          ...turnTools({
+            askedQuestion: turnAskedQuestion(ctx.messages),
+            cardsHeld,
+            heldForAnswer,
+            kind,
+            reportPastAnswer,
             stableContext,
-          });
+            taskAgent,
+          }),
+        };
+        // A turn that delivers the task agent's report is held to its few
+        // tools in every layout (`backgroundTaskTurnTools`).
+        if (!stableContext && !backgroundTaskTurn) {
+          return modelSelection(modelId, selection);
         }
-        if (!stableContext) return modelSelection(modelId, selection);
-        return modelSelection(modelId, {
-          ...selection,
-          offeredTools: reportToolsOnly ? reportToolsAfterOutcome : undefined,
-          stableContext,
-        });
+        return modelSelection(modelId, { ...selection, stableContext, step });
       },
     },
   }),
   reasoning: "low",
+  // eve's default caps a session at 40M input tokens and then holds it on an
+  // Approve/Stop card. Telegram and iMessage keep one session per chat for
+  // its whole 30 days, about 400 steps of ~96k: a long chat stalled on a
+  // card the person never asked for. Ten times that keeps a backstop against
+  // a runaway loop. eve stores the cap when a session is created, so a chat
+  // gets it with its next session.
+  limits: {
+    maxInputTokensPerSession: 400_000_000,
+  },
   compaction: {
     thresholdPercent: 0.7,
   },

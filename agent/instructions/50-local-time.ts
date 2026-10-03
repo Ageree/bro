@@ -9,6 +9,10 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepNoteInstructions } from "@agent/lib/step-context/note";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 export function localTimeInstructions(
@@ -23,7 +27,7 @@ export function localTimeInstructions(
 
 export default defineDynamic({
   events: {
-    async "turn.started"(_event, context) {
+    async "turn.started"(event, context) {
       const caller =
         context.session.auth.current ?? context.session.auth.initiator;
       const canSaveTimeZone = resolveModeValue(context, clockModes);
@@ -38,7 +42,12 @@ export default defineDynamic({
       // The clock changes every turn, so every instruction after it was read
       // at full price. In the pilot it goes into the step's note after the
       // history (`agent/agent.ts`), and this line explains that note.
-      if (await stepContextPilot(scope)) {
+      // The turn's verdict, the one its steps get (`pilotVerdictOfTurn`).
+      const turn = stepIdentity(
+        stepStartedEventSchema.safeParse(event).data,
+        context.session.id
+      );
+      if (await stepContextPilot(scope, turn)) {
         return defineInstructions({
           content: canSaveTimeZone
             ? [stepNoteInstructions, saveTimeZoneInstruction].join("\n")

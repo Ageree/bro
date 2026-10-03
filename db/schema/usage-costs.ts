@@ -49,6 +49,11 @@ export interface UsageCostUnits {
   readonly hostShare?: number;
   /** No price was known: zero roubles here is not a free step. */
   readonly unpriced?: boolean;
+  /**
+   * A browser run's model answers by the upstream host that served them,
+   * under the name the service gives it (RouterAI's `provider`, "DeepInfra").
+   */
+  readonly hosts?: Readonly<Record<string, number>>;
 }
 
 /**

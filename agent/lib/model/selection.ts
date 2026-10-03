@@ -31,7 +31,11 @@ export function modelSelection(
     readonly silent?: boolean;
     readonly skillBlocks?: boolean;
     readonly stableContext?: boolean;
+    readonly step?: Parameters<typeof directModelSelection>[1]["step"];
     readonly toolChoice?: StepToolChoice;
+    readonly toolGroups?: Parameters<
+      typeof directModelSelection
+    >[1]["toolGroups"];
     readonly withheldTools?: readonly string[];
   } = {}
 ) {
@@ -43,7 +47,9 @@ export function modelSelection(
         silent: options.silent,
         skillBlocks: options.skillBlocks,
         stableContext: options.stableContext,
+        step: options.step,
         toolChoice: options.toolChoice ?? "auto",
+        toolGroups: options.toolGroups,
         withheldTools: options.withheldTools,
       })
     : modelId;

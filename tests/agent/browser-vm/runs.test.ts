@@ -29,6 +29,34 @@ const composedTask =
 // hand an address wall to the anti-bot retry at once.
 const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. If the wall is still there after it, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
 
+// The hosts the VM's model may be served from on RouterAI: the main agent's
+// pinned caching host, its skipped ones and those without structured outputs.
+const routerAiDeepSeekRouting = {
+  ignore: [
+    "deepseek",
+    "alibaba",
+    "morph",
+    "wafer",
+    "sail-research",
+    "modal",
+    "parasail",
+    "phala",
+    "inference-net",
+    "relace",
+    "streamlake",
+    "gmicloud",
+    "novita",
+    "siliconflow",
+  ],
+  order: ["deepinfra"],
+  requireParameters: true,
+};
+const vmTuning = {
+  maxActionsPerStep: 8,
+  provider: routerAiDeepSeekRouting,
+  reasoning: "none",
+};
+
 const claimsSchema = z.object({
   env: z.string(),
   exp: z.number(),
@@ -312,8 +340,69 @@ describe("starting a run on a workspace's browser VM", () => {
       sessionId: run.sessionId,
       task: vmTask,
       timeoutSeconds: 1500,
-      tuning: { maxActionsPerStep: 8, reasoning: "none" },
+      tuning: vmTuning,
     });
+  });
+
+  it("routes the VM's model by the service it is called at, apart from the main agent's routing", async () => {
+    const started = async (settings: Record<string, string>) => {
+      worker.startBrowserVmWorkerRun.mockClear();
+      const client = await importWithSettings(
+        { ...browserVmTestEnvironment, ...settings },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      await client.createBrowserUseRun({ profileId, task: composedTask });
+      return worker.startBrowserVmWorkerRun.mock.calls[0]?.[1].tuning?.provider;
+    };
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+
+    // The main agent's pins and skips tune its own model and service.
+    vi.stubEnv("ROUTERAI_PROVIDER_ORDER", "deepseek");
+    vi.stubEnv("ROUTERAI_PROVIDER_IGNORE", "deepinfra");
+    try {
+      expect(await started({})).toEqual(routerAiDeepSeekRouting);
+    } finally {
+      vi.stubEnv("ROUTERAI_PROVIDER_ORDER", "");
+      vi.stubEnv("ROUTERAI_PROVIDER_IGNORE", "");
+    }
+    const routing = routerAiDeepSeekRouting;
+    expect(
+      routing.order.filter((host) => routing.ignore.includes(host))
+    ).toEqual([]);
+    expect(new Set(routing.ignore).size).toBe(routing.ignore.length);
+
+    // OpenRouter filters by `require_parameters` itself; RouterAI's own
+    // DeepSeek endpoint is not there to skip.
+    const openRouter = await started({
+      BROWSER_VM_LLM_BASE_URL: "https://openrouter.ai/api/v1",
+    });
+    expect(openRouter).toEqual({
+      ignore: [
+        "alibaba",
+        "morph",
+        "wafer",
+        "sail-research",
+        "modal",
+        "parasail",
+        "phala",
+        "inference-net",
+      ],
+      requireParameters: true,
+    });
+    // Hosts measured on DeepSeek only: another model keeps all of its own.
+    expect(await started({ BROWSER_VM_MODEL: "qwen/qwen3.6-plus" })).toEqual({
+      requireParameters: true,
+    });
+    // A service that is neither routes nothing.
+    expect(
+      await started({ BROWSER_VM_LLM_BASE_URL: "https://llm.example.test/v1" })
+    ).toBeUndefined();
   });
 
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
@@ -604,6 +693,38 @@ describe("reading a VM run", () => {
     expect(recorded?.costRub).toBe(4.2);
     expect(recorded?.costUsd).toBeNull();
     expect(recorded?.units).toMatchObject({ inputTokens: 150_000 });
+    expect(recorded?.units?.hosts).toBeUndefined();
+  });
+
+  it("records which hosts served the run's model, and its bill when that list is malformed", async () => {
+    const recordedUnits = async (
+      hosts: NonNullable<WorkerRun["usage"]>[string]
+    ) => {
+      recordUsageCost.mockClear();
+      const client = await loadClient();
+      worker.readBrowserVmWorkerRun.mockResolvedValue(
+        workerRun({
+          finishedAt: "2026-09-28T11:58:00Z",
+          result: "RESULT: the parcel is in Moscow",
+          status: "completed",
+          usage: { billed: 4.2, billed_calls: 9, hosts },
+        })
+      );
+      await client.readBrowserUseRun(runId);
+      return recordUsageCost.mock.calls
+        .map(([cost]) => cost)
+        .find((cost) => cost.source === "browser-run");
+    };
+
+    expect(
+      (await recordedUnits({ DeepInfra: 8, DeepSeek: 1 }))?.units
+    ).toMatchObject({ hosts: { DeepInfra: 8, DeepSeek: 1 } });
+    for (const malformed of ["DeepInfra", { DeepInfra: -1 }]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each run's costs are read from a fresh client and cleared mocks.
+      const recorded = await recordedUnits(malformed);
+      expect(recorded?.costRub).toBe(4.2);
+      expect(recorded?.units?.hosts).toBeUndefined();
+    }
   });
 
   it("records what a settled run spent on its model and its proxy, keyed by the run", async () => {
@@ -1171,10 +1292,12 @@ describe("a VM session's browser", () => {
       task: "The code is 4812",
       workspaceId,
     });
+    // The tuning goes along: a restarted worker forgot the session's own.
     expect(worker.sendBrowserVmWorkerMessage.mock.calls[0]?.[2]).toMatchObject({
       llm: { model: "deepseek/deepseek-v4.1-flash" },
       runId: queued.runId,
       text: "The code is 4812",
+      tuning: vmTuning,
     });
 
     // An idle session starts a run with it: the proxy is seen to first, on

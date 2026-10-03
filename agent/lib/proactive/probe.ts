@@ -1,14 +1,17 @@
+import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
 import {
   calendarApi,
   calendarEventListSchema,
 } from "@agent/lib/google-workspace/calendar";
 import {
+  GoogleApiError,
   type GoogleClient,
   GoogleUnreadableAnswerError,
   googleApiErrorStatus,
   googleClient,
   googleUrl,
+  isGoogleRateLimit,
 } from "@agent/lib/google-workspace/client";
 import {
   calendarHorizonMs,
@@ -23,7 +26,11 @@ import {
 import type { ProactiveSignal } from "@db/services/proactive";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { activeConnectedAccount } from "@shared/composio/accounts";
-import { isMissingConnectedAccount } from "@shared/composio/api";
+import {
+  ComposioError,
+  isMissingConnectedAccount,
+  isTransientComposioFailure,
+} from "@shared/composio/api";
 import { googleWorkspaceAuthConfigId } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
 
@@ -71,6 +78,72 @@ const mailMetadataSchema = z.object({
 });
 
 /**
+ * How long a check waits before asking Composio once more. Its refusals from
+ * Cloud.ru come and go (02–03.10: 5 of 9 night checks got a bare 403 while
+ * the same key answered from elsewhere); one more try a few seconds later
+ * keeps a night check from being lost to one of them.
+ */
+const composioRetryMs = 3_000;
+
+/**
+ * Whether Composio's refusal may pass on a second try: its 403 that names no
+ * gone account (a firewall's or a passing one), its throttling or outage, a
+ * network error. A missing key or account stays as it is, and so does a
+ * call cut off by the check's deadline.
+ */
+function composioMayPass(cause: unknown) {
+  if (isMissingConnectedAccount(cause)) return false;
+  // The check's own deadline passed: its signal stays aborted, and a second
+  // call would fail at once after the pause.
+  if (
+    cause instanceof DOMException &&
+    (cause.name === "TimeoutError" || cause.name === "AbortError")
+  ) {
+    return false;
+  }
+  return (
+    (cause instanceof ComposioError && cause.status === 403) ||
+    isTransientComposioFailure(cause)
+  );
+}
+
+/** One call to Composio, asked once more after a pause if it may pass. */
+async function onceMore<T>(call: () => Promise<T>) {
+  try {
+    return await call();
+  } catch (error) {
+    if (!composioMayPass(error)) throw error;
+    await setTimeout(composioRetryMs);
+    return call();
+  }
+}
+
+/**
+ * Why a check failed, for its log line: who refused and with what — never
+ * the person's mail. A Composio 403 is told from Google's quota refusal,
+ * which the proxy passes on as Google's own answer.
+ */
+export function probeFailure(cause: unknown) {
+  if (cause instanceof ComposioError) {
+    return {
+      by: "composio",
+      slug: cause.slug,
+      status: cause.status,
+      ...cause.answer,
+    };
+  }
+  if (cause instanceof GoogleApiError) {
+    return {
+      by: "google",
+      rateLimited: isGoogleRateLimit(cause),
+      reason: cause.error?.errors[0]?.reason ?? cause.error?.status,
+      status: cause.status,
+    };
+  }
+  return { by: cause instanceof Error ? cause.name : "unknown" };
+}
+
+/**
  * The person's Google client for a background check, or why there is none: a
  * workspace without Google (`unavailable`) or without a grant.
  */
@@ -81,10 +154,12 @@ async function connectedGoogle(scope: AccessScope, signal: AbortSignal) {
     await getGoogleWorkspaceAccess(scope)
   );
   if (!authConfigId) return { state: "unavailable" } as const;
-  const account = await activeConnectedAccount(
-    scope.userId,
-    { authConfigIds: [authConfigId] },
-    signal
+  const account = await onceMore(async () =>
+    activeConnectedAccount(
+      scope.userId,
+      { authConfigIds: [authConfigId] },
+      signal
+    )
   );
   return account
     ? ({
@@ -96,7 +171,8 @@ async function connectedGoogle(scope: AccessScope, signal: AbortSignal) {
 
 /**
  * A read whose answer came back as text that is not JSON is asked once more:
- * the proxy passes a passing upstream error on as text. The log line carries
+ * the proxy passes a passing upstream error on as text. So is one Composio
+ * refused in a way that may pass (`onceMore`). The log line carries
  * the start of the body, not what the person's mail says.
  */
 async function readJson<Schema extends z.ZodType>(
@@ -105,7 +181,7 @@ async function readJson<Schema extends z.ZodType>(
   url: string
 ) {
   try {
-    return await google.json(schema, { url });
+    return await onceMore(async () => google.json(schema, { url }));
   } catch (error) {
     if (!(error instanceof GoogleUnreadableAnswerError)) throw error;
     console.warn("[proactive] unreadable Google answer, asking again", {

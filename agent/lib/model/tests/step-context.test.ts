@@ -53,6 +53,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  // A silenced console must not outlive its case, failed or not.
+  vi.restoreAllMocks();
 });
 
 const tools = [
@@ -152,22 +154,93 @@ describe("the pilot of the cache-friendly step", () => {
     );
   });
 
-  it("lists send_message last, so a forced step changes only its schema", async () => {
+  it("sends the same tool block forced or not, the volatile tools last", async () => {
     const forced = await step({ stableContext: true, toolChoice: "required" });
     const free = await step({ stableContext: true, toolChoice: "auto" });
 
-    const names = [
-      "ask_question",
+    // The core tools, then each group that follows a skill, then the
+    // volatile ones.
+    expect(forced.tools?.map(({ name }) => name)).toEqual([
       "browser_task",
+      "list_orders",
       "gmail-search",
+      "send_message",
+      "ask_question",
+    ]);
+    // `send_message` keeps its text required after the reply too: the
+    // step after it re-reads nothing.
+    expect(free.tools).toEqual(forced.tools);
+    expect(
+      JSON.stringify(forced.tools?.find(({ name }) => name === "send_message"))
+    ).toContain('"required":["text"]');
+  });
+
+  it("offers a group's tools only with its skill, after the core ones", async () => {
+    const bare = await step({
+      stableContext: true,
+      toolChoice: "auto",
+      toolGroups: [],
+    });
+    const google = await step({
+      stableContext: true,
+      toolChoice: "auto",
+      toolGroups: ["google"],
+    });
+    expect(bare.tools?.map(({ name }) => name)).toEqual([
+      "browser_task",
       "list_orders",
       "send_message",
-    ];
-    expect(forced.tools?.map(({ name }) => name)).toEqual(names);
-    expect(free.tools?.map(({ name }) => name)).toEqual(names);
-    // Every schema before it is the same in both steps.
-    expect(forced.tools?.slice(0, -1)).toEqual(free.tools?.slice(0, -1));
-    expect(forced.tools?.at(-1)).not.toEqual(free.tools?.at(-1));
+      "ask_question",
+    ]);
+    // The group joins after the core: the core's bytes stay as they were.
+    expect(google.tools?.slice(0, 2)).toEqual(bare.tools?.slice(0, 2));
+    expect(google.tools?.map(({ name }) => name)).toContain("gmail-search");
+    // Outside the pilot of the step the group goes where eve put it.
+    const unordered = await step({ toolChoice: "auto", toolGroups: [] });
+    expect(unordered.tools?.map(({ name }) => name)).toEqual([
+      "ask_question",
+      "send_message",
+      "browser_task",
+      "list_orders",
+    ]);
+  });
+
+  it("takes ask_question out of the tail only, after the turn's question", async () => {
+    const before = await step({ stableContext: true, toolChoice: "auto" });
+    const after = await step({
+      stableContext: true,
+      toolChoice: "auto",
+      withheldTools: ["ask_question"],
+    });
+
+    expect(after.tools).toEqual(before.tools?.slice(0, -1));
+  });
+
+  it("logs a digest of the tool block of each step in the pilot", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const identity = { sessionId: "session-1", stepIndex: 2, turnId: "turn-1" };
+    const { directModelSelection } = await import("@agent/lib/model/direct");
+    for (const toolChoice of ["required", "auto"] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- two steps in order
+      await directModelSelection("deepseek/deepseek-v4.1-flash", {
+        stableContext: true,
+        step: identity,
+        toolChoice,
+      }).model.doGenerate({ prompt: [person], tools });
+    }
+    const logged = info.mock.calls.filter(([tag]) => tag === "[tools]");
+    expect(logged).toHaveLength(2);
+    expect(logged[0]?.[1]).toMatchObject({
+      ...identity,
+      count: tools.length,
+    });
+    expect(logged[0]?.[1]).toEqual(logged[1]?.[1]);
+
+    info.mockClear();
+    await directModelSelection("deepseek/deepseek-v4.1-flash", {
+      toolChoice: "auto",
+    }).model.doGenerate({ prompt: [person], tools });
+    expect(info.mock.calls.some(([tag]) => tag === "[tools]")).toBe(false);
   });
 
   it("offers only the tools a step is given, and none to compaction", async () => {
