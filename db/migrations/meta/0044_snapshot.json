@@ -1,5 +1,5 @@
 {
-  "id": "f6081298-8c83-484e-8abc-af444d785b7f",
+  "id": "98c0fc5f-4ca4-497c-b638-bc3258390019",
   "prevId": "619f655b-f0c1-4099-994f-e777b70c9dcb",
   "version": "7",
   "dialect": "postgresql",
@@ -4749,6 +4749,27 @@
           "columns": [
             {
               "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscriptions_owner_idx": {
+          "name": "subscriptions_owner_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_by_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

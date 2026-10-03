@@ -24,14 +24,16 @@ export interface PriceReading {
 }
 
 /**
- * A page's price, or why there is none: none of the markup is there, or it
+ * A page's price, or why there is none: none of the markup is there, it
  * names several products with different prices (a catalogue, not one
- * product).
+ * product), or the product is out of stock (`unavailable`), whatever other
+ * markup on the page may still say.
  */
 export type PriceRead =
   | PriceReading
   | { readonly kind: "no-price" }
-  | { readonly kind: "several-products" };
+  | { readonly kind: "several-products" }
+  | { readonly kind: "unavailable" };
 
 /** «7 490,00 ₽», «7,490.00», «7.490,00», «1 500»: the amount, if any. */
 export function amountFromText(text: string) {
@@ -169,8 +171,14 @@ const notNew = /used|refurbished|damaged/iu;
  * drop. `undefined` for no price, `several` for offers that disagree.
  */
 function offerPrice(offers: z.output<typeof productSchema>["offers"]) {
-  const priced = (offers ?? []).flatMap((offer) => {
-    if (!offer) return [];
+  const listed = (offers ?? []).filter((offer) => offer !== undefined);
+  if (
+    listed.length > 0 &&
+    listed.every((offer) => unavailable.test(offer.availability ?? ""))
+  ) {
+    return "unavailable" as const;
+  }
+  const priced = listed.flatMap((offer) => {
     if (unavailable.test(offer.availability ?? "")) return [];
     if (notNew.test(offer.itemCondition ?? "")) return [];
     const amount = offer.price ?? offer.lowPrice;
@@ -211,6 +219,8 @@ function jsonLdProducts(html: string) {
       const price = offerPrice(product.offers);
       if (!price) continue;
       if (price === "several") return "several-products" as const;
+      // A sold-out product is not priced by other markup on its page.
+      if (price === "unavailable") return "unavailable" as const;
       products.push({
         ...price,
         extractor: "jsonld",
@@ -338,14 +348,17 @@ function single(readings: readonly PriceReading[]): PriceRead | undefined {
       reading.currency !== first.currency ||
       (reading.name !== null &&
         first.name !== null &&
-        reading.name !== first.name)
+        reading.name !== first.name) ||
+      (reading.sku !== null && first.sku !== null && reading.sku !== first.sku)
   );
   return differs ? { kind: "several-products" } : first;
 }
 
 export function readPrice(html: string): PriceRead {
   const products = jsonLdProducts(html);
-  if (products === "several-products") return { kind: products };
+  if (products === "several-products" || products === "unavailable") {
+    return { kind: products };
+  }
   const fromJsonLd = single(products);
   if (fromJsonLd !== undefined) return fromJsonLd;
   const fromMeta = metaPrice(html);
@@ -415,29 +428,36 @@ const multipliers = new Map([
 ]);
 
 /**
- * The numbers in the person's words, as amounts: «8к», «8 000», «8000р»,
- * «8,5 тыс», «10%». A threshold the model passes counts only when it is one
- * of these, so a page or an earlier report cannot plant one. Links are left
- * out: their digits are no amount the person named.
+ * The numbers in the person's words: `amounts` — «8к», «8 000», «8000р»,
+ * «8,5 тыс», «14 дней» — and `percents` — «10%», «на 10 процентов». A
+ * threshold or a term the model passes counts only when it is one of these,
+ * of its own kind, so a page or an earlier report cannot plant one and «10%»
+ * never reads as a price of 10. Links are left out: their digits are no
+ * amount the person named.
  */
 export function amountsSaid(words: readonly string[]) {
-  const found = new Set<number>();
+  const amounts = new Set<number>();
+  const percents = new Set<number>();
   for (const text of words) {
     const plain = text.normalize("NFKC").replaceAll(/https?:\/\/\S+/giu, " ");
     for (const match of plain.matchAll(
-      /(?<![\p{L}\d])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)|\d+(?!\d))(?:[.,](\d+))?\s*(k|к|млн|тысячи|тысяча|тысяч|тыс|тр|т)?\.?\s*(?:руб\p{L}*|р|₽)?(?!\p{L})/giu
+      /(?<![\p{L}\d])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)|\d+(?!\d))(?:[.,](\d+))?\s*(?:(%|процент\p{L}*)|(k|к|млн|тысячи|тысяча|тысяч|тыс|тр|т)?\.?\s*(?:руб\p{L}*|р|₽)?)(?!\p{L})/giu
     )) {
       const whole = (match[1] ?? "").replaceAll(/\s/gu, "");
       const fraction = match[2];
       const base = Number(fraction ? `${whole}.${fraction}` : whole);
       if (!Number.isFinite(base)) continue;
-      found.add(base);
+      if (match[3] !== undefined) {
+        percents.add(base);
+        continue;
+      }
+      amounts.add(base);
       // «7,490» with a comma of thousands reads as 7 490 as well.
-      if (fraction?.length === 3) found.add(Number(`${whole}${fraction}`));
-      const unit = match[3]?.toLowerCase();
+      if (fraction?.length === 3) amounts.add(Number(`${whole}${fraction}`));
+      const unit = match[4]?.toLowerCase();
       const multiplier = unit === undefined ? undefined : multipliers.get(unit);
-      if (multiplier !== undefined) found.add(Math.round(base * multiplier));
+      if (multiplier !== undefined) amounts.add(Math.round(base * multiplier));
     }
   }
-  return found;
+  return { amounts, percents };
 }

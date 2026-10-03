@@ -40,6 +40,7 @@ ALTER TABLE "subscriptions" DROP CONSTRAINT IF EXISTS "subscriptions_membership_
 ALTER TABLE "subscriptions" ADD CONSTRAINT "subscriptions_membership_fkey" FOREIGN KEY ("workspace_id","created_by_user_id") REFERENCES "public"."workspace_memberships"("workspace_id","user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "subscriptions_due_idx" ON "subscriptions" USING btree ("next_check_at") WHERE "subscriptions"."status" = 'active';--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "subscriptions_job_idx" ON "subscriptions" USING btree ("job_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "subscriptions_owner_idx" ON "subscriptions" USING btree ("workspace_id","created_by_user_id");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "subscriptions_live_idx" ON "subscriptions" USING btree ("workspace_id","created_by_user_id","template","dedupe_key") WHERE "subscriptions"."status" IN ('active', 'paused');--> statement-breakpoint
 ALTER TABLE "scheduled_agent_jobs" DROP CONSTRAINT IF EXISTS "scheduled_agent_jobs_kind_check";--> statement-breakpoint
 ALTER TABLE "scheduled_agent_jobs" ADD CONSTRAINT "scheduled_agent_jobs_kind_check" CHECK ("scheduled_agent_jobs"."kind" IN ('task', 'proactive', 'subscription'));

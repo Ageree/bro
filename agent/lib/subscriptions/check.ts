@@ -5,6 +5,23 @@ import type {
 import type { PageRead } from "./page";
 import { conditionLabel, conditionMet, priceLabel, sameProduct } from "./price";
 
+/**
+ * What a failed check could not do, in the person's terms; the log keeps
+ * the code (`error`).
+ */
+function failureWords(error: string) {
+  if (error === "another-product") {
+    return "confirm the price is still for the same product (the page now shows another product, variant or link)";
+  }
+  if (error.startsWith("blocked")) {
+    return "read the price (the shop no longer shows the page to a plain request)";
+  }
+  if (error.startsWith("unreachable")) {
+    return "read the price (the page did not open)";
+  }
+  return "read the price (the page no longer shows it in a form code can read)";
+}
+
 /** The longest a failing watch waits between tries. */
 const maximumBackoffMs = 24 * 60 * 60_000;
 
@@ -51,13 +68,21 @@ export function judgePriceCheck(
     ),
     outcome: {
       kind: "blocked",
-      summary: `The price watch the person asked for stopped: ${product} (${source.url}) could not be read three times in a row (${error}). The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}.`,
+      summary: `The price watch the person asked for stopped: three checks in a row could not ${failureWords(error)} for ${product} (${source.url}). The last price read was ${priceLabel(state.last, source.currency)}, at ${state.lastSeenAt}.`,
       userActionNeeded:
         "Offer a daily check of the page with the browser (a schedule), or a new watch if the link changed.",
     },
   });
   if (reading.kind === "blocked" || reading.kind === "unreachable") {
     return failure(`${reading.kind}: ${reading.reason}`);
+  }
+  // Out of stock is no news and no failure: the price comes back with it.
+  if (reading.kind === "unavailable") {
+    return {
+      kind: "quiet",
+      nextCheckAt: new Date(now.getTime() + period),
+      state,
+    };
   }
   if (reading.kind !== "price") return failure(reading.kind);
   if (reading.landedOn !== source.landedOn || !sameProduct(source, reading)) {

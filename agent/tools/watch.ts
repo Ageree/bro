@@ -54,11 +54,6 @@ const watchInputSchema = z.object({
 });
 
 /**
- * The link the person gave, as they wrote it: the model may only point at
- * one of theirs, never bring one from a page, a search or a report. The
- * person's own spelling, query included, is what gets watched.
- */
-/**
  * A link's host and path: the model may drop the query, so the person's
  * link is found by these, and their own spelling, query included, is what
  * gets watched.
@@ -67,6 +62,10 @@ function linkPath(url: URL) {
   return `${url.hostname.replace(/^www\./u, "")}${url.pathname.replace(/\/+$/u, "")}`;
 }
 
+/**
+ * The link the person gave, as they wrote it: the model may only point at
+ * one of theirs, never bring one from a page, a search or a report.
+ */
 function personLink(said: readonly string[], given: string) {
   const wanted = URL.parse(given.replace(/^http:/iu, "https:"));
   if (!wanted) return undefined;
@@ -104,19 +103,31 @@ async function createWatch(
     input.below !== undefined && input.below > 0 ? input.below : undefined;
   const percent =
     input.dropPercent !== undefined && input.dropPercent > 0
-      ? Math.min(input.dropPercent, 90)
+      ? input.dropPercent
       : undefined;
   if (
-    (below !== undefined && !named.has(below)) ||
-    (percent !== undefined && !named.has(percent))
+    (below !== undefined && !named.amounts.has(below)) ||
+    (percent !== undefined && !named.percents.has(percent))
   ) {
     throw new Error(notTheirAmount);
   }
+  // A term the person did not name is the default one, not the model's.
+  const days =
+    input.days !== undefined && named.amounts.has(input.days)
+      ? Math.min(Math.max(input.days, 1), maximumDays)
+      : defaultDays;
   const condition: PriceCondition =
     below === undefined
-      ? { kind: "drop", percent: percent ?? 0 }
+      ? { kind: "drop", percent: Math.min(percent ?? 0, 90) }
       : { amount: below, kind: "below" };
   const reading = await readPricePage(url);
+  if (reading.kind === "unavailable") {
+    return {
+      reply:
+        "Say the product is out of stock now, so there is no price to watch; offer to try again when it is back. Nothing was set up.",
+      watching: false,
+    };
+  }
   if (reading.kind !== "price") {
     const why = {
       blocked:
@@ -150,13 +161,6 @@ async function createWatch(
   }
   const owner = scheduleOwner(context);
   const now = new Date();
-  const days = Math.min(
-    Math.max(
-      input.days !== undefined && input.days > 0 ? input.days : defaultDays,
-      1
-    ),
-    maximumDays
-  );
   const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60_000);
   const product = reading.name ? `«${reading.name}»` : "the product";
   const { created, subscription } = await createSubscription(

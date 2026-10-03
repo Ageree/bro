@@ -108,6 +108,42 @@ describe("reading a price", () => {
     ).toMatchObject({ amount: 7_490, name: "Чайник" });
   });
 
+  it("calls a sold-out product unavailable, whatever other markup says", () => {
+    expect(
+      readPrice(
+        `${jsonLd({
+          "@type": "Product",
+          name: "Чайник",
+          offers: {
+            availability: "https://schema.org/OutOfStock",
+            price: 5_000,
+          },
+        })}<meta property="product:price:amount" content="5000">`
+      )
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  it("tells products of one name and price apart by SKU", () => {
+    expect(
+      readPrice(
+        jsonLd([
+          {
+            "@type": "Product",
+            name: "Чайник",
+            offers: { price: 100 },
+            sku: "A",
+          },
+          {
+            "@type": "Product",
+            name: "Чайник",
+            offers: { price: 100 },
+            sku: "B",
+          },
+        ])
+      )
+    ).toEqual({ kind: "several-products" });
+  });
+
   it("refuses a catalogue of several products", () => {
     expect(
       readPrice(
@@ -219,27 +255,36 @@ describe("a watch's product and condition", () => {
 
 describe("amounts in the person's words", () => {
   it("reads an amount with a rouble sign or word", () => {
-    const said = amountsSaid(["меньше 8000р", "до 7500 руб.", "или 9тр"]);
+    const { amounts } = amountsSaid([
+      "меньше 8000р",
+      "до 7500 руб.",
+      "или 9тр",
+    ]);
     for (const amount of [8_000, 7_500, 9_000]) {
-      expect(said.has(amount)).toBe(true);
+      expect(amounts.has(amount)).toBe(true);
     }
-    expect(said.has(800)).toBe(false);
+    expect(amounts.has(800)).toBe(false);
   });
 
-  it("reads «8к», «8 000», «8,5 тыс» and percents", () => {
-    const said = amountsSaid([
+  it("reads «8к», «8 000», «8,5 тыс», and percents apart from prices", () => {
+    const { amounts, percents } = amountsSaid([
       "следи за ценой, напиши когда станет меньше 8к",
-      "или ниже 7 500 ₽, или 8,5 тыс, или упадёт на 10%",
+      "или ниже 7 500 ₽, или 8,5 тыс, или упадёт на 10%, или на 15 процентов",
     ]);
-    for (const amount of [8_000, 7_500, 8_500, 10]) {
-      expect(said.has(amount)).toBe(true);
+    for (const amount of [8_000, 7_500, 8_500]) {
+      expect(amounts.has(amount)).toBe(true);
     }
-    expect(said.has(9_000)).toBe(false);
+    expect(amounts.has(9_000)).toBe(false);
+    // «10%» is no price of 10.
+    expect(amounts.has(10)).toBe(false);
+    expect([...percents].toSorted((a, b) => a - b)).toEqual([10, 15]);
   });
 
   it("does not take the digits of a link as an amount", () => {
-    const said = amountsSaid(["https://shop.example/p/7000/ — меньше 5000"]);
-    expect(said.has(5_000)).toBe(true);
-    expect(said.has(7_000)).toBe(false);
+    const { amounts } = amountsSaid([
+      "https://shop.example/p/7000/ — меньше 5000",
+    ]);
+    expect(amounts.has(5_000)).toBe(true);
+    expect(amounts.has(7_000)).toBe(false);
   });
 });

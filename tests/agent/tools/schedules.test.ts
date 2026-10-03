@@ -775,6 +775,19 @@ describe("schedule tools", () => {
       "paused"
     );
 
+    watches.setStatus.mockResolvedValue({ ...watch, status: "cancelled" });
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "deleted" },
+        toolContext("schedules-update")
+      )
+    ).resolves.toMatchObject({ id: watch.id, status: "deleted" });
+    expect(watches.setStatus).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      watch.id,
+      "deleted"
+    );
+
     services.getJob.mockResolvedValue(undefined);
     await expect(
       updateSchedule.execute(

@@ -188,6 +188,11 @@ describe("the sandbox tool router", () => {
       ...cp1251,
     ]);
     expect(decodePage(meta, "text/html")).toContain("Привет");
+    const spaced = new Uint8Array([
+      ...new TextEncoder().encode('<meta charset = "windows-1251">'),
+      ...cp1251,
+    ]);
+    expect(decodePage(spaced, "text/html")).toContain("Привет");
     expect(decodePage(new TextEncoder().encode("ok"), undefined)).toBe("ok");
   });
 

@@ -87,5 +87,12 @@ describe("reading a product page", () => {
     expect(pageKey(new URL("https://shop.example/p/1/#reviews"))).toBe(
       "shop.example/p/1"
     );
+    // A value that holds «&» or «=», or another port, is another page.
+    expect(pageKey(new URL("https://shop.example/p?a=1%26b%3D2"))).not.toBe(
+      pageKey(new URL("https://shop.example/p?a=1&b=2"))
+    );
+    expect(pageKey(new URL("https://shop.example:8443/p/1"))).toBe(
+      "shop.example:8443/p/1"
+    );
   });
 });

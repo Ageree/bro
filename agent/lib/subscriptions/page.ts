@@ -32,18 +32,20 @@ const trackingParameter =
   /^(?:utm_\w+|gclid|yclid|fbclid|_openstat|from|ref|referrer|srsltid|clid)$/iu;
 
 /**
- * The page a link names: host without `www.`, path without the trailing
- * slash, and the query without tracking parameters, in a fixed order.
+ * The page a link names: host without `www.` (with a port other than the
+ * default), path without the trailing slash, and the query, encoded, without
+ * tracking parameters, in a fixed order.
  * «?id=1» and «?id=2» are two products; «?utm_source=…» is the same one.
  */
 export function pageKey(url: URL) {
-  const query = [...url.searchParams]
-    .filter(([name]) => !trackingParameter.test(name))
-    .toSorted(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => `${name}=${value}`)
-    .join("&");
+  const query = new URLSearchParams(
+    [...url.searchParams]
+      .filter(([name]) => !trackingParameter.test(name))
+      .toSorted(([left], [right]) => left.localeCompare(right))
+  ).toString();
+  const host = `${url.hostname.replace(/^www\./u, "")}${url.port ? `:${url.port}` : ""}`;
   const path = url.pathname.replace(/\/+$/u, "");
-  return `${url.hostname.replace(/^www\./u, "")}${path}${query ? `?${query}` : ""}`;
+  return `${host}${path}${query ? `?${query}` : ""}`;
 }
 
 const blockingStatuses = new Set(["http 401", "http 403", "http 429"]);

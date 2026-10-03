@@ -90,6 +90,29 @@ describe("judging a price check", () => {
     });
   });
 
+  it("waits quietly while the product is out of stock", () => {
+    expect(judgePriceCheck(watch, { kind: "unavailable" }, now)).toEqual({
+      kind: "quiet",
+      nextCheckAt: new Date("2026-10-05T18:00:00.000Z"),
+      state: watch.state,
+    });
+  });
+
+  it("tells the person why the watch stopped in plain words, not codes", () => {
+    const check = judgePriceCheck(
+      { ...watch, failures: 2 },
+      { ...reading, sku: "FILTER" },
+      now
+    );
+    expect(check.kind).toBe("failed");
+    if (check.kind !== "failed") return;
+    expect(check.error).toBe("another-product");
+    const summary =
+      check.outcome.kind === "blocked" ? check.outcome.summary : "";
+    expect(summary).not.toContain("another-product");
+    expect(summary).toContain("same product");
+  });
+
   it("ends a watch whose term ran out, whatever the page says", () => {
     const check = judgePriceCheck(
       { ...watch, expiresAt: new Date("2026-10-05T11:00:00.000Z") },

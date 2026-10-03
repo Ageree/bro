@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { ScheduledRunOutcome } from "@shared/schedules/outcome";
 import type {
@@ -44,6 +44,11 @@ export async function createSubscription(
   now = new Date()
 ) {
   return db.transaction(async (transaction) => {
+    // Two turns setting up the same page at once take turns here: the row
+    // lock below finds nothing to lock while neither has inserted yet.
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`subscription:${scope.workspaceId}:${scope.userId}:${input.template}:${input.dedupeKey}`}, 0))`
+    );
     const [existing] = await transaction
       .select({ id: subscriptions.id, jobId: subscriptions.jobId })
       .from(subscriptions)
@@ -312,7 +317,7 @@ export async function listLiveSubscriptions(scope: AccessScope) {
         inArray(subscriptions.status, [...liveStatuses])
       )
     )
-    .orderBy(asc(subscriptions.createdAt));
+    .orderBy(desc(subscriptions.createdAt));
 }
 
 /**

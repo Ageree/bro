@@ -5,8 +5,8 @@
 export function decodePage(bytes: Uint8Array, mediaType: string | undefined) {
   const head = Buffer.from(bytes.subarray(0, 2048)).toString("latin1");
   const charset =
-    /charset=["']?([\w-]+)/iu.exec(mediaType ?? "")?.[1] ??
-    /<meta[^>]+charset=["']?([\w-]+)/iu.exec(head)?.[1] ??
+    /charset\s*=\s*["']?([\w-]+)/iu.exec(mediaType ?? "")?.[1] ??
+    /<meta[^>]+charset\s*=\s*["']?([\w-]+)/iu.exec(head)?.[1] ??
     /encoding=["']([\w-]+)["']/iu.exec(head)?.[1] ??
     "utf-8";
   try {

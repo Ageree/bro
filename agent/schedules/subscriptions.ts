@@ -15,8 +15,12 @@ import {
  * its check still going.
  */
 const leaseForMs = 10 * 60_000;
-/** How long one tick waits for its checks; the rest finish on their own. */
-const tickDeadlineMs = 4 * 60_000;
+/**
+ * How long one tick starts checks for. A read in flight takes at most 90 s
+ * (15 s a hop, five redirects), so the last one ends before the next tick:
+ * no shop is read by two ticks at once.
+ */
+const tickDeadlineMs = 3 * 60_000;
 const claimLimit = 25;
 
 /**
@@ -105,7 +109,7 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     const expired = subscription.expiresAt.getTime() <= now.getTime();
     const reading = expired
       ? ({ kind: "no-price" } as const)
-      : await readPricePage(new URL(subscription.source.url));
+      : await readSafely(subscription.source.url);
     const check = judgePriceCheck(subscription, reading, new Date());
     const outcome = await settleSubscriptionCheck(subscription, check);
     console.info("[subscriptions] check", {
@@ -120,5 +124,21 @@ async function checkSubscription(subscription: ClaimedSubscription) {
       cause: error,
       outcome: "error",
     });
+  }
+}
+
+/**
+ * A page read that cannot throw: a stored link that no longer parses or a
+ * read that failed in a way the download did not foresee counts as a failed
+ * check, so the backoff and the third failure's report still apply.
+ */
+async function readSafely(url: string) {
+  try {
+    return await readPricePage(new URL(url));
+  } catch (error) {
+    return {
+      kind: "unreachable" as const,
+      reason: error instanceof Error ? error.name : "error",
+    };
   }
 }

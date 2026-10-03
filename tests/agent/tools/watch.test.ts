@@ -99,6 +99,7 @@ async function watchTool(messages: ModelMessage[], authenticator = "authjs") {
 async function create(
   input: {
     readonly below?: number;
+    readonly days?: number;
     readonly dropPercent?: number;
     readonly url: string;
   },
@@ -189,6 +190,26 @@ describe("watch-create", () => {
       expect.objectContaining({ condition: { kind: "drop", percent: 0 } }),
       expect.any(Date)
     );
+  });
+
+  it("keeps a drop the person named above 90% at the cap, and a term only if named", async () => {
+    await create({ days: 60, dropPercent: 95, url: link }, [
+      { content: `${link} напиши, если упадёт на 95%`, role: "user" },
+    ]);
+    const [, watch] = services.create.mock.calls[0] ?? [];
+    expect(watch?.condition).toEqual({ kind: "drop", percent: 90 });
+    // 60 days were never said: the default term holds.
+    const days =
+      ((watch?.expiresAt.getTime() ?? 0) - Date.now()) / (24 * 60 * 60_000);
+    expect(Math.round(days)).toBe(30);
+  });
+
+  it("does not take «10%» for a price of 10", async () => {
+    await expect(
+      create({ below: 10, url: link }, [
+        { content: `${link} напиши, если упадёт на 10%`, role: "user" },
+      ])
+    ).rejects.toThrow(/threshold must be one the person named/u);
   });
 
   it("refuses a link or an amount that is not the person's", async () => {

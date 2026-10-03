@@ -257,8 +257,9 @@
 
 ## Подписки на события
 
-- Пилот `SUBSCRIPTIONS_WORKSPACES` (п. 27). Проверяет код, без модели
-  (`agent/schedules/subscriptions.ts`, раз в 5 минут, отдельно от `dynamic.ts`):
+- Пилот `SUBSCRIPTIONS_WORKSPACES` (п. 27). Проверяет код, без модели: тик
+  `agent/schedules/subscriptions.ts` раз в 5 минут (отдельно от `dynamic.ts`)
+  берёт слежки, чей срок проверки подошёл, — каждая читается раз в 6 часов;
   находка, сбой третий раз подряд или конец срока — уже завершённый прогон
   скрытого задания `kind='subscription'`, отчёт везёт обычный `dynamic.ts`;
   ночью — по правилу `wake` (`agent/lib/subscriptions/delivery.ts`).

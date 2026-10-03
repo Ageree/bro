@@ -87,6 +87,21 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     ).toEqual([]);
   });
 
+  it("keeps one watch when two turns set up the same page at once", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const results = await Promise.all([
+      subscriptions.createSubscription(alice, priceWatch(), now),
+      subscriptions.createSubscription(
+        alice,
+        priceWatch({ condition: { amount: 7_000, kind: "below" } }),
+        now
+      ),
+    ]);
+    expect(results.filter(({ created }) => created)).toHaveLength(1);
+    expect(await db.query.subscriptions.findMany()).toHaveLength(1);
+    expect(await db.query.scheduledAgentJobs.findMany()).toHaveLength(1);
+  });
+
   it("leases a due watch and writes a quiet check without any run", async () => {
     const { db, subscriptions } = await openDatabase();
     await subscriptions.createSubscription(alice, priceWatch(), now);

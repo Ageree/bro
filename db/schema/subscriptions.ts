@@ -136,6 +136,11 @@ export const subscriptions = pgTable(
       .on(table.nextCheckAt)
       .where(sql`${table.status} = 'active'`),
     index("subscriptions_job_idx").on(table.jobId),
+    // Deleting a membership cascades here by its two columns.
+    index("subscriptions_owner_idx").on(
+      table.workspaceId,
+      table.createdByUserId
+    ),
     uniqueIndex("subscriptions_live_idx")
       .on(
         table.workspaceId,

@@ -31,8 +31,13 @@ export function turnCostSource(auth: SessionAuth) {
     return { runId: undefined, source: "chat" as const };
   }
   return {
-    runId: scheduledCallerSchema.safeParse(auth.current).data?.attributes
-      .scheduledRunId,
+    // A resumed worker's turn may carry its run only on the caller that
+    // opened the session.
+    runId:
+      scheduledCallerSchema.safeParse(auth.current).data?.attributes
+        .scheduledRunId ??
+      scheduledCallerSchema.safeParse(auth.initiator).data?.attributes
+        .scheduledRunId,
     source: "background" as const,
   };
 }

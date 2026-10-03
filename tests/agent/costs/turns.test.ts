@@ -124,6 +124,15 @@ describe("whose turn a model step is", () => {
     expect(turnCostSource(auth(caller("scheduled-worker"))).runId).toBe(
       undefined
     );
+    // A resumed worker's turn: the run is on the caller that opened it.
+    expect(
+      turnCostSource(
+        auth(
+          caller("scheduled-input"),
+          caller("scheduled-worker", { scheduledRunId: "run-8" })
+        )
+      ).runId
+    ).toBe("run-8");
   });
 
   it("finds the workspace on the caller, or on the one who opened the session", () => {
