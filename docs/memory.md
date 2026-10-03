@@ -58,8 +58,8 @@ transaction that writes it, with who wrote it (`model`, `person`, `digest`,
 digest's merge, correction and purge). Existing records with content start
 their history with one `import` revision, and the hourly pass gives one to
 each record saved by a release that did not write history. The history is for the person to see
-and undo changes on the memory screen in the cabinet (planned: roadmap item
-31, its last PR); it never enters the model's context. Forgetting — at the person's
+and undo changes on the memory screen in the cabinet (`/workspace/memory`);
+it never enters the model's context. Forgetting — at the person's
 word or by the model — wipes the text of every earlier revision of that record
 at once. A live record keeps its earlier texts up to its last ten revisions. The text of a record that expired or that the digest merged,
 corrected or found one-off stays readable for 30 days, to be restored, and
@@ -98,6 +98,15 @@ text («… (с 01.10; раньше: …)»). At most three of each kind and a f
 memories change in a day; a failed call changes nothing. Its cost is a
 `usage_costs` row with the source `memory`. A record the conversation changed
 since the digest read it is left for the next day.
+
+The memory screen (`/workspace/memory`, tRPC `memory.*` in
+`web/trpc/router.ts`) shows the scope Bro's conversations last read: rules,
+preferences and the rest, and a timeline of the last changes. The person
+edits a record's text (checked by `memoryTextSchema`, refused on a stale
+revision), deletes it (history wiped as when Bro forgets it), and brings back
+an earlier revision from the record's history (`restoreMemory`, written as
+`restore` by `person`). Rules are only deleted there: they are set and changed
+in the conversation, where a rule write needs the person's own turn.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat

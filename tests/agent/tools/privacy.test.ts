@@ -128,6 +128,7 @@ describe("privacy", () => {
     expect(remove).toContain("В самом Google ничего не удаляется");
     expect(remove).toContain("https://example.com/personal-info");
     expect(remove).toContain("https://example.com/vault");
+    expect(remove).toContain("https://example.com/workspace/memory");
     expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
     // The sign-ins Bro keeps, the visits it makes on its own, and how both
