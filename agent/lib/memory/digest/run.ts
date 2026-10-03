@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { planDedupe } from "@agent/lib/memory/digest/dedupe";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { redactUnsafeText } from "@agent/lib/memory/digest/redact";
@@ -267,6 +268,9 @@ async function redactWorkstreams(
   }
 }
 
+/** Postgres's answer to a transaction it chose to end in a deadlock. */
+const deadlock = z.object({ code: z.literal("40P01") });
+
 /**
  * Runs a write the conversation may have raced: a memory changed since the
  * digest read it is left for tomorrow rather than failing the day.
@@ -276,10 +280,13 @@ async function skipChanged<Result>(write: () => Promise<Result>) {
     await write();
     return true;
   } catch (error) {
-    // A text the cut made too long for its field is left as well.
+    // A text the cut made too long for its field is left as well, and so is
+    // a write that lost a deadlock to expiry.
     if (
       error instanceof Error &&
-      (error.name === "ZodError" || /changed|forgotten/u.test(error.message))
+      (error.name === "ZodError" ||
+        /changed|forgotten/u.test(error.message) ||
+        deadlock.safeParse(error.cause).success)
     )
       return false;
     throw error;

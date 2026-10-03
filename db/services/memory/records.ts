@@ -416,18 +416,28 @@ export async function forgetMemory(
     if (replay) return { forgotten: true, ...replay };
     if (input.keeper) {
       // Locked, as below: the text this one folds into stays what was read
-      // until the forget commits.
-      const [keeper] = await transaction
-        .select({ revision: memoryRecords.revision })
+      // until the forget commits. Both rows at once, in index order — the
+      // order expiry's update meets them in too — so the two never wait on
+      // each other.
+      const locked = await transaction
+        .select({
+          index: memoryRecords.index,
+          live: sql<boolean>`${memoryRecords.content} IS NOT NULL`,
+          revision: memoryRecords.revision,
+        })
         .from(memoryRecords)
         .where(
           and(
-            recordIdentity(scope, scopeKey, input.keeper.index),
-            isNotNull(memoryRecords.content)
+            eq(memoryRecords.workspaceId, scope.workspaceId),
+            eq(memoryRecords.scopeKey, scopeKey),
+            inArray(memoryRecords.index, [input.keeper.index, input.index])
           )
         )
-        .limit(1)
+        .orderBy(asc(memoryRecords.index))
         .for("update");
+      const keeper = locked.find(
+        ({ index, live }) => index === input.keeper?.index && live
+      );
       if (keeper?.revision !== input.keeper.revision) {
         throw new Error(
           "Memory changed: what it folds into is not what was read."
