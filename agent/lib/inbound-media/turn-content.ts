@@ -69,23 +69,41 @@ function toBase64(data: Uint8Array) {
   );
 }
 
-/** The line the model sees for a file it cannot open. */
+/**
+ * The line the model sees for a file: its name and type as the sender gave
+ * them, each kept to one line of plain text ({@link lineName}).
+ */
 export function fileNote(
   name: string | undefined,
   mediaType: string | undefined,
   detail?: string
 ) {
-  const label = `${name ?? "без имени"} (${mediaType ?? "неизвестный тип"})`;
+  const type =
+    mediaType !== undefined && mediaTypeToken.test(mediaType)
+      ? mediaType
+      : lineName(mediaType);
+  const label = `${lineName(name) ?? "без имени"} (${type ?? "неизвестный тип"})`;
   return detail ? `[файл: ${label}, ${detail}]` : `[файл: ${label}]`;
 }
 
+/** A media type as one: `type/subtype`, no parameters, nothing else. */
+const mediaTypeToken = /^[\w.+-]+\/[\w.+-]+$/u;
+
 /**
- * The person's file name as one line of the turn: a line break or a bracket
- * in it could otherwise close the note early and forge the line eve writes
- * for a staged file, so they and runs of white space become one space.
+ * What the sender named a file (or its type) as plain text inside one note.
+ * A line break could start a line of the sender's own, a bracket close the
+ * note early, a slash spell a path (eve's `Attached file
+ * /workspace/attachments/…`, which Bro hands to the task agent), and an
+ * invisible format character (a direction override, a zero width space)
+ * hide any of it: each run of them, of control characters and of line or
+ * paragraph separators, with the spaces around it, becomes one space.
+ * Ordinary names and types are left as they are.
  */
-function lineName(name: string) {
-  return name.replace(/[\s\p{Cc}[\]]+/gu, " ").trim() || undefined;
+function lineName(name: string | undefined) {
+  const plain = name
+    ?.replace(/\s*[\p{Cc}\p{Cf}\p{Zl}\p{Zp}[\]/\\]+\s*/gu, " ")
+    .trim();
+  return plain === "" ? undefined : plain;
 }
 
 /**
@@ -127,7 +145,7 @@ export function inboundTurn(
         break;
       }
       case "document": {
-        lines.push(fileNote(lineName(item.filename), item.mediaType));
+        lines.push(fileNote(item.filename, item.mediaType));
         files.push({
           data: toBase64(item.data),
           filename: item.filename,

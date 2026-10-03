@@ -7,6 +7,7 @@ import {
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
+import { taskFilesOfCaller } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
 import {
@@ -70,7 +71,8 @@ const pastAnswerReaction =
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
   pastAnswer: boolean,
-  loadSkill: boolean
+  loadSkill: boolean,
+  taskReport: boolean
 ) {
   return defineTool({
     description:
@@ -81,6 +83,15 @@ function defineSendMessage(
       const refused = sendRefusal(message, turn);
       if (refused) return refused;
       markTurnDelivered(context.session);
+      // A link the task agent's report brought gets no preview: Telegram
+      // would fetch it before the person reads it, and the report may have
+      // built it from the person's files (`agent/channels/telegram.ts`).
+      if (taskReport && message.kind === "link") {
+        const { replyTo, url } = message;
+        return replyTo === undefined
+          ? { kind: "message" as const, text: url }
+          : { kind: "message" as const, replyTo, text: url };
+      }
       // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
       return message.kind === "message" && message.text !== undefined
         ? { ...message, text: withGroupedRoubles(message.text) }
@@ -145,7 +156,9 @@ export default defineDynamic({
         pastAnswer,
         // In the skills pilot a rewrite that asks for a tool says how to
         // get one whose group is not offered yet.
-        skillsLayout(context) === "core"
+        skillsLayout(context) === "core",
+        turnOpenedByBackgroundTask(context.messages) &&
+          taskFilesOfCaller(context)
       );
       const messageOnly = { send_message };
       const interactive = delivery

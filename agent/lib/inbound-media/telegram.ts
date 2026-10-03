@@ -1,7 +1,11 @@
 import type { TelegramMessage } from "eve/channels/telegram";
 import { z } from "zod";
 import { env } from "@shared/environment";
-import { downloadTimeoutMs, downloadWithin } from "./download";
+import {
+  documentDownloadTimeoutMs,
+  downloadTimeoutMs,
+  downloadWithin,
+} from "./download";
 import {
   audioByteCap,
   baseMediaType,
@@ -111,7 +115,8 @@ type TelegramDownload =
 /** Resolves a `file_id` to bytes through `getFile` and the file endpoint. */
 async function downloadTelegramFile(
   fileId: string,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs = downloadTimeoutMs
 ): Promise<TelegramDownload> {
   const token = botToken();
   let filePath: string;
@@ -135,7 +140,8 @@ async function downloadTelegramFile(
   }
   return downloadWithin(
     new URL(`${telegramApiBaseUrl}/file/bot${token}/${filePath}`),
-    maxBytes
+    maxBytes,
+    { timeoutMs }
   );
 }
 
@@ -197,7 +203,8 @@ async function taskDocumentItem(
   }
   const download = await downloadTelegramFile(
     document.file_id,
-    documentByteCap
+    documentByteCap,
+    documentDownloadTimeoutMs
   );
   if (download.kind === "oversize") {
     return {

@@ -4,6 +4,12 @@
  */
 
 export const downloadTimeoutMs = 15_000;
+/**
+ * A spreadsheet or document for the task agent is up to 10 MB
+ * (`documentByteCap`), and Telegram on Cloud.ru loses packets
+ * (docs/dev-notes.md, «Сеть Cloud.ru»): it gets longer than a photo.
+ */
+export const documentDownloadTimeoutMs = 60_000;
 /** Redirect hops followed before a chain is treated as a loop. */
 const maximumRedirects = 5;
 const redirectStatuses: ReadonlySet<number> = new Set([
@@ -32,6 +38,8 @@ export interface DownloadOptions extends RequestInit {
    * checked (`agent/lib/sandbox/public-fetch.ts`) and follows no redirect.
    */
   readonly fetch?: (url: URL, init: RequestInit) => Promise<Response>;
+  /** How long one hop may take, its body included; {@link downloadTimeoutMs} by default. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -110,7 +118,12 @@ export async function downloadWithin(
   maxBytes: number,
   options?: DownloadOptions
 ): Promise<DownloadResult> {
-  const { allowUrl, fetch: requestHop = fetch, ...init } = options ?? {};
+  const {
+    allowUrl,
+    fetch: requestHop = fetch,
+    timeoutMs = downloadTimeoutMs,
+    ...init
+  } = options ?? {};
   if (url.protocol !== "https:") return { kind: "failed", reason: "not-https" };
   let target = url;
   for (let redirects = 0; ; redirects += 1) {
@@ -119,7 +132,7 @@ export async function downloadWithin(
       response = await requestHop(target, {
         ...init,
         redirect: allowUrl ? "manual" : "follow",
-        signal: AbortSignal.timeout(downloadTimeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       const name = error instanceof Error ? error.name : "";

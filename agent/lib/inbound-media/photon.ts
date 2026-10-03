@@ -1,6 +1,6 @@
 import type { Attachment, Message } from "chat";
 import { z } from "zod";
-import { downloadWithin } from "./download";
+import { documentDownloadTimeoutMs, downloadWithin } from "./download";
 import {
   audioByteCap,
   baseMediaType,
@@ -106,7 +106,8 @@ function within(bytes: Uint8Array, maxBytes: number): AttachmentBytes {
 async function attachmentBytes(
   attachment: Attachment,
   reader: Reader,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs?: number
 ): Promise<AttachmentBytes> {
   // The adapter reports the size up front, so a file the model would never
   // receive is refused before its bytes are pulled into memory.
@@ -129,7 +130,7 @@ async function attachmentBytes(
     return { kind: "failed", reason: "read failed" };
   }
   if (attachment.url && URL.canParse(attachment.url)) {
-    return downloadWithin(new URL(attachment.url), maxBytes);
+    return downloadWithin(new URL(attachment.url), maxBytes, { timeoutMs });
   }
   return { kind: "failed", reason: "no source" };
 }
@@ -196,10 +197,17 @@ async function attachmentItem(
   if (voiceLike && !transcriptionAvailable()) {
     return { kind: "voice-unsupported" };
   }
+  // A file that may be one for the task agent is up to 10 MB: its download
+  // gets a document's time, not a photo's.
   const resolved = await attachmentBytes(
     attachment,
     reader,
-    byteCapFor(declared, voiceLike)
+    byteCapFor(declared, voiceLike),
+    documents &&
+      !voiceLike &&
+      documentMediaType(attachment.name, declared) !== undefined
+      ? documentDownloadTimeoutMs
+      : undefined
   );
   if (resolved.kind === "oversize") {
     if (voiceLike) return { kind: "voice-failed" };

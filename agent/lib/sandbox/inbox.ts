@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { SandboxSession } from "eve/sandbox";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { presignStoredObject } from "@shared/object-storage/s3";
 
@@ -19,9 +20,13 @@ export const attachmentByteCap = documentByteCap;
 /** The files one message to the task agent brings along. */
 export const attachmentsPerMessage = 10;
 
-/** Where eve's staging puts a file, its name as `safeFilename` leaves it. */
+/**
+ * Where eve's staging puts a file, its name as `safeFilename` leaves it:
+ * that name is never longer than the person's own, and a file name on the
+ * sandbox's disk is at most 255 bytes.
+ */
 const attachmentPath =
-  /^\/workspace\/attachments\/([\da-f]{16})\/([\w.-]{1,120})$/u;
+  /^\/workspace\/attachments\/([\da-f]{16})\/([\w.-]{1,255})$/u;
 /**
  * The same path inside Bro's text, not part of a longer path or name: a
  * longer name, a deeper path, a path under another root or a name running
@@ -29,7 +34,7 @@ const attachmentPath =
  * than a name holds leave room for a sentence's period.
  */
 const attachmentPathInText =
-  /(?<![\w./\p{L}\p{N}-])\/workspace\/attachments\/[\da-f]{16}\/[\w.-]{1,128}(?![\w./\0\p{L}\p{N}-])/gu;
+  /(?<![\w./\p{L}\p{N}-])\/workspace\/attachments\/[\da-f]{16}\/[\w.-]{1,263}(?![\w./\0\p{L}\p{N}-])/gu;
 /** How many distinct paths one text is searched for. */
 const scannedPaths = 50;
 /** A presigned URL here is used at once, by the server that signed it. */
@@ -122,8 +127,28 @@ export async function putInbox(
   await response.body?.cancel();
 }
 
-/** One file's bytes, or null when nobody stored them under the key. */
-export async function getInbox(key: string, signal?: AbortSignal) {
+/**
+ * How long a stored file stays good to take. Bro's hook stores the file
+ * anew whenever the person's turn names it to `task` (`putInbox` always
+ * writes, so the object's Last-Modified is that turn's), and the task agent
+ * takes it within seconds; an older object is one a later turn that was not
+ * the person's (a page, a report) named again, and it is refused.
+ */
+export const inboxFreshMs = 5 * 60_000;
+
+/**
+ * One file as the task agent may take it: there, stored within
+ * {@link inboxFreshMs} (an object whose date is missing or unreadable counts
+ * as old), or neither. An old object's body is not read.
+ */
+export async function getInbox(
+  key: string,
+  signal?: AbortSignal
+): Promise<
+  | { readonly kind: "missing" }
+  | { readonly kind: "stale" }
+  | { readonly bytes: Uint8Array; readonly kind: "file" }
+> {
   const response = await request(key, "GET", {}, signal);
   if (response.status === 404) {
     // Cloud.ru answers 404 for a missing bucket too: only NoSuchKey is a
@@ -131,7 +156,11 @@ export async function getInbox(key: string, signal?: AbortSignal) {
     if ((await response.text()).includes("NoSuchBucket")) {
       throw new InboxStorageError("Object Storage has no such bucket.");
     }
-    return null;
+    return { kind: "missing" };
+  }
+  if (!storedFresh(response)) {
+    await response.body?.cancel();
+    return { kind: "stale" };
   }
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > attachmentByteCap) {
@@ -141,6 +170,215 @@ export async function getInbox(key: string, signal?: AbortSignal) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > attachmentByteCap) {
     throw new InboxStorageError("The file in the inbox is over 10 MB.");
+  }
+  return { bytes, kind: "file" };
+}
+
+/** Whether an object's Last-Modified is within {@link inboxFreshMs}. */
+function storedFresh(response: Response) {
+  const storedAt = Date.parse(response.headers.get("last-modified") ?? "");
+  return Number.isFinite(storedAt) && Date.now() - storedAt <= inboxFreshMs;
+}
+
+/**
+ * The object that says a sandbox holds the person's files. It lives
+ * outside `sandbox/inbox/`, which a sweep may empty, and is never removed:
+ * the files stay in the sandbox's `/workspace` and its snapshots. The id is
+ * a code sandbox's, as `sandboxd` takes it (`sandboxIdFor`).
+ */
+function personFilesMarkerKey(sandboxId: string) {
+  if (!/^[\da-z-]{1,63}$/u.test(sandboxId)) {
+    throw new InboxStorageError("Only a code sandbox's id can be marked.");
+  }
+  return `sandbox/person-files/${sandboxId}`;
+}
+
+/**
+ * The object that says some task agent of one conversation was given the
+ * person's files: its report may carry their content back into the
+ * conversation, so a task agent the conversation starts later keeps off the
+ * web unless the person's own turn sent it (`personCallKey`). Hashed like
+ * the inbox, and never removed either.
+ */
+function conversationMarkerKey(workspaceId: string, parentSessionId: string) {
+  return [
+    "sandbox/person-files-conversations",
+    sha256(workspaceId).slice(0, 16),
+    sha256(parentSessionId).slice(0, 16),
+  ].join("/");
+}
+
+/**
+ * The object that says the person's own turn made one `task` call: Bro's
+ * hook stores it as the call streams in, before eve starts the task agent
+ * (`agent/hooks/task-files.ts`), and the task agent that call started
+ * checks it (`ctx.session.parent.callId`). Good for {@link inboxFreshMs},
+ * like a file.
+ */
+function personCallKey(
+  workspaceId: string,
+  parentSessionId: string,
+  callId: string
+) {
+  return [
+    "sandbox/inbox",
+    sha256(workspaceId).slice(0, 16),
+    sha256(parentSessionId).slice(0, 16),
+    "calls",
+    sha256(callId).slice(0, 32),
+  ].join("/");
+}
+
+async function putMark(key: string, signal: AbortSignal | undefined) {
+  const response = await request(
+    key,
+    "PUT",
+    { body: "1", headers: { "content-type": "text/plain" } },
+    signal
+  );
+  await response.body?.cancel();
+}
+
+/**
+ * Whether the object is there, and when `fresh`, stored within
+ * {@link inboxFreshMs}. Only Object Storage's own "no such key" reads as
+ * absent; any other answer or an outage throws.
+ */
+async function markHeld(
+  key: string,
+  signal: AbortSignal | undefined,
+  options: { readonly fresh?: boolean } = {}
+) {
+  const response = await request(key, "GET", {}, signal);
+  if (response.status !== 404) {
+    await response.body?.cancel();
+    return options.fresh === true ? storedFresh(response) : true;
+  }
+  if ((await response.text()).includes("NoSuchKey")) return false;
+  throw new InboxStorageError(
+    "Object Storage did not say whether a mark of the person's files is there."
+  );
+}
+
+/**
+ * Marks the sandbox, and its conversation, as holding the person's files,
+ * before the first of them goes in: from then on the tool router keeps that
+ * sandbox off the network (`sandboxHoldsPersonFiles` in `./router.ts`), and
+ * the conversation's later task agents follow unless the person sent them
+ * (`conversationHoldsPersonFiles`). The conversation goes first; a failure
+ * throws, and the task agent's hook then copies nothing.
+ */
+export async function markSandboxHoldsPersonFiles(
+  target: {
+    readonly parentSessionId: string;
+    readonly sandboxId: string;
+    readonly workspaceId: string;
+  },
+  signal?: AbortSignal
+) {
+  const sandboxKey = personFilesMarkerKey(target.sandboxId);
+  await putMark(
+    conversationMarkerKey(target.workspaceId, target.parentSessionId),
+    signal
+  );
+  await putMark(sandboxKey, signal);
+}
+
+/**
+ * Whether the sandbox was ever given the person's files, or told to keep off
+ * the web as if it was. Only Object Storage's own "no such key" reads as no;
+ * any other answer, an outage or a malformed id throws, and the router then
+ * refuses as if it were yes.
+ */
+export async function sandboxHoldsPersonFiles(
+  sandboxId: string,
+  signal?: AbortSignal
+) {
+  return await markHeld(personFilesMarkerKey(sandboxId), signal);
+}
+
+/** Whether some task agent of the conversation was given the person's files. */
+export async function conversationHoldsPersonFiles(
+  workspaceId: string,
+  parentSessionId: string,
+  signal?: AbortSignal
+) {
+  return await markHeld(
+    conversationMarkerKey(workspaceId, parentSessionId),
+    signal
+  );
+}
+
+/** Records that the person's own turn made this `task` call. */
+export async function putPersonCall(
+  workspaceId: string,
+  parentSessionId: string,
+  callId: string,
+  signal?: AbortSignal
+) {
+  await putMark(personCallKey(workspaceId, parentSessionId, callId), signal);
+}
+
+/** Whether the person's own turn made this `task` call just now. */
+export async function personCallFresh(
+  workspaceId: string,
+  parentSessionId: string,
+  callId: string,
+  signal?: AbortSignal
+) {
+  return await markHeld(
+    personCallKey(workspaceId, parentSessionId, callId),
+    signal,
+    { fresh: true }
+  );
+}
+
+/**
+ * Whether the sandbox has a file at the path, without reading it: a file the
+ * task agent wrote there may be far larger than any the person sent.
+ */
+export async function sandboxHasFile(
+  sandbox: Pick<SandboxSession, "readFile">,
+  path: string,
+  signal?: AbortSignal
+) {
+  const stream = await sandbox.readFile({ abortSignal: signal, path });
+  if (stream === null) return false;
+  await stream.cancel().catch(() => undefined);
+  return true;
+}
+
+/**
+ * A sandbox file's bytes up to {@link attachmentByteCap}: null when there is
+ * none, "oversize" as soon as more arrived than that, the rest unread.
+ */
+export async function readSandboxFileWithin(
+  sandbox: Pick<SandboxSession, "readFile">,
+  path: string,
+  signal?: AbortSignal
+) {
+  const stream = await sandbox.readFile({ abortSignal: signal, path });
+  if (stream === null) return null;
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The file arrives as a sequence of chunks.
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > attachmentByteCap) break;
+    chunks.push(value);
+  }
+  if (total > attachmentByteCap) {
+    await reader.cancel().catch(() => undefined);
+    return "oversize" as const;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   return bytes;
 }

@@ -27,6 +27,11 @@ const bytes = new Uint8Array([1, 2, 3]);
 const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
 const path = `/workspace/attachments/${hash}/report.xlsx`;
 
+/** An object's date as Object Storage sends it, this many minutes ago. */
+function storedAgo(minutes: number) {
+  return new Date(Date.now() - minutes * 60_000).toUTCString();
+}
+
 function stubStorage(...answers: readonly (Error | Response)[]) {
   const calls: { method: string; url: URL }[] = [];
   vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
@@ -54,7 +59,7 @@ describe("the paths Bro names", () => {
     ).toEqual([path, other]);
   });
 
-  it("refuses dots, NUL, another directory and a name over 120 characters", async () => {
+  it("refuses dots, NUL, another directory and a name over 255 characters", async () => {
     const { namedAttachmentPaths, pathMatchesBytes } = await loadInbox();
     const root = `/workspace/attachments/${hash}`;
 
@@ -70,12 +75,16 @@ describe("the paths Bro names", () => {
           `2/workspace/attachments/${hash}/x.csv`,
           `/workspace/attachments/${hash}/sub/x.csv`,
           `/workspace/attachments/${hash.toUpperCase()}/x.csv`,
-          `${root}/${"n".repeat(121)}`,
+          `${root}/${"n".repeat(256)}`,
         ].join("\n")
       )
     ).toEqual([]);
     expect(pathMatchesBytes(`${root}/..`, bytes)).toBe(false);
-    expect(namedAttachmentPaths(`${root}/${"n".repeat(120)}`)).toHaveLength(1);
+    // eve's `safeFilename` does not shorten a name: a long one is still found,
+    // at the end of a sentence too.
+    const long = `${root}/${"n".repeat(250)}.xlsx`;
+    expect(namedAttachmentPaths(`Вот файл: ${long}.`)).toEqual([long]);
+    expect(pathMatchesBytes(long, bytes)).toBe(true);
   });
 
   it("checks the bytes against the path's hash", async () => {
@@ -113,7 +122,7 @@ describe("the inbox in Object Storage", () => {
     const calls = stubStorage(
       new Response(null, { status: 200 }),
       new Response(bytes, {
-        headers: { "content-length": "3" },
+        headers: { "content-length": "3", "last-modified": storedAgo(0) },
         status: 200,
       })
     );
@@ -121,7 +130,7 @@ describe("the inbox in Object Storage", () => {
     const key = inboxKey("workspace-1", "session-1", path);
 
     await putInbox(key, bytes);
-    expect(await getInbox(key)).toEqual(bytes);
+    expect(await getInbox(key)).toEqual({ bytes, kind: "file" });
     expect(calls.map((call) => call.method)).toEqual(["PUT", "GET"]);
     expect(calls[0]?.url.pathname).toBe(`/bro-state-test/${key}`);
   });
@@ -132,7 +141,9 @@ describe("the inbox in Object Storage", () => {
     );
     const { getInbox, inboxKey } = await loadInbox();
 
-    expect(await getInbox(inboxKey("w", "s", path))).toBeNull();
+    expect(await getInbox(inboxKey("w", "s", path))).toEqual({
+      kind: "missing",
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -151,7 +162,10 @@ describe("the inbox in Object Storage", () => {
     vi.useFakeTimers();
     const calls = stubStorage(
       new Response(null, { status: 503 }),
-      new Response(bytes, { status: 200 }),
+      new Response(bytes, {
+        headers: { "last-modified": storedAgo(0) },
+        status: 200,
+      }),
       new TypeError("fetch failed"),
       new Response(null, { status: 200 })
     );
@@ -160,7 +174,7 @@ describe("the inbox in Object Storage", () => {
 
     const read = getInbox(key);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(await read).toEqual(bytes);
+    expect(await read).toEqual({ bytes, kind: "file" });
     const write = putInbox(key, bytes);
     await vi.advanceTimersByTimeAsync(1000);
     await write;
@@ -216,7 +230,10 @@ describe("the inbox in Object Storage", () => {
   it("refuses a file over 10 MB both ways", async () => {
     const calls = stubStorage(
       new Response(null, {
-        headers: { "content-length": String(10 * 1024 * 1024 + 1) },
+        headers: {
+          "content-length": String(10 * 1024 * 1024 + 1),
+          "last-modified": storedAgo(0),
+        },
         status: 200,
       })
     );
@@ -228,5 +245,160 @@ describe("the inbox in Object Storage", () => {
     ).rejects.toThrow(/10 MB/u);
     await expect(getInbox(key)).rejects.toThrow(/10 MB/u);
     expect(calls.map((call) => call.method)).toEqual(["GET"]);
+  });
+
+  it("takes only a file stored within the last five minutes", async () => {
+    const calls = stubStorage(
+      new Response(bytes, {
+        headers: { "last-modified": storedAgo(4) },
+        status: 200,
+      }),
+      new Response(bytes, {
+        headers: { "last-modified": storedAgo(6) },
+        status: 200,
+      }),
+      // An object without a readable date counts as old.
+      new Response(bytes, { status: 200 }),
+      new Response(bytes, {
+        headers: { "last-modified": "yesterday" },
+        status: 200,
+      })
+    );
+    const { getInbox, inboxKey } = await loadInbox();
+    const key = inboxKey("w", "s", path);
+
+    expect(await getInbox(key)).toEqual({ bytes, kind: "file" });
+    expect(await getInbox(key)).toEqual({ kind: "stale" });
+    expect(await getInbox(key)).toEqual({ kind: "stale" });
+    expect(await getInbox(key)).toEqual({ kind: "stale" });
+    expect(calls).toHaveLength(4);
+  });
+});
+
+describe("the mark of a sandbox that holds the person's files", () => {
+  const target = {
+    parentSessionId: "session-1",
+    sandboxId: "sb-1",
+    workspaceId: "workspace-1",
+  };
+
+  it("marks the conversation, then the sandbox, and reads both", async () => {
+    const calls = stubStorage(
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 200 }),
+      new Response("1", { status: 200 }),
+      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }),
+      new Response("1", { status: 200 }),
+      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+    );
+    const {
+      conversationHoldsPersonFiles,
+      markSandboxHoldsPersonFiles,
+      sandboxHoldsPersonFiles,
+    } = await loadInbox();
+
+    await markSandboxHoldsPersonFiles(target);
+    expect(await sandboxHoldsPersonFiles("sb-1")).toBe(true);
+    expect(await sandboxHoldsPersonFiles("sb-2")).toBe(false);
+    expect(await conversationHoldsPersonFiles("workspace-1", "session-1")).toBe(
+      true
+    );
+    expect(await conversationHoldsPersonFiles("workspace-1", "session-2")).toBe(
+      false
+    );
+    const paths = calls.map((call) => `${call.method} ${call.url.pathname}`);
+    expect(paths[0]).toMatch(
+      /^PUT \/bro-state-test\/sandbox\/person-files-conversations\/[\da-f]{16}\/[\da-f]{16}$/u
+    );
+    expect(paths[0]).not.toContain("workspace-1");
+    expect(paths.slice(1, 4)).toEqual([
+      "PUT /bro-state-test/sandbox/person-files/sb-1",
+      "GET /bro-state-test/sandbox/person-files/sb-1",
+      "GET /bro-state-test/sandbox/person-files/sb-2",
+    ]);
+    expect(paths[4]).toBe(paths[0]?.replace("PUT", "GET"));
+  });
+
+  it("reads as unknown, not as absent, on anything but no such key", async () => {
+    vi.useFakeTimers();
+    stubStorage(
+      new Response("<Error><Code>NoSuchBucket</Code></Error>", {
+        status: 404,
+      }),
+      new Response(null, { status: 403 }),
+      new Response(null, { status: 503 }),
+      new Response(null, { status: 503 })
+    );
+    const { InboxStorageError, sandboxHoldsPersonFiles } = await loadInbox();
+
+    await expect(sandboxHoldsPersonFiles("sb-1")).rejects.toThrow(
+      InboxStorageError
+    );
+    await expect(sandboxHoldsPersonFiles("sb-1")).rejects.toThrow(/403/u);
+    await Promise.all([
+      expect(sandboxHoldsPersonFiles("sb-1")).rejects.toThrow(/503/u),
+      vi.advanceTimersByTimeAsync(1000),
+    ]);
+    // An id that is not a code sandbox's is no key at all.
+    await expect(sandboxHoldsPersonFiles("../x")).rejects.toThrow(
+      /sandbox's id/u
+    );
+  });
+
+  it("fails the mark when Object Storage refuses either object", async () => {
+    const calls = stubStorage(
+      new Response(null, { status: 403 }),
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 403 })
+    );
+    const { markSandboxHoldsPersonFiles } = await loadInbox();
+
+    await expect(markSandboxHoldsPersonFiles(target)).rejects.toThrow(/403/u);
+    // The sandbox is not marked without its conversation.
+    expect(calls).toHaveLength(1);
+    await expect(markSandboxHoldsPersonFiles(target)).rejects.toThrow(/403/u);
+    expect(calls).toHaveLength(3);
+  });
+});
+
+describe("the person's own task calls", () => {
+  it("are one object per call under the conversation's inbox, hiding the ids", async () => {
+    const calls = stubStorage(
+      new Response(null, { status: 200 }),
+      new Response("1", {
+        headers: { "last-modified": storedAgo(1) },
+        status: 200,
+      })
+    );
+    const { personCallFresh, putPersonCall } = await loadInbox();
+
+    await putPersonCall("workspace-1", "session-1", "call-1");
+    expect(await personCallFresh("workspace-1", "session-1", "call-1")).toBe(
+      true
+    );
+    const [put, get] = calls;
+    expect(put?.method).toBe("PUT");
+    expect(put?.url.pathname).toMatch(
+      /^\/bro-state-test\/sandbox\/inbox\/[\da-f]{16}\/[\da-f]{16}\/calls\/[\da-f]{32}$/u
+    );
+    expect(put?.url.pathname).not.toContain("call-1");
+    expect(get?.url.pathname).toBe(put?.url.pathname);
+  });
+
+  it("count only while stored within the last five minutes", async () => {
+    stubStorage(
+      new Response("1", {
+        headers: { "last-modified": storedAgo(6) },
+        status: 200,
+      }),
+      new Response("1", { status: 200 }),
+      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+    );
+    const { personCallFresh } = await loadInbox();
+
+    expect(await personCallFresh("w", "s", "call-1")).toBe(false);
+    // No date reads as old.
+    expect(await personCallFresh("w", "s", "call-1")).toBe(false);
+    expect(await personCallFresh("w", "s", "call-2")).toBe(false);
   });
 });

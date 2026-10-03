@@ -29,7 +29,7 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
+import { taskFilesEnabled, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
   finalizeScheduledReportDelivery,
@@ -167,6 +167,8 @@ export default telegramChannel({
       }
 
       if (output.kind === "link") {
+        // A link the person asked for keeps its preview: send_message turns
+        // a link of the task agent's report into text (`agent/tools/messaging.ts`).
         await sendText(context, output.url);
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
@@ -425,6 +427,7 @@ async function deliverText(
   }
 ) {
   const caller = session.session.auth.current ?? session.session.auth.initiator;
+  const filesHere = taskFilesOfCaller(session);
   if (!caller) {
     const references = extractImageArtifactMarkdownReferences(text);
     const body =
@@ -436,7 +439,7 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    if (body) await sendText(context, body);
+    if (body) await sendText(context, body, { preview: !filesHere });
     const prepared = await attachmentDelivery(session, attachments);
     await uploadFiles(context, prepared.files, prepared.links);
     return;
@@ -459,7 +462,7 @@ async function deliverText(
   const body = [delivery.text, failureMessage].filter(Boolean).join("\n\n");
   // The words are worth reading before the pictures arrive, so nothing waits
   // on a download that may take the whole timeout.
-  if (body) await sendText(context, body);
+  if (body) await sendText(context, body, { preview: !filesHere });
   const prepared = await attachmentDelivery(session, attachments);
   await uploadFiles(
     context,
@@ -491,15 +494,32 @@ function deliveredTurnId(context: TelegramEventContext) {
   return deliveryMarker(context).deliveredTurnId;
 }
 
-async function sendText(context: TelegramEventContext, text: string) {
+/**
+ * Posts text, split to Telegram's limits. With `preview: false` a link in it
+ * gets no preview: Telegram's servers would fetch the link to build one
+ * before the person even reads it, so a link the task agent's report built
+ * from the person's files would carry their content out unclicked. Only
+ * where those files reach the task agent (`taskFilesOfCaller`).
+ */
+async function sendText(
+  context: TelegramEventContext,
+  text: string,
+  options: { readonly preview?: boolean } = {}
+) {
   if (!context.telegram.chatId) return;
   for (const chunk of splitTelegramHtml(toTelegramHtml(text))) {
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
-    await context.telegram.request("sendMessage", {
+    const body = {
       chat_id: context.telegram.chatId,
       parse_mode: "HTML",
       text: chunk,
-    });
+    };
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
+    await context.telegram.request(
+      "sendMessage",
+      options.preview === false
+        ? { ...body, link_preview_options: { is_disabled: true } }
+        : body
+    );
   }
 }
 

@@ -11,17 +11,38 @@ import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
 import { searchWeb, webSearchInputSchema } from "@agent/lib/web-search/search";
+import { sandboxHoldsPersonFiles } from "./inbox";
 import { verifySandboxToolsToken } from "./keys";
 import { fetchPublic } from "./public-fetch";
 
 /**
  * The tool router of the code sandbox (`sandbox/README.md`): the GraphQL
  * endpoint the `tools` CLI reaches through `sandboxd`, which adds the token
- * the sandbox never sees. Only tools without the person's data and without
- * actions in their name live here: a prompt injected into a page the task
- * agent reads can at most search, read and download public pages: every
- * hop of a read goes only to an address checked public
- * (`./public-fetch.ts`), never into Bro's own network.
+ * the sandbox never sees. Only tools without actions in their name live
+ * here: a prompt injected into a page the task agent reads can at most
+ * search, read and download public pages: every hop of a read goes only to
+ * an address checked public (`./public-fetch.ts`), never into Bro's own
+ * network.
+ *
+ * Each of them also carries what the sandbox puts in its request out to the
+ * web: a URL, a query. So a sandbox that was given the person's files
+ * (docs/roadmap.md, item 30) gets none of them, for good: an instruction
+ * hidden in a sheet or a file name could otherwise send the file's content
+ * out in a URL. The task agent's hook marks the sandbox in Object Storage
+ * before the first file goes in (`markSandboxHoldsPersonFiles`), and every
+ * network call here checks that mark first; a mark that cannot be read
+ * refuses too. The trade-off: a task with the person's files has no web,
+ * so Bro looks up what it needs itself and passes it in the message.
+ *
+ * The content can also leave as text: in the task agent's report, which
+ * opens a turn of Bro's that may start or continue a task agent. So the
+ * same mark goes on every later task agent of that conversation that the
+ * person's own turn did not just start (`keepOffWebUnlessSent` in
+ * `agent/subagents/task/hooks/person-files.ts`). What stays open: a later
+ * turn of the person's may copy report text from the history into a task
+ * agent with the web, or fetch with it itself; and a link in Bro's reply
+ * that iMessage previews (where the files reach the task agent, Telegram
+ * replies go without previews, `agent/channels/telegram.ts`).
  */
 
 /** Under `/eve/v1/`, the only prefix that reaches eve in production. */
@@ -241,12 +262,15 @@ interface RouterTool<T extends z.ZodType> {
   readonly description: string;
   readonly execute: (input: z.infer<T>) => Promise<Json>;
   readonly inputSchema: T;
+  /** Whether a call sends what the sandbox gave it out to the web. */
+  readonly network: boolean;
 }
 
 /** A router tool as the GraphQL resolvers see it, whatever its input. */
 interface ResolvedRouterTool {
   readonly description: string;
   readonly inputSchema: Json;
+  readonly network: boolean;
   readonly run: (input: Json) => Promise<Json>;
 }
 
@@ -256,9 +280,35 @@ function routerTool<T extends z.ZodType>(
   return {
     description: tool.description,
     inputSchema: jsonSchema.parse(z.toJSONSchema(tool.inputSchema)),
+    network: tool.network,
     run: async (input: Json) =>
       await tool.execute(tool.inputSchema.parse(input)),
   };
+}
+
+/** One check of the mark, its retry included. */
+const markTimeoutMs = 10_000;
+
+/**
+ * Why the sandbox may not reach the web, or undefined when it may: the
+ * answer the task agent reads in place of the tool's output.
+ */
+async function networkRefusal(sandboxId: string) {
+  try {
+    const holds = await sandboxHoldsPersonFiles(
+      sandboxId,
+      AbortSignal.timeout(markTimeoutMs)
+    );
+    return holds
+      ? "This sandbox holds the person's files, so it has no web access: web_search, web_fetch and download are off here for good. Work with the files and what Bro wrote; name in your report what you could not look up, and Bro will find it."
+      : undefined;
+  } catch (error) {
+    console.warn("[sandbox-tools] person files mark unread", {
+      error: error instanceof Error ? error.name : "unknown",
+      sandboxId,
+    });
+    return "The web tools are off for now: it could not be checked whether this sandbox holds the person's files. Try again in a minute, or do without the web and say so in your report.";
+  }
 }
 
 const routerTools = new Map<string, ResolvedRouterTool>([
@@ -269,6 +319,7 @@ const routerTools = new Map<string, ResolvedRouterTool>([
         "Search the web. Returns pages with title, URL and an excerpt; read one in full with web_fetch.",
       execute: search,
       inputSchema: webSearchInputSchema,
+      network: true,
     }),
   ],
   [
@@ -278,6 +329,7 @@ const routerTools = new Map<string, ResolvedRouterTool>([
         "Read a public web page as plain text (up to 50 000 characters).",
       execute: fetchPage,
       inputSchema: webFetchInputSchema,
+      network: true,
     }),
   ],
   [
@@ -287,6 +339,7 @@ const routerTools = new Map<string, ResolvedRouterTool>([
         "Download a public file (up to 15 MB). The CLI saves it: tools download <url> <path>.",
       execute: downloadFile,
       inputSchema: downloadInputSchema,
+      network: true,
     }),
   ],
 ]);
@@ -296,12 +349,24 @@ const toolExecuteArgsSchema = z.object({
   name: z.string().min(1),
 });
 
+/** What every resolver knows of the request: whose sandbox sent it. */
+interface RouterContext {
+  readonly sandboxId: string;
+}
+
 const rootValue = {
-  toolExecute: async (rawArgs: Readonly<Record<string, Json>>) => {
+  toolExecute: async (
+    rawArgs: Readonly<Record<string, Json>>,
+    context: RouterContext
+  ) => {
     const args = toolExecuteArgsSchema.parse(rawArgs);
     const tool = routerTools.get(args.name.replaceAll("-", "_"));
     if (tool === undefined) {
       return { error: `There is no tool ${args.name}.`, ok: false };
+    }
+    if (tool.network) {
+      const refusal = await networkRefusal(context.sandboxId);
+      if (refusal !== undefined) return { error: refusal, ok: false };
     }
     try {
       return { ok: true, output: await tool.run(args.input) };
@@ -396,7 +461,9 @@ export async function answerSandboxToolRequest(request: Request) {
           : [{ message: refusal }],
     });
   }
+  const contextValue: RouterContext = { sandboxId: claims.sb };
   const result = await execute({
+    contextValue,
     document,
     operationName: body.data.operationName ?? undefined,
     rootValue,

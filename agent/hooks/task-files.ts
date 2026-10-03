@@ -6,12 +6,13 @@ import { opensAsBackgroundTask } from "@agent/lib/delivery/turn-sends";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
-  attachmentByteCap,
   attachmentsPerMessage,
   inboxKey,
   namedAttachmentPaths,
   pathMatchesBytes,
   putInbox,
+  putPersonCall,
+  readSandboxFileWithin,
 } from "@agent/lib/sandbox/inbox";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 
@@ -50,6 +51,8 @@ const turnRecord = defineState<{
 const taskInputSchema = z.object({ message: z.string() });
 /** All files of one step's calls are copied within this, one after another. */
 const stepBudgetMs = 20_000;
+/** Recording the person's `task` calls of one event. */
+const callsBudgetMs = 10_000;
 
 type TurnCoordinates = Pick<
   HookEvent<"turn.started">["data"],
@@ -80,17 +83,27 @@ function personTurn(ctx: HookContext, step: TurnCoordinates) {
   );
 }
 
-/** The staged paths one event's `task` calls name. */
-function namedPaths(
-  actions: HookEvent<"actions.requested">["data"]["actions"]
-) {
-  const paths = new Set<string>();
-  for (const action of actions) {
+/** The `task` calls of one event. */
+function taskCalls(actions: HookEvent<"actions.requested">["data"]["actions"]) {
+  return actions.flatMap((action) =>
     // A subagent tool reaches hooks as a plain tool call; `subagent-call`
     // is eve's internal dispatch and never shows here
     // (`harness/coordination.js`).
-    if (action.kind !== "tool-call" || action.toolName !== "task") continue;
-    const message = taskInputSchema.safeParse(action.input).data?.message;
+    action.kind === "tool-call" && action.toolName === "task"
+      ? [
+          {
+            callId: action.callId,
+            message: taskInputSchema.safeParse(action.input).data?.message,
+          },
+        ]
+      : []
+  );
+}
+
+/** The staged paths the calls name, each once. */
+function namedPaths(calls: ReturnType<typeof taskCalls>) {
+  const paths = new Set<string>();
+  for (const { message } of calls) {
     for (const path of namedAttachmentPaths(message ?? "")) paths.add(path);
   }
   return [...paths];
@@ -162,13 +175,25 @@ export default defineHook({
     },
     async "actions.requested"(event, ctx) {
       try {
-        const paths = namedPaths(event.data.actions);
-        if (paths.length === 0) return;
+        const calls = taskCalls(event.data.actions);
+        if (calls.length === 0) return;
         if (!taskFilesOfCaller(ctx) || !personCaller(ctx)) return;
         if (!personTurn(ctx, event.data)) return;
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
+        // The task agent each call starts stays on the web only when the
+        // person's turn made the call (`keepOffWebUnlessSent`).
+        const recorded = await recordPersonCalls({
+          callIds: calls.map(({ callId }) => callId),
+          sessionId: ctx.session.id,
+          workspaceId,
+        });
+        const paths = namedPaths(calls);
+        if (paths.length === 0) {
+          console.info("[task-files] calls", { recorded });
+          return;
+        }
         const share = stepShare(event.data.stepIndex, paths);
         if (share.paths.length === 0) return;
         const { failed, mirrored } = await mirror({
@@ -182,6 +207,7 @@ export default defineHook({
           failed,
           mirrored,
           named: paths.length,
+          recorded,
         });
       } catch (error) {
         console.warn("[task-files] files not mirrored", {
@@ -191,6 +217,21 @@ export default defineHook({
     },
   },
 });
+
+/** Records each call as the person's: how many were. */
+async function recordPersonCalls(input: {
+  readonly callIds: readonly string[];
+  readonly sessionId: string;
+  readonly workspaceId: string;
+}) {
+  const signal = AbortSignal.timeout(callsBudgetMs);
+  const results = await Promise.allSettled(
+    input.callIds.map(async (callId) => {
+      await putPersonCall(input.workspaceId, input.sessionId, callId, signal);
+    })
+  );
+  return results.filter((result) => result.status === "fulfilled").length;
+}
 
 /**
  * Copies each file that is what its path names: how many went, and how many
@@ -211,18 +252,19 @@ async function mirror(input: {
   for (const path of input.paths) {
     if (deadline.aborted || Date.now() >= input.deadlineAt) break;
     try {
+      // A file at the path may have grown far past any the person sent: it
+      // is read only up to the cap.
       // oxlint-disable-next-line eslint/no-await-in-loop -- One file at a time, within the step's budget.
-      const bytes = await input.sandbox.readBinaryFile({
-        abortSignal: deadline,
-        path,
-      });
+      const bytes = await readSandboxFileWithin(input.sandbox, path, deadline);
       if (
         bytes === null ||
-        bytes.byteLength > attachmentByteCap ||
+        bytes === "oversize" ||
         !pathMatchesBytes(path, bytes)
       ) {
         continue;
       }
+      // Stored again even when an earlier turn stored it: the object's date
+      // is what tells the task agent this turn named it (`inboxFreshMs`).
       // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       await putInbox(
         inboxKey(input.workspaceId, input.sessionId, path),
