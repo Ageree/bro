@@ -3,7 +3,7 @@ import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 /**
- * Whether the digest folds a workspace's duplicate memories together:
+ * Whether the digest touches a workspace's memory at all:
  * MEMORY_DIGEST_WORKSPACES names the pilot by workspace id or owner's email,
  * as BROWSER_VM_WORKSPACES does, or everyone with `*`. A failed lookup of
  * the email keeps the workspace out for the day; a caller that discloses
@@ -18,7 +18,7 @@ export async function memoryDigestPilot(
   try {
     return await listsWorkspace(list, scope);
   } catch (error) {
-    // The day's cleanup of codes still runs; only the merges wait.
+    // Nothing runs for it that day: no codes cut, no merges.
     console.warn("[memory-digest] pilot lookup failed", {
       errorCode: error instanceof Error ? error.name : "unknown",
     });
