@@ -323,6 +323,13 @@
       "when": 1791005707638,
       "tag": "0045_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791013579360,
+      "tag": "0046_goofy_purifiers",
+      "breakpoints": true
     }
   ]
 }

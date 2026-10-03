@@ -18,16 +18,168 @@ export const memoryIndexSchema = z
   .min(0)
   .max(2 ** 53 - 1);
 
-export function isSafeMemoryText(value: string) {
-  return !(
-    /\b(?:api[_ -]?key|access[_ -]?token|password|passwd|secret|private[_ -]?key|otp|one[_ -]?time[_ -]?code)\b\s*[:=]\s*\S+/iu.test(
-      value
-    ) ||
-    /\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/u.test(
-      value
-    ) ||
-    /(?:\d[ -]?){13,19}/u.test(value)
+/**
+ * A number a code is: 3–12 digits, maybe split as «123-456» or «55 12 98»;
+ * not a phone («+7…», «8 916 123-45-67», «916 123 45 67»), not part of a
+ * longer number, and not a year («с 2023 года»).
+ */
+const phoneNumber = String.raw`(?:[78](?:[ -]?\d){10}|9(?:[ -]?\d){9})(?![ -]?\d)`;
+const codeDigits = String.raw`(?<![+\d])(?!${phoneNumber})(\d(?:[ -]?\d){2,11})(?![ -]?\d)(?!\s*(?:год|г\.))`;
+const notAfterWord = String.raw`(?<![\p{L}\d])`;
+const notBeforeLetter = String.raw`(?!\p{L})`;
+/** What may stand between a code's name and its number: «PIN-код карты: 1234». */
+const codeGap = String.raw`(?:\s*(?:[:=#№—–-]|(?:код|code|карты|card|is|это)${notBeforeLetter}))*\s*`;
+
+/**
+ * What a credential or a one-time code looks like in a memory, in English
+ * and in Russian: «api_key = …», a provider token, a card number, «пароль от
+ * почты — Kot2024!», «PIN 1234», «смс 482193». The first group of each is
+ * the secret itself, which the digest cuts out of a longer text.
+ */
+const credentialPatterns = [
+  /\b(?:api[_ -]?key|access[_ -]?token|password|passwd|secret|private[_ -]?key|otp|one[_ -]?time[_ -]?code)\b\s*[:=]\s*(\S+)/dgiu,
+  /\b[a-z][a-z0-9_]*(?:secret|token|api_key|password)[a-z0-9_]*\s*[:=]\s*(\S+)/dgiu,
+  /\b((?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,})\b/dgu,
+  /\bbearer\s+([A-Za-z0-9._~+/-]{20,}=*)/dgiu,
+  // A Telegram bot's token.
+  /\b(\d{8,10}:[A-Za-z0-9_-]{30,})/dgu,
+  // A card's number: a group of 13–19 digits of its own, not a piece of a
+  // longer number and not an account's, a policy's or a parcel's
+  // («счёт 40817810099910004312», «полис ОМС 1234…», «трек 1234…»).
+  new RegExp(
+    String.raw`(?<!\d[ -]?)(?<!(?:сч[её]т|р/с|полис|омс|трек|account|policy|tracking)[^\d\n]{0,20})(\d(?:[ -]?\d){12,18})(?![ -]?\d)`,
+    "dgiu"
+  ),
+  // A password said with its value: after «:», «=» or a dash, a value with
+  // a digit, a Latin letter or a sign in it («пароль от почты — Kot2024!»),
+  // or one word that ends the clause or that a qualifier follows («пароль:
+  // Мурзик», «пароль: Мурзик для сайта» — not «пароль — на наклейке
+  // роутера»); or right after the word, a value with a digit
+  // («пароль от wifi qwerty123»).
+  new RegExp(
+    String.raw`${notAfterWord}(?:парол\p{L}*|password|passwd|passcode|pwd)${notBeforeLetter}(?:[^\n:=—–]{0,40}?(?:[:=]|\s[—–-]\s)\s*[«"']?((?=[^\s«»"']*[\dA-Za-z!@#$%^&*_])[^\s«»"']+|[^\s«»"',.;:()]+(?=[«»"']?\s*(?:$|[,.;)])|\s+(?:для|от|на|к|в|из|с|for|to|on|at)\s))|\s+(?:(?:от|для|к|на|for|to)\s+\S+\s+)?(?:это\s+|is\s+)?[«"']?([^\s«»"']*\d[^\s«»"']*))`,
+    "dgiu"
+  ),
+];
+
+/** PIN and SMS codes: secret wherever they stand, but at a door. */
+const codePatterns = [
+  // A card's, an app's or a safe's secret number («PIN-код от сейфа 4821»),
+  // unless its clause is about a door («pin 1234 от домофона»).
+  new RegExp(
+    String.raw`${notAfterWord}(?:otp|totp|2fa|cvv2?|cvc2?|пин-?код|pin-?code|пин|pin)${notBeforeLetter}${codeGap}(?:(?:от|для|к|for|to)(?:\s+[^\s\d,;.!?]+){1,3}${codeGap})?${codeDigits}`,
+    "dgiu"
+  ),
+  // An SMS code has four digits or more: «смс 482193», «смс от банка: 1234»,
+  // «смс для входа 482193» — not «смс для домофона 4512»,
+  // not «рейс SMS 123».
+  new RegExp(
+    String.raw`${notAfterWord}(?:смс|sms)${notBeforeLetter}${codeGap}(?:(?:от|из|с|from)\s+[^\s\d]+${codeGap}|(?:для|for)\s+(?:вход\p{L}*|авториз\p{L}*|подтвержд\p{L}*|верификац\p{L}*|регистрац\p{L}*|login|sign[- ]?in|verification|confirmation)${codeGap})?(?=\d(?:[ -]?\d){3})${codeDigits}`,
+    "dgiu"
+  ),
+];
+
+/** «Код» with a number: a secret only beside a sign-in, an SMS or a service. */
+const codeWithNumber = new RegExp(
+  String.raw`${notAfterWord}(?:код\p{L}{0,3}|code|kod)${notBeforeLetter}([^\d]{0,50}?)${codeDigits}`,
+  "dgiu"
+);
+/** What makes a code one-time, near it on either side. */
+const oneTimeWords =
+  /(?:смс|sms|подтвержд|проверочн|верифик|одноразов|авториз|логин|login|sign[- ]?in|verif|confirm|one[- ]?time|двухфактор|two[- ]?factor|2fa|восстановлен|recovery|backup)/iu;
+/** A sign-in or a service the code belongs to, named in its clause. */
+const codeOwners =
+  /(?:вход|госуслуг|gosuslug|есиа|банк|bank|сбер|тинькоф|ozon|озон|wildberries|telegram|телеграм|whatsapp|вотсап|почт|e-?mail|apple|google|гугл|яндекс|yandex|вконтакте|(?<!\p{L})vk(?!\p{L})|авито|avito|push|пуш)/iu;
+/**
+ * A number a code names that is no secret: a bank's details, a client's or
+ * an order's number («код клиента 774411», «код банка БИК…»).
+ */
+const referenceWords =
+  /(?:бик|инн|кпп|огрн|снилс|сч[её]т|клиент|договор|заказ|трек|посылк|ошибк|регион|город|стран|товар|артикул|подразделен|bic|swift|iban|client|customer|order|account|tracking|error|region|country|product)/iu;
+/**
+ * A door's code is no one-time code («код домофона 1234К, вход со двора»,
+ * «код на входе в офис 7788», «код от почтового ящика 123»). A safe's or a
+ * deposit box's is a secret all the same: no «сейф», «ячейка».
+ */
+const doorWords =
+  /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|замк|замок|офис|здани|ящик|пропуск|intercom|door|gate|entrance|office|mailbox)/iu;
+/**
+ * Nothing but a separator between a bare «код» and its number: «код
+ * 482913», «Код: 482913», «Your code is 123456».
+ */
+const bareGap = /^(?:\s*(?:[:=#№—–-]|(?:is|это)(?!\p{L})))*\s*$/iu;
+const codeContextChars = 25;
+
+/** The first group a match captured, as a `[start, end)` range. */
+function capturedRange(match: RegExpExecArray) {
+  const groups = match.indices?.slice(1) ?? [];
+  const range = groups.find((group) => group !== undefined);
+  return range ?? ([match.index, match.index + match[0].length] as const);
+}
+
+/**
+ * Where a text carries a credential or a one-time code, as `[start, end)`
+ * ranges of the secret itself; none for a text memory may keep.
+ */
+export function unsafeMemoryRanges(value: string) {
+  const ranges = credentialPatterns.flatMap((pattern) =>
+    [...value.matchAll(pattern)].map(capturedRange)
   );
+  for (const pattern of codePatterns) {
+    for (const match of value.matchAll(pattern)) {
+      const range = capturedRange(match);
+      if (!doorWords.test(clauseAround(value, range))) ranges.push(range);
+    }
+  }
+  for (const match of value.matchAll(codeWithNumber)) {
+    const gap = match[1] ?? "";
+    // The words before «код» in its own clause: «код домофона 1234, код
+    // Ozon 5678» has a door code and an Ozon one.
+    const before =
+      value
+        .slice(Math.max(0, match.index - codeContextChars), match.index)
+        .split(/[,;.!?\n]/u)
+        .at(-1) ?? "";
+    // «Код подтверждения заказа 123456» is one-time all the same.
+    if (
+      doorWords.test(gap) ||
+      doorWords.test(before) ||
+      (referenceWords.test(gap) && !oneTimeWords.test(gap))
+    )
+      continue;
+    const end = match.index + match[0].length;
+    const around = before + match[0] + value.slice(end, end + codeContextChars);
+    const digits = match.indices?.[2] ?? ([match.index, end] as const);
+    // A bare «код 482913» of four to eight digits is one-time too, unless
+    // its clause is about a door («код 7788 от подъезда»).
+    const bare =
+      bareGap.test(gap) &&
+      /^\d{4,8}$/u.test((match[2] ?? "").replaceAll(/[ -]/gu, "")) &&
+      !doorWords.test(clauseAround(value, digits));
+    // A service names its code before «код» as well: «в Ozon код 1234».
+    if (
+      bare ||
+      oneTimeWords.test(around) ||
+      codeOwners.test(gap) ||
+      codeOwners.test(before)
+    )
+      ranges.push(digits);
+  }
+  return ranges;
+}
+
+/** The clause a range stands in: between the breaks around it. */
+function clauseAround(value: string, [start, end]: readonly [number, number]) {
+  const breaks = /[,;.!?\n]/u;
+  let from = start;
+  while (from > 0 && !breaks.test(value[from - 1] ?? "")) from -= 1;
+  let to = end;
+  while (to < value.length && !breaks.test(value[to] ?? "")) to += 1;
+  return value.slice(from, to);
+}
+
+export function isSafeMemoryText(value: string) {
+  return unsafeMemoryRanges(value).length === 0;
 }
 
 /**

@@ -101,6 +101,16 @@ export async function listCurrentMemories(
   return rows.map(memoryResult);
 }
 
+/** The eve scope keys a workspace keeps profile memory under. */
+export async function listMemoryScopeKeys(workspaceId: string) {
+  const rows = await db
+    .select({ scopeKey: memoryScopes.scopeKey })
+    .from(memoryScopes)
+    .where(eq(memoryScopes.workspaceId, workspaceId))
+    .orderBy(asc(memoryScopes.scopeKey));
+  return rows.map(({ scopeKey }) => scopeKey);
+}
+
 export async function listCurrentRules(scope: AccessScope) {
   const rows = await db
     .select({ index: memoryRecords.index, content: memoryRecords.content })
@@ -385,7 +395,12 @@ export async function updateMemory(
 export async function forgetMemory(
   scope: AccessScope,
   scopeKey: string,
-  input: { index: number; expectedRevision?: number },
+  input: {
+    index: number;
+    expectedRevision?: number;
+    /** A record this one folds into, which must still be at that revision. */
+    keeper?: { readonly index: number; readonly revision: number };
+  },
   operationId: string,
   origin: MemoryOrigin = modelOrigin
 ) {
@@ -399,6 +414,36 @@ export async function forgetMemory(
       operationId
     );
     if (replay) return { forgotten: true, ...replay };
+    if (input.keeper) {
+      // Locked, as below: the text this one folds into stays what was read
+      // until the forget commits. Both rows at once, in index order — the
+      // order expiry's update meets them in too — so the two never wait on
+      // each other.
+      const locked = await transaction
+        .select({
+          index: memoryRecords.index,
+          live: sql<boolean>`${memoryRecords.content} IS NOT NULL`,
+          revision: memoryRecords.revision,
+        })
+        .from(memoryRecords)
+        .where(
+          and(
+            eq(memoryRecords.workspaceId, scope.workspaceId),
+            eq(memoryRecords.scopeKey, scopeKey),
+            inArray(memoryRecords.index, [input.keeper.index, input.index])
+          )
+        )
+        .orderBy(asc(memoryRecords.index))
+        .for("update");
+      const keeper = locked.find(
+        ({ index, live }) => index === input.keeper?.index && live
+      );
+      if (keeper?.revision !== input.keeper.revision) {
+        throw new Error(
+          "Memory changed: what it folds into is not what was read."
+        );
+      }
+    }
     const identity = recordIdentity(scope, scopeKey, input.index);
     // Locked: expiry, which takes no scope lock, may not bump the revision
     // this forget is about to write.
