@@ -19,7 +19,8 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * the turn instead of failing it, `silent`, which keeps any text of the
  * step from the person, and `withheldTools` and `offeredTools`, which a
  * Gateway id ignores. `stableContext`, the pilot of the cache-friendly step,
- * is never set for a Gateway id (`stepContextPilot`).
+ * is never set for a Gateway id (`stepContextPilot`), nor is `skillBlocks`,
+ * the skills pilot (`skillsPilot`).
  */
 export function modelSelection(
   modelId: string,
@@ -28,6 +29,7 @@ export function modelSelection(
     readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
     readonly silent?: boolean;
+    readonly skillBlocks?: boolean;
     readonly stableContext?: boolean;
     readonly toolChoice?: StepToolChoice;
     readonly withheldTools?: readonly string[];
@@ -39,6 +41,7 @@ export function modelSelection(
         offeredTools: options.offeredTools,
         replyNote: options.replyNote,
         silent: options.silent,
+        skillBlocks: options.skillBlocks,
         stableContext: options.stableContext,
         toolChoice: options.toolChoice ?? "auto",
         withheldTools: options.withheldTools,

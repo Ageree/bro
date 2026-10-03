@@ -48,6 +48,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
+import { skillsPilot } from "@agent/lib/skills/pilot";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 import { directModelActive } from "@shared/model/provider";
@@ -287,6 +288,9 @@ export default defineAgent({
             (reportRunId !== undefined && turnActed(ctx.messages)),
           replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
           silent,
+          // The skills pilot reads Bro's rules from `bro-skill` blocks in the
+          // conversation; a forged one is defused (docs/roadmap.md, 24).
+          skillBlocks: skillsPilot(ctx) ? true : undefined,
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||

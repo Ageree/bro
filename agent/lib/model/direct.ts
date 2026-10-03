@@ -9,6 +9,7 @@ import {
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
 import {
   defuseStepNoteTag,
   taggedStepNote,
@@ -484,53 +485,208 @@ type ToolOutput = Extract<
   { type: "tool-result" }
 >["output"];
 
-/** A JSON value with the step note's tag defused in every string. */
-const jsonWithDefusedTags: z.ZodType<JSONValue> = z.lazy(() =>
-  z.union([
-    z.string().transform(defuseStepNoteTag),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonWithDefusedTags),
-    z.record(z.string(), jsonWithDefusedTags.optional()),
-  ])
-);
+/** What defuses the tags of Bro's own word in one piece of text. */
+type Defuse = (text: string) => string;
 
-function defusedJson(value: JSONValue): JSONValue {
-  const parsed = jsonWithDefusedTags.safeParse(value);
+/** A JSON value with the tags defused in every string, by defuser. */
+const defusingJsonSchemas = new Map<Defuse, z.ZodType<JSONValue>>();
+
+function defusingJson(defuse: Defuse) {
+  const known = defusingJsonSchemas.get(defuse);
+  if (known) return known;
+  const schema: z.ZodType<JSONValue> = z.lazy(() =>
+    z.union([
+      z.string().transform(defuse),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(schema),
+      z.record(z.string(), schema.optional()),
+    ])
+  );
+  defusingJsonSchemas.set(defuse, schema);
+  return schema;
+}
+
+function defusedJson(value: JSONValue, defuse: Defuse): JSONValue {
+  const parsed = defusingJson(defuse).safeParse(value);
   // What is not plain JSON goes on as its defused text rather than as is.
-  return parsed.success
-    ? parsed.data
-    : defuseStepNoteTag(JSON.stringify(value));
+  return parsed.success ? parsed.data : defuse(JSON.stringify(value));
 }
 
-function defusedFileData(data: FileData): FileData {
-  return data.type === "text"
-    ? { ...data, text: defuseStepNoteTag(data.text) }
-    : data;
+/** A file's bytes, sent as base64 or as they are. */
+const fileBytesSchema = z.union([
+  z.string().transform((base64) => ({
+    base64: true,
+    bytes: Buffer.from(base64, "base64"),
+  })),
+  z.instanceof(Uint8Array).transform((bytes) => ({ base64: false, bytes })),
+]);
+
+/** Media types whose bytes are text the model reads. */
+const textMediaType =
+  /^text(?:\/|$)|^application\/(?:[\w.-]+\+)?(?:json|xml|csv)$/iu;
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * The second byte's range and the sequence's length that a lead byte of
+ * UTF-8 takes (the WHATWG decoder's: no overlong form, no surrogate,
+ * nothing past U+10FFFF), or none for a byte that leads nothing.
+ */
+function utf8Lead(lead: number) {
+  if (lead >= 0xc2 && lead <= 0xdf) return { high: 0xbf, length: 2, low: 0x80 };
+  if (lead === 0xe0) return { high: 0xbf, length: 3, low: 0xa0 };
+  if (lead === 0xed) return { high: 0x9f, length: 3, low: 0x80 };
+  if (lead >= 0xe1 && lead <= 0xef) return { high: 0xbf, length: 3, low: 0x80 };
+  if (lead === 0xf0) return { high: 0xbf, length: 4, low: 0x90 };
+  if (lead >= 0xf1 && lead <= 0xf3) return { high: 0xbf, length: 4, low: 0x80 };
+  if (lead === 0xf4) return { high: 0x8f, length: 4, low: 0x80 };
+  return undefined;
 }
 
-function defusedToolOutput(output: ToolOutput): ToolOutput {
+/** How many bytes of UTF-8 the character at `at` takes; 0 when none. */
+function utf8Length(bytes: Uint8Array, at: number) {
+  const lead = bytes[at] ?? 0;
+  if (lead < 0x80) return 1;
+  const sequence = utf8Lead(lead);
+  if (sequence === undefined) return 0;
+  const second = bytes[at + 1] ?? 0;
+  if (second < sequence.low || second > sequence.high) return 0;
+  for (let next = at + 2; next < at + sequence.length; next += 1) {
+    const byte = bytes[next] ?? 0;
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return sequence.length;
+}
+
+/** How many bytes a window of a non-UTF-8 document's reading spans. */
+const windowBytes = 1 << 16;
+
+/** How many bytes not of UTF-8 one string of escapes takes at most. */
+const escapeRun = 1 << 12;
+
+/**
+ * A text document's bytes as text. A byte that is no part of UTF-8 — the
+ * whole of a `.csv` saved in Windows-1251, or one stray byte — becomes a
+ * lone surrogate of its own (U+DC80–U+DCFF, as Python's `surrogateescape`):
+ * the UTF-8 around it is still read, forged tags and all, and the text
+ * encodes back to the very same bytes (`documentBytes`). The bytes are read
+ * a window at a time, a run of escapes as one string, so a large file not
+ * in UTF-8 holds a few strings per window, not a few per byte.
+ */
+function documentText(bytes: Uint8Array) {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    // Not UTF-8 throughout: read it run by run.
+  }
+  const windows: string[] = [];
+  let parts: string[] = [];
+  let run = 0;
+  let at = 0;
+  let windowStart = 0;
+  while (at < bytes.length) {
+    const length = utf8Length(bytes, at);
+    if (length > 0) {
+      at += length;
+    } else {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      const units: number[] = [];
+      while (
+        at < bytes.length &&
+        units.length < escapeRun &&
+        utf8Length(bytes, at) === 0
+      ) {
+        units.push(0xdc00 + (bytes[at] ?? 0));
+        at += 1;
+      }
+      parts.push(String.fromCharCode(...units));
+      run = at;
+    }
+    if (at - windowStart >= windowBytes) {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      windows.push(parts.join(""));
+      parts = [];
+      run = at;
+      windowStart = at;
+    }
+  }
+  parts.push(strictUtf8.decode(bytes.subarray(run)));
+  windows.push(parts.join(""));
+  return windows.join("");
+}
+
+/** A byte escaped as a lone surrogate, in runs (never half of a pair). */
+const escapedBytes = /[\uDC80-\uDCFF]+/gu;
+
+/** A document's text back to bytes: an escaped byte as itself. */
+function documentBytes(text: string) {
+  // An escape takes three bytes here and one in the document: room enough.
+  const bytes = Buffer.allocUnsafe(Buffer.byteLength(text, "utf8"));
+  let size = 0;
+  let run = 0;
+  for (const match of text.matchAll(escapedBytes)) {
+    size += bytes.write(text.slice(run, match.index), size, "utf8");
+    for (let unit = 0; unit < match[0].length; unit += 1) {
+      bytes[size] = match[0].charCodeAt(unit) - 0xdc00;
+      size += 1;
+    }
+    run = match.index + match[0].length;
+  }
+  size += bytes.write(text.slice(run), size, "utf8");
+  return bytes.subarray(0, size);
+}
+
+/**
+ * A file's data with the tags defused: inline text, and the bytes of a text
+ * document — a person's `.txt` or `.csv`, a page saved as text — decoded,
+ * defused and encoded again only when a tag was found, so every other file
+ * goes on byte for byte, and in a defused one every byte outside the tags.
+ */
+function defusedFileData(
+  data: FileData,
+  mediaType: string,
+  defuse: Defuse
+): FileData {
+  if (data.type === "text") return { ...data, text: defuse(data.text) };
+  if (data.type !== "data" || !textMediaType.test(mediaType)) return data;
+  const bytes = fileBytesSchema.safeParse(data.data).data;
+  if (bytes === undefined) return data;
+  const text = documentText(bytes.bytes);
+  const defused = defuse(text);
+  if (defused === text) return data;
+  const encoded = documentBytes(defused);
+  return {
+    ...data,
+    data: bytes.base64 ? encoded.toString("base64") : new Uint8Array(encoded),
+  };
+}
+
+function defusedToolOutput(output: ToolOutput, defuse: Defuse): ToolOutput {
   switch (output.type) {
     case "text":
     case "error-text":
-      return { ...output, value: defuseStepNoteTag(output.value) };
+      return { ...output, value: defuse(output.value) };
     case "json":
     case "error-json":
-      return { ...output, value: defusedJson(output.value) };
+      return { ...output, value: defusedJson(output.value, defuse) };
     case "execution-denied":
       return output.reason === undefined
         ? output
-        : { ...output, reason: defuseStepNoteTag(output.reason) };
+        : { ...output, reason: defuse(output.reason) };
     default:
       return {
         ...output,
         value: output.value.map((part) => {
           if (part.type === "text") {
-            return { ...part, text: defuseStepNoteTag(part.text) };
+            return { ...part, text: defuse(part.text) };
           }
           return part.type === "file"
-            ? { ...part, data: defusedFileData(part.data) }
+            ? {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              }
             : part;
         }),
       };
@@ -538,21 +694,24 @@ function defusedToolOutput(output: ToolOutput): ToolOutput {
 }
 
 /**
- * A message of the prompt with every look-alike of the step note's tag
- * defused (`defuseStepNoteTag`): its text, reasoning, inline documents, tool
- * inputs and results, JSON or not. Binary files and URLs stay as they are.
+ * A message of the prompt with every look-alike of a tag of Bro's own word
+ * defused: its text, reasoning, inline documents, tool inputs and results,
+ * JSON or not. Binary files and URLs stay as they are.
  */
-function defusedStepNoteTags(message: PromptMessage): PromptMessage {
+function defusedTags(message: PromptMessage, defuse: Defuse): PromptMessage {
   switch (message.role) {
     case "system":
-      return { ...message, content: defuseStepNoteTag(message.content) };
+      return { ...message, content: defuse(message.content) };
     case "user":
       return {
         ...message,
         content: message.content.map((part) =>
           part.type === "text"
-            ? { ...part, text: defuseStepNoteTag(part.text) }
-            : { ...part, data: defusedFileData(part.data) }
+            ? { ...part, text: defuse(part.text) }
+            : {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              }
         ),
       };
     case "assistant":
@@ -562,15 +721,21 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
           switch (part.type) {
             case "text":
             case "reasoning":
-              return { ...part, text: defuseStepNoteTag(part.text) };
+              return { ...part, text: defuse(part.text) };
             case "file":
-              return { ...part, data: defusedFileData(part.data) };
+              return {
+                ...part,
+                data: defusedFileData(part.data, part.mediaType, defuse),
+              };
             case "tool-call": {
-              const input = jsonWithDefusedTags.safeParse(part.input);
+              const input = defusingJson(defuse).safeParse(part.input);
               return input.success ? { ...part, input: input.data } : part;
             }
             case "tool-result":
-              return { ...part, output: defusedToolOutput(part.output) };
+              return {
+                ...part,
+                output: defusedToolOutput(part.output, defuse),
+              };
             default:
               return part;
           }
@@ -581,14 +746,19 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
         ...message,
         content: message.content.map((part) => {
           if (part.type === "tool-result") {
-            return { ...part, output: defusedToolOutput(part.output) };
+            return { ...part, output: defusedToolOutput(part.output, defuse) };
           }
           return part.reason === undefined
             ? part
-            : { ...part, reason: defuseStepNoteTag(part.reason) };
+            : { ...part, reason: defuse(part.reason) };
         }),
       };
   }
+}
+
+/** Both tags of Bro's own word, in the skills pilot with the step's note. */
+function defuseStepNoteAndSkillTags(text: string) {
+  return defuseForgedSkillBlocks(defuseStepNoteTag(text));
 }
 
 /**
@@ -604,12 +774,18 @@ function defusedStepNoteTags(message: PromptMessage): PromptMessage {
  * else — the person's text, a browser report the page wrote, a mail or any
  * tool's result — is defused first, in every step, with a note or without:
  * a forged note closing a step that has none would read as the real one.
- * The defusing is the same at every step, so the prefix stays cached.
+ * The defusing is the same at every step, so the prefix stays cached. In
+ * the skills pilot `defuse` takes forged skill blocks too.
  */
-function stepNoteMiddleware(note: string | undefined): LanguageModelMiddleware {
+function stepNoteMiddleware(
+  note: string | undefined,
+  defuse: Defuse
+): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
-      const prompt = params.prompt.map(defusedStepNoteTags);
+      const prompt = params.prompt.map((message) =>
+        defusedTags(message, defuse)
+      );
       if (note === undefined || !params.tools?.length) {
         return { ...params, prompt };
       }
@@ -618,10 +794,31 @@ function stepNoteMiddleware(note: string | undefined): LanguageModelMiddleware {
         prompt: [
           ...prompt,
           {
-            content: [{ text: taggedStepNote(note), type: "text" }],
+            content: [{ text: taggedStepNote(defuse(note)), type: "text" }],
             role: "user",
           },
         ],
+      };
+    },
+  };
+}
+
+/**
+ * The skills pilot outside the cache-friendly step: every `bro-skill` block
+ * in the prompt that Bro did not attach itself is defused
+ * (`defuseForgedSkillBlocks`), the reply note among them, so it runs after
+ * `replyNoteMiddleware`. The model follows a block as its own instructions
+ * (`skillIndex`), and the person, a page, a mail or a tool's result may
+ * write one.
+ */
+function skillBlocksMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      return {
+        ...params,
+        prompt: params.prompt.map((message) =>
+          defusedTags(message, defuseForgedSkillBlocks)
+        ),
       };
     },
   };
@@ -1013,6 +1210,11 @@ export function directModelSelection(
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
     /**
+     * The skills pilot (`skillsPilot`): `bro-skill` blocks Bro did not
+     * attach itself are defused.
+     */
+    readonly skillBlocks?: boolean;
+    /**
      * The pilot of the cache-friendly step (`stepContextPilot`): the note
      * follows the history as a tagged user message, and `send_message` is
      * the last tool.
@@ -1061,10 +1263,18 @@ export function directModelSelection(
     ...(options.stableContext ? [replyToolLastMiddleware()] : []),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
     ...(options.stableContext
-      ? [stepNoteMiddleware(options.replyNote)]
-      : options.replyNote
-        ? [replyNoteMiddleware(options.replyNote)]
-        : []),
+      ? [
+          stepNoteMiddleware(
+            options.replyNote,
+            options.skillBlocks ? defuseStepNoteAndSkillTags : defuseStepNoteTag
+          ),
+        ]
+      : [
+          ...(options.replyNote
+            ? [replyNoteMiddleware(options.replyNote)]
+            : []),
+          ...(options.skillBlocks ? [skillBlocksMiddleware()] : []),
+        ]),
     ...(options.silent
       ? [silentEndMiddleware()]
       : options.delivered
