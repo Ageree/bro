@@ -94,7 +94,7 @@ export async function recordBrowserVmRunCosts(
         model,
         steps: run.stepCount,
         unpriced,
-        ...(usage.hosts === undefined ? {} : { hosts: usage.hosts }),
+        hosts: usage.hosts,
       },
       workspaceId,
     });

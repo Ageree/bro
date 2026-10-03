@@ -693,11 +693,13 @@ describe("reading a VM run", () => {
     expect(recorded?.costRub).toBe(4.2);
     expect(recorded?.costUsd).toBeNull();
     expect(recorded?.units).toMatchObject({ inputTokens: 150_000 });
-    expect(recorded?.units).not.toHaveProperty("hosts");
+    expect(recorded?.units?.hosts).toBeUndefined();
   });
 
   it("records which hosts served the run's model, and its bill when that list is malformed", async () => {
-    const recordedUnits = async (hosts: unknown) => {
+    const recordedUnits = async (
+      hosts: NonNullable<WorkerRun["usage"]>[string]
+    ) => {
       recordUsageCost.mockClear();
       const client = await loadClient();
       worker.readBrowserVmWorkerRun.mockResolvedValue(
@@ -721,7 +723,7 @@ describe("reading a VM run", () => {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each run's costs are read from a fresh client and cleared mocks.
       const recorded = await recordedUnits(malformed);
       expect(recorded?.costRub).toBe(4.2);
-      expect(recorded?.units).not.toHaveProperty("hosts");
+      expect(recorded?.units?.hosts).toBeUndefined();
     }
   });
 

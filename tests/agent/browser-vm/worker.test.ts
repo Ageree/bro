@@ -279,8 +279,7 @@ describe("browser VM worker client", () => {
     expect(
       calls.map(
         (call) =>
-          z.object({ tuning: z.unknown() }).parse(JSON.parse(call.body ?? ""))
-            .tuning
+          z.object({ tuning: z.unknown() }).parse(JSON.parse(call.body)).tuning
       )
     ).toEqual([tuning, tuning]);
     for (const provider of [
@@ -294,7 +293,7 @@ describe("browser VM worker client", () => {
           text: "123456",
           tuning: { provider },
         })
-      ).rejects.toThrow();
+      ).rejects.toBeInstanceOf(z.ZodError);
     }
     expect(calls).toHaveLength(2);
   });
