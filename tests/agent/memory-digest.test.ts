@@ -15,6 +15,10 @@ import {
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import {
+  claimMemoryDigestDay,
+  finishMemoryDigestDay,
+} from "@db/services/memory/digest-runs";
+import {
   forgetMemory,
   listCurrentMemories,
   saveMemory,
@@ -703,6 +707,30 @@ describe("the digest's model, for the pilot", () => {
     expect(
       await digestWorkspace(alice.workspaceId, "2026-10-04")
     ).toMatchObject({ classifierCalls: 0 });
+  });
+
+  it("does not pay for the model twice when a failed day is taken again", async () => {
+    proposes({});
+    const now = new Date("2026-10-03T05:00:00Z");
+    expect(
+      await claimMemoryDigestDay(alice.workspaceId, "2026-10-03", 60_000, now)
+    ).toBe(true);
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ classifierCalls: 1 });
+    // The day fails after the model answered, say at the history wipe.
+    await finishMemoryDigestDay(alice.workspaceId, "2026-10-03", now, {
+      errorCode: "DrizzleQueryError",
+    });
+    const later = new Date("2026-10-03T06:00:00Z");
+    expect(
+      await claimMemoryDigestDay(alice.workspaceId, "2026-10-03", 60_000, later)
+    ).toBe(true);
+
+    expect(
+      await digestWorkspace(alice.workspaceId, "2026-10-03")
+    ).toMatchObject({ classifierCalls: 0 });
+    expect(model.generate).toHaveBeenCalledTimes(1);
   });
 
   it("forgets as one-off only what the model read in full, and folds only in the same order", async () => {
