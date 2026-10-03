@@ -44,11 +44,12 @@ const credentialPatterns = [
   /((?:\d[ -]?){13,19})/dgu,
   // A password said with its value: after «:», «=» or a dash, a value with
   // a digit, a Latin letter or a sign in it («пароль от почты — Kot2024!»),
-  // or one word that ends the clause («пароль: Мурзик» — not «пароль — на
-  // наклейке роутера»); or right after the word, a value with a digit
+  // or one word that ends the clause or that a qualifier follows («пароль:
+  // Мурзик», «пароль: Мурзик для сайта» — not «пароль — на наклейке
+  // роутера»); or right after the word, a value with a digit
   // («пароль от wifi qwerty123»).
   new RegExp(
-    String.raw`${notAfterWord}(?:парол\p{L}*|password|passwd|passcode|pwd)${notBeforeLetter}(?:[^\n:=—–]{0,40}?(?:[:=]|\s[—–-]\s)\s*[«"']?((?=[^\s«»"']*[\dA-Za-z!@#$%^&*_])[^\s«»"']+|[^\s«»"',.;:()]+(?=[«»"']?\s*(?:$|[,.;)])))|\s+(?:(?:от|для|к|на|for|to)\s+\S+\s+)?(?:это\s+|is\s+)?[«"']?([^\s«»"']*\d[^\s«»"']*))`,
+    String.raw`${notAfterWord}(?:парол\p{L}*|password|passwd|passcode|pwd)${notBeforeLetter}(?:[^\n:=—–]{0,40}?(?:[:=]|\s[—–-]\s)\s*[«"']?((?=[^\s«»"']*[\dA-Za-z!@#$%^&*_])[^\s«»"']+|[^\s«»"',.;:()]+(?=[«»"']?\s*(?:$|[,.;)])|\s+(?:для|от|на|к|в|из|с|for|to|on|at)\s))|\s+(?:(?:от|для|к|на|for|to)\s+\S+\s+)?(?:это\s+|is\s+)?[«"']?([^\s«»"']*\d[^\s«»"']*))`,
     "dgiu"
   ),
   // A card's or an app's secret number is one whatever surrounds it.
@@ -72,7 +73,7 @@ const codeWithNumber = new RegExp(
 /** What makes a code one-time, near it on either side. */
 const oneTimeWords =
   /(?:смс|sms|подтвержд|проверочн|верифик|одноразов|авториз|логин|login|sign[- ]?in|verif|confirm|one[- ]?time|двухфактор|two[- ]?factor|2fa|восстановлен|recovery|backup)/iu;
-/** A sign-in or a service named between «код» and its number. */
+/** A sign-in or a service the code belongs to, named in its clause. */
 const codeOwners =
   /(?:вход|госуслуг|gosuslug|есиа|банк|bank|сбер|тинькоф|ozon|озон|wildberries|telegram|телеграм|whatsapp|вотсап|почт|e-?mail|apple|google|гугл|яндекс|yandex|вконтакте|(?<!\p{L})vk(?!\p{L})|авито|avito|push|пуш)/iu;
 /** A door's code is no one-time code («код домофона 1234К, вход со двора»). */
@@ -107,7 +108,12 @@ export function unsafeMemoryRanges(value: string) {
     if (doorWords.test(gap) || doorWords.test(before)) continue;
     const end = match.index + match[0].length;
     const around = before + match[0] + value.slice(end, end + codeContextChars);
-    if (oneTimeWords.test(around) || codeOwners.test(gap)) {
+    // A service names its code before «код» as well: «в Ozon код 1234».
+    if (
+      oneTimeWords.test(around) ||
+      codeOwners.test(gap) ||
+      codeOwners.test(before)
+    ) {
       const digits = match.indices?.[2];
       ranges.push(digits ?? [match.index, end]);
     }
