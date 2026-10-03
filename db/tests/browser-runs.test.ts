@@ -165,6 +165,42 @@ describe("browser run persistence", () => {
     expect(await browserRuns.claimDueBrowserRunRetries(lease, 10)).toEqual([]);
   }, 20_000);
 
+  it("knows whether a run's task was written by a follow-up or by the errand's start", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const [startRetry, followUp, followUpRetry] = [
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ];
+    const started = { ...conversation(), task: "Человек написал: «…»" };
+    const followed = { ...conversation(), task: "Человек написал: «да»" };
+    await browserRuns.createBrowserRun(alice, { ...started, id: runId });
+    // A background retry keeps the task of the run it replaces.
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...started, id: startRetry },
+      runId
+    );
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...followed, id: followUp },
+      startRetry
+    );
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...followed, id: followUpRetry },
+      followUp
+    );
+
+    const origin = (id: string, task: string, scope = alice) =>
+      browserRuns.browserRunTaskOrigin(scope, { id, task });
+    expect(await origin(runId, started.task)).toBe("start");
+    expect(await origin(startRetry, started.task)).toBe("start");
+    expect(await origin(followUp, followed.task)).toBe("follow-up");
+    expect(await origin(followUpRetry, followed.task)).toBe("follow-up");
+    expect(await origin(followUpRetry, followed.task, bob)).toBe("start");
+  }, 20_000);
+
   it("carries unread messages parked on a walled run across its hand-off to the retry", async () => {
     const browserRuns = await browserRunsDatabase();
     const retryId = "55555555-5555-4555-8555-555555555555";

@@ -131,6 +131,10 @@ const createBrowserRun = vi.hoisted(() =>
     Promise.resolve()
   )
 );
+// Whether an errand's row was written by a follow-up or by its start.
+const browserRunTaskOrigin = vi.hoisted(() =>
+  vi.fn<() => Promise<"follow-up" | "start">>(() => Promise.resolve("start"))
+);
 const recordBrowserRunSubmission = vi.hoisted(() =>
   vi.fn<(runId: string, submission: BrowserSubmission) => Promise<void>>(() =>
     Promise.resolve()
@@ -471,6 +475,7 @@ vi.mock("@db/services/memory/records", () => ({
 vi.mock("@db/services/browser-runs", async (importOriginal) => ({
   browserRunReportOwed: (await importOriginal<typeof browserRunsService>())
     .browserRunReportOwed,
+  browserRunTaskOrigin,
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
@@ -607,6 +612,7 @@ beforeEach(() => {
   readBrowserVm.mockResolvedValue(undefined);
   browserRunQuotaGate.mockResolvedValue({ allowed: true, note: undefined });
   readBrowserRunForScope.mockResolvedValue(undefined);
+  browserRunTaskOrigin.mockResolvedValue("start");
   readUserProfile.mockResolvedValue(emptyUserProfile);
   readVaultItems.mockResolvedValue([]);
   readVaultSecret.mockResolvedValue(undefined);
@@ -7899,6 +7905,47 @@ describe("browser_task takes an errand the person asked to be done to its last s
       ).toBe(`заказ 0000184951, звонить ${phoneMark} или ${phoneMark}`);
     });
 
+    it.each([
+      ["+375 29 123-45-67", "+375291234567 или +375 29 1234567"],
+      ["+90 532 123 45 67", "+905321234567 или +90 532 123 45 67"],
+      [
+        "+375 29 123-45-67 8 999 000 00 01",
+        "+375291234567 или 8 999 000 00 01",
+      ],
+    ])(
+      "reads a phone field «%s» with a long country code whole",
+      async (field, written) => {
+        // Its groups add up to ten before its last pair: «3752912345».
+        const { withoutOwnContacts } =
+          await import("@agent/lib/browser-use/facts");
+
+        expect(
+          withoutOwnContacts(`звонить ${written}`, {
+            emails: [],
+            phones: [field],
+          }).text
+        ).toBe(`звонить ${phoneMark} или ${phoneMark}`);
+      }
+    );
+
+    it("knows a phone whose country code is glued on, as a link writes it", async () => {
+      const { withoutOwnContacts } =
+        await import("@agent/lib/browser-use/facts");
+
+      expect(
+        withoutOwnContacts("https://wa.me/447911123456?phone=447911123456", {
+          emails: [],
+          phones: ["+44 7911 123456"],
+        }).text
+      ).toBe(`https://wa.me/${phoneMark}?phone=${phoneMark}`);
+      expect(
+        withoutOwnContacts("tel:12125550100", {
+          emails: [],
+          phones: ["+1 212 555 0100"],
+        }).text
+      ).toBe(`tel:${phoneMark}`);
+    });
+
     it("takes every ten digits of numbers written together", async () => {
       const { withoutOwnContacts } =
         await import("@agent/lib/browser-use/facts");
@@ -7967,6 +8014,63 @@ describe("browser_task takes an errand the person asked to be done to its last s
       expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
     });
 
+    it("cuts them though the person picked an option that names them", async () => {
+      // Bro wrote the option's label: choosing it gives no phone of theirs.
+      ownContacts();
+      const tool = await resolvedBrowserTask(
+        [
+          {
+            content: [
+              {
+                input: {
+                  options: [
+                    { id: "more", label: "Да, искать по +7 999 000-00-01" },
+                  ],
+                  prompt: "Искать дальше?",
+                },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: {
+                  type: "json",
+                  value: { optionId: "more", status: "answered" },
+                },
+                toolCallId: "ask-1",
+                toolName: "ask_question",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+        reportOpening
+      );
+
+      const result = await tool.execute(
+        {
+          action: "start",
+          personWants: "look",
+          task: "Найти объявления по номеру +7 999 000-00-01",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(sent().map(contactsIn)).toMatchObject([
+        { phone: false, phoneCut: true },
+        { phone: false, phoneCut: true },
+      ]);
+      expect(continuationNote(result)).toContain(
+        "The user's own phone number was cut"
+      );
+    });
+
     it("cuts them from a report turn's follow-up, the errand it repeats and its site", async () => {
       ownContacts();
       readBrowserRunForScope.mockResolvedValue({
@@ -8000,6 +8104,7 @@ describe("browser_task takes an errand the person asked to be done to its last s
 
     it("keeps the person's earlier quote in the errand a follow-up repeats", async () => {
       ownContacts();
+      browserRunTaskOrigin.mockResolvedValue("follow-up");
       readBrowserRunForScope.mockResolvedValue({
         ...browserRunRow(new Date(), "Needs: none"),
         task: `Человек написал: «мой номер 8 999 000 00 01»\n\n${coordinatorAdds} Почта для связи: ivan.petrov@example.com`,
@@ -8021,6 +8126,35 @@ describe("browser_task takes an errand the person asked to be done to its last s
       expect(task).toContain(`Почта для связи: ${emailMark}`);
       expect(continuationNote(result)).toContain(
         "The user's own email was cut"
+      );
+    });
+
+    it("cuts a start's errand that only opens like the person's quote", async () => {
+      // The model wrote it at the start, uncut on the person's card; only a
+      // follow-up's row holds a quote the tool wrote.
+      ownContacts();
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), "Needs: none"),
+        task: "Человек написал: «запиши меня на стрижку в 15:00, телефон +7 999 000-00-01»",
+      });
+      const tool = await resolvedBrowserTask([], reportOpening);
+
+      await tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          runId,
+          task: "Проверь, что записали",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(
+        contactsIn(String(createBrowserUseRun.mock.calls[0]?.[0].task))
+      ).toMatchObject({ phone: false, phoneCut: true });
+      expect(browserRunTaskOrigin).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: runId })
       );
     });
 

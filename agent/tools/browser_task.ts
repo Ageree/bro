@@ -47,6 +47,7 @@ import {
 } from "@agent/lib/browser-use/secrets";
 import {
   browserRunReportOwed,
+  browserRunTaskOrigin,
   claimBrowserRunCompletion,
   closeQueuedBrowserRun,
   createBrowserRun,
@@ -2291,6 +2292,10 @@ function unsentWordsRefusal(
  * any conversation turn, a browser report's included. Null when there are
  * none. A scheduled worker's answers are relayed by the model from another
  * turn, so they are not the person's words here.
+ *
+ * `typed`: those of them they typed themselves, which are theirs to pass on
+ * uncut (`contactsNotIn`). The label of an option they chose is Bro's
+ * wording, and a phone in it is not one they gave.
  */
 function turnWords(
   context: ModeContext,
@@ -2301,10 +2306,13 @@ function turnWords(
     resolveModeValue(context, { interactive: true }) === true
       ? turn.answers
       : [];
-  const words = [...(personTurn ? (turn.said ?? []) : []), ...answers];
+  const opened = personTurn ? (turn.said ?? []) : [];
+  const words = [...opened, ...answers];
+  const picked = new Set(turn.picked);
   return {
     paymentAsked: personTurn ? turn.paymentAsked : null,
     personTurn,
+    typed: [...opened, ...answers.filter((answer) => !picked.has(answer))],
     words: words.length > 0 ? words : null,
   };
 }
@@ -2472,10 +2480,18 @@ function personInstruction(
  * The task an errand's row keeps, cut for a follow-up that repeats it. The
  * row of a follow-up keeps its own message (`personInstruction`): the
  * person's quote it opens with stays as they wrote it, as when it was sent,
- * and only Bro's words after it are cut.
+ * and only Bro's words after it are cut. A start keeps the model's words,
+ * which may open the same way, so only a task a follow-up wrote
+ * (`browserRunTaskOrigin`) is read for a quote.
  */
-function cutRowTask(task: string, cut: (text: string) => string) {
-  if (!task.startsWith(personQuoteLead)) return cut(task);
+function cutRowTask(
+  task: string,
+  origin: "follow-up" | "start",
+  cut: (text: string) => string
+) {
+  if (origin === "start" || !task.startsWith(personQuoteLead)) {
+    return cut(task);
+  }
   const addition = task.indexOf(`»\n\n${coordinatorAddsLead} `);
   if (addition === -1) return task.endsWith("»") ? task : cut(task);
   return `${task.slice(0, addition + 1)}${cut(task.slice(addition + 1))}`;
@@ -2854,6 +2870,7 @@ export async function browserTaskApproval(
   const said = words ?? {
     paymentAsked: null,
     personTurn: startedByPerson(context),
+    typed: [],
     words: null,
   };
   const consent = await consentFor(input, scope, errand, said);
@@ -3283,7 +3300,7 @@ async function runBrowserTask(
     const contacts = contactCut(
       sharesDetails(consent, staging)
         ? undefined
-        : contactsNotIn(await readOwnContacts(scope), words ?? []),
+        : contactsNotIn(await readOwnContacts(scope), spoken.typed),
       true
     );
     const sent = contacts.text(errand);
@@ -3609,9 +3626,14 @@ async function runBrowserTask(
         done ? undefined : stagingFor(input.personWants, byPerson)
       )
         ? undefined
-        : contactsNotIn(await readOwnContacts(scope), words ?? []),
+        : contactsNotIn(await readOwnContacts(scope), spoken.typed),
       !done
     );
+    // The errand's row is read for the person's quote only if a follow-up
+    // wrote it: a start that opens the same way is the model's words.
+    const taskOrigin = row.task.startsWith(personQuoteLead)
+      ? await browserRunTaskOrigin(scope, row)
+      : "start";
     const message = mail
       ? mailCodeInstruction(mail.domain)
       : words === null
@@ -3799,7 +3821,9 @@ async function runBrowserTask(
                 ? gosuslugiSignInRule(site, true)
                 : undefined,
               details,
-              queuedIntoErrandContract(cutRowTask(row.task, contacts.text)),
+              queuedIntoErrandContract(
+                cutRowTask(row.task, taskOrigin, contacts.text)
+              ),
             ]
               .filter((part) => part !== undefined)
               .join("\n\n")
@@ -3915,7 +3939,7 @@ async function runBrowserTask(
             ? deliveryAddressFor(facts.addresses, row.task, message)
             : undefined,
           done,
-          errand: cutRowTask(row.task, contacts.text),
+          errand: cutRowTask(row.task, taskOrigin, contacts.text),
           facts: facts.details,
           freshBrowser: closed,
           message: withCodeEntry(instruction, codeEntry, carriesCode),
@@ -4003,7 +4027,9 @@ async function runBrowserTask(
             row.sessionId,
             [
               withCodeEntry(instruction, codeEntry, carriesCode),
-              queuedIntoErrandContract(cutRowTask(row.task, contacts.text)),
+              queuedIntoErrandContract(
+                cutRowTask(row.task, taskOrigin, contacts.text)
+              ),
             ].join("\n\n")
           );
           // The session was idle by then and drained the message as a run

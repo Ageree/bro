@@ -435,6 +435,32 @@ export async function readLatestBrowserRunForScope(
   );
 }
 
+/**
+ * Where an errand's own words in `task` came from: the run that first had
+ * them, followed back through the background retries and the queued start
+ * that kept the same task, and whether it took the errand over from a run
+ * with another task — a follow-up — or started it.
+ */
+export async function browserRunTaskOrigin(
+  scope: AccessScope,
+  run: { readonly id: string; readonly task: string },
+  hops = 0
+): Promise<"follow-up" | "start"> {
+  const [before] = await db
+    .select({ id: browserRuns.id, task: browserRuns.task })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, scope.workspaceId),
+        eq(browserRuns.retriedAsRunId, run.id)
+      )
+    )
+    .limit(1);
+  if (before === undefined || hops >= maximumRetryHops) return "start";
+  if (before.task !== run.task) return "follow-up";
+  return browserRunTaskOrigin(scope, before, hops + 1);
+}
+
 function unsettled(options: {
   readonly checkedBefore: Date;
   readonly staleBefore: Date;

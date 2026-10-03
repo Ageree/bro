@@ -353,29 +353,44 @@ const digitRunPattern = new RegExp(
 );
 
 /**
- * The numbers of one run, read group by group in the order written: groups
- * add up until they hold a number — ten digits, or eleven or twelve with a
- * country code («8», «+7», «+44») — and the next group starts the next one.
- * Seven to nine digits left over are a short number of their own. Only
- * digits written together with nothing between them, too many for one
- * number, are split blindly: every ten of them in a row count.
+ * The numbers of one run. Up to twelve digits are one number, by its last
+ * ten however it is grouped: «+375 29 123-45-67» is «5291234567». Seven to
+ * nine digits are a short number of their own. A longer run holds several,
+ * read group by group in the order written: every group boundary where ten
+ * to twelve digits have added up gives a reading by its last ten — groups
+ * cannot tell a number's last pair from the next one's country code, so
+ * both readings count — and a group that would take them past twelve
+ * starts the next number. Seven to nine digits left over are a short
+ * number. Only digits written together with nothing between them, too many
+ * for one number, are split blindly: every ten of them in a row count.
  */
 function runNumbers(groups: readonly string[]) {
+  const digits = groups.join("");
+  if (digits.length <= 12) {
+    if (digits.length >= 10) return [digits.slice(-10)];
+    return digits.length >= 7 ? [digits] : [];
+  }
   const numbers: string[] = [];
   let pending = "";
   for (const group of groups) {
+    if (pending.length >= 10 && pending.length + group.length > 12) {
+      pending = "";
+    }
     pending += group;
-    if (pending.length < 10) continue;
-    numbers.push(
-      ...(pending.length <= 12
-        ? [pending.slice(-10)]
-        : Array.from({ length: pending.length - 9 }, (_, from) =>
-            pending.slice(from, from + 10)
-          ))
-    );
-    pending = "";
+    if (pending.length > 12) {
+      numbers.push(
+        ...Array.from({ length: pending.length - 9 }, (_, from) =>
+          pending.slice(from, from + 10)
+        )
+      );
+      pending = "";
+    } else if (pending.length >= 10) {
+      numbers.push(pending.slice(-10));
+    }
   }
-  return pending.length >= 7 ? [...numbers, pending] : numbers;
+  return pending.length >= 7 && pending.length < 10
+    ? [...numbers, pending]
+    : numbers;
 }
 
 /**
@@ -411,6 +426,13 @@ function phoneDigit(digit: string) {
 const countryCode = String.raw`(?:\([+\uFF0B]?${anyDigit}{1,3}\)|[+\uFF0B]${anyDigit}{1,3}|00${anyDigit}{1,3}|[78\uFF17\uFF18])${phoneSeparator}`;
 
 /**
+ * A full number's country code without its plus, written right against it
+ * as a link writes it: «wa.me/447911123456», «tel:12125550100». Not before
+ * a short number: «9991234567» is another number than «123-45-67».
+ */
+const gluedCountryCode = `${anyDigit}{1,3}`;
+
+/**
  * A phone as people write it: «+7 999 000-00-01», «8 (999) 000 00 01»,
  * «(+7) 999/000/00/01» and «9990000001» are all «+79990000001». Brackets
  * round the country or the area code go with it, so no stray «(» is left.
@@ -419,8 +441,10 @@ function phonePattern(number: string) {
   const digits = Array.from(number, phoneDigit);
   const area = digits.slice(0, 3).join(phoneSeparator);
   const rest = digits.slice(3).join(phoneSeparator);
+  const code =
+    number.length < 10 ? countryCode : `${countryCode}|${gluedCountryCode}`;
   return new RegExp(
-    String.raw`(?<!${anyDigit})(?:${countryCode})?(?:\(${phoneSeparator}${area}${phoneSeparator}\)|${area})${phoneSeparator}${rest}(?!${anyDigit})`,
+    String.raw`(?<!${anyDigit})(?:${code})?(?:\(${phoneSeparator}${area}${phoneSeparator}\)|${area})${phoneSeparator}${rest}(?!${anyDigit})`,
     "gu"
   );
 }
