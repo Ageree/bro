@@ -372,32 +372,32 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-report":
-        "7b8ce7efae1aa4b30118eaa21b5d7afac62bd4c946270a3daf010d008a1bede4",
+        "5d6c2367b232d4759c9db4238ef86aa10207b7e701f6ca2dd93f89242eab2a2c",
       "proactive-worker":
-        "9461b8446ba0ee313d1373fd3e64c44d2af1b48f762bf424eaa5c06cc34d81b4",
+        "b09b9cdafbd7f1eb1b80a1d070038207742f0119de28cb9b7bb4455ca582ff9e",
       "scheduled-report":
-        "645cb43b933ea872fb211cd4059bda2a89cb00a2056e5a13d3f455799d6d56d3",
+        "9c1d52f248d1e9f284a43d04c84faf7195c4c5ea04a37cbef91c3159f59ad4a2",
       "scheduled-worker":
-        "da1df475e985f1ec2bc8d93cb1ef8b8e0b867e61bdd887e90b40fb68ba1ab199",
+        "d0919a9fe12e9d5e76c06b2a4821430a724926cc8b48a94741fabecf0ffa2509",
       telegram:
-        "80864652e1a67147aac1543c1fb48dd8674969d12eeb9d0175ab1332e6b6857b",
-      web: "835a9355788dc7c418e3df024afa001d24ef3cd6e9d8d0ce3592b3befcef1654",
+        "6d4b58765067e4b04725add67ee0916e7294bfa90bd869fc2a5305907f3f600b",
+      web: "b90de66a14726103f7e413eb77e8e0c77461f558237aecde290f4d5f5196a99c",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "8489a82e0e535e46fe3a3b2d9b4c112a8f418bd5fb5952e3c0b743d5c36dbfde",
+        "856fac695f6148cbd8511ee481dd4b2bafb3b008be3083f35e4c52b73459584d",
       "proactive-worker":
-        "227d22e651e541e0d112e7df209fb1508c3d7cd80a2b53e2d0d4ea94c2777a32",
+        "44390f9721a3895cd947c51ee393d4a1fda462f7f82528cfe2cf12c11a9436db",
       "scheduled-report":
-        "f1653fba1184a0f81cc90db65cc71a70b0baae1345f4be5c5737d91d562bf0e1",
+        "79637a7dbfa6f7712074efe0d1e4e86b66b4b58c886977e00710942d4b213130",
       "scheduled-worker":
-        "e86d5551933cfa2e543e4df51b30e3bece9f2ebad9543cc2f7dfc85d52e125af",
+        "60794bfef82b8d377a8981b7138bebd7eff2bc2549d0e2e34ff9b5c5cbdfc7b8",
       telegram:
-        "1aa40ece1f2f62c59d62687e4c46d9b73e9fe2fa02a5ebbf22b6b7c9987798d7",
-      web: "a9256f8fc18f0163fa30e330faf52d3fd580a74efb508fc66720277ce6e4f83d",
+        "2e1fe14b5e1ac6cd62d9779dbebf1dd31038b5ad5cb74080341955956cf85534",
+      web: "d324b486e718a68131572659bada76c58200e209512649dffea1cc6cea7e00c3",
     } satisfies Record<Kind, string>,
   },
 };
@@ -433,7 +433,7 @@ async function stepBytes(environment: Record<string, string>, kind: Kind) {
     request.toolChoice ?? null,
     request.tools ?? [],
   ]);
-  return sha256(JSON.stringify(steps));
+  return sha256(JSON.stringify({ catalogs, steps }));
 }
 
 describe("tools outside both pilots", () => {
