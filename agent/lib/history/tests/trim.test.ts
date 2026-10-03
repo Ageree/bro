@@ -451,6 +451,55 @@ describe("trimming old history in a step's prompt", () => {
     );
   });
 
+  it("leaves a failed or refused run whole, and any read that failed", () => {
+    const long = "x".repeat(3000);
+    const { prompt } = trimPrompt(
+      [
+        call("apps", "c-failed", { action: "run", app: "trello" }),
+        result("apps", "c-failed", {
+          type: "json",
+          value: { error: long, status: "failed" },
+        }),
+        call("apps", "c-refused", { action: "run", app: "trello" }),
+        result("apps", "c-refused", {
+          type: "json",
+          value: { error: long, status: "refused" },
+        }),
+        call("apps", "c-unknown", { action: "run", app: "trello" }),
+        result("apps", "c-unknown", {
+          type: "json",
+          value: { result: long, status: "done" },
+        }),
+        call("web_fetch", "c-fetch-failed", { url: "https://example.com" }),
+        result("web_fetch", "c-fetch-failed", {
+          type: "json",
+          value: { error: long },
+        }),
+        call("apps", "c-search", { action: "search", app: "trello" }),
+        result("apps", "c-search", {
+          type: "json",
+          value: { tools: [{ description: long, slug: "TRELLO_ADD" }] },
+        }),
+      ],
+      trimOf({
+        results: [
+          "c-failed",
+          "c-refused",
+          "c-unknown",
+          "c-fetch-failed",
+          "c-search",
+        ],
+      })
+    );
+
+    for (const id of ["c-failed", "c-refused", "c-unknown", "c-fetch-failed"]) {
+      expect(outputOf(prompt, id).type).toBe("json");
+    }
+    expect(textOf(outputOf(prompt, "c-search"))).toMatch(
+      /Call apps again for the full text\.\]$/u
+    );
+  });
+
   it("keeps the opening of any other long result", () => {
     const text = textOf(
       outputOf(trimPrompt(fixture(), everything).prompt, "c-fetch")

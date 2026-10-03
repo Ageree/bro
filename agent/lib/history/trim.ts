@@ -79,7 +79,7 @@ function clip(text: string, length: number, tail = "…") {
 /**
  * Tools that only read: calling one again costs a read and changes nothing,
  * so an old result's trace may send the model back to it. `apps` reads too
- * unless its run wrote (`wroteSchema`).
+ * when its result says it only read (`appsReadSchema`).
  */
 const readingTools = new Set([
   "calculate",
@@ -102,15 +102,32 @@ const readingTools = new Set([
   "web_search",
 ]);
 
-const wroteSchema = z.object({ wrote: z.literal(true) });
+/**
+ * An `apps` result that only read: a run that says it wrote nothing, or a
+ * search for the app's tools. A failed or refused run carries neither.
+ */
+const appsReadSchema = z.union([
+  z.object({ status: z.literal("done"), wrote: z.literal(false) }),
+  z.object({ tools: z.array(z.unknown()) }),
+]);
 
 /** Whether a result only read: calling its tool again changes nothing. */
 function readResult(toolName: string, output: ToolOutput) {
   return (
     readingTools.has(toolName) ||
-    (toolName === "apps" && parsedOutput(wroteSchema, output) === undefined)
+    (toolName === "apps" && parsedOutput(appsReadSchema, output) !== undefined)
   );
 }
+
+/**
+ * A result that reports a failure in its own fields rather than as an
+ * `error-*` output: `{ error }`, or a `status` of `failed` or `refused`
+ * (`apps`, `browser_task`). It goes whole, as every failure does.
+ */
+const failureSchema = z.union([
+  z.object({ error: z.union([z.string(), z.looseObject({})]) }),
+  z.object({ status: z.enum(["failed", "refused"]) }),
+]);
 
 /**
  * The sentence every trace ends with. Only a read is worth calling again:
@@ -311,7 +328,8 @@ function resultTrace(toolName: string, output: ToolOutput) {
   // `browser_task` is shortened, to a trace that keeps its run and outcome.
   if (
     keptWhole(toolName) ||
-    (toolName !== "browser_task" && !readResult(toolName, output))
+    (toolName !== "browser_task" && !readResult(toolName, output)) ||
+    parsedOutput(failureSchema, output) !== undefined
   ) {
     return undefined;
   }

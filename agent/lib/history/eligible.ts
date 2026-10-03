@@ -76,11 +76,11 @@ function toolParts(message: ModelMessage) {
 }
 
 /**
- * Whether an id is called and answered once in `messages`, the old part of
- * the history. Only the old part counts: it stays the same between two moves
- * of the cut, and a later step that reuses an id must not bring an old
- * result back whole in the middle of them (`trimPrompt` shortens only the
- * first part with the id, which is the old one).
+ * Whether an id is called and answered once in `messages`, one batch of old
+ * turns. A batch never changes once the cut has passed it, so neither does
+ * this verdict: counted over the whole old part, an id reused in a later
+ * batch would bring a result back whole after it had gone as a trace, and
+ * the provider would read the history again from there.
  */
 function idCounts(messages: readonly ModelMessage[]) {
   const calls = new Map<string, number>();
@@ -95,54 +95,82 @@ function idCounts(messages: readonly ModelMessage[]) {
 }
 
 /**
- * Where the old part of the history ends: the opening message of the first
- * kept turn. The cut moves only at a multiple of `batchTurns` turns past the
- * `keptTurns` latest ones, so for the steps between two moves the trimmed
- * history stays the same bytes and the provider's cached prefix holds.
+ * Where each turn of `messages` opens. Openings with no reply of Bro between
+ * them are one turn: a burst of the person's messages, or one that came
+ * before the turn's first step, does not move the cut. A message steered
+ * into a turn after its first step still counts as a turn of its own; the
+ * trim each turn settled on (`rememberedTrim`) covers that, in this process.
  */
-function oldPartEnd(messages: readonly ModelMessage[]) {
-  const openers = messages.flatMap((message, index) =>
-    startsTurn(message) ? [index] : []
+function turnOpenings(messages: readonly ModelMessage[]) {
+  const openings: number[] = [];
+  let answered = true;
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant") answered = true;
+    if (!startsTurn(message)) continue;
+    if (answered) openings.push(index);
+    answered = false;
+  }
+  return openings;
+}
+
+/**
+ * The batches of old turns: from the start of the history (with any memory
+ * and compaction summary before the first turn) to the first kept turn, cut
+ * every `batchTurns` turns. The cut moves only at a multiple of `batchTurns`
+ * turns past the `keptTurns` latest ones, so for the steps between two moves
+ * the trimmed history stays the same bytes and the provider's cached prefix
+ * holds.
+ */
+function oldBatches(messages: readonly ModelMessage[]) {
+  const openings = turnOpenings(messages);
+  const batches = Math.floor((openings.length - keptTurns) / batchTurns);
+  return Array.from({ length: Math.max(0, batches) }, (_, batch) =>
+    messages.slice(
+      batch === 0 ? 0 : openings[batch * batchTurns],
+      openings[(batch + 1) * batchTurns]
+    )
   );
-  const past = openers.length - keptTurns;
-  if (past < batchTurns) return undefined;
-  return openers[Math.floor(past / batchTurns) * batchTurns];
 }
 
 /**
  * What of `messages`, eve's history at a step, is old enough to trim. A
- * call id that occurs more than once in the old part — OpenRouter's hosts
- * and RouterAI's before 01.10 numbered every step's calls from `call_0` —
- * is never trimmed: it cannot tell which result is which.
+ * call id that occurs more than once in its batch — OpenRouter's hosts and
+ * RouterAI's before 01.10 numbered every step's calls from `call_0` — is
+ * never trimmed: it cannot tell which result is which. An id an earlier
+ * batch already used is left to that batch: `trimPrompt` shortens only the
+ * first part with an id.
  */
 function computedHistoryTrim(
   messages: readonly ModelMessage[]
 ): Omit<HistoryTrim, "step"> | undefined {
-  const end = oldPartEnd(messages);
-  if (end === undefined) return undefined;
-  const old = messages.slice(0, end);
-  const unique = idCounts(old);
   const results = new Set<string>();
   const inputs = new Set<string>();
   const openers = new Set<string>();
-  for (const message of old) {
-    for (const part of toolParts(message)) {
-      if (!unique(part.toolCallId)) continue;
-      if (part.type === "tool-result") {
-        results.add(part.toolCallId);
-      } else if (
-        part.toolName === "browser_task" &&
-        (errandSchema.safeParse(part.input).data?.task.length ?? 0) >
-          longErrandChars
-      ) {
-        inputs.add(part.toolCallId);
+  const earlier = new Set<string>();
+  for (const batch of oldBatches(messages)) {
+    const unique = idCounts(batch);
+    const used: string[] = [];
+    for (const message of batch) {
+      for (const part of toolParts(message)) {
+        used.push(part.toolCallId);
+        if (earlier.has(part.toolCallId) || !unique(part.toolCallId)) continue;
+        if (part.type === "tool-result") {
+          results.add(part.toolCallId);
+        } else if (
+          part.toolName === "browser_task" &&
+          (errandSchema.safeParse(part.input).data?.task.length ?? 0) >
+            longErrandChars
+        ) {
+          inputs.add(part.toolCallId);
+        }
+      }
+      const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
+      if (kind !== "user") continue;
+      for (const text of textsOf(message)) {
+        if (reportedRunOf(text) !== undefined) openers.add(reportDigest(text));
       }
     }
-    const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
-    if (kind !== "user") continue;
-    for (const text of textsOf(message)) {
-      if (reportedRunOf(text) !== undefined) openers.add(reportDigest(text));
-    }
+    for (const id of used) earlier.add(id);
   }
   if (results.size + inputs.size + openers.size === 0) return undefined;
   return { inputs, openers, results };
@@ -151,8 +179,12 @@ function computedHistoryTrim(
 /**
  * The trim each turn settled on at its first step, for the last
  * `rememberedTurns` turns used. A person's message steered into a running
- * turn opens a turn of its own in the history, and would move the cut
- * between two steps of one turn.
+ * turn after its first step opens a turn of its own in the history, and
+ * would move the cut between two steps of one turn. It lives in this
+ * process only: a turn that a restart of eve, another instance or the limit
+ * below takes it from works its trim out again, and if a steered message
+ * lands it on a multiple of `batchTurns` the cut moves once mid-turn — one
+ * more read of the history at full price, nothing lost.
  */
 const turnTrims = new Map<
   string,

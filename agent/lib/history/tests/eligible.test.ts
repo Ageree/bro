@@ -114,6 +114,44 @@ describe("which old history a step may trim", () => {
     expect(after?.results).toEqual(before?.results);
   });
 
+  it("never brings back a trimmed result when the cut passes its id again", () => {
+    // `call-dup` in turn 2 and again in turn 10. Once the cut takes turn 10
+    // in, turn 2's result must stay a trace, or the provider would read the
+    // history again from there.
+    const history = (count: number) =>
+      Array.from({ length: count }, (_, index) =>
+        turn(index, index === 2 || index === 10 ? "call-dup" : undefined)
+      ).flat();
+
+    for (const count of [12, 19, 20, 27, 28]) {
+      expect(eligibleHistory(history(count))?.results.has("call-dup")).toBe(
+        true
+      );
+    }
+  });
+
+  it("never trims an id its own batch holds twice, whatever comes after", () => {
+    const history = (count: number) =>
+      Array.from({ length: count }, (_, index) =>
+        turn(index, index === 1 || index === 5 ? "call-twice" : undefined)
+      ).flat();
+
+    for (const count of [12, 20, 28]) {
+      expect(eligibleHistory(history(count))?.results.has("call-twice")).toBe(
+        false
+      );
+    }
+  });
+
+  it("counts the person's messages with no reply between them as one turn", () => {
+    // A burst: the person wrote twice before Bro's first step.
+    const history = turns(12).flatMap((message, index) =>
+      index === 15 ? [person("и ещё"), message] : [message]
+    );
+
+    expect([...(eligibleHistory(history)?.results ?? [])]).toEqual(ids(8));
+  });
+
   it("does not count context and memory messages as turns", () => {
     const history = turns(11).flatMap((message, index) =>
       index % 3 === 0
