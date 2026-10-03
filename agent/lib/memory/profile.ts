@@ -15,10 +15,12 @@ import {
 } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
+import { adoptCutoverMemory } from "@agent/lib/memory/namespace";
 import { ruleAccessNote } from "@agent/lib/privacy/google-access";
 import { afterForgetting } from "@agent/lib/privacy/removal";
 import { forgetAllCardFits } from "@shared/chat/approval-card";
 import {
+  adoptMemoryRecords,
   findMemories,
   forgetMemory,
   importLegacyMemories,
@@ -33,6 +35,7 @@ import {
   wipeForgottenMemoryHistory,
 } from "@db/services/memory/records";
 import {
+  comparableMemoryText,
   findMemorySchema,
   forgetMemorySchema,
   isSafeMemoryText,
@@ -79,19 +82,6 @@ const forgetAllInputSchema = z.strictObject({
     ),
 });
 
-/**
- * A memory's text as a confirmation card compares it: a call that names the
- * record with other quotes, case or spacing still names the same record.
- */
-export function comparableMemoryText(text: string) {
-  return text
-    .normalize("NFKC")
-    .toLocaleLowerCase()
-    .replaceAll(/[«»"“”„]/gu, "")
-    .replaceAll(/\s+/gu, " ")
-    .trim();
-}
-
 /** The turn a memory tool runs in: which conversation, and who started it. */
 type TurnSession = Parameters<typeof startedByPerson>[0]["session"] & {
   readonly id: string;
@@ -137,7 +127,8 @@ export async function ruleWriteRefusal(
  * only when the call names its own text, as the person named it, and never
  * while a question of Bro's waits for its answer (`actionsHeldForAnswer`);
  * then, in the person's own turn, it goes without a card. A memory this
- * conversation saved is a correction of what was just said, and goes at once.
+ * conversation saved is a correction of what was just said, and goes at once,
+ * unless the call names another text.
  */
 export async function memoryRemovalApproval(
   scope: AccessScope,
@@ -152,11 +143,19 @@ export async function memoryRemovalApproval(
   if (record.category === "rule" && !startedByPerson({ session })) {
     return { reason: ruleOutsidePersonTurn, type: "denied" };
   }
-  if (record.sourceSessionId === session.id) return "not-applicable";
-  if (
-    input.text === undefined ||
-    comparableMemoryText(input.text) !== comparableMemoryText(record.text)
-  ) {
+  const named =
+    input.text !== undefined &&
+    comparableMemoryText(input.text) === comparableMemoryText(record.text);
+  if (record.sourceSessionId === session.id) {
+    if (input.text === undefined || named) return "not-applicable";
+    // Another text means another record, even one this conversation saved:
+    // its index may predate the profile's move to the pinned scope.
+    return {
+      reason: `Nothing was forgotten. Memory ${String(input.index)} reads «${record.text}», not the text given. Find the memory's current index before forgetting it.`,
+      type: "denied",
+    };
+  }
+  if (!named) {
     return {
       reason: `Nothing was forgotten. Memory ${String(input.index)} was saved in another conversation and reads «${record.text}». Forget it only if the user named it themselves; then call again with text set to exactly that. If they did not name it, ask them one short question instead and wait for the answer.`,
       type: "denied",
@@ -458,6 +457,10 @@ async function recallProfile(
   const scope = scopeFromPrincipal(current);
   context.abortSignal.throwIfAborted();
   await importLegacyIfNeeded(context, legacyBackend, scope);
+  // After the legacy import: it keeps the indexes the old document gave.
+  await adoptCutoverMemory(context, "profile", scope.workspaceId, (from, to) =>
+    adoptMemoryRecords(scope, from, to)
+  );
   const records = await listCurrentMemories(scope, context.memory.scope.key);
   // Only the cabinet reads the mark: a failed one costs no turn.
   await markMemoryScopeRecalled(scope, context.memory.scope.key).catch(() => {
