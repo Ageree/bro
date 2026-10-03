@@ -9,7 +9,7 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { isSharedFileLink } from "../lib/sandbox/files";
-import { taskFilesOfCaller } from "../lib/sandbox/pilot";
+import { conversationHoldsFiles } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
 import {
@@ -73,6 +73,8 @@ type SentMessage = z.infer<typeof sendMessageOutputSchema>;
  * so both turn into plain text, which Telegram posts without a preview there
  * (`agent/channels/telegram.ts`). Only the links of the task agent's own
  * files stay attachments (`isSharedFileLink`): they lead to Bro alone.
+ * Applied wherever the conversation may hold the files
+ * (`conversationHoldsFiles`).
  */
 function withoutFetchedUrls(message: SentMessage): SentMessage {
   if (message.kind === "link") {
@@ -181,7 +183,7 @@ export default defineDynamic({
   events: {
     // Resolved before every model step, so send_message knows what the
     // current turn has already delivered.
-    "step.started": (_event, context) => {
+    "step.started": async (_event, context) => {
       const delivery = channelDelivery.get(context.channel.kind ?? "");
       const pastAnswer = reportPastAnswer(context);
       const send_message = defineSendMessage(
@@ -190,8 +192,10 @@ export default defineDynamic({
         // In the skills pilot a rewrite that asks for a tool says how to
         // get one whose group is not offered yet.
         skillsLayout(context) === "core",
+        // By the conversation's mark, not the files pilot alone: a report
+        // carries the files' content after the flag is cleared too.
         turnOpenedByBackgroundTask(context.messages) &&
-          taskFilesOfCaller(context)
+          (await conversationHoldsFiles(context))
       );
       const messageOnly = { send_message };
       const interactive = delivery

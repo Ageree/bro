@@ -8,6 +8,7 @@ import {
 } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
 import { sandboxHostConfigured } from "./host";
+import { conversationHoldsPersonFiles } from "./inbox";
 
 /**
  * Whether a workspace's Bro may hand jobs to the task agent
@@ -103,4 +104,52 @@ export function taskFilesOfCaller(context: {
   return taskFilesEnabled(
     userCallerSchema.safeParse(caller).data?.attributes.workspaceId
   );
+}
+
+/**
+ * Whether the guards over the person's files run: whenever Object Storage
+ * is configured, whatever TASK_FILES_WORKSPACES says now. A conversation
+ * whose task agent was given the files keeps their content in its history
+ * and in reports still to come, so clearing the flag stops only new files
+ * from moving: a task agent of a marked conversation still goes off the web
+ * unless the person sent it (`agent/subagents/task/hooks/person-files.ts`),
+ * and Bro's hook still records the person's sends for that check
+ * (`agent/hooks/task-files.ts`). Without Object Storage no file ever moved.
+ */
+export function taskFilesGuarded() {
+  return objectStorageConfigured();
+}
+
+/** A send waits on the conversation's mark at most this long. */
+const sendCheckMs = 5000;
+
+/**
+ * Whether what Bro sends in this conversation must carry no URL a server
+ * fetches before the person reads it (a report turn's links and
+ * attachments, `agent/tools/messaging.ts`; Telegram's previews): the
+ * person's files reach the task agent here, or some task agent of this
+ * conversation was given them (its mark, `markSandboxHoldsPersonFiles`),
+ * whatever TASK_FILES_WORKSPACES says now. Clearing the flag leaves the
+ * files' content in the conversation's history and in reports still to
+ * come. A mark that cannot be read counts as there; without Object Storage
+ * no file ever moved.
+ */
+export async function conversationHoldsFiles(context: {
+  readonly session: Pick<SessionContext["session"], "auth" | "id">;
+}) {
+  if (taskFilesOfCaller(context)) return true;
+  if (!taskFilesGuarded()) return false;
+  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  const workspaceId =
+    userCallerSchema.safeParse(caller).data?.attributes.workspaceId;
+  // Bro's hook moves only the files of a caller with a workspace.
+  if (workspaceId === undefined) return false;
+  // Only the task agent's pilot ever had a helper to hand files to: every
+  // other workspace's send reads no mark (`taskAgentPilot` is remembered).
+  if (!(await taskAgentPilot({ workspaceId }))) return false;
+  return await conversationHoldsPersonFiles(
+    workspaceId,
+    context.session.id,
+    AbortSignal.timeout(sendCheckMs)
+  ).catch(() => true);
 }

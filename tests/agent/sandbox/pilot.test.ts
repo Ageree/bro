@@ -168,3 +168,105 @@ describe("the pilot of the person's files", () => {
     ).rejects.toThrow(/Invalid environment variables/u);
   });
 });
+
+/** Object Storage answering the GETs of marks in turn. */
+function stubMarks(...answers: readonly Response[]) {
+  const keys: string[] = [];
+  vi.stubGlobal("fetch", (url: string) => {
+    keys.push(decodeURIComponent(new URL(url).pathname));
+    const answer = answers[keys.length - 1];
+    return answer === undefined
+      ? Promise.reject(new Error("The test ran out of stubbed answers."))
+      : Promise.resolve(answer);
+  });
+  return keys;
+}
+
+describe("a conversation that may hold the person's files", () => {
+  const person = {
+    attributes: { workspaceId },
+    authenticator: "telegram-webhook",
+    principalId: "user-1",
+    principalType: "user" as const,
+  };
+  const conversation = {
+    session: { auth: { current: person, initiator: null }, id: "session-1" },
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("holds them by the mark of one of its task agents once the files pilot is cleared", async () => {
+    const keys = stubMarks(
+      new Response("1", {
+        headers: { "last-modified": new Date().toUTCString() },
+        status: 200,
+      })
+    );
+    const { conversationHoldsFiles, taskFilesGuarded } =
+      await importWithSandbox(
+        async () => await import("@agent/lib/sandbox/pilot"),
+        { OPENROUTER_API_KEY: "openrouter-test-key", SANDBOX_WORKSPACES: "*" }
+      );
+
+    expect(taskFilesGuarded()).toBe(true);
+    expect(await conversationHoldsFiles(conversation)).toBe(true);
+    expect(keys).toEqual([
+      expect.stringMatching(
+        /^\/bro-state-test\/sandbox\/person-files-conversations\/[\da-f]{16}\/[\da-f]{16}$/u
+      ),
+    ]);
+  });
+
+  it("holds none without the mark, and counts an unreadable mark as there", async () => {
+    stubMarks(
+      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 }),
+      new Response(null, { status: 403 })
+    );
+    const { conversationHoldsFiles } = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      { OPENROUTER_API_KEY: "openrouter-test-key", SANDBOX_WORKSPACES: "*" }
+    );
+
+    expect(await conversationHoldsFiles(conversation)).toBe(false);
+    expect(await conversationHoldsFiles(conversation)).toBe(true);
+  });
+
+  it("reads no mark for a workspace outside the task agent's pilot", async () => {
+    // Every Telegram send asks: only the pilot ever had a helper to give
+    // files to, so nobody else's send waits on Object Storage.
+    const keys = stubMarks();
+    const { conversationHoldsFiles } = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      {
+        OPENROUTER_API_KEY: "openrouter-test-key",
+        SANDBOX_WORKSPACES: "personal:someone-else",
+      }
+    );
+
+    expect(await conversationHoldsFiles(conversation)).toBe(false);
+    expect(keys).toEqual([]);
+  });
+
+  it("holds them wherever the files pilot is on, and none without Object Storage", async () => {
+    const keys = stubMarks();
+    const on = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      {
+        OPENROUTER_API_KEY: "openrouter-test-key",
+        SANDBOX_WORKSPACES: workspaceId,
+        TASK_FILES_WORKSPACES: workspaceId,
+      }
+    );
+    expect(await on.conversationHoldsFiles(conversation)).toBe(true);
+    clearSandboxSettings();
+    const off = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      { BROWSER_STATE_BUCKET: "", SANDBOX_WORKSPACES: "*" }
+    );
+    expect(off.taskFilesGuarded()).toBe(false);
+    expect(await off.conversationHoldsFiles(conversation)).toBe(false);
+    expect(keys).toEqual([]);
+  });
+});

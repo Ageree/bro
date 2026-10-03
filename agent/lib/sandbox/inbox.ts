@@ -209,39 +209,75 @@ function conversationMarkerKey(workspaceId: string, parentSessionId: string) {
 }
 
 /**
- * The object that says the person's own turn sent one task agent its
+ * The object that says the person's own turn sent one task agent one
  * message: Bro's hook stores it as the `task` call streams in, before eve
- * hands the message over (`agent/hooks/task-files.ts`). A new task agent is
- * named by the call that starts it, which it reads as
- * `ctx.session.parent.callId`; a continuation by the `agentId` the call
- * names, since `ctx.session.parent` stays the starting call's for the
- * child's whole life and a continuation's own call id reaches only eve's
- * subagent channel state. Good for {@link inboxFreshMs}, like a file.
+ * hands the message over (`agent/hooks/task-files.ts`). It names the very
+ * message, by the sha256 of its text, so a later turn that sends the same
+ * task agent other text (a report's relayed data) finds none. A new task
+ * agent is named, besides, by the call that starts it and that call's turn
+ * id, as it reads them in `ctx.session.parent` (a host that numbers each
+ * step's calls from `call_0` repeats a call id in every turn). The turn's
+ * sequence is not part of it: eve's lineage takes it from Bro's state when
+ * the task is dispatched, often a turn later (`prepareOwnerAgentInvocation`),
+ * and the id is already `turn_<sequence>` of this session, as eve's own
+ * `deriveAgentOperationId` keys on session, turn and call alone. A
+ * continuation is named by the `agentId` the call names, since
+ * `ctx.session.parent` stays the starting call's for the child's whole life
+ * and a continuation's own call and turn reach only eve's subagent channel
+ * state. Good for {@link inboxFreshMs}, like a file, and for one message of
+ * the task agent's: the first to take it claims it ({@link takePersonSend}).
  */
 function personSendKey(
   workspaceId: string,
   parentSessionId: string,
   send: PersonSend
 ) {
+  const message = sha256(send.message);
+  const names =
+    send.kind === "start"
+      ? [send.turnId, send.callId, message]
+      : [send.agentId, message];
   return [
     "sandbox/inbox",
     sha256(workspaceId).slice(0, 16),
     sha256(parentSessionId).slice(0, 16),
     send.kind === "start" ? "calls" : "agents",
-    sha256(send.kind === "start" ? send.callId : send.agentId).slice(0, 32),
+    sha256(JSON.stringify(names)).slice(0, 32),
   ].join("/");
 }
 
-/** One message the person's turn sent a task agent: a start or a continuation. */
+/**
+ * One message the person's turn sent a task agent: a start, named by its
+ * call and that call's turn id, or a continuation, named by the task agent's
+ * `agentId`; either with the message's exact text.
+ */
 export type PersonSend =
-  | { readonly callId: string; readonly kind: "start" }
-  | { readonly agentId: string; readonly kind: "continue" };
+  | {
+      readonly callId: string;
+      readonly kind: "start";
+      readonly message: string;
+      readonly turnId: string;
+    }
+  | {
+      readonly agentId: string;
+      readonly kind: "continue";
+      readonly message: string;
+    };
 
-async function putMark(key: string, signal: AbortSignal | undefined) {
+/** What a mark, or a person's send nobody took yet, holds. */
+const unclaimed = "1";
+/** The most a person's send record holds: a claim, never more. */
+const claimBytes = 128;
+
+async function putMark(
+  key: string,
+  signal: AbortSignal | undefined,
+  body: string = unclaimed
+) {
   const response = await request(
     key,
     "PUT",
-    { body: "1", headers: { "content-type": "text/plain" } },
+    { body, headers: { "content-type": "text/plain" } },
     signal
   );
   await response.body?.cancel();
@@ -341,18 +377,43 @@ export async function putPersonSend(
   await putMark(personSendKey(workspaceId, parentSessionId, send), signal);
 }
 
-/** Whether the person's own turn sent this message just now. */
-export async function personSendFresh(
+/**
+ * Whether the person's own turn sent this message just now, used up by the
+ * first message of the task agent's that takes it: `taker` names that
+ * message (the task agent's session, turn and sequence), and the record is
+ * overwritten with it before this says yes. So the same text sent again by
+ * a turn that is not the person's opens another turn of the task agent's
+ * and finds the record claimed, while the very message taken, its step run
+ * again after a restart or a failure from the state before it, finds its
+ * own claim, however long ago. A record that could not be claimed throws,
+ * as an unreadable one does.
+ */
+export async function takePersonSend(
   workspaceId: string,
   parentSessionId: string,
   send: PersonSend,
+  taker: string,
   signal?: AbortSignal
 ) {
-  return await markHeld(
-    personSendKey(workspaceId, parentSessionId, send),
-    signal,
-    { fresh: true }
-  );
+  const key = personSendKey(workspaceId, parentSessionId, send);
+  const response = await request(key, "GET", {}, signal);
+  if (response.status === 404) {
+    if ((await response.text()).includes("NoSuchKey")) return false;
+    throw new InboxStorageError(
+      "Object Storage did not say whether the person sent this message."
+    );
+  }
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (length > claimBytes) {
+    await response.body?.cancel();
+    return false;
+  }
+  const body = (await response.text()).slice(0, claimBytes);
+  const claim = `taken:${sha256(taker)}`;
+  if (body === claim) return true;
+  if (body !== unclaimed || !storedFresh(response)) return false;
+  await putMark(key, signal, claim);
+  return true;
 }
 
 /**

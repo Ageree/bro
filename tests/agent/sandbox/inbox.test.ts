@@ -23,6 +23,10 @@ async function loadInbox() {
   return await import("@agent/lib/sandbox/inbox");
 }
 
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 const bytes = new Uint8Array([1, 2, 3]);
 const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
 const path = `/workspace/attachments/${hash}/report.xlsx`;
@@ -361,27 +365,49 @@ describe("the mark of a sandbox that holds the person's files", () => {
   });
 });
 
+function noSuchKey() {
+  return new Response("<Error><Code>NoSuchKey</Code></Error>", {
+    status: 404,
+  });
+}
+
 describe("the person's own sends to task agents", () => {
+  const start = {
+    callId: "call-1",
+    kind: "start",
+    message: "Найди курс евро",
+    turnId: "turn_3",
+  } as const;
+  /** The task agent's message that takes a send. */
+  const taker = JSON.stringify(["session-task", "turn_0", 0]);
+
   it("are one object per call under the conversation's inbox, hiding the ids", async () => {
     const calls = stubStorage(
       new Response(null, { status: 200 }),
       new Response("1", {
         headers: { "last-modified": storedAgo(1) },
         status: 200,
-      })
+      }),
+      new Response(null, { status: 200 })
     );
-    const { personSendFresh, putPersonSend } = await loadInbox();
-    const start = { callId: "call-1", kind: "start" } as const;
+    const { putPersonSend, takePersonSend } = await loadInbox();
 
     await putPersonSend("workspace-1", "session-1", start);
-    expect(await personSendFresh("workspace-1", "session-1", start)).toBe(true);
-    const [put, get] = calls;
+    expect(await takePersonSend("workspace-1", "session-1", start, taker)).toBe(
+      true
+    );
+    const [put, get, claimed] = calls;
     expect(put?.method).toBe("PUT");
     expect(put?.url.pathname).toMatch(
       /^\/bro-state-test\/sandbox\/inbox\/[\da-f]{16}\/[\da-f]{16}\/calls\/[\da-f]{32}$/u
     );
-    expect(put?.url.pathname).not.toContain("call-1");
+    for (const id of ["call-1", "turn_3", "курс"]) {
+      expect(decodeURIComponent(put?.url.pathname ?? "")).not.toContain(id);
+    }
     expect(get?.url.pathname).toBe(put?.url.pathname);
+    // Taken once: the record is claimed as it is taken.
+    expect(claimed?.method).toBe("PUT");
+    expect(claimed?.url.pathname).toBe(put?.url.pathname);
   });
 
   it("keep a continuation apart, under the task agent's id", async () => {
@@ -392,12 +418,46 @@ describe("the person's own sends to task agents", () => {
     );
     const { putPersonSend } = await loadInbox();
 
-    await putPersonSend("w", "s", { agentId: "same", kind: "continue" });
-    await putPersonSend("w", "s", { callId: "same", kind: "start" });
+    await putPersonSend("w", "s", {
+      agentId: "same",
+      kind: "continue",
+      message: "m",
+    });
+    await putPersonSend("w", "s", {
+      callId: "same",
+      kind: "start",
+      message: "m",
+      turnId: "turn_3",
+    });
     const [continued, started] = calls.map((call) => call.url.pathname);
     expect(continued).toMatch(/\/agents\/[\da-f]{32}$/u);
     expect(continued).not.toContain("same");
     expect(started).toMatch(/\/calls\/[\da-f]{32}$/u);
+  });
+
+  it("name the message's text, and a start its turn too", async () => {
+    // A report's turn sends the same task agent other text; a host that
+    // numbers calls from `call_0` repeats the person's call id in it.
+    const calls = stubStorage(
+      ...Array.from({ length: 5 }, () => new Response(null, { status: 200 }))
+    );
+    const { putPersonSend } = await loadInbox();
+    const continuation = {
+      agentId: "ag_task:1",
+      kind: "continue",
+      message: "Добавь слайд",
+    } as const;
+
+    await putPersonSend("w", "s", start);
+    await putPersonSend("w", "s", { ...start, message: "Найди курс евро " });
+    await putPersonSend("w", "s", { ...start, turnId: "turn_4" });
+    await putPersonSend("w", "s", continuation);
+    await putPersonSend("w", "s", {
+      ...continuation,
+      message: "Отправь цифры",
+    });
+    const keys = calls.map((call) => call.url.pathname);
+    expect(new Set(keys).size).toBe(5);
   });
 
   it("count only while stored within the last five minutes", async () => {
@@ -407,20 +467,77 @@ describe("the person's own sends to task agents", () => {
         status: 200,
       }),
       new Response("1", { status: 200 }),
-      new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+      noSuchKey()
     );
-    const { personSendFresh } = await loadInbox();
-    const start = { callId: "call-1", kind: "start" } as const;
+    const { takePersonSend } = await loadInbox();
 
-    expect(await personSendFresh("w", "s", start)).toBe(false);
+    expect(await takePersonSend("w", "s", start, taker)).toBe(false);
     // No date reads as old.
-    expect(await personSendFresh("w", "s", start)).toBe(false);
+    expect(await takePersonSend("w", "s", start, taker)).toBe(false);
     expect(
-      await personSendFresh("w", "s", {
-        agentId: "ag_task:1",
-        kind: "continue",
-      })
+      await takePersonSend(
+        "w",
+        "s",
+        { agentId: "ag_task:1", kind: "continue", message: "m" },
+        taker
+      )
     ).toBe(false);
+  });
+
+  it("count once: another message of the task agent's finds it taken", async () => {
+    const calls = stubStorage(
+      new Response("1", {
+        headers: { "last-modified": storedAgo(1) },
+        status: 200,
+      }),
+      new Response(null, { status: 200 }),
+      new Response(`taken:${sha256(taker)}`, {
+        headers: { "last-modified": storedAgo(0) },
+        status: 200,
+      })
+    );
+    const { takePersonSend } = await loadInbox();
+
+    expect(await takePersonSend("w", "s", start, taker)).toBe(true);
+    // A report's turn sends the same text: another turn of the task agent's.
+    expect(
+      await takePersonSend(
+        "w",
+        "s",
+        start,
+        JSON.stringify(["session-task", "turn_1", 1])
+      )
+    ).toBe(false);
+    expect(calls.map((call) => call.method)).toEqual(["GET", "PUT", "GET"]);
+  });
+
+  it("count again for the very message that took it, its step run again", async () => {
+    // eve re-runs the step after a restart from the state before it; the
+    // claim is long stale by then (14 minutes after a deploy).
+    stubStorage(
+      new Response(`taken:${sha256(taker)}`, {
+        headers: { "last-modified": storedAgo(14) },
+        status: 200,
+      })
+    );
+    const { takePersonSend } = await loadInbox();
+
+    expect(await takePersonSend("w", "s", start, taker)).toBe(true);
+  });
+
+  it("count as unknown when the record could not be claimed", async () => {
+    stubStorage(
+      new Response("1", {
+        headers: { "last-modified": storedAgo(1) },
+        status: 200,
+      }),
+      new Response(null, { status: 403 })
+    );
+    const { takePersonSend } = await loadInbox();
+
+    await expect(takePersonSend("w", "s", start, taker)).rejects.toThrow(
+      /403/u
+    );
   });
 });
 

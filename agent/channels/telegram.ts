@@ -29,7 +29,10 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { taskFilesEnabled, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import {
+  conversationHoldsFiles,
+  taskFilesEnabled,
+} from "@agent/lib/sandbox/pilot";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
   finalizeScheduledReportDelivery,
@@ -180,7 +183,7 @@ export default telegramChannel({
       if (!requestedText) {
         const prepared = await attachmentDelivery(session, attachments);
         await uploadFiles(context, prepared.files, prepared.links, {
-          preview: !taskFilesOfCaller(session),
+          preview: !(await conversationHoldsFiles(session)),
         });
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
@@ -429,7 +432,7 @@ async function deliverText(
   }
 ) {
   const caller = session.session.auth.current ?? session.session.auth.initiator;
-  const filesHere = taskFilesOfCaller(session);
+  const filesHere = await conversationHoldsFiles(session);
   if (!caller) {
     const references = extractImageArtifactMarkdownReferences(text);
     const body =
@@ -504,7 +507,8 @@ function deliveredTurnId(context: TelegramEventContext) {
  * gets no preview: Telegram's servers would fetch the link to build one
  * before the person even reads it, so a link the task agent's report built
  * from the person's files would carry their content out unclicked. Only
- * where those files reach the task agent (`taskFilesOfCaller`).
+ * where those files reach the task agent or reached one of this
+ * conversation's, the flag since cleared or not (`conversationHoldsFiles`).
  */
 async function sendText(
   context: TelegramEventContext,

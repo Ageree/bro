@@ -12,15 +12,15 @@ import {
   namedAttachmentPaths,
   pathMatchesBytes,
   type PersonSend,
-  personSendFresh,
   sandboxHasFile,
   sandboxHoldsPersonFiles,
+  takePersonSend,
 } from "@agent/lib/sandbox/inbox";
 import {
   offlineRefusal,
   recordOfflineRefusal,
 } from "@agent/lib/sandbox/offline";
-import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { taskFilesGuarded, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { taskAgentTool } from "@agent/lib/turn-kind/sets";
 
 /** What the task agent reads when a file Bro named is not there. */
@@ -102,20 +102,44 @@ function ownAgentId(parent: SessionParent) {
   return `ag_${taskAgentTool}:${operation.slice(0, 12)}`;
 }
 
+/** Where eve's first message to a subagent puts Bro's own text. */
+const callerMessageHeading = "\nCaller message:\n";
+
 /**
- * The person's send this message would be: the starting call for the first
- * message, the task agent's `agentId` for a continuation, since
- * `ctx.session.parent` stays the starting call's for good. None for a
- * steered message, which eve hands over from inside `task` while Bro's hook
- * may still be recording it, or for one whose arrival is unknown.
+ * Bro's own text in the task agent's first message: eve wraps it in a
+ * preamble that ends with "Caller message:" (`formatSubagentPrompt` in
+ * `subagents/invocation.js`), and Bro's hook records the call's text
+ * itself. A message without that heading is taken whole, and then matches
+ * no record of the person's: the task agent only loses the web.
+ */
+function callerMessage(message: string) {
+  const at = message.indexOf(callerMessageHeading);
+  return at === -1 ? message : message.slice(at + callerMessageHeading.length);
+}
+
+/**
+ * The person's send this message would be: the starting call and its turn
+ * for the first message, the task agent's `agentId` for a continuation,
+ * since `ctx.session.parent` stays the starting call's for good; either
+ * with the text Bro sent. None for a steered message, which eve hands over
+ * from inside `task` while Bro's hook may still be recording it, or for one
+ * whose arrival is unknown.
  */
 function sendOf(
   arrival: ReturnType<typeof arrivalOf>,
-  parent: SessionParent
+  parent: SessionParent,
+  message: string
 ): PersonSend | undefined {
-  if (arrival === "first") return { callId: parent.callId, kind: "start" };
+  if (arrival === "first") {
+    return {
+      callId: parent.callId,
+      kind: "start",
+      message: callerMessage(message),
+      turnId: parent.turn.id,
+    };
+  }
   if (arrival === "continued") {
-    return { agentId: ownAgentId(parent), kind: "continue" };
+    return { agentId: ownAgentId(parent), kind: "continue", message };
   }
   return undefined;
 }
@@ -135,7 +159,11 @@ function sendOf(
  * (`agent/lib/sandbox/router.ts`); no mark, no file. Every message, files
  * or not, first goes through `keepOffWebUnlessSent`: in a conversation so
  * marked, a task agent goes off the web too unless the person's own turn
- * just sent it this message.
+ * just sent it this message. That check runs wherever Object Storage is,
+ * the files pilot on or not (`taskFilesGuarded`): a conversation marked
+ * while TASK_FILES_WORKSPACES named its workspace keeps the files' content
+ * in Bro's history after the flag is cleared. Only the files themselves,
+ * and NOT_RECEIVED.txt, follow the flag.
  *
  * `message.received` is part of the turn's preamble: eve emits it inside
  * the step's context scope, where the sandbox provider is bound and opens
@@ -153,7 +181,7 @@ export default defineHook({
     async "message.received"(event, ctx) {
       try {
         const { parent } = ctx.session;
-        if (parent === undefined || !taskFilesOfCaller(ctx)) return;
+        if (parent === undefined || !taskFilesGuarded()) return;
         const { message } = event.data;
         const arrival = arrivalOf(event.data);
         const steered = arrival === "steered";
@@ -168,8 +196,17 @@ export default defineHook({
         const relay = await keepOffWebUnlessSent({
           ...conversation,
           sandbox,
-          send: sendOf(arrival, parent),
+          send: sendOf(arrival, parent, message),
+          taker: JSON.stringify([
+            ctx.session.id,
+            event.data.turnId,
+            event.data.sequence,
+          ]),
         });
+        if (!taskFilesOfCaller(ctx)) {
+          if (relay !== "online") console.info("[task-files] relay", { relay });
+          return;
+        }
         const named = namedAttachmentPaths(message);
         const mentioned = message
           .replaceAll(notReceivedPath, "")
@@ -245,9 +282,13 @@ function once<T>(run: (signal?: AbortSignal) => Promise<T>) {
  * have it ask Bro to pass the file's content on to a helper, new or
  * continued, which would send it out in a URL: the files' mark is per
  * sandbox, text is not. So a task agent of such a conversation stays on the
- * web only when the person's turn sent this very message within the last
- * minutes (`personSendFresh`, stored by Bro's hook): the `task` call that
- * started it, or, for a continuation, a `task` call naming its `agentId`. A
+ * web only when the person's turn sent this very text within the last
+ * minutes (`takePersonSend`, stored by Bro's hook): the `task` call that
+ * started it, in its turn, or, for a continuation, a `task` call naming its
+ * `agentId`. The record is claimed by the message that takes it, so the
+ * same text sent again by a report's turn finds it taken, while this very
+ * message, its step run again from the state before it, finds its own
+ * claim. A
  * steered message and a continuation the person did not just send take it
  * off for good, its sandbox alone (`markSandboxOffWeb`): only a file going
  * in marks the conversation. A check that cannot be read marks nothing on a
@@ -261,10 +302,12 @@ async function keepOffWebUnlessSent(input: {
   readonly sandbox: () => Promise<Sandbox>;
   /** The person's send this message would be; none for a steered one. */
   readonly send: PersonSend | undefined;
+  /** This very message of the task agent's, as it claims the send. */
+  readonly taker: string;
   readonly workspaceId: string;
 }) {
   const signal = AbortSignal.timeout(relayBudgetMs);
-  const { parentSessionId, send, workspaceId } = input;
+  const { parentSessionId, send, taker, workspaceId } = input;
   const owed = offlineRefusal() === "owed";
   const held =
     owed ||
@@ -289,9 +332,13 @@ async function keepOffWebUnlessSent(input: {
   const sent =
     owed || send === undefined
       ? false
-      : await personSendFresh(workspaceId, parentSessionId, send, signal).catch(
-          () => undefined
-        );
+      : await takePersonSend(
+          workspaceId,
+          parentSessionId,
+          send,
+          taker,
+          signal
+        ).catch(() => undefined);
   if (sent === true) {
     settle();
     return "online" as const;

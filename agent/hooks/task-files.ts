@@ -15,7 +15,7 @@ import {
   putPersonSend,
   readSandboxFileWithin,
 } from "@agent/lib/sandbox/inbox";
-import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { taskFilesGuarded, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 
 /**
  * Who opened the current turn, as its messages tell: a task-report turn
@@ -88,31 +88,44 @@ function personTurn(ctx: HookContext, step: TurnCoordinates) {
 }
 
 /** The `task` calls of one event. */
-function taskCalls(actions: HookEvent<"actions.requested">["data"]["actions"]) {
-  return actions.flatMap((action) =>
+function taskCalls(data: HookEvent<"actions.requested">["data"]) {
+  return data.actions.flatMap((action) =>
     // A subagent tool reaches hooks as a plain tool call; `subagent-call`
     // is eve's internal dispatch and never shows here
     // (`harness/coordination.js`).
     action.kind === "tool-call" && action.toolName === "task"
-      ? [taskCall(action.callId, taskInputSchema.safeParse(action.input).data)]
+      ? [
+          taskCall(
+            action.callId,
+            data.turnId,
+            taskInputSchema.safeParse(action.input).data
+          ),
+        ]
       : []
   );
 }
 
 /**
  * One `task` call: the message it sends and whom to. eve continues the task
- * agent an `agentId` names, and starts a new one without it; a malformed
- * input sends nothing, but is recorded as a start, which no task agent can
- * mistake for its own continuation.
+ * agent an `agentId` names, and starts a new one without it, its lineage
+ * naming this call and this turn's id (`startSubagent` in
+ * `execution/tools/subagent/start.js`); the lineage's sequence is Bro's as
+ * the task is dispatched, not this turn's, so it names nothing here. A
+ * malformed input sends nothing, and nothing is recorded for it.
  */
 function taskCall(
   callId: string,
+  turnId: string,
   input: z.infer<typeof taskInputSchema> | undefined
 ) {
-  const agentId = input?.agentId?.trim() ?? "";
+  if (input === undefined) return { message: undefined, send: undefined };
+  const { message } = input;
+  const agentId = input.agentId?.trim() ?? "";
   const send: PersonSend =
-    agentId === "" ? { callId, kind: "start" } : { agentId, kind: "continue" };
-  return { message: input?.message, send };
+    agentId === ""
+      ? { callId, kind: "start", message, turnId }
+      : { agentId, kind: "continue", message };
+  return { message, send };
 }
 
 /** The staged paths the calls name, each once. */
@@ -190,20 +203,25 @@ export default defineHook({
     },
     async "actions.requested"(event, ctx) {
       try {
-        const calls = taskCalls(event.data.actions);
+        const calls = taskCalls(event.data);
         if (calls.length === 0) return;
-        if (!taskFilesOfCaller(ctx) || !personCaller(ctx)) return;
+        if (!taskFilesGuarded() || !personCaller(ctx)) return;
         if (!personTurn(ctx, event.data)) return;
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
         // The task agent each call starts or continues stays on the web
-        // only when the person's turn made the call (`keepOffWebUnlessSent`).
+        // only when the person's turn made the call (`keepOffWebUnlessSent`),
+        // which a conversation marked before the files pilot was cleared
+        // still asks: recorded wherever Object Storage is.
         const recorded = await recordPersonSends({
-          sends: calls.map(({ send }) => send),
+          sends: calls.flatMap(({ send }) =>
+            send === undefined ? [] : [send]
+          ),
           sessionId: ctx.session.id,
           workspaceId,
         });
+        if (!taskFilesOfCaller(ctx)) return;
         const paths = namedPaths(calls);
         if (paths.length === 0) {
           console.info("[task-files] calls", { recorded });
