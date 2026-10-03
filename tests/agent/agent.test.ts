@@ -11,6 +11,8 @@ import type * as SkillsPilot from "@agent/lib/skills/pilot";
 
 const services = vi.hoisted(() => ({
   browserRunReportDelivered: vi.fn<(runId: string) => Promise<boolean>>(),
+  compactionHeld: vi.fn<(sessionId: string) => boolean>(),
+  compactionPilot: vi.fn<() => Promise<boolean>>(),
   getFormOfAddress: vi.fn<typeof getFormOfAddress>(),
   getModel: vi.fn<typeof getWorkspaceModelId>(),
   historyTrimPilot: vi.fn<() => Promise<boolean>>(),
@@ -45,6 +47,13 @@ vi.mock("@agent/lib/sandbox/pilot", () => ({
 }));
 vi.mock("@agent/lib/history/pilot", () => ({
   historyTrimPilot: services.historyTrimPilot,
+}));
+vi.mock("@agent/lib/compaction/pilot", () => ({
+  compactionPilot: services.compactionPilot,
+}));
+vi.mock("@agent/lib/compaction/call", () => ({
+  compactionCallMiddleware: () => ({}),
+  compactionHeld: services.compactionHeld,
 }));
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
   const original = await importOriginal<typeof ModelSelection>();
@@ -84,6 +93,8 @@ beforeEach(() => {
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
   services.historyTrimPilot.mockResolvedValue(false);
+  services.compactionPilot.mockResolvedValue(false);
+  services.compactionHeld.mockReturnValue(false);
   services.skillsLayout.mockReturnValue("full");
 });
 
@@ -906,6 +917,90 @@ describe("interactive delivery enforcement", () => {
       ...outside,
       historyTrim: undefined,
     });
+  });
+
+  it("lets only the first step of a text turn compact, in the pilot", async () => {
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+    const earlier = [
+      humanMessage("привет"),
+      ...sent("call-0", "Привет!", "sent"),
+      { content: "Готово.", role: "assistant" as const },
+    ];
+    const opener = humanMessage("найди поезд в Казань");
+    const photo = Object.assign(
+      {
+        content: [
+          { text: "что на фото?", type: "text" as const },
+          {
+            data: "eve-sandbox:/photo.jpg",
+            mediaType: "image/jpeg",
+            type: "file" as const,
+          },
+        ],
+        role: "user" as const,
+      },
+      { kind: "user" }
+    );
+    const firstStep = { data: { stepIndex: 0, turnId: "turn_1" } };
+    const laterStep = { data: { stepIndex: 1, turnId: "turn_1" } };
+    async function compaction(
+      event: typeof firstStep,
+      messages: DynamicResolveContext["messages"]
+    ) {
+      await agent.model.events["step.started"]?.(
+        event,
+        // The person's own Telegram message: its cost is the chat's.
+        interactiveContext(messages, "telegram-webhook")
+      );
+      return services.modelSelection.mock.lastCall?.[1]?.compaction;
+    }
+
+    expect(await compaction(firstStep, [...earlier, opener])).toBeUndefined();
+    expect(services.compactionPilot).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      { sessionId: "interactive-session", stepIndex: 0, turnId: "turn_1" }
+    );
+
+    services.compactionPilot.mockResolvedValue(true);
+    const cost = {
+      runId: null,
+      sessionId: "interactive-session",
+      source: "chat",
+      turnId: "turn_1",
+      workspaceId: "workspace-1",
+    };
+    expect(await compaction(firstStep, [...earlier, opener])).toEqual({
+      cost,
+      inputTokens: 150_000,
+    });
+    // The turn's later steps keep the model's whole window: eve would put
+    // the opener again after their results.
+    expect(
+      await compaction(laterStep, [
+        ...earlier,
+        opener,
+        toolCallStep("web_search", "call-1", { query: "поезд" }),
+        toolResultStep("web_search", "call-1", { results: "…" }),
+      ])
+    ).toEqual({ cost, inputTokens: undefined });
+    // A message steered into the running turn is no first step either.
+    expect(
+      await compaction(laterStep, [...earlier, opener, humanMessage("в купе")])
+    ).toEqual({ cost, inputTokens: undefined });
+    expect(await compaction(firstStep, [...earlier, photo])).toEqual({
+      cost,
+      inputTokens: undefined,
+    });
+    // A session whose summary call just failed keeps its whole window.
+    services.compactionHeld.mockReturnValue(true);
+    expect(await compaction(firstStep, [...earlier, opener])).toEqual({
+      cost,
+      inputTokens: undefined,
+    });
+    expect(services.compactionHeld).toHaveBeenLastCalledWith(
+      "interactive-session"
+    );
   });
 
   it("fails the task agent's report on the Gateway, which ignores the tool limit", async () => {

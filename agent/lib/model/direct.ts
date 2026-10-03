@@ -9,6 +9,8 @@ import {
 } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
+import { compactionCallMiddleware } from "@agent/lib/compaction/call";
+import { compactionWindow } from "@agent/lib/compaction/window";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
 import type { HistoryTrim } from "@agent/lib/history/eligible";
 import { trimPrompt } from "@agent/lib/history/trim";
@@ -1269,6 +1271,16 @@ export function directModelSelection(
   modelId: string,
   options: {
     /**
+     * The pilot of compaction (`compactionPilot`): whose summary calls are
+     * recorded and watched (`compactionCallMiddleware`), and the whole input past which
+     * this step compacts — set only at a turn's first step
+     * (`compactsAtTurnStart`); unset, the model's own window holds.
+     */
+    readonly compaction?: {
+      readonly cost: Parameters<typeof compactionCallMiddleware>[0];
+      readonly inputTokens?: number;
+    };
+    /**
      * The turn already delivered its reply, so a step that says nothing ends
      * it instead of failing it.
      */
@@ -1333,6 +1345,10 @@ export function directModelSelection(
       : options.toolChoice;
 
   const middleware = [
+    // Outermost: it reads the price the one below puts where eve reads it.
+    ...(options.compaction
+      ? [compactionCallMiddleware(options.compaction.cost)]
+      : []),
     ...(routerAi ? [stepCostMiddleware((rub) => rub / env.USAGE_USD_RUB)] : []),
     stepToolsMiddleware(
       {
@@ -1375,8 +1391,15 @@ export function directModelSelection(
   return {
     model: wrapLanguageModel({ middleware, model }),
     // eve resolves an omitted context window from the AI Gateway catalog,
-    // which does not list OpenRouter or RouterAI model ids.
-    modelContextWindowTokens: endpoint.contextTokens,
+    // which does not list OpenRouter or RouterAI model ids. It reads the
+    // window only for the step's compaction threshold (`compactionWindow`).
+    modelContextWindowTokens:
+      options.compaction?.inputTokens === undefined
+        ? endpoint.contextTokens
+        : compactionWindow(
+            endpoint.contextTokens,
+            options.compaction.inputTokens
+          ),
     modelOptions: reasoningOptions(endpoint.reasoningEffort),
   };
 }

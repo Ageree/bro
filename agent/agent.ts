@@ -1,4 +1,9 @@
 import { defineAgent, defineDynamic } from "eve";
+import { compactionHeld } from "@agent/lib/compaction/call";
+import { compactionPilot } from "@agent/lib/compaction/pilot";
+import { recordTurnOpening } from "@agent/lib/compaction/record";
+import { compactsAtTurnStart } from "@agent/lib/compaction/turn-start";
+import { compactionThresholdPercent } from "@agent/lib/compaction/window";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
@@ -46,13 +51,14 @@ import {
 } from "@agent/lib/google-workspace/turn-reads";
 import { eligibleHistory } from "@agent/lib/history/eligible";
 import { historyTrimPilot } from "@agent/lib/history/pilot";
+import { turnCostSource } from "@agent/lib/costs/turns";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
-import { offeredSkills } from "@agent/lib/skills/tools";
+import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
 import { turnKind } from "@agent/lib/turn-kind/kind";
@@ -122,7 +128,15 @@ export default defineAgent({
         // eve delivers the task agent's report in a turn of its own that
         // keeps the previous turn's caller: after a browser report it would
         // pass for that report again, and be dropped as stale.
-        const kind = turnKind(ctx);
+        const step = stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          ctx.session.id
+        );
+        // The first step reads the turn's opening before eve may compact
+        // it: whether a message of the turn reached its history at all.
+        recordTurnOpening(step, ctx.messages);
+        // A turn eve compacted inside takes its kind from its record.
+        const kind = turnKind(ctx, step);
         const backgroundTaskTurn = kind === "background-task";
         // Such a turn is held to a few tools (below), and only the direct
         // model (RouterAI or OpenRouter) holds a step to them: a Gateway id would offer
@@ -225,16 +239,13 @@ export default defineAgent({
           resolveModeValue(ctx, clockModes) !== null;
         // The pilots' verdicts hold for the whole turn: one that flipped
         // between steps changed the step's notes and tools.
-        const step = stepIdentity(
-          stepStartedEventSchema.safeParse(event).data,
-          ctx.session.id
-        );
         const [
           modelId,
           formOfAddress,
           [stableContext, timeZone],
           taskAgent,
           historyTrimmed,
+          compacted,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -254,6 +265,8 @@ export default defineAgent({
             : false,
           // Old tool results go as short traces (docs/roadmap.md, 28).
           historyTrimPilot(scope, step),
+          // A long conversation is compacted (docs/roadmap.md, 28).
+          compactionPilot(scope, step),
         ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
@@ -293,7 +306,32 @@ export default defineAgent({
             : undefined,
           writesToPerson && sendFailed ? failedSendNote : undefined,
         ].filter((note) => note !== undefined);
+        const costOwner = turnCostSource(ctx.session);
         const selection: Parameters<typeof modelSelection>[1] = {
+          // The pilot of compaction: eve summarizes the older conversation
+          // once the step's whole input passes COMPACTION_INPUT_TOKENS, but
+          // only at the first step of a turn whose opening text is the last
+          // message; every other step keeps the model's whole window, so a
+          // turn is never compacted halfway (`compactsAtTurnStart`). Nor is
+          // a session whose summary call just failed (`compactionHeld`).
+          // The call's cost goes to the turn's source and errand.
+          compaction: compacted
+            ? {
+                cost: {
+                  runId: costOwner.runId ?? null,
+                  sessionId: ctx.session.id,
+                  source: costOwner.source,
+                  turnId: step.turnId,
+                  workspaceId: scope.workspaceId,
+                },
+                inputTokens:
+                  step.stepIndex === 0 &&
+                  compactsAtTurnStart(ctx.messages) &&
+                  !compactionHeld(ctx.session.id)
+                    ? env.COMPACTION_INPUT_TOKENS
+                    : undefined,
+              }
+            : undefined,
           // After the reply, a step with nothing to add may come back empty
           // (gpt-6-luna did it almost every time); it ends the turn rather
           // than failing a turn the person already has the answer to. So
@@ -330,9 +368,13 @@ export default defineAgent({
           // message, so until then nothing it asked about is undone.
           // In the skills pilot a person's step has a domain's tools once
           // the conversation has its rules (`offeredSkills`).
+          // In the pilot of compaction they hold for the whole turn
+          // (`turnOfferedSkills`).
           toolGroups:
             kind === "person" && skillsLayout(ctx) === "core"
-              ? offeredSkills(ctx.messages, skillSetup(ctx))
+              ? compacted
+                ? turnOfferedSkills(ctx.messages, skillSetup(ctx), step)
+                : offeredSkills(ctx.messages, skillSetup(ctx))
               : undefined,
           // In the pilot a turn keeps one tool set from its first step to
           // its last (`turnTools`).
@@ -366,6 +408,6 @@ export default defineAgent({
     maxInputTokensPerSession: 400_000_000,
   },
   compaction: {
-    thresholdPercent: 0.7,
+    thresholdPercent: compactionThresholdPercent,
   },
 });

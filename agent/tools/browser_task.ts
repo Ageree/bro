@@ -10,6 +10,10 @@ import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
+import {
   BrowserUseError,
   browserUseBusy,
   browserUseCloudConfigured,
@@ -108,7 +112,7 @@ import {
   type BrowserRunNeed,
 } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
-import { outcomesHeard } from "@agent/lib/browser-use/heard";
+import { outcomesHeardThisTurn } from "@agent/lib/browser-use/heard";
 import {
   codesNotFromPerson,
   oneTimeCodesIn,
@@ -3068,7 +3072,7 @@ async function continueQueuedErrand(
 
 /**
  * What a `browser_task` call does. `heard` names the runs whose settled
- * outcome this conversation already told the person (`outcomesHeard`): a
+ * outcome this conversation already told the person (`outcomesHeardThisTurn`): a
  * follow-up on one of them is theirs to give, not a «ну что там?» to answer
  * with the outcome again. `turn` is what the person wrote this turn
  * (`personWordsThisTurn`): a code, a quote or a step only they can take must
@@ -4135,13 +4139,17 @@ export default defineDynamic({
     // It also carries which settled outcomes the conversation has told the
     // person: the tool itself sees no messages, and a follow-up on one of
     // them goes through instead of being answered with it once more.
-    "step.started": (_event, context) => {
+    "step.started": (event, context) => {
       if (!browserUseConfigured()) return null;
       const startsUsed = turnBrowserStarts(context.messages) >= turnStartLimit;
-      const heard = outcomesHeard(context.messages);
+      const step = stepIdentity(
+        stepStartedEventSchema.safeParse(event).data,
+        context.session.id
+      );
+      const heard = outcomesHeardThisTurn(context.messages, step);
       // The person's own words this turn, which the tool cannot read: the
       // one source of a code, a quote or a consent it passes on as theirs.
-      const turn = personWordsThisTurn(context.messages);
+      const turn = personWordsThisTurn(context.messages, step);
       // The skills pilot's turns read the short description and schema.
       const short = skillsLayout(context) === "core";
       const tool = defineTool({

@@ -1,7 +1,9 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import { turnCompaction } from "@agent/lib/compaction/mid-turn";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
+import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
 
 /** The opening of the report prompt that brings a run's question to a chat. */
 export const waitingQuestionHeading =
@@ -55,9 +57,7 @@ function writtenByPerson(message: ModelMessage, text: string) {
  * chat has nobody here to answer it, and one the person already wrote past
  * without answering is theirs to come back to, not the model's to settle.
  */
-export function answerableScheduledQuestions(
-  messages: readonly ModelMessage[]
-) {
+function answerableScheduledQuestions(messages: readonly ModelMessage[]) {
   let sincePersonWrote = new Set<string>();
   let answerable = new Set<string>();
   let asking: string | undefined;
@@ -84,4 +84,32 @@ export function answerableScheduledQuestions(
     if (delivered) sincePersonWrote.add(asking);
   }
   return [...answerable];
+}
+
+/** What each turn found answerable when it began, on this instance. */
+const turnAnswerable = turnMemory<readonly string[]>();
+
+/**
+ * `answerableScheduledQuestions` for the turn that begins with `turn`. It is
+ * read at `turn.started`, before any compaction of the turn; a resolver run
+ * again later — eve binds a turn's tools anew in another process — reads a
+ * history eve may have compacted since. Then it takes what this instance
+ * read when the turn began, or else none for a turn compacted inside (a
+ * copy of an older message of the person's would pass for their answer)
+ * and what is left for one compacted at its start: a question summarized
+ * away is not answered here, and the person is asked again.
+ */
+export function answerableThisTurn(
+  messages: readonly ModelMessage[],
+  turn: StepIdentity
+): readonly string[] {
+  const { compaction } = turnCompaction(messages, turn);
+  const began = turnAnswerable.get(turn);
+  if (compaction !== "none" && began !== undefined) return began;
+  if (compaction === "inside") return [];
+  const answerable = answerableScheduledQuestions(messages);
+  // Uncompacted, as at `turn.started`: what an earlier run of the session
+  // left under the same turn id on this instance goes.
+  if (compaction === "none") turnAnswerable.set(turn, answerable);
+  return answerable;
 }

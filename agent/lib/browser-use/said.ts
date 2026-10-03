@@ -1,7 +1,12 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  compactionMarker,
+  turnCompaction,
+} from "@agent/lib/compaction/mid-turn";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
+import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
 
 const taggedMessageSchema = z.object({ kind: z.string() });
 
@@ -97,10 +102,31 @@ export function personMessages(messages: readonly ModelMessage[]) {
  * A reply of Bro's or a tool result stops the walk: eve's history has no turn
  * id, but a turn Bro answered always leaves one, so an earlier turn's code or
  * «можно дороже» never reaches a later «ну что там?».
+ *
+ * Except after eve's compaction: when the kept messages run over its
+ * threshold, it keeps none of their tool results and none of Bro's steps
+ * without text (`keepNonToolResultMessages` in
+ * `eve/dist/src/harness/compaction.js`), and a message of an earlier turn
+ * that Bro never answered in words ends up next to the opener. With no tool
+ * result between the summary and the opener, only the opener is this
+ * turn's — unless `whole`: a check that refuses on the person's words reads
+ * the walk as it was, since fewer words would refuse less.
  */
-function personBurst(messages: readonly ModelMessage[], opening: number) {
+function personBurst(
+  messages: readonly ModelMessage[],
+  opening: number,
+  whole = false
+) {
   const message = messages[opening];
   if (message === undefined || !isPersonMessage(message)) return null;
+  const summary = messages.slice(0, opening).findLastIndex(compactionMarker);
+  if (
+    !whole &&
+    summary !== -1 &&
+    !messages.slice(summary + 1, opening).some((kept) => kept.role === "tool")
+  ) {
+    return [messageText(message)];
+  }
   const before = messages.slice(0, opening);
   const stop = before.findLastIndex(
     (earlier) =>
@@ -169,20 +195,88 @@ function paymentQuestionBefore(
 }
 
 /**
+ * What a turn's first step read before its opener, on this instance: eve's
+ * compaction at that step (`start`) may drop the tool results and Bro's
+ * steps without text from the part it keeps (`keepNonToolResultMessages`
+ * in `eve/dist/src/harness/compaction.js`), and with them the question the
+ * person's «да» answers. The first step's resolvers run before the
+ * compaction; a step that runs elsewhere reads the compacted history, which
+ * has at most fewer of the person's words and no payment question.
+ */
+const firstStepWords = turnMemory<{
+  readonly opener: string | undefined;
+  readonly paymentAsked: string | null;
+  readonly said: string[] | null;
+}>();
+
+/** What the person wrote in this turn (`personWordsThisTurn`). */
+export interface PersonWords {
+  answers: string[];
+  compacted?: true;
+  nearby?: string[];
+  paymentAsked: string | null;
+  said: string[] | null;
+}
+
+/**
  * What the person wrote in this turn. `said`: the messages they opened it
  * with, null when Bro opened it — a browser report, a scheduled result, a
  * wakeup, whose text a page or a worker wrote. `answers`: what they answered
  * to its questions, in either kind of turn. `paymentAsked`: Bro's question
  * about paying that their message answers, if it is one. A follow-up acts on
  * these words only; only a turn they opened is theirs for consent.
+ *
+ * `nearby`: when compaction narrowed `said` to the opener (`personBurst`),
+ * the messages it would be without that, for a check that refuses on them.
+ *
+ * `compacted`: eve compacted the conversation inside the turn `step` belongs
+ * to (`turnCompaction`), and its words are unknown: the message that reads
+ * as its opener may be eve's copy of an older one. A tool that acts on what
+ * the person said refuses then, rather than take nothing for their words.
  */
-export function personWordsThisTurn(messages: readonly ModelMessage[]) {
+export function personWordsThisTurn(
+  messages: readonly ModelMessage[],
+  step: StepIdentity
+): PersonWords {
+  const { compaction } = turnCompaction(messages, step);
+  if (compaction === "inside") {
+    return {
+      answers: [],
+      compacted: true,
+      paymentAsked: null,
+      said: null,
+    };
+  }
   const opening = messages.findLastIndex(startsTurn);
-  return {
-    answers: opening === -1 ? [] : answersThisTurn(messages.slice(opening + 1)),
+  const opener = messages[opening];
+  const words = {
+    opener: opener === undefined ? undefined : messageText(opener),
     paymentAsked: paymentQuestionBefore(messages, opening) ?? null,
     said: personBurst(messages, opening),
   };
+  // Written while nothing is compacted yet, so a turn of the same id an
+  // earlier run of the session left on this instance is overwritten.
+  if (step.stepIndex === 0 && compaction === "none") {
+    firstStepWords.set(step, words);
+  }
+  const first = firstStepWords.get(step);
+  // The same opener: no message of theirs steered the turn since.
+  const kept =
+    compaction === "start" &&
+    first !== undefined &&
+    first.opener === words.opener
+      ? first
+      : words;
+  const result: PersonWords = {
+    answers: opening === -1 ? [] : answersThisTurn(messages.slice(opening + 1)),
+    paymentAsked: kept.paymentAsked,
+    said: kept.said,
+  };
+  const nearby = personBurst(messages, opening, true);
+  if (nearby !== null && nearby.length !== words.said?.length) {
+    result.nearby = nearby;
+  }
+  return result;
 }
 
 /**

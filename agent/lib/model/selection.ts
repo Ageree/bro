@@ -21,11 +21,15 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * Gateway id ignores. `stableContext`, the pilot of the cache-friendly step,
  * is never set for a Gateway id (`stepContextPilot`), nor is `skillBlocks`,
  * the skills pilot (`skillsPilot`), nor `historyTrim`, the pilot of trimming
- * old history (`historyTrimPilot`).
+ * old history (`historyTrimPilot`), nor `compaction`, the pilot of compacting
+ * a long conversation (`compactionPilot`).
  */
 export function modelSelection(
   modelId: string,
   options: {
+    readonly compaction?: Parameters<
+      typeof directModelSelection
+    >[1]["compaction"];
     readonly delivered?: boolean;
     readonly historyTrim?: Parameters<
       typeof directModelSelection
@@ -45,6 +49,7 @@ export function modelSelection(
 ) {
   return directModelActive()
     ? directModelSelection(modelId, {
+        compaction: options.compaction,
         delivered: options.delivered,
         historyTrim: options.historyTrim,
         offeredTools: options.offeredTools,

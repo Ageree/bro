@@ -10,9 +10,46 @@ vi.mock("@db/services/settings", () => ({
   updateFormOfAddress: settings.update,
 }));
 
+// eve's state outside a session: one value per slot.
+vi.mock("eve/context", () => ({
+  defineState<T>(_name: string, initial: () => T) {
+    let value = initial();
+    return {
+      get: () => value,
+      update(next: (current: T) => T) {
+        value = next(value);
+      },
+    };
+  },
+}));
+
 import formOfAddressTools, {
   aboutSomeoneElse,
 } from "@agent/tools/form_of_address";
+import {
+  recordCompactionCompleted,
+  recordMessageReceived,
+  recordStepStarted,
+  recordTurnOpening,
+  recordTurnStarted,
+} from "@agent/lib/compaction/record";
+
+/**
+ * A person's turn whose steps began up to `steps`, its first step having
+ * read `opening` before any compaction.
+ */
+function personTurn(
+  turnId: string,
+  steps: number,
+  opening: DynamicResolveContext["messages"] = [person("привет")]
+) {
+  recordTurnStarted(turnId);
+  recordMessageReceived({ turnId });
+  recordTurnOpening({ sessionId: "session-1", stepIndex: 0, turnId }, opening);
+  for (let stepIndex = 0; stepIndex < steps; stepIndex += 1) {
+    recordStepStarted({ stepIndex, turnId });
+  }
+}
 
 beforeEach(() => {
   settings.update.mockReset();
@@ -103,6 +140,102 @@ describe("form_of_address in a turn about someone else's letter", () => {
     );
   });
 
+  describe("after eve compacted the conversation", () => {
+    const summary = [
+      Object.assign(
+        {
+          content: "Summary of our conversation so far:",
+          role: "user" as const,
+        },
+        { kind: "context.compaction" }
+      ),
+      { content: "Сводка.", role: "assistant" as const },
+    ];
+    const letter = person(
+      "ответь Ирине Павловне про встречу. на вы, как обычно"
+    );
+
+    it("saves nothing inside the turn: the person's words are unknown", async () => {
+      // eve compacted inside the turn and put an older message of the
+      // person's back after the kept results: it is not this turn's, and
+      // the letter «на вы» this turn asked for is gone (RU d09).
+      personTurn("turn_7", 4);
+      recordCompactionCompleted("turn_7");
+      const tool = await resolveTool([...summary, person("привет")], {
+        data: { stepIndex: 3, turnId: "turn_7" },
+      });
+
+      const result = await tool.execute({ formal: true }, toolContext());
+
+      expect(settings.update).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ saved: false });
+      expect(JSON.stringify(result)).toContain("compacted");
+    });
+
+    it("saves nothing for a turn it has no record of", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      personTurn("turn_8", 2);
+      const tool = await resolveTool([...summary, person("давай на вы")], {
+        data: { stepIndex: 1, turnId: "turn_other" },
+      });
+
+      await tool.execute({ formal: true }, toolContext());
+
+      expect(settings.update).not.toHaveBeenCalled();
+    });
+
+    it("looks for the letter next to an opener compaction narrowed", async () => {
+      // «ответь Ирине…» went unanswered in an earlier turn, or steered this
+      // one; eve compacted at the first step and kept no results, and the
+      // step after runs where the first step's words are not kept.
+      const history = [...summary, letter, person("ну?")];
+      personTurn("turn_11", 1, history);
+      recordCompactionCompleted("turn_11");
+      recordStepStarted({ stepIndex: 1, turnId: "turn_11" });
+      const tool = await resolveTool(history, {
+        data: { stepIndex: 1, turnId: "turn_11" },
+      });
+
+      const result = await tool.execute({ formal: true }, toolContext());
+
+      expect(settings.update).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ saved: false });
+    });
+
+    it("looks for the letter in a message that steered the turn after it", async () => {
+      const opening = [...summary, letter];
+      personTurn("turn_12", 0, opening);
+      await resolveTool(opening, { data: { stepIndex: 0, turnId: "turn_12" } });
+      recordStepStarted({ stepIndex: 0, turnId: "turn_12" });
+      recordCompactionCompleted("turn_12");
+      recordStepStarted({ stepIndex: 1, turnId: "turn_12" });
+      const tool = await resolveTool(
+        [...opening, person("на вы, как обычно")],
+        { data: { stepIndex: 1, turnId: "turn_12" } }
+      );
+
+      await tool.execute({ formal: true }, toolContext());
+
+      expect(settings.update).not.toHaveBeenCalled();
+    });
+
+    it("reads a later turn's words as before", async () => {
+      personTurn("turn_9", 3);
+      const letterTool = await resolveTool([...summary, letter], {
+        data: { stepIndex: 2, turnId: "turn_9" },
+      });
+      await letterTool.execute({ formal: true }, toolContext());
+      expect(settings.update).not.toHaveBeenCalled();
+
+      personTurn("turn_10", 3);
+      const tool = await resolveTool([...summary, person("давай на вы")], {
+        data: { stepIndex: 2, turnId: "turn_10" },
+      });
+      await tool.execute({ formal: true }, toolContext());
+      expect(settings.update).toHaveBeenCalledOnce();
+    });
+  });
+
   it("saves the switch the person asked of Bro itself", async () => {
     const tool = await resolveTool([person("давай на вы")]);
 
@@ -169,18 +302,18 @@ const auth = {
   initiator: null,
 };
 
-async function resolveTool(messages: DynamicResolveContext["messages"]) {
+async function resolveTool(
+  messages: DynamicResolveContext["messages"],
+  event: { readonly data?: { stepIndex: number; turnId: string } } = {}
+) {
   const resolve = formOfAddressTools.events["step.started"];
   if (!resolve) throw new Error("form_of_address must resolve on each step.");
-  const tools = await resolve(
-    {},
-    {
-      channel: { kind: "channel:telegram", metadata: {} },
-      messages,
-      model: null,
-      session: { auth, id: "session-1" },
-    }
-  );
+  const tools = await resolve(event, {
+    channel: { kind: "channel:telegram", metadata: {} },
+    messages,
+    model: null,
+    session: { auth, id: "session-1" },
+  });
   const tool = tools && "form_of_address" in tools && tools.form_of_address;
   if (!tool) throw new Error("A conversation must expose form_of_address.");
   return tool;
