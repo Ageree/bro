@@ -99,6 +99,21 @@ function personLink(said: readonly string[], given: string) {
   return new Set(loose.map(pageKey)).size === 1 ? loose[0] : undefined;
 }
 
+/**
+ * A page read that cannot throw: one that failed in a way the download did
+ * not foresee is a page that did not open, not an error for the turn.
+ */
+async function readSafely(url: URL) {
+  try {
+    return await readPricePage(url);
+  } catch (error) {
+    console.warn("[subscriptions] watch read failed", {
+      name: error instanceof Error ? error.name : "error",
+    });
+    return { kind: "unreachable", reason: "error" } as const;
+  }
+}
+
 const notThePerson =
   "Nothing was set up: a watch starts only in a turn the person's own message opened.";
 const notTheirLink =
@@ -154,7 +169,7 @@ async function createWatch(
     below === undefined
       ? { kind: "drop", percent: Math.min(percent ?? 0, 90) }
       : { amount: below, kind: "below" };
-  const reading = await readPricePage(url);
+  const reading = await readSafely(url);
   if (reading.kind === "unavailable") {
     return {
       reply:

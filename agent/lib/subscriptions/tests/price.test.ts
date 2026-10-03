@@ -142,6 +142,13 @@ describe("reading a price", () => {
     expect(aggregate({ lowPrice: 5_000, offerCount: "1" })).toMatchObject({
       amount: 5_000,
     });
+    // A price beside a range or a count of sellers is no one price either.
+    expect(
+      aggregate({ highPrice: 9_000, lowPrice: 5_000, price: 7_000 })
+    ).toEqual({ kind: "several-products" });
+    expect(aggregate({ offerCount: 12, price: 7_000 })).toEqual({
+      kind: "several-products",
+    });
   });
 
   it("reads a JSON-LD dot as schema.org's decimal point", () => {
@@ -166,6 +173,17 @@ describe("reading a price", () => {
     const name = reading.kind === "price" ? reading.name : null;
     expect(name).toContain("Чайник K780 1.7 л");
     expect(name).not.toMatch(/evil|shop-deals|999|123/u);
+    // Full-width dots and digits, handles and Telegram links too.
+    const disguised = readPrice(
+      jsonLd({
+        "@type": "Product",
+        name: "Чайник: пишите @kettle_seller, t.me/kettle_deals, shop．ru, ＋７ ９９９ １２３ ４５ ６７",
+        offers: { price: 1 },
+      })
+    );
+    const plain = disguised.kind === "price" ? disguised.name : null;
+    expect(plain).toMatch(/^Чайник/u);
+    expect(plain).not.toMatch(/kettle|shop|ru|999|９/u);
   });
 
   it("does not read the products a page recommends", () => {
@@ -318,6 +336,24 @@ describe("reading a price", () => {
       "every end inside a quote": (size: number) => '<">"'.repeat(size / 4),
       "a quote never closed before many ends": (size: number) =>
         `<meta content="${">".repeat(size)}`,
+      "JSON-LD blocks of nothing": (size: number) =>
+        '<script type="application/ld+json">{}</script>'.repeat(size / 47),
+      "a JSON-LD list of nothing": (size: number) =>
+        jsonLd(Array.from({ length: size / 3 }, () => ({}))),
+      "a JSON-LD graph of nothing": (size: number) =>
+        jsonLd({ "@graph": Array.from({ length: size / 3 }, () => ({})) }),
+      "products in stock and sold out": (size: number) =>
+        jsonLd(
+          Array.from({ length: size / 60 }, (_, index) => ({
+            "@type": "Product",
+            offers:
+              index % 2 === 0
+                ? { price: 1 }
+                : { availability: "OutOfStock", price: 1 },
+          }))
+        ),
+      "empty meta tags": (size: number) => "<meta >".repeat(size / 7),
+      "meta tags": (size: number) => "<META A=B>".repeat(size / 10),
       "unclosed quotes": (size: number) =>
         `<meta content="${"x ".repeat(size / 2)}>`,
     };
@@ -334,6 +370,43 @@ describe("reading a price", () => {
           ];
     });
     expect(slow).toEqual([]);
+  });
+
+  it("reads no further than a product page has: a page past that is no one product", () => {
+    const product = {
+      "@type": "Product",
+      name: "Чайник",
+      offers: { price: 1 },
+    };
+    const graph = Array.from({ length: 700_000 }, () => ({}));
+    // A spread of these into one call overflowed the stack.
+    expect(readPrice(jsonLd({ "@graph": graph }))).toEqual({
+      kind: "several-products",
+    });
+    expect(
+      readPrice(
+        `${jsonLd(product)}${'<script type="application/ld+json">{}</script>'.repeat(100)}`
+      )
+    ).toEqual({ kind: "several-products" });
+    expect(
+      readPrice(
+        jsonLd({
+          ...product,
+          offers: Array.from({ length: 1_001 }, () => ({ price: 1 })),
+        })
+      )
+    ).toEqual({ kind: "several-products" });
+    expect(
+      readPrice(
+        `<meta property="product:price:amount" content="1">${"<meta>".repeat(2_000)}`
+      )
+    ).toEqual({ kind: "several-products" });
+    // Up to the caps the page reads as before.
+    expect(
+      readPrice(
+        `${jsonLd(product)}${"<meta>".repeat(1_000)}${'<script type="application/ld+json">{}</script>'.repeat(98)}`
+      )
+    ).toMatchObject({ amount: 1, kind: "price" });
   });
 
   it("does not end a tag at a > inside a quoted value", () => {

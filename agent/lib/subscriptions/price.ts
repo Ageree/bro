@@ -128,11 +128,13 @@ const phonePattern = /\+?\d[\d\s()\u00a0-]{8,}\d/gu;
  * anywhere.
  */
 function productName(text: string | undefined) {
-  const label = plainLabel(text, 200);
+  // Full-width «．» and digits are a dot and digits like any other.
+  const label = plainLabel(text?.slice(0, 800).normalize("NFKC"), 200);
   if (label === null) return null;
   return plainLabel(
     label
-      .replaceAll(/\S*(?:https?:\/\/|www\.)\S*/giu, " ")
+      .replaceAll(/\S*(?:https?:\/\/|www\.|t\.me\/)\S*/giu, " ")
+      .replaceAll(/(?<![\p{L}\d])@[\p{L}\d_.]+/gu, " ")
       .replaceAll(
         /(?<![\p{L}\d])[\p{L}\d-]+(?:\.[\p{L}\d-]+)*\.(?:[a-z]{2,24}|рф)(?![\p{L}\d])/giu,
         " "
@@ -182,7 +184,7 @@ const productSchema = z.looseObject({
   "@type": typeSchema,
   gtin13: textSchema,
   name: textSchema,
-  offers: listOf(offerSchema),
+  offers: listOf(z.unknown()),
   productID: textSchema,
   sku: textSchema,
 });
@@ -196,10 +198,6 @@ const nodeSchema = z.looseObject({
   "@graph": z.array(z.unknown()).optional().catch(undefined),
 });
 
-const blockSchema = z
-  .union([z.array(nodeSchema.catch({})), nodeSchema.transform((one) => [one])])
-  .catch([]);
-
 function isProduct(types: z.output<typeof typeSchema>) {
   return [types ?? []]
     .flat()
@@ -211,18 +209,29 @@ const unavailable = /outofstock|soldout|discontinued|preorder|presale/iu;
 const notNew = /used|refurbished|damaged/iu;
 
 /**
- * An offer's one amount: its `price`, else an aggregate offer's `lowPrice`
+ * An offer's one amount: its `price`, else an aggregate offer's `lowPrice`,
  * when that is the only price it spans. «from 5 000» over twelve sellers up
- * to 9 000 is `several`: a new cheap seller would read as a drop.
+ * to 9 000 is `several`, whatever `price` it names too: a new cheap seller
+ * would read as a drop.
  */
 function offerAmount(offer: z.output<typeof offerSchema>) {
-  if (offer.price !== undefined) return offer.price;
-  if (offer.lowPrice === undefined) return undefined;
-  const one =
-    (offer.highPrice === undefined || offer.highPrice === offer.lowPrice) &&
-    (offer.offerCount === undefined || offer.offerCount <= 1);
-  return one ? offer.lowPrice : ("several" as const);
+  const amount = offer.price ?? offer.lowPrice;
+  if (amount === undefined) return undefined;
+  const spans =
+    (offer.lowPrice !== undefined && offer.lowPrice !== amount) ||
+    (offer.highPrice !== undefined && offer.highPrice !== amount) ||
+    (offer.offerCount !== undefined && offer.offerCount > 1);
+  return spans ? ("several" as const) : amount;
 }
+
+/**
+ * The most a page's JSON-LD is read for: blocks, nodes in all of them and
+ * offers of one product. A product page has a handful; past these the page
+ * is a catalogue or a trap, and reading on would hold the process.
+ */
+const maximumJsonLdBlocks = 100;
+const maximumJsonLdNodes = 1_000;
+const maximumOffers = 1_000;
 
 /**
  * A product's one price: of its new offers, by `price`, else a one-price
@@ -232,7 +241,11 @@ function offerAmount(offer: z.output<typeof offerSchema>) {
  * `unavailable` when every offer is sold out, `undefined` for no price.
  */
 function offerPrice(offers: z.output<typeof productSchema>["offers"]) {
-  const listed = (offers ?? []).filter((offer) => offer !== undefined);
+  if ((offers?.length ?? 0) > maximumOffers) return "several" as const;
+  const listed = (offers ?? []).flatMap((raw) => {
+    const offer = offerSchema.safeParse(raw).data;
+    return offer ? [offer] : [];
+  });
   const priced = [];
   for (const offer of listed) {
     if (notNew.test(offer.itemCondition ?? "")) continue;
@@ -269,21 +282,60 @@ function offerPrice(offers: z.output<typeof productSchema>["offers"]) {
 
 function parsedJson(text: string) {
   try {
-    return z.json().parse(JSON.parse(text));
+    return z.unknown().parse(JSON.parse(text));
   } catch {
+    // Not JSON, or too deep for the parser.
     return null;
   }
 }
 
-/** Two labels of one product: a missing name or SKU tells nothing apart. */
-function sameLabels(
-  one: Pick<PriceReading, "name" | "sku">,
-  other: Pick<PriceReading, "name" | "sku">
-) {
+const nodeListSchema = z.array(z.unknown());
+
+/**
+ * The top-level nodes of the page's JSON-LD blocks and their `@graph`s, in
+ * order, or `too-many` past the cap: a loop, not a spread, so a `@graph` of
+ * 700 000 items cannot overflow the stack.
+ */
+function jsonLdNodes(blocks: readonly string[]) {
+  const nodes: unknown[] = [];
+  for (const block of blocks) {
+    const parsed = parsedJson(block);
+    const top = nodeListSchema.safeParse(parsed).data ?? [parsed];
+    if (nodes.length + top.length > maximumJsonLdNodes) {
+      return "too-many" as const;
+    }
+    for (const item of top) {
+      const graph = nodeSchema.safeParse(item).data?.["@graph"] ?? [];
+      if (nodes.length + 1 + graph.length > maximumJsonLdNodes) {
+        return "too-many" as const;
+      }
+      nodes.push(item);
+      for (const node of graph) nodes.push(node);
+    }
+  }
+  return nodes;
+}
+
+/** A label every one of `labels` agrees with, or none to tell apart by. */
+function labelFits(label: string | null, labels: ReadonlySet<string>) {
   return (
-    (one.name === null || other.name === null || one.name === other.name) &&
-    (one.sku === null || other.sku === null || one.sku === other.sku)
+    label === null ||
+    labels.size === 0 ||
+    (labels.size === 1 && labels.has(label))
   );
+}
+
+/**
+ * Whether a sold-out node is the product in stock, by name and SKU: a
+ * missing one tells nothing apart. `names` and `skus` are those of the
+ * products in stock, so each node is one lookup, not a pass over them all.
+ */
+function sameProductInStock(
+  gone: Pick<PriceReading, "name" | "sku">,
+  names: ReadonlySet<string>,
+  skus: ReadonlySet<string>
+) {
+  return labelFits(gone.name, names) && labelFits(gone.sku, skus);
 }
 
 /**
@@ -292,46 +344,34 @@ function sameLabels(
  * of another product makes the page as ambiguous as a catalogue, and only
  * a page whose every product is sold out is `unavailable`.
  */
-function jsonLdProducts(tags: readonly HtmlTag[]) {
+function jsonLdProducts(blocks: readonly string[]) {
+  const nodes = jsonLdNodes(blocks);
+  if (nodes === "too-many") return "several-products" as const;
   const products: PriceReading[] = [];
   const soldOut: Pick<PriceReading, "name" | "sku">[] = [];
-  for (const tag of tags) {
-    if (tag.name !== "script" || tag.body === undefined) continue;
-    const type = attributes(tag.inner).get("type")?.trim().toLowerCase();
-    if (type !== "application/ld+json") continue;
-    const nodes: unknown[] = [];
-    for (const node of blockSchema.parse(parsedJson(tag.body))) {
-      nodes.push(node, ...(node["@graph"] ?? []));
+  for (const node of nodes) {
+    const product = productSchema.safeParse(node).data;
+    if (!product || !isProduct(product["@type"])) continue;
+    const price = offerPrice(product.offers);
+    if (!price) continue;
+    if (price === "several") return "several-products" as const;
+    const labels = {
+      name: productName(product.name),
+      sku: plainLabel(product.sku ?? product.productID ?? product.gtin13, 64),
+    };
+    if (price === "unavailable") {
+      soldOut.push(labels);
+      continue;
     }
-    for (const node of nodes) {
-      const product = productSchema.safeParse(node).data;
-      if (!product || !isProduct(product["@type"])) continue;
-      const price = offerPrice(product.offers);
-      if (!price) continue;
-      if (price === "several") return "several-products" as const;
-      const labels = {
-        name: productName(product.name),
-        sku: plainLabel(product.sku ?? product.productID ?? product.gtin13, 64),
-      };
-      if (price === "unavailable") {
-        soldOut.push(labels);
-        continue;
-      }
-      products.push({
-        ...price,
-        ...labels,
-        extractor: "jsonld",
-        kind: "price",
-      });
-    }
+    products.push({ ...price, ...labels, extractor: "jsonld", kind: "price" });
   }
   if (products.length === 0) {
     // A sold-out product is not priced by other markup on its page.
     return soldOut.length > 0 ? ("unavailable" as const) : products;
   }
-  return soldOut.every((gone) =>
-    products.every((product) => sameLabels(gone, product))
-  )
+  const names = new Set(products.flatMap(({ name }) => (name ? [name] : [])));
+  const skus = new Set(products.flatMap(({ sku }) => (sku ? [sku] : [])));
+  return soldOut.every((gone) => sameProductInStock(gone, names, skus))
     ? products
     : ("several-products" as const);
 }
@@ -372,16 +412,6 @@ function asciiLower(text: string) {
 }
 
 /**
- * A tag of the page: its name, what stands between `<` and `>` (the first
- * 4 KB of it) and, for a script or a style, its body.
- */
-interface HtmlTag {
-  readonly body: string | undefined;
-  readonly inner: string;
-  readonly name: string;
-}
-
-/**
  * Where a tag opened at `open` ends: the first `>` outside a quoted value
  * (`content="a > b"` is one value) within the tag's first 4 KB, or -1 when
  * a quote does not close or no `>` stands outside one there.
@@ -402,20 +432,34 @@ function quotedTagEnd(html: string, open: number) {
   return -1;
 }
 
+/** The most meta and itemprop tags read: a product page has dozens. */
+const maximumMarkedTags = 2_000;
+
+const tagName = /[a-z][a-z\d-]{0,31}/uy;
+
 /**
- * The page's tags in one linear pass, as `pageText` reads a page
- * (`agent/lib/sandbox/router.ts`): a page is a stranger's text, and one made
- * to stall a regular expression would stall the whole process, since a
- * deadline cannot stop synchronous code. A comment is skipped; a script's
- * body runs to its own end tag, as JSON-LD may hold `<` and `>`.
+ * What the price is read from, in one linear pass over the page, as
+ * `pageText` reads one (`agent/lib/sandbox/router.ts`): the JSON-LD blocks,
+ * the meta tags' attributes and those of tags marked `itemprop`. A page is a
+ * stranger's text, and one made to stall a regular expression, or to hand
+ * over a million tags, would stall the whole process: a deadline cannot stop
+ * synchronous code. So no other tag is kept, and past the caps the page is
+ * `overflow`, no product page. A comment is skipped; a script's body runs to
+ * its own end tag, as JSON-LD may hold `<` and `>`.
  */
-function htmlTags(html: string) {
+function scanPage(html: string) {
   const lower = asciiLower(html);
-  const tags: HtmlTag[] = [];
+  const jsonLd: string[] = [];
+  const metas: ReadonlyMap<string, string>[] = [];
+  const marked: ReadonlyMap<string, string>[] = [];
+  const page = { jsonLd, marked, metas, overflow: false };
   let at = 0;
   // Where quotes are no longer followed: a window whose quotes did not end
   // the tag is never scanned for them again, so no character is twice.
   let plainUntil = 0;
+  // The next «itemprop» on the page (its length when there is none left),
+  // searched for again only once passed: each search starts past the last.
+  let itemprop = -1;
   while (at < html.length) {
     const open = html.indexOf("<", at);
     if (open === -1) break;
@@ -434,24 +478,40 @@ function htmlTags(html: string) {
     // No tag after this one closes either.
     if (close === -1) break;
     at = close + 1;
-    const name = /^[a-z][a-z\d-]{0,31}/u.exec(
-      lower.slice(open + 1, Math.min(close, open + 33))
-    )?.[0];
-    if (name === undefined) continue;
-    const inner = html.slice(
-      open + 1,
-      Math.min(close, open + 1 + maximumTagLength)
-    );
-    if (name !== "script" && name !== "style") {
-      tags.push({ body: undefined, inner, name });
+    tagName.lastIndex = open + 1;
+    const name = tagName.exec(lower)?.[0];
+    if (name === undefined || open + 1 + name.length > close) continue;
+    const inner = () =>
+      html.slice(open + 1, Math.min(close, open + 1 + maximumTagLength));
+    if (name === "script" || name === "style") {
+      const end = lower.indexOf(`</${name}`, at);
+      const stop = end === -1 ? html.length : end;
+      const type = attributes(inner()).get("type")?.trim().toLowerCase();
+      if (name === "script" && type === "application/ld+json") {
+        if (jsonLd.length === maximumJsonLdBlocks) {
+          page.overflow = true;
+          break;
+        }
+        jsonLd.push(html.slice(at, stop));
+      }
+      at = stop;
       continue;
     }
-    const end = lower.indexOf(`</${name}`, at);
-    const stop = end === -1 ? html.length : end;
-    tags.push({ body: html.slice(at, stop), inner, name });
-    at = stop;
+    if (itemprop < open) {
+      const next = lower.indexOf("itemprop", open);
+      itemprop = next === -1 ? html.length : next;
+    }
+    const isMarked = itemprop < close;
+    if (name !== "meta" && !isMarked) continue;
+    if (metas.length + marked.length === maximumMarkedTags) {
+      page.overflow = true;
+      break;
+    }
+    const found = attributes(inner());
+    if (name === "meta") metas.push(found);
+    if (isMarked) marked.push(found);
   }
-  return tags;
+  return page;
 }
 
 const attributeName = /[^\s"'<>/=]+/uy;
@@ -497,13 +557,6 @@ function attributes(inner: string) {
   return found;
 }
 
-/** The page's meta tags' attributes. */
-function metaTags(tags: readonly HtmlTag[]) {
-  return tags.flatMap((tag) =>
-    tag.name === "meta" ? [attributes(tag.inner)] : []
-  );
-}
-
 function metaName(tag: ReadonlyMap<string, string>) {
   return (tag.get("property") ?? tag.get("name") ?? "").toLowerCase();
 }
@@ -539,10 +592,10 @@ function metaPrices(
   });
 }
 
-function itempropPrices(tags: readonly HtmlTag[], name: string | null) {
-  const marked = tags.flatMap((tag) =>
-    asciiLower(tag.inner).includes("itemprop") ? [attributes(tag.inner)] : []
-  );
+function itempropPrices(
+  marked: readonly ReadonlyMap<string, string>[],
+  name: string | null
+) {
   const currency = marked.find(
     (tag) => tag.get("itemprop")?.toLowerCase() === "pricecurrency"
   );
@@ -584,23 +637,19 @@ function single(readings: readonly PriceReading[]): PriceRead | undefined {
 }
 
 export function readPrice(html: string): PriceRead {
-  const tags = htmlTags(html);
-  const products = jsonLdProducts(tags);
+  const page = scanPage(html);
+  // Past the caps a page is a catalogue or a trap: no one product's price.
+  if (page.overflow) return { kind: "several-products" };
+  const products = jsonLdProducts(page.jsonLd);
   if (products === "several-products" || products === "unavailable") {
     return { kind: products };
   }
   const fromJsonLd = single(products);
   if (fromJsonLd !== undefined) return fromJsonLd;
-  const metas = metaTags(tags);
-  const fromMeta = single(metaPrices(metas));
+  const fromMeta = single(metaPrices(page.metas));
   if (fromMeta !== undefined) return fromMeta;
-  return (
-    single(
-      itempropPrices(tags, productName(metaContent(metas, "og:title")))
-    ) ?? {
-      kind: "no-price",
-    }
-  );
+  const title = productName(metaContent(page.metas, "og:title"));
+  return single(itempropPrices(page.marked, title)) ?? { kind: "no-price" };
 }
 
 /**

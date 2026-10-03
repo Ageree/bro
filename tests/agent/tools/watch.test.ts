@@ -244,6 +244,16 @@ describe("watch-create", () => {
     expect(services.create).not.toHaveBeenCalled();
   });
 
+  it("calls a read that threw a page that did not open, not a failed turn", async () => {
+    services.page.mockRejectedValue(
+      new RangeError("Maximum call stack size exceeded")
+    );
+    const result = await create({ below: 8_000, url: link }, asked);
+    expect(result).toMatchObject({ watching: false });
+    expect(JSON.stringify(result)).toContain("did not open");
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
   it("says the price is already below instead of watching", async () => {
     services.page.mockResolvedValue({
       amount: 7_490,
