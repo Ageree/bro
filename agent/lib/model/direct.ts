@@ -528,7 +528,6 @@ const textMediaType =
   /^text(?:\/|$)|^application\/(?:[\w.-]+\+)?(?:json|xml|csv)$/iu;
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const utf8 = new TextEncoder();
 
 /**
  * The second byte's range and the sequence's length that a lead byte of
@@ -561,12 +560,20 @@ function utf8Length(bytes: Uint8Array, at: number) {
   return sequence.length;
 }
 
+/** How many bytes a window of a non-UTF-8 document's reading spans. */
+const windowBytes = 1 << 16;
+
+/** How many bytes not of UTF-8 one string of escapes takes at most. */
+const escapeRun = 1 << 12;
+
 /**
  * A text document's bytes as text. A byte that is no part of UTF-8 — the
  * whole of a `.csv` saved in Windows-1251, or one stray byte — becomes a
  * lone surrogate of its own (U+DC80–U+DCFF, as Python's `surrogateescape`):
  * the UTF-8 around it is still read, forged tags and all, and the text
- * encodes back to the very same bytes (`documentBytes`).
+ * encodes back to the very same bytes (`documentBytes`). The bytes are read
+ * a window at a time, a run of escapes as one string, so a large file not
+ * in UTF-8 holds a few strings per window, not a few per byte.
  */
 function documentText(bytes: Uint8Array) {
   try {
@@ -574,44 +581,61 @@ function documentText(bytes: Uint8Array) {
   } catch {
     // Not UTF-8 throughout: read it run by run.
   }
-  const parts: string[] = [];
+  const windows: string[] = [];
+  let parts: string[] = [];
   let run = 0;
   let at = 0;
+  let windowStart = 0;
   while (at < bytes.length) {
     const length = utf8Length(bytes, at);
     if (length > 0) {
       at += length;
-      continue;
+    } else {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      const units: number[] = [];
+      while (
+        at < bytes.length &&
+        units.length < escapeRun &&
+        utf8Length(bytes, at) === 0
+      ) {
+        units.push(0xdc00 + (bytes[at] ?? 0));
+        at += 1;
+      }
+      parts.push(String.fromCharCode(...units));
+      run = at;
     }
-    parts.push(
-      strictUtf8.decode(bytes.subarray(run, at)),
-      String.fromCharCode(0xdc00 + (bytes[at] ?? 0))
-    );
-    at += 1;
-    run = at;
+    if (at - windowStart >= windowBytes) {
+      parts.push(strictUtf8.decode(bytes.subarray(run, at)));
+      windows.push(parts.join(""));
+      parts = [];
+      run = at;
+      windowStart = at;
+    }
   }
   parts.push(strictUtf8.decode(bytes.subarray(run)));
-  return parts.join("");
+  windows.push(parts.join(""));
+  return windows.join("");
 }
+
+/** A byte escaped as a lone surrogate, in runs (never half of a pair). */
+const escapedBytes = /[\uDC80-\uDCFF]+/gu;
 
 /** A document's text back to bytes: an escaped byte as itself. */
 function documentBytes(text: string) {
-  const parts: Uint8Array[] = [];
+  // An escape takes three bytes here and one in the document: room enough.
+  const bytes = Buffer.allocUnsafe(Buffer.byteLength(text, "utf8"));
+  let size = 0;
   let run = 0;
-  let at = 0;
-  for (const char of text) {
-    const unit = char.charCodeAt(0);
-    if (char.length === 1 && unit >= 0xdc80 && unit <= 0xdcff) {
-      parts.push(
-        utf8.encode(text.slice(run, at)),
-        Uint8Array.of(unit - 0xdc00)
-      );
-      run = at + 1;
+  for (const match of text.matchAll(escapedBytes)) {
+    size += bytes.write(text.slice(run, match.index), size, "utf8");
+    for (let unit = 0; unit < match[0].length; unit += 1) {
+      bytes[size] = match[0].charCodeAt(unit) - 0xdc00;
+      size += 1;
     }
-    at += char.length;
+    run = match.index + match[0].length;
   }
-  parts.push(utf8.encode(text.slice(run)));
-  return Buffer.concat(parts);
+  size += bytes.write(text.slice(run), size, "utf8");
+  return bytes.subarray(0, size);
 }
 
 /**
