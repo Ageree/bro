@@ -3,6 +3,7 @@ import { web } from "@e2e-dev/web";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { E2EConfig } from "e2e";
 import { e2eEnv } from "./e2e/env.ts";
+import { crossChannelPilotEmail } from "./e2e/pilots.ts";
 import { testSecrets } from "./e2e/secrets.ts";
 
 /**
@@ -53,6 +54,11 @@ const passedThrough = Object.fromEntries(
 const appEnvironment = {
   ...passedThrough,
   BETTER_AUTH_URL: "http://127.0.0.1:{port}",
+  // The cross-channel recap, for the one person its test gives this email
+  // (e2e/chat/cross-channel.e2e.ts); everyone else runs as production does,
+  // outside the pilot. The runner has no env per test, and a second target
+  // would run the whole suite twice.
+  CROSS_CHANNEL_WORKSPACES: crossChannelPilotEmail,
   MODEL_PROVIDER: "openrouter",
   NEXT_TELEMETRY_DISABLED: "1",
   OPENROUTER_MODEL: model,

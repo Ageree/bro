@@ -337,11 +337,25 @@ describe("workstream memory", () => {
       );
     }
 
+    // What the person said in Telegram, for another channel's recap.
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Еду в Лондон в октябре",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    const logged = async () =>
+      (await database.select().from(schema.conversationLog)).length;
+
     const partial = await tools.forget_all.execute(
       { workstreams: [{ id: "uk-visa", title: "UK visa" }] },
       { ...later, callId: "forget-one", toolName: "workstreams__forget_all" }
     );
     expect(partial).toEqual({ forgotten: ["uk-visa"] });
+    // Review of item 28: the person's own words may hold what they asked
+    // to forget, so the recap's lines go on every call.
+    expect(await logged()).toBe(0);
 
     expect(
       await tools.forget_all.execute(
@@ -349,6 +363,87 @@ describe("workstream memory", () => {
         { ...later, callId: "forget-rest", toolName: "workstreams__forget_all" }
       )
     ).toEqual({ forgotten: ["autumn-trip"], ...afterForgetting() });
+    expect(await logged()).toBe(0);
+  });
+
+  // Review of item 28: a turn Bro opened writes no wish of the person's —
+  // its text is a page's or an email's — so forgetting what it saved itself
+  // leaves the person's messages the recap keeps.
+  it("keeps the cross-channel log when a turn Bro opened forgets work", async () => {
+    const report = context("report", "browser-result");
+    const tools = await workstreamMemory.provider.tools(report);
+    if (!tools) throw new Error("Expected tools.");
+    await tools.save.execute(
+      { id: "uk-visa", expectedRevision: 0, content },
+      { ...report, callId: "save", toolName: "workstreams__save" }
+    );
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Еду в Лондон в октябре",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+
+    expect(
+      await tools.forget_all.execute(
+        { workstreams: [{ id: "uk-visa", title: content.title }] },
+        { ...report, callId: "forget", toolName: "workstreams__forget_all" }
+      )
+    ).toMatchObject({ forgotten: ["uk-visa"] });
+    expect(await database.select().from(schema.conversationLog)).toHaveLength(
+      1
+    );
+  });
+
+  // Review of item 28: a failed erase of the log failed the call after the
+  // workstreams were forgotten, and the guide never reached the model.
+  it("forgets the work when the log cannot be erased, and logs no line of it", async () => {
+    const later = context("later");
+    const tools = await workstreamMemory.provider.tools(later);
+    if (!tools) throw new Error("Expected tools.");
+    await tools.save.execute(
+      { id: "uk-visa", expectedRevision: 0, content },
+      { ...later, callId: "save", toolName: "workstreams__save" }
+    );
+    await database.insert(schema.conversationLog).values({
+      channel: "channel:telegram",
+      sessionId: "telegram-session",
+      text: "Еду в Лондон в октябре",
+      turnId: "turn_0",
+      workspaceId: alice.workspaceId,
+    });
+    await client.exec(`
+      CREATE FUNCTION refuse_log_delete() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'no deletes' USING ERRCODE = '55P03'; END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER refuse_log_delete BEFORE DELETE ON conversation_log
+        FOR EACH ROW EXECUTE FUNCTION refuse_log_delete();
+    `);
+    const failed = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      expect(
+        await tools.forget_all.execute(
+          { workstreams: [{ id: "uk-visa", title: content.title }] },
+          { ...later, callId: "forget", toolName: "workstreams__forget_all" }
+        )
+      ).toEqual({ forgotten: ["uk-visa"], ...afterForgetting() });
+      expect(await readWorkstream(alice, "key-a", "uk-visa")).toBeNull();
+      expect(failed.mock.calls).toEqual([
+        [
+          "[cross-channel] the conversation log was not erased",
+          { error: "Error", sqlState: "55P03" },
+        ],
+      ]);
+    } finally {
+      failed.mockRestore();
+      await client.exec(`
+        DROP TRIGGER refuse_log_delete ON conversation_log;
+        DROP FUNCTION refuse_log_delete();
+      `);
+    }
   });
 
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {

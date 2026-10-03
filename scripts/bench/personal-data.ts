@@ -5,11 +5,16 @@
  * tester's own data into sites, and Bro's replies and the tool payloads
  * carry it back.
  *
+ * Passport and SNILS numbers follow the rules the conversation log masks
+ * them by too (`agent/lib/privacy/document-numbers.ts`).
+ *
  * The rules match what these look like in Russian and English text. They
  * mask a stray lookalike too (a page number after «стр.»), which is the
  * cheap side of that trade; they are no proof that a free-form line holds
  * nothing personal.
  */
+
+import { documentNumberRanges } from "@agent/lib/privacy/document-numbers";
 
 const hidden = "***";
 
@@ -17,26 +22,6 @@ const hidden = "***";
 // a number standing alone.
 const alone = String.raw`(?<![\p{L}\p{N}_])`;
 const ends = String.raw`(?![\p{L}\p{N}_])`;
-
-/** Series and number, `45 10 123456`, and any number right after the word. */
-const passportNumber = new RegExp(
-  String.raw`${alone}\d{2}\s?\d{2}\s№?\s?\d{6}${ends}`,
-  "gu"
-);
-const passportAfterWord = new RegExp(
-  String.raw`((?:паспорт|passport|серия)\p{L}*[^\d\n"]{0,40}?)(\d{2}\s?\d{2}(?:[^\d\n"]{0,12}\d{6})?)${ends}`,
-  "giu"
-);
-
-/** `123-456-789 01`, and any 11 digits right after «СНИЛС». */
-const snilsNumber = new RegExp(
-  String.raw`${alone}\d{3}-\d{3}-\d{3}[\s-]\d{2}${ends}`,
-  "gu"
-);
-const snilsAfterWord = new RegExp(
-  String.raw`((?:снилс|snils)[^\d\n"]{0,20}?)(\d(?:[\s-]?\d){10})${ends}`,
-  "giu"
-);
 
 /** 13 to 19 digits, grouped by spaces or dashes or not at all. */
 const cardCandidate = new RegExp(
@@ -90,18 +75,22 @@ const englishStreet =
 const englishUnit =
   /\b(Apt|Apartment|Suite|Unit)\.?\s*#?\s*[\p{L}\p{N}-]{1,6}(?![\p{L}\p{N}])/giu;
 
+/** The text with its passport and SNILS numbers masked, overlaps as one. */
+function maskDocumentNumbers(text: string) {
+  let masked = "";
+  let cursor = 0;
+  for (const [start, end] of documentNumberRanges(text).toSorted(
+    ([a], [b]) => a - b
+  )) {
+    if (end <= cursor) continue;
+    if (start >= cursor) masked += text.slice(cursor, start) + hidden;
+    cursor = end;
+  }
+  return masked + text.slice(cursor);
+}
+
 export function maskPersonalData(text: string) {
-  return text
-    .replaceAll(
-      passportAfterWord,
-      (_match, prefix: string) => `${prefix}${hidden}`
-    )
-    .replaceAll(passportNumber, hidden)
-    .replaceAll(
-      snilsAfterWord,
-      (_match, prefix: string) => `${prefix}${hidden}`
-    )
-    .replaceAll(snilsNumber, hidden)
+  return maskDocumentNumbers(text)
     .replaceAll(cardCandidate, (match) => {
       const digits = match.replaceAll(/\D/gu, "");
       // A receipt shows the last four, and so does the journal.

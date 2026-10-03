@@ -1,5 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
+import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
@@ -62,16 +63,17 @@ export const privacy = defineTool({
       throw new Error("An authenticated user is required.");
     }
     const scope = scopeFromPrincipal(auth);
-    const [modelId, google, memoryDigest] = await Promise.all([
+    const [modelId, google, memoryDigest, conversationLog] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
       // The digest's model reads memory only where the digest runs and asks.
       schedulesEnabled() && directModelActive()
         ? memoryDigestPilot(scope, { whenUnknown: true })
         : false,
+      crossChannelPilot(scope),
     ]);
     return {
-      kept: keptData(),
+      kept: keptData({ conversationLog }),
       processors: dataProcessors(modelId, { memoryDigest }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),

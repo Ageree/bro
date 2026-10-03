@@ -15,6 +15,7 @@ import {
   sessionReplyLanguage,
   turnFailureNotice,
 } from "@agent/lib/delivery/fallback";
+import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
 import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
@@ -285,7 +286,12 @@ export default photonIMessageChannel({
     };
     // The first message this workspace ever sent, from any channel, is the
     // turn on which the instructions introduce Bro once.
-    const turnContext = await firstContactContext(scope);
+    const firstContact = await firstContactContext(scope);
+    // What the person said in Telegram or on the web since, for the pilot.
+    const turnContext = [
+      ...firstContact,
+      ...(await crossChannelRecap(scope, { channel: "channel:photon" })),
+    ];
     // Photos and voice notes are read from the Photon message here, because
     // the adapter exposes no URL for them and the model otherwise sees nothing.
     // Spreadsheets and documents reach the model only where the task agent
@@ -299,7 +305,7 @@ export default photonIMessageChannel({
       // A first message that is an unusable voice note still gets its turn:
       // the first-contact introduction happens only on the workspace's first
       // message, and the model can ask the person to type instead.
-      if (turnContext.length > 0) {
+      if (firstContact.length > 0) {
         return {
           auth: sessionAuth,
           context: turnContext,

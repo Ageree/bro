@@ -136,6 +136,18 @@ describe("what memory may keep", () => {
     ).toEqual(["4276 1234 5678 9012"]);
   });
 
+  // Review of item 28: a card copied whole kept its expiry and CVV.
+  it("cuts a card's expiry and CVV with its number", () => {
+    const text = "Карта 4276 1234 5678 9012, 12/27, 123 — оплати билеты.";
+    expect(
+      unsafeMemoryRanges(text).map(([start, end]) => text.slice(start, end))
+    ).toEqual(["4276 1234 5678 9012, 12/27, 123"]);
+    const amount = "Карта 4276 1234 5678 9012, спиши 1500 рублей.";
+    expect(
+      unsafeMemoryRanges(amount).map(([start, end]) => amount.slice(start, end))
+    ).toEqual(["4276 1234 5678 9012"]);
+  });
+
   it("finds the code itself, to cut it out of a longer note", () => {
     const text = "Вход в Госуслуги: код подтверждения 123-456, дальше анкета.";
     const ranges = unsafeMemoryRanges(text);

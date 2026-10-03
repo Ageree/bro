@@ -45,9 +45,11 @@ const credentialPatterns = [
   /\b(\d{8,10}:[A-Za-z0-9_-]{30,})/dgu,
   // A card's number: a group of 13–19 digits of its own, not a piece of a
   // longer number and not an account's, a policy's or a parcel's
-  // («счёт 40817810099910004312», «полис ОМС 1234…», «трек 1234…»).
+  // («счёт 40817810099910004312», «полис ОМС 1234…», «трек 1234…»); with
+  // the expiry right after it, and the three digits after that, as a card
+  // is copied whole («4276 1234 5678 9012, 12/27, 123»).
   new RegExp(
-    String.raw`(?<!\d[ -]?)(?<!(?:сч[её]т|р/с|полис|омс|трек|account|policy|tracking)[^\d\n]{0,20})(\d(?:[ -]?\d){12,18})(?![ -]?\d)`,
+    String.raw`(?<!\d[ -]?)(?<!(?:сч[её]т|р/с|полис|омс|трек|account|policy|tracking)[^\d\n]{0,20})(\d(?:[ -]?\d){12,18}(?![ -]?\d)(?:[\s,;]+(?:(?:до|срок\p{L}*(?:\s+действия)?|exp\p{L}*|valid\s+thru)[\s:]*)?(?:0[1-9]|1[0-2])\s*/\s*(?:\d{2}){1,2}(?![\d/])(?:[\s,;]+(?:(?:cvv2?|cvc2?|код)[\s:]*)?\d{3}(?![\d/]))?)?)`,
     "dgiu"
   ),
   // A password said with its value: after «:», «=» or a dash, a value with

@@ -17,7 +17,12 @@ import { photonConfigured } from "@shared/photon/credentials";
  * files in Bro's private bucket in Object Storage on Cloud.ru. On 25.09 (RU d14) Bro said only «в
  * облаке сервиса» and «Postgres в облаке».
  */
-export function keptData() {
+export function keptData(
+  options: {
+    /** The workspace is in the cross-channel pilot (`conversation_log`). */
+    readonly conversationLog?: boolean;
+  } = {}
+) {
   return [
     `Память (факты, предпочтения, правила), сохранённые дела, личные данные (имя, телефон, почта, адрес), расписания, сейф, заказы и итоги поручений${yooKassaConfigured() ? ", история оплат подписки" : ""}${browserUseConfigured() ? ", сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом" : ""} — в базе Postgres в Neon.`,
     "Пароли и карты из сейфа лежат там же в зашифрованном виде (AES-256-GCM): языковая модель их не видит.",
@@ -33,6 +38,11 @@ export function keptData() {
         ]
       : []),
     "Приложение и сам Бро работают на Vercel; история переписки (сессии Бро) хранится там же, в Vercel Workflow.",
+    ...(options.conversationLog === true
+      ? [
+          "Сообщения человека в веб-чате, Telegram и iMessage (каждое до 500 знаков) 14 дней хранятся и в той же базе Postgres, чтобы в одном чате Бро знал, о чём человек писал в другом; «удали всё, что ты про меня помнишь» стирает их сразу; что уже попало в сводку другого чата, остаётся в истории того чата, как вся переписка. Стёртые и истёкшие строки ещё до 14 дней остаются в ночных зашифрованных резервных копиях базы.",
+        ]
+      : []),
   ];
 }
 

@@ -351,6 +351,13 @@
       "when": 1791019379997,
       "tag": "0049_lean_mordo",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791020868144,
+      "tag": "0050_conversation_log",
+      "breakpoints": true
     }
   ]
 }
