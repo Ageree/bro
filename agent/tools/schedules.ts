@@ -14,8 +14,10 @@ import {
   scheduleScope,
   scheduleSummary,
 } from "@agent/lib/schedules/tools";
+import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import {
+  localRunLabel,
   resolveScheduleTiming,
   scheduleTimingInputSchema,
   shortScheduleTimingInputSchema,
@@ -29,6 +31,10 @@ import {
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
+import {
+  listLiveSubscriptions,
+  setSubscriptionStatus,
+} from "@db/services/subscriptions";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
 /**
@@ -144,13 +150,69 @@ export const listSchedules = defineTool({
   inputSchema: z.object({}),
   async execute(_input, context) {
     const scope = scheduleScope(context);
-    const [jobs, timeZone] = await Promise.all([
+    const [jobs, timeZone, watches] = await Promise.all([
       listScheduledAgentJobs(scope),
       readWorkspaceTimeZone(scope),
+      // Only the pilot makes watches, but one made before a workspace left
+      // the pilot is still listed, paused and deleted here.
+      listLiveSubscriptions(scope),
     ]);
-    return jobs.map((job) => scheduleListSummary(job, timeZone));
+    return [
+      ...jobs.map((job) => scheduleListSummary(job, timeZone)),
+      ...watches.map((watch) => watchSummary(watch, timeZone)),
+    ];
   },
 });
+
+/** A watch as the schedule tools show it: an id that pauses or deletes it. */
+function watchSummary(
+  watch: Awaited<ReturnType<typeof listLiveSubscriptions>>[number],
+  timeZone: string
+) {
+  return {
+    id: watch.id,
+    kind: "price watch, checked by code every few hours",
+    nextCheckLocal:
+      watch.status === "active"
+        ? localRunLabel(watch.nextCheckAt, timeZone)
+        : null,
+    // A deleted watch is kept as `cancelled`; the tools speak of deleting.
+    status: watch.status === "cancelled" ? "deleted" : watch.status,
+    untilLocal: localRunLabel(watch.expiresAt, timeZone),
+    watch: watch.source,
+    when: watch.condition,
+  };
+}
+
+const watchChangeRefusal =
+  "That is a price watch: it can only be paused, resumed or deleted (status). For a new threshold or term, call watch-create again with the same link.";
+/** For a workspace whose watches are switched off (no `watch-create`). */
+const heldWatchRefusal =
+  "That is a price watch, and watches are switched off here now: it is not checked, and can only be paused or deleted (status). Say so plainly; offer a daily browser check (schedules-create) instead.";
+
+/**
+ * A change to one of the person's price watches, which schedules-update
+ * also reaches by id. Undefined when the id is no live watch of theirs.
+ */
+async function updateWatch(
+  scope: ReturnType<typeof scheduleScope>,
+  id: string,
+  status: "active" | "deleted" | "paused" | undefined
+) {
+  const watches = await listLiveSubscriptions(scope);
+  if (!watches.some((watch) => watch.id === id)) return undefined;
+  // Outside the pilot a watch is held by the tick, and stays so.
+  const inPilot = await subscriptionsPilot(scope);
+  if (status === undefined || (status === "active" && !inPilot)) {
+    throw new Error(inPilot ? watchChangeRefusal : heldWatchRefusal);
+  }
+  const [watch, timeZone] = await Promise.all([
+    setSubscriptionStatus(scope, id, status),
+    readWorkspaceTimeZone(scope),
+  ]);
+  if (!watch) throw new Error("Schedule not found.");
+  return watchSummary(watch, timeZone);
+}
 
 /** What `schedules-update` takes, with the timing's words given. */
 function updateScheduleInput(timingSchema: typeof scheduleTimingInputSchema) {
@@ -196,6 +258,12 @@ async function runUpdateSchedule(
     timing || !changes ? getScheduledAgentJob(scope, id) : undefined,
   ]);
   if ((timing || !changes) && !current) {
+    const watch = await updateWatch(
+      scope,
+      id,
+      timing || runNow === true ? undefined : patch.status
+    );
+    if (watch) return watch;
     throw new Error("Schedule not found.");
   }
   // The new timing keeps what it leaves out: the rule's zone and its
@@ -207,7 +275,15 @@ async function runUpdateSchedule(
           timing && resolveScheduleTiming(timing, timeZone, current?.timing),
       })
     : current;
-  if (!job) throw new Error("Schedule not found.");
+  if (!job) {
+    const watch = await updateWatch(
+      scope,
+      id,
+      patch.prompt === undefined && runNow !== true ? patch.status : undefined
+    );
+    if (watch) return watch;
+    throw new Error("Schedule not found.");
+  }
   // A call that pauses or deletes the schedule runs nothing, whatever a
   // model that fills every field put into runNow.
   if (

@@ -79,12 +79,15 @@ describe("the tools of the skills pilot", () => {
         await catalog("web", true, {
           ...fullDeployment,
           ...taskAgentDeployment,
+          SUBSCRIPTIONS_WORKSPACES: "*",
         })
       ).keys(),
       ...(await catalog("web", false)).keys(),
       ...(await catalog("telegram", true)).keys(),
     ]);
     expect(names.size).toBeGreaterThan(55);
+    // The price watch of its pilot is in the table too.
+    expect(names.has("watch-create")).toBe(true);
     expect(
       [...names].filter((name) => !groupedToolNames.includes(name))
     ).toEqual([]);

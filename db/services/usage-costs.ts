@@ -1,4 +1,14 @@
-import { and, asc, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { browserVms, db, usageCosts, user, workspaceMemberships } from "@db";
 import { vmFixedMonthlyRub } from "@shared/costs/prices";
 
@@ -91,7 +101,14 @@ export async function summarizeUsageCosts(month: string, now = new Date()) {
         workspaceId: usageCosts.workspaceId,
       })
       .from(usageCosts)
-      .where(and(inMonth, isNotNull(usageCosts.runId)))
+      // A background turn's run is a schedule's, not an errand.
+      .where(
+        and(
+          inMonth,
+          isNotNull(usageCosts.runId),
+          ne(usageCosts.source, "background")
+        )
+      )
       .groupBy(usageCosts.workspaceId, usageCosts.runId),
     db
       .select({

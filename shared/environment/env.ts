@@ -716,6 +716,10 @@ export const env = createEnv({
     // trace (`agent/lib/history/`). Only with the direct model. Unset, every
     // step sends the whole history as before.
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
+    // or owners' emails, or `*` for every workspace, whose Bro may set up a
+    // price watch that code checks without the model (`watch-create`).
+    SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),

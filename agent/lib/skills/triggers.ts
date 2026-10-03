@@ -371,7 +371,9 @@ function toolSkills(toolName: string): readonly SkillName[] {
   if (/^(?:notion|slack)-|^(?:apps|connect_app)$/u.test(toolName)) {
     return ["apps"];
   }
-  if (toolName.startsWith("schedules-")) return ["schedules"];
+  if (toolName.startsWith("schedules-") || toolName === "watch-create") {
+    return ["schedules"];
+  }
   if (toolName === "generate_image" || toolName === "find_images") {
     return ["images"];
   }
