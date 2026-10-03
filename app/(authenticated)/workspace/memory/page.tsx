@@ -72,8 +72,7 @@ export default async function Page() {
       <DocumentTitle>Память</DocumentTitle>
       <p className="type-fine text-muted-foreground">
         Что Бро помнит о тебе. Исправь или удали запись — Бро учтёт это со
-        следующего сообщения. Раз в сутки Бро сам вычищает из памяти одноразовые
-        коды.
+        следующего сообщения. Одноразовые коды Бро в память не сохраняет.
       </p>
 
       {scopeKey === null ? (

@@ -18,6 +18,12 @@ describe("memory", { tags: ["smoke"] }, () => {
       await expect(
         screen.getByText("Записи появятся после первого разговора с Бро.")
       ).toBeVisible();
+      // The daily cleanup runs only for the pilot; the save filter for all.
+      await expect(
+        screen.getByText("Одноразовые коды Бро в память не сохраняет.", {
+          exact: false,
+        })
+      ).toBeVisible();
     }
   );
 });
