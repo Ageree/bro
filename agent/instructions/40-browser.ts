@@ -1,8 +1,8 @@
 import { defineDynamic } from "eve/instructions";
 import { resolveModeInstructions } from "@agent/lib/mode";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
-import availableInstructions from "./content/browser/available.md?raw";
-import unavailableInstructions from "./content/browser/unavailable.md?raw";
+import { instructionText } from "@agent/lib/skills/catalog";
+import { skillsLayout } from "@agent/lib/skills/pilot";
 
 export default defineDynamic({
   events: {
@@ -10,9 +10,10 @@ export default defineDynamic({
     // instruction differs: one state explains the capability, the other says
     // plainly that there is none.
     "turn.started": (_event, context) => {
-      const content = browserUseConfigured()
-        ? availableInstructions
-        : unavailableInstructions;
+      const content = instructionText(
+        browserUseConfigured() ? "browser/available" : "browser/unavailable",
+        skillsLayout(context)
+      );
       return resolveModeInstructions(context, {
         interactive: content,
         "scheduled-worker": content,
