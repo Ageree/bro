@@ -129,14 +129,21 @@ const phonePattern = /\+?\d[\d\s()\u00a0-]{8,}\d/gu;
  */
 function productName(text: string | undefined) {
   // Full-width «．» and digits are a dot and digits like any other.
-  const label = plainLabel(text?.slice(0, 800).normalize("NFKC"), 200);
+  const label = plainLabel(
+    text
+      ?.slice(0, 800)
+      .normalize("NFKC")
+      // «shop。ru», «shop[.]ru», «shop(.)ru» are shop.ru.
+      .replaceAll(/\s*(?:[。｡]|\[\.\]|\(\.\)|\[dot\]|\(dot\))\s*/giu, "."),
+    200
+  );
   if (label === null) return null;
   return plainLabel(
     label
-      .replaceAll(/\S*(?:https?:\/\/|www\.|t\.me\/)\S*/giu, " ")
+      .replaceAll(/\S*(?:https?:\/\/|www\.|(?:t|wa)\.me\/)\S*/giu, " ")
       .replaceAll(/(?<![\p{L}\d])@[\p{L}\d_.]+/gu, " ")
       .replaceAll(
-        /(?<![\p{L}\d])[\p{L}\d-]+(?:\.[\p{L}\d-]+)*\.(?:[a-z]{2,24}|рф)(?![\p{L}\d])/giu,
+        /(?<![\p{L}\d])[\p{L}\d-]+(?:\.[\p{L}\d-]+)*\.(?:[a-z]{2,24}|рф|рус|москва|онлайн|сайт|орг|дети)(?![\p{L}\d])/giu,
         " "
       )
       .replaceAll(phonePattern, (phone) =>
@@ -220,7 +227,8 @@ function offerAmount(offer: z.output<typeof offerSchema>) {
   const spans =
     (offer.lowPrice !== undefined && offer.lowPrice !== amount) ||
     (offer.highPrice !== undefined && offer.highPrice !== amount) ||
-    (offer.offerCount !== undefined && offer.offerCount > 1);
+    // «many», «12 sellers» is no count of one.
+    (offer.offerCount !== undefined && !(offer.offerCount <= 1));
   return spans ? ("several" as const) : amount;
 }
 
@@ -408,7 +416,11 @@ const maximumTagLength = 4_096;
 
 /** Lower-cases ASCII letters only, so every index stays the same. */
 function asciiLower(text: string) {
-  return text.replaceAll(/[A-Z]+/gu, (letters) => letters.toLowerCase());
+  // One native pass, unless a letter grew in lower case («İ» is two units).
+  const lower = text.toLowerCase();
+  return lower.length === text.length
+    ? lower
+    : text.replaceAll(/[A-Z]+/gu, (letters) => letters.toLowerCase());
 }
 
 /**
@@ -443,8 +455,10 @@ const tagName = /[a-z][a-z\d-]{0,31}/uy;
  * the meta tags' attributes and those of tags marked `itemprop`. A page is a
  * stranger's text, and one made to stall a regular expression, or to hand
  * over a million tags, would stall the whole process: a deadline cannot stop
- * synchronous code. So no other tag is kept, and past the caps the page is
- * `overflow`, no product page. A comment is skipped; a script's body runs to
+ * synchronous code. So no other tag is kept. Past the JSON-LD caps the page
+ * is `overflow`, no product page; past the meta and itemprop cap those are
+ * no longer kept (`markedOverflow`: 500 reviews in microdata are no
+ * catalogue), but JSON-LD is read on. A comment is skipped; a script's body runs to
  * its own end tag, as JSON-LD may hold `<` and `>`.
  */
 function scanPage(html: string) {
@@ -452,7 +466,13 @@ function scanPage(html: string) {
   const jsonLd: string[] = [];
   const metas: ReadonlyMap<string, string>[] = [];
   const marked: ReadonlyMap<string, string>[] = [];
-  const page = { jsonLd, marked, metas, overflow: false };
+  const page = {
+    jsonLd,
+    marked,
+    markedOverflow: false,
+    metas,
+    overflow: false,
+  };
   let at = 0;
   // Where quotes are no longer followed: a window whose quotes did not end
   // the tag is never scanned for them again, so no character is twice.
@@ -504,8 +524,8 @@ function scanPage(html: string) {
     const isMarked = itemprop < close;
     if (name !== "meta" && !isMarked) continue;
     if (metas.length + marked.length === maximumMarkedTags) {
-      page.overflow = true;
-      break;
+      page.markedOverflow = true;
+      continue;
     }
     const found = attributes(inner());
     if (name === "meta") metas.push(found);
@@ -646,6 +666,8 @@ export function readPrice(html: string): PriceRead {
   }
   const fromJsonLd = single(products);
   if (fromJsonLd !== undefined) return fromJsonLd;
+  // Too many tags to tell one price among them.
+  if (page.markedOverflow) return { kind: "several-products" };
   const fromMeta = single(metaPrices(page.metas));
   if (fromMeta !== undefined) return fromMeta;
   const title = productName(metaContent(page.metas, "og:title"));

@@ -149,6 +149,10 @@ describe("reading a price", () => {
     expect(aggregate({ offerCount: 12, price: 7_000 })).toEqual({
       kind: "several-products",
     });
+    // A count that is no number is no count of one.
+    expect(aggregate({ lowPrice: 5_000, offerCount: "many" })).toEqual({
+      kind: "several-products",
+    });
   });
 
   it("reads a JSON-LD dot as schema.org's decimal point", () => {
@@ -184,6 +188,14 @@ describe("reading a price", () => {
     const plain = disguised.kind === "price" ? disguised.name : null;
     expect(plain).toMatch(/^Чайник/u);
     expect(plain).not.toMatch(/kettle|shop|ru|999|９/u);
+    const spelled = readPrice(
+      jsonLd({
+        "@type": "Product",
+        name: "Чайник K780 shop。ru deals[.]ru чайники.москва wa.me/79991234567",
+        offers: { price: 1 },
+      })
+    );
+    expect(spelled.kind === "price" ? spelled.name : null).toBe("Чайник K780");
   });
 
   it("does not read the products a page recommends", () => {
@@ -401,6 +413,12 @@ describe("reading a price", () => {
         `<meta property="product:price:amount" content="1">${"<meta>".repeat(2_000)}`
       )
     ).toEqual({ kind: "several-products" });
+    // Reviews in microdata past the cap do not hide a JSON-LD product.
+    expect(
+      readPrice(
+        `${'<div itemprop="review"><span itemprop="ratingValue" content="5"></span></div>'.repeat(1_500)}${jsonLd(product)}`
+      )
+    ).toMatchObject({ amount: 1, extractor: "jsonld" });
     // Up to the caps the page reads as before.
     expect(
       readPrice(
