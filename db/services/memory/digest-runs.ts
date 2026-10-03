@@ -41,7 +41,7 @@ export async function listMemoryDigestWorkspaces(
                   ? inArray(workspaces.id, pilot.ids)
                   : sql`false`,
                 pilot.emails.length > 0
-                  ? sql`EXISTS (SELECT 1 FROM ${workspaceMemberships} JOIN ${user} ON ${workspaceMemberships.userId} = ${betterAuthPrincipalPrefix} || ${user.id} WHERE ${workspaceMemberships.workspaceId} = ${workspaces.id} AND lower(${user.email}) IN (${sql.join(
+                  ? sql`EXISTS (SELECT 1 FROM ${workspaceMemberships} JOIN ${user} ON ${workspaceMemberships.userId} = ${betterAuthPrincipalPrefix} || ${user.id} WHERE ${workspaceMemberships.workspaceId} = ${workspaces.id} AND ${workspaceMemberships.role} = 'owner' AND lower(${user.email}) IN (${sql.join(
                       pilot.emails.map((email) => sql`${email}`),
                       sql`, `
                     )}))`
