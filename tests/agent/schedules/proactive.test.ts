@@ -446,6 +446,62 @@ describe("proactive schedule", () => {
     );
   });
 
+  it("never lets a full run cut a flight's reminder, nor marks one it did not carry", async () => {
+    flights.pilot.mockResolvedValue(true);
+    flights.live.mockResolvedValue([flightWatchRow()]);
+    // A reconnect: more new events than one run carries.
+    const events = Array.from({ length: 13 }, (_, index) => ({
+      dedupeKey: `event${String(index)}`,
+      itemId: `event${String(index)}`,
+      source: "calendar" as const,
+      threadId: null,
+    }));
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: events,
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    const queued = proactive.queue.mock.calls[0]?.[0];
+    expect(queued?.signals).toHaveLength(12);
+    expect(queued?.signals[0]).toEqual(checkinSignal);
+    expect(flights.record.mock.lastCall).toMatchObject([
+      "watch-1",
+      { done: ["checkin"] },
+      afternoon,
+    ]);
+
+    // Thirteen flights due at once: the run carries twelve, and the
+    // thirteenth stays due for the next check instead of being marked done.
+    flights.record.mockClear();
+    flights.live.mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => ({
+        ...flightWatchRow(),
+        id: `watch-${String(index)}`,
+        source: { ...dp405, eventId: `flight${String(index)}` },
+      }))
+    );
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(proactive.queue.mock.lastCall?.[0].signals).toHaveLength(12);
+    // The drive is written for each, the reminder only for those carried.
+    expect(
+      flights.record.mock.calls
+        .filter(([, state]) => state.done.length > 0)
+        .map(([id]) => id)
+    ).toEqual(
+      Array.from({ length: 12 }, (_, index) => `watch-${String(index)}`)
+    );
+  });
+
   it("keeps a flight's reminder due while the job is busy, and measures nothing for one already sent", async () => {
     flights.pilot.mockResolvedValue(true);
     flights.live.mockResolvedValue([flightWatchRow()]);

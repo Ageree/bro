@@ -236,7 +236,12 @@ export async function probeGoogleSignals(
         google,
         proactiveEventListSchema,
         googleUrl(calendarApi, "/calendars/primary/events", {
-          fields: proactiveEventFields,
+          // Who the event is whose matters only to the pilot's flight
+          // watches (`isOwnFlight`); outside it the request stays as it was.
+          fields:
+            window.flightReminders === false
+              ? proactiveEventFields
+              : "items(id,status,start,summary,location)",
           maxResults: maxCalendarEvents,
           orderBy: "startTime",
           singleEvents: true,

@@ -338,6 +338,24 @@ describe("probeGoogleSignals", () => {
     ]);
   });
 
+  it("asks Google whose an event is only for the pilot's flight watches", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    const calendarFields = () =>
+      composio.proxy.mock.calls
+        .map(([request]) => request.url)
+        .find((url) => url.hostname === "www.googleapis.com")
+        ?.searchParams.get("fields");
+
+    await probeGoogleSignals(scope, window);
+    expect(calendarFields()).toBe("items(id,status,start,summary,location)");
+
+    composio.proxy.mockClear();
+    await probeGoogleSignals(scope, { ...window, flightReminders: false });
+    expect(calendarFields()).toBe(
+      "items(id,status,start,summary,location,eventType,organizer(self),attendees(self,responseStatus))"
+    );
+  });
+
   it("looks under the read-only level's account for a read-only workspace", async () => {
     settings.access.mockResolvedValue("read_only");
     composio.connect({ id: "ca_full", toolkit: "googlesuper" });
