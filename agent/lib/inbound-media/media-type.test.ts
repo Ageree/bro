@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { baseMediaType, resolveMediaType, sniffMediaType } from "./media-type";
+import {
+  baseMediaType,
+  documentBytesMatch,
+  documentMediaType,
+  resolveMediaType,
+  sniffMediaType,
+} from "./media-type";
 
 function padded(prefix: readonly number[]) {
   const bytes = new Uint8Array(16);
@@ -59,5 +65,58 @@ describe("media type sniffing", () => {
     expect(baseMediaType("audio/x-caf; codecs=opus")).toBe("audio/x-caf");
     expect(baseMediaType("  ")).toBeUndefined();
     expect(baseMediaType(null)).toBeUndefined();
+  });
+});
+
+const xlsxType =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+describe("documents for the task agent", () => {
+  it.each([
+    ["Отчёт.XLSX", undefined, xlsxType],
+    ["book.xlsx", "application/zip", xlsxType],
+    ["book.xls", "application/octet-stream", "application/vnd.ms-excel"],
+    ["data.csv", "application/vnd.ms-excel", "text/csv"],
+    ["data.csv", "text/comma-separated-values", "text/csv"],
+    ["deck.pptx", undefined, expect.stringContaining("presentationml")],
+    ["notes.md", "text/x-markdown", "text/markdown"],
+    ["feed.xml", "text/xml", "application/xml"],
+  ])("takes %s declared as %s", (name, declared, mediaType) => {
+    expect(documentMediaType(name, declared)).toEqual(mediaType);
+  });
+
+  it.each([
+    ["a.zip", "application/zip"],
+    ["setup.exe", "application/x-msdownload"],
+    ["clip.mp4", "video/mp4"],
+    ["scan.pdf", "application/pdf"],
+    ["photo.png", "image/png"],
+    ["book.xlsx", "application/x-msdownload"],
+    ["book.xlsx", "video/mp4"],
+    ["data.csv", "application/zip"],
+    ["xlsx", undefined],
+    [".xlsx", undefined],
+    [undefined, xlsxType],
+  ])("leaves %s declared as %s a note", (name, declared) => {
+    expect(documentMediaType(name, declared)).toBeUndefined();
+  });
+
+  it("believes the bytes only when they are the extension's container", () => {
+    const zip = padded([0x50, 0x4b, 0x03, 0x04]);
+    const cfb = padded([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    const exe = padded([0x4d, 0x5a, 0x90, 0x00]);
+    const csv = new TextEncoder().encode("дата;сумма\n01.10;100\n");
+
+    expect(documentBytesMatch(xlsxType, zip)).toBe(true);
+    expect(documentBytesMatch(xlsxType, exe)).toBe(false);
+    expect(documentBytesMatch(xlsxType, cfb)).toBe(false);
+    expect(documentBytesMatch("application/vnd.ms-excel", cfb)).toBe(true);
+    expect(documentBytesMatch("application/vnd.ms-excel", zip)).toBe(false);
+    expect(documentBytesMatch("text/csv", csv)).toBe(true);
+    expect(documentBytesMatch("text/csv", zip)).toBe(false);
+    expect(documentBytesMatch("text/csv", padded([0xff, 0xfe, 0x41]))).toBe(
+      true
+    );
+    expect(documentBytesMatch("application/zip", zip)).toBe(false);
   });
 });

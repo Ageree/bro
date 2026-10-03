@@ -10,6 +10,7 @@ import type {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import type * as ScopeService from "@db/services/scope";
+import type * as SandboxPilot from "@agent/lib/sandbox/pilot";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
@@ -24,6 +25,7 @@ const capture = vi.hoisted(() => ({
   env: {} as Record<string, string | undefined>,
   findIdentity: vi.fn<typeof findChannelIdentity>(),
   claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
+  taskFilesEnabled: vi.fn<typeof SandboxPilot.taskFilesEnabled>(),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -61,6 +63,10 @@ vi.mock("@db/services/scope", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
+}));
+vi.mock("@agent/lib/sandbox/pilot", async (importOriginal) => ({
+  ...(await importOriginal<typeof SandboxPilot>()),
+  taskFilesEnabled: capture.taskFilesEnabled,
 }));
 
 const onMessage = capture.config?.onMessage;
@@ -110,6 +116,7 @@ describe("Telegram inbound media", () => {
       paywallText: undefined,
     });
     capture.claimIntroduction.mockResolvedValue(false);
+    capture.taskFilesEnabled.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -230,6 +237,45 @@ describe("Telegram inbound media", () => {
     expect(result?.message).toEqual([
       { text: "и это", type: "text" },
       expect.objectContaining({ mediaType: "image/jpeg", type: "file" }),
+    ]);
+  });
+
+  it("hands a spreadsheet to the model only where the person's files reach the task agent", async () => {
+    const xlsx = new Uint8Array(32);
+    xlsx.set([0x50, 0x4b, 0x03, 0x04]);
+    const xlsxType =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    serveTelegram(xlsx);
+    const { context } = inboundContext();
+    const message = telegramMessage({
+      raw: {
+        document: {
+          file_id: "x",
+          file_name: "Бюджет.xlsx",
+          file_size: 32,
+          mime_type: xlsxType,
+        },
+      },
+    });
+
+    const off = await onMessage(context, message);
+    expect(off?.message).toBe(`[файл: Бюджет.xlsx (${xlsxType})]`);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    capture.taskFilesEnabled.mockReturnValue(true);
+    const on = await onMessage(context, message);
+    expect(capture.taskFilesEnabled).toHaveBeenLastCalledWith(
+      on?.auth?.attributes.workspaceId
+    );
+    expect(on?.auth?.attributes.workspaceId).toMatch(/^personal:/u);
+    expect(on?.message).toEqual([
+      { text: `[файл: Бюджет.xlsx (${xlsxType})]`, type: "text" },
+      {
+        data: Buffer.from(xlsx).toString("base64"),
+        filename: "Бюджет.xlsx",
+        mediaType: xlsxType,
+        type: "file",
+      },
     ]);
   });
 

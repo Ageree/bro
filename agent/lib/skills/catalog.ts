@@ -13,6 +13,7 @@ import publicServices from "@agent/instructions/content/public-services.md?raw";
 import recommendations from "@agent/instructions/content/recommendations.md?raw";
 import roleInteractive from "@agent/instructions/content/role/interactive.md?raw";
 import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
+import taskFilesText from "@agent/instructions/content/task-files.md?raw";
 
 /**
  * Bro's instructions, and the skills cut from them (docs/roadmap.md, item
@@ -56,6 +57,8 @@ import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
  * The task agent's text (`task-agent.md`) holds no skill and stays whole in
  * the core: its pilot reads it in the person's turns but not in a browser
  * report's, and a block must read the same in every turn of a session.
+ * The rules for the person's files (`task-files.md`) are one skill instead:
+ * the setup has them in every turn of a session or in none.
  *
  * Only the files below take markers: they are the interactive turn's.
  * The workers' roles (`role/scheduled-worker.md` and the rest) and
@@ -73,6 +76,7 @@ export const skillNames = [
   "memory",
   "money",
   "schedules",
+  "files",
   "images",
   "games",
   "about-bro",
@@ -92,6 +96,7 @@ export const skillUses: Partial<Record<SkillName, string>> = {
   apps: "Notion, Slack, Google Таблицы и другие приложения",
   browser:
     "купить, заказать, забронировать, записать на сайте; билеты, отели, такси, доставка; отчёт запуска",
+  files: "присланные таблицы и документы, презентации, расчёты, графики",
   games: "викторины, квизы, игры",
   "gov-services": "Госуслуги, штрафы, налоги, документы, врачи",
   google: "почта, календарь, Диск, контакты, доступ Google",
@@ -133,6 +138,7 @@ const sourceTexts = [
   ["creative/games", games],
   ["hard-constraints", hardConstraints],
   ["task-agent", taskAgentText],
+  ["task-files", taskFilesText],
 ] as const;
 
 export type InstructionSource = (typeof sourceTexts)[number][0];
@@ -141,15 +147,20 @@ export type InstructionSource = (typeof sourceTexts)[number][0];
 export type InstructionLayout = "core" | "full";
 
 /**
- * What this deployment and turn have: the browser and drawing change which
- * files the interactive turn reads, and so which skills exist (`skillSetup`
- * in `pilot.ts`). The same in every interactive turn of a session, so a
- * block stays the same too. Plain JSON: a dynamic tool keeps it in its
- * closure.
+ * What this deployment and turn have: the browser, drawing and the person's
+ * files for the task agent change which files the interactive turn reads,
+ * and so which skills exist (`skillSetup` in `pilot.ts`). The same in every
+ * interactive turn of a session, so a block stays the same too. Plain JSON:
+ * a dynamic tool keeps it in its closure.
  */
 export interface SkillSetup {
   readonly browser: boolean;
   readonly images: boolean;
+  /**
+   * The person's files reach the task agent (`taskFilesOfCaller`); absent
+   * is no, so a setup written before the flag reads as it did.
+   */
+  readonly taskFiles?: boolean;
 }
 
 /** Who reads a run of lines: every layout, one layout, or one skill. */
@@ -304,6 +315,7 @@ export function interactiveSources(
     setup.images ? "creative/images" : "creative/images-unavailable",
     "creative/games",
     "hard-constraints",
+    ...(setup.taskFiles === true ? (["task-files"] as const) : []),
   ];
 }
 
@@ -344,5 +356,12 @@ export function availableSkills(setup: SkillSetup) {
 
 /** Every setup a deployment can have, for what must hold in each. */
 export const skillSetups: readonly SkillSetup[] = [false, true].flatMap(
-  (browser) => [false, true].map((drawing) => ({ browser, images: drawing }))
+  (browser) =>
+    [false, true].flatMap((drawing) =>
+      [false, true].map((taskFiles) => ({
+        browser,
+        images: drawing,
+        taskFiles,
+      }))
+    )
 );

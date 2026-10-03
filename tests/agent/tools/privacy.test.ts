@@ -61,7 +61,11 @@ const optionalServices = [
   "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
   "ROUTERAI_API_KEY",
+  "SANDBOX_HOST_ID",
+  "SANDBOX_HOST_ORIGIN",
+  "SANDBOX_SIGNING_KEY",
   "SUPERMEMORY_API_KEY",
+  "TASK_FILES_WORKSPACES",
   "TELEGRAM_BOT_TOKEN",
   "YOOKASSA_SECRET_KEY",
   "YOOKASSA_SHOP_ID",
@@ -174,6 +178,34 @@ describe("privacy", () => {
     expect(facts.keptData().join("\n")).toMatch(
       /Object Storage облака Cloud\.ru/u
     );
+  });
+
+  it("names the task agent's sandbox as a keeper of files once the person's files reach it", async () => {
+    const storage = {
+      BROWSER_STATE_BUCKET: "bucket-test",
+      CLOUDRU_KEY_ID: "key-id",
+      CLOUDRU_KEY_SECRET: "key-secret",
+      CLOUDRU_S3_TENANT_ID: "tenant-id",
+    };
+    const host = {
+      SANDBOX_HOST_ID: "sbx-test",
+      SANDBOX_HOST_ORIGIN: "https://sandbox.example.test",
+      SANDBOX_SIGNING_KEY: "ab".repeat(32),
+    };
+    const sentence = "копируются в его песочницу на Cloud.ru";
+    const kept = async (services: Parameters<typeof withServices>[0]) =>
+      (await withServices(services)).facts.keptData().join("\n");
+
+    expect(
+      await kept({ ...storage, ...host, TASK_FILES_WORKSPACES: "workspace-1" })
+    ).toContain(sentence);
+    expect(await kept({ ...storage, ...host })).not.toContain(sentence);
+    expect(
+      await kept({ ...storage, TASK_FILES_WORKSPACES: "workspace-1" })
+    ).not.toContain(sentence);
+    expect(
+      await kept({ ...host, TASK_FILES_WORKSPACES: "workspace-1" })
+    ).not.toContain(sentence);
   });
 
   it("says nothing of visits the deployment does not make", async () => {

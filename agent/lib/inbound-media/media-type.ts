@@ -15,6 +15,12 @@ export const pdfByteCap = 10 * 1024 * 1024;
  * RouterAI's limit was not measured, so the same cap applies there.
  */
 export const audioByteCap = 25 * 1024 * 1024;
+/**
+ * A spreadsheet, document or text file the person sends for the task agent
+ * (TASK_FILES_WORKSPACES): the same cap as the object store's copy for the
+ * task agent (`agent/lib/sandbox/inbox.ts`).
+ */
+export const documentByteCap = 10 * 1024 * 1024;
 
 function ascii(bytes: Uint8Array, offset: number, length: number) {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));
@@ -112,4 +118,162 @@ export function resolveMediaType(
   declared: string | null | undefined
 ) {
   return sniffMediaType(bytes) ?? baseMediaType(declared);
+}
+
+/** How a document's bytes must begin for its extension to be believed. */
+type DocumentContainer = "cfb" | "text" | "zip";
+
+/**
+ * The documents the task agent can open, by extension: the canonical media
+ * type and the container its bytes come in. Nothing here is an image or a
+ * PDF, which the model reads itself; archives, executables and videos are
+ * left out on purpose and stay a one-line note.
+ */
+const documentTypes: ReadonlyMap<
+  string,
+  { readonly container: DocumentContainer; readonly mediaType: string }
+> = new Map([
+  [
+    "xlsx",
+    {
+      container: "zip",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+  ],
+  [
+    "xlsm",
+    {
+      container: "zip",
+      mediaType: "application/vnd.ms-excel.sheet.macroEnabled.12",
+    },
+  ],
+  ["xls", { container: "cfb", mediaType: "application/vnd.ms-excel" }],
+  ["csv", { container: "text", mediaType: "text/csv" }],
+  ["tsv", { container: "text", mediaType: "text/tab-separated-values" }],
+  [
+    "docx",
+    {
+      container: "zip",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+  ],
+  ["doc", { container: "cfb", mediaType: "application/msword" }],
+  [
+    "pptx",
+    {
+      container: "zip",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
+  ],
+  ["ppt", { container: "cfb", mediaType: "application/vnd.ms-powerpoint" }],
+  [
+    "odt",
+    { container: "zip", mediaType: "application/vnd.oasis.opendocument.text" },
+  ],
+  [
+    "ods",
+    {
+      container: "zip",
+      mediaType: "application/vnd.oasis.opendocument.spreadsheet",
+    },
+  ],
+  [
+    "odp",
+    {
+      container: "zip",
+      mediaType: "application/vnd.oasis.opendocument.presentation",
+    },
+  ],
+  ["txt", { container: "text", mediaType: "text/plain" }],
+  ["md", { container: "text", mediaType: "text/markdown" }],
+  ["json", { container: "text", mediaType: "application/json" }],
+  ["xml", { container: "text", mediaType: "application/xml" }],
+]);
+
+const documentMediaTypes: ReadonlySet<string> = new Set(
+  [...documentTypes.values()].map((type) => type.mediaType)
+);
+
+/**
+ * What a sender may declare next to an allowlisted extension: nothing, the
+ * generic binary type, any listed document type (Windows declares a CSV as
+ * `application/vnd.ms-excel`), the zip types for a zip container or any
+ * `text/*` type for a text one. Anything else, a video or an executable
+ * renamed to `.xlsx`, keeps the file a note.
+ */
+function declaredFits(
+  container: DocumentContainer,
+  declared: string | undefined
+) {
+  if (declared === undefined || declared === "application/octet-stream") {
+    return true;
+  }
+  if (documentMediaTypes.has(declared)) return true;
+  if (container === "zip") {
+    return (
+      declared === "application/zip" ||
+      declared === "application/x-zip-compressed"
+    );
+  }
+  return container === "text" && declared.startsWith("text/");
+}
+
+function extensionOf(name: string | undefined) {
+  const dot = name?.lastIndexOf(".") ?? -1;
+  return dot > 0 && name ? name.slice(dot + 1).toLowerCase() : undefined;
+}
+
+/**
+ * The canonical media type of a document the task agent can open, decided by
+ * the file name's extension and checked against the declared type, or
+ * `undefined` when the file is not one. It never returns an image or a PDF.
+ */
+export function documentMediaType(
+  name: string | undefined,
+  declared: string | undefined
+) {
+  const type = documentTypes.get(extensionOf(name) ?? "");
+  if (type === undefined || !declaredFits(type.container, declared)) {
+    return undefined;
+  }
+  return type.mediaType;
+}
+
+const zipSignature = [0x50, 0x4b, 0x03, 0x04] as const;
+const cfbSignature = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
+const utf16Boms = [
+  [0xff, 0xfe],
+  [0xfe, 0xff],
+] as const;
+/** A text file is believed when this much of its head has no NUL byte. */
+const textProbeBytes = 8 * 1024;
+
+/**
+ * Whether the bytes are what a document of `mediaType` comes in: a zip for
+ * OOXML and OpenDocument, an OLE compound file for the legacy Office formats,
+ * and text without NUL bytes (or with a UTF-16 byte order mark) for the rest.
+ * A renamed executable or archive of another kind fails here.
+ */
+export function documentBytesMatch(mediaType: string, bytes: Uint8Array) {
+  const type = [...documentTypes.values()].find(
+    (entry) => entry.mediaType === mediaType
+  );
+  switch (type?.container) {
+    case "zip": {
+      return startsWith(bytes, zipSignature);
+    }
+    case "cfb": {
+      return startsWith(bytes, cfbSignature);
+    }
+    case "text": {
+      if (utf16Boms.some((bom) => startsWith(bytes, bom))) return true;
+      return !bytes.subarray(0, textProbeBytes).includes(0);
+    }
+    default: {
+      return false;
+    }
+  }
 }

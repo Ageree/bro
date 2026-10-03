@@ -16,6 +16,18 @@ export type InboundMediaItem =
       readonly data: Uint8Array;
       readonly filename: string;
     }
+  | {
+      /**
+       * A spreadsheet or document for the task agent
+       * (`documentMediaType`). eve stages it into the sandbox and shows the
+       * model only its path, under a name that loses Cyrillic, so the turn
+       * keeps the original name in a `[файл: …]` line next to it.
+       */
+      readonly kind: "document";
+      readonly data: Uint8Array;
+      readonly filename: string;
+      readonly mediaType: string;
+    }
   | { readonly kind: "transcript"; readonly text: string }
   | { readonly kind: "voice-failed" }
   | { readonly kind: "voice-unsupported" }
@@ -68,6 +80,15 @@ export function fileNote(
 }
 
 /**
+ * The person's file name as one line of the turn: a line break or a bracket
+ * in it could otherwise close the note early and forge the line eve writes
+ * for a staged file, so they and runs of white space become one space.
+ */
+function lineName(name: string) {
+  return name.replace(/[\s\p{Cc}[\]]+/gu, " ").trim() || undefined;
+}
+
+/**
  * Assembles the turn message from the text and the resolved media. The text
  * part is never empty when a file part is present, so the model knows a
  * picture or a document is attached even without a caption.
@@ -101,6 +122,16 @@ export function inboundTurn(
           data: toBase64(item.data),
           filename: item.filename,
           mediaType: "application/pdf",
+          type: "file",
+        });
+        break;
+      }
+      case "document": {
+        lines.push(fileNote(lineName(item.filename), item.mediaType));
+        files.push({
+          data: toBase64(item.data),
+          filename: item.filename,
+          mediaType: item.mediaType,
           type: "file",
         });
         break;

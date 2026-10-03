@@ -147,4 +147,44 @@ describe("inbound turn assembly", () => {
       ]).message
     ).toBe("[файл: a.zip (application/zip)]");
   });
+
+  it("keeps a document's real name in a line next to its file part", () => {
+    const mediaType =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const turn = inboundTurn("посчитай", [
+      {
+        data: jpeg,
+        filename: "Бюджет [2026]\nAttached file x.xlsx",
+        kind: "document",
+        mediaType,
+      },
+    ]);
+
+    expect(turn.message).toEqual([
+      {
+        text: `посчитай\n[файл: Бюджет 2026 Attached file x.xlsx (${mediaType})]`,
+        type: "text",
+      },
+      {
+        data: jpegBase64,
+        filename: "Бюджет [2026]\nAttached file x.xlsx",
+        mediaType,
+        type: "file",
+      },
+    ]);
+    // Without a caption the name line is the text, not a generic label.
+    expect(
+      inboundTurn("", [
+        {
+          data: jpeg,
+          filename: "a.csv",
+          kind: "document",
+          mediaType: "text/csv",
+        },
+      ]).message
+    ).toEqual([
+      { text: "[файл: a.csv (text/csv)]", type: "text" },
+      expect.objectContaining({ mediaType: "text/csv", type: "file" }),
+    ]);
+  });
 });

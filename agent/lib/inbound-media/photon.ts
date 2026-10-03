@@ -4,6 +4,9 @@ import { downloadWithin } from "./download";
 import {
   audioByteCap,
   baseMediaType,
+  documentByteCap,
+  documentBytesMatch,
+  documentMediaType,
   inlineImageByteCap,
   isAudioMediaType,
   isImageMediaType,
@@ -141,9 +144,48 @@ function isVoiceName(name: string | undefined) {
   return name?.toLowerCase().endsWith(".caf") === true;
 }
 
+/**
+ * A spreadsheet or document for the task agent (`documentMediaType`), or the
+ * note it was before when the name, the declared type or the bytes say it is
+ * not one.
+ */
+function taskDocumentItem(
+  attachment: Attachment,
+  declared: string | undefined,
+  bytes: Uint8Array,
+  mediaType: string | undefined
+): InboundMediaItem {
+  const taskType = documentMediaType(attachment.name, declared);
+  if (
+    attachment.name === undefined ||
+    taskType === undefined ||
+    !documentBytesMatch(taskType, bytes)
+  ) {
+    return { kind: "note", text: fileNote(attachment.name, mediaType) };
+  }
+  if (bytes.byteLength > documentByteCap) {
+    return {
+      kind: "note",
+      text: fileNote(attachment.name, taskType, "слишком большой"),
+    };
+  }
+  console.info("[inbound-media] photon document", {
+    bytes: bytes.byteLength,
+    mediaType: taskType,
+    status: "ok",
+  });
+  return {
+    data: bytes,
+    filename: attachment.name,
+    kind: "document",
+    mediaType: taskType,
+  };
+}
+
 async function attachmentItem(
   attachment: Attachment,
-  reader: Reader
+  reader: Reader,
+  documents: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(attachment.mimeType);
   const voiceLike =
@@ -222,22 +264,28 @@ async function attachmentItem(
       ? { kind: "transcript", text: transcript.text }
       : { kind: "voice-failed" };
   }
+  if (documents) {
+    return taskDocumentItem(attachment, declared, resolved.bytes, mediaType);
+  }
   return { kind: "note", text: fileNote(attachment.name, mediaType) };
 }
 
 /**
  * The turn for an iMessage that carries attachments, or `undefined` when it is
- * text only and eve's default turn applies.
+ * text only and eve's default turn applies. `documents` (`taskFilesEnabled`)
+ * also hands the model the spreadsheets and documents the task agent can
+ * open; without it they stay a note.
  */
 export async function photonMediaTurn(
-  message: Message
+  message: Message,
+  { documents = false }: { readonly documents?: boolean } = {}
 ): Promise<InboundTurn | undefined> {
   const attachments = message.attachments;
   if (attachments.length === 0) return undefined;
   const readers = rawReaders(message);
   const items = await Promise.all(
     attachments.map((attachment, index) =>
-      attachmentItem(attachment, readers[index])
+      attachmentItem(attachment, readers[index], documents)
     )
   );
   return inboundTurn(message.text, items);

@@ -5,10 +5,14 @@ import { downloadTimeoutMs, downloadWithin } from "./download";
 import {
   audioByteCap,
   baseMediaType,
+  documentByteCap,
+  documentBytesMatch,
+  documentMediaType,
   inlineImageByteCap,
   isImageMediaType,
   pdfByteCap,
   resolveMediaType,
+  sniffMediaType,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -171,14 +175,93 @@ async function photoItem(
   };
 }
 
+/**
+ * A spreadsheet or document for the task agent, fetched under its own cap.
+ * Bytes that turn out to be an image or a PDF take the branches the model
+ * reads itself; bytes that do not match the extension stay a note.
+ */
+async function taskDocumentItem(
+  document: z.infer<typeof documentSchema>,
+  name: string,
+  mediaType: string
+): Promise<InboundMediaItem> {
+  if (
+    document.file_size !== undefined &&
+    document.file_size > documentByteCap
+  ) {
+    return {
+      kind: "note",
+      text: fileNote(name, mediaType, "слишком большой"),
+    };
+  }
+  const download = await downloadTelegramFile(
+    document.file_id,
+    documentByteCap
+  );
+  if (download.kind === "oversize") {
+    return {
+      kind: "note",
+      text: fileNote(name, mediaType, "слишком большой"),
+    };
+  }
+  if (download.kind === "failed") {
+    console.warn("[inbound-media] telegram document", {
+      declaredBytes: document.file_size,
+      mediaType,
+      status: download.reason,
+    });
+    return {
+      kind: "note",
+      text: fileNote(name, mediaType, "не удалось скачать"),
+    };
+  }
+  const sniffed = sniffMediaType(download.bytes);
+  if (sniffed === "application/pdf") {
+    return { data: download.bytes, filename: name, kind: "pdf" };
+  }
+  if (isImageMediaType(sniffed)) {
+    if (download.bytes.byteLength > inlineImageByteCap) {
+      return {
+        kind: "note",
+        text: fileNote(name, sniffed, "слишком большой"),
+      };
+    }
+    return {
+      data: download.bytes,
+      filename: name,
+      kind: "image",
+      mediaType: sniffed,
+    };
+  }
+  if (sniffed !== undefined || !documentBytesMatch(mediaType, download.bytes)) {
+    return {
+      kind: "note",
+      text: fileNote(name, sniffed ?? baseMediaType(document.mime_type)),
+    };
+  }
+  console.info("[inbound-media] telegram document", {
+    bytes: download.bytes.byteLength,
+    mediaType,
+    status: "ok",
+  });
+  return { data: download.bytes, filename: name, kind: "document", mediaType };
+}
+
 async function documentItem(
-  document: z.infer<typeof documentSchema>
+  document: z.infer<typeof documentSchema>,
+  documents: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(document.mime_type);
   const name = document.file_name ?? "file";
   const isPdf =
     declared === "application/pdf" || name.toLowerCase().endsWith(".pdf");
   if (!isImageMediaType(declared) && !isPdf) {
+    const taskType = documents
+      ? documentMediaType(document.file_name, declared)
+      : undefined;
+    if (taskType !== undefined && document.file_name !== undefined) {
+      return taskDocumentItem(document, document.file_name, taskType);
+    }
     return { kind: "note", text: fileNote(document.file_name, declared) };
   }
   const cap = isPdf ? pdfByteCap : inlineImageByteCap;
@@ -251,17 +334,20 @@ async function voiceItem(
 /**
  * The turn for a Telegram message that carries a photo, document, voice note,
  * audio file, or video note, or `undefined` when it carries none and eve's
- * default text turn applies.
+ * default text turn applies. `documents` (`taskFilesEnabled`) also hands the
+ * model the spreadsheets and documents the task agent can open; without it
+ * they stay a note and are never downloaded.
  */
 export async function telegramMediaTurn(
-  message: TelegramMessage
+  message: TelegramMessage,
+  { documents = false }: { readonly documents?: boolean } = {}
 ): Promise<InboundTurn | undefined> {
   const parsed = mediaMessageSchema.safeParse(message.raw);
   if (!parsed.success) return undefined;
   const media = parsed.data;
   const tasks: Promise<InboundMediaItem>[] = [];
   if (media.photo && media.photo.length > 0) tasks.push(photoItem(media.photo));
-  if (media.document) tasks.push(documentItem(media.document));
+  if (media.document) tasks.push(documentItem(media.document, documents));
   if (media.voice) {
     tasks.push(
       voiceItem(media.voice, baseMediaType(media.voice.mime_type), undefined)

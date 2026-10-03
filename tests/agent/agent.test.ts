@@ -40,6 +40,7 @@ vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
+  taskFilesOfCaller: () => false,
 }));
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
   const original = await importOriginal<typeof ModelSelection>();

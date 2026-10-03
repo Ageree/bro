@@ -19,7 +19,9 @@ import { workspaces } from "./workspaces";
  * schedule's or a mail check's worker, a schedule's report); `browser-report`
  * the turn that tells the person how a browser run went. `browser-run` is
  * the model of the agent inside the browser, `browser-vm` the time a
- * workspace VM was powered on, `proxy` residential traffic.
+ * workspace VM was powered on, `proxy` residential traffic. `task` is a
+ * model step of the task agent Bro delegated to, filed under the session of
+ * the conversation that delegated it.
  */
 export const usageCostSources = [
   "chat",
@@ -28,6 +30,7 @@ export const usageCostSources = [
   "browser-run",
   "browser-vm",
   "proxy",
+  "task",
 ] as const;
 
 /** What was consumed, in whatever measure the source has. */
@@ -90,7 +93,7 @@ export const usageCosts = pgTable(
     unique("usage_costs_idempotency_key_uidx").on(table.idempotencyKey),
     check(
       "usage_costs_source_check",
-      sql`${table.source} IN ('chat', 'background', 'browser-report', 'browser-run', 'browser-vm', 'proxy')`
+      sql`${table.source} IN ('chat', 'background', 'browser-report', 'browser-run', 'browser-vm', 'proxy', 'task')`
     ),
     check("usage_costs_cost_rub_check", sql`${table.costRub} >= 0`),
     check(

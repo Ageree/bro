@@ -81,6 +81,7 @@ describe("the owner's cost report", () => {
         "browser-vm": 0,
         chat: 0,
         proxy: 0,
+        task: 0,
       },
       items: [],
       runId: "run-1",

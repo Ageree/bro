@@ -47,6 +47,7 @@ function emptyBySource(): Record<UsageCostSource, number> {
     "browser-vm": 0,
     chat: 0,
     proxy: 0,
+    task: 0,
   };
 }
 

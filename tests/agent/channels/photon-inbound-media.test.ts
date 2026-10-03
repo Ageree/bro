@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type * as EnvModule from "@shared/environment";
 import type * as ScopeService from "@db/services/scope";
+import type * as SandboxPilot from "@agent/lib/sandbox/pilot";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/photon";
@@ -16,6 +17,7 @@ const capture = vi.hoisted(() => ({
   // The channel reads the key at message time, so a test flips it in place.
   // SAFETY: The mock factory fills this object with the real environment before any test runs.
   env: {} as Record<string, string | undefined>,
+  taskFilesEnabled: vi.fn<typeof SandboxPilot.taskFilesEnabled>(),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -57,6 +59,10 @@ vi.mock("@db/services/scope", async (importOriginal) => ({
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
 }));
+vi.mock("@agent/lib/sandbox/pilot", async (importOriginal) => ({
+  ...(await importOriginal<typeof SandboxPilot>()),
+  taskFilesEnabled: capture.taskFilesEnabled,
+}));
 
 const onMessage = capture.config?.onMessage;
 if (!onMessage) {
@@ -87,6 +93,7 @@ describe("Photon inbound media", () => {
     capture.env.OPENROUTER_API_KEY = "openrouter-test-key";
     capture.ensureUser.mockResolvedValue({ created: false, userId: "user-1" });
     capture.claimIntroduction.mockResolvedValue(false);
+    capture.taskFilesEnabled.mockReturnValue(false);
     capture.messageQuotaGate.mockResolvedValue({
       allowed: true,
       paywallText: undefined,
@@ -222,6 +229,46 @@ describe("Photon inbound media", () => {
     expect(result?.context?.join("\n")).toContain("`first-contact`");
     expect(result?.message).toBe("[голосовое не распозналось]");
     expect(capture.markRead).not.toHaveBeenCalled();
+  });
+
+  it("hands a spreadsheet to the model only where the person's files reach the task agent", async () => {
+    const xlsx = new Uint8Array(32);
+    xlsx.set([0x50, 0x4b, 0x03, 0x04]);
+    const xlsxType =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const message = () =>
+      photonMessage({
+        attachments: [
+          { mimeType: xlsxType, name: "Бюджет.xlsx", size: 32, type: "file" },
+        ],
+        raw: {
+          content: {
+            mimeType: xlsxType,
+            name: "Бюджет.xlsx",
+            read: reader(xlsx),
+            type: "attachment",
+          },
+        },
+      });
+
+    const off = await onMessage(threadContext(), message());
+    expect(off?.message).toBe(`[файл: Бюджет.xlsx (${xlsxType})]`);
+
+    capture.taskFilesEnabled.mockReturnValue(true);
+    const on = await onMessage(threadContext(), message());
+    expect(capture.taskFilesEnabled).toHaveBeenLastCalledWith(
+      on?.auth?.attributes.workspaceId
+    );
+    expect(on?.auth?.attributes.workspaceId).toMatch(/^personal:/u);
+    expect(on?.message).toEqual([
+      { text: `[файл: Бюджет.xlsx (${xlsxType})]`, type: "text" },
+      {
+        data: Buffer.from(xlsx).toString("base64"),
+        filename: "Бюджет.xlsx",
+        mediaType: xlsxType,
+        type: "file",
+      },
+    ]);
   });
 
   it("says voice is unsupported when the deployment has no OpenRouter key", async () => {

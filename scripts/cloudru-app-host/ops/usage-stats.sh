@@ -9,7 +9,9 @@
 #
 #   - steps by source and channel: median input tokens (p25, p75), cache share (cached over input, summed),
 #     roubles per step (mean, median) and in all; `interactive` is chat and browser-report together, the
-#     steps that carry the full instructions (scripts/costs/step-context.ts);
+#     steps that carry the full instructions (scripts/costs/step-context.ts); `task` is the task agent's
+#     steps, filed under the conversation that delegated them, so its channel is that conversation's and its
+#     sessions count conversations, not tasks;
 #   - the same for interactive steps by day (Moscow), to compare before and after a release;
 #   - steps by their place in the whole session, counted from its first step (Telegram's is one session for
 #     good): whether a step grows with the conversation (roadmap item 28);
@@ -47,7 +49,7 @@ STEPS="WITH all_steps AS (
          COALESCE((u.units->>'outputTokens')::bigint, 0) AS output
   FROM usage_costs u
   LEFT JOIN chats c ON c.session_id = u.session_id AND c.workspace_id = u.workspace_id
-  WHERE u.source IN ('chat', 'background', 'browser-report')
+  WHERE u.source IN ('chat', 'background', 'browser-report', 'task')
     AND u.units ? 'inputTokens'
     AND u.occurred_at < :'until'::timestamptz
 ), placed_steps AS (

@@ -29,6 +29,7 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
   finalizeScheduledReportDelivery,
@@ -315,8 +316,11 @@ export default telegramChannel({
     };
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
-    // image content type and never reads a voice note at all.
-    const media = await telegramMediaTurn(message);
+    // image content type and never reads a voice note at all. Spreadsheets
+    // and documents reach the model only where the task agent gets them.
+    const media = await telegramMediaTurn(message, {
+      documents: taskFilesEnabled(scope.workspaceId),
+    });
     if (media?.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.

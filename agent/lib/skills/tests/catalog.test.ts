@@ -85,6 +85,29 @@ describe("the instruction catalog", () => {
     expect(instructionText("task-agent", "core")).toBe(raw);
   });
 
+  it("reads the rules for the person's files only as a skill, and only where they reach the task agent", async () => {
+    const { availableSkills, instructionText, interactiveSources, skillBody } =
+      await import("@agent/lib/skills/catalog");
+    const raw = readFileSync(
+      new URL("../../../instructions/content/task-files.md", import.meta.url),
+      "utf8"
+    );
+    // The whole file is the skill: the core reads none of it.
+    expect(instructionText("task-files", "core").trim()).toBe("");
+    expect(instructionText("task-files", "full")).toBe(
+      raw.replace(/^<!-- .* -->\n/gmu, "")
+    );
+    expect(interactiveSources(setup)).not.toContain("task-files");
+    expect(availableSkills(setup)).not.toContain("files");
+    expect(skillBody("files", setup)).toBeUndefined();
+    const withFiles = { ...setup, taskFiles: true };
+    expect(interactiveSources(withFiles).at(-1)).toBe("task-files");
+    expect(availableSkills(withFiles)).toContain("files");
+    expect(skillBody("files", withFiles)).toBe(
+      instructionText("task-files", "full").trim()
+    );
+  });
+
   it.each([
     [
       "an unknown skill",

@@ -420,4 +420,55 @@ describe("Photon media turn", () => {
     );
     expect(huge?.message).toBe("[файл: big.png (image/png), слишком большой]");
   });
+
+  it("hands over an allowlisted document only when documents are on", async () => {
+    const docx = new Uint8Array(32);
+    docx.set([0x50, 0x4b, 0x03, 0x04]);
+    const docxType =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const { photonMediaTurn } = await loadPhotonMedia();
+    const message = (name: string, bytes: Uint8Array, mimeType?: string) =>
+      photonMessage(
+        [{ data: Buffer.from(bytes), mimeType, name, type: "file" }],
+        undefined
+      );
+
+    await expect(
+      photonMediaTurn(message("Договор.docx", docx, docxType))
+    ).resolves.toEqual({
+      message: `[файл: Договор.docx (${docxType})]`,
+      notice: undefined,
+    });
+
+    await expect(
+      photonMediaTurn(message("Договор.docx", docx, docxType), {
+        documents: true,
+      })
+    ).resolves.toEqual({
+      message: [
+        { text: `[файл: Договор.docx (${docxType})]`, type: "text" },
+        {
+          data: Buffer.from(docx).toString("base64"),
+          filename: "Договор.docx",
+          mediaType: docxType,
+          type: "file",
+        },
+      ],
+      notice: undefined,
+    });
+
+    // Archives and renamed executables stay notes.
+    await expect(
+      photonMediaTurn(message("a.zip", docx, "application/zip"), {
+        documents: true,
+      })
+    ).resolves.toMatchObject({ message: "[файл: a.zip (application/zip)]" });
+    const exe = new Uint8Array(32);
+    exe.set([0x4d, 0x5a]);
+    await expect(
+      photonMediaTurn(message("book.xlsx", exe), { documents: true })
+    ).resolves.toMatchObject({
+      message: "[файл: book.xlsx (неизвестный тип)]",
+    });
+  });
 });

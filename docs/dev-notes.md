@@ -199,6 +199,16 @@
 - Итог фоновой задачи eve приносит родителю отдельным ходом: сообщение
   `[Task state]` с выводом задачи и указание «одним ответом человеку»
   (`eve/dist/src/tasks/delivery-context.js`).
+- Вызов `task` хук видит в `actions.requested` как `kind: "tool-call"` с
+  `toolName: "task"`, не `subagent-call` (внутренний запрос диспетчера,
+  `harness/coordination.js`). Хуки шага отрабатывают до его конца
+  (`closeAndDrain`), а тело задачи ждёт `ready` после шага
+  (`acknowledgeDelegatedTasksStep`): ребёнку не нужно ждать файлов. Ход-отчёт
+  задачи сохраняет вызывающего, поэтому кто открыл ход, решает
+  `message.received.kind`, а не `startedByPerson` (`agent/hooks/task-files.ts`).
+  Оба хука идут в области песочницы шага (`context/run-step.js`), так что
+  `ctx.getSandbox()` там работает; у ребёнка, продолженного после карточки
+  входа, `message.received` нет — файлы того хода не копируются.
 - gVisor работает и в облачной сессии (root, cgroup v1): `sandboxd` гоняют на
   настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
   `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
