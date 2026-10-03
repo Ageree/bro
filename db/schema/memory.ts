@@ -219,6 +219,8 @@ export const memoryDigestRuns = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.localDate] }),
+    // The hourly tick reads the days done since yesterday, for everyone.
+    index("memory_digest_runs_day_idx").on(table.localDate, table.status),
     check(
       "memory_digest_runs_status_check",
       sql`${table.status} IN ('running', 'done', 'failed')`

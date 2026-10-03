@@ -130,7 +130,7 @@ export async function lastMemoryDigestFinishedAt(workspaceId: string) {
         sql`coalesce((${memoryDigestRuns.outcome}->>'classifierFailed')::int, 0) = 0`
       )
     )
-    .orderBy(desc(memoryDigestRuns.localDate))
+    .orderBy(desc(memoryDigestRuns.finishedAt))
     .limit(1);
   return last?.finishedAt ?? null;
 }

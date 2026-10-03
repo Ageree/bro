@@ -1,6 +1,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
+import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -23,6 +24,7 @@ import {
   readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { directModelActive } from "@shared/model/provider";
 
 const googleUnknown = "Проверить подключение Google сейчас не получилось.";
 
@@ -63,7 +65,10 @@ export const privacy = defineTool({
     const [modelId, google, memoryDigest] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
-      memoryDigestPilot(scope),
+      // The digest's model reads memory only where the digest runs and asks.
+      schedulesEnabled() && directModelActive()
+        ? memoryDigestPilot(scope)
+        : false,
     ]);
     return {
       kept: keptData(),
