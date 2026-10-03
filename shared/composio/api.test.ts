@@ -66,6 +66,30 @@ describe("composioRequest", () => {
     expect(isTransientComposioFailure(failure)).toBe(false);
   });
 
+  it("keeps the start of a refusal that is not Composio's own", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(`<html><title>403 Forbidden</title>${"x".repeat(500)}`, {
+        headers: { server: "nginx" },
+        status: 403,
+      })
+    );
+
+    const failure = await composioRequest(z.unknown(), "/x").catch(
+      (cause: unknown) => cause
+    );
+
+    expect(failure).toBeInstanceOf(ComposioError);
+    expect(failure).toMatchObject({
+      answer: { server: "nginx" },
+      message: "Composio answered 403.",
+      status: 403,
+    });
+    const answer =
+      failure instanceof ComposioError ? failure.answer : undefined;
+    expect(answer?.bodyStart).toMatch(/^<html><title>403 Forbidden/u);
+    expect(answer?.bodyStart.length).toBe(120);
+  });
+
   it("tells a passing outage from configuration", () => {
     expect(
       isTransientComposioFailure(new ComposioError(503, undefined, "down"))

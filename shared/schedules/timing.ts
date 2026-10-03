@@ -44,19 +44,29 @@ const skipHolidaysSchema = z
     "true only when the person asked to skip holidays («на праздники не присылай», «кроме праздников»): in a Russian time zone the run then skips public holidays and the days off moved for them (production calendar). Leave it out otherwise: a new reminder keeps firing on holidays, and a changed schedule keeps its setting. false only when they ask to run on holidays again."
   );
 
+/** The fields of a calendar rule whose words the tools say in full. */
+const fullCalendarWords = {
+  dayOfMonth: dayOfMonthSchema,
+  localTime: localTimeSchema,
+  skipHolidays: skipHolidaysSchema,
+};
+
 /**
  * The calendar rules over a zone field: a stored rule always names its zone,
  * while the tool lets the model leave it to the person's profile.
  */
-function calendarTimingSchemaFor<Zone extends z.ZodType>(timezone: Zone) {
+function calendarTimingSchemaFor<Zone extends z.ZodType>(
+  timezone: Zone,
+  { dayOfMonth, localTime, skipHolidays } = fullCalendarWords
+) {
   const calendarBase = {
     kind: z.literal("calendar"),
-    localTime: localTimeSchema,
+    localTime,
     timezone,
   };
   // Only a rule of days can step over a holiday; a stored rule without the
   // flag keeps running on holidays, as it always did.
-  const dayRuleBase = { ...calendarBase, skipHolidays: skipHolidaysSchema };
+  const dayRuleBase = { ...calendarBase, skipHolidays };
   return z.discriminatedUnion("frequency", [
     z.strictObject({ ...dayRuleBase, frequency: z.literal("daily") }),
     // Monday to Friday.
@@ -77,7 +87,7 @@ function calendarTimingSchemaFor<Zone extends z.ZodType>(timezone: Zone) {
     }),
     z.strictObject({
       ...calendarBase,
-      dayOfMonth: dayOfMonthSchema,
+      dayOfMonth,
       frequency: z.literal("monthly"),
     }),
     // «Каждое второе воскресенье месяца», «в последнюю пятницу».
@@ -91,7 +101,7 @@ function calendarTimingSchemaFor<Zone extends z.ZodType>(timezone: Zone) {
     }),
     z.strictObject({
       ...calendarBase,
-      dayOfMonth: dayOfMonthSchema,
+      dayOfMonth,
       frequency: z.literal("yearly"),
       month: z.number().int().min(1).max(12).describe("Month, 1 January."),
     }),
@@ -163,37 +173,79 @@ const personZoneSchema = timezoneSchema
   );
 
 /**
+ * The schedule tools' timing with the words of its zone and holidays given:
+ * the full ones, or the short ones of the skills pilot, whose schedules
+ * skill says the rest (`agent/tools/schedules.ts`).
+ */
+function timingInputSchemaWith(
+  personZone: typeof personZoneSchema,
+  words: typeof fullCalendarWords
+) {
+  return z.discriminatedUnion("kind", [
+    z.strictObject({
+      at: z
+        .string()
+        .trim()
+        .refine(
+          (at) =>
+            instantSchema.safeParse(at).success ||
+            wallClockSchema.safeParse(at).success,
+          {
+            message:
+              "Use the wall-clock time YYYY-MM-DDTHH:MM, or an ISO datetime with its offset.",
+          }
+        )
+        .describe(
+          "When it happens: the wall-clock time YYYY-MM-DDTHH:MM in `timezone`, e.g. 2026-09-26T09:00 for «завтра в 9», or an exact ISO datetime with an offset."
+        ),
+      kind: z.literal("once"),
+      timezone: personZone,
+    }),
+    newIntervalTimingSchema,
+    calendarTimingSchemaFor(personZone, words).refine(
+      yearlyDayExists,
+      yearlyDayMessage
+    ),
+  ]);
+}
+
+/**
  * What the schedule tools accept: the same rules, with the zone left to the
  * person's profile and a one-off moment given on their wall clock. Guessing
  * the offset of «завтра в 9» put reminders an hour or a zone off; the model
  * only reads the date and time, and `resolveScheduleTiming` does the rest.
  */
-export const scheduleTimingInputSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    at: z
+export const scheduleTimingInputSchema = timingInputSchemaWith(
+  personZoneSchema,
+  fullCalendarWords
+);
+
+/**
+ * The same, with its zone, holidays, day and time in a few words each: the
+ * schedules skill's body says how to fill them (`agent/tools/schedules.ts`).
+ */
+export const shortScheduleTimingInputSchema = timingInputSchemaWith(
+  timezoneSchema
+    .optional()
+    .describe(
+      "IANA timezone. Leave it out (the person's zone, or the schedule's own); only for another zone they named."
+    ),
+  {
+    dayOfMonth: z
+      .union([z.number().int().min(1).max(31), z.literal("last")])
+      .describe('1 to 31, or "last".'),
+    localTime: z
       .string()
-      .trim()
-      .refine(
-        (at) =>
-          instantSchema.safeParse(at).success ||
-          wallClockSchema.safeParse(at).success,
-        {
-          message:
-            "Use the wall-clock time YYYY-MM-DDTHH:MM, or an ISO datetime with its offset.",
-        }
-      )
+      .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour HH:MM time.")
+      .describe("HH:MM, 24-hour."),
+    skipHolidays: z
+      .boolean()
+      .optional()
       .describe(
-        "When it happens: the wall-clock time YYYY-MM-DDTHH:MM in `timezone`, e.g. 2026-09-26T09:00 for «завтра в 9», or an exact ISO datetime with an offset."
+        "true only when the person asked to skip holidays; false to run on them again."
       ),
-    kind: z.literal("once"),
-    timezone: personZoneSchema,
-  }),
-  newIntervalTimingSchema,
-  calendarTimingSchemaFor(personZoneSchema).refine(
-    yearlyDayExists,
-    yearlyDayMessage
-  ),
-]);
+  }
+);
 
 // Weekly schedules written before `weekdays` named their single day.
 const legacyWeeklyTimingSchema = z.strictObject({

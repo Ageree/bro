@@ -1,6 +1,7 @@
 import { unsafeMemoryRanges } from "@shared/memory/schema";
 
-const placeholder = "[удалено]";
+/** What stands where a secret was cut out. */
+export const redactionPlaceholder = "[удалено]";
 
 /**
  * The text with every credential and one-time code in it replaced by a
@@ -15,7 +16,7 @@ export function redactUnsafeText(text: string) {
     if (end <= cursor) continue;
     // Overlapping ranges are one secret, and get one placeholder.
     if (start >= cursor) {
-      redacted += text.slice(cursor, start) + placeholder;
+      redacted += text.slice(cursor, start) + redactionPlaceholder;
     }
     cursor = end;
   }

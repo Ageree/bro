@@ -6,7 +6,6 @@ import { directModelSelection } from "@agent/lib/model/direct";
 import { modelEndpoint } from "@agent/lib/model/endpoint";
 import { usdToRub } from "@shared/costs/prices";
 import { env } from "@shared/environment";
-import { defaultModelId } from "@shared/model/provider";
 import { isSafeMemoryText, type MemoryContent } from "@shared/memory/schema";
 
 interface ClassifiedRecord {
@@ -33,6 +32,13 @@ interface ClassifierPlan {
   }[];
 }
 
+/**
+ * The digest's own model when MEMORY_DIGEST_MODEL is unset: never the main
+ * agent's, whose default is the provider's. On RouterAI a third of the main
+ * default's price, with structured output, from the same family the provider
+ * routing already knows (`agent/lib/model/direct.ts`).
+ */
+const digestModelId = "deepseek/deepseek-v4-flash";
 const maximumPerKind = 3;
 const maximumRecords = 120;
 const maximumTextChars = 300;
@@ -77,10 +83,16 @@ const instructions = [
  */
 export function classifierCandidates(records: readonly ClassifiedRecord[]) {
   // Newest first: what changed since the last digest is always asked about.
-  return records
-    .filter(({ content }) => proposedCategories.has(content.category))
-    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, maximumRecords);
+  return (
+    records
+      // A local-only memory reaches no model but the conversation's own.
+      .filter(
+        ({ content }) =>
+          proposedCategories.has(content.category) && !content.localOnly
+      )
+      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, maximumRecords)
+  );
 }
 
 /**
@@ -90,8 +102,8 @@ export function classifierCandidates(records: readonly ClassifiedRecord[]) {
  * duplicate whose every word is in the record it folds into, a correction
  * from older to newer about the same thing. A record with a validity date
  * never goes as one-off, and each kind is capped. A failure changes
- * nothing. The call is the digest's own (`MEMORY_DIGEST_MODEL`, the
- * provider's default otherwise), not the workspace's chosen model, and its
+ * nothing. The call is the digest's own (`MEMORY_DIGEST_MODEL`, or
+ * `digestModelId`), not the main agent's or the workspace's model, and its
  * cost goes to `usage_costs` as `memory` as soon as the step ends, before its
  * answer is parsed.
  */
@@ -103,7 +115,7 @@ export async function classifyMemories(
     readonly workspaceId: string;
   }
 ): Promise<ClassifierPlan> {
-  const modelId = env.MEMORY_DIGEST_MODEL ?? defaultModelId();
+  const modelId = env.MEMORY_DIGEST_MODEL ?? digestModelId;
   const selection = directModelSelection(modelId, { toolChoice: "none" });
   const result = await generateText({
     abortSignal: AbortSignal.timeout(30_000),

@@ -14,6 +14,7 @@ import {
   updateCalendarEvent,
 } from "@agent/lib/google-workspace/calendar";
 import { googleWriteApproval } from "@agent/lib/google-workspace/client";
+import { reportCardHold } from "@agent/lib/delivery/report-cards";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import { resolveModeValue } from "@agent/lib/mode";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
@@ -56,11 +57,20 @@ const overlapNote =
   "`overlapsWith` lists other events at the same time: tell the person about the clash plainly, as a fact («в 15:30 у тебя уже «Стоматолог»»).";
 
 export const calendarCreateEvent = defineTool({
-  approval: calendarWriteApproval,
+  // A browser report's calendar card comes after its message
+  // (`reportCardHold`).
+  approval: async (context) => {
+    const held = await reportCardHold(context.session);
+    return held === undefined
+      ? calendarWriteApproval(context)
+      : { reason: held, type: "denied" as const };
+  },
   description:
     "Create a confirmed private Google Calendar event. When the person asked for it in their own message it is created at once, without a card or a question; with guests, Google mails them an invitation, so tell the person who was invited. Put the address or link of the meeting in `location` and details that matter (who, what to bring, the booking from the email) in `description`. For a vague window, check free time first and put the event in a free window.",
   inputSchema: calendarEventSchema,
   async execute(input, ctx) {
+    const held = await reportCardHold(ctx.session);
+    if (held !== undefined) throw new Error(held);
     const event = await createCalendarEvent(ctx, input);
     const overlapsWith = await calendarOverlaps(ctx, {
       calendarId: input.calendarId,

@@ -9,9 +9,10 @@ import {
   updateBrowserVmRun,
 } from "@db/services/browser-vms";
 import { recordBrowserVmRunCosts } from "@agent/lib/costs/browser";
+import { providerRouting } from "@agent/lib/model/direct";
 import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
-import { browserVmCaptcha, browserVmLlm } from "./backend";
+import { browserVmCaptcha, browserVmLlm, browserVmLlmService } from "./backend";
 import {
   browserVmBrowserId,
   browserVmProfileId,
@@ -64,6 +65,28 @@ type WorkerRun = NonNullable<
 const runMaxSteps = 60;
 const runTimeoutSeconds = 1_500;
 /**
+ * RouterAI's hosts of `deepseek/deepseek-v4.1-flash` without
+ * `structured_outputs` (its `/models/…/endpoints`, 03.10). browser-use asks
+ * every step for a strict JSON schema; left to pick a host itself, RouterAI
+ * served six errands of 03.10 from them, and their answers failed
+ * `AgentOutput` («action Field required», invalid JSON) until browser-use
+ * ended the run after four in a row. RouterAI takes `require_parameters`
+ * without filtering on it (it served the same call from `deepseek`), so the
+ * hosts are named. Fourteen others with structured outputs stay behind the
+ * pinned `deepinfra`.
+ */
+const routerAiHostsWithoutStructuredOutputs = [
+  "deepseek",
+  "relace",
+  "streamlake",
+  "gmicloud",
+  "phala",
+  "novita",
+  "siliconflow",
+  "alibaba",
+];
+
+/**
  * How the VM's browser-use agent runs (bench of 01.10, `docs/agent-costs.md`,
  * section 3.3): DeepSeek's hidden reasoning off — browser-use has the model
  * think in its answer anyway, and the hidden tokens were a third of the
@@ -72,8 +95,30 @@ const runTimeoutSeconds = 1_500;
  * cheaper still on the bench, but drops browser-use's own rules and the
  * model's written reasoning: not before errands that sign in or stage a
  * checkout were measured with it.
+ *
+ * Its hosts are the main agent's (`providerRouting`: the pinned caching
+ * host, the broken ones skipped) less those without structured outputs.
+ * The main agent's ROUTERAI_PROVIDER_* do not apply: they tune another
+ * model and service, and a pinned host there would lift its skip here.
  */
-const runTuning = { maxActionsPerStep: 8, reasoning: "none" } as const;
+function runTuning(model: string) {
+  const service = browserVmLlmService();
+  const provider =
+    service === undefined
+      ? undefined
+      : {
+          ...providerRouting(model, {
+            provider: service,
+            providerIgnore:
+              service === "routerai" && model.startsWith("deepseek/")
+                ? routerAiHostsWithoutStructuredOutputs
+                : [],
+            providerOrder: undefined,
+          }),
+          requireParameters: true,
+        };
+  return { maxActionsPerStep: 8, provider, reasoning: "none" } as const;
+}
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
 /**
@@ -210,7 +255,7 @@ export async function createBrowserVmRun(input: {
     sessionId,
     task,
     timeoutSeconds: runTimeoutSeconds,
-    tuning: runTuning,
+    tuning: runTuning(llm.model),
   });
   // The worker has it: the record says what the worker says from here. The
   // run is acting already, so a write that fails does not fail the start:
@@ -366,11 +411,13 @@ export async function queueBrowserVmSessionMessage(
   const runId = newBrowserVmRunId(workspaceId);
   await recordBrowserVmRun({ id: runId, sessionId, task: text, workspaceId });
   let queued: Awaited<ReturnType<typeof sendBrowserVmWorkerMessage>>;
+  const llm = browserVmLlm();
   try {
     queued = await sendBrowserVmWorkerMessage(vm, sessionId, {
-      llm: browserVmLlm(),
+      llm,
       runId,
       text,
+      tuning: runTuning(llm.model),
     });
   } catch (error) {
     // Refused: no run was started under the id. An answer lost on the way

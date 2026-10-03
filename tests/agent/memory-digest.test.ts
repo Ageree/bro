@@ -100,6 +100,7 @@ vi.mock("@agent/lib/model/endpoint", () => ({
 }));
 
 vi.mock("@agent/lib/memory/digest/pilot", () => ({
+  memoryDigestConfigured: () => pilot.list.length > 0,
   memoryDigestPilot: async (scope: { readonly workspaceId: string }) =>
     Promise.resolve(
       pilot.list.includes("*") || pilot.list.includes(scope.workspaceId)
@@ -179,7 +180,7 @@ async function historyTexts() {
 }
 
 describe("the daily memory digest", () => {
-  it("cuts one-time codes out of memory and its history, for everyone", async () => {
+  it("cuts one-time codes out of the pilot's memory, keeping what it says", async () => {
     await saveMemory(
       alice,
       "scope-a",
@@ -192,18 +193,30 @@ describe("the daily memory digest", () => {
       category: "rule",
       text: "Никогда не вводить PIN 1234 без моего ок.",
     });
+    await writeUnfiltered(3, { text: `sk-${"a".repeat(20)}` });
 
+    // Outside the pilot the digest changes nothing anyone saved.
+    expect(
+      Object.values(await digestWorkspace(alice.workspaceId, "2026-10-03"))
+    ).toEqual(Array(13).fill(0));
+    expect(await texts()).toHaveLength(4);
+
+    pilot.list.push("*");
     const outcome = await digestWorkspace(alice.workspaceId, "2026-10-03");
 
-    expect(outcome).toMatchObject({ purged: 1, redacted: 1 });
+    expect(outcome).toMatchObject({ purged: 1, redacted: 2 });
     expect(await texts()).toEqual([
       "Живёт в Казани.",
+      "Код из смс для Госуслуг [удалено]",
       "Никогда не вводить PIN [удалено] без моего ок.",
     ]);
-    expect((await historyTexts()).join("\n")).not.toMatch(/482193|1234/u);
+    expect((await historyTexts()).join("\n")).not.toMatch(
+      /482193|1234|aaaaaaaa/u
+    );
   });
 
   it("cuts codes out of a workstream's notes", async () => {
+    pilot.list.push("*");
     await saveWorkstream(
       alice,
       "work-scope",
@@ -386,6 +399,7 @@ describe("the daily memory digest", () => {
   });
 
   it("keeps the last ten revisions of a memory", async () => {
+    pilot.list.push("*");
     await saveMemory(alice, "scope-a", { text: "Версия 0." }, "a", source);
     for (let revision = 1; revision <= 12; revision += 1) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Revisions in order.
@@ -412,6 +426,7 @@ describe("the daily memory digest", () => {
   });
 
   it("runs once a local day, from four in the morning", async () => {
+    pilot.list.push("*");
     await saveMemory(
       alice,
       "scope-a",
@@ -438,6 +453,7 @@ describe("the daily memory digest", () => {
   });
 
   it("takes a day back from a run that outlived its lease", async () => {
+    pilot.list.push("*");
     await saveMemory(
       alice,
       "scope-a",
@@ -565,6 +581,13 @@ describe("the digest's model, for the pilot", () => {
 
   it("asks the cheap model without reasoning, and records what it cost", async () => {
     proposes({});
+    await saveMemory(
+      alice,
+      "scope-a",
+      { localOnly: true, text: "Лечится у психотерапевта." },
+      "local",
+      source
+    );
 
     await digestWorkspace(alice.workspaceId, "2026-10-03");
 
@@ -575,12 +598,15 @@ describe("the digest's model, for the pilot", () => {
       providerOptions: { openrouter: { reasoning: { enabled: false } } },
     });
     expect(options?.prompt).not.toContain("Не платить");
+    // A local-only memory reaches no model but the conversation's own.
+    expect(options?.prompt).not.toContain("психотерапевт");
     const [cost] = await database.select().from(schema.usageCosts);
     expect(cost).toMatchObject({
       costRub: 0.42,
       sessionId: null,
       source: "memory",
-      units: { model: "deepseek/deepseek-v4.1-flash", steps: 1 },
+      // The digest's own model, not the main agent's default.
+      units: { model: "deepseek/deepseek-v4-flash", steps: 1 },
     });
   });
 
@@ -590,7 +616,7 @@ describe("the digest's model, for the pilot", () => {
 
     expect(
       await digestWorkspace(alice.workspaceId, "2026-10-03")
-    ).toMatchObject({ classifierCalls: 1, oneOff: 0, purged: 1 });
+    ).toMatchObject({ classifierCalls: 1, oneOff: 0, redacted: 1 });
   });
 
   it("does not ask again when nothing changed since the last digest", async () => {

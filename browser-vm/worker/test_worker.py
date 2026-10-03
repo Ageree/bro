@@ -183,6 +183,9 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
 
 
 LLM = {"baseUrl": "https://llm.test/v1", "apiKey": "k", "model": "m"}
+# Bro's routing of the model's hosts (`tuning.provider`) and what the worker sends the service for it.
+ROUTING = {"order": ["deepinfra"], "ignore": ["deepseek", "sail-research"], "requireParameters": True, "later": 1}
+SENT_ROUTING = {"order": ["deepinfra"], "ignore": ["deepseek", "sail-research"], "require_parameters": True}
 
 
 def fresh_token():
@@ -447,20 +450,39 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
     async def test_tuning_reaches_the_agent_and_the_model(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
                                      "tuning": {"flashMode": True, "maxActionsPerStep": 8, "reasoning": "none",
-                                                "later": 1}})
+                                                "provider": ROUTING, "later": 1}})
         await self.settled("r1")
         options = FakeAgent.built[0].options
         self.assertEqual({k: options[k] for k in ("flash_mode", "max_actions_per_step")},
                          {"flash_mode": True, "max_actions_per_step": 8})
         self.assertNotIn("max_history_items", options)  # a trimmed history loses the prompt cache
-        self.assertEqual(options["llm"]["extra_body"], {"extra_body": {"reasoning": {"enabled": False}}})
+        self.assertEqual(options["llm"]["extra_body"],
+                         {"extra_body": {"reasoning": {"enabled": False}, "provider": SENT_ROUTING}})
         self.assertEqual(options["extend_system_message"], f"{worker.EXTEND_SYSTEM}\n\n{worker.BATCH_HINT}")
         self.assertEqual(worker.tuned_llm_options({"reasoning": "low"}),
                          {"extra_body": {"extra_body": {"reasoning": {"effort": "low"}}}})
 
+    def test_routing_alone_reaches_the_model_and_an_empty_one_changes_nothing(self):
+        self.assertEqual(worker.tuned_llm_options(worker.agent_tuning({"provider": {"requireParameters": True}})),
+                         {"extra_body": {"extra_body": {"provider": {"require_parameters": True}}}})
+        self.assertEqual(worker.agent_tuning({"provider": {"order": [], "later": 1}}), {})
+        self.assertEqual(worker.tuned_llm_options(worker.agent_tuning({"provider": {"order": []}})), {})
+
+    def test_checked_tuning_passes_the_check_again_unchanged(self):
+        # A follow-up runs the session's stored tuning through the same check.
+        tuning = worker.agent_tuning({"reasoning": "none", "provider": {
+            "order": ["deepinfra", "deepinfra"], "ignore": ["deepseek", "deepinfra/fp8"], "requireParameters": False}})
+        self.assertEqual(tuning["provider"], {"order": ["deepinfra"], "ignore": ["deepseek", "deepinfra/fp8"],
+                                              "requireParameters": False})
+        self.assertEqual(worker.agent_tuning(tuning), tuning)
+
     async def test_a_wrong_tuning_is_refused_before_anything_starts(self):
         for tuning in ({"maxActionsPerStep": 50}, {"flashMode": "yes"}, {"reasoning": "lots"},
-                       {"maxActionsPerStep": True}, []):
+                       {"maxActionsPerStep": True}, [], {"provider": "deepinfra"}, {"provider": []},
+                       {"provider": {"order": "deepinfra"}}, {"provider": {"order": [1]}},
+                       {"provider": {"order": ["Deep Infra"]}}, {"provider": {"ignore": [""]}}, {"provider": {"order": ["deepinfra\n"]}},
+                       {"provider": {"ignore": [f"host{i}" for i in range(33)]}},
+                       {"provider": {"requireParameters": "yes"}}, {"provider": {"requireParameters": 1}}):
             with self.subTest(tuning=tuning):
                 response = await self.client.post("/v1/runs", json={
                     "id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.", "tuning": tuning},
@@ -470,7 +492,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_follow_up_keeps_the_sessions_tuning_and_gets_its_own_system_message(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
-                                     "tuning": {"flashMode": True, "reasoning": "none"}})
+                                     "tuning": {"flashMode": True, "reasoning": "none", "provider": ROUTING}})
         await self.settled("r1")
         status, answer = await self.call("POST", "/v1/sessions/s1/messages",
                                          {"text": "Take the red one.", "runId": "r2"})
@@ -479,10 +501,29 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         follow_up = FakeAgent.built[-1]
         self.assertEqual(follow_up.options["task"], "Take the red one.")
         self.assertIs(follow_up.options["flash_mode"], True)
-        self.assertEqual(follow_up.options["llm"]["extra_body"], {"extra_body": {"reasoning": {"enabled": False}}})
+        self.assertEqual(follow_up.options["llm"]["extra_body"],
+                         {"extra_body": {"reasoning": {"enabled": False}, "provider": SENT_ROUTING}})
         # browser-use would keep the system message saved with the memory over the one this run builds.
         saved = follow_up.options["injected_agent_state"].message_manager_state.history
         self.assertEqual((saved.system_message, saved.state_message, saved.context_messages), (None, None, []))
+
+    async def test_a_follow_up_after_a_restart_runs_with_the_tuning_it_carries(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        await self.settled("r1")
+        self.worker.sessions["s1"].options = {}  # what a restarted worker knows of the session
+        status, answer = await self.call("POST", "/v1/sessions/s1/messages", {
+            "text": "Take the red one.", "runId": "r2", "llm": LLM,
+            "tuning": {"reasoning": "none", "provider": ROUTING}})
+        self.assertEqual((status, answer["status"]), (200, "started"))
+        await self.settled("r2")
+        self.assertEqual(FakeAgent.built[-1].options["llm"]["extra_body"],
+                         {"extra_body": {"reasoning": {"enabled": False}, "provider": SENT_ROUTING}})
+        built = len(FakeAgent.built)
+        response = await self.client.post("/v1/sessions/s1/messages", json={
+            "text": "And the blue one.", "runId": "r3", "tuning": {"provider": {"order": "deepinfra"}}},
+            headers={"Authorization": f"Bearer {fresh_token()}"})
+        self.assertEqual(response.status, 400)
+        self.assertEqual((len(FakeAgent.built), "r3" in self.worker.runs), (built, False))
 
     async def test_each_step_records_the_tokens_since_the_last_one(self):
         def entry(prompt, cached, completion):
@@ -563,10 +604,13 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
 
         async def billed(agent, on_step_start):
             count = agent.options["llm"]["http_client"]["event_hooks"]["response"][0]
-            for response in (Response("/api/v1/chat/completions", {"usage": {"cost": 0.25}}),
-                             Response("/api/v1/chat/completions", {"usage": {"cost": 0.5}}),  # unparsed, billed
+            for response in (Response("/api/v1/chat/completions", {"usage": {"cost": 0.25}, "provider": "DeepInfra"}),
+                             # unparsed, billed
+                             Response("/api/v1/chat/completions", {"usage": {"cost": 0.5}, "provider": "DeepInfra"}),
+                             Response("/api/v1/chat/completions", {"provider": "DeepSeek"}),  # served, no cost
                              Response("/api/v1/chat/completions", {"error": "overloaded"}),
-                             Response("/api/v1/models", {"usage": {"cost": 9}}, method="GET")):
+                             Response("/api/v1/chat/completions", {"provider": 7}),
+                             Response("/api/v1/models", {"usage": {"cost": 9}, "provider": "X"}, method="GET")):
                 await count(response)
             history = FakeHistory(True)
             history.usage = Usage()
@@ -577,7 +621,30 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         run = await self.settled("r1")
         self.assertEqual(run.public()["usage"], {"total_prompt_tokens": 20_000, "total_completion_tokens": 300,
                                                  "total_tokens": 20_300, "total_prompt_cached_tokens": 12_000,
-                                                 "billed": 0.75, "billed_calls": 2})
+                                                 "billed": 0.75, "billed_calls": 2,
+                                                 "hosts": {"DeepInfra": 2, "DeepSeek": 1}})
+
+    async def test_a_runs_bill_names_a_bounded_number_of_hosts(self):
+        billed = worker.Billed()
+
+        class Response:
+            request = types.SimpleNamespace(method="POST", url=types.SimpleNamespace(path="/api/v1/chat/completions"))
+
+            def __init__(self, host):
+                self.host = host
+
+            async def aread(self):
+                return b""
+
+            def json(self):
+                return {"provider": self.host}
+
+        for host in [f"Host{i}" for i in range(worker.BILLED_HOSTS_MAX + 3)] + ["Host0", "x" * 65]:
+            await billed.count(Response(host))
+        self.assertEqual(len(billed.hosts), worker.BILLED_HOSTS_MAX)
+        self.assertEqual(billed.hosts["Host0"], 2)
+        # Answers that carried no cost at all still say which host served the run.
+        self.assertEqual(worker.usage_summary(FakeHistory(False), None, billed), {"hosts": billed.hosts})
 
     async def test_a_run_without_parsed_usage_still_reports_its_bill(self):
         # Every answer unparseable: browser-use has no usage, the service billed every call all the same.

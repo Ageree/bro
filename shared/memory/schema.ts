@@ -19,10 +19,12 @@ export const memoryIndexSchema = z
   .max(2 ** 53 - 1);
 
 /**
- * A number a code is: 3–12 digits, maybe split as «123-456» or «55 12 98»,
- * and not a year («с 2023 года»).
+ * A number a code is: 3–12 digits, maybe split as «123-456» or «55 12 98»;
+ * not a phone («+7…», «8 916 123-45-67», «916 123 45 67»), not part of a
+ * longer number, and not a year («с 2023 года»).
  */
-const codeDigits = String.raw`(\d(?:[ -]?\d){2,11})(?!\d)(?!\s*(?:год|г\.))`;
+const phoneNumber = String.raw`(?:[78](?:[ -]?\d){10}|9(?:[ -]?\d){9})(?![ -]?\d)`;
+const codeDigits = String.raw`(?<![+\d])(?!${phoneNumber})(\d(?:[ -]?\d){2,11})(?![ -]?\d)(?!\s*(?:год|г\.))`;
 const notAfterWord = String.raw`(?<![\p{L}\d])`;
 const notBeforeLetter = String.raw`(?!\p{L})`;
 /** What may stand between a code's name and its number: «PIN-код карты: 1234». */
@@ -52,7 +54,12 @@ const credentialPatterns = [
     String.raw`${notAfterWord}(?:парол\p{L}*|password|passwd|passcode|pwd)${notBeforeLetter}(?:[^\n:=—–]{0,40}?(?:[:=]|\s[—–-]\s)\s*[«"']?((?=[^\s«»"']*[\dA-Za-z!@#$%^&*_])[^\s«»"']+|[^\s«»"',.;:()]+(?=[«»"']?\s*(?:$|[,.;)])|\s+(?:для|от|на|к|в|из|с|for|to|on|at)\s))|\s+(?:(?:от|для|к|на|for|to)\s+\S+\s+)?(?:это\s+|is\s+)?[«"']?([^\s«»"']*\d[^\s«»"']*))`,
     "dgiu"
   ),
-  // A card's or an app's secret number is one whatever surrounds it.
+];
+
+/** PIN and SMS codes: secret wherever they stand, but at a door. */
+const codePatterns = [
+  // A card's or an app's secret number, unless its clause is about a door
+  // («pin 1234 от домофона»).
   new RegExp(
     String.raw`${notAfterWord}(?:otp|totp|2fa|cvv2?|cvc2?|пин-?код|pin-?code|пин|pin)${notBeforeLetter}${codeGap}${codeDigits}`,
     "dgiu"
@@ -77,6 +84,12 @@ const oneTimeWords =
 /** A sign-in or a service the code belongs to, named in its clause. */
 const codeOwners =
   /(?:вход|госуслуг|gosuslug|есиа|банк|bank|сбер|тинькоф|ozon|озон|wildberries|telegram|телеграм|whatsapp|вотсап|почт|e-?mail|apple|google|гугл|яндекс|yandex|вконтакте|(?<!\p{L})vk(?!\p{L})|авито|avito|push|пуш)/iu;
+/**
+ * A number a code names that is no secret: a bank's details, a client's or
+ * an order's number («код клиента 774411», «код банка БИК…»).
+ */
+const referenceWords =
+  /(?:бик|инн|кпп|огрн|снилс|сч[её]т|клиент|договор|заказ|трек|посылк|ошибк|регион|город|стран|товар|артикул|подразделен|bic|swift|iban|client|customer|order|account|tracking|error|region|country|product)/iu;
 /** A door's code is no one-time code («код домофона 1234К, вход со двора»). */
 const doorWords =
   /(?:домофон|подъезд|калитк|ворот|двер|шлагбаум|этаж|сейф|замк|замок|ячейк|intercom|door|gate|entrance)/iu;
@@ -97,6 +110,12 @@ export function unsafeMemoryRanges(value: string) {
   const ranges = credentialPatterns.flatMap((pattern) =>
     [...value.matchAll(pattern)].map(capturedRange)
   );
+  for (const pattern of codePatterns) {
+    for (const match of value.matchAll(pattern)) {
+      const range = capturedRange(match);
+      if (!doorWords.test(clauseAround(value, range))) ranges.push(range);
+    }
+  }
   for (const match of value.matchAll(codeWithNumber)) {
     const gap = match[1] ?? "";
     // The words before «код» in its own clause: «код домофона 1234, код
@@ -106,7 +125,12 @@ export function unsafeMemoryRanges(value: string) {
         .slice(Math.max(0, match.index - codeContextChars), match.index)
         .split(/[,;.!?\n]/u)
         .at(-1) ?? "";
-    if (doorWords.test(gap) || doorWords.test(before)) continue;
+    if (
+      doorWords.test(gap) ||
+      doorWords.test(before) ||
+      referenceWords.test(gap)
+    )
+      continue;
     const end = match.index + match[0].length;
     const around = before + match[0] + value.slice(end, end + codeContextChars);
     // A service names its code before «код» as well: «в Ozon код 1234».
@@ -120,6 +144,16 @@ export function unsafeMemoryRanges(value: string) {
     }
   }
   return ranges;
+}
+
+/** The clause a range stands in: between the breaks around it. */
+function clauseAround(value: string, [start, end]: readonly [number, number]) {
+  const breaks = /[,;.!?\n]/u;
+  let from = start;
+  while (from > 0 && !breaks.test(value[from - 1] ?? "")) from -= 1;
+  let to = end;
+  while (to < value.length && !breaks.test(value[to] ?? "")) to += 1;
+  return value.slice(from, to);
 }
 
 export function isSafeMemoryText(value: string) {

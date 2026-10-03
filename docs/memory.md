@@ -72,32 +72,38 @@ conversations read, so the cabinet can show that scope's memory.
 
 A daily digest (`agent/schedules/memory-digest.ts`, every hour at :41, each
 workspace once per local day from 04:00) runs without a conversation and
-without the main agent's model. `memory_digest_runs` holds each workspace's
-day: the claim with its lease and the outcome in counts, never text. For
-everyone it cuts one-time codes and credentials out of memory
-(`isSafeMemoryText` refuses them in Russian and English; a door or entrance
-code stays): a record that carries one is forgotten, a rule keeps binding
-with the code replaced by «[удалено]», workstream notes are redacted the same
-way, and any revision text with one is wiped. It also keeps the last ten
-revisions of each memory. For the pilot (`MEMORY_DIGEST_WORKSPACES`) it folds
-memories that say the same words, or whose words another memory of the same
-category, validity and `localOnly` says in full as a sentence of its own,
-into the one that stays,
-with their aliases; rules are never folded, and what was folded stays
-restorable from history for 30 days. For the pilot, and only with a direct
-model provider, the digest also asks a cheap model (`MEMORY_DIGEST_MODEL`, the
-provider's default otherwise — never the workspace's chosen model, reasoning
-off, 400 output tokens) which non-rule memories are one-off task details,
-duplicates in other words, or facts a newer one corrects — only when memory
-changed since the start of the last digest that asked it. The model returns
-indexes only; code keeps a proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
-one-off is a fact, decision or organization without a validity date; a
-duplicate's every word is in the record it folds into; a correction goes from
-an older to a newer fact, person or organization, and code writes its dated
-text («… (с 01.10; раньше: …)»). At most three of each kind and a fifth of the
-memories change in a day; a failed call changes nothing. Its cost is a
-`usage_costs` row with the source `memory`. A record the conversation changed
-since the digest read it is left for the next day.
+without the main agent's model, and only for the pilot
+(`MEMORY_DIGEST_WORKSPACES`): it changes what people saved, so with the
+variable unset it runs for no one. `memory_digest_runs` holds each workspace's
+day: the claim with its lease and the outcome in counts, never text. It cuts
+one-time codes and credentials out of memory (`isSafeMemoryText`, in Russian
+and English; a door's code, a phone number and a reference number such as a
+client's or a bank's stay): the code itself is replaced by «[удалено]» and
+the record keeps the rest; one that said nothing but the code is forgotten.
+Workstream notes are redacted the same way, and any revision text with one is
+wiped. It keeps the last ten revisions of each memory, and folds memories that
+say the same words, or whose words another memory of the same category,
+validity and `localOnly` says in full as a sentence of its own, into the one
+that stays, with their aliases; rules are never folded, and what was folded
+stays restorable from history for 30 days. A record the conversation changed
+since the digest read it is left for the next day. Saving refuses a text with
+a code for everyone, as before.
+For the pilot, and only with a direct model provider, the digest also asks a
+cheap model which memories are one-off task details, duplicates in other
+words, or facts a newer one corrects — only when memory changed since the
+start of the last digest that asked it. The model is the digest's own:
+`MEMORY_DIGEST_MODEL`, or `deepseek/deepseek-v4-flash` when unset (a third of
+the main default's price on RouterAI), never the main agent's or the
+workspace's model; reasoning off, 400 output tokens. It never sees a rule, a
+preference or a local-only memory. The model returns indexes only; code keeps
+a proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
+one-off is a fact, decision or organization without a validity date that the
+model read in full; a duplicate's every word is in the record it folds into,
+in the same order; a correction goes from an older to a newer fact, person or
+organization, and code writes its dated text («… (с 01.10; раньше: …)»). At
+most three of each kind and a fifth of the memories change in a day; a failed
+call changes nothing. Its cost is a `usage_costs` row with the source
+`memory`.
 
 Forgetting a profile record means Bro stops using its content immediately and
 requests permanent provider-document deletion. It does not erase existing chat
