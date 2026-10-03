@@ -1,8 +1,10 @@
 import type { DynamicResolveContext } from "eve";
 import type { ModelMessage } from "ai";
+import { turnCompaction } from "@agent/lib/compaction/mid-turn";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { turnOpenedByBackgroundTask } from "@agent/lib/delivery/turn-sends";
 import { resolveModeValue } from "@agent/lib/mode";
+import type { StepIdentity } from "./step";
 
 /**
  * Who a turn is for, which decides the one set of tools it is offered in
@@ -22,15 +24,34 @@ export type TurnKind =
   | "scheduled-report"
   | "scheduled-worker";
 
-export function turnKind(context: {
-  readonly messages: readonly ModelMessage[];
-  readonly session: {
-    readonly auth: DynamicResolveContext["session"]["auth"];
-  };
-}): TurnKind {
-  // eve delivers the task agent's report in a turn that keeps the previous
-  // turn's caller, a browser report's too.
-  if (turnOpenedByBackgroundTask(context.messages)) return "background-task";
+/**
+ * The kind of the turn `context` is a step of. A turn eve compacted inside
+ * (`turnCompaction`, by the `step`) may show a copy of an older message of
+ * the person's as its opener, and the task agent's report would pass for
+ * the person's turn with every tool: its kind comes from the turn's record
+ * instead; a record that cannot tell whether it is that report, or no
+ * record, takes the fewest tools.
+ */
+export function turnKind(
+  context: {
+    readonly messages: readonly ModelMessage[];
+    readonly session: {
+      readonly auth: DynamicResolveContext["session"]["auth"];
+    };
+  },
+  step: StepIdentity
+): TurnKind {
+  const { backgroundTask, compaction } = turnCompaction(context.messages, step);
+  if (compaction !== "inside") {
+    // eve delivers the task agent's report in a turn that keeps the
+    // previous turn's caller, a browser report's too.
+    if (turnOpenedByBackgroundTask(context.messages)) return "background-task";
+    return callerTurnKind(context);
+  }
+  return backgroundTask === false ? callerTurnKind(context) : "background-task";
+}
+
+function callerTurnKind(context: Parameters<typeof turnKind>[0]): TurnKind {
   if (reportedBrowserRunId(context.session.auth.current) !== undefined) {
     return "browser-report";
   }

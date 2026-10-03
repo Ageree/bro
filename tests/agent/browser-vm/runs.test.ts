@@ -42,6 +42,7 @@ const routerAiDeepSeekRouting = {
     "parasail",
     "phala",
     "inference-net",
+    "open-inference",
     "relace",
     "streamlake",
     "gmicloud",
@@ -392,6 +393,7 @@ describe("starting a run on a workspace's browser VM", () => {
         "parasail",
         "phala",
         "inference-net",
+        "open-inference",
       ],
       requireParameters: true,
     });

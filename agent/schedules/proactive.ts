@@ -239,15 +239,28 @@ async function pilotFlights(
       }
     },
     /**
-     * Writes the reminders that went: those a run was handed before, and,
-     * once this check's run is queued, those it carries. A busy job leaves
-     * them due for the next check.
+     * Writes the reminders that went: those a run was handed before (not
+     * `unseen`), and, once this check's run is queued, those it `carried`.
+     * A busy job, or a run too full to carry one, leaves it due for the
+     * next check.
      */
-    async record(unseen: readonly ProactiveSignal[], queued: boolean) {
-      const unseenKeys = new Set(unseen.map((signal) => signal.dedupeKey));
+    async record(sent: {
+      readonly carried: readonly ProactiveSignal[];
+      readonly queued: boolean;
+      readonly unseen: readonly ProactiveSignal[];
+    }) {
+      const unseenKeys = dedupeKeys(sent.unseen);
+      const carriedKeys = sent.queued
+        ? dedupeKeys(sent.carried)
+        : new Set<string>();
       const went = new Map<string, FlightStage[]>();
       for (const { signal, stage, watchId } of due) {
-        if (unseenKeys.has(signal.dedupeKey) && !queued) continue;
+        if (
+          unseenKeys.has(signal.dedupeKey) &&
+          !carriedKeys.has(signal.dedupeKey)
+        ) {
+          continue;
+        }
         went.set(watchId, [...(went.get(watchId) ?? []), stage]);
       }
       try {
@@ -266,6 +279,10 @@ async function pilotFlights(
       }
     },
   };
+}
+
+function dedupeKeys(signals: readonly ProactiveSignal[]) {
+  return new Set(signals.map((signal) => signal.dedupeKey));
 }
 
 /** A check outside the pilot: the probe reminds of flights itself. */
@@ -302,12 +319,13 @@ async function checkByDay(
         seenUntil: probe.calendarSeenUntil,
       })
     : noFlights;
+  // A flight's reminder first: the run's cap must not cut it.
   const unseen = await filterUnseenProactiveSignals(watch.workspaceId, [
-    ...probe.signals,
     ...flights.signals,
+    ...probe.signals,
   ]);
   if (unseen.length === 0) {
-    await flights.record(unseen, false);
+    await flights.record({ carried: [], queued: false, unseen });
     await advanceProactiveWatermark(watch.workspaceId, now);
     return { outcome: "nothing_new", signalCount: 0, ...flights.logged };
   }
@@ -324,7 +342,11 @@ async function checkByDay(
     signals,
     workspaceId: watch.workspaceId,
   });
-  await flights.record(signals, queued.status === "queued");
+  await flights.record({
+    carried: signals,
+    queued: queued.status === "queued",
+    unseen,
+  });
   return {
     outcome: queued.status,
     signalCount: unseen.length,
@@ -394,9 +416,10 @@ async function checkAtNight(
         seenUntil: probe.calendarSeenUntil,
       })
     : noFlights;
+  // A flight's reminder first: the run's cap must not cut it.
   const unseen = await filterUnseenProactiveSignals(watch.workspaceId, [
-    ...probe.signals,
     ...flights.signals,
+    ...probe.signals,
   ]);
   const signals = selectRunSignals(unseen);
   if (signals.length > 0) await flights.prepare(signals);
@@ -411,7 +434,11 @@ async function checkAtNight(
           workspaceId: watch.workspaceId,
         })
       : undefined;
-  await flights.record(signals, queued?.status === "queued");
+  await flights.record({
+    carried: signals,
+    queued: queued?.status === "queued",
+    unseen,
+  });
   if (quietUntil < watch.leaseUntil) {
     await deferProactiveWatch(watch, quietUntil);
   }

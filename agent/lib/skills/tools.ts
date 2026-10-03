@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { z } from "zod";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
+import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
 import { type SkillName, type SkillSetup, skillNames } from "./catalog";
 import { loadedSkills, recordedSkills, skillStub } from "./render";
 import { skillsForTurn } from "./triggers";
@@ -15,7 +16,9 @@ import { skillsForTurn } from "./triggers";
  * and every later step reads them from the cache. Compaction is the one
  * point a group may go, when it folds its block to a stub; the cache is
  * broken there anyway, and `load_skill` brings the rules and the tools back
- * together.
+ * together. In the pilot of compaction the group goes from the next turn
+ * (`turnOfferedSkills`): eve compacts at a turn's first step, after its
+ * tools were chosen from the whole history.
  *
  * Hiding a tool is no guard: a call by its name still runs through its
  * approval and execute, as with `withheldTools`. Every rule stays there.
@@ -215,4 +218,32 @@ export function offeredSkills(
     offered.add(name);
   }
   return skillNames.filter((name) => offered.has(name));
+}
+
+/**
+ * The skills each turn was offered so far: a turn this instance lost works
+ * them out again from its history.
+ */
+const turnSkills = turnMemory<readonly SkillName[]>();
+
+/**
+ * `offeredSkills` for every step of the turn `step` belongs to, in the
+ * pilot of compaction: a group offered at one step stays to the turn's
+ * end. eve compacts at a turn's first step after the step's tools were
+ * chosen, and the summary takes away the `load_skill` results and the
+ * calls the choice read; from the next step a group of the step before
+ * would go mid-turn, with the follow-up its first call needs. Without a
+ * turn id, the step's own.
+ */
+export function turnOfferedSkills(
+  messages: readonly ModelMessage[],
+  setup: SkillSetup,
+  step: StepIdentity
+): SkillName[] {
+  const offered = offeredSkills(messages, setup);
+  if (step.turnId === undefined) return offered;
+  const held = new Set([...(turnSkills.get(step) ?? []), ...offered]);
+  const skills = skillNames.filter((name) => held.has(name));
+  turnSkills.set(step, skills);
+  return skills;
 }

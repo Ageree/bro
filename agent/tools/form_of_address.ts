@@ -4,6 +4,10 @@ import { personWordsThisTurn } from "@agent/lib/browser-use/said";
 import { savedFormOfAddressNote } from "@agent/lib/delivery/language";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
 import { formOfAddressSchema } from "@shared/chat/form-of-address";
 import { updateFormOfAddress } from "@db/services/settings";
 
@@ -102,10 +106,20 @@ const aboutSomeoneElseNote =
   "Not saved. The person's message this turn is about writing to someone else, so «вы», «ты» or a name there is how to write that letter or message, not how you address the person. Write the letter that way and keep addressing the person exactly as before. This tool is only for when the person asks you yourself to switch («давай на вы», «обращайся ко мне на ты», «зови меня Саша»).";
 
 /**
- * `aboutLetter` is set when the person's words this turn are about writing
- * to someone else (`aboutSomeoneElse`): the call is then not saved.
+ * What the model reads when eve compacted the conversation inside the turn
+ * and the person's words this turn are unknown.
  */
-function defineFormOfAddress(aboutLetter: boolean) {
+const wordsUnknownNote =
+  "Not saved. The person's message this turn can no longer be read after the conversation was compacted, so it is not known whether they asked you yourself to switch or how to write to someone else. Keep addressing the person exactly as before; if they asked you to switch, ask them to say it once more.";
+
+/**
+ * `held` is set when the call is not saved: `letter` when the person's
+ * words this turn are about writing to someone else (`aboutSomeoneElse`),
+ * `unknown` when eve compacted the conversation inside the turn and their
+ * words cannot be read (`personWordsThisTurn`) — on 25.09 (RU d09) a letter
+ * «на вы» switched Bro with the person in every chat.
+ */
+function defineFormOfAddress(held?: "letter" | "unknown") {
   return defineTool({
     description:
       "Save how the person wants YOU to address THEM, for every chat and channel from now on. Call with formal=true when they ask you to switch to «вы» with them («давай на вы», «обращайся ко мне на вы»), formal=false when they ask for «ты» («можно на ты», «давай на ты»). Call with name when they ask to be called by a particular name («зови меня Саша»), name=null when they ask to drop it. Never call it for how a letter or message to someone else should be written: «ответь Ирине на вы» or «напиши Лёше на ты» is about that letter, and Bro keeps addressing the person as before. Use this, not profile__save_memory, for «ты»/«вы» and the name to call them; their legal name for forms goes to personal_info. Switch to the new form in the reply right away.",
@@ -119,8 +133,11 @@ function defineFormOfAddress(aboutLetter: boolean) {
         "Pass formal, name, or both."
       ),
     async execute(input, ctx) {
-      if (aboutLetter) {
-        return { note: aboutSomeoneElseNote, saved: false };
+      if (held !== undefined) {
+        return {
+          note: held === "letter" ? aboutSomeoneElseNote : wordsUnknownNote,
+          saved: false,
+        };
       }
       const auth = ctx.session.auth.current;
       if (auth?.principalType !== "user") {
@@ -132,17 +149,32 @@ function defineFormOfAddress(aboutLetter: boolean) {
   });
 }
 
-export const formOfAddress = defineFormOfAddress(false);
+export const formOfAddress = defineFormOfAddress();
 
 export default defineDynamic({
   events: {
     // Resolved before every step, so an answer the person gave to Bro's own
     // question in this turn counts as their words too.
-    "step.started": (_event, context) => {
-      const { answers, said } = personWordsThisTurn(context.messages);
-      const aboutLetter = said !== null && aboutSomeoneElse(said, answers);
+    "step.started": (event, context) => {
+      const { answers, compacted, nearby, said } = personWordsThisTurn(
+        context.messages,
+        stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          context.session.id
+        )
+      );
+      // After compaction `said` may be narrowed to the opener: the letter
+      // is looked for in the messages next to it as well.
+      const held =
+        compacted === true
+          ? "unknown"
+          : said !== null &&
+              (aboutSomeoneElse(said, answers) ||
+                (nearby !== undefined && aboutSomeoneElse(nearby, answers)))
+            ? "letter"
+            : undefined;
       return resolveModeValue(context, {
-        interactive: { form_of_address: defineFormOfAddress(aboutLetter) },
+        interactive: { form_of_address: defineFormOfAddress(held) },
       });
     },
   },

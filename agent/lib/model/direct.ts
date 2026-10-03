@@ -9,6 +9,8 @@ import {
 } from "ai";
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
+import { compactionCallMiddleware } from "@agent/lib/compaction/call";
+import { compactionWindow } from "@agent/lib/compaction/window";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
 import type { HistoryTrim } from "@agent/lib/history/eligible";
 import { trimPrompt } from "@agent/lib/history/trim";
@@ -52,6 +54,10 @@ const keyOrderedHosts = ["alibaba", "morph", "wafer"];
  * InferenceNet answered a forced `ask_question` with `{}` in 8 of 27 tries
  * on 26.09, whatever the key order (0 of 8 under `auto`), and dropped the
  * required `kind` of a forced `send_message` in 1 of 8.
+ * OpenInference hides tools once the history holds a tool call (03.10): the
+ * model listed only `send_message` and `find_images` of 34, so «Запомни»
+ * found no `profile__save_memory` and Bro said the build had no memory —
+ * 0 of 7 calls there, 22 of 22 on seven other hosts with the same body.
  */
 const brokenHosts = [
   "sail-research",
@@ -59,6 +65,7 @@ const brokenHosts = [
   "parasail",
   "phala",
   "inference-net",
+  "open-inference",
 ];
 
 /**
@@ -76,7 +83,7 @@ const routerAiDeepSeekSkipped = ["deepseek"];
  * `deepseek/deepseek-v4.1-flash` whole on every repeat (01.10): a repeated
  * step cost 0.031 ₽ there against 0.071 ₽ on Sail Research and gave each
  * tool call its own id. OpenInference, where routing lands without an order,
- * cached only 533 tokens. Sail Research caches as well but stays in
+ * cached only 533 tokens (and is now skipped: `brokenHosts`). Sail Research caches as well but stays in
  * `brokenHosts`: on 01.10 it broke off answer after answer, as on 24.09.
  * A pinned host is never skipped by the lists above; one that fails an
  * answer is skipped for a while (`routerai/hosts.ts`).
@@ -1264,6 +1271,16 @@ export function directModelSelection(
   modelId: string,
   options: {
     /**
+     * The pilot of compaction (`compactionPilot`): whose summary calls are
+     * recorded and watched (`compactionCallMiddleware`), and the whole input past which
+     * this step compacts — set only at a turn's first step
+     * (`compactsAtTurnStart`); unset, the model's own window holds.
+     */
+    readonly compaction?: {
+      readonly cost: Parameters<typeof compactionCallMiddleware>[0];
+      readonly inputTokens?: number;
+    };
+    /**
      * The turn already delivered its reply, so a step that says nothing ends
      * it instead of failing it.
      */
@@ -1328,6 +1345,10 @@ export function directModelSelection(
       : options.toolChoice;
 
   const middleware = [
+    // Outermost: it reads the price the one below puts where eve reads it.
+    ...(options.compaction
+      ? [compactionCallMiddleware(options.compaction.cost)]
+      : []),
     ...(routerAi ? [stepCostMiddleware((rub) => rub / env.USAGE_USD_RUB)] : []),
     stepToolsMiddleware(
       {
@@ -1370,8 +1391,15 @@ export function directModelSelection(
   return {
     model: wrapLanguageModel({ middleware, model }),
     // eve resolves an omitted context window from the AI Gateway catalog,
-    // which does not list OpenRouter or RouterAI model ids.
-    modelContextWindowTokens: endpoint.contextTokens,
+    // which does not list OpenRouter or RouterAI model ids. It reads the
+    // window only for the step's compaction threshold (`compactionWindow`).
+    modelContextWindowTokens:
+      options.compaction?.inputTokens === undefined
+        ? endpoint.contextTokens
+        : compactionWindow(
+            endpoint.contextTokens,
+            options.compaction.inputTokens
+          ),
     modelOptions: reasoningOptions(endpoint.reasoningEffort),
   };
 }

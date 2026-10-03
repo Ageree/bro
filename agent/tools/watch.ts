@@ -12,6 +12,10 @@ import {
   scheduleReplyAnchor,
 } from "@agent/lib/schedules/tools";
 import { pageKey, readPricePage } from "@agent/lib/subscriptions/page";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import {
   amountsSaid,
@@ -270,14 +274,20 @@ export default defineDynamic({
     // message steered into the turn and an answer to Bro's question count:
     // a watch's link and threshold are checked against their words, never
     // the model's.
-    "step.started": async (_event, context) => {
+    "step.started": async (event, context) => {
       const auth = context.session.auth.current;
       if (resolveModeValue(context, { interactive: true }) !== true) {
         return null;
       }
       if (auth?.principalType !== "user") return null;
       if (!(await subscriptionsPilot(scopeFromPrincipal(auth)))) return null;
-      const turn = personWordsThisTurn(context.messages);
+      const turn = personWordsThisTurn(
+        context.messages,
+        stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          context.session.id
+        )
+      );
       const words: WatchWords = {
         personsTurn: turn.said !== null,
         said: [...personMessages(context.messages), ...turn.answers],

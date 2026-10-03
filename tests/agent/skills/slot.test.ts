@@ -559,7 +559,10 @@ describe("the skills memory slot", () => {
       },
     ];
     expect(
-      personWordsThisTurn([person("купи сапсан"), ...sent, block, person("да")])
+      personWordsThisTurn(
+        [person("купи сапсан"), ...sent, block, person("да")],
+        { sessionId: "session-1" }
+      )
     ).toEqual({ answers: [], paymentAsked: question, said: ["да"] });
     expect(language([person("Find me a train to Kazan"), block])).toBe("en");
   });

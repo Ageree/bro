@@ -10,7 +10,14 @@ vi.mock("@db", () => {
 
 const [
   { skillRecord, skillStub },
-  { groupsOfTool, groupedToolNames, offeredSkills, toolGroup, toolOffered },
+  {
+    groupsOfTool,
+    groupedToolNames,
+    offeredSkills,
+    toolGroup,
+    toolOffered,
+    turnOfferedSkills,
+  },
   { skillsForTurn },
 ] = await Promise.all([
   import("@agent/lib/skills/render"),
@@ -209,6 +216,53 @@ describe("the tools that follow skills", () => {
       new Set([offered(opening).join()])
     );
     expect(offered([...(steps[1] ?? []), person("да")])).toContain("money");
+  });
+});
+
+/** A step of a turn in the session of these tests. */
+function step(stepIndex: number, turnId = "turn_4") {
+  return { sessionId: "wrun_skills", stepIndex, turnId };
+}
+
+describe("the skills of a turn in the pilot of compaction", () => {
+  // eve's compaction at the turn's first step, after its tools were chosen:
+  // the summary takes the `load_skill` result away.
+  const summary: ModelMessage[] = [
+    Object.assign(
+      { content: "Summary of our conversation so far:", role: "user" as const },
+      { kind: "context.compaction" }
+    ),
+    { content: "Человек читал почту.", role: "assistant" },
+  ];
+  const opener = person("ну и?");
+  const history = [person("что в почте?"), loaded("google"), opener];
+
+  it("keep a group the summary took away to the turn's end", () => {
+    expect(offered(history)).toEqual(["google"]);
+    expect(offered([...summary, opener])).toEqual([]);
+
+    expect(turnOfferedSkills(history, setup, step(0))).toEqual(["google"]);
+    expect(
+      turnOfferedSkills(
+        [...summary, opener, called("gmail-search")],
+        setup,
+        step(1)
+      )
+    ).toEqual(["google"]);
+    // The next turn reads the compacted conversation as it is.
+    expect(
+      turnOfferedSkills(
+        [...summary, person("спасибо")],
+        setup,
+        step(0, "turn_5")
+      )
+    ).toEqual([]);
+    // Without a turn id, the step's own.
+    expect(
+      turnOfferedSkills([...summary, opener], setup, {
+        sessionId: "wrun_skills",
+      })
+    ).toEqual([]);
   });
 });
 
