@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   clearSandboxSettings,
@@ -14,13 +14,44 @@ vi.mock("@agent/lib/sandbox/public-fetch", () => ({
   fetchPublic: network.fetchPublic,
 }));
 
+/**
+ * Object Storage as the router asks it whether a sandbox holds the person's
+ * files: by default no sandbox does.
+ */
+const storage = vi.hoisted(() => ({
+  answer: vi.fn<(url: URL) => Promise<Response>>(),
+}));
+
+function noMark() {
+  return Promise.resolve(
+    new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+  );
+}
+
+beforeEach(() => {
+  storage.answer.mockImplementation(noMark);
+  vi.stubGlobal("fetch", async (url: string) => {
+    const parsed = new URL(url);
+    if (!parsed.pathname.includes("/sandbox/person-files/")) {
+      throw new Error(`The router asked ${parsed.pathname} of the web.`);
+    }
+    return await storage.answer(parsed);
+  });
+});
+
 afterEach(() => {
   clearSandboxSettings();
   network.fetchPublic.mockReset();
+  storage.answer.mockReset();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
   vi.resetModules();
 });
 
-async function router() {
+/** A deployment where the person's files reach the task agent. */
+const filesPilot = { TASK_FILES_WORKSPACES: "*" };
+
+async function router(overrides: Readonly<Record<string, string>> = {}) {
   return await importWithSandbox(async () => {
     const [{ answerSandboxToolRequest, pageText }, keys] = await Promise.all([
       import("@agent/lib/sandbox/router"),
@@ -43,7 +74,7 @@ async function router() {
         })
       );
     return { ask, pageText };
-  });
+  }, overrides);
 }
 
 const toolsAnswer = z.object({
@@ -228,5 +259,66 @@ describe("the sandbox tool router", () => {
     expect(pageText("<p>a&nbsp;b</p><!-- c --><div>&#1044;&#x430;</div>")).toBe(
       "a b\nДа"
     );
+  });
+
+  it("keeps a sandbox that holds the person's files off the web", async () => {
+    storage.answer.mockImplementation((url) =>
+      url.pathname.endsWith("/sandbox/person-files/sb-1")
+        ? Promise.resolve(new Response("1", { status: 200 }))
+        : noMark()
+    );
+    const { ask } = await router(filesPilot);
+    for (const [name, input] of [
+      ["web_fetch", { url: "https://example.com/?d=c2VjcmV0" }],
+      ["download", { url: "https://example.com/x.csv" }],
+      ["web-search", { query: "секрет из таблицы" }],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each tool is its own case.
+      const answer = await executed(await ask(execute, { input, name }));
+      expect(answer.ok).toBe(false);
+      expect(answer.error).toMatch(/holds the person's files.+no web access/u);
+    }
+    expect(network.fetchPublic).not.toHaveBeenCalled();
+    // The mark it asked for is the one of the token's sandbox.
+    expect(
+      storage.answer.mock.calls.map(([url]) => url.pathname.split("/").at(-1))
+    ).toEqual(["sb-1", "sb-1", "sb-1"]);
+  });
+
+  it("asks for no mark without the files pilot", async () => {
+    // No sandbox gets the person's files then, and the web does not wait
+    // on Object Storage.
+    storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
+    network.fetchPublic.mockResolvedValue(
+      new Response("<p>Привет</p>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })
+    );
+    const { ask } = await router();
+    const answer = await executed(
+      await ask(execute, {
+        input: { url: "https://example.com/" },
+        name: "web_fetch",
+      })
+    );
+
+    expect(answer.ok).toBe(true);
+    expect(storage.answer).not.toHaveBeenCalled();
+  });
+
+  it("refuses the web while the mark cannot be read", async () => {
+    vi.useFakeTimers();
+    storage.answer.mockResolvedValue(new Response(null, { status: 503 }));
+    const { ask } = await router(filesPilot);
+    const pending = ask(execute, {
+      input: { url: "https://example.com/" },
+      name: "web_fetch",
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const answer = await executed(await pending);
+
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toMatch(/could not be checked/u);
+    expect(network.fetchPublic).not.toHaveBeenCalled();
   });
 });

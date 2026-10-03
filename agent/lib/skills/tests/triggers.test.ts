@@ -19,6 +19,17 @@ function skillsFor(text: string, history: readonly ModelMessage[] = []) {
   return skillsForTurn({ browserReport: false, history, input: [said(text)] });
 }
 
+/** A message of the person's with a file of this type, as the web sends. */
+function sent(mediaType: string): ModelMessage {
+  return {
+    content: [
+      { text: "глянь", type: "text" },
+      { data: "AAAA", filename: "plan", mediaType, type: "file" },
+    ],
+    role: "user",
+  };
+}
+
 /** An assistant's step that called these tools with these inputs. */
 function called(
   ...calls: readonly (readonly [string, object])[]
@@ -183,7 +194,7 @@ const golden = {
   "en:uc_webinars": ["browser", "schedules"],
   "en:uc_recurring": ["money", "schedules"],
   "en:uc_remodel": ["schedules"],
-  "en:uc_payments_sheet": ["google", "apps", "money"],
+  "en:uc_payments_sheet": ["google", "apps", "money", "files"],
   "en:uc_meme_edit": ["images"],
   "en:uc_followups": ["google", "apps", "schedules"],
   "en:uc_brief_telegram": ["apps", "schedules"],
@@ -260,7 +271,7 @@ const synthetic = [
   [
     "sheets",
     "add these payments to my budgeting spreadsheet",
-    ["google", "apps", "money"],
+    ["google", "apps", "money", "files"],
   ],
   // Undoing a permission or a schedule must find its tool, which follows
   // its skill (`agent/lib/skills/tools.ts`).
@@ -461,6 +472,69 @@ describe("the skills a turn attaches", () => {
       skillsFor("[файл: photo.jpg (image/jpeg), не удалось скачать]")
     ).toEqual([]);
     expect(skillsFor("[документ]\n[голосовое не распозналось]")).toEqual([]);
+  });
+
+  it("give a document for the task agent, or its marker, the rules for files", () => {
+    for (const text of [
+      "[файл: отчёт (1).xlsx (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet)]",
+      "посчитай итог\n[файл: продажи, март.csv (text/csv)]",
+      // One that did not come through: Bro says so.
+      "[файл: архив.zip (application/zip)]",
+      "[файл: смета.xlsx (application/vnd.ms-excel), слишком большой]",
+    ]) {
+      expect(skillsFor(text)).toContain("files");
+    }
+    // A picture or a PDF the model reads itself.
+    for (const text of [
+      "[файл: счёт.pdf (application/pdf)]",
+      "[файл: фото (1).jpg (image/jpeg)]",
+      "[файл: photo.jpg (image/jpeg), слишком большой]",
+    ]) {
+      expect(skillsFor(text)).not.toContain("files");
+    }
+    const filesFor = (mediaType: string) =>
+      skillsForTurn({
+        browserReport: false,
+        history: [],
+        input: [sent(mediaType)],
+      }).includes("files");
+    expect(
+      filesFor(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      )
+    ).toBe(true);
+    expect(filesFor("image/png")).toBe(false);
+    expect(filesFor("application/pdf")).toBe(false);
+  });
+
+  it("give decks, tables and charts the rules for files", () => {
+    for (const text of [
+      "сделай презентацию на пять слайдов",
+      "сведи в таблицу и построй график",
+      "make a pitch deck about us",
+      "convert this to xlsx",
+      "нарисуй график",
+      "построй мне график расходов",
+      "график продаж по месяцам",
+    ]) {
+      expect(skillsFor(text)).toContain("files");
+    }
+    for (const text of [
+      // «График» is a schedule too.
+      "скинь график дежурств на неделю",
+      "какой у тебя график работы?",
+      "сделай график дежурств на неделю",
+      "добавь меня в график",
+      "build a Commander deck around Atraxa",
+      "this is excellent",
+      "свари документы на подпись",
+    ]) {
+      expect(skillsFor(text)).not.toContain("files");
+    }
+    // An edit of the task agent's job follows it.
+    expect(skillsFor("сделай фон темнее", [called(["task", {}])])).toEqual([
+      "files",
+    ]);
   });
 
   it("take meter readings for photos sent with no word of their own", () => {

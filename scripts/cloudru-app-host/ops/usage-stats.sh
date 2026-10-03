@@ -9,7 +9,9 @@
 #
 #   - steps by source and channel: median input tokens (p25, p75), cache share (cached over input, summed),
 #     roubles per step (mean, median) and in all; `interactive` is chat and browser-report together, the
-#     steps that carry the full instructions (scripts/costs/step-context.ts);
+#     steps that carry the full instructions (scripts/costs/step-context.ts); `task` is the task agent's
+#     steps, filed under the conversation that delegated them, so its channel is that conversation's and its
+#     sessions count conversations, not tasks;
 #   - the same for interactive steps by day (Moscow), to compare before and after a release;
 #   - steps by their place in the whole session, counted from its first step (Telegram's is one session for
 #     good): whether a step grows with the conversation (roadmap item 28);
@@ -52,7 +54,7 @@ STEPS="WITH all_steps AS (
          substring(u.idempotency_key from '^step:.+:turn_[0-9]+:([0-9]+)$')::int AS step_index
   FROM usage_costs u
   LEFT JOIN chats c ON c.session_id = u.session_id AND c.workspace_id = u.workspace_id
-  WHERE u.source IN ('chat', 'background', 'browser-report')
+  WHERE u.source IN ('chat', 'background', 'browser-report', 'task')
     AND u.units ? 'inputTokens'
     AND u.occurred_at < :'until'::timestamptz
 ), placed_steps AS (
@@ -64,7 +66,9 @@ STEPS="WITH all_steps AS (
 # A turn of a session, from its steps (\$STEPS above). eve numbers turns per run of the session
 # (turn_0, turn_1…), and a deploy handoff on Vercel starts again at turn_0 under the same session id: its steps
 # then share keys with the earlier turns, and usage_costs keeps only the first row of each key. A session whose
-# turn numbers do not grow with time, or whose turn spans hours, is such a one and is left out.
+# turn numbers do not grow with time, or whose turn spans hours, is such a one and is left out. The task agent's
+# steps are filed under the delegating conversation's session but numbered by their own (its turn_0 would merge
+# with the conversation's and mark the session restarted), so they stay out of the turns.
 TURNS="turns AS (
   SELECT session_id, turn_id,
          substring(turn_id from '[0-9]+\$')::int AS turn_number,
@@ -76,7 +80,7 @@ TURNS="turns AS (
          (array_agg(cached ORDER BY step_index, occurred_at))[1] AS first_cached,
          count(*) AS steps
   FROM all_steps
-  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL
+  WHERE session_id IS NOT NULL AND turn_id IS NOT NULL AND source <> 'task'
   GROUP BY session_id, turn_id
 ), numbered AS (
   SELECT *,

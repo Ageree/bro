@@ -1,4 +1,7 @@
+import type { SessionContext } from "eve/context";
+import { z } from "zod";
 import { directModelActive } from "@shared/model/provider";
+import { objectStorageConfigured } from "@shared/object-storage/s3";
 import {
   listsWorkspaceRemembered,
   pilotVerdictOfTurn,
@@ -36,4 +39,68 @@ export async function taskAgentPilot(
       return undefined;
     }
   });
+}
+
+/**
+ * Whether the person's files reach the task agent in this workspace
+ * (TASK_FILES_WORKSPACES, docs/roadmap.md item 30): only inside the task
+ * agent's pilot, and decided without a lookup, so ingestion, the skill's
+ * setup and both hooks agree: SANDBOX_WORKSPACES must name the workspace by
+ * id or be `*` (a pilot named only by the owner's email stays out), and the
+ * files travel through the object store (`agent/lib/sandbox/inbox.ts`).
+ */
+export function taskFilesEnabled(workspaceId: string | undefined) {
+  if (workspaceId === undefined) return false;
+  const files = env.TASK_FILES_WORKSPACES ?? [];
+  const pilot = env.SANDBOX_WORKSPACES ?? [];
+  return (
+    (files.includes("*") || files.includes(workspaceId)) &&
+    (pilot.includes("*") || pilot.includes(workspaceId)) &&
+    sandboxHostConfigured() &&
+    directModelActive() &&
+    objectStorageConfigured()
+  );
+}
+
+/**
+ * Whether `taskFilesEnabled` holds for some workspace of this deployment,
+ * decided from the settings alone (privacy facts, `agent/lib/privacy/facts.ts`):
+ * a workspace both lists name by id, or `*` in one with an id in the other.
+ * A pilot named only by owners' emails never matches a workspace id.
+ */
+export function taskFilesDeployed() {
+  const files = env.TASK_FILES_WORKSPACES ?? [];
+  const pilot = (env.SANDBOX_WORKSPACES ?? []).filter(
+    (entry) => !entry.includes("@")
+  );
+  const overlap = pilot.includes("*")
+    ? files.length > 0
+    : files.includes("*")
+      ? pilot.length > 0
+      : files.some((id) => pilot.includes(id));
+  return (
+    overlap &&
+    sandboxHostConfigured() &&
+    directModelActive() &&
+    objectStorageConfigured()
+  );
+}
+
+const userCallerSchema = z.object({
+  attributes: z.object({ workspaceId: z.string().min(1) }),
+  principalType: z.literal("user"),
+});
+
+/**
+ * `taskFilesEnabled` for the workspace of the caller that holds the turn: a
+ * person signed in to a channel, or Bro's own caller in a subagent, which
+ * carries the parent's auth. A caller without a workspace is out.
+ */
+export function taskFilesOfCaller(context: {
+  readonly session: Pick<SessionContext["session"], "auth">;
+}) {
+  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  return taskFilesEnabled(
+    userCallerSchema.safeParse(caller).data?.attributes.workspaceId
+  );
 }

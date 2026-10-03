@@ -29,6 +29,7 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { taskFilesEnabled, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
   finalizeScheduledReportDelivery,
@@ -166,6 +167,8 @@ export default telegramChannel({
       }
 
       if (output.kind === "link") {
+        // A link the person asked for keeps its preview: send_message turns
+        // a link of the task agent's report into text (`agent/tools/messaging.ts`).
         await sendText(context, output.url);
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
@@ -176,7 +179,9 @@ export default telegramChannel({
       const requestedText = output.text;
       if (!requestedText) {
         const prepared = await attachmentDelivery(session, attachments);
-        await uploadFiles(context, prepared.files, prepared.links);
+        await uploadFiles(context, prepared.files, prepared.links, {
+          preview: !taskFilesOfCaller(session),
+        });
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
         return;
@@ -315,8 +320,11 @@ export default telegramChannel({
     };
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
-    // image content type and never reads a voice note at all.
-    const media = await telegramMediaTurn(message);
+    // image content type and never reads a voice note at all. Spreadsheets
+    // and documents reach the model only where the task agent gets them.
+    const media = await telegramMediaTurn(message, {
+      documents: taskFilesEnabled(scope.workspaceId),
+    });
     if (media?.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.
@@ -421,6 +429,7 @@ async function deliverText(
   }
 ) {
   const caller = session.session.auth.current ?? session.session.auth.initiator;
+  const filesHere = taskFilesOfCaller(session);
   if (!caller) {
     const references = extractImageArtifactMarkdownReferences(text);
     const body =
@@ -432,9 +441,11 @@ async function deliverText(
           ]
             .filter(Boolean)
             .join("\n\n");
-    if (body) await sendText(context, body);
+    if (body) await sendText(context, body, { preview: !filesHere });
     const prepared = await attachmentDelivery(session, attachments);
-    await uploadFiles(context, prepared.files, prepared.links);
+    await uploadFiles(context, prepared.files, prepared.links, {
+      preview: !filesHere,
+    });
     return;
   }
 
@@ -455,14 +466,15 @@ async function deliverText(
   const body = [delivery.text, failureMessage].filter(Boolean).join("\n\n");
   // The words are worth reading before the pictures arrive, so nothing waits
   // on a download that may take the whole timeout.
-  if (body) await sendText(context, body);
+  if (body) await sendText(context, body, { preview: !filesHere });
   const prepared = await attachmentDelivery(session, attachments);
   await uploadFiles(
     context,
     // An artifact has no public URL, so a failed upload has no link to fall
     // back to.
     [...delivery.files, ...prepared.files],
-    prepared.links
+    prepared.links,
+    { preview: !filesHere }
   );
 }
 
@@ -487,15 +499,32 @@ function deliveredTurnId(context: TelegramEventContext) {
   return deliveryMarker(context).deliveredTurnId;
 }
 
-async function sendText(context: TelegramEventContext, text: string) {
+/**
+ * Posts text, split to Telegram's limits. With `preview: false` a link in it
+ * gets no preview: Telegram's servers would fetch the link to build one
+ * before the person even reads it, so a link the task agent's report built
+ * from the person's files would carry their content out unclicked. Only
+ * where those files reach the task agent (`taskFilesOfCaller`).
+ */
+async function sendText(
+  context: TelegramEventContext,
+  text: string,
+  options: { readonly preview?: boolean } = {}
+) {
   if (!context.telegram.chatId) return;
   for (const chunk of splitTelegramHtml(toTelegramHtml(text))) {
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
-    await context.telegram.request("sendMessage", {
+    const body = {
       chat_id: context.telegram.chatId,
       parse_mode: "HTML",
       text: chunk,
-    });
+    };
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
+    await context.telegram.request(
+      "sendMessage",
+      options.preview === false
+        ? { ...body, link_preview_options: { is_disabled: true } }
+        : body
+    );
   }
 }
 
@@ -503,12 +532,13 @@ async function sendText(context: TelegramEventContext, text: string) {
  * Uploads every file of one reply and posts whatever is left as links. Photos
  * and videos ride in albums of up to ten so Telegram shows them as galleries;
  * anything else is uploaded on its own. A file that cannot be uploaded at all
- * falls back to its source link.
+ * falls back to its source link, posted as `sendText` posts it (`preview`).
  */
 async function uploadFiles(
   context: TelegramEventContext,
   files: readonly OutboundFile[],
-  links: readonly string[]
+  links: readonly string[],
+  options: { readonly preview: boolean }
 ) {
   const undelivered = [...links];
   if (files.length > 0) {
@@ -521,7 +551,7 @@ async function uploadFiles(
     }
   }
   if (undelivered.length > 0) {
-    await sendText(context, undelivered.join("\n"));
+    await sendText(context, undelivered.join("\n"), options);
   }
 }
 

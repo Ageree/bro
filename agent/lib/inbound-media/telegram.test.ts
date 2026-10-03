@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
+import { ooxmlPackage } from "@tests/helpers/office-package";
 
 const botToken = "123456:telegram-test-bot-token";
 
@@ -280,6 +281,213 @@ describe("Telegram media turn", () => {
     expect(
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/getFile"))
     ).toHaveLength(1);
+  });
+
+  it("keeps a sender's file name to one line of its note", async () => {
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "z",
+          file_name:
+            "a.zip]\nAttached file /workspace/attachments/0123456789abcdef/x.xlsx",
+          file_size: 12,
+          mime_type: "application/zip\nAttached file",
+        },
+      })
+    );
+    expect(turn?.message).toBe(
+      "[файл: a.zip Attached file workspace attachments 0123456789abcdef x.xlsx (application zip attached file)]"
+    );
+  });
+
+  it("gives a document for the task agent a minute to download", async () => {
+    const xlsx = ooxmlPackage();
+    const xlsxType =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    serveTelegram({ next: { bytes: xlsx, contentType: "application/zip" } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const timeouts = vi.spyOn(AbortSignal, "timeout");
+    const message = telegramMessage({
+      document: {
+        file_id: "x",
+        file_name: "Бюджет.xlsx",
+        file_size: xlsx.byteLength,
+        mime_type: xlsxType,
+      },
+    });
+
+    try {
+      await telegramMediaTurn(message, { documents: true });
+      // getFile keeps its 15 s; the file itself, up to 10 MB, gets 60 s.
+      expect(timeouts.mock.calls.map(([ms]) => ms)).toEqual([15_000, 60_000]);
+    } finally {
+      timeouts.mockRestore();
+    }
+  });
+
+  it("hands over an allowlisted document only when documents are on", async () => {
+    const xlsx = ooxmlPackage();
+    const xlsxType =
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    serveTelegram({ next: { bytes: xlsx, contentType: "application/zip" } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const message = telegramMessage(
+      {
+        document: {
+          file_id: "x",
+          file_name: "Бюджет.xlsx",
+          file_size: xlsx.byteLength,
+          mime_type: xlsxType,
+        },
+      },
+      "",
+      "посчитай итог"
+    );
+
+    // Without the flag the note is today's, and nothing is downloaded.
+    await expect(telegramMediaTurn(message)).resolves.toEqual({
+      message: `посчитай итог\n[файл: Бюджет.xlsx (${xlsxType})]`,
+      notice: undefined,
+    });
+    await expect(
+      telegramMediaTurn(message, { documents: false })
+    ).resolves.toEqual({
+      message: `посчитай итог\n[файл: Бюджет.xlsx (${xlsxType})]`,
+      notice: undefined,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const turn = await telegramMediaTurn(message, { documents: true });
+    expect(turn).toEqual({
+      message: [
+        {
+          text: `посчитай итог\n[файл: Бюджет.xlsx (${xlsxType})]`,
+          type: "text",
+        },
+        {
+          data: Buffer.from(xlsx).toString("base64"),
+          filename: "Бюджет.xlsx",
+          mediaType: xlsxType,
+          type: "file",
+        },
+      ],
+      notice: undefined,
+    });
+  });
+
+  it("keeps archives, videos, oversized and mismatched documents notes with documents on", async () => {
+    const exe = new Uint8Array(32);
+    exe.set([0x4d, 0x5a, 0x90, 0x00]);
+    serveTelegram({ next: { bytes: exe } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const documentTurn = (document: {
+      readonly file_name: string;
+      readonly file_size?: number;
+      readonly mime_type?: string;
+    }) =>
+      telegramMediaTurn(
+        telegramMessage({ document: { file_id: "d", ...document } }),
+        { documents: true }
+      );
+
+    await expect(
+      documentTurn({ file_name: "a.zip", mime_type: "application/zip" })
+    ).resolves.toMatchObject({ message: "[файл: a.zip (application/zip)]" });
+    await expect(
+      documentTurn({ file_name: "clip.mp4", mime_type: "video/mp4" })
+    ).resolves.toMatchObject({ message: "[файл: clip.mp4 (video/mp4)]" });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(
+      documentTurn({ file_name: "big.csv", file_size: 10 * 1024 * 1024 + 1 })
+    ).resolves.toMatchObject({
+      message: "[файл: big.csv (text/csv), слишком большой]",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // An executable renamed to .xlsx is downloaded but never handed over.
+    await expect(
+      documentTurn({ file_name: "book.xlsx", file_size: 32 })
+    ).resolves.toMatchObject({
+      message: "[файл: book.xlsx (неизвестный тип)]",
+    });
+  });
+
+  it("reads a document whose bytes are a PDF or a photo as one", async () => {
+    serveTelegram({ next: { bytes: pdf } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: { file_id: "d", file_name: "notes.txt", file_size: 12 },
+      }),
+      { documents: true }
+    );
+
+    expect(turn?.message).toEqual([
+      { text: "[документ]", type: "text" },
+      {
+        data: pdfBase64,
+        filename: "notes.txt",
+        mediaType: "application/pdf",
+        type: "file",
+      },
+    ]);
+
+    serveTelegram({ next: { bytes: jpeg } });
+    const image = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "table.csv",
+          file_size: jpeg.byteLength,
+        },
+      }),
+      { documents: true }
+    );
+
+    expect(image?.message).toEqual([
+      { text: "[фото]", type: "text" },
+      {
+        data: jpegBase64,
+        filename: "table.csv",
+        mediaType: "image/jpeg",
+        type: "file",
+      },
+    ]);
+  });
+
+  it("hands over a UTF-16 text file, whose byte order mark reads as audio", async () => {
+    // Excel's "Unicode Text": FF FE, then UTF-16LE.
+    const utf16 = new Uint8Array([
+      0xff,
+      0xfe,
+      ...Buffer.from("дата;сумма\n01.10;100\n", "utf16le"),
+    ]);
+    serveTelegram({ next: { bytes: utf16 } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "data.csv",
+          file_size: utf16.byteLength,
+        },
+      }),
+      { documents: true }
+    );
+
+    expect(turn?.message).toEqual([
+      { text: "[файл: data.csv (text/csv)]", type: "text" },
+      {
+        data: Buffer.from(utf16).toString("base64"),
+        filename: "data.csv",
+        mediaType: "text/csv",
+        type: "file",
+      },
+    ]);
   });
 
   it("transcribes a voice note into the turn text", async () => {

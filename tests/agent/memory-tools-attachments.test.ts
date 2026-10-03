@@ -1,5 +1,7 @@
-import type { ModelMessage } from "ai";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { generateText, type ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { defineDurableCallback, defineTool } from "eve/tools";
 
 /**
@@ -52,6 +54,7 @@ interface SessionValue {
 
 type ContextValue =
   | Principal
+  | { readonly get: () => Promise<HydratingSandbox> }
   | SessionValue
   | string
   | null
@@ -125,6 +128,11 @@ interface StagingSandbox {
   writeBinaryFile(input: { content: Uint8Array; path: string }): Promise<void>;
 }
 
+/** The sandbox call eve makes while reading an attachment back for the model. */
+interface HydratingSandbox {
+  readBinaryFile(input: { path: string }): Promise<Uint8Array | null>;
+}
+
 type UserParts = Exclude<
   Extract<ModelMessage, { role: "user" }>["content"],
   string
@@ -146,11 +154,15 @@ interface EveInternals {
     turnId: string;
   }): TurnEvent;
   deserializeContext(serialized: SerializedContext): Promise<Context>;
+  hydrateSandboxAttachments(
+    messages: readonly ModelMessage[]
+  ): Promise<ModelMessage[]>;
   dispatchDynamicToolEvent(input: ToolEventInput): Promise<void>;
   keys: Readonly<
     Record<
       | "AuthKey"
       | "SessionIdKey"
+      | "SandboxKey"
       | "SessionKey"
       | "StaticModelReferenceKey"
       | "TurnDynamicToolMetadataKey"
@@ -167,6 +179,7 @@ interface EveInternals {
     sandbox: StagingSandbox,
     adapter: Readonly<Record<string, never>>
   ): Promise<UserParts>;
+  stageAttachmentsToSandbox(content: UserParts): Promise<UserParts>;
 }
 
 function importInternal(path: string) {
@@ -516,5 +529,179 @@ describe("memory tools with photos in the conversation", () => {
       callTool(eve, step, "profile__save", "счётчики сдаёт 20-го")
     ).resolves.toEqual({ saved: "счётчики сдаёт 20-го" });
     expect(saved).toEqual(["profile: счётчики сдаёт 20-го"]);
+  });
+});
+
+const xlsxType =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const xlsx = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0, 0, 0]);
+const xlsxBase64 = Buffer.from(xlsx).toString("base64");
+
+/** A spreadsheet as `inboundTurn` hands it over from Telegram and iMessage. */
+function inboundSpreadsheet(): UserParts {
+  return [
+    {
+      text: `посчитай итог\n[файл: Бюджет.xlsx (${xlsxType})]`,
+      type: "text",
+    },
+    {
+      data: xlsxBase64,
+      filename: "Бюджет.xlsx",
+      mediaType: xlsxType,
+      type: "file",
+    },
+  ];
+}
+
+/**
+ * Item 30 (TASK_FILES_WORKSPACES) hands a spreadsheet to eve as a file part:
+ * eve stages it like a photo, and the model sees only the line with its path,
+ * never the bytes. These pin what eve does with a type that is neither an
+ * image nor a PDF, staged or not.
+ */
+describe("a document in the conversation", () => {
+  it("is staged under a sandbox path and reaches the model as that path", async () => {
+    const eve = await loadEve();
+    const written: string[] = [];
+    const content = await eve.stageAttachmentsForAdapter(
+      inboundSpreadsheet(),
+      {
+        resolvePath: (path) => path,
+        async writeBinaryFile({ path }) {
+          written.push(path);
+        },
+      },
+      {}
+    );
+    // eve's file name keeps only ASCII word characters, so the real name
+    // travels in Bro's own line above it.
+    expect(written).toEqual([
+      expect.stringMatching(
+        /^\/workspace\/attachments\/[0-9a-f]{16}\/_+\.xlsx$/u
+      ),
+    ]);
+    expect(content[1]).toMatchObject({ mediaType: xlsxType, type: "file" });
+
+    const reads: string[] = [];
+    const sandbox: HydratingSandbox = {
+      async readBinaryFile({ path }) {
+        reads.push(path);
+        return xlsx;
+      },
+    };
+    const ctx = newContext(eve);
+    ctx.setVirtualContext(eve.keys.SandboxKey, { get: async () => sandbox });
+    const [hydrated] = await eve.contextStorage.run(ctx, () =>
+      eve.hydrateSandboxAttachments([{ content, role: "user" }])
+    );
+
+    expect(reads).toEqual([]);
+    expect(hydrated?.content).toEqual([
+      inboundSpreadsheet()[0],
+      {
+        text: `Attached file ${written[0] ?? ""} (${xlsxType})`,
+        type: "text",
+      },
+    ]);
+  });
+
+  it("keeps every memory tool on the turn it arrives", async () => {
+    const eve = await loadEve();
+    const { resolvers } = createAgent(eve);
+    const content = await eve.stageAttachmentsForAdapter(
+      inboundSpreadsheet(),
+      {
+        resolvePath: (path) => path,
+        writeBinaryFile: async () => undefined,
+      },
+      {}
+    );
+    const message: ModelMessage = { content, role: "user" };
+    const ctx = newContext(eve);
+
+    await startTurn(eve, ctx, resolvers, 0, [message], [message]);
+
+    expect(turnTools(eve, ctx).map((tool) => tool.name)).toEqual([
+      ...memoryTools,
+      "calendar-list-events",
+    ]);
+    expect(JSON.stringify(turnTools(eve, ctx))).not.toContain("eve-sandbox");
+  });
+
+  it("fails the step when the sandbox cannot take it, rather than reaching the model", async () => {
+    const eve = await loadEve();
+
+    await expect(
+      eve.stageAttachmentsForAdapter(
+        inboundSpreadsheet(),
+        {
+          resolvePath: (path) => path,
+          async writeBinaryFile() {
+            throw new Error("sandbox host unreachable");
+          },
+        },
+        {}
+      )
+    ).rejects.toThrow("sandbox host unreachable");
+  });
+
+  it("stays a raw file part only without any sandbox, which OpenRouter then receives whole", async () => {
+    const eve = await loadEve();
+    const ctx = newContext(eve);
+    const parts = inboundSpreadsheet();
+
+    // Bro always defines a sandbox (`agent/sandbox.ts`), so this is only the
+    // case of a context without one.
+    await expect(
+      eve.contextStorage.run(ctx, () => eve.stageAttachmentsToSandbox(parts))
+    ).resolves.toBe(parts);
+
+    const bodies: unknown[] = [];
+    const provider = createOpenRouter({
+      apiKey: "openrouter-test-key",
+      async fetch(_url, init) {
+        bodies.push(JSON.parse(z.string().parse(init?.body)));
+        return Response.json({
+          choices: [
+            {
+              finish_reason: "stop",
+              index: 0,
+              message: { content: "ok", role: "assistant" },
+            },
+          ],
+          created: 0,
+          id: "gen-1",
+          model: "deepseek/deepseek-v4.1-flash",
+          usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+    await generateText({
+      messages: [{ content: parts, role: "user" }],
+      model: provider.chat("deepseek/deepseek-v4.1-flash"),
+    });
+
+    expect(bodies).toEqual([
+      expect.objectContaining({
+        messages: [
+          {
+            content: [
+              {
+                text: parts[0]?.type === "text" ? parts[0].text : "",
+                type: "text",
+              },
+              {
+                file: {
+                  file_data: `data:${xlsxType};base64,${xlsxBase64}`,
+                  filename: "Бюджет.xlsx",
+                },
+                type: "file",
+              },
+            ],
+            role: "user",
+          },
+        ],
+      }),
+    ]);
   });
 });

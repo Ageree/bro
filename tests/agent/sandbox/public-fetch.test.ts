@@ -77,6 +77,7 @@ vi.mock("node:https", async (importOriginal) => {
 
 afterEach(() => {
   clearSandboxSettings();
+  vi.unstubAllGlobals();
   site.answers = [];
   dns.answer = [];
   dns.asked = [];
@@ -145,6 +146,15 @@ describe("a request the sandbox tool router makes", () => {
 
   it("answers web_fetch and download for such a name with a blocked host", async () => {
     dns.answer = [{ address: "127.0.0.1", family: 4 }];
+    // Object Storage has no mark of the person's files for this sandbox.
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (!url.includes("/sandbox/person-files/")) {
+        throw new Error("Only the mark is asked of Object Storage here.");
+      }
+      return await Promise.resolve(
+        new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
+      );
+    });
     const ask = await importWithSandbox(async () => {
       const [{ answerSandboxToolRequest }, keys] = await Promise.all([
         import("@agent/lib/sandbox/router"),

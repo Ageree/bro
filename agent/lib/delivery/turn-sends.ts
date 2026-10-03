@@ -503,6 +503,11 @@ export function startsTurn(message: ModelMessage) {
  */
 const backgroundTaskOpening = /^Background task task_\S+ /u;
 
+/** Whether a message's text opens as eve's delivery of background work. */
+export function opensAsBackgroundTask(text: string) {
+  return backgroundTaskOpening.test(text);
+}
+
 /**
  * Whether the current turn is eve's delivery of finished background work —
  * the task agent's report — rather than anything the person wrote or a
@@ -515,7 +520,7 @@ export function turnOpenedByBackgroundTask(messages: readonly ModelMessage[]) {
     opening !== undefined &&
     taggedMessageSchema.safeParse(opening).data?.kind ===
       "execution.background_task" &&
-    backgroundTaskOpening.test(openingText(opening))
+    opensAsBackgroundTask(openingText(opening))
   );
 }
 

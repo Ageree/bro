@@ -82,6 +82,7 @@ describe("the owner's cost report", () => {
         chat: 0,
         memory: 0,
         proxy: 0,
+        task: 0,
       },
       items: [],
       runId: "run-1",

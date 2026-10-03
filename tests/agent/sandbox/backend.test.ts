@@ -110,6 +110,9 @@ describe("the Cloud.ru sandbox backend", () => {
       sb: sandboxId,
       ws: "personal:abc",
     });
+    // The task agent's hook marks the sandbox by the session's id
+    // (`markSandboxHoldsPersonFiles`), and the router checks the token's.
+    expect(handle.session.id).toBe(sandboxId);
     expect(body.snapshot.key).toBe(keys.sandboxSnapshotKey(sandboxId));
     expect(body.snapshot.put).toContain(
       `/bro-state-test/sandbox/workspaces/${sandboxId}.snap?`

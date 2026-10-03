@@ -4,6 +4,7 @@ import {
   fullDeployment,
   stubDeployment,
   systemPrompt,
+  taskAgentDeployment,
   turnKinds,
 } from "@tests/helpers/system-prompt";
 
@@ -121,6 +122,52 @@ describe("instructions outside the skills pilot", () => {
     // The interactive turns of the pilot read the core instead.
     for (const kind of ["browser-result", "interactive", "telegram"] as const) {
       expect(piloted[kind]).not.toBe(hashes[kind]);
+    }
+  });
+
+  it("stay so where the person's files do not reach the task agent", async () => {
+    const { environment, hashes } = deployments.full;
+    expect(
+      await promptHashes({ ...environment, TASK_FILES_WORKSPACES: "*" })
+    ).toEqual(hashes);
+    // With the task agent, but for another workspace.
+    const agent = { ...environment, ...taskAgentDeployment };
+    expect(
+      await promptHashes({ ...agent, TASK_FILES_WORKSPACES: "workspace-2" })
+    ).toEqual(await promptHashes(agent));
+  });
+
+  it("add the rules for files to a person's turns, where they reach the task agent", async () => {
+    stubDeployment({ ...fullDeployment, ...taskAgentDeployment });
+    const agent = await systemPrompt(turnKinds.interactive);
+    stubDeployment({
+      ...fullDeployment,
+      ...taskAgentDeployment,
+      TASK_FILES_WORKSPACES: "workspace-1",
+    });
+    const { instructionText } = await import("@agent/lib/skills/catalog");
+    const files = instructionText("task-files", "full");
+    const heading = "# Файлы человека и тяжёлая работа";
+    expect(files.startsWith(heading)).toBe(true);
+    // One block more, and nothing else changed.
+    const prompts = await Promise.all(
+      Object.values(turnKinds).map((context) => systemPrompt(context))
+    );
+    const byKind = new Map(
+      Object.keys(turnKinds).map((kind, index) => [kind, prompts[index] ?? ""])
+    );
+    for (const kind of ["interactive", "telegram"]) {
+      const prompt = byKind.get(kind) ?? "";
+      expect(prompt).toContain(files);
+      expect(prompt.replace(`\n\n${files}`, "")).toBe(agent);
+    }
+    for (const kind of [
+      "browser-result",
+      "proactive-worker",
+      "scheduled-report",
+      "scheduled-worker",
+    ]) {
+      expect(byKind.get(kind)).not.toContain(heading);
     }
   });
 
