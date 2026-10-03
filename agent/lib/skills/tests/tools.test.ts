@@ -105,6 +105,7 @@ describe("the tools that follow skills", () => {
     expect(gatedTools(["schedules"])).toEqual([
       "schedules-create",
       "schedules-update",
+      "watch-create",
     ]);
     expect(gatedTools(["apps"])).toContain("notion-add-task");
     expect(gatedTools(["google"])).toEqual(gatedTools(["first-contact"]));

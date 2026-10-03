@@ -20,12 +20,16 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * step from the person, and `withheldTools` and `offeredTools`, which a
  * Gateway id ignores. `stableContext`, the pilot of the cache-friendly step,
  * is never set for a Gateway id (`stepContextPilot`), nor is `skillBlocks`,
- * the skills pilot (`skillsPilot`).
+ * the skills pilot (`skillsPilot`), nor `historyTrim`, the pilot of trimming
+ * old history (`historyTrimPilot`).
  */
 export function modelSelection(
   modelId: string,
   options: {
     readonly delivered?: boolean;
+    readonly historyTrim?: Parameters<
+      typeof directModelSelection
+    >[1]["historyTrim"];
     readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
     readonly silent?: boolean;
@@ -42,6 +46,7 @@ export function modelSelection(
   return directModelActive()
     ? directModelSelection(modelId, {
         delivered: options.delivered,
+        historyTrim: options.historyTrim,
         offeredTools: options.offeredTools,
         replyNote: options.replyNote,
         silent: options.silent,

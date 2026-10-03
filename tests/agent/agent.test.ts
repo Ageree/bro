@@ -13,6 +13,7 @@ const services = vi.hoisted(() => ({
   browserRunReportDelivered: vi.fn<(runId: string) => Promise<boolean>>(),
   getFormOfAddress: vi.fn<typeof getFormOfAddress>(),
   getModel: vi.fn<typeof getWorkspaceModelId>(),
+  historyTrimPilot: vi.fn<() => Promise<boolean>>(),
   isActive: vi.fn<typeof isScheduledAgentRunLeaseActive>(),
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
   directModelActive: vi.fn<() => boolean>(),
@@ -40,6 +41,9 @@ vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
+}));
+vi.mock("@agent/lib/history/pilot", () => ({
+  historyTrimPilot: services.historyTrimPilot,
 }));
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
   const original = await importOriginal<typeof ModelSelection>();
@@ -78,6 +82,7 @@ beforeEach(() => {
   services.browserRunReportDelivered.mockResolvedValue(false);
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
+  services.historyTrimPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
 });
 
@@ -859,6 +864,47 @@ describe("interactive delivery enforcement", () => {
     expect(services.modelSelection.mock.lastCall?.[1]?.toolGroups).toBe(
       undefined
     );
+  });
+
+  it("hands the step what old history to trim only in the pilot", async () => {
+    services.directModelActive.mockReturnValue(true);
+    // Once per step below: later tests get the real selection back.
+    services.modelSelection
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash")
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
+    // Twelve turns, each a search: the first eight are old enough.
+    const history = Array.from({ length: 12 }, (_, turn) => [
+      humanMessage(`вопрос ${String(turn)}`),
+      toolCallStep("web_fetch", `call-${String(turn)}`, { url: "x" }),
+      toolResultStep("web_fetch", `call-${String(turn)}`, { content: "y" }),
+    ]).flat();
+    const event = { data: { stepIndex: 0, turnId: "turn_11" } };
+
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext(history)
+    );
+    const outside = services.modelSelection.mock.lastCall?.[1];
+    expect(outside?.historyTrim).toBeUndefined();
+    expect(services.historyTrimPilot).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      { sessionId: "interactive-session", stepIndex: 0, turnId: "turn_11" }
+    );
+
+    services.historyTrimPilot.mockResolvedValue(true);
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext(history)
+    );
+    const inside = services.modelSelection.mock.lastCall?.[1];
+    expect([...(inside?.historyTrim?.results ?? [])]).toEqual(
+      Array.from({ length: 8 }, (_, turn) => `call-${String(turn)}`)
+    );
+    // Nothing else of the step changes with it.
+    expect({ ...inside, historyTrim: undefined }).toEqual({
+      ...outside,
+      historyTrim: undefined,
+    });
   });
 
   it("fails the task agent's report on the Gateway, which ignores the tool limit", async () => {

@@ -16,7 +16,18 @@ import type {
   submitScheduledAgentRunAnswer,
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
+import type {
+  listLiveSubscriptions,
+  setSubscriptionStatus,
+} from "@db/services/subscriptions";
 import type { readWorkspaceTimeZone } from "@db/services/user-profile";
+import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
+
+const watches = vi.hoisted(() => ({
+  list: vi.fn<typeof listLiveSubscriptions>(() => Promise.resolve([])),
+  pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
+  setStatus: vi.fn<typeof setSubscriptionStatus>(),
+}));
 
 const services = vi.hoisted(() => ({
   create: vi.fn<typeof createScheduledAgentJob>(),
@@ -39,6 +50,13 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   reportConversations: services.report,
   submitScheduledAgentRunAnswer: services.submitAnswer,
   updateScheduledAgentJob: services.update,
+}));
+vi.mock("@agent/lib/subscriptions/pilot", () => ({
+  subscriptionsPilot: watches.pilot,
+}));
+vi.mock("@db/services/subscriptions", () => ({
+  listLiveSubscriptions: watches.list,
+  setSubscriptionStatus: watches.setStatus,
 }));
 vi.mock("@db/services/user-profile", () => ({
   readWorkspaceTimeZone: services.timeZone,
@@ -698,6 +716,116 @@ describe("schedule tools", () => {
       workspaceId: "workspace-1",
     });
     expect(result).toEqual([scheduleListSummary(job)]);
+  });
+
+  it("lists, pauses and deletes a price watch, and changes nothing else of it", async () => {
+    const created = new Date("2026-10-02T10:00:00.000Z");
+    const watch = {
+      action: "notify" as const,
+      checkEverySeconds: 21_600,
+      checks: 3,
+      condition: { amount: 8_000, kind: "below" as const },
+      createdAt: created,
+      createdByUserId: "user-1",
+      dedupeKey: "shop.example/p/1",
+      expiresAt: new Date("2026-11-01T10:00:00.000Z"),
+      failures: 0,
+      hits: 0,
+      id: "00000000-0000-4000-8000-0000000000aa",
+      jobId: "00000000-0000-4000-8000-0000000000ab",
+      lastCheckedAt: null,
+      lastError: null,
+      lastHitAt: null,
+      nextCheckAt: new Date("2026-10-02T16:00:00.000Z"),
+      source: {
+        currency: "RUB",
+        extractor: "jsonld" as const,
+        landedOn: "shop.example/p/1",
+        name: "Чайник",
+        sku: null,
+        url: "https://shop.example/p/1",
+      },
+      state: {
+        baseline: 8_990,
+        last: 8_990,
+        lastSeenAt: created.toISOString(),
+      },
+      status: "active" as const,
+      template: "price" as const,
+      updatedAt: created,
+      wake: "day_only" as const,
+      workspaceId: "workspace-1",
+    };
+    services.list.mockResolvedValue([]);
+    watches.list.mockResolvedValue([watch]);
+    const listed = await listSchedules.execute(
+      {},
+      toolContext("schedules-list")
+    );
+    expect(listed).toEqual([
+      expect.objectContaining({ id: watch.id, status: "active" }),
+    ]);
+
+    services.update.mockResolvedValue(undefined);
+    watches.setStatus.mockResolvedValue({ ...watch, status: "paused" });
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "paused" },
+        toolContext("schedules-update")
+      )
+    ).resolves.toMatchObject({ id: watch.id, status: "paused" });
+    expect(watches.setStatus).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      watch.id,
+      "paused"
+    );
+
+    watches.setStatus.mockResolvedValue({ ...watch, status: "cancelled" });
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "deleted" },
+        toolContext("schedules-update")
+      )
+    ).resolves.toMatchObject({ id: watch.id, status: "deleted" });
+    expect(watches.setStatus).toHaveBeenLastCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      watch.id,
+      "deleted"
+    );
+
+    services.getJob.mockResolvedValue(undefined);
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, runNow: true },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/can only be paused, resumed or deleted/u);
+
+    // Outside the pilot the tick holds it: it is not resumed, only paused
+    // or deleted, and nothing points at a tool the turn does not have.
+    watches.pilot.mockResolvedValue(false);
+    watches.setStatus.mockClear();
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "active" },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/watches are switched off here now/u);
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, prompt: "ниже 7000" },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/^(?!.*watch-create).*switched off/u);
+    expect(watches.setStatus).not.toHaveBeenCalled();
+    watches.setStatus.mockResolvedValue({ ...watch, status: "paused" });
+    await expect(
+      updateSchedule.execute(
+        { id: watch.id, status: "paused" },
+        toolContext("schedules-update")
+      )
+    ).resolves.toMatchObject({ status: "paused" });
+    watches.pilot.mockResolvedValue(true);
   });
 
   it("updates a schedule without carrying an action discriminator", async () => {

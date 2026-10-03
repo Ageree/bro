@@ -10,6 +10,8 @@ import {
 import type { AgentModelOptionsDefinition } from "eve";
 import { z } from "zod";
 import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
+import type { HistoryTrim } from "@agent/lib/history/eligible";
+import { trimPrompt } from "@agent/lib/history/trim";
 import type { SkillName } from "@agent/lib/skills/catalog";
 import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
 import { toolGroup, toolGroups, toolOffered } from "@agent/lib/skills/tools";
@@ -20,6 +22,7 @@ import {
 } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
 import { modelEndpoint } from "./endpoint";
+import type { PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
 import { watchedModelFetch } from "./stream-watchdog";
 
@@ -165,6 +168,33 @@ function toolChoiceMiddleware(
     async transformParams({ params }) {
       if (!params.tools?.length) return params;
       return { ...params, toolChoice: { type } };
+    },
+  };
+}
+
+/**
+ * The pilot of trimming old history (`historyTrimPilot`): the results,
+ * errands and browser reports `trim` names go to the provider as their short
+ * traces (`agent/lib/history/trim.ts`); eve keeps them whole in the history,
+ * where the turn's own readers look. It runs before the step note's and the
+ * skill blocks' defusing, so a trace that quotes a page or a mail is defused
+ * like the rest. A call without tools, compaction, gets the prompt as eve
+ * built it.
+ */
+function historyTrimMiddleware(trim: HistoryTrim): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      if (!params.tools?.length) return params;
+      const { prompt, trimmed } = trimPrompt(params.prompt, trim);
+      if (trimmed.results + trimmed.inputs + trimmed.openers === 0) {
+        return params;
+      }
+      console.info("[history-trim]", {
+        sessionId: trim.step?.sessionId,
+        turnId: trim.step?.turnId,
+        ...trimmed,
+      });
+      return { ...params, prompt };
     },
   };
 }
@@ -513,22 +543,11 @@ function stepToolsMiddleware(
   };
 }
 
-/** One message of a model call's prompt, as middleware sees it. */
-type PromptMessage = Parameters<
-  NonNullable<LanguageModelMiddleware["transformParams"]>
->[0]["params"]["prompt"][number];
-
 /** A file's data: only an inline text document carries text. */
 type FileData = Extract<
   Extract<PromptMessage, { role: "user" }>["content"][number],
   { type: "file" }
 >["data"];
-
-/** A tool's result, JSON or text. */
-type ToolOutput = Extract<
-  Extract<PromptMessage, { role: "tool" }>["content"][number],
-  { type: "tool-result" }
->["output"];
 
 /** What defuses the tags of Bro's own word in one piece of text. */
 type Defuse = (text: string) => string;
@@ -1249,6 +1268,11 @@ export function directModelSelection(
      * it instead of failing it.
      */
     readonly delivered?: boolean;
+    /**
+     * The pilot of trimming old history: what of it goes to the provider as
+     * a short trace (`historyTrimMiddleware`).
+     */
+    readonly historyTrim?: HistoryTrim;
     /** The only tools this step may call, when not every tool of the turn. */
     readonly offeredTools?: readonly string[];
     readonly replyNote?: string;
@@ -1316,6 +1340,9 @@ export function directModelSelection(
       options.step
     ),
     ...(toolChoice === "auto" ? [] : [toolChoiceMiddleware(toolChoice)]),
+    ...(options.historyTrim
+      ? [historyTrimMiddleware(options.historyTrim)]
+      : []),
     ...(options.stableContext
       ? [
           stepNoteMiddleware(
