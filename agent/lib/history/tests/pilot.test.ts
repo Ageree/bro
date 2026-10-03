@@ -27,6 +27,7 @@ beforeEach(() => {
 
 // Unstubbing every variable would drop the setup of `tests/setup-env.ts`.
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.stubEnv("HISTORY_TRIM_WORKSPACES", "");
   vi.stubEnv("OPENROUTER_API_KEY", "");
 });

@@ -372,6 +372,10 @@ describe("trimming old history in a step's prompt", () => {
     });
     expect(text).not.toContain("Отчёт.");
     expect(text).not.toContain("Страница.");
+    // A run acts: its trace never sends the model to start it again.
+    expect(text).toMatch(
+      /This call already ran: do not call it again to see this result\.\]$/u
+    );
   });
 
   it("never lifts a run's page text out of its untrusted label", () => {
