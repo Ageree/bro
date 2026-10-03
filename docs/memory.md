@@ -86,8 +86,9 @@ say the same words, or whose words another memory of the same category,
 validity and `localOnly` says in full as a sentence of its own, into the one
 that stays, with their aliases; rules are never folded, and what was folded
 stays restorable from history for 30 days. A record the conversation changed
-since the digest read it is left for the next day. Saving refuses a text with
-a code for everyone, as before.
+since the digest read it is left for the next day. Saving a profile memory
+refuses a text with a code for everyone, as before; a workstream save does
+not filter its notes, so outside the pilot a code in one stays.
 For the pilot, and only with a direct model provider, the digest also asks a
 cheap model which memories are one-off task details, duplicates in other
 words, or facts a newer one corrects — only when memory changed since the
