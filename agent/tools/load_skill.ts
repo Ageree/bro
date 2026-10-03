@@ -31,7 +31,7 @@ export default defineDynamic({
       const attached = attachedSkills(context.messages, setup);
       return defineTool({
         description:
-          "Load the rules of one skill from the index in your instructions, when the turn needs them and their bro-skill block is not already in the conversation. Call it before the first action of that kind; the rules come back as the block, and the skill's own tools (google: mail, Drive, calendar changes; apps; money; schedules: creating and changing one) join yours from the next step.",
+          "Load the rules of one skill from the index in your instructions, when the turn needs them and their bro-skill block is not already in the conversation. Call it before the first action of that kind; the rules come back as the block. Some skills also bring their tools, from the next step: google (mail, Drive, calendar changes), apps, money, schedules (creating and changing one).",
         inputSchema: z.object({
           name: z
             .string()

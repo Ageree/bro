@@ -76,7 +76,7 @@ const shortSubmissionWords: SubmissionWords = {
   kind: "What kind of action: appointment (a doctor, a salon, any service slot), table, taxi, order, booking (a stay, tickets, a rental), application (Gosuslugi included), job_application, message (a contact form too), other. Standing permissions are matched on it.",
   what: "Exactly what is submitted in the user's name, in their language: «запись к терапевту», «заказ такси до Шереметьево».",
   items:
-    "For a basket only: one line per position as the run staged it — item, variant, quantity, price.",
+    "For an order or a basket: one line per position as the run staged it — item, variant, quantity, price.",
   where: "Who receives it and on which site.",
   forWhom: "Whose name it is in.",
   personalData:

@@ -288,7 +288,9 @@
   (`browser-report.ts`): карточка парковала ход до засчёта отчёта. В пилоте
   шага набор хода постоянный (`reportTurnTools`), а три его карточки
   отказывают в approval и в execute (`reportCardHold`: состояние хода
-  `holds.ts` или `reportDeliveredAt`).
+  `holds.ts` или `reportDeliveredAt`). AI SDK решает approval всех вызовов
+  шага до первого execute: карточка в шаге сообщения получает отказ
+  (`tests/agent/tools/report-cards.test.ts`).
 - До ответа на «остановить или оставить?» разрушающие инструменты убраны
   (`turnAwaitsAnswer`): модель спрашивала и через 3 с удаляла.
 - Правило, которое слабая модель не держит из промпта, повторяйте в результате

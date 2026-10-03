@@ -72,7 +72,9 @@ async function toolBlocks(
     };
     const context = catalogContext(kind, messages);
     // oxlint-disable-next-line eslint/no-await-in-loop -- one step after another
-    const catalog = await toolCatalog(context, event);
+    const catalog = await toolCatalog(context, {
+      step: { stepIndex, turnId: "turn-1" },
+    });
     // oxlint-disable-next-line eslint/no-await-in-loop -- one step after another
     await agent.model.events["step.started"]?.(event, context);
     const options = services.modelSelection.mock.lastCall?.[1];

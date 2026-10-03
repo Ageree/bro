@@ -1,8 +1,10 @@
 import type { OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
-import type { wrapLanguageModel } from "ai";
+import type { ModelMessage, wrapLanguageModel } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cardToolsBeforeOutcome } from "@agent/lib/delivery/browser-report";
 import { actionsHeldForAnswer } from "@agent/lib/delivery/questions";
+import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { fullDeployment, stubDeployment } from "@tests/helpers/system-prompt";
 import {
   catalogContext,
@@ -65,28 +67,184 @@ const kinds = [
   "web",
 ] as const satisfies readonly Kind[];
 
-/** What `agent/agent.ts` asks of a step outside both pilots, by kind. */
+function person(text: string): ModelMessage {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
+function call(
+  toolName: string,
+  toolCallId: string,
+  input: Readonly<Record<string, string>>
+): ModelMessage {
+  return {
+    content: [{ input, toolCallId, toolName, type: "tool-call" }],
+    role: "assistant",
+  };
+}
+
+function result(
+  toolName: string,
+  toolCallId: string,
+  value: string
+): ModelMessage {
+  return {
+    content: [
+      {
+        output: { type: "text", value },
+        toolCallId,
+        toolName,
+        type: "tool-result",
+      },
+    ],
+    role: "tool",
+  };
+}
+
+// A person's turn, step by step.
+const opening = [person("Привет! Что у меня завтра?")];
+const answered = [
+  ...opening,
+  call("web_search", "call-1", { query: "погода завтра" }),
+  result("web_search", "call-1", "Солнечно"),
+  call("send_message", "call-2", { kind: "message", text: "Завтра солнечно." }),
+  result("send_message", "call-2", "submitted"),
+];
+const pastAnswer = [
+  ...answered,
+  call("send_message", "call-3", { kind: "message", text: "Завтра солнечно." }),
+  result("send_message", "call-3", skippedSendNotice("duplicate")),
+];
+const asked = [
+  ...answered,
+  call("ask_question", "call-4", { prompt: "Какой город?" }),
+  result("ask_question", "call-4", "Москва"),
+];
+const heldQuestion = [
+  ...answered,
+  call("send_message", "call-5", {
+    kind: "message",
+    text: "Напоминание о зарядке стоит на 8:00. Остановить его или оставить?",
+  }),
+  result("send_message", "call-5", "submitted"),
+];
+const declinedMail: ModelMessage[] = [
+  ...answered,
+  {
+    content: [
+      {
+        input: { body: "Привет", subject: "Привет", to: ["a@example.com"] },
+        toolCallId: "call-6",
+        toolName: "gmail-send",
+        type: "tool-call",
+      },
+      {
+        approvalId: "approval-1",
+        toolCallId: "call-6",
+        type: "tool-approval-request",
+      },
+    ],
+    role: "assistant",
+  },
+  {
+    content: [
+      {
+        approvalId: "approval-1",
+        approved: false,
+        type: "tool-approval-response",
+      },
+    ],
+    role: "tool",
+  },
+];
+const taskReport = [
+  Object.assign(
+    {
+      content:
+        "Background task task_0998 (task) is completed.\n\nResult:\nГотово.",
+      role: "user" as const,
+    },
+    { kind: "execution.background_task" }
+  ),
+];
+
+// A browser report's turn, step by step.
+const report = [
+  Object.assign(
+    {
+      content: `${backgroundTurnMarker}\nBrowser run run-1 finished.\nResult: booked.`,
+      role: "user" as const,
+    },
+    { kind: "user" }
+  ),
+];
+const reportRead = [
+  ...report,
+  call("list_orders", "call-1", {}),
+  result("list_orders", "call-1", "[]"),
+];
+const told = [
+  ...reportRead,
+  call("send_message", "call-2", {
+    kind: "message",
+    text: "Записал на 3 октября, 14:30.",
+  }),
+  result("send_message", "call-2", "submitted"),
+];
+const reportPast = [
+  ...told,
+  call("send_message", "call-3", {
+    kind: "message",
+    text: "Записал на 3 октября, 14:30.",
+  }),
+  result("send_message", "call-3", skippedSendNotice("duplicate")),
+];
+
+/**
+ * What `agent/agent.ts` asks of a step outside both pilots, by kind, each
+ * step with the history it is resolved for: a step-scoped tool (the mail's
+ * draft after a declined card, the messaging tools past an answer) is what
+ * that history makes it, and a turn-scoped one what the turn's first
+ * message made it.
+ */
 const stepCases: Record<
   Kind,
   readonly {
+    readonly messages: readonly ModelMessage[];
     readonly offeredTools?: readonly string[];
     readonly toolChoice: "auto" | "none" | "required";
+    readonly turn: readonly ModelMessage[];
     readonly withheldTools: readonly string[];
   }[]
 > = {
   "browser-report": [
-    // Before its message, after it, past its answer.
+    // Before its message, after a read, after the message, past its
+    // answer, and the step that ends it.
     {
+      messages: report,
       toolChoice: "required",
+      turn: report,
       withheldTools: ["ask_question", ...cardToolsBeforeOutcome, "task"],
     },
     {
+      messages: reportRead,
       toolChoice: "auto",
+      turn: report,
       withheldTools: ["ask_question", ...cardToolsBeforeOutcome, "task"],
     },
-    { toolChoice: "auto", withheldTools: ["ask_question", "task"] },
     {
+      messages: told,
       toolChoice: "auto",
+      turn: report,
+      withheldTools: ["ask_question", "task"],
+    },
+    {
+      messages: reportPast,
+      toolChoice: "auto",
+      turn: report,
       withheldTools: [
         "ask_question",
         "react_to_message",
@@ -94,101 +252,188 @@ const stepCases: Record<
         "task",
       ],
     },
-    { toolChoice: "none", withheldTools: ["ask_question", "task"] },
+    {
+      messages: reportPast,
+      toolChoice: "none",
+      turn: report,
+      withheldTools: ["ask_question", "task"],
+    },
   ],
-  "proactive-worker": [{ toolChoice: "auto", withheldTools: ["task"] }],
+  "proactive-worker": [
+    {
+      messages: opening,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+  ],
   "scheduled-report": [
-    { toolChoice: "auto", withheldTools: ["ask_question", "task"] },
+    {
+      messages: opening,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["ask_question", "task"],
+    },
   ],
-  "scheduled-worker": [{ toolChoice: "auto", withheldTools: ["task"] }],
+  "scheduled-worker": [
+    {
+      messages: opening,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+  ],
   telegram: [
-    { toolChoice: "required", withheldTools: ["task"] },
-    { toolChoice: "auto", withheldTools: ["task"] },
+    {
+      messages: opening,
+      toolChoice: "required",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: answered,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: declinedMail,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
   ],
   web: [
     // Until the reply, after it, past the answer, after a question, while
-    // a question waits for an answer, with the task agent, and a turn that
-    // delivers the task agent's report.
-    { toolChoice: "required", withheldTools: ["task"] },
-    { toolChoice: "auto", withheldTools: ["task"] },
-    { toolChoice: "none", withheldTools: ["task"] },
-    { toolChoice: "required", withheldTools: ["ask_question", "task"] },
-    { toolChoice: "auto", withheldTools: [...actionsHeldForAnswer, "task"] },
-    { toolChoice: "required", withheldTools: [] },
+    // a question waits for an answer, after a declined mail card, with the
+    // task agent, and a turn that delivers the task agent's report.
     {
+      messages: opening,
+      toolChoice: "required",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: answered,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: pastAnswer,
+      toolChoice: "none",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: asked,
+      toolChoice: "required",
+      turn: opening,
+      withheldTools: ["ask_question", "task"],
+    },
+    {
+      messages: heldQuestion,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: [...actionsHeldForAnswer, "task"],
+    },
+    {
+      messages: declinedMail,
+      toolChoice: "auto",
+      turn: opening,
+      withheldTools: ["task"],
+    },
+    {
+      messages: opening,
+      toolChoice: "required",
+      turn: opening,
+      withheldTools: [],
+    },
+    {
+      messages: taskReport,
       offeredTools: ["react_to_message", "send_message", "task", "task_cancel"],
       toolChoice: "required",
+      turn: taskReport,
       withheldTools: ["task"],
     },
   ],
 };
 
 /**
- * Deployments whose tools differ, each with a hash per kind of turn of its
- * catalog and of every step `agent/agent.ts` builds of it outside the
- * pilots, taken before item 25 (3 October 2026). Outside both pilots the
- * bytes a step sends must stay as they were; a change to a tool itself
- * changes these on purpose.
+ * Deployments whose tools differ, each with a hash per kind of turn of the
+ * tools every step `agent/agent.ts` builds outside the pilots sends, each
+ * resolved for its own history, taken on the code before item 25 (1972be7,
+ * 3 October 2026). Outside both pilots the bytes a step sends must stay as
+ * they were; a change to a tool itself changes these on purpose, and the new
+ * hashes come from that same code with this test.
  */
 const deployments = {
   bare: {
     environment: {},
     hashes: {
       "browser-report":
-        "42fd8f9ce62e26ec3869fce859b101040a33b2cfce14ab5836371307e4fbddcc",
+        "7b8ce7efae1aa4b30118eaa21b5d7afac62bd4c946270a3daf010d008a1bede4",
       "proactive-worker":
-        "dab8329658162d816c1a616cf8e6d5384702c6e8effff1442ccf65920b755209",
+        "9461b8446ba0ee313d1373fd3e64c44d2af1b48f762bf424eaa5c06cc34d81b4",
       "scheduled-report":
-        "5c29c7c7ec4895fc5f668b631f90c6ce38cf83963a6d4f78f6d90d2b120b37c2",
+        "645cb43b933ea872fb211cd4059bda2a89cb00a2056e5a13d3f455799d6d56d3",
       "scheduled-worker":
-        "5a55168e334ffb79ad5c2734cc296c6ddf8d25d57475c1fca1a7eadc739b8166",
+        "da1df475e985f1ec2bc8d93cb1ef8b8e0b867e61bdd887e90b40fb68ba1ab199",
       telegram:
-        "c3718f5a11ed558f7be8c942420e4dde5e53f36cf9c8ed496b46709d852d284c",
-      web: "149c10c9d06e88091f5ba69fbeb64e369b4ac582426e07012042f90389843bea",
+        "80864652e1a67147aac1543c1fb48dd8674969d12eeb9d0175ab1332e6b6857b",
+      web: "835a9355788dc7c418e3df024afa001d24ef3cd6e9d8d0ce3592b3befcef1654",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "0a9cc15b183d8c1b06b94968d06cb013eddc56bf835889766ed41f3f3d51641b",
+        "8489a82e0e535e46fe3a3b2d9b4c112a8f418bd5fb5952e3c0b743d5c36dbfde",
       "proactive-worker":
-        "4efe5121048d2319aa8c4fbc3ac9689494ae048bc1a380cd774b4df541ad778c",
+        "227d22e651e541e0d112e7df209fb1508c3d7cd80a2b53e2d0d4ea94c2777a32",
       "scheduled-report":
-        "3b5c145ce74f35a0dd897b0da8c8c9d84caff8c14a7c1fad8ce516b88e82b352",
+        "f1653fba1184a0f81cc90db65cc71a70b0baae1345f4be5c5737d91d562bf0e1",
       "scheduled-worker":
-        "e0b7969e4c1e893b6c5c09a8c798ebd02ac822d9702e987ce2f41548da35067c",
+        "e86d5551933cfa2e543e4df51b30e3bece9f2ebad9543cc2f7dfc85d52e125af",
       telegram:
-        "108b3dd1f94d492fbca39bd6407ca0b45b1f605d0e2ee6bb241d53894a7c1cda",
-      web: "1ace613d84210501d22959c7dfea63eececea23d177b6df3394debc66a9fc892",
+        "1aa40ece1f2f62c59d62687e4c46d9b73e9fe2fa02a5ebbf22b6b7c9987798d7",
+      web: "a9256f8fc18f0163fa30e330faf52d3fd580a74efb508fc66720277ce6e4f83d",
     } satisfies Record<Kind, string>,
   },
 };
 
-const conversation = [
-  { content: "Привет! Что у меня завтра?", role: "user" as const },
-];
-
 async function stepBytes(environment: Record<string, string>, kind: Kind) {
   stubDeployment(environment);
-  const catalog = await toolCatalog(catalogContext(kind, conversation));
+  const catalogs = [];
+  for (const [stepIndex, { messages, turn }] of stepCases[kind].entries()) {
+    catalogs.push(
+      // oxlint-disable-next-line eslint/no-await-in-loop -- one step at a time, in order
+      await toolCatalog(catalogContext(kind, messages), {
+        step: { stepIndex, turnId: "turn-1" },
+        turnMessages: turn,
+      })
+    );
+  }
   // The transform needs the direct model, whatever the deployment's tools.
   vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
   vi.resetModules();
   const { directModelSelection } = await import("@agent/lib/model/direct");
   openRouter.doGenerate.mockClear();
-  for (const options of stepCases[kind]) {
+  for (const [index, { offeredTools, toolChoice, withheldTools }] of stepCases[
+    kind
+  ].entries()) {
+    const options = { offeredTools, toolChoice, withheldTools };
     // oxlint-disable-next-line eslint/no-await-in-loop -- one step at a time, in order
     await directModelSelection(
       "deepseek/deepseek-v4.1-flash",
-      options
-    ).model.doGenerate({ prompt: [], tools: catalog });
+      offeredTools === undefined ? { toolChoice, withheldTools } : options
+    ).model.doGenerate({ prompt: [], tools: catalogs[index] });
   }
-  const steps = openRouter.doGenerate.mock.calls.map(([call]) => [
-    call.toolChoice ?? null,
-    call.tools ?? [],
+  const steps = openRouter.doGenerate.mock.calls.map(([request]) => [
+    request.toolChoice ?? null,
+    request.tools ?? [],
   ]);
-  return sha256(JSON.stringify({ catalog, steps }));
+  return sha256(JSON.stringify(steps));
 }
 
 describe("tools outside both pilots", () => {
@@ -207,7 +452,7 @@ describe("tools outside both pilots", () => {
 
   it("cover every tool of a fully set-up deployment", async () => {
     stubDeployment(fullDeployment);
-    const names = (await toolCatalog(catalogContext("web", conversation))).map(
+    const names = (await toolCatalog(catalogContext("web", opening))).map(
       ({ name }) => name
     );
     expect(names.length).toBeGreaterThan(55);

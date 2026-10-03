@@ -242,7 +242,7 @@ export const updateSchedule = defineTool({
 const shortUpdateSchedule = defineTool({
   approval: ({ session }) => scheduleApproval({ session }),
   description:
-    "Update, pause (status paused), resume (active) or delete one of the person's schedules, whichever chat it was made in; list them first when the target is ambiguous. «Сдвинь на 7:30» is the same rule with the new localTime; «на праздники не присылай» the same rule with skipHolidays true; «пришли сводку сейчас» is runNow true. Name the result's nextRunLocal exactly in the reply.",
+    "Update, pause (status paused), resume (active) or delete one of the person's schedules, whichever chat it was made in; list them first when the target is ambiguous. «Сдвинь на 7:30» is the same rule with the new localTime, a one-off a new at; «на праздники не присылай» the same rule with skipHolidays true; «пришли сводку сейчас» is runNow true. Name the result's nextRunLocal exactly in the reply.",
   inputSchema: updateScheduleInput(shortScheduleTimingInputSchema),
   execute: runUpdateSchedule,
 });

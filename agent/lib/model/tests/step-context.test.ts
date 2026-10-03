@@ -53,6 +53,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  // A silenced console must not outlive its case, failed or not.
+  vi.restoreAllMocks();
 });
 
 const tools = [

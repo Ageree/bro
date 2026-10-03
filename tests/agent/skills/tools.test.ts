@@ -111,6 +111,15 @@ describe("the tools of the skills pilot", () => {
       expect(short.get("browser_task")?.description).toContain(
         "call load_skill browser"
       );
+      // Short, but allowing no less and no more than the full text: a
+      // standing permission sets allowSubmit too, an order lists its items,
+      // and an uncertain start makes every row uncertain.
+      const browserSchema = JSON.stringify(
+        short.get("browser_task")?.inputSchema
+      );
+      expect(browserSchema).toContain("a standing permission of theirs");
+      expect(browserSchema).toContain("For an order or a basket");
+      expect(short.get("route_time")?.description).toContain("`fromUncertain`");
       // A worker reads the full instructions, and the full tools.
       expect(
         Object.keys(shortened).flatMap((name) => {
@@ -163,7 +172,7 @@ const carried = {
     ["the run's own country", "убедись, что сайт работает там, где человек"],
     ["fallback sites", "два-три запасных сайта"],
     ["queued", '`status: "queued"`'],
-    ["out of credits", '`status: "unavailable"`'],
+    ["unavailable: the note's reason", '`status: "unavailable"`'],
     ["a new runId", "возвращает **новый** `runId`"],
     ["no password", "Никогда не проси у человека пароль."],
     ["the code from mail", '`codeFrom: "mail"`'],

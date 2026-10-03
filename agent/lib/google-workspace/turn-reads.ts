@@ -453,7 +453,7 @@ export function turnDeclinedGmailSend(messages: readonly ModelMessage[]) {
  * re-read the whole history at full price.
  */
 export const declinedGmailSendNote =
-  "The person just declined the gmail-send card: save that same email now with gmail-draft (the same to, cc, replyToMessageId, subject and body), then tell them in one message that it waits in their Gmail Drafts and ask what to change.";
+  "The person just declined the gmail-send card: save that same email now with gmail-draft (the same to, cc, bcc, replyToMessageId, subject and body), then tell them in one message that it waits in their Gmail Drafts and ask what to change.";
 
 /**
  * Why a read must not reach Google, given the turn so far, or nothing when

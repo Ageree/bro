@@ -182,11 +182,49 @@ export const catalogKinds = {
   },
 } as const;
 
-/** The catalog of one step, in eve's order. */
+/** The step a catalog is resolved for, as eve's events name it. */
+export interface CatalogStep {
+  readonly stepIndex: number;
+  readonly turnId: string;
+}
+
+/**
+ * The catalog of one step, in eve's order. Each resolver gets the event eve
+ * gives it: `step.started` with the step's turn and index — a resolver that
+ * keeps a verdict per turn (`stepIdentity`) reads them — and `turn.started`
+ * with the turn. A turn-scoped resolver runs once, as the turn starts, so it
+ * sees the messages up to then (`turnMessages`, the step's own unless
+ * given); a step-scoped one sees the step's.
+ */
 export async function toolCatalog(
   context: DynamicResolveContext,
-  event: Parameters<Resolver>[0] = {}
+  {
+    step = { stepIndex: 0, turnId: "turn-1" },
+    turnMessages = context.messages,
+  }: {
+    readonly step?: CatalogStep;
+    readonly turnMessages?: readonly ModelMessage[];
+  } = {}
 ) {
+  const events = {
+    "step.started": {
+      data: {
+        modelId: "deepseek/deepseek-v4.1-flash",
+        sequence: step.stepIndex + 1,
+        stepIndex: step.stepIndex,
+        turnId: step.turnId,
+      },
+      type: "step.started",
+    },
+    "turn.started": {
+      data: { sequence: 0, turnId: step.turnId },
+      type: "turn.started",
+    },
+  } as const;
+  const contexts = {
+    "step.started": context,
+    "turn.started": { ...context, messages: turnMessages },
+  };
   const files = readdirSync(toolsDirectory)
     .filter((file) => file.endsWith(".ts"))
     .toSorted();
@@ -205,7 +243,7 @@ export async function toolCatalog(
           if (!("events" in module.default)) return [];
           const resolve = module.default.events[scope];
           return resolve
-            ? resolvedTools(name, await resolve(event, context))
+            ? resolvedTools(name, await resolve(events[scope], contexts[scope]))
             : [];
         })
       )
@@ -229,7 +267,7 @@ export async function toolCatalog(
                 scope: { key: `${slot}-key`, namespace: slot, value: "w" },
                 slot,
               },
-              turn: { id: "turn-1", input: [], sequence: 1 },
+              turn: { id: step.turnId, input: [], sequence: 1 },
             })
           );
         return Object.entries(resolved ?? {}).map(([name, tool]) =>

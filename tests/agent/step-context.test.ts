@@ -74,6 +74,10 @@ type ProviderSettings = Partial<
 afterEach(() => {
   for (const name of providerSettings) vi.stubEnv(name, "");
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
+  // A case that failed half-way must not leave its clock or its silenced
+  // console to the next one.
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 /** Loads `load` against a fresh environment with these settings. */
@@ -219,6 +223,15 @@ describe("a step in the pilot", () => {
     expect(reportTurnTools).toEqual(
       expect.arrayContaining([...owed, "connect_google", "send_message"])
     );
+    // A search of the mail or Drive comes with its read.
+    expect(reportTurnTools).toEqual(
+      expect.arrayContaining([
+        "drive-read",
+        "drive-search",
+        "gmail-read-thread",
+        "gmail-search",
+      ])
+    );
     // No question card, and no card that is not a report's own step.
     expect(reportTurnTools).not.toContain("ask_question");
     expect(reportTurnTools).not.toContain("gmail-send");
@@ -288,7 +301,6 @@ describe("a step in the pilot", () => {
       turnId: "turn-b",
     });
     expect(services.readAccountEmail).toHaveBeenCalledTimes(2);
-    vi.useRealTimers();
   });
 
   it("tells the step after a declined gmail-send card in its note, not in gmail-draft", async () => {
@@ -325,6 +337,14 @@ describe("a step in the pilot", () => {
     ];
     const piloted = await stepOptions("*", interactiveContext(declined));
     expect(piloted?.replyNote).toContain(declinedGmailSendNote);
+    // The draft keeps every field of the email the card showed.
+    const { gmailComposeSchema } =
+      await import("@agent/lib/google-workspace/gmail");
+    expect(
+      Object.keys(gmailComposeSchema.shape).filter(
+        (field) => !declinedGmailSendNote.includes(field)
+      )
+    ).toEqual([]);
     const outside = await stepOptions(undefined, interactiveContext(declined));
     expect(outside?.replyNote ?? "").not.toContain(declinedGmailSendNote);
   });

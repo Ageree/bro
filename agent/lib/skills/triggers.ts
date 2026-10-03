@@ -163,7 +163,9 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`schedule|recurring|bots?(?!\p{L})|repeat|follow up|ping me`,
     String.raw`brief me`,
     // So must stopping a schedule.
-    String.raw`хватит присыла|больше не (присылай|напоминай|надо)`,
+    // Not a bare «больше не надо»: «мне больше не надо, спасибо» is no
+    // schedule.
+    String.raw`хватит присыла|больше не (присылай|напоминай|(надо|нужно) (присыла|напомина|писа))`,
     String.raw`отключи напомин|stop (sending|reminding)`,
     String.raw`не (надо|нужно) больше (присыла|напомина|писа)`,
     String.raw`перестань (мне )?(писать|присылать|напоминать)`,

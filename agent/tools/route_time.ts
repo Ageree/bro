@@ -853,7 +853,7 @@ export const routeTime = defineTool({
  */
 const shortRouteTime = defineTool({
   description:
-    "Walking, cycling or driving time and distance between places on OpenStreetMap: up to five destinations from one start in one call. Check that each result's place (`matched`; `fromMatched` for the start) is the one meant, in the right city, and name it with the time. A result with `uncertain`, or an error for a street, a district or another building, has no time to state as fact: do what it says. Use the minutes and km as returned and credit the map with `attribution` («по данным © OpenStreetMap»); `link` opens the route, with live traffic for a car.",
+    "Walking, cycling or driving time and distance between places on OpenStreetMap: up to five destinations from one start in one call. Check that each result's place (`matched`; `fromMatched` for the start) is the one meant, in the right city, and name it with the time. A result with `uncertain` (`fromUncertain`: the start, so every row), or an error for a street, a district or another building, has no time to state as fact: do what it says. Use the minutes and km as returned and credit the map with `attribution` («по данным © OpenStreetMap»); `link` opens the route, with live traffic for a car.",
   inputSchema: shortInputSchema,
   async execute(input, ctx) {
     return measure(input, ctx.abortSignal);

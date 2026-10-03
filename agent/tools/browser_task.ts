@@ -294,7 +294,7 @@ const shortTexts: BrowserTaskTexts = {
   allowPayment:
     "Lets the run pay or bind the saved card. Only on the call right after the user's plain yes to your one «Оплачиваю?» question naming this exact order and total with fees; refused otherwise.",
   allowSubmit:
-    "true only when the user asked in their own message for this errand to be done in their name (book, sign up, order, apply, send a request); never for find, compare or recommend. Always with submission naming the one option: on start only when that option is already known, else start without it and continue with it once the run reported the option it staged. Leave it unset on a continue of an errand already confirmed.",
+    "true only when the user asked in their own message for this errand to be done in their name (book, sign up, order, apply, send a request), or a standing permission of theirs covers it (the tool checks it); never for find, compare or recommend. Always with submission naming the one option: on start only when that option is already known, else start without it and continue with it once the run reported the option it staged. Leave it unset on a continue of an errand already confirmed.",
   codeFrom:
     "\"mail\" on a continue after NEEDS: email_code: the tool finds the site's letter in the user's Gmail and types the code itself. Leave task and personSaid out; ask the user only when it found none.",
   collectImages: fullTexts.collectImages,

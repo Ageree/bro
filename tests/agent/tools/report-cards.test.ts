@@ -1,3 +1,5 @@
+import { generateText, simulateReadableStream, streamText, tool } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import type { DynamicResolveContext } from "eve/tools";
 import type { Approval, ApprovalContext } from "eve/tools/approval";
 import type {
@@ -5,6 +7,7 @@ import type {
   reportDeliveredInTurn,
 } from "@agent/lib/delivery/holds";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { toolContext } from "@tests/helpers/tool-context";
 
 const services = vi.hoisted(() => ({
@@ -302,5 +305,120 @@ describe("a browser report's messages past its answer", () => {
     expect(services.markTurnDelivered).toHaveBeenCalledExactlyOnceWith(
       context.session
     );
+  });
+});
+
+/**
+ * The card tools refuse until `send_message` recorded the turn's message
+ * (`markTurnDelivered`, in its execute). A card asked for in the very step of
+ * the message must still be refused: the AI SDK decides the approval of
+ * every call of a step as the calls arrive, and runs the calls only once the
+ * step's model call ended (`execute-tools-from-stream`, and the same order in
+ * `generateText`), so no execute of the step runs before an approval of it.
+ * This pins that order; if an upgrade changed it, the hold would have to
+ * look at messages of earlier steps only.
+ */
+const usage = {
+  inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 1, total: 1 },
+  outputTokens: { reasoning: 0, text: 1, total: 1 },
+};
+const calls = [
+  {
+    input: JSON.stringify({ text: "Записал на 3 октября." }),
+    toolCallId: "call-message",
+    toolName: "send_message",
+    type: "tool-call" as const,
+  },
+  {
+    input: JSON.stringify({ summary: "Стрижка" }),
+    toolCallId: "call-card",
+    toolName: "calendar-create-event",
+    type: "tool-call" as const,
+  },
+];
+
+/** One step that calls `send_message` and a card tool together. */
+function messageAndCard() {
+  let delivered = false;
+  const seen: boolean[] = [];
+  return {
+    recorded: () => delivered,
+    seen,
+    toolApproval: async ({
+      toolCall,
+    }: {
+      readonly toolCall: { readonly toolName: string };
+    }) => {
+      if (toolCall.toolName !== "calendar-create-event") {
+        return "not-applicable" as const;
+      }
+      // An approval that awaits, as `reportCardHold` does.
+      await Promise.resolve();
+      seen.push(delivered);
+      return delivered
+        ? ("user-approval" as const)
+        : { reason: reportCardHoldRefusal, type: "denied" as const };
+    },
+    tools: {
+      "calendar-create-event": tool({
+        execute: () => ({ created: true }),
+        inputSchema: z.object({ summary: z.string() }),
+      }),
+      send_message: tool({
+        execute: (message: { readonly text: string }) => {
+          delivered = true;
+          return message;
+        },
+        inputSchema: z.object({ text: z.string() }),
+      }),
+    },
+  };
+}
+
+describe("a card in the step of the turn's message", () => {
+  it("is decided before the message is recorded, when the step is generated", async () => {
+    const { recorded, seen, toolApproval, tools } = messageAndCard();
+    await generateText({
+      model: new MockLanguageModelV4({
+        doGenerate: async () => ({
+          content: calls,
+          finishReason: { raw: "tool_calls", unified: "tool-calls" },
+          usage,
+          warnings: [],
+        }),
+      }),
+      prompt: "Browser run finished",
+      toolApproval,
+      tools,
+    });
+    expect(seen).toEqual([false]);
+    expect(recorded()).toBe(true);
+  });
+
+  it("is decided before the message is recorded, when the step is streamed", async () => {
+    const { recorded, seen, toolApproval, tools } = messageAndCard();
+    const result = streamText({
+      model: new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start" as const, warnings: [] },
+              ...calls,
+              {
+                finishReason: { raw: "tool_calls", unified: "tool-calls" },
+                type: "finish" as const,
+                usage,
+              },
+            ],
+          }),
+        }),
+      }),
+      prompt: "Browser run finished",
+      toolApproval,
+      tools,
+    });
+    await result.consumeStream();
+    expect(seen).toEqual([false]);
+    expect(recorded()).toBe(true);
   });
 });

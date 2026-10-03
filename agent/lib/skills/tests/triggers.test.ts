@@ -280,6 +280,8 @@ const synthetic = [
   ["schedule-cancel", "хватит, отмени эту сводку", ["schedules"]],
   ["schedule-remove", "убери утреннюю сводку", ["schedules"]],
   ["schedule-no-more", "не надо больше присылать новости", ["schedules"]],
+  ["schedule-no-longer", "больше не надо присылать погоду", ["schedules"]],
+  ["no-more-thanks", "мне больше не надо, спасибо", []],
   ["schedule-quit", "перестань мне писать про погоду", ["schedules"]],
   ["schedule-cancel-en", "cancel my morning brief", ["schedules"]],
   ["schedule-move", "перенеси сводку на 8", ["google", "schedules"]],

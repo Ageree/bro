@@ -161,10 +161,15 @@ export function skippedSendNotice(reason: SkipReason) {
 /**
  * The rewrites that send the model to a tool, which in the skills pilot may
  * not be offered yet: its group follows its skill (`agent/lib/skills/tools.ts`).
+ * `found` and `status` send it to the work's own tools, the mail's search
+ * among them. `calendar-later` comes only in a browser report's turn, which
+ * keeps its calendar tool from its first step (`reportTurnTools`).
  */
 const toolStepRewrites: ReadonlySet<RewriteReason> = new Set([
   "announced",
   "calendar",
+  "found",
+  "status",
   "undone",
 ]);
 

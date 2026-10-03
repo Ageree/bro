@@ -22,8 +22,8 @@ export const backgroundTaskTurnTools = [
  * is out (`stepsAskedBy`) and `connect_google`, which the calendar's refusal
  * names when Google is not connected (`googleNotConnectedWriteRefusal`), the
  * reads that check a date or a sum before telling it — the mail and Drive
- * too, where a document's date is when Госуслуги failed — and the errand's
- * workstream. The three card tools refuse until the message is out
+ * too, searched and read, where a document's date is when Госуслуги
+ * failed — and the errand's workstream. The three card tools refuse until the message is out
  * (`reportCardHold`): the set stays the same through the turn, so its
  * schemas stay in the cached prefix. No question card and no other card:
  * the report is Bro's own turn, and the person answers its question in a
@@ -35,7 +35,9 @@ export const reportTurnTools = [
   "calendar-create-event",
   "calendar-list-events",
   "connect_google",
+  "drive-read",
   "drive-search",
+  "gmail-read-thread",
   "gmail-search",
   "list_orders",
   "load_skill",
