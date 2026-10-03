@@ -341,6 +341,15 @@ export default defineAgent({
     },
   }),
   reasoning: "low",
+  // eve's default caps a session at 40M input tokens and then holds it on an
+  // Approve/Stop card. Telegram and iMessage keep one session per chat for
+  // its whole 30 days, about 400 steps of ~96k: a long chat stalled on a
+  // card the person never asked for. Ten times that keeps a backstop against
+  // a runaway loop. eve stores the cap when a session is created, so a chat
+  // gets it with its next session.
+  limits: {
+    maxInputTokensPerSession: 400_000_000,
+  },
   compaction: {
     thresholdPercent: 0.7,
   },
