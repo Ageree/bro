@@ -204,8 +204,26 @@ function parsedJson(text: string) {
   }
 }
 
+/** Two labels of one product: a missing name or SKU tells nothing apart. */
+function sameLabels(
+  one: Pick<PriceReading, "name" | "sku">,
+  other: Pick<PriceReading, "name" | "sku">
+) {
+  return (
+    (one.name === null || other.name === null || one.name === other.name) &&
+    (one.sku === null || other.sku === null || one.sku === other.sku)
+  );
+}
+
+/**
+ * The page's products, decided once all are read: a sold-out node of the
+ * product in stock (a variant, a seller) leaves its price, a sold-out node
+ * of another product makes the page as ambiguous as a catalogue, and only
+ * a page whose every product is sold out is `unavailable`.
+ */
 function jsonLdProducts(html: string) {
   const products: PriceReading[] = [];
+  const soldOut: Pick<PriceReading, "name" | "sku">[] = [];
   for (const match of html.matchAll(
     /<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script\s*>/giu
   )) {
@@ -219,18 +237,31 @@ function jsonLdProducts(html: string) {
       const price = offerPrice(product.offers);
       if (!price) continue;
       if (price === "several") return "several-products" as const;
-      // A sold-out product is not priced by other markup on its page.
-      if (price === "unavailable") return "unavailable" as const;
-      products.push({
-        ...price,
-        extractor: "jsonld",
-        kind: "price",
+      const labels = {
         name: plainLabel(product.name, 120),
         sku: plainLabel(product.sku ?? product.productID ?? product.gtin13, 64),
+      };
+      if (price === "unavailable") {
+        soldOut.push(labels);
+        continue;
+      }
+      products.push({
+        ...price,
+        ...labels,
+        extractor: "jsonld",
+        kind: "price",
       });
     }
   }
-  return products;
+  if (products.length === 0) {
+    // A sold-out product is not priced by other markup on its page.
+    return soldOut.length > 0 ? ("unavailable" as const) : products;
+  }
+  return soldOut.every((gone) =>
+    products.every((product) => sameLabels(gone, product))
+  )
+    ? products
+    : ("several-products" as const);
 }
 
 const htmlEntities = new Map([

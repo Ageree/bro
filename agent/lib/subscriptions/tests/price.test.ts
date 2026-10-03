@@ -123,6 +123,34 @@ describe("reading a price", () => {
     ).toEqual({ kind: "unavailable" });
   });
 
+  it("reads every product before calling a page sold out", () => {
+    const inStock = {
+      "@type": "Product",
+      name: "Чайник",
+      offers: { availability: "https://schema.org/InStock", price: 7_490 },
+      sku: "K780",
+    };
+    const soldOut = {
+      ...inStock,
+      offers: { availability: "https://schema.org/OutOfStock", price: 6_990 },
+    };
+    // The same product sold out in one node and in stock in another.
+    expect(readPrice(jsonLd([soldOut, inStock]))).toMatchObject({
+      amount: 7_490,
+      kind: "price",
+    });
+    expect(readPrice(jsonLd([inStock, soldOut]))).toMatchObject({
+      amount: 7_490,
+    });
+    // Another product sold out beside it: as ambiguous as a catalogue.
+    expect(
+      readPrice(jsonLd([{ ...soldOut, name: "Фильтр", sku: "F1" }, inStock]))
+    ).toEqual({ kind: "several-products" });
+    expect(readPrice(jsonLd([soldOut, { ...soldOut, sku: "K781" }]))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
   it("tells products of one name and price apart by SKU", () => {
     expect(
       readPrice(
