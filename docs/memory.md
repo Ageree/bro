@@ -89,8 +89,8 @@ model provider, the digest also asks a cheap model (`MEMORY_DIGEST_MODEL`, the
 provider's default otherwise — never the workspace's chosen model, reasoning
 off, 400 output tokens) which non-rule memories are one-off task details,
 duplicates in other words, or facts a newer one corrects — only when memory
-changed since the start of the last digest that asked it. The model returns indexes only; code keeps a
-proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
+changed since the start of the last digest that asked it. The model returns
+indexes only; code keeps a proposal only where it holds (`agent/lib/memory/digest/classifier.ts`): a
 one-off is a fact, decision or organization without a validity date; a
 duplicate's every word is in the record it folds into; a correction goes from
 an older to a newer fact, person or organization, and code writes its dated
