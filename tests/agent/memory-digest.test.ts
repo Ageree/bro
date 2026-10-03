@@ -413,6 +413,7 @@ describe("folding memories together", () => {
     // A clause after a comma may lean on the one before it.
     expect(saysInFull("По выходным, любит суши.", "Любит суши")).toBe(false);
     expect(saysInFull("Не любит суши.", "Любит суши")).toBe(false);
+    expect(saysInFull("Любит суши, когда голоден.", "Любит суши")).toBe(false);
     expect(saysInFull("Любит суши.", "Любит суши и роллы")).toBe(false);
     // A clause that narrows or takes back the memory is no copy of it.
     expect(saysInFull("Любит суши по пятницам.", "Любит суши")).toBe(false);

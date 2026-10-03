@@ -41,6 +41,15 @@ const contrastWords = new Set([
   "although",
   "except",
   "only",
+  // A condition limits what it follows: «любит суши, когда голоден».
+  "когда",
+  "если",
+  "пока",
+  "лишь",
+  "when",
+  "if",
+  "unless",
+  "while",
 ]);
 const clauseBreak = /[,;:.!?()—–]/u;
 /**
