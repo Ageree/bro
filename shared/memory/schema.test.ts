@@ -48,6 +48,12 @@ describe("what memory may keep", () => {
     "Пароль: СекретноеСлово для сайта",
     "В Ozon код 1234",
     "смс для входа 482193",
+    // A safe's PIN guards valuables, unlike a door's code.
+    "PIN-код от сейфа 4821",
+    "пин от банковской ячейки 4821",
+    // A one-time word outweighs the order the code is for.
+    "код подтверждения заказа 123456",
+    "Order confirmation code 482193",
   ])("refuses «%s»", (text) => {
     expect(isSafeMemoryText(text)).toBe(false);
   });
@@ -92,7 +98,7 @@ describe("what memory may keep", () => {
     "код банка БИК 044525225",
     "В Сбере код клиента 774411",
     "pin 1234 от домофона",
-    "PIN-код от сейфа 4821",
+    "PIN для домофона 4512",
     "Пароль от wifi — на наклейке роутера",
     "Никогда не спрашивай пароль от почты",
   ])("keeps «%s»", (text) => {
