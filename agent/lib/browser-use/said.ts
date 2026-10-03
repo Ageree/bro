@@ -511,6 +511,16 @@ export function oneTimeCodesIn(
   text: string,
   options: { readonly awaitingCode: boolean }
 ) {
+  return oneTimeCodeRanges(text, options).map(([start, end]) =>
+    text.slice(start, end).replaceAll(/\D/gu, "")
+  );
+}
+
+/** Where `oneTimeCodesIn` finds its codes, as `[start, end)` ranges. */
+export function oneTimeCodeRanges(
+  text: string,
+  options: { readonly awaitingCode: boolean }
+) {
   return [...text.matchAll(digitGroupPattern)].flatMap((match) => {
     const start = match.index;
     const end = start + match[0].length;
@@ -528,7 +538,7 @@ export function oneTimeCodesIn(
       (!namedOtherwise(match[0], before, after) &&
         (options.awaitingCode ||
           near.some((words) => codeContextPattern.test(words))));
-    return isCode ? [match[0].replaceAll(/\D/gu, "")] : [];
+    return isCode ? [[start, end] as const] : [];
   });
 }
 

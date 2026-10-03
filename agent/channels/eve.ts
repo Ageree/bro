@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import { claimSession, isSessionOwned } from "@db/services/sessions";
 import { ensureScope } from "@db/services/scope";
+import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -80,9 +81,16 @@ const channel = eveChannel({
     // Route auth above resolves a workspace user or has already refused the
     // request, so a missing caller is a broken invariant, not a guest.
     if (!auth) throw new Error("An eve message arrived without a caller.");
+    const scope = scopeFromPrincipal(auth);
     return {
       auth,
-      context: await firstContactContext(scopeFromPrincipal(auth)),
+      context: [
+        ...(await firstContactContext(scope)),
+        ...(await crossChannelRecap(scope, {
+          channel: "channel:eve",
+          sessionId: context.eve.sessionId,
+        })),
+      ],
     };
   },
   events: {

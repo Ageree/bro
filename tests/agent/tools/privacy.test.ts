@@ -56,6 +56,7 @@ const optionalServices = [
   "CLOUDRU_KEY_ID",
   "CLOUDRU_KEY_SECRET",
   "CLOUDRU_S3_TENANT_ID",
+  "CROSS_CHANNEL_WORKSPACES",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
   "MEMORY_DIGEST_MODEL",
@@ -147,6 +148,24 @@ describe("privacy", () => {
     );
     expect(remove).toContain("«забудь мои входы на сайты»");
     expect(remove).toContain("«не заходи больше в <сайт>»");
+  });
+
+  // Review of item 28: a pilot workspace's messages sit in Postgres too.
+  it("names the cross-channel log only for a pilot workspace", async () => {
+    const outside = await withServices({});
+    expect((await overview(outside.tool)).kept.join("\n")).not.toContain(
+      "14 дней"
+    );
+
+    const pilot = await withServices({ CROSS_CHANNEL_WORKSPACES: "*" });
+    const kept = (await overview(pilot.tool)).kept.join("\n");
+    expect(kept).toContain("веб-чате, Telegram и iMessage");
+    expect(kept).toContain("14 дней");
+    expect(kept).toContain("«удали всё, что ты про меня помнишь» стирает их");
+    // Review of item 28: the nightly backups keep them a while longer.
+    expect(kept).toContain(
+      "ещё до 14 дней остаются в ночных зашифрованных резервных копиях"
+    );
   });
 
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {

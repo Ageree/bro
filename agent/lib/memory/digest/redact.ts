@@ -8,7 +8,15 @@ export const redactionPlaceholder = "[удалено]";
  * placeholder, or the text itself when it has none.
  */
 export function redactUnsafeText(text: string) {
-  const ranges = unsafeMemoryRanges(text).toSorted(([a], [b]) => a - b);
+  return redactRanges(text, unsafeMemoryRanges(text));
+}
+
+/** The text with each `[start, end)` range replaced by a placeholder. */
+export function redactRanges(
+  text: string,
+  secrets: readonly (readonly [number, number])[]
+) {
+  const ranges = secrets.toSorted(([a], [b]) => a - b);
   if (ranges.length === 0) return text;
   let redacted = "";
   let cursor = 0;

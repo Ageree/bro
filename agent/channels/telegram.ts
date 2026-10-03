@@ -22,6 +22,7 @@ import {
   turnFailureNotice,
 } from "@agent/lib/delivery/fallback";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -335,7 +336,10 @@ export default telegramChannel({
     // An account linked from the web cabinet may never have written before,
     // so the introduction follows the workspace's first message here too. It
     // is claimed only now, once this message is sure to start a turn.
-    const turnContext = await firstContactContext(scope);
+    const turnContext = [
+      ...(await firstContactContext(scope)),
+      ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
+    ];
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },

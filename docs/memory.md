@@ -146,6 +146,29 @@ and the interactive instructions (`agent/instructions/content/role/interactive.m
   `SECRET_ENCRYPTION_KEY` (`db/services/vault.ts`); no model reads them.
 - Files and generated pictures go to a private bucket of Object Storage on
   Cloud.ru, under `artifacts/` (`shared/object-storage/artifacts.ts`).
+- For the cross-channel pilot (`CROSS_CHANNEL_WORKSPACES`) only, Postgres
+  also keeps what the person said in the web chat, Telegram and iMessage, a
+  line per message cut to 500 characters, in `conversation_log`
+  (`db/services/conversation-log.ts`), with one-time codes, card numbers
+  and passwords cut out by memory's own filter (`unsafeMemoryRanges`), a
+  short message's bare code by the browser errand's (`oneTimeCodeRanges`),
+  passport and SNILS numbers by `agent/lib/privacy/document-numbers.ts`, and a
+  card's CVV and a password or a secret word after its name (past words
+  about it and its owner) by the hook's own rules; only the first 600 characters are read: a
+  message in one channel carries a short recap of the others, each line
+  stamped with its day and time in the workspace's zone. Bro's own messages
+  are not kept there: they quote mail, pages and task output, and the recap
+  is user-role turn context. Every line goes 14 days after it was said,
+  pilot or not, in the hourly `memory-history` tick, which runs that pass
+  under `EVE_SCHEDULES=off` too. Every `profile__forget_all` and
+  `workstreams__forget_all` call in a turn the person's own message started
+  deletes the workspace's lines at once; in the pilot `profile__forget_all`
+  takes an empty list there, so «удали всё» with no memory saved still
+  erases them. A turn Bro opened forgets only the records it names. Deleting the workspace deletes them
+  too. A recap a chat received stays in that chat's session history like
+  any message, as long as the session does. Erased and expired lines stay
+  up to 14 more days in the nightly encrypted backups of the database
+  (`db-backup.sh`). The privacy tool names the log for a pilot workspace.
 - Google, Notion, Slack and other connected apps' grants live in Composio,
   not in Bro's database; Bro keeps no provider token.
 - Model providers see the conversation they answer, Browser Use sees the
