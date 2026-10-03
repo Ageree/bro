@@ -435,18 +435,28 @@ export async function forgetMemory(
     if (replay) return { forgotten: true, ...replay };
     if (input.keeper) {
       // Locked, as below: the text this one folds into stays what was read
-      // until the forget commits.
-      const [keeper] = await transaction
-        .select({ revision: memoryRecords.revision })
+      // until the forget commits. Both rows at once, in index order — the
+      // order expiry's update meets them in too — so the two never wait on
+      // each other.
+      const locked = await transaction
+        .select({
+          index: memoryRecords.index,
+          live: sql<boolean>`${memoryRecords.content} IS NOT NULL`,
+          revision: memoryRecords.revision,
+        })
         .from(memoryRecords)
         .where(
           and(
-            recordIdentity(scope, scopeKey, input.keeper.index),
-            isNotNull(memoryRecords.content)
+            eq(memoryRecords.workspaceId, scope.workspaceId),
+            eq(memoryRecords.scopeKey, scopeKey),
+            inArray(memoryRecords.index, [input.keeper.index, input.index])
           )
         )
-        .limit(1)
+        .orderBy(asc(memoryRecords.index))
         .for("update");
+      const keeper = locked.find(
+        ({ index, live }) => index === input.keeper?.index && live
+      );
       if (keeper?.revision !== input.keeper.revision) {
         throw new Error(
           "Memory changed: what it folds into is not what was read."
@@ -812,8 +822,9 @@ export async function importLegacyMemories(
  * takes the target's next index (related indexes follow it), joins the
  * semantic index queue, and retires the source as forgetting would, so a
  * repeated call finds nothing to move. History sees each step as `system`:
- * an `import` in the target, a `merge` for the copy it folded and for the
- * source it retired. The number of records moved.
+ * an `import` in the target (dated now), a `merge` for the copy it folded
+ * and for the source it retired, whose earlier text is wiped: the target
+ * holds it. The number of records moved.
  */
 export async function adoptMemoryRecords(
   scope: AccessScope,
@@ -948,7 +959,7 @@ export async function adoptMemoryRecords(
         .returning();
       if (!saved) throw new Error("Memory could not be adopted.");
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
-      await recordRevision(transaction, saved, adoption, "import");
+      await recordRevision(transaction, saved, adoption, "import", now);
       // oxlint-disable-next-line eslint/no-await-in-loop -- Same transaction as the insert above.
       await enqueueSync(transaction, saved);
     }
@@ -992,8 +1003,8 @@ export async function adoptMemoryRecords(
       .update(memoryScopes)
       .set({ lastAllocatedIndex: lastIndex, updatedAt: now })
       .where(scopeIdentity(scope, toKey));
-    // The text lives on in the target, so a source keeps its history as a
-    // merge does, for 30 days.
+    // The text lives on in the target, the one record that holds it now: the
+    // source keeps no earlier text, so forgetting the target forgets it all.
     await Promise.all(
       retired.map(async (row) => {
         const [gone] = await transaction
@@ -1013,7 +1024,9 @@ export async function adoptMemoryRecords(
             )
           )
           .returning();
-        if (gone) await recordRevision(transaction, gone, adoption, "merge");
+        if (!gone) return;
+        await wipeRecordHistory(transaction, scope, row.scopeKey, row.index);
+        await recordRevision(transaction, gone, adoption, "merge");
       })
     );
     await Promise.all(
@@ -1322,13 +1335,16 @@ function recordRevision(
   transaction: Transaction,
   row: typeof memoryRecords.$inferSelect,
   origin: MemoryOrigin,
-  action: RevisionAction
+  action: RevisionAction,
+  // When the revision was written, if not when the record last changed: a
+  // moved record keeps its own dates.
+  createdAt = row.updatedAt
 ) {
   return transaction.insert(memoryRevisions).values({
     action: origin.action ?? action,
     actor: origin.actor,
     content: row.content,
-    createdAt: row.updatedAt,
+    createdAt,
     recordIndex: row.index,
     revision: row.revision,
     scopeKey: row.scopeKey,
