@@ -5249,7 +5249,7 @@ describe("browser_task finds the option before the one card", () => {
     // The same browser, so the seats the search picked are still picked.
     expect(created?.sessionId).toBe(sessionId);
     expect(created?.task).toContain(
-      "Keep the tab that is open and the account already signed in"
+      "Keep the tab that is open and do not start over"
     );
     expect(created?.task).toContain(
       "The person asked for this one submission in their name and answered yes when asked to pay its total."

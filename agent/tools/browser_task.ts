@@ -412,6 +412,7 @@ function outcomeContract() {
   return [
     "Before the labelled footer, write a complete useful report with every material fact the errand requested for each option. The footer is routing metadata and never replaces the report.",
     reportFactsLine(),
+    "Report only what you did and saw on this run: say that you signed in, added, chose, filled in or confirmed something only once the page showed it done, and never report a step you did not take.",
     "Finish your final answer with these labelled lines, written in the language of the errand above:",
     "RESULT: what was actually accomplished, or why it stopped",
     "ORDER: the order, booking, or reference number, or none",
@@ -1105,6 +1106,20 @@ function gosuslugiSignInLine(
 const smsCodeOverAppLine =
   "If the site offers to sign in with a QR code or a confirmation in its app and also with a code by SMS or a call («Войти другим способом», «По номеру телефона», «Получить код в SMS»), choose the code by SMS or call.";
 
+/** A phone field that already shows the country code types the rest. */
+const maskedPhoneField =
+  "If the phone field already shows the country code (+7) or a mask";
+const nationalDigits = "only the 10 digits after it (no +7, no 8, no spaces)";
+
+/**
+ * A phone secret's 10-digit twin, for a field that already shows +7
+ * (`nationalPhoneDigits`): Ozon took a whole «+7…» login as a malformed
+ * phone (RU 25.09, d04).
+ */
+function maskedPhoneAliasLine(alias: string) {
+  return `${maskedPhoneField}, ask for ${alias} instead — the same number as ${nationalDigits}; if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`;
+}
+
 /**
  * Signing in with the person's own phone where no login is saved. Ozon,
  * Wildberries, Самокат and Яндекс sign people in by phone and a code, and a
@@ -1122,7 +1137,7 @@ function phoneSignInLine(aliases: readonly string[], site: string | undefined) {
   const where = host === undefined || host === "" ? "the errand's Site" : host;
   const [domain] = site === undefined ? [] : phoneSignInDomains(site);
   const digits = aliases.includes(browserSecretAliases.signinPhoneDigits)
-    ? ` If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.signinPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects.`
+    ? ` ${maskedPhoneAliasLine(browserSecretAliases.signinPhoneDigits)}`
     : "";
   return `No saved password is available for ${where}. ${phoneSignInSentence}${digits} ${smsCodeOverAppLine} It works only on ${domain ?? where} and its own sign-in pages; never try it on another site, and no other personal detail goes with it. Complete the ordinary send-code step before stopping; do not assume an offer to send a code means it arrived. Once sent, stop with NEEDS: sms_code for SMS or push for either a code in the app notification or an app approval, and put exactly what the page asks for and any masked destination in DETAILS. If ${where} offers only a password sign-in, stop with NEEDS: password instead of guessing one.`;
 }
@@ -1132,7 +1147,7 @@ function phoneSignInLine(aliases: readonly string[], site: string | undefined) {
  * for Госуслуги, where no digits are bound (`phoneDigitsBinding`).
  */
 function loginPhoneLine() {
-  return `${browserSecretAliases.loginUsername} is a phone number. If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.loginPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects. ${smsCodeOverAppLine}`;
+  return `${browserSecretAliases.loginUsername} is a phone number. ${maskedPhoneAliasLine(browserSecretAliases.loginPhoneDigits)} ${smsCodeOverAppLine}`;
 }
 
 /**
@@ -1164,6 +1179,52 @@ function credentialsLine(aliases: readonly string[], site: string | undefined) {
     .filter((line) => line !== undefined)
     .join(" ");
 }
+
+/**
+ * A run never takes the sign-in for granted. On 04.10 (predubezhdai.ru) the
+ * follow-up text said the account was «already signed in»; the site had
+ * logged it out, and three follow-ups in a row stopped with NEEDS: info
+ * without signing in, although the login and password were bound. A start
+ * met «На ваш email был создан личный кабинет. Пароль выслан на почту» at a
+ * guest checkout the site refused (409 «User already exist») and stopped
+ * with NEEDS: password, saying the saved password «did not fit», without
+ * ever submitting it. Only a password the site rejected is missing.
+ */
+function accountStateLine(aliases: readonly string[]) {
+  const { gosuslugiLogin, ownLogin } = boundLogins(aliases);
+  if (
+    !ownLogin &&
+    !gosuslugiLogin &&
+    !aliases.includes(browserSecretAliases.signinPhone)
+  ) {
+    return undefined;
+  }
+  const password =
+    ownLogin && aliases.includes(browserSecretAliases.loginPassword);
+  return [
+    "Never take it for granted that this browser is signed in to the person's account, even when an earlier run was or this task says so: sites sign people out. Before you do anything in the account — the basket, the checkout, an order, a booking, the order history — look for a visible signed-in state (the person's name, «Профиль», «Личный кабинет», «Мои заказы», «Выйти»); «Войти» or «Вход» in its place means you are signed out.",
+    password
+      ? `When the site shows you are signed out, asks you to sign in, or will not let you go on as a guest because an account already exists for the person («пользователь уже существует», «на ваш email был создан личный кабинет», «пароль выслан на почту»), sign in yourself on the site's own sign-in form with ${browserSecretAliases.loginUsername} and ${browserSecretAliases.loginPassword}, then go on with the errand. A note that an account was created or a password was emailed is no reason to stop and no code the person must give: the bound password is the one to try. Stop with NEEDS: password only when the site rejects that password after you submitted it${gosuslugiLogin ? " and signing in through Госуслуги as above did not work either" : ""}, and quote the site's message in DETAILS.`
+      : "When the site shows you are signed out, asks you to sign in, or will not let you go on as a guest because an account already exists for the person, sign in again as the sign-in paragraph above allows, then go on with the errand.",
+  ].join(" ");
+}
+
+/**
+ * Where a checkout starts. Runs on 04.10 opened a checkout address they
+ * remembered (predubezhdai.ru/order, a legacy page that no longer takes an
+ * order) instead of the basket and «Оформить заказ»; after a sign-in, the
+ * page left open before it is a guest's.
+ */
+const checkoutRouteLine =
+  "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button («Оформить заказ», «Перейти к оформлению»). Never open a checkout, order or payment page by an address you remember, guess or saw on an earlier run. A checkout page an earlier run left open is this order's only while it still shows this order's items and total; when it does not, when it shows an error, or once you have signed in since it opened, go back to the basket and start the checkout again from its button.";
+
+/**
+ * How form fields take the person's details: the phone after the field's
+ * own +7, a city or an address picked from the site's suggestions. On 04.10
+ * a run typed «+7…» after the field's +7, doubling the number and flipping
+ * the country to Kazakhstan, and typed a city the site never took.
+ */
+const formFieldsLine = `${maskedPhoneField}, type ${nationalDigits} and check that the field shows the number and the country you meant. When a city, street, address or pickup-point field opens a list of suggestions as you type, choose the matching entry from that list rather than leaving the typed text, and check that the field took it.`;
 
 /**
  * A sign-in the site offers to remember is one the profile keeps: «Запомнить
@@ -1213,11 +1274,18 @@ export function composeBrowserTask(options: {
     homeLine(options.home),
     searchLine(),
     commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
+    options.staging !== undefined || options.consent !== undefined
+      ? checkoutRouteLine
+      : undefined,
     address,
     paymentLine(options.allowPayment),
     budgetLine(options.allowPayment),
     options.consent || own ? options.facts : undefined,
+    (options.consent || own ? options.facts : address) === undefined
+      ? undefined
+      : formFieldsLine,
     credentialsLine(options.aliases, options.site),
+    accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
@@ -1259,10 +1327,10 @@ function closedPageLine(errand: string, closed: ClosedPage) {
     return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on, waiting for the person's code or approval, was closed after sitting idle, so that step did not finish there. Open the Site again. If a payment was waiting for 3-D Secure, first check whether it went through, and never pay twice. If the site asks you to sign in, sign in again. A code in the message above belonged to the closed page and does not work in a new sign-in: do not type it, and stop at the new code step as the first rule says.`;
   }
   if (closed === "staged") {
-    return `This continues the errand «${errand}» in a fresh browser: the page the last run left at its final step was closed while it waited. Open the Site again — the sign-in the last run had is kept in this browser's profile, and a basket the site keeps for the account still holds what was put in it — find the same option again and take it back to that step. If it is gone or changed (another price, time or seat), stop with NEEDS: decision and say what changed, rather than taking another.`;
+    return `This continues the errand «${errand}» in a fresh browser: the page the last run left at its final step was closed while it waited. Open the Site again — this browser's profile may still hold the sign-in the last run had, but check that the page shows it before you act in the account and sign in again when it does not; a basket the site keeps for the account still holds what was put in it —find the same option again and take it back to that step. If it is gone or changed (another price, time or seat), stop with NEEDS: decision and say what changed, rather than taking another.`;
   }
   if (closed === "asked") {
-    return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on to ask the person was closed while it waited. Open the Site again — the sign-in the last run had is kept in this browser's profile, and a basket the site keeps for the account still holds what was put in it — get back to where the errand stopped, without redoing what is already done, and go on with the person's answer. If what the last run found is gone or changed, stop with NEEDS: decision and say what changed.`;
+    return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on to ask the person was closed while it waited. Open the Site again — this browser's profile may still hold the sign-in the last run had, but check that the page shows it before you act in the account and sign in again when it does not; a basket the site keeps for the account still holds what was put in it —get back to where the errand stopped, without redoing what is already done, and go on with the person's answer. If what the last run found is gone or changed, stop with NEEDS: decision and say what changed.`;
   }
   return `This continues the errand «${errand}» in a fresh browser: the page the last run stopped on was closed so that the person's sign-ins are kept in this browser's profile. Open the Site again and pick up where the errand left off, without redoing what is already done.`;
 }
@@ -1393,7 +1461,7 @@ export function composeBrowserContinuation(options: {
     options.message,
     [
       options.freshBrowser === undefined
-        ? `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and the account already signed in: do not start over and do not navigate again unless the page is gone.`
+        ? `This continues the errand «${options.errand}» in this same browser session. Keep the tab that is open and do not start over; leave it only to sign in again or when the page is gone. The site may have signed the account out since the last run: check that the page still shows the account signed in before you act in it, and if it does not, sign in again as the sign-in rules below allow, then go back to where the errand stopped.`
         : closedPageLine(options.errand, options.freshBrowser),
       options.site ? `Site: ${options.site}` : undefined,
     ]
@@ -1408,11 +1476,19 @@ export function composeBrowserContinuation(options: {
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
     commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
+    options.done !== true &&
+    (staging !== undefined || options.consent !== undefined)
+      ? checkoutRouteLine
+      : undefined,
     address,
     paymentLine(options.allowPayment),
     options.searching ? budgetLine(options.allowPayment) : undefined,
     options.consent || own ? options.facts : undefined,
+    (options.consent || own ? options.facts : address) === undefined
+      ? undefined
+      : formFieldsLine,
     credentialsLine(options.aliases, options.site),
+    accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
