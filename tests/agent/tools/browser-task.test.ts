@@ -2028,7 +2028,29 @@ describe("browser_task one question per errand", () => {
     );
   });
 
+  it("keeps the yes when the follow-up names the contacts every order gives", async () => {
+    // RU 04.10: the yes was to an order with no personal data named; the
+    // follow-up listed «имя, телефон, почта, данные карты из сейфа».
+    await continueErrand({
+      allowSubmit: true,
+      completedAt: new Date(),
+      confirmed: { ...cream, paymentCapRub: 2100, personalData: [] },
+      outcome: "Result: сайт ушёл на /order/error\nNeeds: decision",
+      personSaid: "войди заново и оплати",
+      submission: {
+        ...cream,
+        personalData: ["имя", "телефон", "почта", "данные карты из сейфа"],
+      },
+      task: "войди заново и оплати",
+    });
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+  });
+
   it.each([
+    ["a passport", { ...cream, personalData: ["имя", "телефон", "паспорт"] }],
     [
       "another basket",
       {
