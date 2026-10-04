@@ -73,7 +73,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-03.1"
+VERSION = "2026-10-04.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -90,6 +90,7 @@ CANDIDATE_IMPORTS = (
     ("browser_use.browser.events", ("SwitchTabEvent",)),
     ("browser_use.agent.message_manager.views", ("HistoryItem",)),
     ("browser_use.agent.views", ("AgentState",)),
+    ("browser_use.utils", ("match_url_with_domain_pattern",)),
     ("httpx", ("AsyncClient", "Timeout")),
     ("cv2", ()),
     ("numpy", ()),
@@ -903,6 +904,18 @@ class Worker:
             return ActionResult(extracted_content=f"Entered the code into {where}.",
                                 long_term_memory="Entered the one-time code.")
 
+        @tools.action("Fill the page's bank card form (number, expiry, CVC, cardholder) with the saved card. Always "
+                      "use this for a card form instead of typing card secrets yourself: it finds the fields in the "
+                      "payment processor's frame too, types each one (a month box, a year box, a single MM/YY field, "
+                      "a select) the way that field takes it, and checks each kept its value.")
+        async def fill_card(browser_session):
+            card = card_secrets(session.sensitive_data, await browser_session.get_current_page_url())
+            if card is None:
+                return ActionResult(error="No saved card is bound to this site for this run.")
+            filled, message = await fill_card_form(await card_frames(browser_session), card)
+            return (ActionResult(extracted_content=message, long_term_memory=message) if filled
+                    else ActionResult(error=message))
+
         @tools.action("Get past a site's anti-bot check with a slider puzzle (GeeTest), such as Avito's «Доступ "
                       "ограничен» page. Call it once on the check page: it presses the check's button itself, "
                       "waits for the puzzle, moves the slider and says whether the page let it through.")
@@ -1354,6 +1367,499 @@ GEETEST_ANSWER = r"""((answer) => {
 })"""
 
 
+# --- Bank card forms ------------------------------------------------------------------------------------
+
+# The model never sees a card's values, so it cannot tell which field took what: on a ЮKassa checkout it
+# typed card_expiry («01/31») into both two-character boxes of the expiry and got 01/01, read the CVC's
+# dots as empty and told the person their saved card was wrong (RU 04.10). `fill_card` finds the fields
+# itself, in every frame of the tab (a processor's own cross-origin frame too), types each the way that
+# field takes it and reads it back.
+CARD_ALIASES = {"number": "card_number", "expiry": "card_expiry", "cvc": "card_cvc", "holder": "card_holder"}
+CARD_KINDS = ("number", "exp", "month", "year", "cvc", "holder")
+
+# Runs in an isolated world of one frame: lists the card fields of that document, kept in a global of the
+# world for the calls that follow. A field is named by its autocomplete token, its own attributes and
+# labels, or else the text right before it. Words of the rest of a checkout (a passport, a loyalty card, a
+# phone, an intercom or promo code) rule a field out; a loose word («код», «ММ», «номер») counts only after
+# the card number of the same document, and a cardholder field needs words about the card itself. Each
+# field says how far it sits from the card number in the DOM tree, for `card_plan` to take the nearest.
+FIND_CARD_FIELDS = r"""(() => {
+  const all = [];
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('input, select')) all.push(el);
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(document);
+  const skipped = /^(hidden|checkbox|radio|submit|button|reset|file|image|range|color|date|datetime-local|week|time|email|search|url)$/;
+  const shown = (el) => {
+    if (el.disabled || el.readOnly || skipped.test(el.type || '')) return false;
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    return box.width > 2 && box.height > 2 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const fields = all.filter(shown);
+  const clean = (text) => (text || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const own = (el) => {
+    const parts = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.title,
+      el.getAttribute('data-testid'), el.getAttribute('data-qa'), el.getAttribute('data-name')];
+    for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
+      const node = el.getRootNode().getElementById ? el.getRootNode().getElementById(id) : null;
+      if (node) parts.push(node.textContent);
+    }
+    for (const label of el.labels || []) parts.push(label.textContent);
+    return clean(parts.filter(Boolean).join(' | '));
+  };
+  // The text right before the field, as a label above or beside it reads: earlier siblings first, then
+  // the parent's. A sibling that is another field is passed over (the «/» between two expiry boxes); one
+  // that holds other fields belongs to them and ends the search.
+  const before = (el) => {
+    let node = el;
+    for (let depth = 0; depth < 4 && node; depth += 1, node = node.parentElement) {
+      for (let sib = node.previousSibling; sib; sib = sib.previousSibling) {
+        if (sib.nodeType === 1 && sib.matches('input, select')) continue;
+        if (sib.nodeType === 1 && sib.querySelector('input, select')) return '';
+        const text = clean(sib.nodeType === 3 ? sib.textContent : sib.innerText);
+        if (/[a-zа-я]/.test(text)) return text.length <= 60 ? text : '';
+      }
+    }
+    return '';
+  };
+  const word = (source) => new RegExp('(?<![a-zа-я0-9])(?:' + source + ')(?![a-zа-я0-9])');
+  const strong = {
+    cvc: /cvc|cvv|cvn|security.?code|securitycode|card.?verif|код безопасности|код карты|секретный код|csc(?![a-z])|(?<![a-z])cid(?![a-z])/,
+    holder: /cardholder|card.?holder|holder.?name|name.?on.?card|держател|владел.{0,12}карт|имя.{0,16}карт/,
+    month: /exp.{0,8}month|expmonth|card.?month|cc.?month|месяц.{0,10}(срок|оконч)/,
+    year: /exp.{0,8}year|expyear|card.?year|cc.?year|год.{0,10}(срок|оконч)/,
+    exp: /expir|exp.?date|expdate|cc.?exp|card.?exp|valid.?(thru|till|until|to)|срок действия|действ\S* до|дата окончания/,
+    number: /card.?num|cardnumber|card.?no(?![a-z])|ccnum|cc.?number|номер карты|номер банковской карты|card number|(?<![a-z])pan(?![a-z])/,
+  };
+  const loose = {
+    cvc: word('код|code|cvc2|cvv2'),
+    month: word('month|mm|мм|месяц|мес'),
+    year: word('year|yy|yyyy|гг|гггг|год'),
+    exp: word('exp|срок|valid|expiry'),
+    number: word('номер|number|card|карта|карты'),
+  };
+  const both = (text) => loose.month.test(text) && loose.year.test(text);
+  // A run of 13–19 digits or mask characters: a card number's placeholder. A phone's mask is a phone.
+  const digitsLike = (el) => {
+    const marks = ((el.placeholder || '').match(/[\d•*x·_]/g) || []).length;
+    return el.type !== 'tel' && marks >= 13 && marks <= 19 && /^[\d•*x·_\s-]+$/.test(el.placeholder);
+  };
+  // Fields of the rest of a checkout that read like a card's: a passport's expiry, a loyalty or gift card's
+  // number, a birth month, a phone, a promo or intercom code. None of them is ever the card.
+  const elsewhere = /паспорт|passport|документ|рожд|birth|участник|лояльн|loyal|бонус|bonus|подароч|gift|сертификат|certificat|frequent|телефон|phone|mobile|промо|promo|купон|coupon|скидк|discount|(?<![a-z])sms|смс|домофон|intercom|подъезд|квартир|этаж|снилс|(?<![а-я])инн(?![а-я])|полис|пассажир|passenger|транспорт|тройк/;
+  const byAutocomplete = (el) => {
+    const token = clean(el.getAttribute('autocomplete'));
+    if (/cc-number/.test(token)) return 'number';
+    if (/cc-exp-month/.test(token)) return 'month';
+    if (/cc-exp-year/.test(token)) return 'year';
+    if (/cc-exp/.test(token)) return 'exp';
+    if (/cc-csc/.test(token)) return 'cvc';
+    if (/cc-name|cc-given-name|cc-family-name/.test(token)) return 'holder';
+    return null;
+  };
+  const strongKind = (text) => {
+    if (!text) return null;
+    if (strong.cvc.test(text)) return 'cvc';
+    if (strong.holder.test(text)) return 'holder';
+    if (strong.month.test(text)) return 'month';
+    if (strong.year.test(text)) return 'year';
+    if (strong.exp.test(text) || /(?<![a-zа-я])(mm|мм) ?\/ ?(yy|гг)/.test(text)) return 'exp';
+    if (strong.number.test(text)) return 'number';
+    return null;
+  };
+  const looseKind = (text) => {
+    if (!text) return null;
+    if (both(text)) return 'exp';
+    if (loose.cvc.test(text)) return 'cvc';
+    if (loose.month.test(text)) return 'month';
+    if (loose.year.test(text)) return 'year';
+    if (loose.exp.test(text)) return 'exp';
+    if (loose.number.test(text)) return 'number';
+    return null;
+  };
+  const optionsKind = (el) => {
+    if (el.tagName !== 'SELECT') return null;
+    const numbers = [...el.options].map((option) => parseInt((option.value || option.text).replace(/\D/g, ''), 10))
+      .filter((value) => !Number.isNaN(value));
+    const months = new Set(numbers.filter((value) => value >= 0 && value <= 12));
+    if (months.size >= 12 && numbers.length <= 13) return 'month';
+    const years = numbers.filter((value) => (value >= 2020 && value <= 2099) || (value >= 20 && value <= 99));
+    return years.length >= 3 && years.length >= numbers.length - 1 ? 'year' : null;
+  };
+  const rows = fields.map((el, index) => {
+    const mine = own(el), around = before(el);
+    let kind = byAutocomplete(el), sure = kind !== null, auto = sure;
+    if (!kind && elsewhere.test(mine + ' | ' + around)) return {el, index, kind: null, sure: false, auto};
+    // A select of months or years is the card's only beside words about the card or its expiry.
+    if (!kind && el.tagName === 'SELECT') kind = optionsKind(el), sure = kind !== null && /exp|срок|card|карт/.test(mine + ' ' + around);
+    if (!kind && (kind = strongKind(mine))) sure = true;
+    if (!kind && digitsLike(el)) kind = 'number', sure = true;
+    if (!kind && (kind = (both(mine) ? 'exp' : null) || strongKind(around))) sure = kind !== 'holder' || strong.holder.test(around);
+    if (!kind) kind = looseKind(mine) || (el.tagName === 'SELECT' ? optionsKind(el) : null) || looseKind(around);
+    return {el, index, kind, sure, auto};
+  });
+  // The card number the rest is measured from: one the page marks with autocomplete first, then a named one.
+  const number = rows.find((row) => row.kind === 'number' && row.auto) || rows.find((row) => row.kind === 'number' && row.sure);
+  const chain = (el) => { const up = []; for (let node = el; node; node = node.parentNode || node.host) up.push(node); return up; };
+  const distance = (el) => {
+    if (!number) return null;
+    const mine = chain(el), theirs = new Map(chain(number.el).map((node, depth) => [node, depth]));
+    const shared = mine.findIndex((node) => theirs.has(node));
+    return shared < 0 ? null : shared + theirs.get(mine[shared]);
+  };
+  const after = (el) => {
+    if (!number) return false;
+    const position = number.el.compareDocumentPosition(el);
+    return Boolean(position & Node.DOCUMENT_POSITION_DISCONNECTED || position & Node.DOCUMENT_POSITION_FOLLOWING);
+  };
+  // A field nothing names, after the card number in the same document: what its length allows.
+  for (const row of rows) {
+    if (row.kind || !number || !after(row.el) || row.el.tagName === 'SELECT' || elsewhere.test(own(row.el))) continue;
+    const max = row.el.maxLength;
+    if (max === 5 || max === 7) row.kind = 'exp';
+    else if (max === 2) row.kind = rows.some((other) => other.kind === 'month') ? 'year' : 'month';
+    else if (max === 3 || (max === 4 && row.el.type === 'password')) row.kind = 'cvc';
+    else if (row.el.type === 'password') row.kind = 'cvc';
+  }
+  // A loosely named field counts only after the card number of its own document; a cardholder field only
+  // when named for sure.
+  const kept = rows.filter((row) => row.kind && (row.sure || (row.kind !== 'holder' && after(row.el))));
+  globalThis.__broCard = kept.map((row) => row.el);
+  return kept.map((row, id) => ({
+    id, kind: row.kind, sure: row.sure, auto: row.auto, distance: row === number ? 0 : distance(row.el),
+    tag: row.el.tagName.toLowerCase(), type: row.el.type || '',
+    maxLength: row.el.maxLength > 0 ? row.el.maxLength : null, placeholder: row.el.placeholder || '',
+    options: row.el.tagName === 'SELECT' ? [...row.el.options].map((o) => [o.value, o.text]).slice(0, 120) : null,
+  }));
+})()"""
+
+# On one field the find call above kept, in the same isolated world. Focus also moves the frame's focus,
+# so the key events that follow land in it.
+CARD_FIELD_FOCUS = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (!el || !el.isConnected) return false;
+  el.scrollIntoView({block: 'center', inline: 'nearest'}); el.focus(); return true; })"""
+CARD_FIELD_CLEAR = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (!el) return null;
+  const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, '');
+  el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true}));
+  if (el.value && el.select) el.select(); return el.value; })"""
+CARD_FIELD_VALUE = r"""((id) => { const el = (globalThis.__broCard || [])[id]; return el && el.isConnected ? el.value : null; })"""
+CARD_FIELD_PICK = r"""((id, wanted) => { const el = (globalThis.__broCard || [])[id]; if (!el) return null;
+  const option = [...el.options].find((o) => wanted.includes(o.value.trim()) || wanted.includes(o.text.trim()));
+  if (!option) return null;
+  el.focus(); el.value = option.value;
+  el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true}));
+  el.blur(); return el.value; })"""
+CARD_FIELD_BLUR = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (el) el.blur(); return true; })"""
+
+
+def card_secrets(sensitive_data, page_url):
+    """The saved card as the run's secrets hold it for this page, or None: bound to the top page's site
+    and its payment processors only, the same rule browser-use applies to a typed <secret>."""
+    from browser_use.utils import match_url_with_domain_pattern
+
+    values, patterns = {}, []
+    for pattern, content in (sensitive_data or {}).items():
+        if isinstance(content, dict) and page_url and match_url_with_domain_pattern(page_url, pattern):
+            values.update(content)
+        if isinstance(content, dict) and CARD_ALIASES["number"] in content:
+            patterns.append(pattern)
+    number = re.sub(r"\D", "", values.get(CARD_ALIASES["number"]) or "")
+    expiry = re.fullmatch(r"\s*(\d{1,2})\s*/\s*(\d{2}|\d{4})\s*", values.get(CARD_ALIASES["expiry"]) or "")
+    if not 12 <= len(number) <= 19 or not expiry:
+        return None
+    return {"number": number, "month": f"{int(expiry[1]):02d}", "year": expiry[2][-2:],
+            "cvc": re.sub(r"\D", "", values.get(CARD_ALIASES["cvc"]) or ""),
+            "holder": (values.get(CARD_ALIASES["holder"]) or "").strip(), "sites": patterns}
+
+
+def card_digits(value):
+    return re.sub(r"\D", "", value or "")
+
+
+def four_digit_year(field):
+    """A year box that wants 2031, not 31."""
+    placeholder = (field.get("placeholder") or "").lower()
+    return (field.get("maxLength") or 0) >= 4 or bool(re.search(r"yyyy|гггг", placeholder))
+
+
+def expiry_with_long_year(field):
+    """A single expiry field that wants 01/2031."""
+    return bool(re.search(r"yyyy|гггг", (field.get("placeholder") or "").lower()))
+
+
+def card_plan(frames, card, origins=None, bound=None):
+    """Which field takes what. `frames` is each frame's list from FIND_CARD_FIELDS, top document first, and
+    `origins` their origins. Everything is anchored to the card number: the one the page marks with
+    autocomplete, else one named for sure, in a frame on a site the card is bound to (`bound`: the shop and
+    its payment processors) before any other, then in the frame that holds the most of the card. Each other kind is
+    the field nearest to it in its own frame; only a kind that frame lacks comes from another frame of the
+    same origin (Stripe keeps each field in a frame of its own), and only when named for sure — never from
+    the shop's page around a processor's frame. Two expiry boxes (selects, or inputs of up to 4 characters)
+    beside the number are its month and year. Each step: the frame, the field, the kind and the texts to try
+    in turn (a select: the option values or texts it may pick)."""
+    numbers = [(index, field) for index, fields in enumerate(frames) for field in fields if field["kind"] == "number"
+               and field["sure"]]
+    if not numbers:
+        return []
+
+    def number_rank(item):
+        index, field = item
+        return (not field.get("auto"), not (bound or [True] * len(frames))[index],
+                -len({other["kind"] for other in frames[index]}), index)
+
+    home, number = min(numbers, key=number_rank)
+    origin = (origins or [None] * len(frames))[home]
+    local = [field for field in frames[home] if field is not number]
+    boxes = [field for field in local if field["kind"] == "exp"
+             and (field["tag"] == "select" or 0 < (field.get("maxLength") or 0) <= 4)]
+    if len(boxes) == 2 and not any(field["kind"] in ("month", "year") for field in local):
+        renamed = {id(boxes[0]): "month", id(boxes[1]): "year"}
+        local = [{**field, "kind": renamed[id(field)]} if id(field) in renamed else field for field in local]
+
+    def nearest(fields):
+        return min(fields, key=lambda field: (field.get("distance") is None, field.get("distance") or 0,
+                                              not field["sure"], field["id"]), default=None)
+
+    chosen = {"number": (home, number)}
+    for kind in CARD_KINDS[1:]:
+        field = nearest([field for field in local if field["kind"] == kind])
+        if field is not None:
+            chosen[kind] = (home, field)
+            continue
+        others = [(index, field) for index, fields in enumerate(frames) if index != home
+                  and (origins or [None] * len(frames))[index] == origin
+                  for field in fields if field["kind"] == kind and field["sure"]]
+        if others:
+            chosen[kind] = others[0]
+    # One expiry field and a box beside it: both boxes are the more specific reading, a lone box is not.
+    if "exp" in chosen and ("month" in chosen) != ("year" in chosen):
+        chosen.pop("month", None)
+        chosen.pop("year", None)
+    elif "month" in chosen and "year" in chosen:
+        chosen.pop("exp", None)
+    elif "exp" not in chosen:
+        chosen.pop("month", None)
+        chosen.pop("year", None)
+    month, year = card["month"], card["year"]
+    steps = []
+    for kind in CARD_KINDS:
+        if kind not in chosen or (kind == "holder" and not card["holder"]) or (kind == "cvc" and not card["cvc"]):
+            continue
+        frame_index, field = chosen[kind]
+        if field["tag"] == "select":
+            wanted = {"month": [month, str(int(month))], "year": [f"20{year}", year]}.get(kind)
+            if wanted:
+                steps.append({"frame": frame_index, "field": field, "kind": kind, "pick": wanted})
+            continue
+        long_year = [f"{month}/20{year}", f"{month} / 20{year}", f"{month}20{year}"]
+        short_year = [f"{month}/{year}", f"{month} / {year}", f"{month}{year}"]
+        texts = {
+            "number": [card["number"]],
+            "exp": long_year + short_year if expiry_with_long_year(field) else short_year + long_year,
+            "month": [month],
+            "year": [f"20{year}", year] if four_digit_year(field) else [year, f"20{year}"],
+            "cvc": [card["cvc"]],
+            "holder": [card["holder"]],
+        }[kind]
+        steps.append({"frame": frame_index, "field": field, "kind": kind, "texts": texts})
+    return steps
+
+
+def card_value_ok(step, card, value):
+    """Whether the field now holds what it should, however the page formats it. A select holds the option
+    picked for it (its value may be anything: 0 for January)."""
+    if value is None:
+        return False
+    if "pick" in step:
+        return value == step.get("picked")
+    kind, digits = step["kind"], card_digits(value)
+    month, year = card["month"], card["year"]
+    if kind == "number":
+        return digits == card["number"]
+    if kind == "cvc":
+        return digits == card["cvc"]
+    if kind == "holder":
+        return re.sub(r"\s+", " ", value).strip().lower() == re.sub(r"\s+", " ", card["holder"]).lower()
+    if kind == "month":
+        return digits != "" and int(digits) == int(month)
+    if kind == "year":
+        if four_digit_year(step["field"]) and step["field"]["tag"] != "select":
+            return digits == f"20{year}"
+        return digits in (year, f"20{year}")
+    # One expiry field: the month and the year, with a separator unless the field has room for four digits
+    # only. A plain field keeps «0131» as typed, and a site reads it as no date.
+    field = step["field"]
+    if digits not in (f"{month}{year}", f"{month}20{year}"):
+        return False
+    return field.get("maxLength") in (4, 6) or not value.strip().isdigit()
+
+
+CARD_KIND_NAMES = {"number": "card number", "exp": "expiry", "month": "expiry month", "year": "expiry year",
+                   "cvc": "CVC", "holder": "cardholder name"}
+
+
+def card_key_events(char):
+    """keyDown, char and keyUp for one character, as a person's keyboard sends them."""
+    if char.isdigit():
+        key, code, vk = char, f"Digit{char}", ord(char)
+    elif char == "/":
+        key, code, vk = "/", "Slash", 191
+    elif char == " ":
+        key, code, vk = " ", "Space", 32
+    elif char.isascii() and char.isalpha():
+        key, code, vk = char, f"Key{char.upper()}", ord(char.upper())
+    else:
+        key, code, vk = char, "", 0
+    down = {"type": "keyDown", "key": key, "code": code, "windowsVirtualKeyCode": vk}
+    return [down, {"type": "char", "text": char, "key": char}, {**down, "type": "keyUp"}]
+
+
+class CardFrame:
+    """One frame of the tab, through the CDP session of the target that holds it (an out-of-process frame
+    has its own), in an isolated world of its own: the page's scripts never see these calls."""
+
+    def __init__(self, cdp_session, frame_id, url):
+        self.cdp, self.frame_id, self.url, self.context = cdp_session, frame_id, url, None
+
+    async def send(self, domain, method, params=None):
+        return await getattr(getattr(self.cdp.cdp_client.send, domain), method)(
+            params=params or {}, session_id=self.cdp.session_id)
+
+    async def call(self, expression, *args):
+        if self.context is None:
+            world = await self.send("Page", "createIsolatedWorld", {"frameId": self.frame_id, "worldName": "bro-card"})
+            self.context = world["executionContextId"]
+        source = expression if not args else f"({expression})({', '.join(json.dumps(arg) for arg in args)})"
+        answer = await self.send("Runtime", "evaluate", {"expression": source, "contextId": self.context,
+                                                         "returnByValue": True})
+        return (answer.get("result") or {}).get("value")
+
+    async def type(self, text):
+        for char in text:
+            for event in card_key_events(char):
+                await self.send("Input", "dispatchKeyEvent", event)
+            await asyncio.sleep(0.03)
+
+
+async def card_frames(browser_session):
+    """The frames of the agent's tab, its own document first."""
+    all_frames, _ = await browser_session.get_all_frames()
+    tab = browser_session.agent_focus_target_id
+
+    def root(frame):
+        seen = set()
+        while frame.get("parentFrameId") in all_frames and frame["id"] not in seen:
+            seen.add(frame["id"])
+            frame = all_frames[frame["parentFrameId"]]
+        return frame
+
+    def depth(frame):
+        count = 0
+        while frame.get("parentFrameId") in all_frames and count < 20:
+            frame, count = all_frames[frame["parentFrameId"]], count + 1
+        return count
+
+    frames = []
+    for frame in sorted(all_frames.values(), key=depth):
+        if root(frame).get("frameTargetId") != tab or not str(frame.get("url", "")).startswith(("http", "about:")):
+            continue
+        with contextlib.suppress(Exception):
+            cdp_session = await browser_session.get_or_create_cdp_session(frame["frameTargetId"], focus=False)
+            frames.append(CardFrame(cdp_session, frame["id"], frame.get("url", "")))
+    return frames
+
+
+async def fill_card_form(frames, card):
+    """Fill the card form across `frames` and say what happened, never with a value in it."""
+    found = []
+    for frame in frames:
+        fields = None
+        with contextlib.suppress(Exception):
+            fields = await frame.call(FIND_CARD_FIELDS)
+        found.append(fields if isinstance(fields, list) else [])
+    from browser_use.utils import match_url_with_domain_pattern
+
+    origins = [urllib.parse.urlsplit(frame.url)[:2] for frame in frames]
+    bound = [any(match_url_with_domain_pattern(frame.url, site) for site in card.get("sites") or [])
+             for frame in frames]
+    steps = card_plan(found, card, origins, bound)
+    if not steps:
+        return False, ("No card number field on this page or in its frames. Open the payment step with the card "
+                       "form (choose «Банковская карта» if the site asks how to pay) and call fill_card again.")
+    done, failed = [], []
+    for step in steps:
+        frame = frames[step["frame"]]
+        field_id = step["field"]["id"]
+        ok = False
+        try:
+            if "pick" in step:
+                step["picked"] = await frame.call(CARD_FIELD_PICK, field_id, step["pick"])
+                ok = step["picked"] is not None
+            else:
+                value = await frame.call(CARD_FIELD_VALUE, field_id)
+                ok = card_value_ok(step, card, value)
+                for text in [] if ok else step["texts"]:
+                    if not await frame.call(CARD_FIELD_FOCUS, field_id):
+                        break
+                    if await frame.call(CARD_FIELD_VALUE, field_id):
+                        await frame.call(CARD_FIELD_CLEAR, field_id)
+                        if await frame.call(CARD_FIELD_VALUE, field_id):
+                            await frame.send("Input", "dispatchKeyEvent", {"type": "keyDown", "key": "Backspace",
+                                                                         "code": "Backspace", "windowsVirtualKeyCode": 8})
+                            await frame.send("Input", "dispatchKeyEvent", {"type": "keyUp", "key": "Backspace",
+                                                                         "code": "Backspace", "windowsVirtualKeyCode": 8})
+                    await frame.type(text)
+                    await asyncio.sleep(0.2)
+                    if card_value_ok(step, card, await frame.call(CARD_FIELD_VALUE, field_id)):
+                        ok = True
+                        break
+        except Exception:  # noqa: BLE001 - a frame that navigated away or detached
+            ok = False
+        (done if ok else failed).append(step)
+    # The last field's own checks run when it loses focus; a page may also reformat or clear a field when
+    # the next one fills, so every field is read once more at the end.
+    with contextlib.suppress(Exception):
+        last = steps[-1]
+        await frames[last["frame"]].call(CARD_FIELD_BLUR, last["field"]["id"])
+    await asyncio.sleep(0.3)
+    for step in list(done):
+        value = None
+        with contextlib.suppress(Exception):
+            value = await frames[step["frame"]].call(CARD_FIELD_VALUE, step["field"]["id"])
+        if not card_value_ok(step, card, value):
+            done.remove(step)
+            failed.append(step)
+    # Part of a card number or a code left in a field that did not take it is worth nothing to the form and
+    # stays on the page for anyone to read.
+    for step in failed:
+        with contextlib.suppress(Exception):
+            await frames[step["frame"]].call(CARD_FIELD_CLEAR, step["field"]["id"])
+    names = lambda items: ", ".join(CARD_KIND_NAMES[step["kind"]] for step in items)  # noqa: E731
+    hosts = sorted({urllib.parse.urlsplit(frames[step["frame"]].url).hostname or "the page" for step in done})
+    text = f"Filled {names(done)} (card ending {card['number'][-4:]})" + (f" in {', '.join(hosts)}" if hosts else "") + "."
+    kinds = {step["kind"] for step in steps}
+    if not kinds & {"exp", "month"}:
+        text += " This form shows no expiry field yet."
+    if "cvc" not in kinds:
+        text += " This form shows no CVC field yet."
+    if failed:
+        # Only the whole expiry is a secret: a month or a year alone would be hidden wherever those two digits
+        # show on the page (agent/lib/browser-use/secrets.ts), so a box of them is left to the person.
+        aliases = [CARD_ALIASES.get({"exp": "expiry"}.get(step["kind"], step["kind"])) for step in failed
+                   if step["kind"] not in ("month", "year")]
+        advice = (f" Type it yourself with its secret ({', '.join(aliases)})." if aliases else "")
+        if any(step["kind"] in ("month", "year") for step in failed):
+            advice += " The month and year boxes have no secrets of their own: stop with NEEDS: info and say which box."
+        text = (text if done else "") + f" Could not fill {names(failed)}: the field did not keep the value.{advice}"
+        return False, text.strip()
+    # The run cannot see a password field's value: told only «filled», it spent twelve steps trying to read the
+    # CVC out of the processor's frame, and opened that frame in a tab of its own (bench of 04.10.2026).
+    return True, text + (" Each field was read back from the page after typing and holds the card's value; a CVC "
+                         "field shows you nothing or dots, and that is the value. Do not check or retype the fields: "
+                         "go on with the errand, and pay only as your task allows.")
+
+
 def slider_gap(background_png, piece_png):
     """Where the piece fits: the x of its left edge in the background's own pixels, the background's width
     and how well it matched. The piece is matched by its edges against the background's, which finds the
@@ -1499,7 +2005,9 @@ visible page, e.g. report/final.png) or save_element_picture (one item photo, by
 use web archives, caches or mirrors (web.archive.org and the like) instead of the live site: if the live
 site does not open, say so. Credentials and codes come as <secret>alias</secret> placeholders: type the
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
-one-time code you are given goes in with the enter_code action, never digit by digit. An anti-bot check
+one-time code you are given goes in with the enter_code action, never digit by digit. A bank card form goes in
+with the fill_card action, never field by field; type a card secret yourself only into a field fill_card
+says it could not fill. An anti-bot check
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
 button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
