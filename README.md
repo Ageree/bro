@@ -419,6 +419,14 @@ cache; a pinned host that fails an answer is skipped for ten minutes) and
 DeepSeek endpoint hangs, so `deepseek/*` always skips it. Costs come back in
 roubles and are recorded as roubles, without a dollar price.
 
+With `CLOUDRU_FM_API_KEY` (a Cloud.ru Foundation Models API key) a RouterAI
+chat call whose route fails — a network error, a silent connection, or a
+500/502/503/504 — is answered by `CLOUDRU_FM_MODEL` (default
+`deepseek-ai/DeepSeek-V4.1-Flash`) at `CLOUDRU_FM_BASE_URL`, and chat calls
+skip RouterAI for five minutes before one call tries it again. Web search
+does not fall back, and those steps are recorded with their tokens but
+unpriced.
+
 `web_search` changes shape with the provider. The framework tool is
 provider-managed: an AI Gateway model searches through Exa, and a direct
 provider model is handed that provider's own search tool. OpenRouter exposes

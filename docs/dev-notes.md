@@ -469,6 +469,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `agent/lib/model/routerai/` читает ответ целиком, упавший закреплённый хост
   переносит в `ignore` на 10 минут (`hosts.ts`) и сразу повторяет вызов.
   Поиск (`agent/lib/web-search/search.ts`) идёт тем же fetch и маршрутом.
+- С `CLOUDRU_FM_API_KEY` (свой ключ Foundation Models API: IAM-ключ — 400
+  «invalid api key secret») чат RouterAI без `plugins` при сетевой ошибке,
+  молчащем соединении или 500/502/503/504 (и внутри HTTP 200) уходит в
+  Cloud.ru FM, затем 5 минут сразу туда, потом один пробный вызов в RouterAI
+  (`routerai/fallback.ts`, на процесс; 4xx не переключает). Теряются
+  веб-поиск, цена шага (нет `usage.cost` — шаг `unpriced`), закрепление хостов
+  и кэш DeepInfra, `reasoning`; модель — `CLOUDRU_FM_MODEL` для любого
+  воркспейса. Отказ FM возвращает сбой RouterAI («скоро вернусь»).
 - `ROUTERAI_API_KEY` облачной сессии приходит в типографских кавычках:
   `/api/v1/credits` без их снятия отвечает 401, хотя ключ рабочий.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром

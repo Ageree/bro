@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { watchedModelFetch } from "../stream-watchdog";
 import { failureStatus, reportedErrorSchema } from "./errors";
+import { withFoundationModelsFallback } from "./fallback";
 import { noteFailedHost, routedAroundFailedHosts } from "./hosts";
 
 const answerSchema = z
@@ -206,12 +207,17 @@ const attempts = 3;
  * passed on: a failure often comes at its very end, after the tool call, and
  * nothing of a failed answer may reach eve. Bro sends its words through
  * `send_message`, so no person waits on the streamed text.
+ *
+ * A chat call whose route to RouterAI failed goes to Cloud.ru Foundation
+ * Models when its key is set (`fallback.ts`).
  */
 export async function routerAiModelFetch(
   input: string | URL | Request,
   init?: RequestInit
 ): Promise<Response> {
-  return attemptRouterAiFetch(input, init, 1);
+  return withFoundationModelsFallback(input, init, async () =>
+    attemptRouterAiFetch(input, init, 1)
+  );
 }
 
 /**
@@ -225,14 +231,18 @@ export async function routerAiFetchOnce(
   input: string | URL | Request,
   init?: RequestInit
 ): Promise<Response> {
-  return attemptRouterAiFetch(input, init, attempts);
+  return (await attemptRouterAiFetch(input, init, attempts)).answer;
 }
 
+/**
+ * The answer as the provider package reads it, and the status it failed
+ * with: the HTTP status, or that of the failure RouterAI sent inside it.
+ */
 async function attemptRouterAiFetch(
   input: string | URL | Request,
   init: RequestInit | undefined,
   attempt: number
-): Promise<Response> {
+): Promise<{ readonly answer: Response; readonly status: number }> {
   // The provider package sends its request as JSON text.
   const json = z.string().safeParse(init?.body).data;
   const sent = json === undefined ? undefined : routedAroundFailedHosts(json);
@@ -240,7 +250,7 @@ async function attemptRouterAiFetch(
     input,
     sent === undefined ? init : { ...init, body: sent }
   );
-  if (!response.body) return response;
+  if (!response.body) return { answer: response, status: response.status };
   const text = await response.text();
   const failure = isEventStream(response)
     ? streamFailure(text)
@@ -251,7 +261,10 @@ async function attemptRouterAiFetch(
     sent !== undefined &&
     noteFailedHost(sent, failure.host);
   if (!skipped || attempt >= attempts || init?.signal?.aborted === true) {
-    return readableAnswer(text, response, failure);
+    return {
+      answer: readableAnswer(text, response, failure),
+      status: failure?.status ?? response.status,
+    };
   }
   console.warn("[model] RouterAI host failed an answer, asking the next", {
     attempt,

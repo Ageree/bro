@@ -446,6 +446,19 @@ export const env = createEnv({
       .default(12),
     CLOUDRU_BROWSER_FLAVOR: trimmedValue.default("gen-2-4"),
     CLOUDRU_BROWSER_IMAGE: trimmedValue.optional(),
+    // Cloud.ru Foundation Models, the OpenAI-compatible API inside the cloud
+    // that answers RouterAI's chat calls while the route to RouterAI is down
+    // (`agent/lib/model/routerai/fallback.ts`). Its own API key, not the IAM
+    // key below; without it nothing falls back.
+    CLOUDRU_FM_API_KEY: pastedKeySchema.optional(),
+    // The key goes to this address with every call: https only.
+    CLOUDRU_FM_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.parse(value)?.protocol === "https:",
+        "CLOUDRU_FM_BASE_URL must be an absolute https URL"
+      )
+      .default("https://foundation-models.api.cloud.ru/v1"),
+    CLOUDRU_FM_MODEL: trimmedValue.default("deepseek-ai/DeepSeek-V4.1-Flash"),
     CLOUDRU_KEY_ID: pastedKeySchema.optional(),
     CLOUDRU_KEY_SECRET: pastedKeySchema.optional(),
     // The Object Storage tenant of the pool: the S3 access key is
