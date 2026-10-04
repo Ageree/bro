@@ -215,14 +215,14 @@ class Harness(unittest.IsolatedAsyncioTestCase):
         import checkout_harness
 
         os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
-        tasks = json.loads(checkout_harness.TASKS.read_text())
+        fixture = json.loads(checkout_harness.TASKS.read_text())
         names = [n for n in os.environ.get("BRO_CHECKOUT_SCENARIOS", "").split(",") if n] or list(
             checkout_harness.SCENARIOS)
         out = tempfile.mkdtemp(prefix="bro-checkout-")
         for name in names:
             for model in MODELS:
                 with self.subTest(scenario=name, model=model):
-                    report = await checkout_harness.run_scenario(name, model, out, tasks)
+                    report = await checkout_harness.run_scenario(name, model, out, fixture)
                     self.assertTrue(report["verdict"]["pass"], report["verdict"])
 
 

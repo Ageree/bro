@@ -33,6 +33,10 @@ SHOP_PORT = 8711
 PAY_PORT = 8712
 SHOP = f"http://127.0.0.1:{SHOP_PORT}"
 PAY = f"http://localhost:{PAY_PORT}"
+# The shop as the real errand's addresses, served over TLS on two loopback addresses that Chromium is pointed at
+# (checkout_harness.py): a model that reads «Where: predubezhdai.ru» in its task and pays on 127.0.0.1 may take
+# the page for a fake. yoomoney.ru is where ЮKassa's card frame lives, and Bro binds the card there too.
+REAL = {"shop": ("https://predubezhdai.ru", "127.0.0.2", 443), "pay": ("https://yoomoney.ru", "127.0.0.3", 443)}
 
 # The person of the errand, as Bro's facts name them, and their account on the shop.
 EMAIL = "savely@example.com"
@@ -435,7 +439,8 @@ pay.onclick = async () => {{
 class Shop:
     """The shop's whole state: accounts, sessions (by cookie), carts, orders and the request log."""
 
-    def __init__(self, *, account=True, saved_phone=False, saved_city=False):
+    def __init__(self, *, account=True, saved_phone=False, saved_city=False, shop=SHOP, pay=PAY):
+        self.shop_origin, self.pay_origin = shop, pay
         self.accounts = {}
         if account:
             self.accounts[EMAIL] = {"password": PASSWORD, "cart": {}, "profile": {
@@ -667,10 +672,10 @@ class Shop:
         if request.query.get("method") == "sbp":
             body = SBP.format(order=order["id"])
         else:
-            body = (f'<iframe src="{PAY}/frame?order={order["id"]}" width="520" height="420" '
+            body = (f'<iframe src="{self.pay_origin}/frame?order={order["id"]}" width="520" height="420" '
                     f'title="Оплата картой" style="border:1px solid #ccc"></iframe>')
         return page(f"Оплата заказа №{order['id']}", PAYMENT.format(order=order["id"], total=rub(order["total"]),
-                                                                     body=body, pay=PAY))
+                                                                     body=body, pay=self.pay_origin))
 
     async def success(self, request):
         order = self.orders.get(request.match_info["order"])
@@ -685,7 +690,7 @@ class Shop:
         order = self.orders.get(request.query.get("order", ""))
         if order is None:
             raise web.HTTPNotFound()
-        return web.Response(text=PAY_FRAME.format(order=order["id"], total=rub(order["total"]), shop=SHOP),
+        return web.Response(text=PAY_FRAME.format(order=order["id"], total=rub(order["total"]), shop=self.shop_origin),
                             content_type="text/html")
 
     async def api_pay(self, request):
@@ -757,12 +762,13 @@ class Shop:
         app.router.add_post("/api/pay", self.api_pay)
         return app
 
-    async def start(self, host="127.0.0.1"):
+    async def start(self, shop=("127.0.0.1", SHOP_PORT), pay=("127.0.0.1", PAY_PORT), ssl_context=None):
+        """Serve the shop and its processor at (host, port) each, over TLS with `ssl_context`."""
         self.runners = []
-        for app, port in ((self.shop_app(), SHOP_PORT), (self.pay_app(), PAY_PORT)):
+        for app, (host, port) in ((self.shop_app(), shop), (self.pay_app(), pay)):
             runner = web.AppRunner(app)
             await runner.setup()
-            await web.TCPSite(runner, host, port).start()
+            await web.TCPSite(runner, host, port, ssl_context=ssl_context).start()
             self.runners.append(runner)
 
     async def stop(self):

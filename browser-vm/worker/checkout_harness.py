@@ -4,18 +4,22 @@
     python checkout_harness.py --scenario all --model all --out <dir>
 
 Each scenario runs the worker's own agent (`Worker.start_run` → `run_agent`: the same tools with fill_card,
-system extension, tuning and follow-up memory as on a VM) on a Chromium launched as the VM's bro-chrome
-unit launches its Chrome, with the task text Bro's `composeBrowserTask` and `composeBrowserContinuation`
-write (checkout_tasks.json, from tests/agent/tools/checkout-harness-tasks.test.ts). The model is called
-through RouterAI with the tuning `runTuning` gives it (agent/lib/browser-vm/runs.ts). Every model call is
-paid: a run costs a few roubles.
+system extension, tuning, secrets and follow-up memory as on a VM) on a Chromium launched as the VM's
+bro-chrome unit launches its Chrome, with the task text and the secret bindings Bro's `composeBrowserTask`,
+`composeBrowserContinuation` and `browserSecretBindings` write (checkout_tasks.json, from
+tests/agent/tools/checkout-harness-tasks.test.ts). The shop is served as https://predubezhdai.ru and its card
+frame as https://yoomoney.ru, on loopback addresses this Chromium resolves those names to, with a certificate
+of the harness's own: a run sees the addresses its task names (GPT Luna refused to pay «on a local site»
+127.0.0.1 when the task said predubezhdai.ru, 04.10). The model is called through RouterAI with the tuning
+`runTuning` gives it (agent/lib/browser-vm/runs.ts). Every model call is paid: a run costs a few roubles.
 
 What a run did is read off the shop's own request log, not the agent's word: an order paid once, by the
 person's phone, for the store pickup and the 2 100 ₽ the person said yes to. The report (JSON, one per
 scenario and model) keeps each step's goal and actions with their parameters, the agent's memory of each
 step's results, the shop's requests and the verdict.
 
-Needs browser-use 0.13.10, a Chromium (BRO_CHECKOUT_CHROME, else Playwright's) and ROUTERAI_API_KEY.
+Needs browser-use 0.13.10, a Chromium (BRO_CHECKOUT_CHROME, else Playwright's), openssl, ROUTERAI_API_KEY and
+root (the shop listens on port 443 of 127.0.0.2 and 127.0.0.3).
 """
 
 import argparse
@@ -27,6 +31,7 @@ import logging
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -56,10 +61,8 @@ MODELS = {
 MAX_STEPS = 60  # runMaxSteps
 TIMEOUT_S = 1500  # runTimeoutSeconds
 
-LOGIN = {"login_username": shop_module.EMAIL, "login_password": shop_module.PASSWORD}
-CARD = {"card_number": shop_module.CARD["number"],
-        "card_expiry": f"{shop_module.CARD['month']}/{shop_module.CARD['year']}",
-        "card_cvc": shop_module.CARD["cvc"], "card_holder": shop_module.CARD["holder"]}
+SHOP, SHOP_HOST, SHOP_PORT = shop_module.REAL["shop"]
+PAY, PAY_HOST, PAY_PORT = shop_module.REAL["pay"]
 
 
 def routerai_key():
@@ -67,23 +70,22 @@ def routerai_key():
     return re.sub(r"[\s‘’“”\"']", "", os.environ.get("ROUTERAI_API_KEY", ""))
 
 
-def sensitive_data(login=True, card=True):
-    """The run's secrets as the worker's `secrets_to_sensitive_data` keys them, by the fixture's origins: the
-    login on the shop only, the card on the shop and its payment processor."""
-    data = {}
-    if login:
-        data.setdefault(shop_module.SHOP, {}).update(LOGIN)
-    if card:
-        data.setdefault(shop_module.SHOP, {}).update(CARD)
-        data.setdefault(shop_module.PAY, {}).update(CARD)
-    return data
+def tls_context(directory):
+    """A certificate of the harness's own for both names: this Chromium ignores certificate errors."""
+    key, cert = Path(directory) / "tls.key", Path(directory) / "tls.crt"
+    names = ",".join(f"DNS:{origin.split('://')[1]}" for origin in (SHOP, PAY))
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out",
+                    str(cert), "-days", "2", "-subj", "/CN=checkout-harness", "-addext", f"subjectAltName={names}"],
+                   check=True, capture_output=True)
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(cert, key)
+    return context
 
 
 @dataclasses.dataclass
 class Run:
-    task: str  # a key of checkout_tasks.json
-    login: bool = True
-    card: bool = True
+    task: str  # a key of checkout_tasks.json's tasks
+    secrets: str = "loginAndCard"  # a key of its secrets: what Bro binds for this run
     sign_out_before: bool = False  # the shop ends every session first (an expiry between two runs)
 
 
@@ -102,9 +104,9 @@ SCENARIOS = {
     "continuation": Scenario(
         "The first run has no card yet and stops at payment; the shop signs everyone out; the follow-up "
         "(«карту в сейф добавил, запускай оплату») continues in the same session with the card.",
-        [Run("startNoCard", card=False), Run("continuation", sign_out_before=True)]),
+        [Run("startNoCard", secrets="login"), Run("continuation", sign_out_before=True)]),
     "guest": Scenario("No saved login: guest checkout is refused for the account's email (409).",
-                      [Run("startGuest", login=False)], expect="stopped"),
+                      [Run("startGuest", secrets="card")], expect="stopped"),
     "phone": Scenario("Signed in, the basket filled, the city saved: the phone field with its fixed +7.",
                       [Run("start")], shop={"saved_city": True}, signed_in=True),
     "city": Scenario("Signed in, the basket filled, the phone saved: the city's late suggestions and the store.",
@@ -127,7 +129,9 @@ async def launch_chrome(profile):
     args = [CHROME, f"--user-data-dir={profile}", "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={port}", "--no-proxy-server", "--no-first-run", "--no-default-browser-check",
             "--disable-dev-shm-usage", "--password-store=basic", "--window-size=1366,900", "--lang=ru-RU",
-            "--accept-lang=ru-RU,ru,en-US,en", "--headless=new", "--site-per-process", "about:blank"]
+            "--accept-lang=ru-RU,ru,en-US,en", "--headless=new", "--site-per-process",
+            f"--host-resolver-rules=MAP {SHOP.split('://')[1]} {SHOP_HOST}, MAP {PAY.split('://')[1]} {PAY_HOST}",
+            "--ignore-certificate-errors", "about:blank"]
     if os.geteuid() == 0:
         args.insert(1, "--no-sandbox")
     process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -209,10 +213,12 @@ async def prepare_signed_in(worker, session, shop):
     shop.fill_cart()
     sid = shop.new_session(shop_module.EMAIL)
     await worker.cdp_command(await worker.browser_socket(), "Storage.setCookies", {"cookies": [
-        {"name": "sid", "value": sid, "domain": "127.0.0.1", "path": "/", "httpOnly": True}]})
+        {"name": "sid", "value": sid, "domain": SHOP.split("://")[1], "path": "/", "httpOnly": True,
+         "secure": True}]})
 
 
-async def run_scenario(name, model_key, out_dir, tasks):
+async def run_scenario(name, model_key, out_dir, fixture):
+    """One scenario on one model; `fixture` is checkout_tasks.json: the task texts and Bro's secret bindings."""
     scenario, model = SCENARIOS[name], MODELS[model_key]
     state = Path(tempfile.mkdtemp(prefix=f"checkout-{name}-{model_key}-", dir=out_dir))
     os.environ["BRO_STATE_DIR"] = str(state / "worker")
@@ -224,8 +230,8 @@ async def run_scenario(name, model_key, out_dir, tasks):
     trail = []
     worker.step_summary = step_recorder(worker, trail)
 
-    shop = shop_module.Shop(**scenario.shop)
-    await shop.start()
+    shop = shop_module.Shop(**scenario.shop, shop=SHOP, pay=PAY)
+    await shop.start((SHOP_HOST, SHOP_PORT), (PAY_HOST, PAY_PORT), tls_context(state))
     chrome, cdp = await launch_chrome(state / "profile")
     worker.CDP_HTTP = cdp
     report = {"scenario": name, "about": scenario.about, "model": model["model"], "runs": []}
@@ -244,12 +250,12 @@ async def run_scenario(name, model_key, out_dir, tasks):
         for index, step in enumerate(scenario.runs):
             if step.sign_out_before:
                 shop.sign_out_everyone()
-            session.sensitive_data = sensitive_data(step.login, step.card)
             trail.clear()
             started = time.monotonic()
             # The first run as Bro's `POST /v1/runs`, a follow-up as `POST /v1/sessions/<id>/messages` makes it.
-            body = {"id": f"{session_id}-{index}", "sessionId": session_id, "task": tasks[step.task], "llm": llm,
-                    "tuning": model["tuning"], "maxSteps": MAX_STEPS, "timeoutSeconds": TIMEOUT_S}
+            body = {"id": f"{session_id}-{index}", "sessionId": session_id, "task": fixture["tasks"][step.task],
+                    "llm": llm, "tuning": model["tuning"], "maxSteps": MAX_STEPS, "timeoutSeconds": TIMEOUT_S,
+                    "secrets": fixture["secrets"][step.secrets]}
             run, _ = await bro.start_run(body)
             while run.status not in worker.TERMINAL:
                 await asyncio.sleep(1)
@@ -308,12 +314,12 @@ async def main():
     Path(options.out).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=str(Path(options.out) / "browser-use.log"), level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    tasks = json.loads(TASKS.read_text())
+    fixture = json.loads(TASKS.read_text())
     names = list(SCENARIOS) if options.scenario == "all" else options.scenario.split(",")
     models = list(MODELS) if options.model == "all" else options.model.split(",")
     for name in names:
         for model_key in models:
-            report = await run_scenario(name, model_key, options.out, tasks)
+            report = await run_scenario(name, model_key, options.out, fixture)
             if options.trail:
                 print(trail_text(report), flush=True)
 

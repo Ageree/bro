@@ -12,25 +12,25 @@ import {
 } from "@shared/vault/schema";
 
 /**
- * The task texts the browser checkout harness runs
- * (`browser-vm/worker/checkout_harness.py`): Bro's own composers, with the
- * errand of RU 04.10 (a hand cream on predubezhdai.ru, picked up in a store,
- * paid by the saved card) and the harness's local shop as the Site. The
- * secrets are bound for the real shop, which is what decides the aliases the
- * text names; the harness binds the same aliases to its local origins.
+ * The task texts and secrets the browser checkout harness runs
+ * (`browser-vm/worker/checkout_harness.py`): Bro's own composers and secret
+ * bindings, with the errand of RU 04.10 (a hand cream on predubezhdai.ru,
+ * picked up in a store, paid by the saved card). The harness serves its copy
+ * of the shop at https://predubezhdai.ru to its own Chromium, so the texts and
+ * the bindings are the ones a real run gets; the login and the card are the
+ * harness's test values.
  *
  * `BRO_CHECKOUT_TASKS_OUT=browser-vm/worker/checkout_tasks.json
  * ./node_modules/.bin/vitest run tests/agent/tools/checkout-harness-tasks`
  * writes them; without it the test only checks they compose.
  */
-const shop = "http://127.0.0.1:8711";
-const realShop = "https://predubezhdai.ru";
+const shop = "https://predubezhdai.ru";
 
 const login = serializeLoginVaultPayload({
   authentication: { password: ["fixture", "only", "0410"].join("-"), type: "password" },
   identifier: { type: "email", value: "savely@example.com" },
   kind: "login",
-  origin: realShop,
+  origin: shop,
   version: 2,
 });
 
@@ -71,17 +71,26 @@ const cream: ConfirmedSubmission = {
   where: "predubezhdai.ru",
 };
 
-function aliases(withLogin: boolean, withCard: boolean) {
+function bound(withLogin: boolean, withCard: boolean) {
   return browserSecretBindings({
     card: withCard ? card : undefined,
     login: withLogin ? login : undefined,
-    site: realShop,
-  }).aliases;
+    site: shop,
+  });
+}
+
+/** The secrets as `startBrowserVmRun` sends them to the worker. */
+function secrets(withLogin: boolean, withCard: boolean) {
+  return bound(withLogin, withCard).bindings.map((binding) => ({
+    alias: binding.alias,
+    allowedDomains: [...binding.allowedDomains],
+    value: binding.source.value,
+  }));
 }
 
 function start(withLogin: boolean, withCard: boolean) {
   return composeBrowserTask({
-    aliases: aliases(withLogin, withCard),
+    aliases: bound(withLogin, withCard).aliases,
     allowPayment: true,
     collectImages: false,
     consent: { by: "person", kind: "confirmed", submission: cream },
@@ -96,7 +105,7 @@ function start(withLogin: boolean, withCard: boolean) {
 
 function continuation(freshBrowser?: "asked") {
   return composeBrowserContinuation({
-    aliases: aliases(true, true),
+    aliases: bound(true, true).aliases,
     allowPayment: true,
     collectImages: false,
     consent: { by: "person", kind: "confirmed", submission: cream },
@@ -127,7 +136,15 @@ describe("checkout harness tasks", () => {
     }
     const out = process.env.BRO_CHECKOUT_TASKS_OUT;
     if (out !== undefined && out !== "") {
-      writeFileSync(out, `${JSON.stringify(tasks, null, 2)}\n`);
+      const all = {
+        secrets: {
+          card: secrets(false, true),
+          login: secrets(true, false),
+          loginAndCard: secrets(true, true),
+        },
+        tasks,
+      };
+      writeFileSync(out, `${JSON.stringify(all, null, 2)}\n`);
     }
   });
 });
