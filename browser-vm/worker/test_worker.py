@@ -291,8 +291,8 @@ class FakeAgent:
     def stop(self):
         self.state.stopped = True
 
-    async def run(self, max_steps, on_step_start=None):
-        self.max_steps = max_steps
+    async def run(self, max_steps, on_step_start=None, on_step_end=None):
+        self.max_steps, self.on_step_end = max_steps, on_step_end or FakeAgent.no_hook
         return await FakeAgent.script(self, on_step_start or FakeAgent.no_hook)
 
     @staticmethod
