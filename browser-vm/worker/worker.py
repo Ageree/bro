@@ -73,7 +73,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-04.1"
+VERSION = "2026-10-04.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -364,6 +364,112 @@ async def new_tab():
 async def close_tab(target_id):
     with contextlib.suppress(Exception):
         await cdp_command(await browser_socket(), "Target.closeTarget", {"targetId": target_id})
+
+
+class SiteErrors:
+    """The site's own requests (XHR and fetch) that its server refused during a run, read off the tab's CDP
+    socket beside the agent's. PREDUBEZHDAI sent «Оплатить» to /order/error on every run for two hours
+    (RU 04.10) while the same order went through on the person's phone: the page showed no reason, the
+    agent was asked twice to hook the requests with `evaluate` and did not, and nobody ever saw the
+    server's answer. Now the report carries it, whatever the agent does.
+
+    Kept small and blind to what was sent: the address without its query, the status and the start of the
+    answer, with every secret's value cut out of it."""
+
+    LIMIT = 8
+    BODY = 600
+
+    def __init__(self):
+        self.entries = []
+        self.requests = {}  # requestId → (method, address) of the site's own requests
+        self.refused = {}  # requestId → entry still waiting for its body
+        self.task = None
+        self.ws = None
+        self.next_id = 1
+        self.bodies = {}  # command id → requestId
+
+    def start(self, websocket_url):
+        self.task = asyncio.create_task(self.listen(websocket_url))
+
+    async def stop(self):
+        if self.task:
+            # Bodies asked for just before the end still come in: give them a moment.
+            await asyncio.sleep(0.3)
+            self.task.cancel()
+            with contextlib.suppress(BaseException):
+                await self.task
+
+    async def listen(self, websocket_url):
+        with contextlib.suppress(Exception):
+            async with aiohttp.ClientSession() as http:
+                async with http.ws_connect(websocket_url, max_msg_size=64 * 1024 * 1024, timeout=10) as ws:
+                    self.ws = ws
+                    await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000})
+                    async for message in ws:
+                        with contextlib.suppress(Exception):
+                            await self.handle(json.loads(message.data))
+
+    async def send(self, method, params):
+        command = self.next_id
+        self.next_id += 1
+        await self.ws.send_json({"id": command, "method": method, "params": params})
+        return command
+
+    async def handle(self, data):
+        method, params = data.get("method"), data.get("params") or {}
+        request_id = params.get("requestId")
+        if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
+            request = params.get("request") or {}
+            self.requests[request_id] = (request.get("method", "GET"), request.get("url", ""))
+        elif method == "Network.responseReceived" and request_id in self.requests:
+            status = (params.get("response") or {}).get("status") or 0
+            if status >= 400:
+                self.refused[request_id] = self.record(request_id, str(status))
+        elif method == "Network.loadingFinished" and request_id in self.refused:
+            self.bodies[await self.send("Network.getResponseBody", {"requestId": request_id})] = request_id
+        elif method == "Network.loadingFailed" and request_id in self.requests:
+            if not params.get("canceled"):
+                self.record(request_id, params.get("errorText") or "failed")
+        elif "id" in data and data["id"] in self.bodies:
+            entry = self.refused.pop(self.bodies.pop(data["id"]), None)
+            result = data.get("result") or {}
+            if entry is not None and not result.get("base64Encoded"):
+                body = result.get("body", "")
+                # JSON as servers send it often escapes every Cyrillic letter: read it as the person would.
+                with contextlib.suppress(ValueError):
+                    body = json.dumps(json.loads(body), ensure_ascii=False)
+                entry["answer"] = body[: self.BODY]
+
+    def record(self, request_id, status):
+        method, url = self.requests.get(request_id, ("GET", ""))
+        entry = {"status": status, "method": method, "address": url.split("?")[0].split("#")[0], "answer": ""}
+        if len(self.entries) < self.LIMIT:
+            self.entries.append(entry)
+        return entry
+
+    def report(self, secrets=None):
+        if not self.entries:
+            return ""
+        values = sorted({str(v) for v in flat_secret_values(secrets) if len(str(v)) >= 3}, key=len, reverse=True)
+
+        def clean(text):
+            for value in values:
+                text = text.replace(value, "<secret>")
+            return " ".join(text.split())
+
+        lines = [f"- {e['status']} {e['method']} {clean(e['address'])}" + (f" — {clean(e['answer'])}" if e["answer"] else "")
+                 for e in self.entries]
+        return ("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
+                "server refused during this run):\n" + "\n".join(lines) + "\n\n")
+
+
+def flat_secret_values(secrets):
+    """Every value of sensitive_data, flat or keyed by domain."""
+    for value in (secrets or {}).values():
+        if isinstance(value, dict):
+            yield from value.values()
+        elif value:
+            yield value
 
 
 async def screenshot(target_id, quality=80):
@@ -1051,9 +1157,14 @@ class Worker:
             **tuned_agent_options(tuning),
         )
         run.agent = agent
+        site_errors = SiteErrors()
+        with contextlib.suppress(Exception):
+            targets = {t["id"]: t for t in await page_targets()}
+            site_errors.start(targets[session.tab]["webSocketDebuggerUrl"])
         try:
             history = await agent.run(max_steps=max_steps, on_step_start=read_messages)
         finally:
+            await site_errors.stop()
             # browser-use swallows an InterruptedError raised by `should_stop` mid-step (a cancel or the
             # deadline landing while the LLM call or an action was in flight) and returns normally, with
             # `agent.state.stopped` the only sign that the step which just read `pending_messages` never
@@ -1067,6 +1178,9 @@ class Worker:
         with contextlib.suppress(Exception):
             session.agent_state = agent.state.model_dump(mode="json")
         final = history.final_result()
+        errors_seen = site_errors.report(session.sensitive_data)
+        if errors_seen:
+            final = errors_seen + (final or "")
         run.success = history.is_successful()
         run.usage = usage_summary(history, agent, billed)
         with contextlib.suppress(Exception):
