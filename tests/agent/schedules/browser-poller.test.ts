@@ -12,6 +12,7 @@ import {
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
 } from "vitest";
 import { z } from "zod";
@@ -52,6 +53,7 @@ const cloud = vi.hoisted(() => ({
   cancelled: new Array<string>(),
   created: new Array<{
     id?: string;
+    search?: boolean;
     secretBindings?: readonly BrowserUseSecretBinding[];
     sessionId?: string;
     task: string;
@@ -197,6 +199,7 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
     },
     createBrowserUseRun: async (input: {
       id?: string;
+      search?: boolean;
       secretBindings?: readonly BrowserUseSecretBinding[];
       sessionId?: string;
       task: string;
@@ -1076,6 +1079,21 @@ async function queuedErrand(
   });
 }
 
+/**
+ * The queue as a deployment with this FLASH_SEARCH_WORKSPACES loads it. The
+ * settings are read once per module graph, so the graph is loaded afresh,
+ * on the same database.
+ */
+async function queueWithFlashPilot(list: string) {
+  vi.stubEnv("FLASH_SEARCH_WORKSPACES", list);
+  vi.resetModules();
+  const fresh = await import("@db");
+  // SAFETY: PGlite implements the same Drizzle query-builder contract used by these services; only the driver changes.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The fresh module graph's queries run against the same isolated database.
+  vi.spyOn(fresh, "db", "get").mockReturnValue(database as never);
+  return import("@agent/lib/browser-use/queue");
+}
+
 describe("the browser queue", () => {
   it("tries only the first errand while Browser Use is at its cap", async () => {
     const first = await queuedErrand(0);
@@ -1297,6 +1315,107 @@ describe("the browser queue", () => {
       status: "running",
     });
     expect(send).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("starts a queued errand that only searches in flash mode, in the pilot alone and never wider", async () => {
+    onTestFinished(async () => {
+      await queueWithFlashPilot("");
+    });
+    const { stagingLead } = await import("@agent/lib/browser-use/staging");
+    const { createBrowserRun, createQueuedBrowserRun } =
+      await import("@db/services/browser-runs");
+    // On no site, so that none waits for another's sign-in.
+    const queue = (
+      index: number,
+      row: Partial<Parameters<typeof createQueuedBrowserRun>[1]> = {},
+      fromRunId?: string
+    ) =>
+      createQueuedBrowserRun(
+        alice,
+        {
+          conversationChannel: "eve",
+          conversationId: "web-session",
+          createdAt: minutesAgo(10 - index),
+          paymentAllowed: false,
+          pendingTask: `Полный текст поручения ${String(index)}`,
+          profileId: "profile-1",
+          retryAt: minutesAgo(1),
+          rootSessionId: "web-session",
+          site: null,
+          startedByPerson: true,
+          submission: null,
+          task: `Поручение ${String(index)}`,
+          ...row,
+        },
+        fromRunId
+      );
+    const search = await queue(0);
+    const confirmed = await queue(1, { submission: cardSubmission });
+    const paying = await queue(2, { paymentAllowed: true });
+    const staged = await queue(3, {
+      pendingTask: `Забронируй столик\n\n${stagingLead}`,
+    });
+    const signedIn = await queue(4);
+    // A follow-up waiting for a browser: it keeps full mode.
+    await createBrowserRun(alice, {
+      completedAt: minutesAgo(2),
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      id: "searched-run",
+      rootSessionId: "web-session",
+      sessionId: "session-searched-run",
+      status: "done",
+      task: "Найди отель в Казани",
+    });
+    const followUp = await queue(
+      5,
+      { task: "Человек написал: «а подешевле?»" },
+      "searched-run"
+    );
+    const unflagged = await queue(6);
+
+    const pilot = await queueWithFlashPilot(alice.workspaceId);
+    const start = async (
+      startQueued: typeof pilot.startQueuedBrowserRun,
+      id: string
+    ) => {
+      const row = await readRun(id);
+      if (!row) throw new Error("The queued errand is gone.");
+      return startQueued(row);
+    };
+    const started = [];
+    for (const row of [search, confirmed, paying, staged]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The errands start one by one, as the poller starts them.
+      started.push(await start(pilot.startQueuedBrowserRun, row.id));
+    }
+    resolveBrowserSecretBindings.mockResolvedValueOnce({
+      aliases: ["login_username"],
+      bindings: [
+        {
+          alias: "login_username",
+          allowedDomains: ["example.ru"],
+          source: { type: "inline", value: "alice@example.com" },
+        },
+      ],
+    });
+    started.push(await start(pilot.startQueuedBrowserRun, signedIn.id));
+    started.push(await start(pilot.startQueuedBrowserRun, followUp.id));
+    // Unset, every queued errand starts as it always did.
+    const unset = await queueWithFlashPilot("");
+    started.push(await start(unset.startQueuedBrowserRun, unflagged.id));
+
+    expect(started.map((result) => result.status)).toEqual(
+      Array.from({ length: 7 }, () => "started")
+    );
+    expect(cloud.created.map((input) => input.search)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   }, 30_000);
 
   it("finishes the tick when a failed start cannot even be parked", async () => {

@@ -335,6 +335,11 @@ presigned PUT с VM — 23 с. Бандл — `boot.py bundle` из этой в�
 припаркованного — p95 2,9 с, Chrome в песочнице, `/v1/health` — worker
 2026-10-03.1.
 
+Его worker понимает `tuning.flashMode`: Бро включает flash mode поручениям,
+которые только ищут, у воркспейсов пилота `FLASH_SEARCH_WORKSPACES`
+(`agent/lib/browser-use/flash.ts`; 04.10 на пробном хосте — 7,6 с на шаг
+против 11,9 с, подвал RESULT…NEEDS в 5 прогонах из 5).
+
 Корень меняется сменой `BROWSER_SANDBOX_ROOTFS` в среде VM (`prod.json`,
 `host.py env`, затем `host.py state save`); хосты со старым корнем сторож
 осушит и удалит.

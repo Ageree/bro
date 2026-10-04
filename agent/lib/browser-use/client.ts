@@ -214,6 +214,11 @@ const createRunInputSchema = z.object({
   model: z.string().min(1).optional(),
   profileId: z.string().min(1).optional(),
   proxyCountryCode: z.string().length(2).optional(),
+  /**
+   * A VM profile only: the errand only searches, and its worker runs in
+   * flash mode (`agent/lib/browser-use/flash.ts`). Cloud ignores it.
+   */
+  search: z.boolean().optional(),
   secretBindings: z.array(secretBindingSchema).max(10).optional(),
   sessionId: z.string().min(1).optional(),
   task: z.string().min(1),

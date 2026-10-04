@@ -38,6 +38,8 @@ import {
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
+import { errandSearches, flashSearchPilot } from "@agent/lib/browser-use/flash";
+import { stagesErrand, stagingLead } from "@agent/lib/browser-use/staging";
 import {
   browserSecretAliases,
   phoneSignInDomains,
@@ -696,13 +698,6 @@ function commitmentLine(
 }
 
 /**
- * The words a run is told the errand is to be done with, which also mark a
- * composed run so its follow-ups carry the same rule (`stagesErrand`).
- */
-const stagingLead =
-  "The person asked for this to be done — booked, bought, ordered or signed up for — not only found.";
-
-/**
  * An errand the person asked to be done goes as far as it can before they
  * are asked anything. On 25.09 runs asked to «возьми», «закажи»,
  * «забронируй» stopped at a list or a guest basket because the errand the
@@ -750,11 +745,6 @@ const ownStagingCommitment = [
   `${documentNumbersLine} Choose instead a passenger or a document the signed-in account already saved, and when the form needs one it has not, fill in the rest and stop there with NEEDS: decision, naming in DETAILS the document it asks for.`,
   "Never press the button that pays, places the order, books, submits or sends, and never register, subscribe or write to anyone beyond this errand: stop right before that button, with NEEDS: payment and the final TOTAL with every fee when it charges or commits money (prepayment, binding a card, pay on delivery or at the property, a non-refundable rate, a cancellation fee), or with NEEDS: decision when it is free. Put that option first in ITEMS with everything the person would answer to — its exact name, the date and time, the seats, the price with every fee, its link — then the next best options.",
 ].join(" ");
-
-/** Whether a composed run was told the errand is to be done. */
-function stagesErrand(task: string | undefined) {
-  return task?.includes(stagingLead) === true;
-}
 
 /**
  * Who asked for the errand to be done: the person in their own turn
@@ -3409,6 +3399,15 @@ async function runBrowserTask(
           task,
         };
       }
+      // Only an errand that searches runs in flash mode: nothing allowed in
+      // the person's name, nothing to stage, nothing bound. A queued one is
+      // decided again from its row when it starts (`flash.ts`).
+      const search = await errandSearches(scope, {
+        bindings: secrets.bindings,
+        paymentAllowed: allowPayment,
+        staged: staging !== undefined,
+        submits: consent !== undefined,
+      });
       try {
         const run = await createBrowserUseRun({
           customProxy: customProxy(),
@@ -3416,6 +3415,7 @@ async function runBrowserTask(
           model: env.BROWSER_USE_MODEL,
           profileId,
           proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+          search,
           secretBindings: secrets.bindings,
           task,
         });
@@ -3808,7 +3808,18 @@ async function runBrowserTask(
         // submission confirmed on this call rides on the message with the
         // details it may type, and stays with the errand for its follow-ups;
         // one confirmed earlier is already in the run's own instructions.
-        if (live && !bindsCardNow && row.sessionId !== null) {
+        // Never into a live run that may be a search in flash mode, though:
+        // like a card, the submission takes a run of its own, in full mode
+        // (`agent/lib/browser-use/flash.ts`).
+        const intoSearchRun =
+          live &&
+          confirmedNow !== undefined &&
+          row.sessionId !== null &&
+          isBrowserVmId(row.sessionId) &&
+          !row.paymentAllowed &&
+          row.submission === null &&
+          (await flashSearchPilot(scope));
+        if (live && !bindsCardNow && !intoSearchRun && row.sessionId !== null) {
           const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;

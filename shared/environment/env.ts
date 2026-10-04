@@ -825,6 +825,12 @@ export const env = createEnv({
     // Unset, a first message that only announces work goes back to be
     // rewritten, as before.
     EARLY_REPLY_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of flash mode for browser errands that only search: workspace
+    // ids or owners' emails, or `*` for every workspace, whose errands on
+    // their own browser (a VM or a sandbox of the pool) run browser-use's
+    // flash mode when they neither sign in, submit, stage nor pay
+    // (`agent/lib/browser-use/flash.ts`). Unset, every errand runs as before.
+    FLASH_SEARCH_WORKSPACES: workspaceListSchema.optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),

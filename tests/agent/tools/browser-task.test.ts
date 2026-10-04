@@ -9372,3 +9372,110 @@ describe("browser_task keeps sign-ins", () => {
     expect(result).toMatchObject({ liveViewUrl });
   });
 });
+
+describe("browser_task flash mode for errands that only search", () => {
+  const workspaceId = accessScopeForUser("better-auth:alice").workspaceId;
+  const vmProfileId = `vm:${workspaceId}:p1`;
+  const vmSessionId = `vm:${workspaceId}:s:5e7d2c1a-8b9f-4e3d-a2c1-0f9e8d7c6b5a`;
+
+  afterEach(() => {
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "");
+  });
+
+  /** Whether the run started last runs in flash mode. */
+  function lastSearch() {
+    return createBrowserUseRun.mock.calls.at(-1)?.[0].search;
+  }
+
+  it("starts an errand that only searches in flash mode, and only in the pilot", async () => {
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "*");
+    await startErrand("");
+    expect(lastSearch()).toBe(true);
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", workspaceId);
+    await startErrand("");
+    expect(lastSearch()).toBe(true);
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "personal:someone-else");
+    await startErrand("");
+    expect(lastSearch()).toBe(false);
+    // Unset, every errand starts as it always did.
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "");
+    await startErrand("");
+    expect(lastSearch()).toBe(false);
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps full mode for an errand allowed to submit, bound to a sign-in or to be done", async () => {
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "*");
+    // Allowed to submit in the person's name.
+    await startErrand("", undefined, true);
+    expect(lastSearch()).toBe(false);
+    // A saved sign-in (or the person's phone) bound to the site.
+    resolveBrowserSecretBindings.mockResolvedValueOnce({
+      aliases: ["login_username", "login_password"],
+      bindings: [{ alias: "login_username" }, { alias: "login_password" }],
+    });
+    await startErrand("");
+    expect(lastSearch()).toBe(false);
+    // Asked to be done, not only found: staged up to the last step.
+    vi.resetModules();
+    const tool = await resolvedBrowserTask([], "забронируй столик");
+    await tool.execute(
+      {
+        action: "start",
+        personWants: "done",
+        site: "https://2gis.ru",
+        task: "Забронируй столик на субботу",
+      },
+      toolContext("better-auth:alice")
+    );
+    expect(lastSearch()).toBe(false);
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(3);
+  });
+
+  it("never hands a submission to a live run that may be a search in flash mode", async () => {
+    const approve = async (list: string) => {
+      vi.stubEnv("FLASH_SEARCH_WORKSPACES", list);
+      vi.resetModules();
+      readBrowserProfileId.mockResolvedValue(vmProfileId);
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(),
+        profileId: vmProfileId,
+        sessionId: vmSessionId,
+      });
+      const tool = await resolvedBrowserTask([], "Да, записывай");
+      return tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          allowSubmit: true,
+          personSaid: "Да, записывай",
+          runId,
+          submission: cardSubmission,
+          task: "Да, записывай",
+        },
+        toolContext("better-auth:alice")
+      );
+    };
+
+    // Out of the pilot the approval rides into the live run, as before.
+    await approve("");
+    expect(queueBrowserUseSessionMessage).toHaveBeenCalledOnce();
+    expect(queueBrowserUseSessionMessage.mock.calls[0]?.[0]).toBe(vmSessionId);
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+    queueBrowserUseSessionMessage.mockClear();
+
+    // In the pilot the live run may be in flash mode: like a card, the
+    // submission takes a follow-up run of its own, in full mode.
+    const result = await approve(workspaceId);
+
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+    expect(cancelBrowserUseRun).toHaveBeenCalledExactlyOnceWith(runId);
+    const followUp = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(followUp?.sessionId).toBe(vmSessionId);
+    expect(followUp?.search).toBeUndefined();
+    expect(followUp?.task).toContain(
+      "The person asked in their own message for this one submission in their name."
+    );
+    expect(result).toMatchObject({ runId: followUpRunId });
+  });
+});

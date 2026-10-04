@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import type * as ownerAlert from "@agent/lib/owner-alert";
 import { z } from "zod";
 import type * as lifecycleModule from "@agent/lib/browser-vm/lifecycle";
@@ -113,12 +121,20 @@ const recordUsageCost = vi.hoisted(() =>
   vi.fn<typeof usageCostRecords.recordUsageCost>()
 );
 vi.mock("@db/services/usage-costs", () => ({ recordUsageCost }));
+// The worker client's own start, for a case that reads the bytes it sends.
+const realWorker = vi.hoisted(() => ({
+  startBrowserVmWorkerRun: vi.fn<typeof workerModule.startBrowserVmWorkerRun>(),
+}));
+
 vi.mock("@db/services/browser-vms", () => records);
 vi.mock("@agent/lib/browser-vm/lifecycle", () => lifecycle);
-vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
-  ...(await importOriginal<typeof workerModule>()),
-  ...worker,
-}));
+vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => {
+  const original = await importOriginal<typeof workerModule>();
+  realWorker.startBrowserVmWorkerRun.mockImplementation(
+    original.startBrowserVmWorkerRun
+  );
+  return { ...original, ...worker };
+});
 
 function vmRow(overrides: Partial<BrowserVmRow> = {}): BrowserVmRow {
   const now = new Date();
@@ -405,6 +421,95 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(
       await started({ BROWSER_VM_LLM_BASE_URL: "https://llm.example.test/v1" })
     ).toBeUndefined();
+  });
+
+  it("runs an errand that only searches in flash mode, and any other as before", async () => {
+    const client = await loadClient();
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    worker.sendBrowserVmWorkerMessage.mockImplementation((_vm, id, message) =>
+      Promise.resolve({
+        runId: message.runId ?? "",
+        sessionId: id,
+        status: "started",
+      })
+    );
+
+    await client.createBrowserUseRun({
+      profileId,
+      search: true,
+      task: composedTask,
+    });
+    await client.createBrowserUseRun({
+      profileId,
+      search: false,
+      task: composedTask,
+    });
+    await client.createBrowserUseRun({ profileId, task: composedTask });
+    // A follow-up in the search's own session replaces its tuning, in
+    // full mode.
+    await client.queueBrowserUseSessionMessage(sessionId, "А синий есть?");
+
+    expect(
+      worker.startBrowserVmWorkerRun.mock.calls.map(([, input]) => input.tuning)
+    ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
+    expect(worker.sendBrowserVmWorkerMessage.mock.calls[0]?.[2].tuning).toEqual(
+      vmTuning
+    );
+  });
+
+  it("sends the worker byte for byte what it sent before flash mode, unless the errand only searches", async () => {
+    // No 2Captcha key from the shell: the body is the run's alone.
+    const client = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_VM_TWOCAPTCHA_API_KEY: "" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", (_url: string, init: { body?: string }) => {
+      const body = init.body ?? "";
+      bodies.push(body);
+      const sent = z
+        .object({ id: z.string(), sessionId: z.string() })
+        .parse(JSON.parse(body));
+      return Promise.resolve(
+        Response.json({ ...sent, status: "queued" }, { status: 202 })
+      );
+    });
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    worker.startBrowserVmWorkerRun.mockImplementation(
+      realWorker.startBrowserVmWorkerRun
+    );
+    // What the worker was sent before flash mode existed.
+    const before = (run: { readonly id: string; readonly sessionId: string }) =>
+      `{"id":"${run.id}","llm":{"apiKey":"routerai-test-key","baseUrl":"https://routerai.ru/api/v1","model":"deepseek/deepseek-v4.1-flash"},"maxSteps":60,"sessionId":"${run.sessionId}","task":${JSON.stringify(vmTask)},"timeoutSeconds":1500,"tuning":{"maxActionsPerStep":8,"provider":{"ignore":${JSON.stringify(routerAiDeepSeekRouting.ignore)},"order":["deepinfra"],"requireParameters":true},"reasoning":"none"}}`;
+
+    const unflagged = await client.createBrowserUseRun({
+      profileId,
+      task: composedTask,
+    });
+    const full = await client.createBrowserUseRun({
+      profileId,
+      search: false,
+      task: composedTask,
+    });
+    const search = await client.createBrowserUseRun({
+      profileId,
+      search: true,
+      task: composedTask,
+    });
+
+    expect(bodies).toEqual([
+      before(unflagged),
+      before(full),
+      before(search).replace('"tuning":{', '"tuning":{"flashMode":true,'),
+    ]);
   });
 
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
