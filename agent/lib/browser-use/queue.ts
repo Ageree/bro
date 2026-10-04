@@ -27,6 +27,7 @@ import {
   browserUseCreditsRestored,
   reportBrowserUseOutOfCredits,
 } from "./credits";
+import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { customProxy } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 import { gosuslugiDomain } from "./public-services";
@@ -42,7 +43,9 @@ type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
  * poller tries the longest-waiting one each minute, and a busy answer ends
  * that minute's tries, since the next errand would get the same answer. A
  * workspace's own browser VM answers busy, or starting, for that workspace
- * alone, so its errands wait without holding back anyone else's.
+ * alone, so its errands wait without holding back anyone else's — and only
+ * as long as that browser asked (`ownBrowserRetryMs` at least), which the
+ * poller's live watch keeps to within seconds between its minute ticks.
  */
 const queueRetryMs = 60_000;
 /** A throttle may ask for a longer pause; five minutes is the most we wait. */
@@ -50,9 +53,22 @@ const maximumQueueRetryMs = 5 * 60_000;
 /** Past this the person hears that the errand did not start, not silence. */
 const queueWindowMs = 90 * 60_000;
 
-export function queueRetryAt(now: Date, retryAfterMs?: number) {
+/**
+ * When a queued errand is tried next. `ownBrowser` is an errand whose own
+ * browser said it is starting or busy; an errand on Browser Use, one that
+ * waits for another errand on the same account, and one whose start failed
+ * otherwise wait the minute.
+ */
+export function queueRetryAt(
+  now: Date,
+  options: {
+    readonly ownBrowser?: boolean;
+    readonly retryAfterMs?: number | undefined;
+  } = {}
+) {
+  const least = options.ownBrowser === true ? ownBrowserRetryMs : queueRetryMs;
   const wait = Math.min(
-    Math.max(retryAfterMs ?? queueRetryMs, queueRetryMs),
+    Math.max(options.retryAfterMs ?? least, least),
     maximumQueueRetryMs
   );
   return new Date(now.getTime() + wait);
@@ -67,20 +83,13 @@ function expectedStartMinutes(ahead: number) {
   return Math.min(2 + ahead * 3, 30);
 }
 
-/** Whether an errand runs on its workspace's own browser VM. */
-function onBrowserVm(profileId: string | null | undefined) {
-  return (
-    profileId !== null && profileId !== undefined && isBrowserVmId(profileId)
-  );
-}
-
 /**
  * The line an errand on `profileId` waits in. Browser Use errands share the
  * project's cap across every workspace; a workspace on its own browser VM
  * waits only for that VM, whatever other workspaces' VMs are doing.
  */
 function lineFor(workspaceId: string, profileId: string | null | undefined) {
-  return onBrowserVm(profileId) ? { vmWorkspaceId: workspaceId } : {};
+  return onOwnBrowser(profileId) ? { vmWorkspaceId: workspaceId } : {};
 }
 
 /**
@@ -125,7 +134,11 @@ export async function queueBrowserErrand(
     {
       ...row,
       pendingTask: composedTask,
-      retryAt: queueRetryAt(now, retryAfterMs),
+      // An errand waiting for another one on its account waits the minute.
+      retryAt: queueRetryAt(now, {
+        ownBrowser: account === undefined && onOwnBrowser(row.profileId),
+        retryAfterMs,
+      }),
     },
     fromRunId
   );
@@ -136,7 +149,7 @@ export async function queueBrowserErrand(
       runId: queued.id,
     };
   }
-  if (onBrowserVm(row.profileId)) {
+  if (onOwnBrowser(row.profileId)) {
     return {
       ...(await browserVmWait(scope.workspaceId, ahead)),
       runId: queued.id,
@@ -400,7 +413,7 @@ export async function startQueuedBrowserRun(
   // Use before its key was taken away has no browser to start in, nor a run
   // there to adopt. It is closed before anything asks Browser Use, rather
   // than failing every minute ahead of the errands that can start.
-  if (!onBrowserVm(current.profileId) && !browserUseCloudConfigured()) {
+  if (!onOwnBrowser(current.profileId) && !browserUseCloudConfigured()) {
     const outcome =
       "The errand never started: the cloud browser service is not available right now. Nothing was done on the site. Tell the user so plainly and offer what you can do without a browser, or to try again later.";
     return {
@@ -451,7 +464,7 @@ export async function startQueuedBrowserRun(
       }
       // Who asked for the errand decides how long its VM stays up after
       // it, written before the start wakes or touches the VM.
-      if (onBrowserVm(current.profileId)) {
+      if (onOwnBrowser(current.profileId)) {
         await keepBrowserVmForErrand(
           current.workspaceId,
           current.startedByPerson !== false
@@ -461,14 +474,24 @@ export async function startQueuedBrowserRun(
     }
   } catch (error) {
     if (browserUseBusy(error)) {
+      const ownBrowser = onOwnBrowser(current.profileId);
+      // The workspace's own browser asked for its wait when it answered,
+      // which may be well after `now` once it checked a host or an exit;
+      // Browser Use's errands keep to the minute ticks they are tried on.
       await parkQueuedBrowserRun(
         current.id,
-        queueRetryAt(now, error.retryAfterMs)
+        queueRetryAt(
+          ownBrowser ? new Date(Math.max(now.getTime(), Date.now())) : now,
+          {
+            ownBrowser,
+            retryAfterMs: error.retryAfterMs,
+          }
+        )
       );
       // A workspace's VM that is starting, or busy with another of its
       // errands, holds back that workspace alone: like an errand waiting on
       // its account, this one took no shared slot, and the drain goes on.
-      return { status: onBrowserVm(current.profileId) ? "waiting" : "busy" };
+      return { status: ownBrowser ? "waiting" : "busy" };
     }
     if (browserUseOutOfCredits(error)) {
       await reportBrowserUseOutOfCredits(error);

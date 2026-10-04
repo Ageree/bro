@@ -860,6 +860,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   ЕСИА на новом адресе спрашивает код всегда.
 - На 429 (мало сессий) поручение встаёт в очередь (`queue.ts`), на 402 — алерт
   владельцу (`agent/lib/owner-alert.ts`).
+- Очередь и антибот-повторы своего браузера (`vm:`) разбирает и live watch
+  тика `browser-runs` (`nextOwnBrowserStarts`), с общим на тик лимитом
+  стартов; Browser Use — только тики. В тестах поллера watch держат
+  выключенным моки `hasLiveBrowserRuns` и `nextOwnBrowserStarts` (`liveWatch`):
+  без них тест спит настоящие секунды.
 - eve подписывает карточку лишь «Approve tool call: …»: текст собирает
   `shared/chat/approval-card.ts`. В iMessage eve примет ответ текстом, только
   равный id, английской метке или номеру (`channel/resolve-text.js`).

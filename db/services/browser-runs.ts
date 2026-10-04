@@ -10,6 +10,7 @@ import {
   like,
   lt,
   lte,
+  min,
   ne,
   not,
   or,
@@ -311,13 +312,22 @@ const retryClaimLeaseMs = 10 * 60_000;
  * and skips it, and a poller that dies before the handoff leaves the row to
  * be claimed again once the lease runs out, rather than losing the errand.
  * The row stays `waiting` until the retry takes it over, so a cancel in the
- * meantime still lands on it and the handoff sees it.
+ * meantime still lands on it and the handoff sees it. `vmOnly` takes only
+ * errands on a workspace's own browser, as `claimNextQueuedBrowserRun` does.
  */
-export async function claimDueBrowserRunRetries(now: Date, limit: number) {
+export async function claimDueBrowserRunRetries(
+  now: Date,
+  limit: number,
+  options: { readonly vmOnly?: boolean } = {}
+) {
+  const claimable = and(
+    retryDue(now),
+    options.vmOnly === true ? onOwnBrowser() : undefined
+  );
   const due = db
     .select({ id: browserRuns.id })
     .from(browserRuns)
-    .where(retryDue(now))
+    .where(claimable)
     .orderBy(asc(browserRuns.retryAt))
     .limit(limit);
   return db
@@ -326,8 +336,31 @@ export async function claimDueBrowserRunRetries(now: Date, limit: number) {
       retryAt: new Date(now.getTime() + retryClaimLeaseMs),
       updatedAt: now,
     })
-    .where(and(inArray(browserRuns.id, due), retryDue(now)))
+    .where(and(inArray(browserRuns.id, due), claimable))
     .returning();
+}
+
+/** An errand on a workspace's own browser: a VM, or a sandbox of the pool. */
+function onOwnBrowser() {
+  return like(browserRuns.profileId, "vm:%");
+}
+
+/**
+ * When the first errand on a workspace's own browser falls due by `before`:
+ * the earliest queued start (`queued`) and the earliest anti-bot retry
+ * (`retry`), or undefined for a kind with none. A row being started is not
+ * due — its claim moved `retry_at` a lease away — so the poller's live watch
+ * looks only at what it can claim, by the same conditions as the claims.
+ */
+export async function nextOwnBrowserStarts(before: Date) {
+  const rows = await db
+    .select({ due: min(browserRuns.retryAt), status: browserRuns.status })
+    .from(browserRuns)
+    .where(and(or(queuedAndDue(before), retryDue(before)), onOwnBrowser()))
+    .groupBy(browserRuns.status);
+  const earliest = (status: string) =>
+    rows.find((row) => row.status === status)?.due ?? undefined;
+  return { queued: earliest("queued"), retry: earliest("waiting") };
 }
 
 /**
@@ -585,7 +618,7 @@ export async function claimNextQueuedBrowserRun(
 ) {
   const due = and(
     queuedAndDue(now),
-    options.vmOnly === true ? like(browserRuns.profileId, "vm:%") : undefined
+    options.vmOnly === true ? onOwnBrowser() : undefined
   );
   const next = db
     .select({ id: browserRuns.id })

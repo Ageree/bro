@@ -187,6 +187,21 @@ describe("the anti-bot retry policy", () => {
     expect(captchaRetryAt(9, now)).toBeUndefined();
   });
 
+  it("retries on the person's own browser at once, through another exit, and backs off after", async () => {
+    const { captchaRetryAt } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    const waits = [1, 2, 3, 4].map(
+      (attempt) =>
+        ((captchaRetryAt(attempt, now, true)?.getTime() ?? 0) - now.getTime()) /
+        60_000
+    );
+
+    // Due as soon as the wall is reported: waiting buys a new exit nothing.
+    expect(waits).toEqual([0, 1, 2, 5]);
+    expect(captchaRetryAt(5, now, true)).toBeUndefined();
+  });
+
   it("replaces the previous retry note instead of piling notes up", async () => {
     const { captchaRetryTask } =
       await import("@agent/lib/browser-use/captcha-retry");
@@ -417,6 +432,25 @@ describe("the anti-bot retry policy", () => {
       retryAt: new Date("2026-09-23T12:01:00.000Z"),
     });
 
+    // A sandbox being moved onto its host asks for 15 s: no more than that,
+    // and never less than 15 s whatever it says.
+    for (const asked of [15_000, 3_000]) {
+      createBrowserUseRun.mockRejectedValueOnce(
+        new BrowserUseError(
+          429,
+          "browser-vm",
+          "The browser is starting.",
+          asked
+        )
+      );
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Two answers, in turn.
+      expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
+      expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
+        captchaAttempt: 2,
+        retryAt: new Date("2026-09-23T12:00:15.000Z"),
+      });
+    }
+
     // Past half an hour after the wall it counts, so it cannot wait forever.
     createBrowserUseRun.mockRejectedValueOnce(
       new BrowserUseError(429, "browser-vm", "The browser is starting.", 60_000)
@@ -427,7 +461,7 @@ describe("the anti-bot retry policy", () => {
     expect(parkBrowserRunForRetry).toHaveBeenLastCalledWith(runId, {
       captchaAttempt: 3,
       // A VM's retry goes out through another exit, so it waits less.
-      retryAt: new Date("2026-09-23T12:45:00.000Z"),
+      retryAt: new Date("2026-09-23T12:42:00.000Z"),
     });
     expect(handOffBrowserRunRetry).not.toHaveBeenCalled();
   });
