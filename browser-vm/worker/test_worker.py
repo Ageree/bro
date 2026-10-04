@@ -331,7 +331,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         FakeAgent.built, FakeAgent.script = [], one_step
         views = types.SimpleNamespace(AgentState=FakeAgentState)
         message_views = types.SimpleNamespace(HistoryItem=lambda system_message: system_message)
-        browser_use = types.SimpleNamespace(Agent=FakeAgent, ChatOpenRouter=lambda **options: options)
+        browser_use = types.SimpleNamespace(Agent=FakeAgent, ChatOpenRouter=lambda **options: options,
+                                            ActionResult=lambda **fields: fields)
         test = self
 
         async def browser_session(self, session, options):
@@ -547,6 +548,63 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                          [{"in": 20_000, "cached": 0, "out": 300, "calls": 1},
                           {"in": 26_000, "cached": 19_000, "out": 350, "calls": 2}])
         self.assertEqual([step["goal"] for step in run.steps], ["Search.", "Read."])
+
+    async def test_the_site_refusing_a_write_reaches_the_next_step_and_each_step_leaves_a_trail(self):
+        refused = "The site's server refused POST https://shop.test/api/order: 400 — Введите корректный номер."
+        told = [["A line before any step."], [refused], []]
+
+        class Refusals:
+            def start(self, url):
+                pass
+
+            async def stop(self):
+                pass
+
+            def notices(self, secrets):
+                return told.pop(0) if told else []
+
+            def report(self, secrets):
+                return ""
+
+        async def jpeg(browser):
+            return b"\xff\xd8small"
+
+        self.enterContext(mock.patch.object(worker, "SiteErrors", Refusals))
+        self.enterContext(mock.patch.object(worker, "page_jpeg", jpeg))
+        seen = {}
+
+        async def two_steps(agent, on_step_start):
+            step = agent.options["register_new_step_callback"]
+            # Step 1: no step before it to hang a line on, so the line is a history item of its own.
+            await on_step_start(agent)
+            seen["history"] = list(agent.state.message_manager_state.agent_history_items)
+            await step(types.SimpleNamespace(url="https://shop.test/cart", title="Корзина"),
+                       types.SimpleNamespace(next_goal="Pay as owner-pass.", action=[]), 1)
+            agent.state.last_model_output = object()
+            agent.state.last_result = [types.SimpleNamespace(error="Typing owner-pass failed.")]
+            await agent.on_step_end(agent)
+            # Step 2: the refusal goes on step 1's result, which the model reads next. Its output fails.
+            await on_step_start(agent)
+            seen["result"] = list(agent.state.last_result)
+            agent.state.last_result = []
+            await agent.on_step_end(agent)
+            return FakeHistory(True)
+
+        FakeAgent.script = two_steps
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Order the kettle.",
+                                     "secrets": [{"alias": "password", "value": "owner-pass",
+                                                  "allowedDomains": ["shop.test"]}]})
+        await self.settled("r1")
+        self.assertEqual(seen["history"], ["<sys>A line before any step.</sys>"])
+        self.assertEqual(seen["result"][-1], {"long_term_memory": refused})
+        trail = worker.SESSIONS / worker.disk_name("s1") / worker.TRAIL / "r1"
+        lines = [json.loads(line) for line in (trail / "steps.jsonl").read_text().splitlines()]
+        self.assertEqual([(line["step"], line.get("shot")) for line in lines], [(1, "001.jpg"), (2, "002.jpg")])
+        self.assertEqual((lines[0]["goal"], lines[0]["errors"], lines[0]["url"]),
+                         ("Pay as <secret>.", ["Typing <secret> failed."], "https://shop.test/"))
+        self.assertNotIn("goal", lines[1])  # a step whose output failed has no summary of its own
+        self.assertEqual((trail / "002.jpg").read_bytes(), b"\xff\xd8small")
+        self.assertNotIn("owner-pass", (trail / "steps.jsonl").read_text())
 
     async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
         async def browse(agent, on_step_start):
@@ -1709,6 +1767,169 @@ class CardFormTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(filled)
         self.assertIn("No card number field", message)
         self.assertEqual(frame.values, {0: ""})
+
+
+class FakeSocket:
+    """The CDP socket SiteErrors listens on: what it sends."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, data):
+        self.sent.append(data)
+
+
+class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
+    """SiteErrors fed CDP events by hand; test_site_errors runs it against a real Chrome."""
+
+    PAGE = "https://shop.ru/checkout"
+
+    async def asyncSetUp(self):
+        self.errors = worker.SiteErrors()
+        self.errors.ws = FakeSocket()
+        self.ids = itertools.count(1)
+
+    async def request(self, method, url, status, body=None, kind="XHR"):
+        request_id = f"q{next(self.ids)}"
+        await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": request_id, "type": kind, "documentURL": self.PAGE,
+            "request": {"method": method, "url": url}}})
+        await self.errors.handle({"method": "Network.responseReceived",
+                                  "params": {"requestId": request_id, "response": {"status": status}}})
+        await self.errors.handle({"method": "Network.loadingFinished", "params": {"requestId": request_id}})
+        if body is not None and status >= 400:
+            command = self.errors.ws.sent[-1]["id"]
+            await self.errors.handle({"id": command, "result": {"body": body}})
+
+    async def test_a_refused_write_is_told_once_and_a_probe_never(self):
+        secrets = {"https://*.shop.ru": {"phone": "+79217818876"}}
+        await self.request("GET", "https://shop.ru/api/user", 401, '{"error": "unauthorized"}')
+        await self.request("GET", "https://api.shop.ru/api/user/cart?x=1", 404, "")
+        await self.request("POST", "https://api.shop.ru/api/orders?session=s3cr3t", 400,
+                           '{"errors": ["Пожалуйста, введите корректный номер телефона +79217818876",'
+                           ' "deliveryMethod must be a valid enum value"]}')
+        notices = self.errors.notices(secrets)
+        self.assertEqual(len(notices), 1)
+        self.assertIn("refused POST https://api.shop.ru/api/orders: 400 — ", notices[0])
+        self.assertIn("Пожалуйста, введите корректный номер телефона <secret>", notices[0])
+        self.assertIn("deliveryMethod must be a valid enum value", notices[0])
+        self.assertIn("do not report success", notices[0])
+        for hidden in ("s3cr3t", "79217818876", "/api/user"):
+            self.assertNotIn(hidden, notices[0])
+        self.assertEqual(self.errors.notices(secrets), [])
+        # The same refusal again with the same answer is not told twice; a new answer is.
+        await self.request("POST", "https://api.shop.ru/api/orders", 400,
+                           '{"errors": ["deliveryMethod must be a valid enum value"]}')
+        await self.request("POST", "https://api.shop.ru/api/orders", 400,
+                           '{"errors": ["Пожалуйста, введите корректный номер телефона +79217818876",'
+                           ' "deliveryMethod must be a valid enum value"]}')
+        self.assertEqual(len(self.errors.notices(secrets)), 1)
+        # The report keeps everything, the probes too.
+        report = self.errors.report(secrets)
+        self.assertIn("401 GET https://shop.ru/api/user", report)
+        self.assertIn("404 GET https://api.shop.ru/api/user/cart", report)
+
+    async def test_a_third_party_request_or_a_read_is_not_told_and_notices_are_capped(self):
+        await self.request("POST", "https://mc.yandex.ru/watch", 403, "forbidden")
+        await self.request("PUT", "https://shop.ru/api/cart", 500, "")
+        await self.request("GET", "https://shop.ru/api/slots", 500, "oops")
+        notices = self.errors.notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn("refused PUT https://shop.ru/api/cart: 500 (no answer text)", notices[0])
+        for number in range(5):
+            await self.request("DELETE", f"https://shop.ru/api/cart/{number}", 409, "gone")
+        self.assertEqual(len(self.errors.notices()), worker.SiteErrors.NOTICES - 1)
+
+    async def test_a_notice_waits_a_moment_for_its_answer(self):
+        await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": "q", "type": "Fetch", "documentURL": self.PAGE,
+            "request": {"method": "POST", "url": "https://shop.ru/api/orders"}}})
+        await self.errors.handle({"method": "Network.responseReceived",
+                                  "params": {"requestId": "q", "response": {"status": 422}}})
+        self.assertEqual(self.errors.notices(), [])
+        with mock.patch.object(worker.SiteErrors, "BODY_WAIT_S", 0):
+            self.assertIn("422 (no answer text)", self.errors.notices()[0])
+
+    async def test_probes_never_crowd_a_refused_write_out_of_the_report(self):
+        for number in range(worker.SiteErrors.LIMIT + 2):
+            await self.request("GET", f"https://shop.ru/api/probe{number}", 404, "")
+            await self.request("GET", f"https://shop.ru/api/probe{number}", 404, "")
+        await self.request("POST", "https://shop.ru/api/orders", 400, "bad phone")
+        report = self.errors.report()
+        self.assertIn("400 POST https://shop.ru/api/orders — bad phone", report)
+        self.assertIn("404 GET https://shop.ru/api/probe1 (×2)", report)
+        self.assertEqual(len(self.errors.entries), worker.SiteErrors.LIMIT)
+
+
+class StepTrailTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.object(worker, "SESSIONS", self.root / "sessions"))
+        self.secrets = {"https://*.shop.ru": {"password": "hunter22", "card_cvc": "249"}}
+
+    def lines(self, trail):
+        return [json.loads(line) for line in (trail.directory / "steps.jsonl").read_text().splitlines()]
+
+    async def test_a_step_line_has_no_secret_no_query_and_no_typed_text(self):
+        trail = worker.StepTrail(self.root / "t", self.secrets)
+        summary = worker.step_summary(
+            types.SimpleNamespace(url="https://shop.ru/pay?token=t0k", title="Оплата hunter22"),
+            types.SimpleNamespace(next_goal="Type hunter22 and 249.", action=[types.SimpleNamespace(
+                model_dump=lambda exclude_none: {"input": {"index": 7, "text": "hunter22"}})]), 3)
+
+        async def shoot():
+            return b"\xff\xd8jpeg"
+
+        await trail.record(shoot, summary, "https://shop.ru/pay?token=t0k#x", ["Field rejected hunter22"])
+        line = self.lines(trail)[0]
+        self.assertEqual(line["step"], 1)
+        self.assertEqual((line["url"], line["goal"], line["title"], line["errors"], line["actions"], line["shot"]),
+                         ("https://shop.ru/pay", "Type <secret> and <secret>.", "Оплата <secret>",
+                          ["Field rejected <secret>"], [{"action": "input", "index": 7}], "001.jpg"))
+        written = (trail.directory / "steps.jsonl").read_text()
+        for secret in ("hunter22", "249", "t0k"):
+            self.assertNotIn(secret, written)
+        self.assertEqual((trail.directory / "001.jpg").read_bytes(), b"\xff\xd8jpeg")
+
+    async def test_only_the_last_shots_are_kept_and_a_failed_or_slow_shot_skips_only_the_picture(self):
+        trail = worker.StepTrail(self.root / "t")
+
+        async def shoot():
+            return b"jpeg"
+
+        async def broken():
+            raise RuntimeError("tab is gone")
+
+        async def slow():
+            await asyncio.sleep(5)
+
+        self.enterContext(mock.patch.object(worker, "TRAIL_SHOTS", 3))
+        self.enterContext(mock.patch.object(worker, "TRAIL_SHOT_S", 0.05))
+        for _ in range(5):
+            await trail.record(shoot)
+        await trail.record(broken)
+        await trail.record(slow)
+        self.assertEqual(sorted(p.name for p in trail.directory.glob("*.jpg")), ["003.jpg", "004.jpg", "005.jpg"])
+        self.assertEqual([line.get("shot") for line in self.lines(trail)],
+                         ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", None, None])
+
+    async def test_a_trail_that_cannot_be_written_does_not_fail_the_step(self):
+        (self.root / "file").write_text("")
+        trail = worker.StepTrail(self.root / "file" / "t")
+
+        async def shoot():
+            return b"jpeg"
+
+        await trail.record(shoot)  # no exception
+
+    def test_only_the_newest_run_trails_stay_on_the_vm(self):
+        for number, session in enumerate(["a", "b", "a", "c"]):
+            path = worker.SESSIONS / session / worker.TRAIL / f"r{number}"
+            path.mkdir(parents=True)
+            os.utime(path, (1000 + number, 1000 + number))
+        worker.prune_trails(2)
+        kept = sorted(p.name for p in worker.SESSIONS.glob(f"*/{worker.TRAIL}/*"))
+        self.assertEqual(kept, ["r2", "r3"])
 
 
 if __name__ == "__main__":
