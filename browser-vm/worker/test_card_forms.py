@@ -87,6 +87,15 @@ UNLABELLED_FRAME = """
 <input name="cardNumber"><input name="expMonth" maxlength="2"><input name="expYear" maxlength="4"><input name="cvc">
 """
 
+# What else a checkout puts on the page beside the card form: an airline's passenger and contact fields, the
+# delivery's intercom code. Each one reads like a card field to a careless matcher.
+BIRTH_MONTH = '<h3>Пассажир</h3><label>Месяц <select id="dob"><option value="">Месяц</option>' + "".join(
+    f'<option value="{m}">{m:02d}</option>' for m in range(1, 13)) + "</select></label>"
+PASSPORT_EXPIRY = '<label>Срок действия паспорта <input id="pexp" placeholder="ДД.ММ.ГГГГ"></label>'
+PHONE = '<label>Телефон <input id="phone" type="tel" placeholder="8 999 999-99-99"></label>'
+LOYALTY = '<label>Номер карты участника программы <input id="ff"></label>'
+PROCESSOR_FRAME = '<iframe src="http://localhost:8702/frame" width=500 height=400></iframe>'
+
 DELIVERY_PAGE = """<label>Имя <input id="name"></label><label>Код домофона <input id="intercom"></label>"""
 
 
@@ -198,6 +207,13 @@ class CardForms(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.values("/", ["number", "month", "year", "cvv", "name", "intercom"]),
                          ["4276550101324310", "01", "2031", "249", "", ""])
 
+    async def test_month_options_counted_from_zero(self):
+        self.pages["/"] = SELECTS_PAGE.replace('<option value="01">01</option>', '<option value="0">01</option>')
+        await self.open("/")
+        filled, message = await self.fill()
+        self.assertTrue(filled, message)
+        self.assertEqual(await self.values("/", ["month", "year"]), ["0", "2031"])
+
     async def test_unlabelled_fields_in_a_same_origin_frame(self):
         self.pages["/frame"] = UNLABELLED_FRAME.replace('name="cardNumber"', 'name="cardNumber" id="n"').replace(
             'name="expMonth"', 'name="expMonth" id="m"').replace('name="expYear"', 'name="expYear" id="y"').replace(
@@ -207,6 +223,34 @@ class CardForms(unittest.IsolatedAsyncioTestCase):
         filled, message = await self.fill()
         self.assertTrue(filled, message)
         self.assertEqual(await self.values("/frame", ["n", "m", "y", "c"]), ["4276550101324310", "01", "2031", "249"])
+
+    async def test_passenger_and_contact_fields_beside_the_processors_frame_are_left_alone(self):
+        self.pages["/frame"] = YOOKASSA_FRAME
+        self.pages["/"] = BIRTH_MONTH + PASSPORT_EXPIRY + PHONE + LOYALTY + PROCESSOR_FRAME
+        await self.open("/")
+        filled, message = await self.fill()
+        self.assertTrue(filled, message)
+        self.assertEqual(await self.values("/", ["dob", "pexp", "phone", "ff"]), ["", "", "", ""])
+        self.assertEqual(await self.values("/frame", ["n", "m", "y", "c"]), ["4276 5501 0132 4310", "01", "31", "249"])
+
+    async def test_the_passport_expiry_is_not_the_cards(self):
+        self.pages["/frame"] = SINGLE_MASKED_FRAME
+        self.pages["/"] = PASSPORT_EXPIRY + PROCESSOR_FRAME
+        await self.open("/")
+        filled, message = await self.fill()
+        self.assertTrue(filled, message)
+        self.assertEqual(await self.values("/", ["pexp"]), [""])
+        self.assertEqual(await self.values("/frame", ["e"]), ["01/31"])
+
+    async def test_an_intercom_code_before_the_card_form_is_not_its_cvc(self):
+        self.pages["/"] = ('<label>Код домофона <input id="i"></label><label>Промо-код <input id="p"></label>'
+                           '<h2>Оплата</h2><label>Номер карты <input id="n"></label>'
+                           '<label>Срок действия <input id="e" placeholder="ММ/ГГ"></label>'
+                           '<label>Код <input id="c" type="password"></label>')
+        await self.open("/")
+        filled, message = await self.fill()
+        self.assertTrue(filled, message)
+        self.assertEqual(await self.values("/", ["i", "p", "n", "e", "c"]), ["", "", "4276550101324310", "01/31", "249"])
 
     async def test_a_page_without_a_card_form_is_left_alone(self):
         self.pages["/"] = DELIVERY_PAGE
