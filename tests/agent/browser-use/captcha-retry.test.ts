@@ -1,5 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BrowserUseCreateRunInput } from "@agent/lib/browser-use/client";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
+import type {
+  BrowserUseCreateRunInput,
+  BrowserUseSecretBinding,
+} from "@agent/lib/browser-use/client";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -61,7 +72,7 @@ const resolveBrowserSecretBindings = vi.hoisted(() =>
     (
       scope: AccessScope,
       options: { allowPayment: boolean; site: string | undefined }
-    ) => Promise<{ aliases: string[]; bindings: [] }>
+    ) => Promise<{ aliases: string[]; bindings: BrowserUseSecretBinding[] }>
   >(() => Promise.resolve({ aliases: [], bindings: [] }))
 );
 
@@ -75,7 +86,12 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
   findRecentBrowserUseRunByTaskLine,
   readBrowserUseRun,
 }));
+// Whether the walled run is its errand's start or a follow-up's run.
+const browserRunTaskOrigin = vi.hoisted(() =>
+  vi.fn<() => Promise<"follow-up" | "start">>(() => Promise.resolve("start"))
+);
 vi.mock("@db/services/browser-runs", () => ({
+  browserRunTaskOrigin,
   handOffBrowserRunRetry,
   parkBrowserRunForRetry,
   readBrowserRun,
@@ -145,6 +161,8 @@ beforeEach(() => {
   vi.stubEnv("BROWSER_USE_PROXY_PORT", "");
   vi.stubEnv("BROWSER_USE_PROXY_USERNAME", "");
   vi.stubEnv("BROWSER_USE_PROXY_ROTATING_USERNAME", "");
+  vi.stubEnv("FLASH_SEARCH_WORKSPACES", "");
+  browserRunTaskOrigin.mockResolvedValue("start");
   readBrowserRun.mockResolvedValue({ retriedAsRunId: null, status: "waiting" });
   handOffBrowserRunRetry.mockResolvedValue(true);
   parkBrowserRunForRetry.mockResolvedValue(true);
@@ -891,5 +909,86 @@ describe("the retry's exit to the internet", () => {
     expect(retryProxySettings(3, "def").customProxy?.username).toBe(
       "bro-session-def"
     );
+  });
+});
+
+describe("flash mode on an anti-bot retry", () => {
+  /** A walled errand that only searched: nothing allowed, nothing bound. */
+  function searchRow() {
+    return { ...parkedRow(1), paymentAllowed: false, submission: null };
+  }
+
+  /** Whether each retry started so far ran in flash mode. */
+  function searches() {
+    return createBrowserUseRun.mock.calls.map(([input]) => input.search);
+  }
+
+  it("retries the start of an errand that only searches in flash mode, in the pilot alone", async () => {
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "workspace:alice");
+    const pilot = await import("@agent/lib/browser-use/captcha-retry");
+
+    await pilot.startCaptchaRetry(searchRow());
+
+    // Decided from the row: the errand's own start, through its retries.
+    expect(browserRunTaskOrigin).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      expect.objectContaining({ id: runId })
+    );
+
+    vi.resetModules();
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "");
+    const unset = await import("@agent/lib/browser-use/captcha-retry");
+    await unset.startCaptchaRetry(searchRow());
+
+    expect(searches()).toEqual([true, false]);
+    // Unset, nothing is even looked up.
+    expect(browserRunTaskOrigin).toHaveBeenCalledOnce();
+  });
+
+  it("never retries wider than a search: not a payment, a submission, a staged errand, a sign-in or a follow-up", async () => {
+    vi.stubEnv("FLASH_SEARCH_WORKSPACES", "*");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    onTestFinished(() => {
+      warn.mockRestore();
+    });
+    const { stagingLead } = await import("@agent/lib/browser-use/staging");
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry({ ...searchRow(), paymentAllowed: true });
+    await startCaptchaRetry({
+      ...searchRow(),
+      submission: parkedRow(1).submission,
+    });
+    readBrowserUseRun.mockResolvedValueOnce({
+      task: `Забронируй столик на субботу\n\n${stagingLead}`,
+    });
+    await startCaptchaRetry(searchRow());
+    resolveBrowserSecretBindings.mockResolvedValueOnce({
+      aliases: ["login_username"],
+      bindings: [
+        {
+          alias: "login_username",
+          allowedDomains: ["shop.example"],
+          source: { type: "inline", value: "alice@example.com" },
+        },
+      ],
+    });
+    await startCaptchaRetry(searchRow());
+    browserRunTaskOrigin.mockResolvedValueOnce("follow-up");
+    await startCaptchaRetry(searchRow());
+    browserRunTaskOrigin.mockRejectedValueOnce(new Error("connection lost"));
+    await startCaptchaRetry(searchRow());
+    await startCaptchaRetry(searchRow());
+
+    expect(searches()).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+    ]);
   });
 });

@@ -91,17 +91,19 @@ const routerAiHostsWithoutStructuredOutputs = [
  * section 3.3): DeepSeek's hidden reasoning off — browser-use has the model
  * think in its answer anyway, and the hidden tokens were a third of the
  * errand's price and slowed every step — and up to eight actions in a step,
- * with the worker's hint to put the obvious ones together. Flash mode was
- * cheaper still on the bench, but drops browser-use's own rules and the
- * model's written reasoning: not before errands that sign in or stage a
- * checkout were measured with it.
+ * with the worker's hint to put the obvious ones together. Flash mode is
+ * faster still, but drops browser-use's own rules and the model's written
+ * reasoning: only the start of an errand that only searches runs in it
+ * (`search`, decided in `agent/lib/browser-use/flash.ts`), never one that
+ * signs in or stages a checkout, and never a follow-up message. Without
+ * `search` the tuning is what it always was, key for key.
  *
  * Its hosts are the main agent's (`providerRouting`: the pinned caching
  * host, the broken ones skipped) less those without structured outputs.
  * The main agent's ROUTERAI_PROVIDER_* do not apply: they tune another
  * model and service, and a pinned host there would lift its skip here.
  */
-function runTuning(model: string) {
+function runTuning(model: string, search = false) {
   const service = browserVmLlmService();
   const provider =
     service === undefined
@@ -117,7 +119,8 @@ function runTuning(model: string) {
           }),
           requireParameters: true,
         };
-  return { maxActionsPerStep: 8, provider, reasoning: "none" } as const;
+  const tuning = { maxActionsPerStep: 8, provider, reasoning: "none" } as const;
+  return search ? { flashMode: true, ...tuning } : tuning;
 }
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
@@ -184,6 +187,8 @@ export async function createBrowserVmRun(input: {
    */
   readonly freshExit?: boolean;
   readonly profileId: string;
+  /** The errand only searches: its agent runs in flash mode (`runTuning`). */
+  readonly search?: boolean;
   readonly secretBindings?: readonly {
     readonly alias: string;
     readonly allowedDomains: readonly string[];
@@ -255,7 +260,7 @@ export async function createBrowserVmRun(input: {
     sessionId,
     task,
     timeoutSeconds: runTimeoutSeconds,
-    tuning: runTuning(llm.model),
+    tuning: runTuning(llm.model, input.search),
   });
   // The worker has it: the record says what the worker says from here. The
   // run is acting already, so a write that fails does not fail the start:
@@ -417,6 +422,8 @@ export async function queueBrowserVmSessionMessage(
       llm,
       runId,
       text,
+      // A follow-up started from the message runs on this tuning instead
+      // of the session's, so it never inherits a search's flash mode.
       tuning: runTuning(llm.model),
     });
   } catch (error) {

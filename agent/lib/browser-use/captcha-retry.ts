@@ -14,6 +14,7 @@ import {
   findRecentBrowserUseRunByTaskLine,
   readBrowserUseRun,
 } from "./client";
+import { storedErrandSearches } from "./flash";
 import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { retryProxySettings } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
@@ -192,6 +193,13 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
             row.startedByPerson !== false
           );
         }
+        // Flash mode only for the start of an errand that searches, decided
+        // again from the row: never wider than the attempt before it.
+        const search = await storedErrandSearches(
+          row,
+          previous.task,
+          secrets.bindings
+        );
         starting = true;
         run = await createBrowserUseRun({
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
@@ -201,6 +209,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
           model: env.BROWSER_USE_MODEL,
           profileId: row.profileId ?? undefined,
+          search,
           secretBindings: secrets.bindings,
           // On the VM the retry goes on in the attempt's own session, whose
           // agent keeps what it found: walls there come after a while on

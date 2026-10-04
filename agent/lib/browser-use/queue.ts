@@ -27,6 +27,7 @@ import {
   browserUseCreditsRestored,
   reportBrowserUseOutOfCredits,
 } from "./credits";
+import { storedErrandSearches } from "./flash";
 import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { customProxy } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
@@ -354,7 +355,9 @@ async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
 /**
  * Start a cloud run for the errand as the person left it: the instruction
  * composed when they asked, on the workspace profile and in the browser a
- * follow-up was using, with the site's secrets bound afresh.
+ * follow-up was using, with the site's secrets bound afresh. Whether it
+ * only searches, and runs in flash mode, is decided again from the row: a
+ * queued follow-up never does.
  */
 async function createQueuedRun(row: BrowserRunRow, reference: string) {
   const task = row.pendingTask ?? row.task;
@@ -373,6 +376,7 @@ async function createQueuedRun(row: BrowserRunRow, reference: string) {
     model: env.BROWSER_USE_MODEL,
     profileId: row.profileId ?? undefined,
     proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+    search: await storedErrandSearches(row, task, secrets.bindings),
     secretBindings: secrets.bindings,
     sessionId: row.sessionId ?? undefined,
     task: `${task}\n\n${reference}`,
