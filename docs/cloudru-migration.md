@@ -5,6 +5,14 @@
 лучше (`docs/instinct.md`). Браузер уже на Cloud.ru (пул песочниц, пилот
 владельца с 01.10, `docs/browser-pool.md`).
 
+**Состояние на 04.10:** переезд сделан, прод на VM Cloud.ru с 02.10, модель —
+только RouterAI (запасной Cloud.ru FM в коде, но без ключа спит: владелец
+04.10 решил его пока не заводить). Осталась уборка Vercel через неделю без
+отката — 09.10 её запускает Routine, поставленная сессией 02.10: не
+дублируйте её. Не сделано: `agent/lib/privacy/facts.ts` всё ещё называет
+людям Vercel, Vercel Workflow и Neon (модель — уже RouterAI). Разделы ниже —
+план, как он писался 01.10.
+
 ## Куда идём
 
 | Слой        | Сейчас (Vercel)                                       | Цель (Cloud.ru, как у Instinct)                                                              |
@@ -514,9 +522,14 @@ status`) — до решения об откате.
 - Каналы: iMessage (Photon) доставляет в обе стороны, вход по коду,
   оплата ЮKassa (уведомление дошло, подписка продлилась), подключение
   Composio возвращает на `brobro.tech`, поручения браузера и task-агента.
-- Через неделю без отката: `host.py env bro-app-1 --profile prod` без
-  `--with-neon` (убирает адрес Neon), Neon — в архив, затем уборка Vercel
-  (`vercel.json`, Gateway-строки моделей, зависимость `vercel`, Blob).
+- Через неделю без отката (09.10, Routine сессии 02.10 — не дублируйте): PR
+  с уборкой Vercel из кода (`vercel.json`, `@vercel/*` и `vercel`,
+  Gateway-строки моделей, ветка OpenRouter, чтение секретов из Blob; режимы
+  VM — основные), выкат, `host.py env bro-app-1 --profile prod` без
+  `--with-neon` (убирает адрес Neon) и пауза проекта Vercel. Удалить Neon,
+  Blob и проект и перенести DNS-зону — решение владельца, Routine их не
+  трогает. «Ветка OpenRouter» — не `createOpenRouter` в
+  `agent/lib/model/direct.ts`: через него ходит RouterAI.
 
 ### Telegram из РФ
 

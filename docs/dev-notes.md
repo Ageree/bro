@@ -31,8 +31,8 @@
   `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
   хосты пула, worker) — `docs/browser-infra-notes.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
-  `docs/instinct.md`; план переезда с Vercel на Cloud.ru по этапам —
-  `docs/cloudru-migration.md`, промпт сессии, которая доводит его до конца, —
+  `docs/instinct.md`; переезд с Vercel на Cloud.ru (сделан 02.10) —
+  `docs/cloudru-migration.md`, промпт сессии, которая доводила его до конца, —
   `docs/cloudru-full-migration-prompt.md`; песочница для кода и task-агент —
   `sandbox/README.md`.
 
@@ -40,14 +40,41 @@
 
 - Основная ветка — `bro-next`, PR — в неё; CI — `.github/workflows/checks.yml`.
   Коммиты и заголовки PR — по-русски, с точки зрения пользователя.
-- Ревьюит только cubic и только PR не в черновике; на merge-коммит в голове PR
-  он ставит зелёную проверку без ревью — кладите сверху обычный коммит.
+- Владелец заранее разрешил всем сессиям (03.10), переспрашивать не нужно:
+  код и миграции, слияние в bro-next при зелёном CI, выкат, откат и рестарт
+  на VM прода, env прода (`prod.json`, `host.py env`, `state save/restore`),
+  deployd, ops-скрипты и серийную консоль, чтение и запись базы прода,
+  создание и удаление своих ресурсов Cloud.ru.
+- Правила владельца для всех сессий (03.10): спрашивать его только о том, что
+  может лишь он (ключ из кабинета сервиса, код из SMS, пополнение);
+  `bro-app-1`, `sbx-code-2` и базу прода не удалять; его Gmail и
+  Календарь — только чтение, тестовые события можно, но потом удалить;
+  поручения браузеру с его аккаунта (он же аккаунт бенчмарка) — только на
+  чтение, брони и оплаты не подтверждать; до 3 000 ₽ сверх обычного расхода
+  без спроса. Новое поведение — флагом сначала владельцу, затем бенчмарк,
+  затем всем. Лимиты подписки дороги: без мутационных прогонов, больших ревью
+  и недельных наблюдений внутри сессии.
+- Ревьюит cubic и только PR не в черновике; на merge-коммит в голове PR
+  он ставит зелёную проверку без ревью — кладите сверху обычный коммит. С
+  03.10 до 01.11 его квота кончилась (`neutral`, «AI review line limit
+  reached»): ревьюят субагенты сессии, Hacktron `skipped` — тоже норма.
+- Vitest подхватывает тесты из забытых worktree подагентов в
+  `.claude/worktrees/` и падает на чужих моках: закончив с worktree —
+  `git worktree remove -f -f <путь>`. В чекауте с симлинком на `node_modules`
+  `pnpm exec vitest` падает с `ERR_PNPM_UNSAFE_MODULES_DIR` — запускайте
+  `./node_modules/.bin/vitest`.
+- Длинное задание сессии-исполнителю (`create_session`) через подагента
+  классификатор обрезал: полный текст — файлом в служебной ветке без слияния,
+  а промпт — «прочитай `git show origin/<ветка>:<файл>`».
 - В свежей облачной сессии нет `node_modules` (`pnpm install`), а Node 22 валит
   ~12 наборов `pnpm check` («Unexpected identifier 'r'»). Node 24 без root:
   `npm pack node-linux-x64@24` в scratchpad, `bin` — в начало `PATH`.
 - `TELEGRAM_BOT_USERNAME` облачной сессии начинается с `@`, и проверка env
-  роняет каждый тест, который импортирует `@shared/environment`: гоняйте
-  vitest через `env -u TELEGRAM_BOT_USERNAME`, в env прода — без `@`.
+  роняет каждый тест, который импортирует `@shared/environment`, и `pnpm build`
+  / `build:eve`: гоняйте их через `env -u TELEGRAM_BOT_USERNAME`, в env прода —
+  без `@`. Из-за `IMESSAGE_PROJECT_ID` в env сессии прямой `vitest run` падает
+  и на `db/services/auth/tests/photon.test.ts` («resolves project credentials
+  lazily»), даже на чистом bro-next: `env -u IMESSAGE_PROJECT_ID`.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
@@ -66,9 +93,11 @@
   Так же виснет `vi.mock` с `importOriginal` модуля, тянущего `@db`: сбой
   записи в таком тесте делайте триггером PGlite (`failVmUptimeWrites` в
   `tests/agent/browser-pool/sandbox.test.ts`).
-- Превью делят базу с продом, поэтому сборка зовёт `db:migrate:deploy` (на
-  превью пустой): миграции неслитых PR ложились в прод, и drizzle пропускал
-  более ранние `when`. Миграцию PR перед слиянием генерируйте поверх bro-next.
+- Миграции прода с 02.10 катит deployd при релизе на VM (`ops/migrate.mjs`);
+  до этого превью Vercel делили базу с продом, и миграции неслитых PR ложились
+  в прод, а drizzle пропускал более ранние `when`. Миграцию PR перед слиянием
+  генерируйте поверх bro-next: параллельные PR сталкиваются номерами, второй
+  перегенерирует свою, журнал и снимки руками не правят.
 - `drizzle-kit migrate` применяет пачку миграций одной транзакцией: `NOT VALID`
   у CHECK блокировку таблицы не укорачивает.
 - `pnpm build:eve` без заглушек `DATABASE_URL`/`BETTER_AUTH_*` падает
@@ -93,6 +122,40 @@
   старый: `PLAYWRIGHT_BROWSERS_PATH=<scratchpad>` и `playwright install chromium`.
 - Management-ключ OpenRouter проходит `GET /api/v1/key`, но на вызов модели
   отвечает «User not found»: в `OPENROUTER_API_KEY` — только обычный ключ.
+
+## Прод на VM
+
+- Прод с 02.10 — VM Cloud.ru; Vercel `bro-next` — путь отката до 09.10, когда
+  Routine другой сессии запустит уборку Vercel (`docs/cloudru-migration.md`):
+  до неё Vercel-пути не удаляйте и уборку не дублируйте. Убирая «ветку
+  OpenRouter», не трогайте `createOpenRouter` в `agent/lib/model/direct.ts`:
+  через него с другим `baseURL` ходит RouterAI — единственный провайдер прода.
+- Слияние прод не обновляет: релиз — `host.py deploy <VM>`, и он собирает
+  текущий чекаут: сначала свежий `origin/bro-next` и Node 24 (на Node 22 —
+  «build with Node v24…»). Выкат и `host.py env` перезапускают eve и web и
+  рвут идущие ходы: не во время прогона бенчмарка. Логи —
+  `host.py logs <VM> bro-eve` (и `bro-web`), стек ошибки ищите там по тексту
+  (в `turn.failed` — только код); runtime-логи Vercel — лишь путь отката.
+- Env прода собирает `host.py env <VM> --profile prod` с `--allow-missing` и
+  `--no-alert-webhook` (до 09.10 ещё `--with-neon`, иначе с VM уйдёт адрес
+  Neon), потом `host.py state save`; последний слой — `prod.json` (`compose_env`).
+  Пилоты — там же, `null` снимает имя. Ключ из `SENSITIVE_ON_VERCEL` без
+  значения в профиле берётся из env облачной сессии, а `BROWSER_VM_LLM_API_KEY`
+  — из её `ROUTERAI_API_KEY`: новый ключ RouterAI кладите в `prod.json` под
+  обоими именами, иначе сессия со старым выкатит старый, и браузер пула на нём.
+  `SKILLS_WORKSPACES` и `TASK_FILES_WORKSPACES` берут только id воркспейса или
+  `*`: email, как в пилотах снимка Vercel, валит проверку env, и eve не
+  стартует.
+- Классификатор auto mode Claude Code блокирует запись в `~/.bro-app-host`,
+  `host.py env` («Secret-Store Writes») и выкат неслитой ветки с общим
+  SQL-скриптом, а «разрешаю» владельца в чате не засчитывает. Не обходите:
+  владелец меняет режим permissions сам. Базу читайте узким ops-скриптом через
+  PR: `host.py ops` гоняет скрипты выкаченного релиза (`usage-stats.sh`,
+  `memory-keys.sh`).
+- Свежая облачная сессия без `~/.bro-app-host` не выкатит на VM
+  (`DEPLOY_SIGNING_KEY`, пароли консолей, env-файлы): сначала
+  `host.py state restore`, после смены ключей — `host.py state save`
+  (`scripts/cloudru-app-host/README.md`, «Ключ и артефакты»).
 
 ## eve
 
@@ -177,10 +240,6 @@
   `host.py update-host`, а не пересоздание. Oneshot-юниты (`bro-egress`) он
   сам не перезапускает: что хосту нужно сразу, зовёт `install-code.sh`
   (`egress.sh`), а рестарт `bro-egress` перезапустил бы Caddy, web и eve.
-- Свежая облачная сессия без `~/.bro-app-host` не выкатит на VM
-  (`DEPLOY_SIGNING_KEY`, пароли консолей, env-файлы): сначала
-  `host.py state restore`, после смены ключей — `host.py state save`
-  (`scripts/cloudru-app-host/README.md`, «Ключ и артефакты»).
 - Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
   `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
   Telegram на Vercel и живые хосты пула работают, только если значения
@@ -334,10 +393,14 @@
   (`usage-stats.sh`) такие сессии исключает и считает.
 - `eve info` 0.62 не печатает подключения: их видно в
   `.eve/compile/compiled-agent-manifest.json`.
-- Эвалы в облаке без Gateway и Docker: `OPENROUTER_API_KEY`, Postgres от не-root
-  (`setpriv --reuid=postgres`, данные вне `/tmp/claude-0`), `pnpm db:migrate` и
+- Эвалы в облаке без Gateway и Docker: `MODEL_PROVIDER=routerai` и
+  `ROUTERAI_API_KEY` (OpenRouter без денег), Postgres от не-root
+  (`setpriv --reuid=postgres`, данные в `/var/lib/postgresql/…`: в scratchpad
+  `initdb` падает), `pnpm db:migrate` (нужен и `DATABASE_URL_UNPOOLED`) и
   `eve eval agent --tag <тег>` с `DATABASE_URL`,
-  `BETTER_AUTH_URL=http://127.0.0.1:9`, `NODE_ENV=development`.
+  `BETTER_AUTH_URL=http://127.0.0.1:9`, `NODE_ENV=development`. Локального
+  Бро запускайте через `env -i` с явным набором: в env сессии есть
+  `SUPERMEMORY_API_KEY`, и память ушла бы в облачный индекс Supermemory.
   `agent` здесь — префикс путей: `eve eval agent <id>` гоняет весь набор.
   `eve dev` при старте продолжает незаконченные ходы из `.eve/.workflow-data`
   (и платит за них): прерванный прогон перед следующим уберите оттуда.
@@ -425,6 +488,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   читался как новая просьба. Правила — в `agent/lib/delivery/`: повтор без
   нового — `stale`, затем `toolChoice: none` (`turn-sends.ts`, `novelty.ts`),
   претензии без дела — на переписывание (`claims.ts`).
+- Модель писала `DELIVERY_COMPLETE` (метку «ответ уже доставлен» из
+  инструкций) в сам `send_message`, и человек получал её сообщением:
+  `withoutBookkeeping` в `agent/tools/messaging.ts` вырезает её и
+  `<eve-empty-delivery/>`, отправка из одной метки — пропуск `sentinel`.
 - Одобренный на карточке вызов AI SDK выполняет после `step.started`:
   `send_message` шага его не видит, а вызов мог упасть (`approvedPending`).
 - В ходе-отчёте браузера до сообщения с итогом нет инструментов с карточкой
@@ -479,13 +546,24 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   воркспейса. Отказ FM возвращает сбой RouterAI («скоро вернусь»). Ключ —
   только сервисного аккаунта в области проекта, иначе FM отвечает 401
   «Please create service account on the project scope»; IAM-токен проекта
-  пускает лишь в `GET /v1/models`.
+  пускает лишь в `GET /v1/models`. Владелец 04.10: FM пока не заводим — ключа
+  нет, запасной путь спит; код не убирать и ключ не искать.
 - 03.10 маршрут Cloud.ru → routerai.ru (узел сразу после MSK-IX) терял
   до 40% пакетов: шаг Бро (~250 КБ) грузился КБ/с и падал 503 или «other
   side closed», с других сетей тот же ключ отвечал за секунды. Это не бан
   IP: свежий адрес Cloud.ru вёл себя так же. Проверка — `curl` с телом
   250 КБ с VM через консоль (`scripts/cloudru-sandbox-probe/console.py`,
-  `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос.
+  `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос. Тогда же с Cloud.ru
+  быстро отвечали FM, aitunnel, vsegpt, proxyapi, `api.deepseek.com` и Timeweb
+  (дорог: 41 ₽ за 1 млн входа без скидки на кэш) — кандидаты в запасные.
+- RouterAI — единственный провайдер прода, 402 «Insufficient balance» не
+  переключает и на FM: при пустом балансе Бро молчит всем (03.10 — дважды).
+  Баланс — `GET /api/v1/credits` ключом прода (рубли) или пробный ход
+  драйвера бенчмарка: в журнале eve 402 видны лишь у прошедших ходов и в
+  длинном хвосте (`--lines 20000`). Ключ, а не сервис, сломан, если
+  completions и `/credits` отвечают 500
+  `internal error`, `/models` — 200, а заведомо неверный ключ — 401: помог
+  новый ключ из кабинета. Ключ из env облачной сессии может быть тем, мёртвым.
 - `ROUTERAI_API_KEY` облачной сессии приходит в типографских кавычках:
   `/api/v1/credits` без их снятия отвечает 401, хотя ключ рабочий.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
@@ -621,6 +699,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `toolSkillExtras` (тест в `agent/lib/skills/tests/tools.test.ts`). Группа,
   открытая лишь словами сообщения, пришедшего посреди хода, в следующем ходе
   пропадает: слот прикладывает блоки только на `turn.started`.
+- Строка `<!-- …` в `agent/instructions/content/` — только маркер навыка
+  (`skill:`, `body-only:`, `core-only`, `full-only`), иначе каталог падает
+  при загрузке. Ядро держит `tests/agent/skills/core.test.ts` (≤ 10 тыс.
+  токенов, запаса почти нет): новая строка ядра — за счёт другой, а
+  укороченную сверьте с фразами `bodies.test.ts`.
 - id хода eve — `turn_N`, счётчик своей сессии (и заново с `turn_0` в
   преемнике): кэш вердикта пилота — по сессии и ходу
   (`pilotVerdictOfTurn`), состояние хода — с id запуска. Строку
@@ -636,8 +719,6 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 
 ## Vercel
 
-- Стек ошибки прода — в runtime-логах `bro-next` по тексту (в `turn.failed` —
-  только код).
 - Маршруты каналов eve вне `/eve/v1/` в Build Output не публикуйте: Workflow
   переставал вызывать `/.well-known/workflow/v1/flow` (откат `bb5b1a0`). В проде
   до eve доходит только `/eve/v1/*`; у V4-запусков Browser Use вебхуков нет.
@@ -648,8 +729,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Ключи окружения приходили с переводами строк и в типографских кавычках:
   чистит `clean()` в `vm.py` и `build.py`. `VERCEL_TOKEN` облачной сессии
   30.09 тоже пришёл с переводом строки внутри: убирайте пробелы перед вызовом.
-- Env Vercel действует лишь со следующего деплоя. `BETTER_AUTH_SECRET` и
-  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: прод берёт их из Blob
+- Env Vercel действует лишь со следующего деплоя, а до прода на VM не доходит
+  вовсе (раздел «Прод на VM»). `BETTER_AUTH_SECRET` и
+  `SECRET_ENCRYPTION_KEY` в env `bro-next` нет: развёртывание Vercel читает их из Blob
   (`db/services/installation-secrets.ts`); вне Vercel задавать те же значения
   (`installation-secrets.json`, сверен с Blob 02.10), новые разлогинят всех и
   закроют сейф. Пока это чтение есть, `BLOB_*` остаётся в `turbo.json`:
@@ -886,7 +968,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   зарезервированных доменов (`outsider` в `scripts/bench/account/catalog.ts`).
 - Что делала проактивность, видно не в чате: сессии воркеров лежат в «Все
   чаты» как «New chat» с промптом «Proactive check…», исход каждой проверки —
-  строка `[proactive] check` в runtime-логах. Простаивающий контейнер
+  строка `[proactive] check` в журнале eve на VM. Простаивающий контейнер
   облачной сессии останавливается вместе с `observe`: утром дочитайте
   `--minutes 0`.
 - Кейсы «запиши/забронируй» (d15 — барбер, uc_visa — отель и билеты) в ходе
@@ -894,10 +976,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   вписывает в форму имя и телефон владельца, «не нажимать» — только в
   промпте. На аккаунте владельца такие поручения сразу переводите в поиск
   (`bench send --kind hint`: «ничего не заполняй, только варианты»).
+- Прогон оставляет на аккаунте владельца настоящие следы: d12 — утреннюю
+  сводку, d15 — событие в календаре и напоминание. Убирайте после прогона
+  (`bench send --case <id> --kind cleanup --text "…"`) и сверяйте по логу
+  кейса: удаление события Composio с Cloud.ru порой отвечает 403, повтор
+  через пару минут проходит. Кейс, оборванный «fetch failed» драйвера,
+  `bench follow` не продолжает — только `bench send --kind hint`.
 - Драйвер ждёт ответа, лишь если вопрос Бро стоит в конце сообщения; вопрос
   в середине — кейс `completed`, хотя Бро ждёт. Перед сравнением прогонов
   смотрите последние реплики и досылайте `bench send --kind answer`.
-- Память аккаунта переживает прогоны: повтор d10 отвечает «уже сохранено».
+- Память аккаунта переживает прогоны: повтор d10 отвечает «уже сохранено»;
+  с 03.10 в памяти владельца лежат записи d10 («место у прохода», «без
+  свинины») — перед d10 и d13 удалите их в `/workspace/memory`.
   Кейсы памяти (d10, d13) сравнивайте на чистой памяти — d13 гоняли
   локальным Бро на RouterAI. При слепом судействе прячьте в логах только
   имена каталогов, не слова before/after: судьи штрафуют «битый текст».
@@ -921,7 +1011,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   история); код вырезает из записи, а забывает лишь запись, где кроме кода
   ничего нет. Пилот фильтрует список в SQL (`listMemoryDigestWorkspaces`):
   иначе остальные воркспейсы проверялись на каждом тике. Сбой записи «Memory
-  changed» — пропуск.
+  changed» — пропуск. Сводка идёт после 04:00 по зоне воркспейса, тиком раз
+  в час; классификатор — лишь с прямым провайдером и видит только `fact`,
+  `person`, `organization` и `decision`. Ложное срабатывание фильтра кодов в
+  сводке стирает прежнюю версию записи безвозвратно
+  (`wipeUnsafeMemoryHistory`): правку фильтра гоняйте на сотне образцов (коды
+  домофона, телефоны, счета, полисы, СНИЛС — сохраняются).
 - В системный промпт профиль не достать: ключ области памяти есть лишь у
   провайдера, а документ профиля eve дописывает в историю лишь при изменении.
 - У слотов памяти — явный `namespace`: умолчание eve зависит от проекта Vercel

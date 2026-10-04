@@ -263,9 +263,12 @@
   сессии.
 - `BROWSER_STATE_KEY` не меняйте никогда: наборы в S3 шифруются ключом от него
   (HKDF с id воркспейса), и после смены все запаркованные наборы нечитаемы.
-- Env пула в Vercel `bro-next` (prod и preview) задан 30.09:
+- С 02.10 env пула прода собирает `host.py env` (`docs/dev-notes.md`, «Прод на
+  VM»): снимок `vercel-production.json`, поверх — `prod.json`
+  (`BROWSER_HOST_BUNDLE`, `BROWSER_SANDBOX_ROOTFS`); пилот у владельца с
+  01.10, правка env на Vercel до прода не доходит. Исходно, 30.09, env пула
+  задан в Vercel `bro-next` (prod и preview):
   `BROWSER_STATE_BUCKET`, `BROWSER_STATE_KEY`, `CLOUDRU_S3_TENANT_ID`,
   `BROWSER_HOST_BUNDLE`, `BROWSER_SANDBOX_ROOTFS`, `BROWSER_HOST_RUNTIME=runc`,
-  там же `BROWSER_VM_WORKER`. Пул выключен, пока не задан
-  `BROWSER_POOL_WORKSPACES` (id воркспейса или email владельца); включается со
-  следующего деплоя.
+  там же `BROWSER_VM_WORKER`; пилот — `BROWSER_POOL_WORKSPACES` (id
+  воркспейса или email владельца).
