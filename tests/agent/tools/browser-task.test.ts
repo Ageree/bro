@@ -7504,6 +7504,22 @@ describe("browser_task asks only before paying, in text", () => {
     });
   });
 
+  it("pays on the yes when the follow-up names the total but forgets allowPayment", async () => {
+    // RU 04.10: after «Оплачиваю?» and «Да» the model sent chargeRub 2100
+    // with allowSubmit only, and the yes was refused as unasked.
+    stoppedAtPayment();
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await tool.execute(
+      { ...pay, allowPayment: undefined, allowSubmit: true },
+      toolContext("better-auth:alice")
+    );
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+  });
+
   it("asks again after a run that placed the order", async () => {
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(
