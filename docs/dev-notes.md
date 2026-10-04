@@ -871,6 +871,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   номер карты. Стенд с Chromium — `browser-vm/worker/test_card_forms.py`
   (`BRO_CARD_FORMS_CHROME`); Chrome browser-use в облачной сессии не берёт CA
   прокси из NSS — `--ignore-certificate-errors-spki-list=<SPKI CA прокси>`.
+- Отказы сервера сайта (XHR и fetch со статусом ≥ 400) worker пула пишет сам
+  блоком `SITE ERRORS` в начало отчёта (`SiteErrors`, стенд
+  `test_site_errors.py`): модель запуска перехват через `evaluate` по просьбе
+  не ставила, и причину отказа сайта никто не видел.
 - Логин Госуслуг вводится только на gosuslugi.ru и дан лишь госсайтам из
   закрытого списка (`public-services.ts`): вход отдаёт сайту профиль человека.
 - Статуса «ждёт ввода» у Browser Use нет: правило «сразу кончай с

@@ -417,6 +417,17 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await started({ BROWSER_VM_MODEL: "qwen/qwen3.6-plus" })).toEqual({
       requireParameters: true,
     });
+    // RU 04.10: GPT Luna returned no choices with reasoning off and the
+    // parameters required; it reasons, DeepSeek still does not.
+    worker.startBrowserVmWorkerRun.mockClear();
+    const luna = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_VM_MODEL: "openai/gpt-6-luna" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    await luna.createBrowserUseRun({ profileId, task: composedTask });
+    expect(
+      worker.startBrowserVmWorkerRun.mock.calls[0]?.[1].tuning?.reasoning
+    ).toBe("medium");
     // A service that is neither routes nothing.
     expect(
       await started({ BROWSER_VM_LLM_BASE_URL: "https://llm.example.test/v1" })
