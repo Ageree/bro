@@ -67,6 +67,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -74,7 +75,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.1"
+VERSION = "2026-10-05.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -397,41 +398,54 @@ class SiteErrors:
         self.entries = []
         self.requests = {}  # requestId → (method, address, the page's own site) of the site's own requests
         self.refused = {}  # requestId → entry still waiting for its body
-        self.task = None
-        self.ws = None
+        self.tasks = {}  # the tabs listened to (target id, or socket address) → their listening task
+        self.ws = None  # the socket `handle` and `send` use when not given one (a test feeds events by hand)
         self.next_id = 1
-        self.bodies = {}  # command id → requestId
+        self.bodies = {}  # (socket, command id) → requestId
         self.told = set()  # (method, address, status, answer) the agent was already told
         self.notices_sent = 0
 
-    def start(self, websocket_url):
-        self.task = asyncio.create_task(self.listen(websocket_url))
+    def start(self, websocket_url, target=None):
+        """Listen to one more tab of the run. The agent moves into a tab a link opens, or opens one itself
+        (`navigate` with `new_tab`), and the checkout happens there: on the checkout harness's shop
+        (checkout_harness.py, 04.10) a DeepSeek run did, and two of its three refused orders were never seen."""
+        key = target or websocket_url
+        if key not in self.tasks:
+            self.tasks[key] = asyncio.create_task(self.listen(websocket_url))
+
+    def watches(self, target):
+        return target in self.tasks
 
     async def stop(self):
-        if self.task:
+        if self.tasks:
             # Bodies asked for just before the end still come in: give them a moment.
             await asyncio.sleep(0.3)
-            self.task.cancel()
-            with contextlib.suppress(BaseException):
-                await self.task
+            for task in self.tasks.values():
+                task.cancel()
+            for task in self.tasks.values():
+                with contextlib.suppress(BaseException):
+                    await task
 
     async def listen(self, websocket_url):
         with contextlib.suppress(Exception):
             async with aiohttp.ClientSession() as http:
                 async with http.ws_connect(websocket_url, max_msg_size=64 * 1024 * 1024, timeout=10) as ws:
-                    self.ws = ws
-                    await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000})
+                    # Each socket numbers its own commands.
+                    socket = types.SimpleNamespace(ws=ws, next_id=1)
+                    await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000}, socket)
                     async for message in ws:
                         with contextlib.suppress(Exception):
-                            await self.handle(json.loads(message.data))
+                            await self.handle(json.loads(message.data), socket)
 
-    async def send(self, method, params):
-        command = self.next_id
-        self.next_id += 1
-        await self.ws.send_json({"id": command, "method": method, "params": params})
+    async def send(self, method, params, socket=None):
+        socket = socket or self
+        command = socket.next_id
+        socket.next_id += 1
+        await socket.ws.send_json({"id": command, "method": method, "params": params})
         return command
 
-    async def handle(self, data):
+    async def handle(self, data, socket=None):
+        socket = socket or self
         method, params = data.get("method"), data.get("params") or {}
         request_id = params.get("requestId")
         if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
@@ -444,12 +458,13 @@ class SiteErrors:
             if status >= 400:
                 self.refused[request_id] = self.record(request_id, str(status))
         elif method == "Network.loadingFinished" and request_id in self.refused:
-            self.bodies[await self.send("Network.getResponseBody", {"requestId": request_id})] = request_id
+            command = await self.send("Network.getResponseBody", {"requestId": request_id}, socket)
+            self.bodies[(id(socket), command)] = request_id
         elif method == "Network.loadingFailed" and request_id in self.requests:
             if not params.get("canceled"):
                 self.record(request_id, params.get("errorText") or "failed")
-        elif "id" in data and data["id"] in self.bodies:
-            entry = self.refused.pop(self.bodies.pop(data["id"]), None)
+        elif "id" in data and (id(socket), data["id"]) in self.bodies:
+            entry = self.refused.pop(self.bodies.pop((id(socket), data["id"])), None)
             result = data.get("result") or {}
             if entry is not None and not result.get("base64Encoded"):
                 body = result.get("body", "")
@@ -1330,6 +1345,13 @@ class Worker:
         async def read_messages(_):
             nonlocal steps_before
             steps_before = len(run.steps)
+            # A tab the agent moved into (a link that opens one, its own `navigate` with `new_tab`) is listened to
+            # from now on: the checkout it goes through there is the run's too.
+            with contextlib.suppress(Exception):
+                focus = getattr(browser, "agent_focus_target_id", None)
+                if focus and not site_errors.watches(focus):
+                    targets = {t["id"]: t for t in await page_targets()}
+                    site_errors.start(targets[focus]["webSocketDebuggerUrl"], focus)
             # The site's refusals of what the last step sent: the next model call sees them, whatever the
             # page shows (it may show nothing and move on).
             with contextlib.suppress(Exception):
@@ -1373,7 +1395,7 @@ class Worker:
         run.agent = agent
         with contextlib.suppress(Exception):
             targets = {t["id"]: t for t in await page_targets()}
-            site_errors.start(targets[session.tab]["webSocketDebuggerUrl"])
+            site_errors.start(targets[session.tab]["webSocketDebuggerUrl"], session.tab)
         try:
             history = await agent.run(max_steps=max_steps, on_step_start=read_messages, on_step_end=step_ended)
         finally:
@@ -2334,7 +2356,11 @@ site does not open, say so. Credentials and codes come as <secret>alias</secret>
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
 one-time code you are given goes in with the enter_code action, never digit by digit. A bank card form goes in
 with the fill_card action, never field by field; type a card secret yourself only into a field fill_card
-says it could not fill. An anti-bot check
+says it could not fill. A phone field that already shows a country code (+7) or a mask keeps it: type only
+the digits after it, never the +7 or 8 again (for +7 921 781-88-76, type 9217818876). Read a form back after
+filling it: a phone with a doubled 7, extra digits or another country's flag was typed wrong, so type it again
+that way rather than hunting the country list. When a form's button seems to do nothing, read the errors the
+form shows before pressing it again. An anti-bot check
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
 button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
