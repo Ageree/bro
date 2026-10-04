@@ -16,6 +16,7 @@ import {
   leavesRunAtWork,
   settledOutcomeRun,
 } from "./browser-report";
+import { deliveryCompleteSentinel } from "./fallback";
 import {
   addsNothingNew,
   announcesErrand,
@@ -79,6 +80,7 @@ const skipReasonSchema = z.enum([
   "limit",
   "past",
   "reported",
+  "sentinel",
   "stale",
   "started",
 ]);
@@ -135,6 +137,7 @@ const skipNotices = {
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
   past: `${skippedPrefix} this browser report's turn is past its answer: the person already has your message about it, so no more messages go out in this turn. Do not say this one was sent. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing; otherwise end the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
+  sentinel: `${skippedPrefix} ${deliveryCompleteSentinel} is bookkeeping, not a message — the person never reads it. If the reply is done, end the turn now without calling any tool.`,
   stale: `${skippedPrefix} it adds nothing to what this turn already sent — no new result, number, link, name, option or question, only the same status in other words. The person already has your answer and knows the outcome will follow. End the turn now without calling any tool.`,
   started: `${skippedPrefix} the person already has this turn's message about the errand you handed the browser, and an errand gets one such message: what the run finds reaches them in its own report, as a new turn. Where it runs, what it was asked to do and that nothing is done yet are no news to them. If the person asked in this turn for something else you have not done yet — a calendar entry, a reminder — do it now with its tool, without announcing it first; otherwise end the turn now without calling any tool.`,
 } as const satisfies Record<SkipReason, string>;
@@ -804,7 +807,10 @@ export function turnSends(messages: readonly ModelMessage[]) {
  * Whether the turn has to end now: the model sent something that added
  * nothing, or used up the limit, so another step may only write the closing
  * text. A first message about the errand dropped as `started` leaves one
- * more step for what else the person asked for.
+ * more step for what else the person asked for. A send of nothing but
+ * `DELIVERY_COMPLETE` (`sentinel`) counts like any dropped send: the model
+ * takes the reply for delivered, and one that has not delivered it yet ends
+ * in text, which the channel fallback posts.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {
   const { delivered, errandSkips, skipped } = turnSends(messages);

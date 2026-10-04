@@ -12,6 +12,8 @@ import { isSharedFileLink } from "../lib/sandbox/files";
 import { reportTurnHoldsFiles } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
+import { withoutEmptyDeliveryMarker } from "../lib/delivery/empty";
+import { deliveryCompleteSentinel } from "../lib/delivery/fallback";
 import {
   rewriteSendNotice,
   sendRefusal,
@@ -104,12 +106,41 @@ function withoutFetchedUrls(message: SentMessage): SentMessage {
 }
 
 /**
+ * The send without the bookkeeping in its text: `DELIVERY_COMPLETE`, which
+ * the instructions ask for as plain text after the last delivery, and eve's
+ * empty delivery marker. The channel fallback drops both from assistant text
+ * (`fallbackDeliveryText`); written into `send_message`, the sentinel reached
+ * the person as a message of its own (04.10). Nothing when neither text nor
+ * an attachment is left. A text that would lose only whitespace goes out as
+ * written.
+ */
+function withoutBookkeeping(message: SentMessage): SentMessage | undefined {
+  if (message.kind === "link" || message.text === undefined) return message;
+  const text = withoutEmptyDeliveryMarker(
+    message.text.replaceAll(deliveryCompleteSentinel, "")
+  );
+  if (text.replace(/\s/gu, "") === message.text.replace(/\s/gu, "")) {
+    return message;
+  }
+  if (text) return { ...message, text };
+  if (!message.attachments) return undefined;
+  const sent: Extract<SentMessage, { kind: "message" }> = {
+    attachments: message.attachments,
+    kind: "message",
+  };
+  if (message.replyTo !== undefined) sent.replyTo = message.replyTo;
+  return sent;
+}
+
+/**
  * `turn` holds what the current turn already sent and did, so a repeat, a
  * rephrased status with nothing new, or a send past the per-turn limit is
  * dropped here rather than posted, and a message claiming what no tool did
  * goes back to the model. `pastAnswer` drops every send of a browser
- * report's turn past its answer (`reportPastAnswer`). A message that goes
- * out is recorded for the turn's card tools (`markTurnDelivered`).
+ * report's turn past its answer (`reportPastAnswer`), and a send with only
+ * bookkeeping in it is dropped as `sentinel` (`withoutBookkeeping`). A
+ * message that goes out is recorded for the turn's card tools
+ * (`markTurnDelivered`).
  */
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
@@ -123,11 +154,13 @@ function defineSendMessage(
     inputSchema: sendMessageOutputSchema,
     execute(message, context) {
       if (pastAnswer) return { skipped: "past" as const };
-      const refused = sendRefusal(message, turn);
+      const outgoing = withoutBookkeeping(message);
+      if (!outgoing) return { skipped: "sentinel" as const };
+      const refused = sendRefusal(outgoing, turn);
       if (refused) return refused;
       markTurnDelivered(context.session);
       // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
-      const sent = taskReport ? withoutFetchedUrls(message) : message;
+      const sent = taskReport ? withoutFetchedUrls(outgoing) : outgoing;
       return sent.kind === "message" && sent.text !== undefined
         ? { ...sent, text: withGroupedRoubles(sent.text) }
         : sent;

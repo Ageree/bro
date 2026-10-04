@@ -189,6 +189,78 @@ describe("send_message in a looping turn", () => {
   });
 });
 
+describe("send_message and the delivery sentinel", () => {
+  // The instructions ask for DELIVERY_COMPLETE as plain text after the last
+  // delivery; on 04.10 a model wrote it into send_message instead, and the
+  // person received a message «DELIVERY_COMPLETE».
+  it.each([
+    ["the sentinel alone", "DELIVERY_COMPLETE"],
+    [
+      "the sentinel with eve's empty marker",
+      "DELIVERY_COMPLETE\n<eve-empty-delivery/>",
+    ],
+  ])("never delivers %s", async (_case, text) => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("напомни завтра"),
+    ]);
+
+    const output = await sendMessage.execute(
+      { kind: "message", replyTo: { kind: "current" }, text },
+      toolContext()
+    );
+    expect(output).toEqual({ skipped: "sentinel" });
+    expect(sendMessageOutputSchema.safeParse(output).success).toBe(false);
+    const modelOutput = await sendMessage.toModelOutput?.({
+      skipped: "sentinel",
+    });
+    expect(modelOutput?.type === "text" ? modelOutput.value : "").toBe(
+      "Not delivered: DELIVERY_COMPLETE is bookkeeping, not a message — the person never reads it. If the reply is done, end the turn now without calling any tool."
+    );
+  });
+
+  it("delivers the text written around the sentinel without it", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("напомни завтра"),
+    ]);
+
+    expect(
+      await sendMessage.execute(
+        {
+          kind: "message",
+          replyTo: { kind: "current" },
+          text: "Готово, напомню завтра в 10:00.\n\nDELIVERY_COMPLETE",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      replyTo: { kind: "current" },
+      text: "Готово, напомню завтра в 10:00.",
+    });
+  });
+
+  it("delivers the attachment of a send whose only text is the sentinel", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("пришли фото кота"),
+    ]);
+    const attachments = [
+      { kind: "image" as const, url: "https://example.com/cat.jpg" },
+    ];
+
+    expect(
+      await sendMessage.execute(
+        {
+          attachments,
+          kind: "message",
+          replyTo: { kind: "current" },
+          text: "DELIVERY_COMPLETE",
+        },
+        toolContext()
+      )
+    ).toEqual({ attachments, kind: "message", replyTo: { kind: "current" } });
+  });
+});
+
 describe("send_message and the reply language", () => {
   // The language is a prompt directive, never a filter: a translation the
   // person asked for is in the other language on purpose.
