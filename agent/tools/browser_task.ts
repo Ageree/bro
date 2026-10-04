@@ -2137,18 +2137,26 @@ function sameSubmission(
     sameItems(confirmed.items, requested.items) &&
     requested.personalData.every(
       (item) =>
-        shared.has(normalizedTerm(item)) || (basket && namesTheCard(item))
+        shared.has(normalizedTerm(item)) || (basket && everyOrderGives(item))
     )
   );
 }
 
 /**
- * «данные карты из сейфа» in a paid order's personal data: the card is bound
- * by the person's yes to the total, not by this list, and naming it made the
- * same order a new one (RU 04.10).
+ * What every order gives the shop, in a paid order's personal data: the
+ * card, bound by the person's yes to the total, and their name, phone and
+ * email, which the checkout asks for anyway. Naming «данные карты из сейфа»,
+ * then «имя, телефон, почта», made the same order a new one, and the person
+ * was asked «Оплачиваю?» again (RU 04.10). A passport or an address still
+ * asks.
  */
-function namesTheCard(term: string) {
-  return /карт|card|cvc|cvv/iu.test(term);
+function everyOrderGives(term: string) {
+  return (
+    /карт|card|cvc|cvv/iu.test(term) ||
+    /^(?:имя|фио|name|телефон|phone|почта|e-?mail)$/iu.test(
+      normalizedTerm(term) ?? ""
+    )
+  );
 }
 
 /**
