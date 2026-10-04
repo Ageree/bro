@@ -7,7 +7,7 @@ import { withoutEmptyDeliveryMarker } from "@agent/lib/delivery/empty";
  * write once `send_message` already delivered the reply. It is bookkeeping for
  * the runtime, never something a person should read.
  */
-const deliveryCompleteSentinel = "DELIVERY_COMPLETE";
+export const deliveryCompleteSentinel = "DELIVERY_COMPLETE";
 
 /**
  * Assistant text a channel should deliver itself because the model answered in
