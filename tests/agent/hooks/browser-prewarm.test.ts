@@ -1,18 +1,18 @@
 import type { HookContext } from "eve/hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as backend from "@agent/lib/browser-vm/backend";
-import type * as hosts from "@agent/lib/browser-pool/hosts";
+import type * as sandbox from "@agent/lib/browser-pool/sandbox";
 import browserPrewarmHook from "@agent/hooks/browser-prewarm";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
-  prewarmBrowserPool: vi.fn<typeof hosts.prewarmBrowserPool>(),
+  prewarmBrowserSandbox: vi.fn<typeof sandbox.prewarmBrowserSandbox>(),
   usesBrowserPool: vi.fn<typeof backend.usesBrowserPool>(),
 }));
 
-vi.mock("@agent/lib/browser-pool/hosts", () => ({
-  prewarmBrowserPool: mocks.prewarmBrowserPool,
+vi.mock("@agent/lib/browser-pool/sandbox", () => ({
+  prewarmBrowserSandbox: mocks.prewarmBrowserSandbox,
 }));
 vi.mock("@agent/lib/browser-vm/backend", () => ({
   usesBrowserPool: mocks.usesBrowserPool,
@@ -89,16 +89,18 @@ async function receive(event: ReceivedEvent, ctx: HookContext = context()) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.prewarmBrowserPool.mockResolvedValue(undefined);
+  mocks.prewarmBrowserSandbox.mockResolvedValue(undefined);
   mocks.usesBrowserPool.mockResolvedValue(true);
 });
 
 describe("the browser warm-up hook", () => {
-  it("warms the pool up when a person of the pool writes", async () => {
+  it("warms the person's browser up when a person of the pool writes", async () => {
     await receive(received("найди крем для рук на вб"));
 
     expect(mocks.usesBrowserPool).toHaveBeenCalledWith(scope);
-    expect(mocks.prewarmBrowserPool).toHaveBeenCalledOnce();
+    expect(mocks.prewarmBrowserSandbox).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId
+    );
   });
 
   it("leaves the pool alone for a workspace outside it", async () => {
@@ -106,18 +108,18 @@ describe("the browser warm-up hook", () => {
 
     await receive(received("найди крем для рук на вб"));
 
-    expect(mocks.prewarmBrowserPool).not.toHaveBeenCalled();
+    expect(mocks.prewarmBrowserSandbox).not.toHaveBeenCalled();
   });
 
   it("does not wait for the warm-up", async () => {
-    mocks.prewarmBrowserPool.mockReturnValue(
+    mocks.prewarmBrowserSandbox.mockReturnValue(
       new Promise<void>(() => undefined)
     );
 
     await expect(
       receive(received("найди крем для рук на вб"))
     ).resolves.toBeUndefined();
-    expect(mocks.prewarmBrowserPool).toHaveBeenCalledOnce();
+    expect(mocks.prewarmBrowserSandbox).toHaveBeenCalledOnce();
   });
 
   it("does not warm up for what no person wrote", async () => {
@@ -129,7 +131,7 @@ describe("the browser warm-up hook", () => {
       context({ caller: caller("browser-result") })
     );
 
-    expect(mocks.prewarmBrowserPool).not.toHaveBeenCalled();
+    expect(mocks.prewarmBrowserSandbox).not.toHaveBeenCalled();
   });
 
   it("goes on with the turn when the pool membership cannot be read", async () => {
@@ -137,7 +139,7 @@ describe("the browser warm-up hook", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await expect(receive(received("найди крем"))).resolves.toBeUndefined();
-    expect(mocks.prewarmBrowserPool).not.toHaveBeenCalled();
+    expect(mocks.prewarmBrowserSandbox).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       "[browser-pool] could not tell whether to warm up",
       expect.objectContaining({ sessionId: "session-1" })

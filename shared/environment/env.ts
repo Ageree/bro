@@ -247,6 +247,45 @@ export const env = createEnv({
       .min(1, "BROWSER_HOST_MAX must be at least 1")
       .max(16, "BROWSER_HOST_MAX must be at most 16")
       .default(1),
+    // Hosts on the current bundle, root and runtime the pool keeps in service
+    // however long they stay empty (docs/browser-pool.md, «Сон хоста»): an
+    // errand then starts its sandbox in seconds instead of waiting a minute
+    // and a half for a sleeping host or five for a new one. Each one bills
+    // its flavor by the hour (gen-2-8: 5.50 ₽, about 3 960 ₽ a month). At
+    // most BROWSER_HOST_MAX count; 0 keeps none, as before this setting.
+    BROWSER_HOST_MIN_WARM: z.coerce
+      .number()
+      .int("BROWSER_HOST_MIN_WARM must be a whole number")
+      .min(0, "BROWSER_HOST_MIN_WARM must be at least 0")
+      .max(16, "BROWSER_HOST_MIN_WARM must be at most 16")
+      .default(0),
+    // The hours, Moscow time, during which BROWSER_HOST_MIN_WARM holds, as
+    // `HH-HH`: from the first hour up to the second, past midnight when the
+    // second is smaller (`08-02` is 08:00–02:00). Unset: all day.
+    BROWSER_HOST_WARM_HOURS: z
+      .string()
+      .trim()
+      .transform((value, context) => {
+        const groups = /^(?<from>\d{2})-(?<to>\d{2})$/u.exec(value)?.groups;
+        const from = Number(groups?.from);
+        const to = Number(groups?.to);
+        if (
+          !Number.isInteger(from) ||
+          !Number.isInteger(to) ||
+          from > 23 ||
+          to > 23 ||
+          from === to
+        ) {
+          context.addIssue({
+            code: "custom",
+            message:
+              "BROWSER_HOST_WARM_HOURS must be two different hours HH-HH (00–23), such as 08-02",
+          });
+          return z.NEVER;
+        }
+        return { from, to };
+      })
+      .optional(),
     // Host ids and VM names are this prefix and the slot number
     // (`bro-host-1`…): a test stand takes another prefix, so its hosts and
     // Bro's never share a name, a token key or a record.

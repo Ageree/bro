@@ -773,6 +773,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`docs/browser-pool.md`, «Сон хоста»). Старый код спящих хостов не видит:
   слот занят, и поручения ждут до отказа. Перед откатом на релиз до этого —
   `UPDATE browser_hosts SET state = 'deleting'` для `stopped` и `waking`.
+- `BROWSER_HOST_MIN_WARM` (часы — `BROWSER_HOST_WARM_HOURS` по Москве) держит
+  хосты текущей сборки `ready`: `gen-2-8` — ≈ 3 960 ₽ в месяц за хост. При
+  готовом хосте сообщение человека сразу поднимает его песочницу
+  (`prewarmBrowserSandbox`, паркуется через 10 минут без поручения). Очередь
+  повторяет старт не раньше чем через минуту, поэтому чужой короткий lease
+  поручение ждёт в своём вызове до 30 с (`leaseFreed` в `sandbox.ts`).
 
 Файлы без пути — в `agent/lib/browser-use/`.
 

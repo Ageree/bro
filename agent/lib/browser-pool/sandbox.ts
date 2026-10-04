@@ -43,7 +43,11 @@ import {
   readWrittenBrowserSet,
   startBrowserSandbox,
 } from "./host";
-import { placeBrowserSandbox, reconcileBrowserHosts } from "./hosts";
+import {
+  placeBrowserSandbox,
+  prewarmBrowserPool,
+  reconcileBrowserHosts,
+} from "./hosts";
 import { browserSandboxId } from "./keys";
 import { deleteBrowserStateObjects, listBrowserStateObjects } from "./s3";
 
@@ -87,6 +91,21 @@ type SandboxState = NonNullable<BrowserVm["sandboxState"]>;
 const sandboxLeaseMs = 6 * 60_000;
 /** Someone else holds the lease: they are starting or parking it already. */
 const leaseHeldRetryMs = 15_000;
+/**
+ * How long an errand waits, in its own call, for a step that holds the
+ * lease briefly (a warm-up's start: p50 2 s from a set, 10 s with Chrome on
+ * a host just woken), and how often it looks: the queue it would go to
+ * instead tries again a minute later at the earliest.
+ */
+const heldWaitMs = 30_000;
+const heldPollMs = 1_000;
+/**
+ * A sandbox a person's message warmed up (`prewarmBrowserSandbox`) and no
+ * errand used parks this long after: the model reaches `browser_task`
+ * within a minute or two, and a person who chats on without an errand does
+ * not hold it for the whole BROWSER_VM_IDLE_MINUTES of an errand's window.
+ */
+const warmIdleMs = 10 * 60_000;
 /** The sandbox is on its way onto a host or off one. */
 const transitionRetryMs = 15_000;
 /** A start whose answer was lost may still be going: the reconcile reads it. */
@@ -152,12 +171,127 @@ export async function inBrowserPool(record: BrowserVm) {
  * The workspace's sandbox when its worker is up, or how long the errand
  * should wait. A sandbox on no host is placed and started under the lease,
  * right here: from its set in seconds, or fresh; one on its way onto a host
- * or off one is waited for.
+ * or off one is waited for. A step that holds the lease briefly — the
+ * person's warm-up starting the sandbox (`prewarmBrowserSandbox`), another
+ * errand's start, a health check — is waited for here, up to `heldWaitMs`,
+ * rather than in the queue.
  */
 export async function ensureBrowserSandbox(
   record: BrowserVm,
   now = new Date()
 ) {
+  const step = await ensureUnderLease(record, now);
+  if (step !== undefined) return step;
+  const freed = await leaseFreed(record.workspaceId, now);
+  if (freed === undefined) return starting(leaseHeldRetryMs);
+  return (
+    (await ensureUnderLease(freed.vm, freed.at)) ?? starting(leaseHeldRetryMs)
+  );
+}
+
+/**
+ * A person of the pool wrote: get their browser up before the model gets to
+ * `browser_task`. The pool first (`prewarmBrowserPool`: a sleeping host
+ * wakes, a missing one is created); then, on a host already in service,
+ * their sandbox starts from its set right away under its lease, so the
+ * errand finds the worker and Chrome up instead of starting them (2–3 s
+ * from a set, about 10 with Chrome on a host just woken).
+ *
+ * Only a sandbox on no host with nothing to wipe first is started: not one
+ * running or on its way (a message must not move a running sandbox's idle
+ * window), not one whose set failed or whose sign-ins the person asked to
+ * forget (the errand does that), not one with a run open, and none without
+ * the sets' storage, whose idle sandbox could only be deleted. Unused, it
+ * parks after the short window `bringUp` gives a warm-up. Never throws.
+ */
+export async function prewarmBrowserSandbox(
+  workspaceId: string,
+  now = new Date()
+) {
+  const began = Date.now();
+  await prewarmBrowserPool(now);
+  try {
+    if (!browserStateConfigured()) return;
+    const record = await readBrowserVm(workspaceId);
+    if (
+      record === undefined ||
+      !startableByWarmUp(record) ||
+      !(await inBrowserPool(record)) ||
+      (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs))
+    ) {
+      return;
+    }
+    const claimed = await claimBrowserVmLease(workspaceId, now, sandboxLeaseMs);
+    if (!claimed) return;
+    try {
+      if (!startableByWarmUp(claimed)) return;
+      const step = await bringUp(claimed, now, true);
+      if (step.kind === "ready") {
+        console.info("[browser-pool] a sandbox was warmed up", {
+          generation: step.vm.generation,
+          hostId: step.vm.hostId,
+          ms: Date.now() - began,
+          workspaceId,
+        });
+      }
+    } finally {
+      await releaseBrowserVmLease(workspaceId, claimed.leaseUntil ?? undefined);
+    }
+  } catch (error) {
+    console.warn("[browser-pool] the sandbox could not be warmed up", {
+      cause: error,
+      workspaceId,
+    });
+  }
+}
+
+/** Whether a warm-up may start the sandbox: on no host, nothing to wipe. */
+function startableByWarmUp(vm: BrowserVm) {
+  return (
+    vm.state === "stopped" &&
+    !vm.profileResetPending &&
+    (vm.sandboxState === null ||
+      vm.sandboxState === "absent" ||
+      vm.sandboxState === "parked" ||
+      vm.sandboxState === "cold")
+  );
+}
+
+/**
+ * The record once the step that holds its lease is done, polled every
+ * `heldPollMs` for up to `heldWaitMs`, with the time it was read at.
+ * Undefined for a park or a deletion, which take minutes, and for a step
+ * that outlasts the wait.
+ */
+async function leaseFreed(workspaceId: string, now: Date) {
+  const began = Date.now();
+  for (;;) {
+    const at = new Date(now.getTime() + Date.now() - began);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The record is read again until the step holding it is done.
+    const vm = await readBrowserVm(workspaceId);
+    if (
+      vm === undefined ||
+      vm.state === "deleting" ||
+      vm.sandboxState === "parking"
+    ) {
+      return undefined;
+    }
+    if (vm.leaseUntil === null || vm.leaseUntil.getTime() <= at.getTime()) {
+      return { at, vm };
+    }
+    if (Date.now() - began >= heldWaitMs) return undefined;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above: one look a second.
+    await new Promise((resolve) => {
+      setTimeout(resolve, heldPollMs);
+    });
+  }
+}
+
+/**
+ * `ensureBrowserSandbox` once: undefined while another step holds the
+ * lease.
+ */
+async function ensureUnderLease(record: BrowserVm, now: Date) {
   if (record.state === "deleting") return starting(transitionRetryMs);
   if (record.sandboxState === "running") return readyForErrand(record, now);
   const claimed = await claimBrowserVmLease(
@@ -165,7 +299,7 @@ export async function ensureBrowserSandbox(
     now,
     sandboxLeaseMs
   );
-  if (!claimed) return starting(leaseHeldRetryMs);
+  if (!claimed) return undefined;
   try {
     if (claimed.state === "deleting") return starting(transitionRetryMs);
     switch (claimed.sandboxState) {
@@ -358,6 +492,12 @@ function overdue(vm: BrowserVm, now: Date, afterMs: number) {
  * address Bro knows and its worker is alive, or a short wait. A host that
  * failed or went is the reconcile's to take the sandbox off; a profile the
  * person forgot is wiped by the reconcile before anything runs on it.
+ *
+ * A worker whose proxy is not set yet takes the errand while its Chrome is
+ * still coming up: the errand's session sets the proxy, which starts Chrome
+ * and waits for it (`prepareBrowserVmSession`), as after a start in the
+ * errand itself. So a sandbox a warm-up started seconds ago serves the
+ * errand instead of sending it to the queue for a minute.
  */
 async function readyForErrand(vm: BrowserVm, now: Date) {
   if (vm.profileResetPending) return starting(transitionRetryMs);
@@ -365,7 +505,11 @@ async function readyForErrand(vm: BrowserVm, now: Date) {
   if (host === undefined || !(await hostVmStillThere(host))) {
     return starting(transitionRetryMs);
   }
-  if ((await aliveWorker(vm)) === undefined) {
+  const health = await workerHealth(vm);
+  if (
+    health === undefined ||
+    !(health.busy || (health.configured && (health.chrome || !health.proxy)))
+  ) {
     return starting(transitionRetryMs);
   }
   const touched = await updateBrowserVm(
@@ -385,9 +529,14 @@ async function readyForErrand(vm: BrowserVm, now: Date) {
  * sign-ins, whose sets go first. The host and the new state are written
  * before `hostd` is asked: that write keeps an empty host from being deleted
  * under the start, and a start whose answer is lost is read back by it.
+ *
+ * A warm-up (`warm`) takes only a host in service, and puts the sandbox on
+ * the short window of one no errand used yet (`warmIdleMs`, written with
+ * the start, so a start read back later keeps it); a person's errand moves
+ * it to their own window (`keepBrowserVmForErrand`).
  */
-async function bringUp(record: BrowserVm, now: Date) {
-  const placed = await placeBrowserSandbox(now);
+async function bringUp(record: BrowserVm, now: Date, warm = false) {
+  const placed = await placeBrowserSandbox(now, { inServiceOnly: warm });
   if (placed.kind === "starting") return starting(placed.retryAfterMs);
   const { host } = placed;
   const vm = record.profileResetPending
@@ -408,25 +557,28 @@ async function bringUp(record: BrowserVm, now: Date) {
           snapshotKey: null,
         }
       : {};
-  const placedRow = await writeHeld(
-    vm,
-    {
-      ...givenUp,
-      generation,
-      healthFailures: 0,
-      host: host.address,
-      hostId: host.id,
-      parkFailures: 0,
-      parkRetryAt: null,
-      poweredOnAt: now,
-      recoveries: 0,
-      // A restore of a snapshot, or a start fresh or from the profile alone:
-      // what a failure falls back from.
-      sandboxState: from?.snapshot === true ? "restoring" : "starting",
-      state: "starting",
-    },
-    now
-  );
+  const placing: Parameters<typeof updateBrowserVm>[1] = {
+    ...givenUp,
+    generation,
+    healthFailures: 0,
+    host: host.address,
+    hostId: host.id,
+    parkFailures: 0,
+    parkRetryAt: null,
+    poweredOnAt: now,
+    recoveries: 0,
+    // A restore of a snapshot, or a start fresh or from the profile alone:
+    // what a failure falls back from.
+    sandboxState: from?.snapshot === true ? "restoring" : "starting",
+    state: "starting",
+  };
+  if (warm) {
+    // Never shorter than a stop already set.
+    placing.stopNotBefore = new Date(
+      Math.max(vm.stopNotBefore?.getTime() ?? 0, now.getTime() + warmIdleMs)
+    );
+  }
+  const placedRow = await writeHeld(vm, placing, now);
   let sandbox: Awaited<ReturnType<typeof startBrowserSandbox>>;
   try {
     sandbox = await startBrowserSandbox(host, {
@@ -1111,12 +1263,18 @@ async function hostVmStillThere(host: BrowserHost) {
  * busy with a run. Undefined when it did not answer or is not alive.
  */
 async function aliveWorker(vm: BrowserVm) {
+  const health = await workerHealth(vm);
+  return health !== undefined &&
+    (health.busy || (health.configured && health.chrome))
+    ? health
+    : undefined;
+}
+
+/** The worker's health, or undefined when it did not answer. */
+async function workerHealth(vm: BrowserVm) {
   if (vm.host === null) return undefined;
   try {
-    const health = await readBrowserVmWorkerHealth(vm);
-    return health.busy || (health.configured && health.chrome)
-      ? health
-      : undefined;
+    return await readBrowserVmWorkerHealth(vm);
   } catch {
     return undefined;
   }

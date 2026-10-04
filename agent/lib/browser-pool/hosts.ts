@@ -1,3 +1,4 @@
+import { browserPoolConfigured } from "@agent/lib/browser-vm/backend";
 import { alertOwner } from "@agent/lib/owner-alert";
 import {
   CloudRuError,
@@ -40,7 +41,10 @@ import { presignStoredObject } from "@shared/object-storage/s3";
  * the first errand after a quiet hour had waited for a new one for 16
  * minutes. A stopped VM bills only its disk and address, but keeps its
  * quota, so any other host is deleted with its public address, as is one
- * that stops answering or sleeps past `sleepLimitMs`.
+ * that stops answering or sleeps past `sleepLimitMs`. BROWSER_HOST_MIN_WARM
+ * hosts on the current boot config never sleep, within
+ * BROWSER_HOST_WARM_HOURS, and the reconcile wakes or creates one when
+ * fewer are up (`keptWarm`, `keepWarmHostsUp`).
  *
  * Every step on a host runs under its record's lease, like a workspace's VM
  * (`agent/lib/browser-vm/lifecycle.ts`).
@@ -88,6 +92,8 @@ const bootingMinutes = 3;
 const wakeMinutes = 2;
 /** Every host is full: sandboxes park as their errands end. */
 const poolFullRetryMs = 5 * 60_000;
+/** The clock BROWSER_HOST_WARM_HOURS is read on: the owner's. */
+const warmHoursTimeZone = "Europe/Moscow";
 /** Cloud.ru could not be asked (its key, IAM, the project): soon again. */
 const unsentRetryMs = 60_000;
 /**
@@ -324,9 +330,14 @@ function onCurrentBoot(host: BrowserHost) {
  * the sandbox there: a host empty for its idle time is first `draining`
  * and deleted only if it is still empty a reconcile later, so a placement
  * that raced the drain keeps its host; a placement may also take an empty
- * draining host back (`backInService`).
+ * draining host back (`backInService`). With `inServiceOnly` (a warm-up,
+ * `prewarmBrowserSandbox` in `sandbox.ts`) it takes a host in service or
+ * none: waking or creating one is `prewarmBrowserPool`'s.
  */
-export async function placeBrowserSandbox(now = new Date()) {
+export async function placeBrowserSandbox(
+  now = new Date(),
+  { inServiceOnly = false }: { readonly inServiceOnly?: boolean } = {}
+) {
   const hosts = await listBrowserHosts();
   // The ready hosts, fullest first; then the draining ones, which an empty
   // host is before it is deleted: taking one back is quicker than a new one.
@@ -353,6 +364,7 @@ export async function placeBrowserSandbox(now = new Date()) {
     const revived = await backInService(host, now);
     if (revived !== undefined) return { host: revived, kind: "ready" as const };
   }
+  if (inServiceOnly) return starting(hostBootingRetryMs);
   const rising = hosts.filter(onItsWayUp);
   if (rising.length > 0) {
     // One that came up since the reconcile serves now, not a minute later:
@@ -548,16 +560,18 @@ async function backInService(host: BrowserHost, now: Date) {
 
 /**
  * Look after every host once: follow a new one up, check a ready one's
- * `hostd` and its Cloud.ru VM, drain and delete an empty one, delete a
- * failed one. Never throws; a host another step holds is left for the next
- * round.
+ * `hostd` and its Cloud.ru VM, drain and delete an empty one (but those
+ * BROWSER_HOST_MIN_WARM keeps, `keptWarm`), delete a failed one; then wake
+ * or create a host if fewer than the minimum are up (`keepWarmHostsUp`).
+ * Never throws; a host another step holds is left for the next round.
  */
 export async function reconcileBrowserHosts(now = new Date()) {
   const hosts = await listBrowserHosts();
+  const warm = keptWarm(hosts, now);
   await Promise.all(
     hosts.map(async (host) => {
       try {
-        await reconcileBrowserHost(host.id, now);
+        await reconcileBrowserHost(host.id, now, warm.has(host.id));
       } catch (error) {
         console.warn("[browser-pool] the host could not be reconciled", {
           cause: error,
@@ -567,9 +581,107 @@ export async function reconcileBrowserHosts(now = new Date()) {
       }
     })
   );
+  try {
+    await keepWarmHostsUp(now);
+  } catch (error) {
+    console.warn("[browser-pool] a host could not be kept warm", {
+      cause: error,
+    });
+  }
 }
 
-async function reconcileBrowserHost(id: string, now: Date) {
+/**
+ * How many hosts BROWSER_HOST_MIN_WARM keeps up at `now`: none outside
+ * BROWSER_HOST_WARM_HOURS (Moscow time) or while the pool is not configured
+ * (hosts left over are only looked after then), and never more than
+ * BROWSER_HOST_MAX.
+ */
+function warmHostsWanted(now: Date) {
+  const wanted = Math.min(env.BROWSER_HOST_MIN_WARM, env.BROWSER_HOST_MAX);
+  if (wanted === 0 || !browserPoolConfigured()) return 0;
+  const hours = env.BROWSER_HOST_WARM_HOURS;
+  if (hours === undefined) return wanted;
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      hourCycle: "h23",
+      timeZone: warmHoursTimeZone,
+    }).format(now)
+  );
+  const inside =
+    hours.from < hours.to
+      ? hour >= hours.from && hour < hours.to
+      : hour >= hours.from || hour < hours.to;
+  return inside ? wanted : 0;
+}
+
+/**
+ * Whether the host counts towards BROWSER_HOST_MIN_WARM: in service, set up
+ * as a new host would be now, with the current sandbox root. A host on an
+ * older bundle, root or runtime does not, so it still empties and goes, and
+ * a current one takes its place.
+ */
+function warmable(host: BrowserHost) {
+  return (
+    (host.state === "ready" || host.state === "draining") &&
+    host.address !== null &&
+    onCurrentBoot(host) &&
+    !outdatedRoot(host.capacity)
+  );
+}
+
+/**
+ * The hosts this round keeps in service however long they have been empty:
+ * the BROWSER_HOST_MIN_WARM warmable ones a placement would fill first.
+ */
+function keptWarm(hosts: readonly BrowserHost[], now: Date) {
+  const wanted = warmHostsWanted(now);
+  if (wanted === 0) return new Set<string>();
+  return new Set(
+    hosts
+      .filter(warmable)
+      .toSorted(
+        (a, b) =>
+          Number(a.state === "draining") - Number(b.state === "draining") ||
+          (b.capacity?.committedMb ?? 0) - (a.capacity?.committedMb ?? 0)
+      )
+      .slice(0, wanted)
+      .map((host) => host.id)
+  );
+}
+
+/**
+ * When a create kept warm last made no host, the next waits until then: a
+ * create Cloud.ru refuses (quota) would otherwise be asked for every minute.
+ */
+let warmCreateAfter = 0;
+
+/**
+ * Fewer hosts up, or on their way up, than BROWSER_HOST_MIN_WARM: wake a
+ * sleeping one on the current boot config, or create one in a free slot.
+ * One host a round. No slot free means a host on an older config holds it
+ * until it empties and goes; nothing is created past BROWSER_HOST_MAX.
+ */
+async function keepWarmHostsUp(now: Date) {
+  const wanted = warmHostsWanted(now);
+  if (wanted === 0) return;
+  const hosts = await listBrowserHosts();
+  const up = hosts.filter((host) => warmable(host) || onItsWayUp(host));
+  if (up.length >= wanted) return;
+  const sleeping = hosts.find(
+    (host) => host.state === "stopped" && onCurrentBoot(host)
+  );
+  if (sleeping !== undefined) {
+    await wakeBrowserHost(sleeping, now);
+    return;
+  }
+  if (hosts.length >= env.BROWSER_HOST_MAX) return;
+  if (now.getTime() < warmCreateAfter) return;
+  const wait = await createBrowserHost(hosts, new Map(), now);
+  warmCreateAfter = now.getTime() + wait;
+}
+
+async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
   const host = await claimBrowserHostLease(id, now, leaseMs);
   if (host === undefined) return;
   try {
@@ -584,7 +696,7 @@ async function reconcileBrowserHost(id: string, now: Date) {
       }
       case "ready":
       case "draining": {
-        await tendReady(host, now);
+        await tendReady(host, now, keepWarm);
         break;
       }
       case "stopped": {
@@ -854,9 +966,12 @@ async function tendBooting(host: BrowserHost, now: Date) {
 /**
  * A ready (or draining) host: still the VM Bro created at the address it
  * knows, `hostd` answering, and either holding sandboxes or empty. Empty
- * for the idle time it drains; still empty a round later it is deleted.
+ * for the idle time it drains; still empty a round later it sleeps or is
+ * deleted. One BROWSER_HOST_MIN_WARM keeps (`keepWarm`) stays in service
+ * however long it is empty, a drained one comes back, and its empty time
+ * runs on: once the warm hours end it drains at the next round.
  */
-async function tendReady(host: BrowserHost, now: Date) {
+async function tendReady(host: BrowserHost, now: Date, keepWarm: boolean) {
   const cloud = host.vmId === null ? undefined : await readCloudRuVm(host.vmId);
   if (cloud === undefined || cloud.host !== host.address) {
     // Deleted by hand, or its address moved: an answer at the old address
@@ -891,6 +1006,14 @@ async function tendReady(host: BrowserHost, now: Date) {
     return;
   }
   const emptySince = host.emptySince ?? now;
+  if (keepWarm && !outdated) {
+    await writeHeld(
+      host,
+      { capacity: held, emptySince, lastSeenAt: now, state: "ready" },
+      now
+    );
+    return;
+  }
   if (host.state === "draining") {
     if (!outdated && onCurrentBoot(host) && host.vmId !== null) {
       // Written first: a power-off whose answer is lost is asked for again

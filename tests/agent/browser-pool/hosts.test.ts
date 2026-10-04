@@ -1235,6 +1235,180 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
   });
 });
 
+describe("hosts kept warm", { timeout: 60_000 }, () => {
+  it("never puts a host it keeps warm to sleep, and takes a drained one back", async () => {
+    const { hosts, records } = await loadPool({ BROWSER_HOST_MIN_WARM: "1" });
+    await seedHost(records, {
+      bootConfig: currentBoot,
+      emptySince: minutes(-61),
+      lastSeenAt: minutes(-1),
+      state: "ready",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+
+    await hosts.reconcileBrowserHosts(now);
+    await hosts.reconcileBrowserHosts(minutes(1));
+    // Its empty time runs on, for when the warm hours end.
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      emptySince: minutes(-61),
+      state: "ready",
+    });
+
+    // Drained before the setting: back in service, not powered off.
+    await records.updateBrowserHost(
+      "bro-host-1",
+      { state: "draining" },
+      minutes(2)
+    );
+    await hosts.reconcileBrowserHosts(minutes(3));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("ready");
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+  });
+
+  it("wakes a sleeping host when fewer than the minimum are up", async () => {
+    const { hosts, records } = await loadPool({ BROWSER_HOST_MIN_WARM: "1" });
+    await seedHost(records, { bootConfig: currentBoot, state: "stopped" });
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+
+    await hosts.reconcileBrowserHosts(now);
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_on"
+    );
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("waking");
+
+    // On its way up it counts: nobody powers it on twice or creates a host.
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+    await hosts.reconcileBrowserHosts(minutes(1));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledOnce();
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+  });
+
+  it("creates a host when none is up, one at a time", async () => {
+    const { hosts, records } = await loadPool({
+      BROWSER_HOST_MAX: "2",
+      BROWSER_HOST_MIN_WARM: "1",
+    });
+
+    await hosts.reconcileBrowserHosts(now);
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      bootConfig: currentBoot,
+      state: "creating",
+    });
+
+    cloud.readCloudRuVm.mockResolvedValue(
+      cloudVm({ host: undefined, state: "creating" })
+    );
+    await hosts.reconcileBrowserHosts(minutes(1));
+    await hosts.reconcileBrowserHosts(minutes(5));
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+  });
+
+  it("lets a host set up otherwise go when it empties, and creates its successor only in the slot it frees", async () => {
+    const { hosts, records } = await loadPool({ BROWSER_HOST_MIN_WARM: "1" });
+    await seedHost(records, {
+      bootConfig: "old",
+      emptySince: minutes(-61),
+      lastSeenAt: minutes(-1),
+      state: "ready",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+
+    await hosts.reconcileBrowserHosts(now);
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "draining"
+    );
+    await hosts.reconcileBrowserHosts(minutes(1));
+    expect(cloud.deleteCloudRuVm).toHaveBeenCalledOnce();
+    // BROWSER_HOST_MAX is 1: nothing is created while it holds the slot,
+    // and the owner is not told the pool is full.
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+    expect(alertOwner).not.toHaveBeenCalled();
+
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+    await hosts.reconcileBrowserHosts(minutes(2));
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      bootConfig: currentBoot,
+      state: "creating",
+    });
+  });
+
+  it("keeps hosts warm only within BROWSER_HOST_WARM_HOURS, Moscow time", async () => {
+    const { hosts, records } = await loadPool({
+      BROWSER_HOST_MIN_WARM: "1",
+      BROWSER_HOST_WARM_HOURS: "08-02",
+    });
+    await seedHost(records, {
+      bootConfig: currentBoot,
+      emptySince: minutes(-61),
+      lastSeenAt: minutes(-1),
+      state: "ready",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+
+    // 01:30 in Moscow: the hours run past midnight.
+    await hosts.reconcileBrowserHosts(new Date("2026-09-30T22:30:00.000Z"));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("ready");
+
+    // 02:00: they are over, and a host empty since before noon sleeps.
+    await hosts.reconcileBrowserHosts(new Date("2026-09-30T23:00:00.000Z"));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "draining"
+    );
+    await hosts.reconcileBrowserHosts(new Date("2026-09-30T23:01:00.000Z"));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_off"
+    );
+
+    // Nobody wakes it before 08:00; at 08:00 the reconcile does.
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+    await hosts.reconcileBrowserHosts(new Date("2026-10-01T04:59:00.000Z"));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledOnce();
+    await hosts.reconcileBrowserHosts(new Date("2026-10-01T05:00:00.000Z"));
+    expect(cloud.setCloudRuVmPower).toHaveBeenLastCalledWith(
+      "vm-host-1",
+      "power_on"
+    );
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("waking");
+  });
+
+  it("asks again for a host Cloud.ru refused only five minutes later", async () => {
+    const { hosts } = await loadPool({ BROWSER_HOST_MIN_WARM: "1" });
+    const { CloudRuError } = await import("@agent/lib/browser-vm/cloudru");
+    cloud.createCloudRuHostVm.mockRejectedValue(
+      new CloudRuError(403, "/v1/vms", '{"code":"quota_exceeded"}')
+    );
+
+    await hosts.reconcileBrowserHosts(now);
+    expect(alertOwner).toHaveBeenCalledWith(
+      "browser-host-create",
+      expect.stringContaining("403"),
+      expect.anything()
+    );
+    await hosts.reconcileBrowserHosts(minutes(4));
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+    await hosts.reconcileBrowserHosts(minutes(5));
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps nothing warm without the setting or while the pool is not configured", async () => {
+    const unset = await loadPool();
+    await unset.hosts.reconcileBrowserHosts(now);
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+
+    const off = await loadPool({
+      BROWSER_HOST_BUNDLE: "",
+      BROWSER_HOST_MIN_WARM: "1",
+    });
+    await off.hosts.reconcileBrowserHosts(now);
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+  });
+});
+
 async function applyMigrations(database: PGlite) {
   const directory = new URL("../../../db/migrations/", import.meta.url);
   const names = (await readdir(directory))

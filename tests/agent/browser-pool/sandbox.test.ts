@@ -263,9 +263,20 @@ async function loadPool(settings: Record<string, string> = {}) {
       const hosts = await import("@db/services/browser-hosts");
       const lifecycle = await import("@agent/lib/browser-vm/lifecycle");
       const runs = await import("@agent/lib/browser-vm/runs");
+      const idle = await import("@agent/lib/browser-vm/idle");
+      const sandboxes = await import("@agent/lib/browser-pool/sandbox");
       await scope.ensureScope(alice);
       await scope.ensureScope(bob);
-      return { costsOf, failVmUptimeWrites, hosts, lifecycle, runs, vms };
+      return {
+        costsOf,
+        failVmUptimeWrites,
+        hosts,
+        idle,
+        lifecycle,
+        runs,
+        sandboxes,
+        vms,
+      };
     }
   );
 }
@@ -1482,6 +1493,267 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     });
   });
 });
+
+/** Alice's sandbox parked into its set of generation 3. */
+async function seedParked(
+  pool: Pool,
+  patch: Parameters<Pool["vms"]["updateBrowserVm"]>[1] = {}
+) {
+  return seedAlice(pool, {
+    generation: 3,
+    sandboxState: "parked",
+    snapshotChunks: 5,
+    snapshotGeneration: 3,
+    snapshotKey: `sets/${aliceSandbox}/3/`,
+    ...patch,
+  });
+}
+
+async function pause(ms: number) {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+describe(
+  "warming a sandbox up for a person who wrote",
+  { timeout: 60_000 },
+  () => {
+    it("starts a parked sandbox from its set on a host in service, and parks it after a short window if no errand comes", async () => {
+      const pool = await loadPool();
+      await seedHost(pool, 1);
+      // An errand nobody waited for left a stop that passed long ago.
+      await seedParked(pool, { stopNotBefore: minutes(-30) });
+      hostClient.startBrowserSandbox.mockImplementation(async (_host, input) =>
+        sandbox({ generation: input.generation, path: "restored" })
+      );
+      const info = vi
+        .spyOn(console, "info")
+        .mockImplementation(() => undefined);
+
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+
+      expect(hostClient.startBrowserSandbox).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "bro-host-1" }),
+        {
+          from: { chunks: 5, key: `sets/${aliceSandbox}/3/`, snapshot: true },
+          generation: 4,
+          workspaceId: alice.workspaceId,
+        }
+      );
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        hostId: "bro-host-1",
+        lastUsedAt: now,
+        leaseUntil: null,
+        sandboxState: "running",
+        state: "ready",
+        stopNotBefore: minutes(10),
+      });
+      expect(info).toHaveBeenCalledWith(
+        "[browser-pool] a sandbox was warmed up",
+        expect.objectContaining({
+          generation: 4,
+          workspaceId: alice.workspaceId,
+        })
+      );
+      expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+
+      // Unused, it parks ten minutes on, not after the twenty of an errand.
+      hostClient.parkBrowserSandbox.mockResolvedValue(parked(4));
+      await pool.lifecycle.reconcileBrowserVms(minutes(9));
+      expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
+      await pool.lifecycle.reconcileBrowserVms(minutes(10));
+      expect(hostClient.parkBrowserSandbox).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "bro-host-1" }),
+        { ample: false, generation: 4, workspaceId: alice.workspaceId }
+      );
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        hostId: null,
+        sandboxState: "parked",
+        snapshotKey: `sets/${aliceSandbox}/4/`,
+      });
+    });
+
+    it("moves a warmed sandbox to the person's own window once their errand uses it", async () => {
+      const pool = await loadPool();
+      await seedHost(pool, 1);
+      await seedParked(pool);
+      vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+      await pool.idle.keepBrowserVmForErrand(
+        alice.workspaceId,
+        true,
+        minutes(1)
+      );
+      expect(
+        await pool.lifecycle.ensureBrowserVm(alice.workspaceId, minutes(1))
+      ).toMatchObject({ kind: "ready", vm: { lastUsedAt: minutes(1) } });
+      // The errand found it up: nothing started twice.
+      expect(hostClient.startBrowserSandbox).toHaveBeenCalledOnce();
+
+      hostClient.parkBrowserSandbox.mockResolvedValue(parked(4));
+      await pool.lifecycle.reconcileBrowserVms(minutes(12));
+      expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
+      await pool.lifecycle.reconcileBrowserVms(minutes(21));
+      expect(hostClient.parkBrowserSandbox).toHaveBeenCalledOnce();
+    });
+
+    it("leaves a running sandbox and its idle window alone", async () => {
+      const pool = await loadPool();
+      await seedRunning(pool, 5);
+
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+
+      expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+      expect(worker.readBrowserVmWorkerHealth).not.toHaveBeenCalled();
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        lastUsedAt: minutes(-5),
+        stopNotBefore: null,
+      });
+    });
+
+    it("starts nothing without a host in service, and has the pool bring one up instead", async () => {
+      const pool = await loadPool();
+      await seedParked(pool);
+      cloud.createCloudRuHostVm.mockResolvedValue({
+        id: "vm-host-1",
+        image: "ubuntu-22.04",
+        name: "bro-host-1",
+      });
+
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+
+      expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+      expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        generation: 3,
+        hostId: null,
+        leaseUntil: null,
+        sandboxState: "parked",
+      });
+    });
+
+    it("never starts one with a run open, a failed set or sign-ins to forget, and wipes nothing", async () => {
+      const pool = await loadPool();
+      await seedHost(pool, 1);
+      await seedParked(pool, { profileResetPending: true });
+      bucket.add(`sets/${aliceSandbox}/3/manifest.json`);
+
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+      await pool.vms.updateBrowserVm(alice.workspaceId, {
+        profileResetPending: false,
+        sandboxState: "failed",
+      });
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+      await pool.vms.updateBrowserVm(alice.workspaceId, {
+        sandboxState: "parked",
+      });
+      await pool.vms.recordBrowserVmRun({
+        id: `vm:${alice.workspaceId}:r:1`,
+        sessionId: `vm:${alice.workspaceId}:s:1`,
+        status: "running",
+        task: "Find a hand cream",
+        workspaceId: alice.workspaceId,
+      });
+      await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+
+      expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+      expect([...bucket]).toEqual([`sets/${aliceSandbox}/3/manifest.json`]);
+      expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+        snapshotKey: `sets/${aliceSandbox}/3/`,
+      });
+    });
+
+    it("has an errand that comes mid-warm-up wait for it in its own call, not in the queue", async () => {
+      const pool = await loadPool();
+      await seedHost(pool, 1);
+      await seedParked(pool);
+      // The warm-up holds the lease and has written its start.
+      const held = await pool.vms.claimBrowserVmLease(
+        alice.workspaceId,
+        now,
+        6 * 60_000
+      );
+      await pool.vms.updateBrowserVm(
+        alice.workspaceId,
+        {
+          generation: 4,
+          host: firstAddress,
+          hostId: "bro-host-1",
+          sandboxState: "restoring",
+          state: "starting",
+        },
+        now,
+        held?.leaseUntil ?? undefined
+      );
+      const warmed = (async () => {
+        await pause(1500);
+        await pool.vms.updateBrowserVm(
+          alice.workspaceId,
+          { lastUsedAt: now, sandboxState: "running", state: "ready" },
+          now
+        );
+        await pool.vms.releaseBrowserVmLease(alice.workspaceId);
+      })();
+
+      const started = await pool.lifecycle.ensureBrowserVm(
+        alice.workspaceId,
+        now
+      );
+      await warmed;
+
+      expect(started).toMatchObject({
+        kind: "ready",
+        vm: { generation: 4, hostId: "bro-host-1", sandboxState: "running" },
+      });
+      expect(hostClient.startBrowserSandbox).not.toHaveBeenCalled();
+    });
+
+    it("sends an errand behind a park to the queue at once", async () => {
+      const pool = await loadPool();
+      await seedRunning(pool, 30);
+      const held = await pool.vms.claimBrowserVmLease(
+        alice.workspaceId,
+        now,
+        6 * 60_000
+      );
+      await pool.vms.updateBrowserVm(
+        alice.workspaceId,
+        { sandboxState: "parking", state: "stopping" },
+        now,
+        held?.leaseUntil ?? undefined
+      );
+      const began = Date.now();
+
+      expect(
+        await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
+      ).toEqual({ kind: "starting", retryAfterMs: 15_000 });
+      expect(Date.now() - began).toBeLessThan(1000);
+    });
+
+    it("lets a worker whose Chrome is still coming up take the errand while its proxy is unset", async () => {
+      const pool = await loadPool();
+      await seedRunning(pool, 1);
+
+      // The errand's session sets the proxy, which starts Chrome and waits.
+      worker.readBrowserVmWorkerHealth.mockResolvedValue(
+        health({ chrome: false, proxy: false })
+      );
+      expect(
+        await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
+      ).toMatchObject({ kind: "ready" });
+
+      // With the proxy set, a Chrome that is down is not the errand's to fix.
+      worker.readBrowserVmWorkerHealth.mockResolvedValue(
+        health({ chrome: false, proxy: true })
+      );
+      expect(
+        await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)
+      ).toEqual({ kind: "starting", retryAfterMs: 15_000 });
+    });
+  }
+);
 
 describe("a pool turned off with hosts left", { timeout: 60_000 }, () => {
   it("still looks after the hosts, which bill until deleted", async () => {
