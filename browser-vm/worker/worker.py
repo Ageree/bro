@@ -595,7 +595,7 @@ TRAIL_SHOTS = 40  # the last shots of a run kept; steps.jsonl keeps every line
 TRAIL_RUNS = 20  # run trails kept on the VM, the newest
 TRAIL_QUALITY = 35
 TRAIL_SCALE = 0.5
-TRAIL_SHOT_S = 4  # a shot that takes longer is skipped, the line still written
+TRAIL_SHOT_S = 3  # a shot that takes longer is skipped, the line still written
 TRAIL_TEXT = 300
 
 
