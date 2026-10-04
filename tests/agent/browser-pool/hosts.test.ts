@@ -947,6 +947,294 @@ describe("browser host reconcile", { timeout: 60_000 }, () => {
   });
 });
 
+/** What a host created under `browserPoolTestEnvironment` boots with. */
+const currentBoot = `${"ab".repeat(32)}:2026-09-30.1:${"cd".repeat(32)}:runc:`;
+
+const readyHealth = {
+  configured: true,
+  hostd: "2026-10-01.1",
+  runsc: null,
+  stage: "ready",
+};
+
+describe("browser host sleep", { timeout: 60_000 }, () => {
+  it("records what a new host boots with", async () => {
+    const { hosts, records } = await loadPool();
+
+    await hosts.placeBrowserSandbox(now);
+
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      bootConfig: currentBoot,
+      state: "creating",
+    });
+  });
+
+  it("powers an idle host off instead of deleting it, and wakes it for the next sandbox", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, {
+      bootConfig: currentBoot,
+      emptySince: minutes(-61),
+      lastSeenAt: minutes(-1),
+      state: "ready",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+
+    await hosts.reconcileBrowserHosts(now);
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "draining"
+    );
+    await hosts.reconcileBrowserHosts(minutes(1));
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      address,
+      floatingIpId: "fip-host-1",
+      state: "stopped",
+      vmId: "vm-host-1",
+    });
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_off"
+    );
+    expect(cloud.deleteCloudRuVm).not.toHaveBeenCalled();
+
+    // Asleep, it is left alone: no health checks, no deletion.
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+    await hosts.reconcileBrowserHosts(minutes(30));
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "stopped"
+    );
+    expect(hostClient.readBrowserHostHealth).not.toHaveBeenCalled();
+
+    // The next sandbox wakes it rather than create a host.
+    expect(await hosts.placeBrowserSandbox(minutes(60))).toEqual({
+      kind: "starting",
+      retryAfterMs: 60_000,
+    });
+    expect(cloud.setCloudRuVmPower).toHaveBeenLastCalledWith(
+      "vm-host-1",
+      "power_on"
+    );
+    expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      leaseUntil: null,
+      state: "waking",
+    });
+
+    // Seconds after the power-on nobody asks its hostd: it cannot be up,
+    // and a person's errand would wait out the health check.
+    expect(
+      await hosts.placeBrowserSandbox(new Date(minutes(60).getTime() + 10_000))
+    ).toEqual({ kind: "starting", retryAfterMs: 60_000 });
+    expect(hostClient.readBrowserHostHealth).not.toHaveBeenCalled();
+
+    // Not up yet: the errand waits, nobody powers it on twice.
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "starting" }));
+    hostClient.readBrowserHostHealth.mockRejectedValueOnce(
+      new Error("timeout")
+    );
+    expect(await hosts.placeBrowserSandbox(minutes(61))).toEqual({
+      kind: "starting",
+      retryAfterMs: 60_000,
+    });
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledTimes(2);
+
+    // Back: the placement takes it the moment hostd answers.
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm());
+    hostClient.readBrowserHostHealth.mockResolvedValue(readyHealth);
+    expect(await hosts.placeBrowserSandbox(minutes(62))).toMatchObject({
+      host: { emptySince: minutes(62), id: "bro-host-1", state: "ready" },
+      kind: "ready",
+    });
+  });
+
+  it("deletes an idle host set up otherwise than a new one would be", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, {
+      bootConfig: `${"ef".repeat(32)}:2026-09-30.1:${"cd".repeat(32)}:runc:`,
+      emptySince: minutes(-61),
+      state: "draining",
+    });
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+
+    await hosts.reconcileBrowserHosts(now);
+
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "deleting"
+    );
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(cloud.deleteCloudRuVm).toHaveBeenCalledWith("vm-host-1", {
+      diskIds: [],
+      floatingIpIds: ["fip-host-1"],
+    });
+  });
+
+  it("deletes a sleeping host on an old bundle instead of waking it", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { bootConfig: "old", state: "stopped" });
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+
+    expect(await hosts.placeBrowserSandbox(now)).toEqual({
+      kind: "starting",
+      retryAfterMs: 60_000,
+    });
+
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    expect(cloud.deleteCloudRuVm).toHaveBeenCalledWith("vm-host-1", {
+      diskIds: [],
+      floatingIpIds: ["fip-host-1"],
+    });
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "deleting"
+    );
+  });
+
+  it("asks again for a power-off Cloud.ru did not carry out, and deletes a host asleep a week", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { bootConfig: currentBoot, state: "ready" });
+    await records.updateBrowserHost("bro-host-1", { state: "stopped" }, now);
+
+    await hosts.reconcileBrowserHosts(minutes(3));
+    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
+    await hosts.reconcileBrowserHosts(minutes(4));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_off"
+    );
+
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+    await hosts.reconcileBrowserHosts(minutes(6 * 24 * 60));
+    expect(cloud.deleteCloudRuVm).not.toHaveBeenCalled();
+    await hosts.reconcileBrowserHosts(minutes(7 * 24 * 60));
+    expect(cloud.deleteCloudRuVm).toHaveBeenCalledWith("vm-host-1", {
+      diskIds: [],
+      floatingIpIds: ["fip-host-1"],
+    });
+  });
+
+  it("forgets a sleeping host whose VM was deleted by hand, with its address", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { bootConfig: currentBoot, state: "stopped" });
+    cloud.readCloudRuVm.mockResolvedValue(undefined);
+
+    await hosts.reconcileBrowserHosts(now);
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe(
+      "deleting"
+    );
+    await hosts.reconcileBrowserHosts(minutes(1));
+
+    expect(cloud.deleteCloudRuFloatingIp).toHaveBeenCalledWith("fip-host-1");
+    expect(await records.readBrowserHost("bro-host-1")).toBeUndefined();
+  });
+
+  it("asks again for a lost power-on, and fails a host that does not wake without holding creates back", async () => {
+    const { hosts, records } = await loadPool();
+    await seedHost(records, { bootConfig: currentBoot, state: "stopped" });
+    await records.updateBrowserHost("bro-host-1", { state: "waking" }, now);
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await hosts.reconcileBrowserHosts(minutes(4));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_on"
+    );
+
+    await hosts.reconcileBrowserHosts(minutes(10));
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      createBlockedUntil: null,
+      lastError: "The host was not back 10 minutes after it was powered on.",
+      state: "failed",
+    });
+  });
+
+  it("says how long a sandbox start waits for its host", async () => {
+    const { hosts, records } = await loadPool();
+    expect(await hosts.browserPoolWait(now)).toEqual({
+      minutes: 6,
+      phase: "new",
+    });
+
+    // Created at minutes(-60): the rest of the six minutes a new host takes.
+    await seedHost(records, { bootConfig: currentBoot, state: "creating" });
+    expect(await hosts.browserPoolWait(minutes(-58))).toEqual({
+      minutes: 4,
+      phase: "new",
+    });
+    // Past its usual time a new host is still a couple of minutes away.
+    await records.updateBrowserHost("bro-host-1", { state: "booting" }, now);
+    expect(await hosts.browserPoolWait(minutes(1))).toEqual({
+      minutes: 2,
+      phase: "new",
+    });
+    expect(await hosts.browserPoolWait(minutes(9))).toEqual({
+      minutes: 2,
+      phase: "new",
+    });
+
+    await records.updateBrowserHost("bro-host-1", { state: "stopped" }, now);
+    expect(await hosts.browserPoolWait(now)).toEqual({
+      minutes: 2,
+      phase: "waking",
+    });
+
+    await records.updateBrowserHost("bro-host-1", { state: "ready" }, now);
+    expect(await hosts.browserPoolWait(now)).toEqual({
+      minutes: 1,
+      phase: "ready",
+    });
+  });
+
+  it("warms the pool up for a person who wrote", async () => {
+    const { hosts, records } = await loadPool();
+
+    // No host: one is created.
+    await hosts.prewarmBrowserPool(now);
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+
+    // On its way up: left alone.
+    await hosts.prewarmBrowserPool(minutes(1));
+    expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
+
+    // Asleep: woken.
+    await records.updateBrowserHost(
+      "bro-host-1",
+      { address, state: "stopped" },
+      minutes(2)
+    );
+    cloud.readCloudRuVm.mockResolvedValue(cloudVm({ state: "stopped" }));
+    await hosts.prewarmBrowserPool(minutes(3));
+    expect(cloud.setCloudRuVmPower).toHaveBeenCalledExactlyOnceWith(
+      "vm-host-1",
+      "power_on"
+    );
+    expect((await records.readBrowserHost("bro-host-1"))?.state).toBe("waking");
+
+    // Draining: taken back into service, empty from now.
+    await records.updateBrowserHost(
+      "bro-host-1",
+      { emptySince: minutes(-60), state: "draining" },
+      minutes(4)
+    );
+    await hosts.prewarmBrowserPool(minutes(5));
+    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
+      emptySince: minutes(5),
+      state: "ready",
+    });
+  });
+
+  it("never fails the turn when Cloud.ru does not answer", async () => {
+    const { hosts } = await loadPool();
+    cloud.createCloudRuHostVm.mockRejectedValue(new Error("socket hang up"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(hosts.prewarmBrowserPool(now)).resolves.toBeUndefined();
+    expect(warn).not.toHaveBeenCalledWith(
+      "[browser-pool] the pool could not be warmed up",
+      expect.anything()
+    );
+  });
+});
+
 async function applyMigrations(database: PGlite) {
   const directory = new URL("../../../db/migrations/", import.meta.url);
   const names = (await readdir(directory))

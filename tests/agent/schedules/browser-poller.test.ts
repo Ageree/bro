@@ -1499,9 +1499,8 @@ describe("the browser queue", () => {
   it("tells Bro a Госуслуги errand in the wait may still ask for a code", async () => {
     const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
 
-    const note = queuedStatusNote({
+    const note = await queuedStatusNote({
       profileId: "profile-1",
-      retryAt: null,
       waitsForAccount: "gosuslugi.ru",
     });
 
@@ -1513,24 +1512,28 @@ describe("the browser queue", () => {
 
   it("tells Bro an errand waiting for the person's own VM that their browser is starting", async () => {
     const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
-    const waiting = { retryAt: null, waitsForAccount: null };
+    const waiting = { waitsForAccount: null };
 
-    const onVm = queuedStatusNote({
+    const onVm = await queuedStatusNote({
       ...waiting,
       profileId: `vm:${alice.workspaceId}:p1`,
     });
-    const onBrowserUse = queuedStatusNote({
+    const onBrowserUse = await queuedStatusNote({
       ...waiting,
       profileId: "profile-1",
     });
 
+    // No VM yet: its very first start, said in minutes, never as a time.
     expect(onVm).toContain(
-      "Bro's own browser for the user is still starting (about a minute, up to about six on its very first start)"
+      "Bro's own browser for the user is being set up for its very first start, which takes about 6 more minutes"
     );
+    expect(onVm).toContain("in minutes rather than a time of day");
+    expect(onVm).not.toMatch(/\d{4}-\d{2}-\d{2}T/u);
     expect(onVm).not.toContain("cloud browser service");
     expect(onBrowserUse).toContain(
       "the cloud browser service had no free browser for it yet"
     );
+    expect(onBrowserUse).not.toContain("next try");
   });
 
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {

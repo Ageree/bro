@@ -1,4 +1,6 @@
-import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { browserPoolWait } from "@agent/lib/browser-pool/hosts";
+import { usesBrowserPool } from "@agent/lib/browser-vm/backend";
+import { browserVmWorkspace, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -10,7 +12,6 @@ import {
   parkQueuedBrowserRun,
   readBrowserRun,
 } from "@db/services/browser-runs";
-import { listBrowserHosts } from "@db/services/browser-hosts";
 import { readBrowserVm } from "@db/services/browser-vms";
 import {
   BrowserUseError,
@@ -174,10 +175,10 @@ function queuedErrandNote(ahead: number, minutes: number) {
 
 /**
  * What Bro is told about an errand that waits for the workspace's own
- * browser VM, which is off between errands and has one browser: that the
- * person's browser is starting, or busy with another of their errands —
- * never that a shared service is full. A VM powers on in about a minute;
- * the first start creates it, which takes up to about six.
+ * browser, which runs one errand at a time: that the person's browser is
+ * starting, or busy with another of their errands — never that a shared
+ * service is full. How long a start takes is said from what is known now
+ * (`browserStartWait`), never as a time of day.
  */
 async function browserVmWait(workspaceId: string, ahead: number) {
   const vm = await readBrowserVm(workspaceId);
@@ -195,51 +196,87 @@ async function browserVmWait(workspaceId: string, ahead: number) {
       ].join(" "),
     };
   }
-  const firstStart =
-    vm?.sandboxState === undefined || vm.sandboxState === null
-      ? (vm?.vmId ?? null) === null ||
-        vm?.state === "creating" ||
-        vm?.state === "failed"
-      : await sandboxNeedsHost(vm.sandboxState);
-  const wait = firstStart ? "up to about six minutes" : "about a minute";
+  const wait = await browserStartWait(workspaceId, vm);
+  const minutes = `about ${String(wait.minutes)} minute${wait.minutes === 1 ? "" : "s"}`;
   return {
-    minutes: firstStart ? 6 : 1,
+    minutes: wait.minutes,
     note: [
-      firstStart
-        ? `Bro's own browser for the user is being set up for its very first start, which takes ${wait}; this errand is queued and starts by itself as soon as the browser is up.`
-        : `Bro's own browser for the user is switched off between errands and is starting now, which takes ${wait}; this errand is queued and starts by itself as soon as the browser is up.`,
-      `Tell the user in one short line that their browser is starting and the errand begins in ${wait}; the outcome arrives as a new message like any other.`,
+      `${wait.why}, which takes ${minutes}; this errand is queued and starts by itself as soon as the browser is up.`,
+      `Tell the user in one short line that their browser is starting and the errand begins in ${minutes}; the outcome arrives as a new message like any other.`,
       queuedErrandRules,
     ].join(" "),
   };
 }
 
 /**
- * Whether a pool sandbox's start may wait for a new host (up to about six
- * minutes): one with no set to come back from while no host is ready. A
- * parked or cold one, or one already on its way, is up in about a minute.
+ * Why the workspace's browser is not up yet, and about how many minutes
+ * until it is. A sandbox of the pool waits for its host: seconds on a host
+ * in service, a minute and a half on a sleeping one, about six on a new one
+ * (`browserPoolWait`) — on 04.10 a parked sandbox was promised «about a
+ * minute» while a new host took sixteen, and each `status` named the next
+ * poll, a minute later every time. A VM of its own powers on in about a
+ * minute, and the first start creates it, which takes up to about six.
  */
-async function sandboxNeedsHost(state: string) {
-  if (state !== "absent" && state !== "failed") return false;
-  const hosts = await listBrowserHosts();
-  return !hosts.some((host) => host.state === "ready");
+async function browserStartWait(
+  workspaceId: string,
+  vm: Awaited<ReturnType<typeof readBrowserVm>>
+) {
+  // As `inBrowserPool`: a workspace with a VM of its own stays on it.
+  const pool =
+    (vm?.sandboxState ?? null) !== null ||
+    ((vm?.vmId ?? null) === null &&
+      (vm?.state ?? "stopped") === "stopped" &&
+      (await usesBrowserPool({ workspaceId })));
+  if (pool) {
+    const wait = await browserPoolWait();
+    const why = {
+      new: "Bro's browser machine was switched off after a quiet spell and is being set up anew",
+      ready:
+        "Bro's own browser for the user is switched off between errands and is starting now",
+      waking:
+        "Bro's browser machine was asleep after a quiet spell and is waking up",
+    }[wait.phase];
+    return { minutes: wait.minutes, why };
+  }
+  const firstStart =
+    (vm?.vmId ?? null) === null ||
+    vm?.state === "creating" ||
+    vm?.state === "failed";
+  return firstStart
+    ? {
+        minutes: 6,
+        why: "Bro's own browser for the user is being set up for its very first start",
+      }
+    : {
+        minutes: 1,
+        why: "Bro's own browser for the user is switched off between errands and is starting now",
+      };
 }
 
-/** The model-facing note for `status` on an errand still in the queue. */
-export function queuedStatusNote(
-  row: Pick<BrowserRunRow, "profileId" | "retryAt" | "waitsForAccount">
+/**
+ * The model-facing note for `status` on an errand still in the queue. It
+ * says what the errand waits for and about how long, never the time of the
+ * queue's next try: that moves a minute on at every try, and the person was
+ * told «в 13:05», then «в 13:07».
+ */
+export async function queuedStatusNote(
+  row: Pick<BrowserRunRow, "profileId" | "waitsForAccount">
 ) {
   const account = row.waitsForAccount ?? undefined;
   if (account !== undefined) {
     return `The errand is still waiting for another errand of the user to finish in Bro's browser on ${account}, so that the two never ask for codes at once; it starts by itself right after. The site may still ask for a code then${account === gosuslugiDomain ? " (Госуслуги asks for one in every new browser)" : ""}, so do not promise there will be none. Say so in one short line; do not start it again.`;
   }
-  const next = row.retryAt
-    ? ` The next try is at ${row.retryAt.toISOString()}.`
-    : "";
-  if (onBrowserVm(row.profileId)) {
-    return `The errand is still queued: Bro's own browser for the user is still starting (about a minute, up to about six on its very first start) or busy with another errand of theirs, and it starts by itself as soon as the browser is free.${next} Say so in one short line; do not start it again.`;
+  const { profileId } = row;
+  if (profileId !== null && isBrowserVmId(profileId)) {
+    const workspaceId = browserVmWorkspace(profileId);
+    const vm = await readBrowserVm(workspaceId);
+    if (vm?.state === "ready") {
+      return "The errand is still queued: Bro's own browser for the user is busy with another errand of theirs, and this one starts by itself right after. Say so in one short line, without a time; do not start it again.";
+    }
+    const wait = await browserStartWait(workspaceId, vm);
+    return `The errand is still queued: ${wait.why}, which takes about ${String(wait.minutes)} more minute${wait.minutes === 1 ? "" : "s"}, and it starts by itself as soon as the browser is up. Say so in one short line, in minutes rather than a time of day; do not start it again.`;
   }
-  return `The errand is still queued: the cloud browser service had no free browser for it yet, and it starts by itself as soon as one frees up.${next} Say so in one short line; do not start it again.`;
+  return "The errand is still queued: the cloud browser service had no free browser for it yet, and it starts by itself as soon as one frees up. Say so in one short line, without a time; do not start it again.";
 }
 
 /**

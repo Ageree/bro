@@ -29,6 +29,7 @@ import {
   prepareAttachmentDelivery,
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
+import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   conversationHoldsFiles,
@@ -88,6 +89,20 @@ const maximumThrottledChats = 500;
  */
 const unlinkedHintSentAt = new Map<string, number>();
 
+/**
+ * Telegram shows «печатает…» for five seconds after each chat action, and
+ * eve sends one when a turn starts and when a step calls its tools: a slow
+ * tool — a browser errand being started, a web search — or a long step left
+ * the person looking at a silent chat for most of the turn (owner, 04.10:
+ * «довольно долго выполнялось»). So a turn the person opened keeps it on
+ * until its first message or card, or its end, and never past
+ * `typingForMs`. The timers live with the serving instance, like the hint
+ * throttle: one lost with it costs only the indicator.
+ */
+const typingEveryMs = 4_500;
+const typingForMs = 3 * 60_000;
+const typingChats = new Map<string, ReturnType<typeof setInterval>>();
+
 function telegramBotToken() {
   const botToken = env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -124,9 +139,24 @@ export default telegramChannel({
     maxBytes: 10 * 1024 * 1024,
   },
   events: {
+    // eve's own handler starts the indicator; a turn the person opened keeps
+    // it on (`typingChats`). A report or a schedule's turn may end without a
+    // word, so it gets the one indicator only.
+    async "turn.started"(_event, context, session) {
+      await context.telegram.startTyping();
+      if (startedByPerson(session) && !scheduledReportFromSession(session)) {
+        keepTyping(context);
+      }
+    },
+    async "turn.completed"(_event, context) {
+      stopTyping(context);
+    },
     async "action.result"(event, context, session) {
       const reaction = reactToMessageToolResultSchema.safeParse(event.result);
       if (event.status === "completed" && reaction.success) {
+        // Off before the message goes: a tick after it would show
+        // «печатает…» under the reply.
+        stopTyping(context);
         const messageId = currentTelegramMessageId(session.session.auth);
         if (!messageId) {
           throw new Error(
@@ -153,6 +183,7 @@ export default telegramChannel({
 
       const message = sendMessageToolResultSchema.safeParse(event.result);
       if (event.status !== "completed" || !message.success) return;
+      stopTyping(context);
 
       const { output } = message.data;
       // Telegram can quote a message natively, but send_message advertises
@@ -215,6 +246,7 @@ export default telegramChannel({
       console.warn("[telegram] assistant text delivered as fallback", {
         sessionId: session.session.id,
       });
+      stopTyping(context);
       markTurnDelivered(context, event.turnId);
       await deliverText(context, session, { attachments: [], text });
     },
@@ -222,6 +254,7 @@ export default telegramChannel({
     // browser errand's submission, a standing permission, a spend limit —
     // instead of only the tool's name.
     async "input.requested"(event, context, session) {
+      stopTyping(context);
       const language = sessionReplyLanguage(session.session.auth);
       /* oxlint-disable eslint/no-await-in-loop -- Each card is posted in request order, and a freeform prompt is registered against its own message. */
       for (const request of event.requests) {
@@ -248,13 +281,15 @@ export default telegramChannel({
         await finalizeScheduledReportDelivery(session, "suppressed");
       }
     },
-    async "turn.cancelled"(_event, _context, session) {
+    async "turn.cancelled"(_event, context, session) {
+      stopTyping(context);
       await releaseScheduledReportDelivery(
         session,
         "Scheduled result reporting was cancelled."
       );
     },
     async "turn.failed"(event, context, session) {
+      stopTyping(context);
       await releaseScheduledReportDelivery(session, event.message);
       // A failed reporting turn is retried from its lease, so only a person
       // waiting on their own message is told that the turn broke.
@@ -500,7 +535,34 @@ function deliveryMarker(context: TelegramEventContext) {
 }
 
 function markTurnDelivered(context: TelegramEventContext, turnId: string) {
+  stopTyping(context);
   deliveryMarker(context).deliveredTurnId = turnId;
+}
+
+/** Keep «печатает…» on in the chat until `stopTyping` (`typingChats`). */
+function keepTyping(context: TelegramEventContext) {
+  const { chatId } = context.telegram;
+  if (!chatId) return;
+  stopTyping(context);
+  const until = Date.now() + typingForMs;
+  const timer = setInterval(() => {
+    if (Date.now() > until) {
+      stopTyping(context);
+      return;
+    }
+    // `startTyping` swallows its own failures.
+    void context.telegram.startTyping();
+  }, typingEveryMs);
+  timer.unref();
+  typingChats.set(chatId, timer);
+}
+
+function stopTyping(context: TelegramEventContext) {
+  const { chatId } = context.telegram;
+  const timer = typingChats.get(chatId);
+  if (timer === undefined) return;
+  clearInterval(timer);
+  typingChats.delete(chatId);
 }
 
 function deliveredTurnId(context: TelegramEventContext) {

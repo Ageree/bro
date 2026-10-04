@@ -4260,7 +4260,7 @@ async function runBrowserTask(
   }
 
   if (row.status === "queued") {
-    return { note: queuedStatusNote(row), runId, status: "queued" };
+    return { note: await queuedStatusNote(row), runId, status: "queued" };
   }
   const cloudStatus = row.completedAt
     ? undefined
