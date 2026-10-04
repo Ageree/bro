@@ -20,7 +20,8 @@
 
 ## С чего начать
 
-- Браузерные e2e-тесты (раннер e2e, `e2e/`, джоба `E2E`) — `docs/e2e.md`.
+- Браузерные e2e-тесты (раннер e2e, `e2e/`) — `docs/e2e.md`. С 04.10 набор
+  не в CI и не обязателен в PR (решение владельца), гоняется лишь вручную.
 - Бэклог с приоритетами и критериями «готово» — `docs/roadmap.md` (сделанное
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
@@ -92,7 +93,6 @@
   старый: `PLAYWRIGHT_BROWSERS_PATH=<scratchpad>` и `playwright install chromium`.
 - Management-ключ OpenRouter проходит `GET /api/v1/key`, но на вызов модели
   отвечает «User not found»: в `OPENROUTER_API_KEY` — только обычный ключ.
-  Джоба `E2E` проверяет это первым шагом (`.github/workflows/e2e.yml`).
 
 ## eve
 
