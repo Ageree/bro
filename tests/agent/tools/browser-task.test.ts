@@ -80,7 +80,7 @@ vi.mock("ai", async (importOriginal) => ({
     return {
       output: {
         matches:
-          !staged.includes("Needs: none") &&
+          !/^order:/imu.test(staged) &&
           question.includes(submission.what) &&
           question.includes(submission.when ?? "") &&
           question.includes(submission.where) &&
@@ -5249,7 +5249,7 @@ describe("browser_task finds the option before the one card", () => {
     // The same browser, so the seats the search picked are still picked.
     expect(created?.sessionId).toBe(sessionId);
     expect(created?.task).toContain(
-      "Keep the tab that is open and the account already signed in"
+      "Keep the tab that is open and do not start over"
     );
     expect(created?.task).toContain(
       "The person asked for this one submission in their name and answered yes when asked to pay its total."
@@ -7486,11 +7486,32 @@ describe("browser_task asks only before paying, in text", () => {
     }
   );
 
-  it("asks again after a run that finished the errand", async () => {
+  it("pays on the yes after a run that stopped at payment but wrote Needs: none", async () => {
+    // RU 04.10: the staging run said «Needs: none» at the payment step; the
+    // yes was refused and the order staged again in a loop.
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(
         new Date(),
         stagedPayment(tickets).replace("Needs: payment", "Needs: none")
+      )
+    );
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await tool.execute(pay, toolContext("better-auth:alice"));
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+  });
+
+  it("asks again after a run that placed the order", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment(tickets).replace(
+          "Needs: payment",
+          "Order: 43846\nNeeds: none"
+        )
       )
     );
     const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));

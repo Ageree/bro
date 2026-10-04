@@ -37,6 +37,7 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/sessions/<id>/action           {action, params}: click/input/select/scroll/keys/back/navigate
   GET  /v1/sessions/<id>/screenshot       JPEG of the session's tab
   GET  /v1/files?session=&prefix=         files a run saved (report/…), newest first
+                                          (trail/<run id>/: each step's shot and steps.jsonl, for developers)
   GET  /v1/files/<session>/<path>         download one
   GET  /v1/dl/<token>/<session>/<path>    the same by URL alone (token scoped to the session)
   PUT  /v1/uploads/<name>                 a file for the agent to upload to a site
@@ -73,7 +74,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-04.2"
+VERSION = "2026-10-05.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -374,19 +375,34 @@ class SiteErrors:
     server's answer. Now the report carries it, whatever the agent does.
 
     Kept small and blind to what was sent: the address without its query, the status and the start of the
-    answer, with every secret's value cut out of it."""
+    answer, with every secret's value cut out of it.
+
+    The report alone came too late: on 04.10 the server answered the order with 400 «Пожалуйста, введите
+    корректный номер телефона», «deliveryMethod must be a valid enum value», the page silently went to
+    /order/error, and the run's model, never shown the answer, retried blindly and reported what it had not
+    done. So a refusal of the site's own write (POST, PUT, PATCH, DELETE to the page's own site) is also told
+    to the agent at its next step (`notices`), a few per run, each answer once. A refused GET is the page
+    probing the account in the background (/api/user, /api/user/cart answer 401 or 404 to a guest on every
+    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it."""
 
     LIMIT = 8
     BODY = 600
+    NOTICES = 3  # told to the agent per run
+    NOTICE_BODY = 400
+    # How long a notice waits for the refused answer's body before it goes without it.
+    BODY_WAIT_S = 3
+    WRITES = ("POST", "PUT", "PATCH", "DELETE")
 
     def __init__(self):
         self.entries = []
-        self.requests = {}  # requestId → (method, address) of the site's own requests
+        self.requests = {}  # requestId → (method, address, the page's own site) of the site's own requests
         self.refused = {}  # requestId → entry still waiting for its body
         self.task = None
         self.ws = None
         self.next_id = 1
         self.bodies = {}  # command id → requestId
+        self.told = set()  # (method, address, status, answer) the agent was already told
+        self.notices_sent = 0
 
     def start(self, websocket_url):
         self.task = asyncio.create_task(self.listen(websocket_url))
@@ -420,7 +436,9 @@ class SiteErrors:
         request_id = params.get("requestId")
         if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
             request = params.get("request") or {}
-            self.requests[request_id] = (request.get("method", "GET"), request.get("url", ""))
+            url = request.get("url", "")
+            self.requests[request_id] = (request.get("method", "GET").upper(), url,
+                                         same_site(url, params.get("documentURL") or ""))
         elif method == "Network.responseReceived" and request_id in self.requests:
             status = (params.get("response") or {}).get("status") or 0
             if status >= 400:
@@ -441,26 +459,92 @@ class SiteErrors:
                 entry["answer"] = body[: self.BODY]
 
     def record(self, request_id, status):
-        method, url = self.requests.get(request_id, ("GET", ""))
-        entry = {"status": status, "method": method, "address": url.split("?")[0].split("#")[0], "answer": ""}
+        method, url, own = self.requests.get(request_id, ("GET", "", False))
+        address = url.split("?")[0].split("#")[0]
+        # A write of the page's own site its server answered with an HTTP status: what the agent is told.
+        write = own and method in self.WRITES and status.isdigit()
+        entry = {"status": status, "method": method, "address": address, "answer": "", "write": write,
+                 "count": 1, "at": time.monotonic()}
+        if not write:
+            # The same probe refused on every page is one line of the report.
+            for kept in self.entries:
+                if not kept["write"] and (kept["status"], kept["method"], kept["address"]) == (status, method, address):
+                    kept["count"] += 1
+                    return entry
         if len(self.entries) < self.LIMIT:
             self.entries.append(entry)
+        elif write:
+            # Background probes filled the report first: a refused write takes the oldest one's place.
+            probe = next((kept for kept in self.entries if not kept["write"]), None)
+            if probe is not None:
+                self.entries.remove(probe)
+                self.entries.append(entry)
         return entry
+
+    def notices(self, secrets=None):
+        """What to tell the agent before its next step: each refused write of the site not told yet, once its
+        answer is in (or did not come within `BODY_WAIT_S`), each distinct answer once, `NOTICES` a run."""
+        clean = secret_cleaner(secrets)
+        waiting = [id(entry) for entry in self.refused.values()]
+        told = []
+        for entry in self.entries:
+            if not entry["write"] or entry.get("told") or self.notices_sent >= self.NOTICES:
+                continue
+            if id(entry) in waiting and time.monotonic() - entry["at"] < self.BODY_WAIT_S:
+                continue
+            entry["told"] = True
+            answer = clean(entry["answer"])[: self.NOTICE_BODY]
+            key = (entry["method"], entry["address"], entry["status"], answer)
+            if key in self.told:
+                continue
+            self.told.add(key)
+            self.notices_sent += 1
+            told.append(f"The site's server refused {entry['method']} {clean(entry['address'])}: {entry['status']}"
+                        + (f" — {answer}" if answer else " (no answer text)")
+                        + ". The browser saw this request; the page may not show why. Fix what the answer names "
+                          "(a field, a choice, a format) before trying again, and do not report success for it.")
+        return told
 
     def report(self, secrets=None):
         if not self.entries:
             return ""
-        values = sorted({str(v) for v in flat_secret_values(secrets) if len(str(v)) >= 3}, key=len, reverse=True)
+        clean = secret_cleaner(secrets)
 
-        def clean(text):
-            for value in values:
-                text = text.replace(value, "<secret>")
-            return " ".join(text.split())
+        def line(e):
+            times = f" (×{e['count']})" if e["count"] > 1 else ""
+            return (f"- {e['status']} {e['method']} {clean(e['address'])}{times}"
+                    + (f" — {clean(e['answer'])}" if e["answer"] else ""))
 
-        lines = [f"- {e['status']} {e['method']} {clean(e['address'])}" + (f" — {clean(e['answer'])}" if e["answer"] else "")
-                 for e in self.entries]
         return ("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
-                "server refused during this run):\n" + "\n".join(lines) + "\n\n")
+                "server refused during this run):\n" + "\n".join(map(line, self.entries)) + "\n\n")
+
+
+def secret_cleaner(secrets):
+    """A function that cuts every secret's value (three characters or longer) out of a text and folds its
+    whitespace: what the worker writes or tells from a page passes through it."""
+    values = sorted({str(v) for v in flat_secret_values(secrets) if len(str(v)) >= 3}, key=len, reverse=True)
+
+    def clean(text):
+        text = str(text or "")
+        for value in values:
+            text = text.replace(value, "<secret>")
+        return " ".join(text.split())
+
+    return clean
+
+
+def same_site(url, document_url):
+    """Whether a request goes to the page's own site: the same host or one under the same last two labels
+    (api.shop.ru for shop.ru). A tracker's or a payment processor's request is not the site's own."""
+    def site(address):
+        try:
+            host = (urllib.parse.urlsplit(address).hostname or "").rstrip(".")
+        except ValueError:
+            return None
+        return ".".join(host.split(".")[-2:]) if host else None
+
+    request_site = site(url)
+    return request_site is not None and request_site == site(document_url)
 
 
 def flat_secret_values(secrets):
@@ -481,6 +565,114 @@ async def screenshot(target_id, quality=80):
         await cdp_command(await browser_socket(), "Target.activateTarget", {"targetId": target_id})
     shot = await cdp_command(target["webSocketDebuggerUrl"], "Page.captureScreenshot",
                              {"format": "jpeg", "quality": quality}, timeout=20)
+    return base64.b64decode(shot["data"])
+
+
+def tell_agent(agent, text):
+    """Put a line of the worker's in front of the agent at the step about to start, in its history for good: on
+    the result of the step before, as browser-use itself reports a captcha it waited for, or, when that step
+    left no output to hang it on (its answer failed to parse, or none came before), as a line of its own."""
+    if getattr(agent.state, "last_model_output", None) is not None:
+        from browser_use import ActionResult
+
+        agent.state.last_result = [*(agent.state.last_result or []), ActionResult(long_term_memory=text)]
+    else:
+        from browser_use.agent.message_manager.views import HistoryItem
+
+        agent.state.message_manager_state.agent_history_items.append(HistoryItem(system_message=f"<sys>{text}</sys>"))
+
+
+# --- Step trail ----------------------------------------------------------------------------------------
+
+# What each step of a run did, for developers: nobody could tell afterwards what a run had seen and done at
+# each step (RU 04.10: an order sent to /order/error while the run claimed success). A small JPEG of the
+# page after each step and a line of steps.jsonl, under trail/<run id>/ of the session's workspace. Not
+# under report/: Bro sends every picture there to the person, and lists only that folder (newest first,
+# a hundred at most) — step shots there would crowd out the item photos. Read like report files, with a
+# worker token: GET /v1/files?session=<id>&prefix=trail/<run id>/ and GET /v1/files/<session>/<path>.
+TRAIL = "trail"
+TRAIL_SHOTS = 40  # the last shots of a run kept; steps.jsonl keeps every line
+TRAIL_RUNS = 20  # run trails kept on the VM, the newest
+TRAIL_QUALITY = 35
+TRAIL_SCALE = 0.5
+TRAIL_SHOT_S = 3  # a shot that takes longer is skipped, the line still written
+TRAIL_TEXT = 300
+
+
+def prune_trails(keep=TRAIL_RUNS):
+    """Keep the newest `keep` run trails of the VM, whatever their session: older ones are removed."""
+    trails = [path for path in SESSIONS.glob(f"*/{TRAIL}/*") if path.is_dir()]
+    trails.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in trails[keep:]:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def trail_line(summary, url, errors, clean):
+    """A step's line of steps.jsonl: Bro's step summary (action names and element indexes, never what was
+    typed), the page after the step without its query, and the step's errors, each with every secret's
+    value cut out."""
+    line = {}
+    if summary:
+        line.update(goal=clean(summary.get("goal"))[:TRAIL_TEXT], title=clean(summary.get("title"))[:200],
+                    actions=summary.get("actions") or [])
+        if summary.get("tokens") is not None:
+            line["tokens"] = summary["tokens"]
+    if url:
+        line["url"] = clean(str(url).split("?")[0].split("#")[0])[:500]
+    if errors:
+        line["errors"] = [clean(error)[:TRAIL_TEXT] for error in errors[:5]]
+    return line
+
+
+class StepTrail:
+    """One run's trail: `record` writes a step's shot and line, skipping what fails or takes too long. A
+    trail never fails or holds a run."""
+
+    def __init__(self, directory, secrets=None):
+        self.directory = Path(directory)
+        self.clean = secret_cleaner(secrets)
+        self.count = 0
+        self.shots = []  # file names of the shots on disk, oldest first
+
+    async def record(self, shoot, summary=None, url=None, errors=()):
+        """`shoot()` answers the page's JPEG. Runs right after a step, between the agent's steps."""
+        self.count += 1
+        number = self.count
+        shot = None
+        try:
+            shot = await asyncio.wait_for(shoot(), TRAIL_SHOT_S)
+        except Exception:  # a slow or failed shot: the line goes without one
+            pass
+        line = {"step": number, "at": now_iso(), **trail_line(summary, url, list(errors), self.clean)}
+        if shot:
+            line["shot"] = f"{number:03d}.jpg"
+        try:
+            await asyncio.to_thread(self.write, line, shot)
+        except Exception:
+            log.warning("trail: step %s was not written", number)
+
+    def write(self, line, shot):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        if shot:
+            (self.directory / line["shot"]).write_bytes(shot)
+            self.shots.append(line["shot"])
+            while len(self.shots) > TRAIL_SHOTS:
+                (self.directory / self.shots.pop(0)).unlink(missing_ok=True)
+        with (self.directory / "steps.jsonl").open("a") as steps:
+            steps.write(json.dumps(line) + "\n")
+
+
+async def page_jpeg(browser):
+    """A small JPEG of what the agent's tab shows: its viewport at half scale, low quality (tens of KB)."""
+    cdp = await browser.get_or_create_cdp_session()
+    params = {"format": "jpeg", "quality": TRAIL_QUALITY}
+    with contextlib.suppress(Exception):
+        metrics = await cdp.cdp_client.send.Page.getLayoutMetrics(session_id=cdp.session_id)
+        view = metrics.get("cssVisualViewport") or {}
+        if view.get("clientWidth") and view.get("clientHeight"):
+            params["clip"] = {"x": view.get("pageX", 0), "y": view.get("pageY", 0), "width": view["clientWidth"],
+                              "height": view["clientHeight"], "scale": TRAIL_SCALE}
+    shot = await cdp.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp.session_id)
     return base64.b64decode(shot["data"])
 
 
@@ -1129,8 +1321,20 @@ class Worker:
             return run.cancel_requested or time.monotonic() > deadline
 
         pending_messages = []  # this step's batch: folded back if the step is cut off before it finishes
+        site_errors = SiteErrors()
+        trail = StepTrail(session.workspace / TRAIL / run.id, session.sensitive_data)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(prune_trails, TRAIL_RUNS - 1)
+        steps_before = 0  # run.steps when the current step started: a step whose output failed adds none
 
         async def read_messages(_):
+            nonlocal steps_before
+            steps_before = len(run.steps)
+            # The site's refusals of what the last step sent: the next model call sees them, whatever the
+            # page shows (it may show nothing and move on).
+            with contextlib.suppress(Exception):
+                for notice in site_errors.notices(session.sensitive_data):
+                    tell_agent(agent, notice)
             # Read right before the model's next call, so that call can act on them. The last step (only
             # `done` is left) and one about to be stopped leave them for the follow-up run instead.
             pending_messages.clear()
@@ -1139,6 +1343,16 @@ class Worker:
                 run.messages = []
                 for message in pending_messages:
                     agent.add_new_task(message)
+
+        async def step_ended(_):
+            summary = run.steps[-1] if len(run.steps) > steps_before else None
+            errors = [result.error for result in (getattr(agent.state, "last_result", None) or [])
+                      if getattr(result, "error", None)]
+            url = None
+            with contextlib.suppress(Exception):
+                url = await asyncio.wait_for(browser.get_current_page_url(), 2)
+            with contextlib.suppress(Exception):
+                await trail.record(lambda: page_jpeg(browser), summary, url, errors)
 
         agent = Agent(
             task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
@@ -1157,12 +1371,11 @@ class Worker:
             **tuned_agent_options(tuning),
         )
         run.agent = agent
-        site_errors = SiteErrors()
         with contextlib.suppress(Exception):
             targets = {t["id"]: t for t in await page_targets()}
             site_errors.start(targets[session.tab]["webSocketDebuggerUrl"])
         try:
-            history = await agent.run(max_steps=max_steps, on_step_start=read_messages)
+            history = await agent.run(max_steps=max_steps, on_step_start=read_messages, on_step_end=step_ended)
         finally:
             await site_errors.stop()
             # browser-use swallows an InterruptedError raised by `should_stop` mid-step (a cancel or the
