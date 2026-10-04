@@ -388,6 +388,11 @@ export function browserSecretBindings(options: {
     if (domains.length > 0) {
       const month = String(card.expirationMonth).padStart(2, "0");
       const year = String(card.expirationYear % 100).padStart(2, "0");
+      // No month or year of their own: browser-use hides every secret value
+      // wherever it shows up in the page it gives the model, and a «01» or a
+      // «31» turned the card number into «4276 55<month> <month>32 4<year>0»,
+      // which the run took for a broken field and retyped for the whole run
+      // (RU 04.10). A month box and a year box are the worker's `fill_card`.
       bindings.push(
         binding(browserSecretAliases.cardNumber, card.number, domains),
         binding(browserSecretAliases.cardExpiry, `${month}/${year}`, domains),
