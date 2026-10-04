@@ -21,7 +21,10 @@ interface BrowserRunRow {
   paymentAllowed?: boolean;
   sessionId?: string | null;
   site?: string | null;
-  submission?: { readonly what: string } | null;
+  submission?: {
+    readonly paymentCapRub?: number;
+    readonly what: string;
+  } | null;
   task: string;
   // Unread messages accumulated on the row across earlier attempts, carried
   // forward by a background retry's hand-off.
@@ -2389,6 +2392,55 @@ describe("what the report turn retells", () => {
       "When it costs money, write the user one short message in your own voice with the exact order, what changed, the real total with every fee and the delivery or date, ending with «Оплачиваю?»"
     );
     expect(prompt).not.toContain("confirms the change on one card");
+  });
+
+  it("finishes a payment the person already said yes to instead of asking again", async () => {
+    // RU 04.10: one order, «Оплачиваю?» three times.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      submission: { what: "заказ крема", paymentCapRub: 2100 },
+    });
+    finishedRun([
+      "RESULT: заказ собран, оплата не проведена",
+      'ITEMS: [{"name":"Крем для рук","price":"2 100 ₽","quantity":1}]',
+      "TOTAL: 2 100 ₽",
+      "NEEDS: payment",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "The user already said yes to paying up to 2\u00a0100 ₽ for this exact order"
+    );
+    expect(prompt).toContain("do not ask them «Оплачиваю?» again");
+    expect(prompt).not.toContain("only their plain yes in the next message");
+  });
+
+  it("asks again when the total came out above the yes", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: { what: "заказ крема", paymentCapRub: 2100 },
+    });
+    finishedRun([
+      "RESULT: доставка подорожала",
+      'ITEMS: [{"name":"Крем для рук","price":"2 100 ₽","quantity":1}]',
+      "TOTAL: 2 400 ₽",
+      "NEEDS: payment",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).not.toContain("already said yes to paying");
+    expect(prompt).toContain("ending with «Оплачиваю?»");
   });
 
   it("leaves a search that stopped at its final step to the usual card", async () => {
