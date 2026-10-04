@@ -476,7 +476,16 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`routerai/fallback.ts`, на процесс; 4xx не переключает). Теряются
   веб-поиск, цена шага (нет `usage.cost` — шаг `unpriced`), закрепление хостов
   и кэш DeepInfra, `reasoning`; модель — `CLOUDRU_FM_MODEL` для любого
-  воркспейса. Отказ FM возвращает сбой RouterAI («скоро вернусь»).
+  воркспейса. Отказ FM возвращает сбой RouterAI («скоро вернусь»). Ключ —
+  только сервисного аккаунта в области проекта, иначе FM отвечает 401
+  «Please create service account on the project scope»; IAM-токен проекта
+  пускает лишь в `GET /v1/models`.
+- 03.10 маршрут Cloud.ru → routerai.ru (узел сразу после MSK-IX) терял
+  до 40% пакетов: шаг Бро (~250 КБ) грузился КБ/с и падал 503 или «other
+  side closed», с других сетей тот же ключ отвечал за секунды. Это не бан
+  IP: свежий адрес Cloud.ru вёл себя так же. Проверка — `curl` с телом
+  250 КБ с VM через консоль (`scripts/cloudru-sandbox-probe/console.py`,
+  `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос.
 - `ROUTERAI_API_KEY` облачной сессии приходит в типографских кавычках:
   `/api/v1/credits` без их снятия отвечает 401, хотя ключ рабочий.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
