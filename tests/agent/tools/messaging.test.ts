@@ -17,7 +17,19 @@ const sharedFile =
 vi.mock("@agent/lib/sandbox/files", () => ({
   isSharedFileLink: (url: string) => url === sharedFile,
 }));
+const earlyReply = vi.hoisted(() => ({
+  pilot: vi.fn<() => boolean>(() => false),
+}));
+vi.mock("@agent/lib/delivery/pilot", () => ({
+  // The turn's verdict of EARLY_REPLY_WORKSPACES for the caller.
+  earlyReplyPilotOfCaller: async () =>
+    await Promise.resolve(earlyReply.pilot()),
+}));
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
+import {
+  headsUpDeliveredNotice,
+  rewriteSendNotice,
+} from "@agent/lib/delivery/turn-sends";
 
 describe("send_message channel notes", () => {
   it.each(["channel:eve", "channel:photon", "channel:telegram"])(
@@ -258,6 +270,71 @@ describe("send_message and the delivery sentinel", () => {
         toolContext()
       )
     ).toEqual({ attachments, kind: "message", replyTo: { kind: "current" } });
+  });
+});
+
+describe("send_message and the early reply", () => {
+  const headsUp = {
+    kind: "message" as const,
+    replyTo: { kind: "current" as const },
+    text: "Секунду, запускаю браузер",
+  };
+
+  it("returns the heads-up for a rewrite outside the pilot, as before", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("найди крем для рук на озоне"),
+    ]);
+
+    const output = await sendMessage.execute(headsUp, toolContext());
+    expect(output).toEqual({ rewrite: "status" });
+    const modelOutput = await sendMessage.toModelOutput?.({
+      rewrite: "status",
+    });
+    expect(modelOutput?.type === "text" ? modelOutput.value : "").toBe(
+      rewriteSendNotice("status")
+    );
+    // A delivered message keeps its usual note.
+    const delivered = await sendMessage.toModelOutput?.(headsUp);
+    expect(delivered?.type === "text" ? delivered.value : "").toMatch(
+      /^The message was submitted to the active channel\. Do not repeat/u
+    );
+  });
+
+  it("delivers it in the pilot and tells the model the answer is still owed", async () => {
+    earlyReply.pilot.mockReturnValue(true);
+    try {
+      const sendMessage = await resolveSendMessage("channel:telegram", [
+        personMessage("найди крем для рук на озоне"),
+      ]);
+
+      const output = await sendMessage.execute(headsUp, toolContext());
+      expect(output).toEqual(headsUp);
+      expect(sendMessageOutputSchema.safeParse(output).success).toBe(true);
+      const modelOutput = await sendMessage.toModelOutput?.(headsUp);
+      const note = modelOutput?.type === "text" ? modelOutput.value : "";
+      expect(note.startsWith(headsUpDeliveredNotice)).toBe(true);
+      expect(note).toContain("Native quoted replies are unavailable");
+    } finally {
+      earlyReply.pilot.mockReturnValue(false);
+    }
+  });
+
+  it("gives the answer in the pilot its usual note", async () => {
+    earlyReply.pilot.mockReturnValue(true);
+    try {
+      const sendMessage = await resolveSendMessage("channel:telegram", [
+        personMessage("сколько будет 2+2?"),
+      ]);
+      const answer = { kind: "message" as const, text: "4" };
+
+      expect(await sendMessage.execute(answer, toolContext())).toEqual(answer);
+      const modelOutput = await sendMessage.toModelOutput?.(answer);
+      expect(modelOutput?.type === "text" ? modelOutput.value : "").toMatch(
+        /^The message was submitted to the active channel\./u
+      );
+    } finally {
+      earlyReply.pilot.mockReturnValue(false);
+    }
   });
 });
 

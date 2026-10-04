@@ -817,6 +817,14 @@ export const env = createEnv({
     // messages in one channel carry a short recap of what was said in the
     // others since (`agent/lib/conversation/`). Unset, nothing is logged.
     CROSS_CHANNEL_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the early reply: workspace ids or owners' emails, or `*`
+    // for every workspace, whose person's turn may open with one short
+    // heads-up («сейчас поищу») before slow work, while the turn still owes
+    // the answer itself (`agent/lib/delivery/pilot.ts`). Only with the
+    // direct model, which alone carries the step note that asks for it.
+    // Unset, a first message that only announces work goes back to be
+    // rewritten, as before.
+    EARLY_REPLY_WORKSPACES: workspaceListSchema.optional(),
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),

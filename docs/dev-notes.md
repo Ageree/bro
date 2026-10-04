@@ -488,6 +488,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   читался как новая просьба. Правила — в `agent/lib/delivery/`: повтор без
   нового — `stale`, затем `toolChoice: none` (`turn-sends.ts`, `novelty.ts`),
   претензии без дела — на переписывание (`claims.ts`).
+- Пилот `EARLY_REPLY_WORKSPACES`: первое сообщение хода человека — одна
+  строка до 120 знаков «сейчас поищу» — уходит, а не на `status`. От ответа
+  её отличает текст результата `headsUpDeliveredNotice`: по нему
+  `awaitsDelivery` держит шаг форсированным, а `turnSends` кладёт её в
+  `headsUps`, не в `delivered`. Канал помечает ход доставленным уже на ней:
+  Telegram гасит «печатает…» и не постит ответ текстом — только `send_message`.
 - Модель писала `DELIVERY_COMPLETE` (метку «ответ уже доставлен» из
   инструкций) в сам `send_message`, и человек получал её сообщением:
   `withoutBookkeeping` в `agent/tools/messaging.ts` вырезает её и
