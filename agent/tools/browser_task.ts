@@ -1145,6 +1145,19 @@ function loginPhoneLine() {
   return `${browserSecretAliases.loginUsername} is a phone number. If the phone field already shows the country code (+7) or a mask, ask for ${browserSecretAliases.loginPhoneDigits} instead — the same number as only the 10 digits after it (no +7, no 8, no spaces); if the site rejects the format, clear the field and try once with the other one, then stop with NEEDS: info describing what the field expects. ${smsCodeOverAppLine}`;
 }
 
+/**
+ * How to type the saved card. The run never sees the values, so it cannot
+ * tell a wrong field from a masked one: with card_expiry in both boxes of a
+ * split expiry ЮKassa showed 01/01, and the run, reading the CVC's dots as
+ * empty, told the person their saved card was wrong (RU 04.10). The pool's
+ * worker fills the whole form itself (`fill_card` in
+ * `browser-vm/worker/worker.py`); Browser Use has no such action.
+ */
+function cardLine(aliases: readonly string[]) {
+  if (!aliases.includes(browserSecretAliases.cardNumber)) return undefined;
+  return `The saved card: if you have the fill_card action, fill the card form with it — it finds the fields in the payment processor's frame too and types the expiry the way its boxes take it — and type a card secret yourself only into a field it says it could not fill. Without it: ${browserSecretAliases.cardNumber} goes into the card number, ${browserSecretAliases.cardExpiry} (MM/YY) into an expiry field that takes both; when the month and the year are separate boxes, no secret holds either alone — stop with NEEDS: info and say so in DETAILS rather than typing ${browserSecretAliases.cardExpiry} into them. ${browserSecretAliases.cardCvc} goes into the CVC, CVV or «Код» field, which shows only dots once filled — dots mean it is filled, not empty. If a field still shows a wrong value after typing, clear it and type it once more, then stop with NEEDS: info and say in DETAILS which field shows what: a value that landed wrong in a field is a typing problem, not a sign that the saved card is wrong.`;
+}
+
 function credentialsLine(aliases: readonly string[], site: string | undefined) {
   if (aliases.length === 0) {
     return "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one.";
@@ -1156,6 +1169,7 @@ function credentialsLine(aliases: readonly string[], site: string | undefined) {
       : undefined,
     gosuslugiSignInLine(aliases, site),
     phoneSignInLine(aliases, site),
+    cardLine(aliases),
   ]
     .filter((line) => line !== undefined)
     .join(" ");

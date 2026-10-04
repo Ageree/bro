@@ -317,6 +317,41 @@ describe("browser secret bindings", () => {
     expect(JSON.stringify(bound.aliases)).not.toContain(password);
   });
 
+  it("binds the expiry whole and leaves its boxes to fill_card", () => {
+    // RU 04.10: ЮKassa's month and year boxes each took card_expiry and kept
+    // 01/01. A secret of two digits is no answer: browser-use hides a secret
+    // wherever its value shows on the page, so «01» and «31» turned the card
+    // number the run read into «4276 55<month> <month>32 4<year>0».
+    const bound = browserSecretBindings({
+      card,
+      login: undefined,
+      site: "https://predubezhdai.ru",
+    });
+    for (const binding of bound.bindings) {
+      expect(binding.source.value.length).toBeGreaterThan(2);
+    }
+
+    const task = composeBrowserTask({
+      aliases: bound.aliases,
+      allowPayment: true,
+      collectImages: false,
+      consent: { kind: "spend-limit" },
+      deliveryAddress: undefined,
+      errand: "Оплати заказ",
+      facts: undefined,
+      home: undefined,
+      site: "https://predubezhdai.ru",
+    });
+    expect(task).toContain(
+      "if you have the fill_card action, fill the card form with it"
+    );
+    expect(task).toContain(
+      "when the month and the year are separate boxes, no secret holds either alone — stop with NEEDS: info"
+    );
+    expect(task).toContain("dots mean it is filled, not empty");
+    expect(task).not.toContain(securityCode);
+  });
+
   it("leads a continuation with the person's own message", () => {
     const bound = browserSecretBindings({
       card,

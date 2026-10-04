@@ -21,6 +21,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -1568,6 +1569,125 @@ class SliderTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
             solved, message = await worker.solve_slider(check_page([PUZZLE]), self.mouse, FakeHttp())
         self.assertEqual((solved, message), (False, "The puzzle was not accepted."))
+
+
+def card_field(field_id, kind, sure=True, tag="input", max_length=None, placeholder=""):
+    return {"id": field_id, "kind": kind, "sure": sure, "tag": tag, "type": "text", "maxLength": max_length,
+            "placeholder": placeholder, "options": None}
+
+
+CARD = {"number": "4276550101324310", "month": "01", "year": "31", "cvc": "249", "holder": "SAVELY SOLOVYEV"}
+
+
+class FakeCardFrame:
+    """A frame of fields as FIND_CARD_FIELDS lists them; typing keeps at most `maxLength` characters, as the
+    browser does, and a field in `refuses` keeps nothing."""
+
+    def __init__(self, url, fields, refuses=()):
+        self.url, self.fields, self.refuses = url, fields, set(refuses)
+        self.values = {field["id"]: "" for field in fields}
+        self.focused = None
+
+    async def call(self, expression, *args):
+        if expression == worker.FIND_CARD_FIELDS:
+            return self.fields
+        if expression == worker.CARD_FIELD_FOCUS:
+            self.focused = args[0]
+            return True
+        if expression == worker.CARD_FIELD_CLEAR:
+            self.values[args[0]] = ""
+            return ""
+        if expression == worker.CARD_FIELD_VALUE:
+            return self.values[args[0]]
+        return True
+
+    async def send(self, *_):
+        return {}
+
+    async def type(self, text):
+        field = next(f for f in self.fields if f["id"] == self.focused)
+        if field["id"] not in self.refuses:
+            self.values[field["id"]] = (self.values[field["id"]] + text)[:field["maxLength"] or None]
+
+
+class CardFormTest(unittest.IsolatedAsyncioTestCase):
+    """fill_card's choices, without a browser: `test_card_forms.py` runs the same against Chrome."""
+
+    def test_the_card_comes_from_the_secrets_of_the_top_pages_site_only(self):
+        def matches(url, pattern):
+            host = urllib.parse.urlsplit(url).hostname
+            return host == pattern.removeprefix("https://*.") or host.endswith("." + pattern.removeprefix("https://*."))
+
+        sensitive = {"https://*.shop.ru": {"card_number": "4276 5501 0132 4310", "card_expiry": "1/31",
+                                           "card_cvc": "249", "card_holder": "SAVELY SOLOVYEV"},
+                     "https://*.yoomoney.ru": {"login_password": "x"}}
+        fake = types.SimpleNamespace(match_url_with_domain_pattern=matches)
+        with mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(utils=fake), "browser_use.utils": fake}):
+            self.assertEqual(worker.card_secrets(sensitive, "https://pay.shop.ru/checkout"),
+                             {**CARD, "holder": "SAVELY SOLOVYEV"})
+            self.assertIsNone(worker.card_secrets(sensitive, "https://other.ru/checkout"))
+
+    def test_two_expiry_boxes_take_the_month_and_the_year(self):
+        # RU 04.10: ЮKassa's boxes each took «01/31» whole and kept 01/01.
+        frames = [[], [card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+                       card_field(3, "cvc", sure=False)]]
+        steps = worker.card_plan(frames, CARD)
+        self.assertEqual([(step["frame"], step["kind"], step["texts"]) for step in steps],
+                         [(1, "number", ["4276550101324310"]), (1, "month", ["01"]), (1, "year", ["31", "2031"]),
+                          (1, "cvc", ["249"])])
+
+    def test_a_loose_field_counts_only_beside_the_card_number(self):
+        # «Код домофона» on the shop's own page is not the CVC of a card form in the processor's frame.
+        frames = [[card_field(0, "cvc", sure=False)], [card_field(0, "number"), card_field(1, "exp")]]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
+                         [(1, "number"), (1, "exp")])
+        # A field the page names for sure wins over a loose one, wherever it is.
+        frames = [[card_field(0, "number"), card_field(1, "cvc", sure=False)], [card_field(0, "cvc")]]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
+                         [(0, "number"), (1, "cvc")])
+        self.assertEqual(worker.card_plan([[card_field(0, "cvc"), card_field(1, "exp")]], CARD), [])
+
+    def test_each_expiry_field_wants_its_own_shape(self):
+        single = {"kind": "exp", "field": card_field(0, "exp", placeholder="MM/YY")}
+        self.assertTrue(worker.card_value_ok(single, CARD, "01/31"))
+        self.assertTrue(worker.card_value_ok(single, CARD, "01 / 31"))
+        self.assertFalse(worker.card_value_ok(single, CARD, "0131"))
+        self.assertFalse(worker.card_value_ok(single, CARD, "01/01"))
+        self.assertTrue(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp")}, CARD, "0131"))
+        long_year = {"kind": "year", "field": card_field(0, "year", max_length=4)}
+        self.assertTrue(worker.card_value_ok(long_year, CARD, "2031"))
+        self.assertFalse(worker.card_value_ok(long_year, CARD, "31"))
+        self.assertEqual(worker.card_plan([[card_field(0, "number"), card_field(1, "exp", placeholder="ММ/ГГГГ")]],
+                                          CARD)[1]["texts"][0], "012031")
+
+    async def test_fills_the_boxes_and_says_so_without_a_value(self):
+        frame = FakeCardFrame("https://yoomoney.ru/checkout", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")])
+        filled, message = await worker.fill_card_form([FakeCardFrame("https://shop.ru/", []), frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertEqual(frame.values, {0: "4276550101324310", 1: "01", 2: "31", 3: "249"})
+        self.assertIn("in yoomoney.ru", message)
+        self.assertIn("Do not check or retype the fields", message)
+        for secret in ("4276550101324310", "249"):
+            self.assertNotIn(secret, message)
+
+    async def test_a_box_that_keeps_nothing_is_reported_with_what_to_do(self):
+        frame = FakeCardFrame("https://shop.ru/", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")], refuses={2})
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertFalse(filled)
+        self.assertIn("Could not fill expiry year", message)
+        self.assertIn("NEEDS: info", message)
+        self.assertNotIn("card_expiry_year", message)
+
+    async def test_no_card_form_fills_nothing(self):
+        frame = FakeCardFrame("https://shop.ru/", [card_field(0, "cvc", sure=False)])
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertFalse(filled)
+        self.assertIn("No card number field", message)
+        self.assertEqual(frame.values, {0: ""})
 
 
 if __name__ == "__main__":
