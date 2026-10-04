@@ -37,31 +37,41 @@ function backendName() {
   return modelEndpoint()?.name ?? "The model provider";
 }
 
-class ModelStreamStalledError extends Error {
+/**
+ * A call cut short. `idle` is a connection that sent nothing at all: a
+ * route that is down, as `routerai/fallback.ts` reads it, not a slow model.
+ */
+export class ModelStreamStalledError extends Error {
   override readonly name = "ModelStreamStalledError";
   readonly idle: boolean;
 
-  constructor(idle: boolean, waitedMs: number) {
+  constructor(idle: boolean, waitedMs: number, backend: string) {
     super(
       idle
-        ? `${backendName()} sent nothing for ${String(waitedMs / 1000)} s.`
-        : `${backendName()} sent no answer for ${String(waitedMs / 1000)} s.`
+        ? `${backend} sent nothing for ${String(waitedMs / 1000)} s.`
+        : `${backend} sent no answer for ${String(waitedMs / 1000)} s.`
     );
     this.idle = idle;
   }
 }
 
-/** A `fetch` for the direct model provider that bounds every silence. */
+/**
+ * A `fetch` for the direct model provider that bounds every silence.
+ * `backend` names who stalled in the error and the logs: the provider's
+ * fallback (`routerai/fallback.ts`) is not the provider.
+ */
 export async function watchedModelFetch(
   input: string | URL | Request,
-  init?: RequestInit
+  init?: RequestInit,
+  backend = backendName()
 ): Promise<Response> {
-  return attemptModelFetch(input, init, 1);
+  return attemptModelFetch(input, init, backend, 1);
 }
 
 async function attemptModelFetch(
   input: string | URL | Request,
   init: RequestInit | undefined,
+  backend: string,
   attempt: number
 ): Promise<Response> {
   const controller = new AbortController();
@@ -77,7 +87,7 @@ async function attemptModelFetch(
   const request = modelRequest(init);
   // A call that does not stream may hold its headers until the whole answer
   // is ready: only the ceiling applies to it.
-  const timers = stallTimers(controller, request?.stream === true);
+  const timers = stallTimers(controller, request?.stream === true, backend);
   timers.start();
   try {
     const response = await fetch(input, {
@@ -95,7 +105,15 @@ async function attemptModelFetch(
     const head = await readUntilFirstEvent(reader, events, timers, []);
     timers.data();
     return new Response(
-      watchedBody({ controller, events, head, reader, release, timers }),
+      watchedBody({
+        backend,
+        controller,
+        events,
+        head,
+        reader,
+        release,
+        timers,
+      }),
       {
         headers: response.headers,
         status: response.status,
@@ -109,7 +127,7 @@ async function attemptModelFetch(
     if (!stalled || caller?.aborted) throw error;
     console.warn("[model] direct model call stalled before its answer", {
       attempt,
-      backend: backendName(),
+      backend,
       idle: stalled.idle,
       model: request?.model,
     });
@@ -118,7 +136,7 @@ async function attemptModelFetch(
     if (!stalled.idle || attempt >= maximumAttempts || !resendable(init)) {
       throw stalled;
     }
-    return attemptModelFetch(input, init, attempt + 1);
+    return attemptModelFetch(input, init, backend, attempt + 1);
   }
 }
 
@@ -131,7 +149,11 @@ function stallOf(controller: AbortController) {
  * The idle timer restarts on every byte, comments included; the ceiling only
  * on a `data:` event. Either one firing aborts the call with its reason.
  */
-function stallTimers(controller: AbortController, watchIdle: boolean) {
+function stallTimers(
+  controller: AbortController,
+  watchIdle: boolean,
+  backend: string
+) {
   const ceilingMs = dataCeilingMs();
   let idle: ReturnType<typeof setTimeout> | undefined;
   let ceiling: ReturnType<typeof setTimeout> | undefined;
@@ -139,14 +161,16 @@ function stallTimers(controller: AbortController, watchIdle: boolean) {
     if (!watchIdle) return;
     clearTimeout(idle);
     idle = setTimeout(() => {
-      controller.abort(new ModelStreamStalledError(true, idleTimeoutMs));
+      controller.abort(
+        new ModelStreamStalledError(true, idleTimeoutMs, backend)
+      );
     }, idleTimeoutMs);
   };
   const data = () => {
     bytes();
     clearTimeout(ceiling);
     ceiling = setTimeout(() => {
-      controller.abort(new ModelStreamStalledError(false, ceilingMs));
+      controller.abort(new ModelStreamStalledError(false, ceilingMs, backend));
     }, ceilingMs);
   };
   return {
@@ -225,6 +249,7 @@ async function readUntilFirstEvent(
 }
 
 function watchedBody(options: {
+  readonly backend: string;
   readonly controller: AbortController;
   readonly events: (chunk: Uint8Array) => boolean;
   readonly head: readonly Uint8Array[];
@@ -232,7 +257,8 @@ function watchedBody(options: {
   readonly release: () => void;
   readonly timers: StallTimers;
 }) {
-  const { controller, events, head, reader, release, timers } = options;
+  const { backend, controller, events, head, reader, release, timers } =
+    options;
   const finish = () => {
     timers.stop();
     release();
@@ -258,7 +284,7 @@ function watchedBody(options: {
         const stalled = stallOf(controller);
         if (stalled) {
           console.warn("[model] direct model stream stalled mid-answer", {
-            backend: backendName(),
+            backend,
             idle: stalled.idle,
           });
           stream.error(stalled);
