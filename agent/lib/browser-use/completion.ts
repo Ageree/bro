@@ -45,12 +45,14 @@ import {
   networkErrorIn,
   parseBrowserOrder,
   parseBrowserOutcome,
+  priceRubFromTotal,
   summaryUnreachableCause,
   unreachableCause,
   unreachableRun,
   type BrowserRunNeed,
 } from "./outcome";
 import {
+  approvedPaymentInstruction,
   bookingInstruction,
   browserRunNeedGuidance,
   calendarInstruction,
@@ -184,6 +186,7 @@ export async function settleBrowserRun(
     ...(run.unreadMessages ?? []),
   ];
   const reportFacts = {
+    approvedRub: approvedPaymentRub(row, parsed.total),
     booking: bookingState(row, parsed),
     confirmed: row.submission !== null,
     hasCharges: parsed.charges.length > 0,
@@ -590,6 +593,8 @@ function deliveryInstruction(
   needs: BrowserRunNeed,
   facts: {
     readonly booking?: "booked" | "reported";
+    /** What the person's yes on this errand lets it pay, in roubles. */
+    readonly approvedRub?: number;
     readonly confirmed: boolean;
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
@@ -623,13 +628,20 @@ function deliveryInstruction(
   // A confirmed errand that stopped on the way is still the purchase the
   // person asked for: the stop is a change to confirm, not a search result.
   const unreadBasket = needs === "payment" && !hasItems;
+  const paidFor =
+    needs === "payment" && !unreadBasket ? facts.approvedRub : undefined;
   const stillBuying =
     facts.confirmed &&
     !unreadBasket &&
+    paidFor === undefined &&
     (needs === "decision" || needs === "payment");
   return [
     "This is a background result, not a user message.",
-    unreadBasket ? unreadBasketInstruction : browserRunNeedGuidance(needs),
+    unreadBasket
+      ? unreadBasketInstruction
+      : paidFor === undefined
+        ? browserRunNeedGuidance(needs)
+        : approvedPaymentInstruction(paidFor),
     facts.stuck,
     facts.interrupted === undefined
       ? undefined
@@ -690,9 +702,22 @@ function imagesBlock(images: readonly BrowserRunImage[]) {
   ].join("\n");
 }
 
+/**
+ * What the person's yes on this errand lets it pay, when the run's total is
+ * within it: then a stop on the payment step is not a question for them.
+ */
+function approvedPaymentRub(row: BrowserRunRow, total: string | undefined) {
+  const cap = row.submission?.paymentCapRub;
+  const totalRub = total === undefined ? undefined : priceRubFromTotal(total);
+  return cap !== undefined && totalRub !== undefined && totalRub <= cap
+    ? cap
+    : undefined;
+}
+
 function browserRunReport(
   row: BrowserRunRow,
   options: {
+    readonly approvedRub?: number;
     readonly booking?: "booked" | "reported";
     readonly confirmed?: boolean;
     readonly hasCharges?: boolean;
@@ -746,6 +771,7 @@ function browserRunReport(
     imagesBlock(images),
     options.spend,
     deliveryInstruction(needs, {
+      approvedRub: options.approvedRub,
       booking: options.booking,
       confirmed: options.confirmed === true,
       hasCharges: options.hasCharges === true,

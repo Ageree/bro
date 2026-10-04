@@ -1986,6 +1986,127 @@ describe("browser_task one question per errand", () => {
     });
   });
 
+  // RU 04.10: after the person's one yes to 2 100 ₽, every follow-up that
+  // named the same basket in other words was refused with «Оплачиваю?», and
+  // the person was asked three times for one order.
+  const cream: BrowserSubmission = {
+    amount: "2 100 ₽, самовывоз бесплатно",
+    chargeRub: 2100,
+    forWhom: "Савелий",
+    items: [
+      "Крем для рук VAM I NE SNILOS, 30 мл — 1 шт — 2 100 ₽",
+      "Самовывоз: Чистопрудный бульвар, 21 — бесплатно",
+    ],
+    kind: "order",
+    personalData: ["имя", "телефон"],
+    what: "заказ крема для рук VAM I NE SNILOS, 30 мл",
+    when: "самовывоз, срок сайт не показывает",
+    where: "predubezhdai.ru",
+  };
+
+  it("pays an order the person said yes to once, however the follow-up words it", async () => {
+    await continueErrand({
+      allowSubmit: true,
+      completedAt: new Date(),
+      confirmed: { ...cream, paymentCapRub: 2100 },
+      outcome: "Result: карта не подставилась\nNeeds: info",
+      personSaid: "карту в сейф добавил, запускай оплату",
+      submission: {
+        ...cream,
+        personalData: ["имя", "телефон", "данные карты из сейфа"],
+        what: "оплата заказа 43846: крем для рук VAM I NE SNILOS, 30 мл",
+        when: "сейчас",
+      },
+      task: "карту в сейф добавил, запускай оплату",
+    });
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+    expect(String(createBrowserUseRun.mock.calls[0]?.[0].task)).toContain(
+      `Payment is pre-approved up to ${formatRub(2100)}`
+    );
+  });
+
+  it.each([
+    [
+      "another basket",
+      {
+        ...cream,
+        items: ["Крем для рук VAM I NE SNILOS, 75 мл — 1 шт — 2 100 ₽"],
+      },
+    ],
+    ["a higher total", { ...cream, chargeRub: 2400 }],
+  ])("asks again for %s on the same errand", async (_, submission) => {
+    await expect(
+      continueErrand({
+        allowSubmit: true,
+        completedAt: new Date(),
+        confirmed: { ...cream, paymentCapRub: 2100 },
+        outcome: "Result: готово к оплате\nNeeds: payment",
+        personSaid: "оплати",
+        submission,
+        task: "оплати",
+      })
+    ).rejects.toThrow("Оплачиваю?");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps the yes after a run that was only told to look and bought nothing", async () => {
+    // RU 04.10: Bro sent a run «проверь, ничего не плати»; it ended
+    // `Needs: none`, and the person's yes to 2 100 ₽ went with it.
+    await continueErrand({
+      completedAt: new Date(),
+      confirmed: { ...cream, paymentCapRub: 2100 },
+      outcome: "Result: карта в виджете не подставилась\nNeeds: none",
+      personSaid: "оплати заказ",
+      task: "оплати заказ сохранённой картой",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(2100)}`);
+    expect(task).toContain("whether this order went through");
+  });
+
+  it("asks anew once the run reported the order placed", async () => {
+    await expect(
+      continueErrand({
+        allowSubmit: true,
+        completedAt: new Date(),
+        confirmed: { ...cream, paymentCapRub: 2100 },
+        outcome: "Result: оплачено\nOrder: 43846\nTotal: 2 100 ₽\nNeeds: none",
+        personSaid: "закажи ещё один",
+        submission: cream,
+        task: "закажи ещё один",
+      })
+    ).rejects.toThrow("Оплачиваю?");
+  });
+
+  it("keeps the yes of a paid errand whose run broke off, and checks before paying again", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), null, { ...cream, paymentCapRub: 2100 }),
+      status: "failed",
+    });
+    const tool = await resolvedBrowserTask([], "ну что, оплатил?");
+
+    await tool.execute(
+      {
+        action: "continue",
+        personWants: "done",
+        personSaid: "ну что, оплатил?",
+        runId,
+        task: "ну что, оплатил?",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(2100)}`);
+    expect(task).toContain(
+      "check on the site — the order's own page or the account's order history — whether this order went through"
+    );
+  });
+
   it("queues a code into a live paid run instead of replacing it", async () => {
     await continueErrand({
       allowPayment: true,
@@ -7333,6 +7454,28 @@ describe("browser_task asks only before paying, in text", () => {
       expect(createBrowserUseRun).toHaveBeenCalledOnce();
     }
   );
+
+  it("has a call that names more than the question was retried, not the yes asked for again", async () => {
+    // RU 04.10: «самовывоз сегодня, 4 октября» in the call, not in the
+    // question: told to ask again for a yes it had, Bro gave up instead.
+    stoppedAtPayment();
+    const tool = await resolvedBrowserTask([], "Да", askedToPay(4320, tickets));
+
+    const call = tool.execute(
+      {
+        ...pay,
+        personSaid: "Да",
+        submission: { ...tickets, when: "пт 03.10, 18:40, сегодня же" },
+        task: "Да",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    await expect(call).rejects.toThrow(
+      "the user did say yes to your question, but this submission names more or other than that question did. Do not ask them again."
+    );
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
 
   it("takes «а дешевле нет?» as a new message, not a yes", async () => {
     stoppedAtPayment();
