@@ -2267,8 +2267,18 @@ function brokeOffPaying(row: ErrandRow) {
   return (
     row.status !== "stopped" &&
     row.submission?.paymentCapRub !== undefined &&
-    !/^order:/imu.test(row.outcome ?? "")
+    !reportsPlacedOrder(row.outcome)
   );
+}
+
+/**
+ * Whether a run's summary names a placed order: an `Order:` line with its
+ * number. «ORDER: не отображается» at the payment form read as a placed
+ * order, and the person's yes was refused three times (RU 04.10).
+ */
+function reportsPlacedOrder(outcome: string | null | undefined) {
+  const order = /^order:[ \t]*(.*)$/imu.exec(outcome ?? "")?.[1] ?? "";
+  return /\d/u.test(order);
 }
 
 /**
@@ -2864,7 +2874,7 @@ async function paymentUnanswered(
   if (
     !errand ||
     errand.completedAt === null ||
-    /^order:/imu.test(errand.outcome ?? "")
+    reportsPlacedOrder(errand.outcome)
   )
     return paymentQuestionRefusal(chargeRub);
   try {

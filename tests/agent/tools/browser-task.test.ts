@@ -80,7 +80,7 @@ vi.mock("ai", async (importOriginal) => ({
     return {
       output: {
         matches:
-          !/^order:/imu.test(staged) &&
+          !/^order:[^\n]*\d/imu.test(staged) &&
           question.includes(submission.what) &&
           question.includes(submission.when ?? "") &&
           question.includes(submission.where) &&
@@ -7514,6 +7514,25 @@ describe("browser_task asks only before paying, in text", () => {
       { ...pay, allowPayment: undefined, allowSubmit: true },
       toolContext("better-auth:alice")
     );
+
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+    });
+  });
+
+  it("pays on the yes when the run at the payment form wrote an order line without a number", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment(tickets).replace(
+          "Needs: payment",
+          "Order: не отображается\nNeeds: payment"
+        )
+      )
+    );
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await tool.execute(pay, toolContext("better-auth:alice"));
 
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
