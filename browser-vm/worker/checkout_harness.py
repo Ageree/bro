@@ -137,7 +137,8 @@ async def launch_chrome(profile):
 def step_recorder(worker, trail):
     """The worker's step summary keeps only action names; the harness keeps each step's whole output too
     (actions with their parameters: secrets are placeholders there)."""
-    summary = worker.step_summary
+    # The worker's own, not a recorder an earlier scenario of this process put in its place.
+    summary = getattr(worker.step_summary, "original", worker.step_summary)
 
     def recorded(state, output, number, tokens=None):
         entry = summary(state, output, number, tokens)
@@ -148,6 +149,7 @@ def step_recorder(worker, trail):
                           "goal": full.get("next_goal"), "actions": full.get("action")})
         return entry
 
+    recorded.original = summary
     return recorded
 
 
