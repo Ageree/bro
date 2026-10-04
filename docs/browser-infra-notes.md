@@ -114,7 +114,7 @@
 - Модели из РФ: OpenRouter, OpenAI и Anthropic отвечают 403, RouterAI
   (`routerai.ru/api/v1`, `GET /key` как у OpenRouter) работает. GPT Luna
   через RouterAI отвечает без `choices`, лишь если рассуждение выключено и
-  `require_parameters` включён: ей `reasoning: low` (`runTuning`), DeepSeek —
+  `require_parameters` включён: ей `reasoning: medium` (`runTuning`), DeepSeek —
   `none`. Модель агента — `BROWSER_VM_MODEL`. Ключ
   Foundation Models Cloud.ru — отдельный: ключ доступа даёт лишь список моделей.
 - Steel Cloud из Cloud.ru нестабилен (Cloudflare); его капчи и прокси — только
