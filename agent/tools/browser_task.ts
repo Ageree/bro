@@ -2764,10 +2764,15 @@ async function paymentUnanswered(
     input.submission === undefined
   )
     return paymentQuestionRefusal(chargeRub);
+  // The run that staged the order stopped short of it, whatever it called
+  // the stop: «Needs: decision», or no footer at all when its report was cut
+  // («ORD... (truncated)»), and the person's yes to the total Bro named was
+  // refused twice (RU 04.10). The check below holds that yes to the staged
+  // order; only a run that finished (`Needs: none`) staged nothing to pay.
   if (
     !errand ||
     errand.completedAt === null ||
-    endedNeeding(errand.outcome) !== "payment"
+    endedNeeding(errand.outcome) === "none"
   )
     return paymentQuestionRefusal(chargeRub);
   try {
