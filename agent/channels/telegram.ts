@@ -142,8 +142,11 @@ export default telegramChannel({
     // eve's own handler starts the indicator; a turn the person opened keeps
     // it on (`typingChats`). A report or a schedule's turn may end without a
     // word, so it gets the one indicator only.
+    // Not awaited: the call has no timeout and goes through tg-egress, where
+    // a lost SYN costs a retry, and the turn's first step waited on it.
+    // `startTyping` swallows its own failures.
     async "turn.started"(_event, context, session) {
-      await context.telegram.startTyping();
+      void context.telegram.startTyping();
       if (startedByPerson(session) && !scheduledReportFromSession(session)) {
         keepTyping(context);
       }
