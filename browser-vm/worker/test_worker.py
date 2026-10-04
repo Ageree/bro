@@ -1613,6 +1613,11 @@ class FakeCardFrame:
 class CardFormTest(unittest.IsolatedAsyncioTestCase):
     """fill_card's choices, without a browser: `test_card_forms.py` runs the same against Chrome."""
 
+    def setUp(self):
+        utils = types.SimpleNamespace(match_url_with_domain_pattern=lambda url, pattern: False)
+        self.enterContext(mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(utils=utils),
+                                                        "browser_use.utils": utils}))
+
     def test_the_card_comes_from_the_secrets_of_the_top_pages_site_only(self):
         def matches(url, pattern):
             host = urllib.parse.urlsplit(url).hostname
@@ -1624,7 +1629,7 @@ class CardFormTest(unittest.IsolatedAsyncioTestCase):
         fake = types.SimpleNamespace(match_url_with_domain_pattern=matches)
         with mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(utils=fake), "browser_use.utils": fake}):
             self.assertEqual(worker.card_secrets(sensitive, "https://pay.shop.ru/checkout"),
-                             {**CARD, "holder": "SAVELY SOLOVYEV"})
+                             {**CARD, "sites": ["https://*.shop.ru"]})
             self.assertIsNone(worker.card_secrets(sensitive, "https://other.ru/checkout"))
 
     def test_two_expiry_boxes_take_the_month_and_the_year(self):
@@ -1641,10 +1646,25 @@ class CardFormTest(unittest.IsolatedAsyncioTestCase):
         frames = [[card_field(0, "cvc", sure=False)], [card_field(0, "number"), card_field(1, "exp")]]
         self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
                          [(1, "number"), (1, "exp")])
-        # A field the page names for sure wins over a loose one, wherever it is.
+        # The card number's own frame first; another frame of the same origin only for what it lacks (Stripe
+        # keeps each field in a frame of its own), never the shop's page around a processor's frame.
         frames = [[card_field(0, "number"), card_field(1, "cvc", sure=False)], [card_field(0, "cvc")]]
         self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
-                         [(0, "number"), (1, "cvc")])
+                         [(0, "number"), (0, "cvc")])
+        frames = [[card_field(0, "exp")], [card_field(0, "number")], [card_field(0, "exp")], [card_field(0, "cvc")]]
+        origins = [("https", "shop.ru"), ("https", "js.stripe.com"), ("https", "js.stripe.com"), ("https", "js.stripe.com")]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD, origins)],
+                         [(1, "number"), (2, "exp"), (3, "cvc")])
+
+    def test_the_field_nearest_to_the_card_number_wins(self):
+        frames = [[card_field(0, "cvc", sure=False), card_field(1, "number"), card_field(2, "cvc", sure=False)]]
+        frames[0][0]["distance"], frames[0][1]["distance"], frames[0][2]["distance"] = 6, 0, 2
+        self.assertEqual([step["field"]["id"] for step in worker.card_plan(frames, CARD)], [1, 2])
+
+    def test_a_number_on_a_site_the_card_is_bound_to_comes_first(self):
+        frames = [[card_field(0, "number")], [card_field(0, "number"), card_field(1, "cvc")]]
+        self.assertEqual(worker.card_plan(frames, CARD, bound=[True, False])[0]["frame"], 0)
+        self.assertEqual(worker.card_plan(frames, CARD, bound=[False, True])[0]["frame"], 1)
         self.assertEqual(worker.card_plan([[card_field(0, "cvc"), card_field(1, "exp")]], CARD), [])
 
     def test_each_expiry_field_wants_its_own_shape(self):
@@ -1653,12 +1673,13 @@ class CardFormTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(worker.card_value_ok(single, CARD, "01 / 31"))
         self.assertFalse(worker.card_value_ok(single, CARD, "0131"))
         self.assertFalse(worker.card_value_ok(single, CARD, "01/01"))
-        self.assertTrue(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp")}, CARD, "0131"))
+        self.assertFalse(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp")}, CARD, "0131"))
+        self.assertTrue(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp", max_length=4)}, CARD, "0131"))
         long_year = {"kind": "year", "field": card_field(0, "year", max_length=4)}
         self.assertTrue(worker.card_value_ok(long_year, CARD, "2031"))
         self.assertFalse(worker.card_value_ok(long_year, CARD, "31"))
         self.assertEqual(worker.card_plan([[card_field(0, "number"), card_field(1, "exp", placeholder="ММ/ГГГГ")]],
-                                          CARD)[1]["texts"][0], "012031")
+                                          CARD)[1]["texts"][0], "01/2031")
 
     async def test_fills_the_boxes_and_says_so_without_a_value(self):
         frame = FakeCardFrame("https://yoomoney.ru/checkout", [
