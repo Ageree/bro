@@ -80,7 +80,7 @@ vi.mock("ai", async (importOriginal) => ({
     return {
       output: {
         matches:
-          staged.includes("Needs: payment") &&
+          !staged.includes("Needs: none") &&
           question.includes(submission.what) &&
           question.includes(submission.when ?? "") &&
           question.includes(submission.where) &&
@@ -7456,6 +7456,49 @@ describe("browser_task asks only before paying, in text", () => {
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
     });
+  });
+
+  it.each([
+    ["stopped for a decision", "Needs: decision"],
+    ["whose footer was cut", "ORD... (truncated)"],
+  ])(
+    "pays on the yes after a run that staged the order and %s",
+    async (_, footer) => {
+      // RU 04.10: the run stopped before «Оплатить» without `Needs: payment`,
+      // and the person's «Да» to 2 100 ₽ was refused twice.
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(
+          new Date(),
+          stagedPayment(tickets).replace("Needs: payment", footer)
+        )
+      );
+      const tool = await resolvedBrowserTask(
+        [],
+        "да",
+        askedToPay(4320, tickets)
+      );
+
+      await tool.execute(pay, toolContext("better-auth:alice"));
+
+      expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+        paymentAllowed: true,
+      });
+    }
+  );
+
+  it("asks again after a run that finished the errand", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment(tickets).replace("Needs: payment", "Needs: none")
+      )
+    );
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await expect(
+      tool.execute(pay, toolContext("better-auth:alice"))
+    ).rejects.toThrow("ending with «Оплачиваю?»");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it.each(["да", "Оплачивай", "давай", "yes", "go ahead"])(
