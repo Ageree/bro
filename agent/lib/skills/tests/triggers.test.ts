@@ -239,6 +239,14 @@ const synthetic = [
     ["browser", "gov-services", "meter-readings"],
   ],
   ["photo-calendar", "[фото] добавь в календарь", ["google"]],
+  // A product pick needs the rules of picking at once, not a step later.
+  [
+    "product-pick",
+    "Привет! Найди мне хороший крем для рук",
+    ["recommendations"],
+  ],
+  ["product-pick-short", "подыщи недорогой увлажнитель", ["recommendations"]],
+  ["find-mail", "найди письмо от Пети про счёт", ["google"]],
   // Paraphrases of risky errands the benchmark does not word this way.
   ["sts", "пробей по СТС А123ВС77", ["browser", "gov-services"]],
   [

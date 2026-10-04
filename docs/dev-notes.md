@@ -488,6 +488,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   читался как новая просьба. Правила — в `agent/lib/delivery/`: повтор без
   нового — `stale`, затем `toolChoice: none` (`turn-sends.ts`, `novelty.ts`),
   претензии без дела — на переписывание (`claims.ts`).
+- Пилот `EARLY_REPLY_WORKSPACES`: первое сообщение хода человека — одна
+  строка до 120 знаков «сейчас поищу» — уходит, а не на `status`. От ответа
+  её отличает текст результата `headsUpDeliveredNotice`: по нему
+  `awaitsDelivery` держит шаг форсированным, а `turnSends` кладёт её в
+  `headsUps`, не в `delivered`. Канал помечает ход доставленным уже на ней:
+  Telegram гасит «печатает…» и не постит ответ текстом — только `send_message`.
 - Модель писала `DELIVERY_COMPLETE` (метку «ответ уже доставлен» из
   инструкций) в сам `send_message`, и человек получал её сообщением:
   `withoutBookkeeping` в `agent/tools/messaging.ts` вырезает её и
@@ -556,6 +562,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос. Тогда же с Cloud.ru
   быстро отвечали FM, aitunnel, vsegpt, proxyapi, `api.deepseek.com` и Timeweb
   (дорог: 41 ₽ за 1 млн входа без скидки на кэш) — кандидаты в запасные.
+  04.10 с новой пробной VM (`cloudru.py create`, без ключей прода) те же
+  250 КБ уходили за 0,1 с, а шаг DeepSeek в 37 тыс. токенов через
+  `deepinfra` давал первый токен за 3 с: медленный ответ ищите в числе шагов
+  и в инструментах, а не в модели.
 - RouterAI — единственный провайдер прода, 402 «Insufficient balance» не
   переключает и на FM: при пустом балансе Бро молчит всем (03.10 — дважды).
   Баланс — `GET /api/v1/credits` ключом прода (рубли) или пробный ход
@@ -763,6 +773,19 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
   Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
 
+- Хост пула в простое выключается (`stopped`), а не удаляется, и его будит
+  следующая песочница или сообщение человека (`agent/hooks/browser-prewarm.ts`):
+  новый хост в AZ-1 — 5 минут, а 04.10 — 16; включение — 92 с
+  (`docs/browser-pool.md`, «Сон хоста»). Старый код спящих хостов не видит:
+  слот занят, и поручения ждут до отказа. Перед откатом на релиз до этого —
+  `UPDATE browser_hosts SET state = 'deleting'` для `stopped` и `waking`.
+- `BROWSER_HOST_MIN_WARM` (часы — `BROWSER_HOST_WARM_HOURS` по Москве) держит
+  хосты текущей сборки `ready`: `gen-2-8` — ≈ 3 960 ₽ в месяц за хост. При
+  готовом хосте сообщение человека сразу поднимает его песочницу
+  (`prewarmBrowserSandbox`, паркуется через 10 минут без поручения). Очередь
+  повторяет старт не раньше чем через минуту, поэтому чужой короткий lease
+  поручение ждёт в своём вызове до 30 с (`leaseFreed` в `sandbox.ts`).
+
 Файлы без пути — в `agent/lib/browser-use/`.
 
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и
@@ -837,6 +860,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   ЕСИА на новом адресе спрашивает код всегда.
 - На 429 (мало сессий) поручение встаёт в очередь (`queue.ts`), на 402 — алерт
   владельцу (`agent/lib/owner-alert.ts`).
+- Очередь и антибот-повторы своего браузера (`vm:`) разбирает и live watch
+  тика `browser-runs` (`nextOwnBrowserStarts`), с общим на тик лимитом
+  стартов; Browser Use — только тики. В тестах поллера watch держат
+  выключенным моки `hasLiveBrowserRuns` и `nextOwnBrowserStarts` (`liveWatch`):
+  без них тест спит настоящие секунды.
 - eve подписывает карточку лишь «Approve tool call: …»: текст собирает
   `shared/chat/approval-card.ts`. В iMessage eve примет ответ текстом, только
   равный id, английской метке или номеру (`channel/resolve-text.js`).

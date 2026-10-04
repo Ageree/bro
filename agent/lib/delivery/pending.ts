@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import {
   leavesRunAtWork,
@@ -9,12 +9,22 @@ import {
 import { asksForSomething } from "./novelty";
 import {
   currentTurnMessages,
+  headsUpDelivered,
   sendReachedPerson,
   startsTurn,
 } from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
 const deliveryToolNames = new Set(["send_message", "react_to_message"]);
+
+/**
+ * Whether a delivery tool's result is a reply the person got: not a send
+ * that failed, was dropped or returned, and not the early-reply pilot's
+ * heads-up, after which they still wait for the answer.
+ */
+function repliedWith(output: ToolResultPart["output"]) {
+  return sendReachedPerson(output) && !headsUpDelivered(output);
+}
 
 /**
  * eve tags every user-role message it keeps in history with a kind: `user`
@@ -29,7 +39,8 @@ function userMessageKind(message: ModelMessage) {
 
 /**
  * A send `send_message` dropped or returned for a rewrite completes too, but
- * nobody received it, so the person is still waiting.
+ * nobody received it, so the person is still waiting. So they are after a
+ * heads-up.
  */
 function deliveredByTool(message: ModelMessage) {
   return (
@@ -38,7 +49,7 @@ function deliveredByTool(message: ModelMessage) {
       (part) =>
         part.type === "tool-result" &&
         deliveryToolNames.has(part.toolName) &&
-        sendReachedPerson(part.output)
+        repliedWith(part.output)
     )
   );
 }
@@ -51,7 +62,10 @@ function deliveredByTool(message: ModelMessage) {
  */
 const forcedStepLimit = 10;
 
-/** Whether a tool message holds a call of `toolName` that reached the person. */
+/**
+ * Whether a tool message holds a call of `toolName` that reached the person
+ * as a reply, not as the early-reply pilot's heads-up.
+ */
 function reachedPerson(message: ModelMessage, toolName: string) {
   return (
     message.role === "tool" &&
@@ -59,7 +73,7 @@ function reachedPerson(message: ModelMessage, toolName: string) {
       (part) =>
         part.type === "tool-result" &&
         part.toolName === toolName &&
-        sendReachedPerson(part.output)
+        repliedWith(part.output)
     )
   );
 }
@@ -78,7 +92,9 @@ function messageText(message: ModelMessage) {
  * «What is 2 plus 2?» with 😂, and the «4» it wrote next never reached the
  * person. A wakeup from a finished background task is not a person talking,
  * and the instructions let the model keep such a wakeup silent, so it never
- * counts as waiting.
+ * counts as waiting. Nor does the early-reply pilot's heads-up answer: after
+ * «сейчас поищу» the person waits for what the search finds, so the steps
+ * stay forced until the answer goes out.
  */
 export function awaitsDelivery(messages: readonly ModelMessage[]) {
   let steps = 0;
@@ -102,7 +118,10 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
 
 /**
  * Whether the current turn already got a `send_message` or
- * `react_to_message` through to the person, whoever started it.
+ * `react_to_message` through to the person, whoever started it. The
+ * early-reply pilot's heads-up does not count: a step that comes back empty
+ * after it fails the turn, and the person hears that it broke, rather than
+ * ending it quietly with only «сейчас поищу» sent.
  */
 export function turnDelivered(messages: readonly ModelMessage[]) {
   return currentTurnMessages(messages).some(deliveredByTool);

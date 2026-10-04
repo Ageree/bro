@@ -21,6 +21,7 @@ const services = vi.hoisted(() => ({
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
   recordStepHistory: vi.fn<typeof CompactionRecord.recordStepHistory>(),
   directModelActive: vi.fn<() => boolean>(),
+  earlyReplyPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
 }));
@@ -53,6 +54,9 @@ vi.mock("@agent/lib/history/pilot", () => ({
 vi.mock("@agent/lib/compaction/pilot", () => ({
   compactionPilot: services.compactionPilot,
 }));
+vi.mock("@agent/lib/delivery/pilot", () => ({
+  earlyReplyPilot: services.earlyReplyPilot,
+}));
 vi.mock("@agent/lib/compaction/call", () => ({
   compactionCallMiddleware: () => ({}),
   compactionHeld: services.compactionHeld,
@@ -82,6 +86,8 @@ import {
 import { declinedErrandNote } from "@agent/lib/delivery/declined-cards";
 import { replyDirective } from "@agent/lib/delivery/language";
 import {
+  earlyReplyNote,
+  headsUpDeliveredNotice,
   rewriteSendNotice,
   skippedSendNotice,
 } from "@agent/lib/delivery/turn-sends";
@@ -102,6 +108,7 @@ beforeEach(() => {
   services.historyTrimPilot.mockResolvedValue(false);
   services.compactionPilot.mockResolvedValue(false);
   services.compactionHeld.mockReturnValue(false);
+  services.earlyReplyPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
 });
 
@@ -1173,6 +1180,101 @@ describe("interactive delivery enforcement", () => {
     );
     // A worker writes to the report turn, not to the person.
     expect(services.getFormOfAddress).not.toHaveBeenCalled();
+  });
+});
+
+describe("the early-reply pilot", () => {
+  const request = [humanMessage("найди крем для рук")];
+  const announced = [
+    ...request,
+    ...sent("call-1", "Сейчас поищу.", headsUpDeliveredNotice),
+    toolCallStep("web_search", "call-2", { query: "крем для рук" }),
+    toolResultStep("web_search", "call-2", { results: "3" }),
+  ];
+  const answered = [
+    ...announced,
+    ...sent("call-3", "Нашёл: Neutrogena за 450 ₽.", "submitted"),
+  ];
+
+  it("asks for a heads-up before slow work in the pilot's person turn", async () => {
+    services.earlyReplyPilot.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.({}, interactiveContext(request));
+
+    expect(services.earlyReplyPilot).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      { sessionId: "interactive-session" }
+    );
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      {
+        delivered: false,
+        replyNote: `${note("ru")}\n\n${earlyReplyNote}`,
+        silent: false,
+        toolChoice: "required",
+        withheldTools: ["task"],
+      }
+    );
+  });
+
+  it("keeps the step forced after the heads-up, with the same notes", async () => {
+    services.earlyReplyPilot.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(announced)
+    );
+
+    // The heads-up is no answer: the reply directive is the one of the
+    // turn's first step, so the step's notes keep their cache.
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      {
+        delivered: false,
+        replyNote: `${note("ru")}\n\n${earlyReplyNote}`,
+        silent: false,
+        toolChoice: "required",
+        withheldTools: ["task"],
+      }
+    );
+  });
+
+  it("drops the note once the answer is out", async () => {
+    services.earlyReplyPilot.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(answered)
+    );
+
+    expect(services.modelSelection).toHaveBeenLastCalledWith(
+      "openai/gpt-5.6-sol-fast",
+      {
+        delivered: true,
+        replyNote: note("ru", true),
+        silent: false,
+        toolChoice: "auto",
+        withheldTools: ["task"],
+      }
+    );
+  });
+
+  it("asks nothing of a browser report's turn", async () => {
+    services.earlyReplyPilot.mockResolvedValue(true);
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(request, "browser-result", reportAttributes)
+    );
+
+    expect(services.earlyReplyPilot).not.toHaveBeenCalled();
+    expect(lastReplyNote()).not.toContain(earlyReplyNote);
+  });
+
+  it("adds no note outside the pilot", async () => {
+    await agent.model.events["step.started"]?.({}, interactiveContext(request));
+
+    expect(lastReplyNote()).toBe(note("ru"));
   });
 });
 

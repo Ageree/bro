@@ -39,8 +39,10 @@ import {
   turnDeclinedErrand,
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
+import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import {
   approvedResendOwed,
+  earlyReplyNote,
   turnMustEnd,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
@@ -247,6 +249,7 @@ export default defineAgent({
           taskAgent,
           historyTrimmed,
           compacted,
+          earlyReply,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -268,6 +271,9 @@ export default defineAgent({
           historyTrimPilot(scope, step),
           // A long conversation is compacted (docs/roadmap.md, 28).
           compactionPilot(scope, step),
+          // A person's turn may open with «сейчас поищу» before slow work;
+          // `send_message` asks the same verdict of the turn.
+          kind === "person" ? earlyReplyPilot(scope, step) : false,
         ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
@@ -283,6 +289,12 @@ export default defineAgent({
                 stepOwed: owedSteps.length > 0 || resendOwed,
                 wordlessLatest: wordlessLatestMessage(ctx.messages),
               })
+            : undefined,
+          // The early-reply pilot asks for a heads-up before slow work at
+          // every step until the answer is out; the heads-up itself is no
+          // delivery (`turnSends`). A turn that must end writes nothing.
+          earlyReply && sends.delivered.length === 0 && !pastAnswer
+            ? earlyReplyNote
             : undefined,
           staleReport ? staleReportNote : undefined,
           cardsHeld && !silent

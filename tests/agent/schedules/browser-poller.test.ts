@@ -65,9 +65,12 @@ const cloud = vi.hoisted(() => ({
   // The sessions whose browsers Bro stopped, in order.
   stopped: new Array<string>(),
   // What the next create answers: a new run, or a refusal — Browser Use's
-  // own (`busy`, `down`, `no_credits`), or a VM session busy with its own
-  // run (`vm_busy`, 409).
-  nextCreate: new Array<"busy" | "down" | "no_credits" | "ok" | "vm_busy">(),
+  // own (`busy`, `down`, `no_credits`), a VM session busy with its own run
+  // (`vm_busy`, 409), or the workspace's own browser still coming up and
+  // asking to be tried again in 15 s (`vm_starting`, 429).
+  nextCreate: new Array<
+    "busy" | "down" | "no_credits" | "ok" | "vm_busy" | "vm_starting"
+  >(),
   runs: new Map<string, CloudRun>(),
 }));
 
@@ -133,6 +136,13 @@ vi.mock("@db/services/browser-runs", async (importOriginal) => {
         : original.claimDueBrowserRunRetries(...args),
     hasLiveBrowserRuns: () =>
       liveWatch.value ? original.hasLiveBrowserRuns() : Promise.resolve(false),
+    // An own-browser errand due before the watch ends keeps it going too.
+    nextOwnBrowserStarts: (
+      ...args: Parameters<typeof original.nextOwnBrowserStarts>
+    ) =>
+      liveWatch.value
+        ? original.nextOwnBrowserStarts(...args)
+        : Promise.resolve({ queued: undefined, retry: undefined }),
     parkQueuedBrowserRun: (
       ...args: Parameters<typeof original.parkQueuedBrowserRun>
     ) =>
@@ -204,6 +214,16 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => {
             429,
             "/runs",
             '{"detail":"Too many concurrent active sessions"}'
+          )
+        );
+      }
+      if (next === "vm_starting") {
+        return Promise.reject(
+          new original.BrowserUseError(
+            429,
+            "browser-vm",
+            "The browser is starting.",
+            15_000
           )
         );
       }
@@ -1499,9 +1519,8 @@ describe("the browser queue", () => {
   it("tells Bro a Госуслуги errand in the wait may still ask for a code", async () => {
     const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
 
-    const note = queuedStatusNote({
+    const note = await queuedStatusNote({
       profileId: "profile-1",
-      retryAt: null,
       waitsForAccount: "gosuslugi.ru",
     });
 
@@ -1513,24 +1532,28 @@ describe("the browser queue", () => {
 
   it("tells Bro an errand waiting for the person's own VM that their browser is starting", async () => {
     const { queuedStatusNote } = await import("@agent/lib/browser-use/queue");
-    const waiting = { retryAt: null, waitsForAccount: null };
+    const waiting = { waitsForAccount: null };
 
-    const onVm = queuedStatusNote({
+    const onVm = await queuedStatusNote({
       ...waiting,
       profileId: `vm:${alice.workspaceId}:p1`,
     });
-    const onBrowserUse = queuedStatusNote({
+    const onBrowserUse = await queuedStatusNote({
       ...waiting,
       profileId: "profile-1",
     });
 
+    // No VM yet: its very first start, said in minutes, never as a time.
     expect(onVm).toContain(
-      "Bro's own browser for the user is still starting (about a minute, up to about six on its very first start)"
+      "Bro's own browser for the user is being set up for its very first start, which takes about 6 more minutes"
     );
+    expect(onVm).toContain("in minutes rather than a time of day");
+    expect(onVm).not.toMatch(/\d{4}-\d{2}-\d{2}T/u);
     expect(onVm).not.toContain("cloud browser service");
     expect(onBrowserUse).toContain(
       "the cloud browser service had no free browser for it yet"
     );
+    expect(onBrowserUse).not.toContain("next try");
   });
 
   it("closes a queued errand, tells the person and alerts the owner when credits run out", async () => {
@@ -1577,4 +1600,217 @@ describe("the browser queue", () => {
     expect(cloud.created[0]?.task).toContain("Полный текст поручения 6");
     expect((await readRun(onVm.id))?.retriedAsRunId).toBe("cloud-run-1");
   }, 30_000);
+});
+
+describe("errands on the person's own browser between ticks", () => {
+  const ownProfile = `vm:${alice.workspaceId}:p1`;
+
+  /**
+   * Start a tick on the fake clock and move the clock a second at a time,
+   * letting the real database answer in between, until the tick is over or
+   * `until` holds.
+   */
+  async function tickOnClock(
+    attachSession: ScheduleHandlerArgs["attachSession"],
+    until: () => boolean = () => false
+  ) {
+    const finished = { value: false };
+    const ticking = tick(attachSession).then(() => {
+      finished.value = true;
+      return finished.value;
+    });
+    async function runClock(stepsLeft: number): Promise<void> {
+      if (finished.value || until() || stepsLeft === 0) return;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      return runClock(stepsLeft - 1);
+    }
+    await runClock(90);
+    return { finished, ticking };
+  }
+
+  async function onFakeClock() {
+    // Loaded before the clock is faked: the module runner has timers of its own.
+    await import("@agent/schedules/browser-runs");
+    liveWatch.value = true;
+    vi.useFakeTimers({ now: new Date(), toFake: ["Date", "setTimeout"] });
+  }
+
+  it("asks the person's own browser again as soon as it said, Browser Use only after the minute", async () => {
+    const { queueRetryAt } = await import("@agent/lib/browser-use/queue");
+    const now = new Date("2026-10-04T13:05:00.000Z");
+    const waitOf = (options: Parameters<typeof queueRetryAt>[1]) =>
+      queueRetryAt(now, options).getTime() - now.getTime();
+
+    // A sandbox being moved onto its host says 15 s; a starting VM 45 s.
+    expect(waitOf({ ownBrowser: true, retryAfterMs: 15_000 })).toBe(15_000);
+    expect(waitOf({ ownBrowser: true, retryAfterMs: 45_000 })).toBe(45_000);
+    expect(waitOf({ ownBrowser: true, retryAfterMs: 2_000 })).toBe(15_000);
+    expect(waitOf({ ownBrowser: true })).toBe(15_000);
+    // Browser Use's cap, an account held by another errand, a failed start.
+    expect(waitOf({ retryAfterMs: 15_000 })).toBe(60_000);
+    expect(waitOf({})).toBe(60_000);
+    // Nobody waits more than five minutes between tries.
+    expect(waitOf({ ownBrowser: true, retryAfterMs: 600_000 })).toBe(300_000);
+  });
+
+  it("parks an errand whose own browser is starting for the 15 s it asked, and a Browser Use one for the minute", async () => {
+    const own = await queuedErrand(0, undefined, ownProfile);
+    const hosted = await queuedErrand(1);
+    cloud.nextCreate.push("vm_starting", "busy");
+    const { attachSession } = webChat();
+
+    const before = Date.now();
+    await tick(attachSession);
+
+    expect(cloud.created).toHaveLength(0);
+    const ownRetry = (await readRun(own.id))?.retryAt?.getTime() ?? 0;
+    expect(ownRetry - before).toBeGreaterThanOrEqual(15_000);
+    expect(ownRetry - Date.now()).toBeLessThanOrEqual(15_000);
+    const hostedRetry = (await readRun(hosted.id))?.retryAt?.getTime() ?? 0;
+    expect(hostedRetry - before).toBeGreaterThanOrEqual(59_000);
+  }, 30_000);
+
+  it("starts an errand 15 s after its own browser asked for them, in the same tick, and only once", async () => {
+    await onFakeClock();
+    const queued = await queuedErrand(0, undefined, ownProfile);
+    // Starting at the tick; up when asked again.
+    cloud.nextCreate.push("vm_starting", "ok");
+    const tries = new Array<number>();
+    const noteTry = () => {
+      tries.push(Date.now());
+      return Promise.resolve();
+    };
+    cloud.beforeCreate.push(noteTry, noteTry);
+    const { attachSession } = webChat();
+
+    const { finished, ticking } = await tickOnClock(attachSession);
+    await ticking;
+
+    expect(finished.value).toBe(true);
+    expect(tries).toHaveLength(2);
+    const [first = 0, second = 0] = tries;
+    // Not the next minute's tick: the live watch, a few seconds late at most.
+    expect(second - first).toBeGreaterThanOrEqual(15_000);
+    expect(second - first).toBeLessThanOrEqual(20_000);
+    expect(cloud.created).toHaveLength(1);
+    expect(await readRun(queued.id)).toMatchObject({
+      retriedAsRunId: "cloud-run-1",
+      status: "stopped",
+    });
+  }, 60_000);
+
+  it("never starts an errand twice while its start in the live watch is still going", async () => {
+    await onFakeClock();
+    const queued = await queuedErrand(0, undefined, ownProfile);
+    await database
+      .update(schema.browserRuns)
+      .set({ retryAt: new Date(Date.now() + 10_000) })
+      .where(eq(schema.browserRuns.id, queued.id));
+    // The start hangs, as a sandbox restore on its host does, until let go.
+    const gate = Promise.withResolvers<undefined>();
+    cloud.beforeCreate.push(async () => {
+      await gate.promise;
+    });
+    const { attachSession } = webChat();
+
+    const first = await tickOnClock(
+      attachSession,
+      () => cloud.beforeCreate.length === 0
+    );
+    expect(cloud.beforeCreate).toHaveLength(0);
+    expect(first.finished.value).toBe(false);
+    // The next tick finds the errand claimed: neither its queue stage nor
+    // its own live watch starts it again.
+    await tick(attachSession);
+    expect(cloud.created).toHaveLength(0);
+
+    gate.resolve(undefined);
+    const rest = await tickOnClock(attachSession);
+    await Promise.all([first.ticking, rest.ticking]);
+
+    expect(cloud.created).toHaveLength(1);
+    expect(await readRun(queued.id)).toMatchObject({
+      retriedAsRunId: "cloud-run-1",
+      status: "stopped",
+    });
+  }, 60_000);
+
+  it("keeps to the tick's start cap across its queue stage and its live watch", async () => {
+    await onFakeClock();
+    const queued = await Promise.all(
+      [0, 1, 2, 3, 4, 5].map(async (index) => {
+        const row = await queuedErrand(index, undefined, ownProfile);
+        // Each on a site of its own: none waits for another's sign-in.
+        await database
+          .update(schema.browserRuns)
+          .set({ site: `https://shop-${String(index)}.ru` })
+          .where(eq(schema.browserRuns.id, row.id));
+        return row;
+      })
+    );
+    const { attachSession } = webChat();
+
+    const { ticking } = await tickOnClock(attachSession);
+    await ticking;
+
+    // Five started in the queue stage; the sixth, due all along, waits for
+    // the next tick rather than starting in the watch.
+    expect(cloud.created).toHaveLength(5);
+    const last = await readRun(queued[5]?.id ?? "");
+    expect(last?.status).toBe("queued");
+    expect(last?.retriedAsRunId).toBeNull();
+  }, 60_000);
+
+  it("retries an errand walled on its own browser within seconds of the wall", async () => {
+    await onFakeClock();
+    const runId = `vm:${alice.workspaceId}:r:7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f`;
+    const sessionId = `vm:${alice.workspaceId}:s:3f2e1d0c-9b8a-4f7e-a6d5-c4b3a2f1e0d9`;
+    cloud.runs.set(runId, {
+      result:
+        "RESULT: Avito: «Доступ ограничен: проблема с IP»\nNEEDS: captcha",
+      sessionId,
+      status: "completed",
+      task: "Найди велосипед на Авито",
+    });
+    const { createBrowserRun } = await import("@db/services/browser-runs");
+    await createBrowserRun(alice, {
+      conversationChannel: "eve",
+      conversationId: "web-session",
+      createdAt: minutesAgo(3),
+      id: runId,
+      profileId: ownProfile,
+      rootSessionId: "web-session",
+      sessionId,
+      site: "https://www.avito.ru",
+      status: "running",
+      task: "Найди велосипед",
+      updatedAt: minutesAgo(3),
+    });
+    const retried = new Array<number>();
+    cloud.beforeCreate.push(() => {
+      retried.push(Date.now());
+      return Promise.resolve();
+    });
+    const { attachSession, send } = webChat();
+
+    const settledFrom = Date.now();
+    const { ticking } = await tickOnClock(attachSession);
+    await ticking;
+
+    // The wall was parked with its first retry due at once, and the live
+    // watch started it a moment later, not a minute later.
+    expect(cloud.created).toHaveLength(1);
+    expect(cloud.created[0]?.task).toContain(
+      `(Background retry 2 of errand ${runId}; for bookkeeping only.)`
+    );
+    expect(cloud.created[0]?.sessionId).toBe(sessionId);
+    expect((retried[0] ?? Number.POSITIVE_INFINITY) - settledFrom).toBeLessThan(
+      10_000
+    );
+    expect((await readRun(runId))?.retriedAsRunId).toBe("cloud-run-1");
+    // The person hears nothing about a wall the retry may get past.
+    expect(send).not.toHaveBeenCalled();
+  }, 60_000);
 });

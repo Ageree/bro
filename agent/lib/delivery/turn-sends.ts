@@ -66,6 +66,21 @@ const skipsBeforeEnd = 1;
 const errandSkipsBeforeEnd = 2;
 
 /**
+ * Sends the early-reply pilot dropped as the heads-up said again before the
+ * turn is ended. The first leaves the turn open: the person still waits for
+ * the answer, and the next step may do the work. A model that keeps saying
+ * it is on it instead is not forced on until the step limit.
+ */
+const headsUpSkipsBeforeEnd = 2;
+
+/**
+ * The longest heads-up the early-reply pilot lets open a person's turn: one
+ * line that only says Bro is on it. A longer status is the answer put off,
+ * and goes back to be rewritten as before.
+ */
+const headsUpLength = 120;
+
+/**
  * Sends returned for a rewrite before one goes through as written. A model
  * that keeps the same claim twice is left to it, rather than leaving the
  * person without a reply.
@@ -77,6 +92,7 @@ type OutgoingMessage = z.infer<typeof sendMessageOutputSchema>;
 
 const skipReasonSchema = z.enum([
   "duplicate",
+  "heads-up",
   "limit",
   "past",
   "reported",
@@ -134,6 +150,7 @@ const unseenDraft =
 
 const skipNotices = {
   duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
+  "heads-up": `${skippedPrefix} the person already has your heads-up that you are on it, and this message only says that again. They are waiting for the answer itself, so write no other status. If the work has not started, start it now with its tool, without writing; once its result is in — a tool you called in the same step as the heads-up has returned by now — send what it shows in one message.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
   past: `${skippedPrefix} this browser report's turn is past its answer: the person already has your message about it, so no more messages go out in this turn. Do not say this one was sent. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing; otherwise end the turn now without calling any tool.`,
   reported: `${skippedPrefix} this browser result already reached the person in this turn, as one message, and this one tells the same result again — restated, with a detail added, or corrected. The person gets a browser result once. Another message goes out only when it asks them for something new — a code, a confirmation, a choice — or brings a picture or a link they need. If the report still asks you to act — browser_task continue on the errand, the calendar entry for a booking, a schedule for a later step — do that without writing again; otherwise end the turn now without calling any tool.`,
@@ -189,6 +206,31 @@ export function rewriteSendNotice(reason: RewriteReason, loadSkill = false) {
     ? `${rewriteNotices[reason]} ${loadSkillHint} ${unseenDraft}`
     : `${rewriteNotices[reason]} ${unseenDraft}`;
 }
+
+const headsUpPrefix = "The heads-up was submitted to the active channel.";
+
+/**
+ * What `send_message` tells the model of the early-reply pilot's heads-up
+ * (`opensWithHeadsUp`) instead of its usual note. The person has it, but
+ * the turn still owes the answer, and the history tells the two apart by
+ * this text (`headsUpDelivered`): it never appears outside the pilot.
+ */
+export const headsUpDeliveredNotice = `${headsUpPrefix} The person now waits for the answer itself: this heads-up does not end your reply. If you did not call the work's tool in this same step, call it now, without writing; once its result is in, send the answer in one message — what it found, or, for an errand you handed a browser run, where it stands, as its result says. Do not send another heads-up or status.`;
+
+/**
+ * Whether a `send_message` result is the early-reply pilot's heads-up: it
+ * reached the person, but it is not the answer they wait for.
+ */
+export function headsUpDelivered(output: ToolResultPart["output"]) {
+  return output.type === "text" && output.value.startsWith(headsUpPrefix);
+}
+
+/**
+ * What the early-reply pilot tells every step of a person's turn until the
+ * answer is out: the same text at each step, so the step's notes keep their
+ * prompt cache until the reply directive changes anyway (`answered`).
+ */
+export const earlyReplyNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, send one short heads-up as the first call of the step that calls that tool: send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, запускаю браузер»), then the tool call in the same step. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
 
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
@@ -309,6 +351,65 @@ function announcesUnstartedWork(
   );
 }
 
+/** Whether a send is one short line of text and nothing else. */
+function isHeadsUpLine(outgoing: OutgoingMessage) {
+  if (outgoing.kind !== "message" || (outgoing.attachments ?? []).length > 0) {
+    return false;
+  }
+  const text = (outgoing.text ?? "").trim();
+  return (
+    text.length > 0 && text.length <= headsUpLength && !/[\r\n]/u.test(text)
+  );
+}
+
+/**
+ * Whether a send is the one heads-up the early-reply pilot lets a person's
+ * turn open with — «Сейчас поищу», «Секунду, запускаю браузер» — rather
+ * than returning it as a status (`announcesUnstartedWork`): a single short
+ * line, the turn's first message, before any work. Its result tells the
+ * model the answer is still owed (`headsUpDeliveredNotice`), and the turn
+ * judges the answer as if the heads-up had not gone out.
+ */
+export function opensWithHeadsUp(
+  outgoing: OutgoingMessage,
+  turn: ReturnType<typeof turnSends>
+) {
+  return (
+    turn.headsUps.length === 0 &&
+    isHeadsUpLine(outgoing) &&
+    announcesUnstartedWork(sentMessageOf(outgoing), turn)
+  );
+}
+
+/**
+ * Whether a send after the turn's heads-up, before its answer, only says the
+ * heads-up again: a near copy of it at any point, or, before any work,
+ * another message that only announces the work. Dropped, it leaves the turn
+ * open (`headsUpSkipsBeforeEnd`). Once work is done, a message that is no
+ * copy is judged as the turn's first: the errand's message after a browser
+ * run took it, the answer after a search.
+ */
+function restatesHeadsUp(
+  outgoing: OutgoingMessage,
+  message: SentMessage,
+  turn: ReturnType<typeof turnSends>
+) {
+  if (turn.headsUps.length === 0 || turn.delivered.length > 0) return false;
+  if (repeatsDelivered(outgoing, turn.headsUps, turn)) return true;
+  return (
+    !turn.worked &&
+    message.attachments.length === 0 &&
+    message.questions.length === 0 &&
+    message.requests.length === 0 &&
+    announcesWork(message) &&
+    addsNothingNew(
+      message,
+      [...(turn.request ? [turn.request] : []), ...turn.headsUps],
+      { afterWork: false }
+    )
+  );
+}
+
 /**
  * Whether the first message of a browser report's turn only announces the
  * result — «Секунду, смотрю, что нашёл браузер» — while the report in front
@@ -346,17 +447,28 @@ function announcesReport(
  * it found. In RU d05 (25.09) three messages in a row said the order had
  * been handed to Лавка, each with a detail of the errand the one before left
  * out.
+ *
+ * In the early-reply pilot (`earlyReply`) a person's turn may open with one
+ * short heads-up before slow work (`opensWithHeadsUp`); saying it again
+ * before the answer is dropped as `heads-up`, which leaves the turn open.
  */
 export function sendRefusal(
   outgoing: OutgoingMessage,
-  turn: ReturnType<typeof turnSends>
+  turn: ReturnType<typeof turnSends>,
+  earlyReply = false
 ): z.infer<typeof sendRefusalSchema> | undefined {
   const { delivered } = turn;
-  if (delivered.length >= turnMessageLimit) return { skipped: "limit" };
+  // The heads-up is a message the person reads too.
+  if (delivered.length + turn.headsUps.length >= turnMessageLimit) {
+    return { skipped: "limit" };
+  }
   if (repeatsDelivered(outgoing, delivered, turn)) {
     return { skipped: "duplicate" };
   }
   const message = sentMessageOf(outgoing);
+  if (restatesHeadsUp(outgoing, message, turn)) {
+    return { skipped: "heads-up" };
+  }
   if (
     turn.report &&
     delivered.some((sent) => tellsFacts(sent)) &&
@@ -382,7 +494,12 @@ export function sendRefusal(
   }
   if (yields) return undefined;
   if (announcesReport(message, turn)) return { rewrite: "report" };
-  if (announcesUnstartedWork(message, turn)) return { rewrite: "status" };
+  if (
+    announcesUnstartedWork(message, turn) &&
+    !(earlyReply && opensWithHeadsUp(outgoing, turn))
+  ) {
+    return { rewrite: "status" };
+  }
   if (
     !turn.workSinceDelivery &&
     retellsAroundQuestion(outgoing.text ?? "", message, delivered, turn.stated)
@@ -641,8 +758,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const errandKnown = () =>
     withoutFound(errandSent(errandTexts), errandSent(foundTexts));
   const delivered: SentMessage[] = [];
+  // The early-reply pilot's heads-up: the person read it, but the answer is
+  // still owed, so it is no delivery the answer is judged against.
+  const headsUps: SentMessage[] = [];
   let skipped = 0;
   let errandSkips = 0;
+  let headsUpSkips = 0;
   let rewrites = 0;
   let worked = false;
   let workSinceDelivery = false;
@@ -713,10 +834,20 @@ export function turnSends(messages: readonly ModelMessage[]) {
       ) {
         errandSkips += 1;
       }
+      if (
+        part.output.type === "text" &&
+        part.output.value === skipNotices["heads-up"]
+      ) {
+        headsUpSkips += 1;
+      }
       if (!sendReachedPerson(part.output)) continue;
       const input = inputs.get(part.toolCallId);
       if (!input) continue;
       const sent = sentMessageOf(input);
+      if (headsUpDelivered(part.output)) {
+        headsUps.push(sent);
+        continue;
+      }
       delivered.push(sent);
       // A message that follows other work — a search in the same step as the
       // errand, a calendar entry — may tell that work's result rather than
@@ -785,6 +916,13 @@ export function turnSends(messages: readonly ModelMessage[]) {
         normalizedText([requestText ?? "", ...inputTexts].join("\n")).split(" ")
       ),
     ],
+    /**
+     * The early-reply pilot's heads-up, when the turn sent one: no part of
+     * `delivered`, which holds the messages the answer is judged against.
+     */
+    headsUps,
+    /** How many sends were dropped as the heads-up said again. */
+    headsUpSkips,
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,
@@ -810,13 +948,17 @@ export function turnSends(messages: readonly ModelMessage[]) {
  * more step for what else the person asked for. A send of nothing but
  * `DELIVERY_COMPLETE` (`sentinel`) counts like any dropped send: the model
  * takes the reply for delivered, and one that has not delivered it yet ends
- * in text, which the channel fallback posts.
+ * in text, which the channel fallback posts. The first send dropped as the
+ * early-reply pilot's heads-up said again leaves the turn open too: the
+ * person still waits for the answer.
  */
 export function turnMustEnd(messages: readonly ModelMessage[]) {
-  const { delivered, errandSkips, skipped } = turnSends(messages);
+  const { delivered, errandSkips, headsUpSkips, headsUps, skipped } =
+    turnSends(messages);
   return (
-    skipped - errandSkips >= skipsBeforeEnd ||
+    skipped - errandSkips - headsUpSkips >= skipsBeforeEnd ||
     errandSkips >= errandSkipsBeforeEnd ||
-    delivered.length >= turnMessageLimit
+    headsUpSkips >= headsUpSkipsBeforeEnd ||
+    delivered.length + headsUps.length >= turnMessageLimit
   );
 }

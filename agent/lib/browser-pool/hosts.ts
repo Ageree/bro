@@ -1,3 +1,4 @@
+import { browserPoolConfigured } from "@agent/lib/browser-vm/backend";
 import { alertOwner } from "@agent/lib/owner-alert";
 import {
   CloudRuError,
@@ -16,6 +17,7 @@ import {
   countLiveSandboxesOnHost,
   deleteBrowserHostRecord,
   listBrowserHosts,
+  readBrowserHost,
   releaseBrowserHostLease,
   updateBrowserHost,
 } from "@db/services/browser-hosts";
@@ -32,9 +34,17 @@ import { presignStoredObject } from "@shared/object-storage/s3";
  * The hosts of the browser pool (docs/browser-pool.md, section 6): created
  * when a sandbox needs room and no host has it, up to BROWSER_HOST_MAX;
  * set up at boot by cloud-init (`browser-vm/host/boot.py`); watched by the
- * poller's reconcile; deleted with their public address once empty for
- * BROWSER_HOST_IDLE_MINUTES, or once they stop answering. A stopped VM
- * keeps its quota, so a host is never merely stopped.
+ * poller's reconcile. Once empty for BROWSER_HOST_IDLE_MINUTES a host still
+ * on the current bundle, root and runtime is powered off with its disk and
+ * address (`stopped`), and powered on again for the next sandbox (`waking`):
+ * on 04.10 in `ru.AZ-1` that took 92 s to `ready`, a new host 288 s, and
+ * the first errand after a quiet hour had waited for a new one for 16
+ * minutes. A stopped VM bills only its disk and address, but keeps its
+ * quota, so any other host is deleted with its public address, as is one
+ * that stops answering or sleeps past `sleepLimitMs`. BROWSER_HOST_MIN_WARM
+ * hosts on the current boot config never sleep, within
+ * BROWSER_HOST_WARM_HOURS, and the reconcile wakes or creates one when
+ * fewer are up (`keptWarm`, `keepWarmHostsUp`).
  *
  * Every step on a host runs under its record's lease, like a workspace's VM
  * (`agent/lib/browser-vm/lifecycle.ts`).
@@ -49,8 +59,41 @@ const leaseMs = 2 * 60_000;
 const hostCreateRetryMs = 4 * 60_000;
 /** A host on its way up: the errand looks again in a minute. */
 const hostBootingRetryMs = 60_000;
+/**
+ * A stopped host powered on again: `running` after about 77 s and `hostd`
+ * ready after about 92 (04.10, `ru.AZ-1`, `gen-2-8`).
+ */
+const hostWakeRetryMs = 60_000;
+/**
+ * A host on its way up is asked about by a placement only this long after
+ * its last step: none woke in under 77 s, nor booted to `hostd` in under 60.
+ */
+const risingCheckMs = 45_000;
+/** A woken host not ready this long after its power-on is failed. */
+const wakeFailAfterMs = 10 * 60_000;
+/**
+ * A power change Cloud.ru has not carried out this long after it was asked
+ * for is asked for again: a power-off took 23 s, a power-on 77 s.
+ */
+const powerRetryMs = 4 * 60_000;
+/**
+ * A host asleep this long is deleted: its disk and address bill about 600 ₽
+ * a month while nobody uses the pool, and a new host is five minutes away.
+ */
+const sleepLimitMs = 7 * 24 * 60 * 60_000;
+/**
+ * How long a new host takes to `ready`, as the person hears it: 288 s on
+ * 04.10, and up to 16 minutes when its first boot had to be rebooted.
+ */
+const newHostMinutes = 6;
+/** How long a host takes from its VM running to `ready`: 132 s on 04.10. */
+const bootingMinutes = 3;
+/** How long a sleeping host takes to wake, as the person hears it. */
+const wakeMinutes = 2;
 /** Every host is full: sandboxes park as their errands end. */
 const poolFullRetryMs = 5 * 60_000;
+/** The clock BROWSER_HOST_WARM_HOURS is read on: the owner's. */
+const warmHoursTimeZone = "Europe/Moscow";
 /** Cloud.ru could not be asked (its key, IAM, the project): soon again. */
 const unsentRetryMs = 60_000;
 /**
@@ -170,12 +213,7 @@ exec bash /opt/bro/host/provision.sh
 export function browserHostCloudInit(hostId: string, now = new Date()) {
   const bundle = env.BROWSER_HOST_BUNDLE;
   const rootfs = env.BROWSER_SANDBOX_ROOTFS;
-  // Unset, as before the setting: runsc with a pinned release.
-  const runtime =
-    env.BROWSER_HOST_RUNTIME ??
-    (env.BROWSER_HOST_RUNSC_RELEASE === undefined ? "runc" : "runsc");
-  const runscRelease =
-    runtime === "runsc" ? env.BROWSER_HOST_RUNSC_RELEASE : "";
+  const { runscRelease, runtime } = hostRuntime();
   if (bundle === undefined || rootfs === undefined) {
     throw new Error(
       "BROWSER_HOST_BUNDLE and BROWSER_SANDBOX_ROOTFS are not configured."
@@ -244,6 +282,43 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
   ].join("\n");
 }
 
+/** The runtime a new host boots with, and its gVisor release under runsc. */
+function hostRuntime() {
+  // Unset, as before the setting: runsc with a pinned release.
+  const runtime =
+    env.BROWSER_HOST_RUNTIME ??
+    (env.BROWSER_HOST_RUNSC_RELEASE === undefined ? "runc" : "runsc");
+  const runscRelease =
+    runtime === "runsc" ? env.BROWSER_HOST_RUNSC_RELEASE : "";
+  return { runscRelease, runtime };
+}
+
+/**
+ * What a host created now boots with: the bundle, the sandbox root and the
+ * runtime its cloud-init names. A sleeping host wakes as it was set up, so
+ * only one still on these is put to sleep or woken (`onCurrentBoot`).
+ */
+function browserHostBootConfig() {
+  const bundle = env.BROWSER_HOST_BUNDLE;
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  if (bundle === undefined || rootfs === undefined) return null;
+  const { runscRelease, runtime } = hostRuntime();
+  return [
+    bundle.sha256,
+    rootfs.version,
+    rootfs.sha256,
+    runtime,
+    runscRelease ?? "",
+  ].join(":");
+}
+
+/** Whether the host was set up as a new one would be now. */
+function onCurrentBoot(host: BrowserHost) {
+  return (
+    host.bootConfig !== null && host.bootConfig === browserHostBootConfig()
+  );
+}
+
 /**
  * A ready host with room for one more sandbox, or how long the errand
  * should wait for one. Hosts are filled one after another (the fullest
@@ -255,9 +330,14 @@ export function browserHostCloudInit(hostId: string, now = new Date()) {
  * the sandbox there: a host empty for its idle time is first `draining`
  * and deleted only if it is still empty a reconcile later, so a placement
  * that raced the drain keeps its host; a placement may also take an empty
- * draining host back (`backInService`).
+ * draining host back (`backInService`). With `inServiceOnly` (a warm-up,
+ * `prewarmBrowserSandbox` in `sandbox.ts`) it takes a host in service or
+ * none: waking or creating one is `prewarmBrowserPool`'s.
  */
-export async function placeBrowserSandbox(now = new Date()) {
+export async function placeBrowserSandbox(
+  now = new Date(),
+  { inServiceOnly = false }: { readonly inServiceOnly?: boolean } = {}
+) {
   const hosts = await listBrowserHosts();
   // The ready hosts, fullest first; then the draining ones, which an empty
   // host is before it is deleted: taking one back is quicker than a new one.
@@ -284,12 +364,179 @@ export async function placeBrowserSandbox(now = new Date()) {
     const revived = await backInService(host, now);
     if (revived !== undefined) return { host: revived, kind: "ready" as const };
   }
-  if (
-    hosts.some((host) => host.state === "creating" || host.state === "booting")
-  ) {
+  if (inServiceOnly) return starting(hostBootingRetryMs);
+  const rising = hosts.filter(onItsWayUp);
+  if (rising.length > 0) {
+    // One that came up since the reconcile serves now, not a minute later:
+    // the poller drains the queue before it reconciles the hosts. One that
+    // only just began cannot be up, and asking its silent `hostd` would
+    // hold a person's `browser_task` for the health check's timeout.
+    const due = rising.filter(
+      (host) => now.getTime() - host.stateChangedAt.getTime() >= risingCheckMs
+    );
+    await Promise.all(
+      due.map(async (host) => {
+        try {
+          await reconcileBrowserHost(host.id, now);
+        } catch (error) {
+          console.warn("[browser-pool] the host could not be reconciled", {
+            cause: error,
+            hostId: host.id,
+            state: host.state,
+          });
+        }
+      })
+    );
+    for (const id of due.map((host) => host.id)) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Hosts on their way up are few, and the first ready one is taken.
+      const risen = await readBrowserHost(id);
+      const room = risen?.state === "ready" ? risen.capacity : null;
+      if (risen !== undefined && room !== null && fits(room)) {
+        return { host: risen, kind: "ready" as const };
+      }
+    }
     return starting(hostBootingRetryMs);
   }
+  // A sleeping host is up in a minute and a half, a new one in five.
+  const sleeping = hosts.find((host) => host.state === "stopped");
+  if (sleeping !== undefined)
+    return starting(await wakeBrowserHost(sleeping, now));
   return starting(await createBrowserHost(hosts, read, now));
+}
+
+function onItsWayUp(host: BrowserHost) {
+  return (
+    host.state === "creating" ||
+    host.state === "booting" ||
+    host.state === "waking"
+  );
+}
+
+/**
+ * Get the pool ready for a person who just wrote: their next errand may
+ * need a browser, and a host takes a minute and a half to wake and five to
+ * create, longer than the model takes to start the errand. A host on its
+ * way up, or a ready one, is left as it is; an empty draining one is taken
+ * back into service. Never throws: the turn goes on whatever Cloud.ru says.
+ */
+export async function prewarmBrowserPool(now = new Date()) {
+  try {
+    const hosts = await listBrowserHosts();
+    if (hosts.some((host) => host.state === "ready" || onItsWayUp(host))) {
+      return;
+    }
+    const draining = hosts.find(
+      (host) => host.state === "draining" && host.address !== null
+    );
+    if (draining !== undefined) {
+      await backInService(draining, now);
+      return;
+    }
+    await placeBrowserSandbox(now);
+  } catch (error) {
+    console.warn("[browser-pool] the pool could not be warmed up", {
+      cause: error,
+    });
+  }
+}
+
+/**
+ * About how many minutes a sandbox start waits for its host now, and why,
+ * as the person hears it (`agent/lib/browser-use/queue.ts`): a host in
+ * service starts a sandbox in seconds; a sleeping one wakes in a minute and
+ * a half; a new one is up about six minutes after its create (three after
+ * its VM runs), so one on its way is told what is left of that, and a
+ * create held back after a failed boot (`createCooldownMs`) adds its wait.
+ * A sleeping host set up otherwise than a new one is replaced, not woken.
+ */
+export async function browserPoolWait(now = new Date()) {
+  const hosts = await listBrowserHosts();
+  if (
+    hosts.some(
+      (host) =>
+        (host.state === "ready" || host.state === "draining") &&
+        host.address !== null
+    )
+  ) {
+    return { minutes: 1, phase: "ready" as const };
+  }
+  if (
+    hosts.some(
+      (host) =>
+        host.state === "waking" ||
+        (host.state === "stopped" && onCurrentBoot(host))
+    )
+  ) {
+    return { minutes: wakeMinutes, phase: "waking" as const };
+  }
+  const coming = hosts.find(
+    (host) => host.state === "creating" || host.state === "booting"
+  );
+  if (coming !== undefined) {
+    // From its create, or from its VM running for one already booting.
+    const total = coming.state === "creating" ? newHostMinutes : bootingMinutes;
+    const left = Math.ceil(
+      (coming.stateChangedAt.getTime() + total * 60_000 - now.getTime()) /
+        60_000
+    );
+    return {
+      minutes: Math.min(Math.max(left, 2), newHostMinutes),
+      phase: "new" as const,
+    };
+  }
+  const cooling = Math.max(
+    0,
+    ...hosts.map(
+      (host) => (host.createBlockedUntil?.getTime() ?? 0) - now.getTime()
+    )
+  );
+  return {
+    minutes: newHostMinutes + Math.ceil(cooling / 60_000),
+    phase: "new" as const,
+  };
+}
+
+/**
+ * Power a sleeping host on for a placement, under its lease. One no longer
+ * on the current bundle, root or runtime is deleted instead, and the slot
+ * it gives back takes a new host. How long the errand should wait.
+ */
+async function wakeBrowserHost(host: BrowserHost, now: Date) {
+  const claimed = await claimBrowserHostLease(host.id, now, leaseMs);
+  if (claimed === undefined) return hostBootingRetryMs;
+  try {
+    if (claimed.state !== "stopped") return hostBootingRetryMs;
+    if (!onCurrentBoot(claimed) || claimed.vmId === null) {
+      await removeHost(claimed, now);
+      return hostBootingRetryMs;
+    }
+    const cloud = await readCloudRuVm(claimed.vmId);
+    if (cloud === undefined) {
+      await writeHeld(
+        claimed,
+        { lastError: "The VM is gone from Cloud.ru.", state: "deleting" },
+        now
+      );
+      return hostBootingRetryMs;
+    }
+    if (cloud.state !== "running") {
+      try {
+        await setCloudRuVmPower(cloud.id, "power_on");
+      } catch (error) {
+        // Still powering off, or Cloud.ru busy: the next try asks again.
+        console.warn("[browser-pool] a sleeping host did not power on", {
+          cause: error,
+          hostId: claimed.id,
+          state: cloud.state,
+        });
+        return hostBootingRetryMs;
+      }
+    }
+    await writeHeld(claimed, { lastError: null, state: "waking" }, now);
+    return hostWakeRetryMs;
+  } finally {
+    await releaseBrowserHostLease(claimed.id, claimed.leaseUntil ?? undefined);
+  }
 }
 
 /**
@@ -313,16 +560,18 @@ async function backInService(host: BrowserHost, now: Date) {
 
 /**
  * Look after every host once: follow a new one up, check a ready one's
- * `hostd` and its Cloud.ru VM, drain and delete an empty one, delete a
- * failed one. Never throws; a host another step holds is left for the next
- * round.
+ * `hostd` and its Cloud.ru VM, drain and delete an empty one (but those
+ * BROWSER_HOST_MIN_WARM keeps, `keptWarm`), delete a failed one; then wake
+ * or create a host if fewer than the minimum are up (`keepWarmHostsUp`).
+ * Never throws; a host another step holds is left for the next round.
  */
 export async function reconcileBrowserHosts(now = new Date()) {
   const hosts = await listBrowserHosts();
+  const warm = keptWarm(hosts, now);
   await Promise.all(
     hosts.map(async (host) => {
       try {
-        await reconcileBrowserHost(host.id, now);
+        await reconcileBrowserHost(host.id, now, warm.has(host.id));
       } catch (error) {
         console.warn("[browser-pool] the host could not be reconciled", {
           cause: error,
@@ -332,9 +581,107 @@ export async function reconcileBrowserHosts(now = new Date()) {
       }
     })
   );
+  try {
+    await keepWarmHostsUp(now);
+  } catch (error) {
+    console.warn("[browser-pool] a host could not be kept warm", {
+      cause: error,
+    });
+  }
 }
 
-async function reconcileBrowserHost(id: string, now: Date) {
+/**
+ * How many hosts BROWSER_HOST_MIN_WARM keeps up at `now`: none outside
+ * BROWSER_HOST_WARM_HOURS (Moscow time) or while the pool is not configured
+ * (hosts left over are only looked after then), and never more than
+ * BROWSER_HOST_MAX.
+ */
+function warmHostsWanted(now: Date) {
+  const wanted = Math.min(env.BROWSER_HOST_MIN_WARM, env.BROWSER_HOST_MAX);
+  if (wanted === 0 || !browserPoolConfigured()) return 0;
+  const hours = env.BROWSER_HOST_WARM_HOURS;
+  if (hours === undefined) return wanted;
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      hourCycle: "h23",
+      timeZone: warmHoursTimeZone,
+    }).format(now)
+  );
+  const inside =
+    hours.from < hours.to
+      ? hour >= hours.from && hour < hours.to
+      : hour >= hours.from || hour < hours.to;
+  return inside ? wanted : 0;
+}
+
+/**
+ * Whether the host counts towards BROWSER_HOST_MIN_WARM: in service, set up
+ * as a new host would be now, with the current sandbox root. A host on an
+ * older bundle, root or runtime does not, so it still empties and goes, and
+ * a current one takes its place.
+ */
+function warmable(host: BrowserHost) {
+  return (
+    (host.state === "ready" || host.state === "draining") &&
+    host.address !== null &&
+    onCurrentBoot(host) &&
+    !outdatedRoot(host.capacity)
+  );
+}
+
+/**
+ * The hosts this round keeps in service however long they have been empty:
+ * the BROWSER_HOST_MIN_WARM warmable ones a placement would fill first.
+ */
+function keptWarm(hosts: readonly BrowserHost[], now: Date) {
+  const wanted = warmHostsWanted(now);
+  if (wanted === 0) return new Set<string>();
+  return new Set(
+    hosts
+      .filter(warmable)
+      .toSorted(
+        (a, b) =>
+          Number(a.state === "draining") - Number(b.state === "draining") ||
+          (b.capacity?.committedMb ?? 0) - (a.capacity?.committedMb ?? 0)
+      )
+      .slice(0, wanted)
+      .map((host) => host.id)
+  );
+}
+
+/**
+ * When a create kept warm last made no host, the next waits until then: a
+ * create Cloud.ru refuses (quota) would otherwise be asked for every minute.
+ */
+let warmCreateAfter = 0;
+
+/**
+ * Fewer hosts up, or on their way up, than BROWSER_HOST_MIN_WARM: wake a
+ * sleeping one on the current boot config, or create one in a free slot.
+ * One host a round. No slot free means a host on an older config holds it
+ * until it empties and goes; nothing is created past BROWSER_HOST_MAX.
+ */
+async function keepWarmHostsUp(now: Date) {
+  const wanted = warmHostsWanted(now);
+  if (wanted === 0) return;
+  const hosts = await listBrowserHosts();
+  const up = hosts.filter((host) => warmable(host) || onItsWayUp(host));
+  if (up.length >= wanted) return;
+  const sleeping = hosts.find(
+    (host) => host.state === "stopped" && onCurrentBoot(host)
+  );
+  if (sleeping !== undefined) {
+    await wakeBrowserHost(sleeping, now);
+    return;
+  }
+  if (hosts.length >= env.BROWSER_HOST_MAX) return;
+  if (now.getTime() < warmCreateAfter) return;
+  const wait = await createBrowserHost(hosts, new Map(), now);
+  warmCreateAfter = now.getTime() + wait;
+}
+
+async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
   const host = await claimBrowserHostLease(id, now, leaseMs);
   if (host === undefined) return;
   try {
@@ -349,7 +696,15 @@ async function reconcileBrowserHost(id: string, now: Date) {
       }
       case "ready":
       case "draining": {
-        await tendReady(host, now);
+        await tendReady(host, now, keepWarm);
+        break;
+      }
+      case "stopped": {
+        await tendStopped(host, now);
+        break;
+      }
+      case "waking": {
+        await tendWaking(host, now);
         break;
       }
       case "failed":
@@ -409,7 +764,11 @@ async function createBrowserHost(
       cloudInit,
       name: slot.vmName,
     });
-    await writeHeld(slot, { vmId: created.id }, now);
+    await writeHeld(
+      slot,
+      { bootConfig: browserHostBootConfig(), vmId: created.id },
+      now
+    );
     return hostCreateRetryMs;
   } catch (error) {
     if (error instanceof CloudRuUnsentError) {
@@ -444,10 +803,11 @@ async function createBrowserHost(
       return poolFullRetryMs;
     }
     // The answer was lost: the VM may exist, and the reconcile finds it by
-    // the slot's name.
+    // the slot's name. If it does, it boots with this cloud-init.
     await writeHeld(
       slot,
       {
+        bootConfig: browserHostBootConfig(),
         lastError: `The create of ${slot.vmName} got no answer; the VM may exist.`,
       },
       now
@@ -606,9 +966,12 @@ async function tendBooting(host: BrowserHost, now: Date) {
 /**
  * A ready (or draining) host: still the VM Bro created at the address it
  * knows, `hostd` answering, and either holding sandboxes or empty. Empty
- * for the idle time it drains; still empty a round later it is deleted.
+ * for the idle time it drains; still empty a round later it sleeps or is
+ * deleted. One BROWSER_HOST_MIN_WARM keeps (`keepWarm`) stays in service
+ * however long it is empty, a drained one comes back, and its empty time
+ * runs on: once the warm hours end it drains at the next round.
  */
-async function tendReady(host: BrowserHost, now: Date) {
+async function tendReady(host: BrowserHost, now: Date, keepWarm: boolean) {
   const cloud = host.vmId === null ? undefined : await readCloudRuVm(host.vmId);
   if (cloud === undefined || cloud.host !== host.address) {
     // Deleted by hand, or its address moved: an answer at the old address
@@ -643,7 +1006,26 @@ async function tendReady(host: BrowserHost, now: Date) {
     return;
   }
   const emptySince = host.emptySince ?? now;
+  if (keepWarm && !outdated) {
+    await writeHeld(
+      host,
+      { capacity: held, emptySince, lastSeenAt: now, state: "ready" },
+      now
+    );
+    return;
+  }
   if (host.state === "draining") {
+    if (!outdated && onCurrentBoot(host) && host.vmId !== null) {
+      // Written first: a power-off whose answer is lost is asked for again
+      // by `tendStopped`, and a placement never takes a stopped host.
+      await writeHeld(
+        host,
+        { capacity: held, lastSeenAt: now, state: "stopped" },
+        now
+      );
+      await setCloudRuVmPower(host.vmId, "power_off");
+      return;
+    }
     const deleting = await writeHeld(
       host,
       { capacity: held, lastSeenAt: now, state: "deleting" },
@@ -666,6 +1048,79 @@ async function tendReady(host: BrowserHost, now: Date) {
     },
     now
   );
+}
+
+/**
+ * A sleeping host: powered off, or asked to be. One no longer on the current
+ * bundle, root or runtime, or asleep past `sleepLimitMs`, is deleted; one
+ * whose VM is gone loses its record (and address); a power-off Cloud.ru did
+ * not carry out is asked for again.
+ */
+async function tendStopped(host: BrowserHost, now: Date) {
+  if (
+    !onCurrentBoot(host) ||
+    host.vmId === null ||
+    overdue(host, now, sleepLimitMs)
+  ) {
+    await removeHost(host, now);
+    return;
+  }
+  const cloud = await readCloudRuVm(host.vmId);
+  if (cloud === undefined) {
+    await writeHeld(
+      host,
+      { lastError: "The VM is gone from Cloud.ru.", state: "deleting" },
+      now
+    );
+    return;
+  }
+  if (cloud.state === "running" && overdue(host, now, powerRetryMs)) {
+    await setCloudRuVmPower(cloud.id, "power_off");
+  }
+}
+
+/**
+ * A sleeping host powered on for a sandbox: ready once `hostd` says so, at
+ * the address it slept with. A power-on Cloud.ru did not carry out is asked
+ * for again; one that is not back in `wakeFailAfterMs` fails, and its slot
+ * goes to a new host without the cool-down of a failed first boot.
+ */
+async function tendWaking(host: BrowserHost, now: Date) {
+  const health = await readBrowserHostHealth(host).catch(() => undefined);
+  if (health?.stage === "ready") {
+    const capacity = await readBrowserHostCapacity(host);
+    await writeHeld(
+      host,
+      {
+        capacity: summary(capacity),
+        emptySince: now,
+        lastError: null,
+        lastSeenAt: now,
+        state: "ready",
+      },
+      now
+    );
+    return;
+  }
+  const cloud = host.vmId === null ? undefined : await readCloudRuVm(host.vmId);
+  if (
+    cloud === undefined ||
+    (cloud.host !== undefined && cloud.host !== host.address)
+  ) {
+    await fail(host, "The host's VM is gone or has another address.", now);
+    return;
+  }
+  if (overdue(host, now, wakeFailAfterMs)) {
+    await fail(
+      host,
+      `The host was not back ${String(wakeFailAfterMs / 60_000)} minutes after it was powered on.`,
+      now
+    );
+    return;
+  }
+  if (cloud.state === "stopped" && overdue(host, now, powerRetryMs)) {
+    await setCloudRuVmPower(cloud.id, "power_on");
+  }
 }
 
 /**

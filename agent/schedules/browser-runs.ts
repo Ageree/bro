@@ -33,6 +33,7 @@ import {
   hasLiveBrowserRuns,
   listOverdueBrowserRunReports,
   listPendingBrowserRunReports,
+  nextOwnBrowserStarts,
   parkBrowserRunForRetry,
   otherRunHoldsBrowser,
   parkQueuedBrowserRun,
@@ -54,7 +55,10 @@ const pollLimit = 25;
  * this many; past it, the runs checked longest ago go first next minute.
  */
 const maximumPollBatches = 8;
-/** Browsers free up one run at a time; a minute seldom frees more. */
+/**
+ * Browsers free up one run at a time; a minute seldom frees more. The cap is
+ * the tick's, shared by its queue stage and its live watch.
+ */
 const maximumQueueStartsPerPoll = 5;
 /** Pages kept for the person are few; each stop is two reads and a stop. */
 const idleClosesPerPoll = 10;
@@ -81,6 +85,11 @@ const livePollIntervalMs = 4_000;
  * promise, so a watch that overran would cost the next minute its own.
  */
 const liveWatchMs = 45_000;
+/**
+ * The shortest sleep of the live watch, so that a claim that keeps failing
+ * on an errand due now cannot turn the watch into a busy loop.
+ */
+const minimumWatchSleepMs = 1_000;
 
 /**
  * How long a tick waits on one open run, and on one stage, before it moves
@@ -122,26 +131,27 @@ async function pollBrowserRuns(delivery: BrowserRunDelivery) {
   }
 }
 
+/** What is left of a tick's queue starts (`maximumQueueStartsPerPoll`). */
+interface QueueStarts {
+  left: number;
+}
+
 async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   const now = new Date();
   const watchUntil = now.getTime() + liveWatchMs;
+  const starts: QueueStarts = { left: maximumQueueStartsPerPoll };
   // Each stage stands on its own: one that throws must not cost the rest of
   // the tick — the redelivery, the overdue watch and the live watch least of
   // all, which are what gets a report out when something upstream went wrong.
   await pollStage("settle", () => reconcileUnsettledBrowserRuns(delivery, now));
   // Errands parked on an anti-bot wall get their next attempt when it is due.
-  await pollStage("retry", async () => {
-    const retries = await claimDueBrowserRunRetries(now, pollLimit);
-    await Promise.all(
-      retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
-    );
-  });
+  await pollStage("retry", () => retryDueWalledRuns(delivery, now));
   // A page kept for the person that has sat idle is stopped by Bro before
   // the cloud ends it and loses its sign-ins.
   await pollStage("idle", () => closeIdleBrowsers(now));
   // Settling and the idle stops freed browsers and sign-ins; errands waiting
   // for either start now.
-  await pollStage("queue", () => drainBrowserQueue(delivery, now));
+  await pollStage("queue", () => drainBrowserQueue(delivery, now, starts));
   await pollStage("spend", () => reconcileSpendReservations(now));
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
@@ -151,7 +161,8 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   // idle ones are stopped. Only after the reports: every call here goes to
   // Cloud.ru or to a VM, and a Cloud.ru outage that held each of them to its
   // timeout would otherwise hold every person's report behind it, Browser
-  // Use's included. An errand whose VM came up starts on the next tick.
+  // Use's included. An errand whose VM came up starts when its next try is
+  // due: in this tick's live watch, or on the next tick.
   if (browserVmReconcileConfigured()) {
     await pollStage(
       "vms",
@@ -159,7 +170,7 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
       vmStageWaitMs
     );
   }
-  await watchLiveBrowserRuns(delivery, watchUntil);
+  await watchLiveBrowserRuns(delivery, watchUntil, starts);
 }
 
 async function pollStage(
@@ -228,21 +239,87 @@ async function redeliverPendingReports(delivery: BrowserRunDelivery) {
 
 /**
  * Between ticks, look at the open runs every few seconds and settle the ones
- * that finished, and send again a report whose turn failed. Nothing open,
- * nothing to watch: the tick ends at once.
+ * that finished, and send again a report whose turn failed. Errands on a
+ * workspace's own browser are started here too once their try is due — a
+ * queued start or an anti-bot retry — so one its browser asked to come back
+ * in 15 s starts in about 15 s rather than at the next minute tick; Browser
+ * Use's errands keep to the ticks, where its cap is asked once a minute.
+ * The starts go through the same claims as the tick's (`retry_at` leases)
+ * and count against the tick's cap. Nothing open and nothing due before the
+ * watch ends, nothing to watch: the tick ends at once.
  */
 async function watchLiveBrowserRuns(
   delivery: BrowserRunDelivery,
-  until: number
+  until: number,
+  starts: QueueStarts
 ): Promise<void> {
   if (Date.now() + livePollIntervalMs > until) return;
-  if (!(await safeHasLiveBrowserRuns())) return;
-  await new Promise((resolve) => setTimeout(resolve, livePollIntervalMs));
-  await pollStage("watch", async () => {
-    await reconcileUnsettledBrowserRuns(delivery, new Date());
-    await redeliverPendingReports(delivery);
-  });
-  return watchLiveBrowserRuns(delivery, until);
+  const [live, due] = await Promise.all([
+    safeHasLiveBrowserRuns(),
+    dueOwnBrowserStarts(until, starts),
+  ]);
+  const firstDue = Math.min(
+    due.queued ?? Number.POSITIVE_INFINITY,
+    due.retry ?? Number.POSITIVE_INFINITY
+  );
+  if (!live && firstDue === Number.POSITIVE_INFINITY) return;
+  // A few seconds while runs are open, else until the first start is due.
+  const wait = Math.min(
+    live ? livePollIntervalMs : Number.POSITIVE_INFINITY,
+    firstDue - Date.now(),
+    until - Date.now()
+  );
+  await new Promise((resolve) =>
+    setTimeout(resolve, Math.max(wait, minimumWatchSleepMs))
+  );
+  if (live) {
+    await pollStage("watch", async () => {
+      await reconcileUnsettledBrowserRuns(delivery, new Date());
+      await redeliverPendingReports(delivery);
+    });
+  }
+  // Bounded by the watch's own end: a start still going past it keeps its
+  // claim, so no later drain starts that errand again.
+  const startWaitMs = Math.max(until - Date.now(), livePollIntervalMs);
+  if ((due.retry ?? Number.POSITIVE_INFINITY) <= Date.now()) {
+    await pollStage(
+      "watch-retry",
+      () => retryDueWalledRuns(delivery, new Date(), { vmOnly: true }),
+      startWaitMs
+    );
+  }
+  if ((due.queued ?? Number.POSITIVE_INFINITY) <= Date.now()) {
+    await pollStage(
+      "watch-queue",
+      () => drainBrowserQueue(delivery, new Date(), starts, true),
+      startWaitMs
+    );
+  }
+  return watchLiveBrowserRuns(delivery, until, starts);
+}
+
+/**
+ * When the first own-browser start the watch can make falls due before it
+ * ends, in epoch milliseconds: a queued one only while the tick has starts
+ * left. Nothing on a failed read, as with the open runs.
+ */
+async function dueOwnBrowserStarts(until: number, starts: QueueStarts) {
+  try {
+    const next = await within(
+      nextOwnBrowserStarts(new Date(until)),
+      stageWaitMs
+    );
+    if (next.timedOut) return {};
+    return {
+      queued: starts.left > 0 ? next.value.queued?.getTime() : undefined,
+      retry: next.value.retry?.getTime(),
+    };
+  } catch (error) {
+    console.warn("[browser-use] due own-browser errands could not be read", {
+      cause: error,
+    });
+    return {};
+  }
 }
 
 async function safeHasLiveBrowserRuns() {
@@ -368,6 +445,22 @@ async function safeExpire(
 const retryAgainAfterMs = 60_000;
 
 /**
+ * Start the next attempt of every errand parked on an anti-bot wall whose
+ * attempt is due; with `vmOnly`, only of errands on a workspace's own
+ * browser, which the live watch starts between ticks.
+ */
+async function retryDueWalledRuns(
+  delivery: BrowserRunDelivery,
+  now: Date,
+  options: { readonly vmOnly?: boolean } = {}
+) {
+  const retries = await claimDueBrowserRunRetries(now, pollLimit, options);
+  await Promise.all(
+    retries.map((retry) => retryWalledBrowserRun(delivery, retry, now))
+  );
+}
+
+/**
  * A step that throws here would otherwise leave the errand until the claim's
  * lease runs out. It is parked again for the next poll instead — marked as
  * out of attempts when it was, so that poll reports the wall rather than
@@ -409,16 +502,30 @@ async function retryWalledBrowserRun(
  * so the drain goes on with those alone (`vmOnly`). A start that fails
  * otherwise is put back in line for the next minute rather than lost; the
  * queue window closes it eventually.
+ *
+ * Each claim takes one of the tick's starts before it is made, and gives it
+ * back when the errand started nothing, so the tick's queue stage and its
+ * live watch together never start more than the cap.
  */
 async function drainBrowserQueue(
   delivery: BrowserRunDelivery,
   now: Date,
-  startsLeft = maximumQueueStartsPerPoll,
+  starts: QueueStarts,
   vmOnly = false
 ): Promise<void> {
-  if (startsLeft <= 0) return;
-  const row = await claimNextQueuedBrowserRun(now, { vmOnly });
-  if (!row) return;
+  if (starts.left <= 0) return;
+  starts.left -= 1;
+  let row: Awaited<ReturnType<typeof claimNextQueuedBrowserRun>>;
+  try {
+    row = await claimNextQueuedBrowserRun(now, { vmOnly });
+  } catch (error) {
+    starts.left += 1;
+    throw error;
+  }
+  if (!row) {
+    starts.left += 1;
+    return;
+  }
   let result: Awaited<ReturnType<typeof startQueuedBrowserRun>>;
   try {
     result = await startQueuedBrowserRun(row, now);
@@ -437,7 +544,13 @@ async function drainBrowserQueue(
         runId: row.id,
       });
     }
-    return drainBrowserQueue(delivery, now, startsLeft - 1, vmOnly);
+    return drainBrowserQueue(delivery, now, starts, vmOnly);
+  }
+  if (result.status === "started") {
+    console.info("[browser-use] a queued errand started", {
+      runId: row.id,
+      waitedMs: Date.now() - row.createdAt.getTime(),
+    });
   }
   if (
     result.status === "expired" ||
@@ -451,17 +564,18 @@ async function drainBrowserQueue(
   // Browser Use is full, or out of credits, for every errand of its own;
   // the VMs' errands still start.
   if (result.status === "busy" || result.status === "no_credits") {
+    starts.left += 1;
     if (vmOnly) return;
-    return drainBrowserQueue(delivery, now, startsLeft, true);
+    return drainBrowserQueue(delivery, now, starts, true);
   }
   // An errand still waiting on its workspace's other browser, or on its
   // workspace's VM, started nothing and took no shared slot; it is parked
-  // past this tick, so the next claim is another errand. Nor did one closed
+  // past this try, so the next claim is another errand. Nor did one closed
   // for want of Browser Use on a deployment without it, which left the line.
   if (result.status === "waiting" || result.status === "unavailable") {
-    return drainBrowserQueue(delivery, now, startsLeft, vmOnly);
+    starts.left += 1;
   }
-  return drainBrowserQueue(delivery, now, startsLeft - 1, vmOnly);
+  return drainBrowserQueue(delivery, now, starts, vmOnly);
 }
 
 async function redeliverBrowserRunReport(

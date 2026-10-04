@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
 import {
@@ -15,6 +14,7 @@ import {
   findRecentBrowserUseRunByTaskLine,
   readBrowserUseRun,
 } from "./client";
+import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { retryProxySettings } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 
@@ -30,8 +30,10 @@ export const maximumCaptchaAttempts = 5;
 const retryDelaysMinutes = [2, 5, 9, 14] as const;
 // On the workspace's own VM a retry goes out through another residential
 // exit, and a site that blocked the address (Avito's «Доступ ограничен:
-// проблема с IP») lets the next one in at once: waiting buys nothing there.
-const vmRetryDelaysMinutes = [1, 2, 5, 9] as const;
+// проблема с IP») lets the next one in at once: waiting buys nothing there,
+// so the first retry is due as soon as the wall is reported, and the
+// poller's live watch starts it within seconds rather than a minute later.
+const vmRetryDelaysMinutes = [0, 1, 2, 5] as const;
 
 export const captchaRetryWindowMinutes = retryDelaysMinutes.reduce(
   (sum, minutes) => sum + minutes,
@@ -149,7 +151,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
     return { status: "exhausted" as const };
   }
   const attempt = row.captchaAttempt + 1;
-  const onVm = row.profileId !== null && isBrowserVmId(row.profileId);
+  const onVm = onOwnBrowser(row.profileId);
   try {
     const reference = retryReference(row.id, attempt);
     let run: Pick<
@@ -211,10 +213,11 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
     } catch (error) {
       // The workspace's own VM starting, or busy with another errand of
       // its workspace, ran no attempt at all: the attempt keeps its number
-      // and waits as long as the VM asked, while the wall is recent.
+      // and waits as long as the VM asked, while the wall is recent — 15 s
+      // at least, as a queued errand on its own browser does.
       const vmWaitMs =
         onVm && starting && browserUseBusy(error)
-          ? Math.max(error.retryAfterMs ?? 0, uncertainStartRetryMs)
+          ? Math.max(error.retryAfterMs ?? 0, ownBrowserRetryMs)
           : undefined;
       // Only a clear refusal (4xx) of the start is a failed attempt. A
       // timeout, a dropped connection or a 5xx on the start says nothing

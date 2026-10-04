@@ -261,13 +261,31 @@ describe("browser VM backend choice", () => {
       BROWSER_HOST_FLAVOR: "gen-4-16",
       BROWSER_HOST_IDLE_MINUTES: 60,
       BROWSER_HOST_MAX: 1,
+      BROWSER_HOST_MIN_WARM: 0,
       BROWSER_HOST_NAME_PREFIX: "bro-host-",
       BROWSER_HOST_RUNTIME: "runc",
       BROWSER_SANDBOX_MEMORY_MB: 3072,
       CLOUDRU_S3_TENANT_ID: "test-tenant",
     });
+    expect(env.BROWSER_HOST_WARM_HOURS).toBeUndefined();
+
+    const { env: warm } = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        BROWSER_HOST_MIN_WARM: "1",
+        BROWSER_HOST_WARM_HOURS: " 08-02 ",
+      },
+      async () => import("@shared/environment")
+    );
+    expect(warm.BROWSER_HOST_MIN_WARM).toBe(1);
+    expect(warm.BROWSER_HOST_WARM_HOURS).toEqual({ from: 8, to: 2 });
 
     for (const settings of [
+      { BROWSER_HOST_MIN_WARM: "-1" },
+      { BROWSER_HOST_MIN_WARM: "1.5" },
+      { BROWSER_HOST_WARM_HOURS: "8-2" },
+      { BROWSER_HOST_WARM_HOURS: "08-24" },
+      { BROWSER_HOST_WARM_HOURS: "08-08" },
       { BROWSER_SANDBOX_ROOTFS: `rootfs/v7.tar.zst:${"01".repeat(32)}` },
       { BROWSER_HOST_BUNDLE: "hosts/b-2.tgz:abc" },
       { BROWSER_HOST_RUNSC_RELEASE: "latest" },

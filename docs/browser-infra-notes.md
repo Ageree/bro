@@ -126,7 +126,8 @@
   `BROWSER_VM_PROXY` облачной сессии 01.10) — 403 «Can not use -session- on
   rotating ports range», и проверка выхода worker отвечает `error`.
 - Причина пустой проверки выхода — `exit.error` worker (строка
-  `[browser-vm] the proxy exit…` в журнале eve): до 02.10 её не писали, и
+  `[browser-vm] the proxy exit checked` в журнале eve, с 04.10 на каждую
+  проверку, с `durationMs`, `latencyMs`, `mbps`): до 02.10 её не писали, и
   отказ прокси сутки выглядел как «нет русского выхода». Отказ логина
   (402/403/407 на CONNECT) ротацией не лечится: Бро шлёт тревогу
   `browser-vm-proxy` и ждёт (`proxyRefusal` в `agent/lib/browser-vm/lifecycle.ts`).

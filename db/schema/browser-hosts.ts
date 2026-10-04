@@ -12,14 +12,18 @@ import {
  * Where a host of the browser pool is in its life (docs/browser-pool.md):
  * `creating` until Cloud.ru gave it an address, `booting` while cloud-init
  * sets it up, `ready` to take sandboxes, `draining` when it has been empty
- * for the idle time and takes no new sandbox, `deleting` until Cloud.ru no
- * longer has it, `failed` when it stopped answering or never came up.
+ * for the idle time and takes no new sandbox, `stopped` when it was then
+ * powered off with its disk and address kept, `waking` while it powers on
+ * again for a sandbox, `deleting` until Cloud.ru no longer has it, `failed`
+ * when it stopped answering or never came up.
  */
 export const browserHostStates = [
   "creating",
   "booting",
   "ready",
   "draining",
+  "stopped",
+  "waking",
   "deleting",
   "failed",
 ] as const;
@@ -47,7 +51,8 @@ interface BrowserHostCapacity {
  * A Cloud.ru VM that runs people's browsers as sandboxes (plain `runc`
  * containers, or gVisor). It holds
  * nobody's data for longer than a sandbox lives there, so a host is created
- * when a sandbox needs room and deleted once it has been empty for a while.
+ * when a sandbox needs room, powered off once it has been empty for a while
+ * and woken for the next sandbox, and deleted when it is outdated or broken.
  * The id is also the VM's name and the host's identity in its token key
  * (`agent/lib/browser-pool/keys.ts`); ids are the slots `bro-host-1` to
  * `bro-host-<BROWSER_HOST_MAX>` (BROWSER_HOST_NAME_PREFIX, for a test stand,
@@ -68,6 +73,11 @@ export const browserHosts = pgTable(
     // Deleted with the VM: a floating IP left behind stays billed.
     floatingIpId: text("floating_ip_id"),
     capacity: jsonb("capacity").$type<BrowserHostCapacity>(),
+    // What the host booted with (`browserHostBootConfig`): the bundle, the
+    // sandbox root and the runtime. Only a host still on the current ones
+    // is powered off when idle, to be woken later; any other is deleted.
+    // Null for hosts created before hosts slept: they are deleted.
+    bootConfig: text("boot_config"),
     // When `hostd` last answered: a ready host silent for long is failed.
     lastSeenAt: timestamp("last_seen_at", {
       mode: "date",
@@ -132,7 +142,7 @@ export const browserHosts = pgTable(
   (table) => [
     check(
       "browser_hosts_state_check",
-      sql`${table.state} IN ('creating', 'booting', 'ready', 'draining', 'deleting', 'failed')`
+      sql`${table.state} IN ('creating', 'booting', 'ready', 'draining', 'stopped', 'waking', 'deleting', 'failed')`
     ),
     check("browser_hosts_id_check", sql`${table.id} ~ '^[a-z0-9-]{1,63}$'`),
     index("browser_hosts_state_idx").on(table.state, table.stateChangedAt),

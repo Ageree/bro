@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import type * as timersModule from "node:timers/promises";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import type * as cloudRuModule from "@agent/lib/browser-vm/cloudru";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 import type { browserVms } from "@db/schema/browser-vms";
@@ -1965,6 +1973,122 @@ describe("routing the VM's browser through a Russian exit", () => {
       ip: "95.24.1.9",
       org: "AS1 Test",
     });
+  });
+
+  it("logs each exit check with how long it took and how fast the exit was, never the proxy login", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    // Each check takes what the worker's probes take through the exit.
+    vi.useFakeTimers({ now, toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    worker.setBrowserVmWorkerProxy
+      .mockImplementationOnce(() => {
+        vi.advanceTimersByTime(4_300);
+        return Promise.resolve(
+          proxySetup({
+            country: "RU",
+            ip: "95.24.1.1",
+            latencyMs: 900,
+            mbps: 0.8,
+          })
+        );
+      })
+      .mockImplementationOnce(() => {
+        // The megabyte timed out: 25 s on top of the address.
+        vi.advanceTimersByTime(25_650);
+        return Promise.resolve({
+          ...proxySetup({ country: "RU", ip: "95.24.1.2" }),
+          exit: {
+            country: "RU",
+            ip: "95.24.1.2",
+            latencyMs: 650,
+            speedError: "TimeoutError: ",
+          },
+        });
+      });
+
+    await lifecycle.prepareBrowserVmSession(vm, now);
+
+    // The slow exit, moved on from: one line.
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "[browser-vm] the proxy exit checked",
+      {
+        country: "RU",
+        durationMs: 4_300,
+        error: null,
+        kept: false,
+        latencyMs: 900,
+        mbps: 0.8,
+        rotated: false,
+        rotation: 0,
+        speedError: null,
+        workspaceId,
+      }
+    );
+    // The next rotation, kept although its speed is unknown: one line.
+    expect(info).toHaveBeenCalledWith("[browser-vm] the proxy exit checked", {
+      country: "RU",
+      durationMs: 25_650,
+      error: null,
+      kept: true,
+      latencyMs: 650,
+      mbps: null,
+      rotated: true,
+      rotation: 1,
+      speedError: "TimeoutError: ",
+      workspaceId,
+    });
+    const logged = JSON.stringify([...warn.mock.calls, ...info.mock.calls]);
+    expect(logged).not.toContain("user-session");
+    expect(logged).not.toContain("pa:ss");
+    expect(logged).not.toContain("proxy.example.test");
+    expect(logged).not.toContain("95.24.1.");
+  });
+
+  it("logs a check the worker never answered with how long it waited, and the error's name alone", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers({ now, toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const timeout = new Error(
+      "POST http://user-session-x:pa:ss@proxy.example.test timed out"
+    );
+    timeout.name = "TimeoutError";
+    worker.setBrowserVmWorkerProxy.mockImplementationOnce(() => {
+      vi.advanceTimersByTime(60_000);
+      return Promise.reject(timeout);
+    });
+
+    await expect(lifecycle.prepareBrowserVmSession(vm, now)).rejects.toBe(
+      timeout
+    );
+
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "[browser-vm] the proxy exit checked",
+      {
+        durationMs: 60_000,
+        error: "TimeoutError",
+        kept: false,
+        rotated: false,
+        rotation: 0,
+        workspaceId,
+      }
+    );
   });
 
   it("moves a slow Russian exit to the next rotation, and takes a slow one when none is left", async () => {

@@ -17,6 +17,7 @@ import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseMailCode from "@agent/lib/browser-use/mail-code";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
+import type * as browserPoolHosts from "@agent/lib/browser-pool/hosts";
 import type * as browserVmBackend from "@agent/lib/browser-vm/backend";
 import type * as browserRunsService from "@db/services/browser-runs";
 import type * as browserVmsService from "@db/services/browser-vms";
@@ -312,6 +313,15 @@ const usesBrowserVm = vi.hoisted(() =>
     Promise.resolve(false)
   )
 );
+// What the pool says a sandbox start waits for: its hosts are not here.
+const browserPoolWait = vi.hoisted(() =>
+  vi.fn<
+    () => Promise<{
+      minutes: number;
+      phase: "new" | "ready" | "waking";
+    }>
+  >(() => Promise.resolve({ minutes: 1, phase: "ready" }))
+);
 const ensureBrowserVmRecord = vi.hoisted(() =>
   vi.fn<(workspaceId: string) => Promise<{ profileGeneration: number }>>(() =>
     Promise.resolve({ profileGeneration: 1 })
@@ -531,6 +541,10 @@ vi.mock("@db/services/browser-vms", async (importOriginal) => ({
   readBrowserVm,
 }));
 vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForErrand }));
+vi.mock("@agent/lib/browser-pool/hosts", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserPoolHosts>()),
+  browserPoolWait,
+}));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof scopeService>()),
   ensureScope,
@@ -3929,8 +3943,8 @@ describe("browser_task on a workspace's own browser VM", () => {
     readBrowserVm.mockResolvedValue(undefined);
     createBrowserUseRun.mockRejectedValueOnce(vmStarting());
     const firstStart = await startVmErrand();
-    // A parked sandbox of the pool has no VM of its own, and is back in
-    // about a minute.
+    // A parked sandbox of the pool has no VM of its own: it waits for its
+    // host, a minute on one in service, more for one that sleeps or is new.
     readBrowserVm.mockResolvedValue({
       sandboxState: "parked",
       state: "stopped",
@@ -3938,6 +3952,12 @@ describe("browser_task on a workspace's own browser VM", () => {
     });
     createBrowserUseRun.mockRejectedValueOnce(vmStarting());
     const parkedSandbox = await startVmErrand();
+    browserPoolWait.mockResolvedValueOnce({ minutes: 2, phase: "waking" });
+    createBrowserUseRun.mockRejectedValueOnce(vmStarting());
+    const sleepingHost = await startVmErrand();
+    browserPoolWait.mockResolvedValueOnce({ minutes: 6, phase: "new" });
+    createBrowserUseRun.mockRejectedValueOnce(vmStarting());
+    const newHost = await startVmErrand();
     readBrowserVm.mockResolvedValue({ state: "ready", vmId: "vm-1" });
     createBrowserUseRun.mockRejectedValueOnce(
       new BrowserUseError(
@@ -3951,7 +3971,7 @@ describe("browser_task on a workspace's own browser VM", () => {
 
     expect(poweringOn).toMatchObject({ startsInMinutes: 1, status: "queued" });
     expect(continuationNote(poweringOn)).toContain(
-      "Bro's own browser for the user is switched off between errands and is starting now, which takes about a minute"
+      "Bro's own browser for the user is switched off between errands and is starting now, which takes about 1 minute"
     );
     expect(firstStart).toMatchObject({ startsInMinutes: 6, status: "queued" });
     expect(parkedSandbox).toMatchObject({
@@ -3959,7 +3979,21 @@ describe("browser_task on a workspace's own browser VM", () => {
       status: "queued",
     });
     expect(continuationNote(firstStart)).toContain(
-      "is being set up for its very first start, which takes up to about six minutes"
+      "is being set up for its very first start, which takes about 6 minutes"
+    );
+    expect(sleepingHost).toMatchObject({
+      startsInMinutes: 2,
+      status: "queued",
+    });
+    expect(continuationNote(sleepingHost)).toContain(
+      "Bro's browser machine was asleep after a quiet spell and is waking up, which takes about 2 minutes"
+    );
+    expect(newHost).toMatchObject({ startsInMinutes: 6, status: "queued" });
+    expect(continuationNote(newHost)).toContain(
+      "is being set up anew, which takes about 6 minutes"
+    );
+    expect(continuationNote(newHost)).toContain(
+      "the errand begins in about 6 minutes"
     );
     // How long another errand takes is not known: no time is promised.
     expect(busyVm).toMatchObject({
@@ -3969,7 +4003,13 @@ describe("browser_task on a workspace's own browser VM", () => {
     expect(continuationNote(busyVm)).toContain(
       "runs one errand at a time and another errand of theirs is using it"
     );
-    for (const result of [poweringOn, firstStart, busyVm]) {
+    for (const result of [
+      poweringOn,
+      firstStart,
+      sleepingHost,
+      newHost,
+      busyVm,
+    ]) {
       expect(continuationNote(result)).not.toContain("cloud browser service");
       expect(continuationNote(result)).toContain(
         "Do not call browser_task start again for this errand"

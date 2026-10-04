@@ -14,7 +14,10 @@ import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
 import { withoutEmptyDeliveryMarker } from "../lib/delivery/empty";
 import { deliveryCompleteSentinel } from "../lib/delivery/fallback";
+import { earlyReplyPilotOfCaller } from "../lib/delivery/pilot";
 import {
+  headsUpDeliveredNotice,
+  opensWithHeadsUp,
   rewriteSendNotice,
   sendRefusal,
   sendRefusalSchema,
@@ -23,6 +26,7 @@ import {
   turnOpenedByBackgroundTask,
   turnSends,
 } from "../lib/delivery/turn-sends";
+import { stepStartedEventSchema } from "../lib/turn-kind/step";
 
 /** What a conversation channel can do with a delivered message. */
 interface ChannelDelivery {
@@ -140,13 +144,16 @@ function withoutBookkeeping(message: SentMessage): SentMessage | undefined {
  * report's turn past its answer (`reportPastAnswer`), and a send with only
  * bookkeeping in it is dropped as `sentinel` (`withoutBookkeeping`). A
  * message that goes out is recorded for the turn's card tools
- * (`markTurnDelivered`).
+ * (`markTurnDelivered`). In the early-reply pilot (`earlyReply`) a person's
+ * turn may open with one short heads-up, and its result tells the model the
+ * answer is still owed (`headsUpDeliveredNotice`).
  */
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
   pastAnswer: boolean,
   loadSkill: boolean,
-  taskReport: boolean
+  taskReport: boolean,
+  earlyReply: boolean
 ) {
   return defineTool({
     description:
@@ -156,7 +163,7 @@ function defineSendMessage(
       if (pastAnswer) return { skipped: "past" as const };
       const outgoing = withoutBookkeeping(message);
       if (!outgoing) return { skipped: "sentinel" as const };
-      const refused = sendRefusal(outgoing, turn);
+      const refused = sendRefusal(outgoing, turn, earlyReply);
       if (refused) return refused;
       markTurnDelivered(context.session);
       // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
@@ -179,9 +186,16 @@ function defineSendMessage(
             "Native quoted replies are unavailable on this channel, so it was delivered as an ordinary message.",
           ]
         : [];
+      // The same turn and verdict `execute` judged the send with.
+      const headsUp =
+        earlyReply &&
+        message.data !== undefined &&
+        opensWithHeadsUp(message.data, turn);
       return toolOutput.text(
         [
-          "The message was submitted to the active channel. Do not repeat or rephrase it, in assistant text or in another send_message. Send another message in this turn only with something new — a result of further work, another option, a number, a link, a question; when nothing new is left, end the turn now without calling any tool.",
+          headsUp
+            ? headsUpDeliveredNotice
+            : "The message was submitted to the active channel. Do not repeat or rephrase it, in assistant text or in another send_message. Send another message in this turn only with something new — a result of further work, another option, a number, a link, a question; when nothing new is left, end the turn now without calling any tool.",
           ...unsupported,
         ].join(" ")
       );
@@ -216,7 +230,7 @@ export default defineDynamic({
   events: {
     // Resolved before every model step, so send_message knows what the
     // current turn has already delivered.
-    "step.started": async (_event, context) => {
+    "step.started": async (event, context) => {
       const delivery = channelDelivery.get(context.channel.kind ?? "");
       const pastAnswer = reportPastAnswer(context);
       const send_message = defineSendMessage(
@@ -228,7 +242,13 @@ export default defineDynamic({
         // By the conversation's mark, not the files pilot alone: a report
         // carries the files' content after the flag is cleared too.
         turnOpenedByBackgroundTask(context.messages) &&
-          (await reportTurnHoldsFiles(context))
+          (await reportTurnHoldsFiles(context)),
+        // The verdict the model's resolver got for this turn, which tells
+        // the model to send the heads-up (`earlyReplyNote`).
+        await earlyReplyPilotOfCaller(
+          context,
+          stepStartedEventSchema.safeParse(event).data
+        )
       );
       const messageOnly = { send_message };
       const interactive = delivery

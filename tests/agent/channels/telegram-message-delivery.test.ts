@@ -2,7 +2,7 @@ import type {
   TelegramChannelConfig,
   TelegramContext,
 } from "eve/channels/telegram";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type * as ArtifactObjects from "@shared/object-storage/artifacts";
 import type * as EnvModule from "@shared/environment";
@@ -128,11 +128,17 @@ const handleMessageCompleted =
 const handleTurnFailed = telegramChannelCapture.config?.events?.["turn.failed"];
 const handleInputRequested =
   telegramChannelCapture.config?.events?.["input.requested"];
+const handleTurnStarted =
+  telegramChannelCapture.config?.events?.["turn.started"];
+const handleTurnCompleted =
+  telegramChannelCapture.config?.events?.["turn.completed"];
 if (
   !handleActionResult ||
   !handleMessageCompleted ||
   !handleTurnFailed ||
-  !handleInputRequested
+  !handleInputRequested ||
+  !handleTurnStarted ||
+  !handleTurnCompleted
 ) {
   throw new Error(
     "The Telegram channel must configure action result delivery."
@@ -942,6 +948,123 @@ describe("Telegram message delivery", () => {
 
     expect(request).not.toHaveBeenCalled();
     expect(scheduleDeliveryCapture.release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Telegram typing indicator", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function typingContext() {
+    const request = vi.fn<TelegramContext["telegram"]["request"]>();
+    request.mockResolvedValue({ body: { ok: true }, ok: true, status: 200 });
+    const startTyping = vi.fn<TelegramContext["telegram"]["startTyping"]>(
+      async () => {
+        await Promise.resolve();
+      }
+    );
+    const context = handlerEventContext({
+      state: { chatId: "4242" },
+      telegram: { chatId: "4242", request, startTyping },
+    });
+    return { context, request, startTyping };
+  }
+
+  const started = { sequence: 0, turnId: "turn-1" };
+
+  it("keeps «печатает…» on through the person's turn until the reply goes", async () => {
+    const { context, request, startTyping } = typingContext();
+
+    await handleTurnStarted(
+      started,
+      context,
+      sessionContext("telegram-webhook")
+    );
+    expect(startTyping).toHaveBeenCalledOnce();
+    // A slow step or tool: Telegram's five seconds are renewed.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(startTyping).toHaveBeenCalledTimes(5);
+
+    await handleActionResult(
+      sendMessageResult({ kind: "message", text: "Запустил поиск." }),
+      context,
+      sessionContext("telegram-webhook")
+    );
+    expect(request).toHaveBeenCalledWith(
+      "sendMessage",
+      expect.objectContaining({ text: "Запустил поиск." })
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(startTyping).toHaveBeenCalledTimes(5);
+  });
+
+  it("stops at a card and at the end of the turn", async () => {
+    const { context, startTyping } = typingContext();
+
+    await handleTurnStarted(
+      started,
+      context,
+      sessionContext("telegram-webhook")
+    );
+    await handleTurnCompleted(
+      { sequence: 4, turnId: "turn-1" },
+      context,
+      sessionContext("telegram-webhook")
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(startTyping).toHaveBeenCalledOnce();
+
+    const card = cardContext();
+    const cardTyping = vi.fn<TelegramContext["telegram"]["startTyping"]>(
+      async () => {
+        await Promise.resolve();
+      }
+    );
+    const withCard = handlerEventContext({
+      state: card.state,
+      telegram: { chatId: "4242", post: card.post, startTyping: cardTyping },
+    });
+    await handleTurnStarted(
+      started,
+      withCard,
+      sessionContext("telegram-webhook")
+    );
+    await handleInputRequested(
+      inputRequested(approvalRequest("calendar-create", { title: "Барбер" })),
+      withCard,
+      sessionContext("telegram-webhook")
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(cardTyping).toHaveBeenCalledOnce();
+  });
+
+  it("gives a report's turn the one indicator only, and a person's turn three minutes at most", async () => {
+    const report = typingContext();
+    await handleTurnStarted(
+      started,
+      report.context,
+      sessionContext("scheduled-result")
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(report.startTyping).toHaveBeenCalledOnce();
+
+    const person = typingContext();
+    await handleTurnStarted(
+      started,
+      person.context,
+      sessionContext("telegram-webhook")
+    );
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    const shown = person.startTyping.mock.calls.length;
+    expect(shown).toBeLessThanOrEqual(1 + Math.ceil(180_000 / 4_500));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(person.startTyping).toHaveBeenCalledTimes(shown);
   });
 });
 

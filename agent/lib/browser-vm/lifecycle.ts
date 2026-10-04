@@ -1488,7 +1488,24 @@ async function routeThroughRussia(
   rotationsLeft: number
 ): Promise<BrowserVm> {
   const session = browserVmProxySession(vm.workspaceId, rotation);
-  const { exit } = await setBrowserVmWorkerProxy(vm, browserVmProxy(session));
+  const checkStarted = Date.now();
+  const rotated = rotation !== rotationOf(vm);
+  let exit: Awaited<ReturnType<typeof setBrowserVmWorkerProxy>>["exit"];
+  try {
+    ({ exit } = await setBrowserVmWorkerProxy(vm, browserVmProxy(session)));
+  } catch (error) {
+    // The worker did not answer the check: how long the errand waited for
+    // that, and the error's name only, since the request carried the login.
+    console.warn("[browser-vm] the proxy exit checked", {
+      durationMs: Date.now() - checkStarted,
+      error: error instanceof Error ? error.name : null,
+      kept: false,
+      rotated,
+      rotation,
+      workspaceId: vm.workspaceId,
+    });
+    throw error;
+  }
   // An exit address means the proxy took the login: its next refusal is a
   // new incident, and the owner hears of it at once.
   if (exit.ip) await proxyAccepted(now);
@@ -1496,15 +1513,35 @@ async function routeThroughRussia(
     (exit.mbps ?? Number.POSITIVE_INFINITY) < slowExitMbps ||
     (exit.latencyMs ?? 0) > slowExitLatencyMs;
   // A slow Russian exit is still taken when no rotation is left to try.
-  if (exit.country === "RU" && exit.ip && (!slow || rotationsLeft === 0)) {
+  const taken =
+    exit.country === "RU" && exit.ip && (!slow || rotationsLeft === 0)
+      ? { country: exit.country, ip: exit.ip }
+      : undefined;
+  // One line per check, before the errand starts: the worker asks ipinfo.io
+  // (up to 20 s) and pulls a megabyte (up to 25 s) through the exit, and up
+  // to four rotations may be tried. Never the proxy login or the address.
+  const check = {
+    country: exit.country ?? null,
+    durationMs: Date.now() - checkStarted,
+    error: exit.error ?? null,
+    kept: taken !== undefined,
+    latencyMs: exit.latencyMs ?? null,
+    mbps: exit.mbps ?? null,
+    rotated,
+    rotation,
+    speedError: exit.speedError ?? null,
+    workspaceId: vm.workspaceId,
+  };
+  if (taken !== undefined) {
+    console.info("[browser-vm] the proxy exit checked", check);
     return updateBrowserVm(
       vm.workspaceId,
       {
         proxyExit: {
           at: now.toISOString(),
           city: exit.city ?? null,
-          country: exit.country,
-          ip: exit.ip,
+          country: taken.country,
+          ip: taken.ip,
           org: exit.org ?? null,
         },
         proxySession: session,
@@ -1512,13 +1549,7 @@ async function routeThroughRussia(
       now
     );
   }
-  console.warn("[browser-vm] the proxy exit is not in Russia or too slow", {
-    country: exit.country ?? null,
-    error: exit.error ?? null,
-    latencyMs: exit.latencyMs ?? null,
-    mbps: exit.mbps ?? null,
-    rotation,
-  });
+  console.warn("[browser-vm] the proxy exit checked", check);
   // The proxy turned the login away: every sticky session of that login
   // meets the same answer, so only the owner's account can change it.
   const refusal = proxyRefusal(exit.error);
