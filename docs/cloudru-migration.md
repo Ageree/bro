@@ -10,7 +10,8 @@
 04.10 решил его пока не заводить). Осталась уборка Vercel через неделю без
 отката — 09.10 её запускает Routine, поставленная сессией 02.10: не
 дублируйте её. Не сделано: `agent/lib/privacy/facts.ts` всё ещё называет
-людям Vercel, Neon и AI Gateway. Разделы ниже — план, как он писался 01.10.
+людям Vercel, Vercel Workflow и Neon (модель — уже RouterAI). Разделы ниже —
+план, как он писался 01.10.
 
 ## Куда идём
 
@@ -521,10 +522,14 @@ status`) — до решения об откате.
 - Каналы: iMessage (Photon) доставляет в обе стороны, вход по коду,
   оплата ЮKassa (уведомление дошло, подписка продлилась), подключение
   Composio возвращает на `brobro.tech`, поручения браузера и task-агента.
-- Через неделю без отката (09.10, запускает Routine сессии 02.10):
-  `host.py env bro-app-1 --profile prod` без `--with-neon` (убирает адрес
-  Neon), Neon — в архив, затем уборка Vercel (`vercel.json`, Gateway-строки
-  моделей, зависимость `vercel`, Blob).
+- Через неделю без отката (09.10, Routine сессии 02.10 — не дублируйте): PR
+  с уборкой Vercel из кода (`vercel.json`, `@vercel/*` и `vercel`,
+  Gateway-строки моделей, ветка OpenRouter, чтение секретов из Blob; режимы
+  VM — основные), выкат, `host.py env bro-app-1 --profile prod` без
+  `--with-neon` (убирает адрес Neon) и пауза проекта Vercel. Удалить Neon,
+  Blob и проект и перенести DNS-зону — решение владельца, Routine их не
+  трогает. «Ветка OpenRouter» — не `createOpenRouter` в
+  `agent/lib/model/direct.ts`: через него ходит RouterAI.
 
 ### Telegram из РФ
 
