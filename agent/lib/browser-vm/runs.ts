@@ -117,7 +117,11 @@ function runTuning(model: string) {
           }),
           requireParameters: true,
         };
-  return { maxActionsPerStep: 8, provider, reasoning: "none" } as const;
+  // GPT Luna on RouterAI answers with no `choices` at all when reasoning is
+  // off and the parameters are required, so every step failed: it reasons
+  // briefly instead (RU 04.10, a local browser-use run on a test form).
+  const reasoning = model.startsWith("deepseek/") ? "none" : "low";
+  return { maxActionsPerStep: 8, provider, reasoning } as const;
 }
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
