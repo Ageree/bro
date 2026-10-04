@@ -7,8 +7,8 @@ import { crossChannelPilotEmail } from "./e2e/pilots.ts";
 import { testSecrets } from "./e2e/secrets.ts";
 
 /**
- * The browser suite: `pnpm test:e2e` locally, the `e2e` job in CI. How to
- * run, write and extend it — docs/e2e.md.
+ * The browser suite, run by hand with `pnpm test:e2e`: CI does not run it.
+ * How to run, write and extend it — docs/e2e.md.
  */
 
 const model = e2eEnv.E2E_MODEL;
@@ -107,11 +107,13 @@ export default {
   tests: "e2e/**/*.e2e.ts",
   targets: [{ engine: web(), app }],
   // `next dev` compiles each route on its first visit, tens of seconds on a
-  // CI runner.
+  // cold machine.
   actionTimeout: 90_000,
   assertionTimeout: 15_000,
   timeout: 240_000,
-  // `junit` and `markdown` feed CI's artifact, `github()` its PR comment.
+  // `junit` and `markdown` write reports under `.e2e/`; `github()` comments
+  // on a PR only inside GitHub Actions, for when the job comes back
+  // (docs/e2e.md, «CI»).
   reporters: ["list", "junit", "markdown", github()],
   secrets: testSecrets,
   agents: {
