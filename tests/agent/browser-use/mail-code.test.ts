@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as agentMailApi from "@shared/agent-mail/api";
 import {
   authenticatedFrom,
   codeInLetter,
+  confirmationLinkInLetter,
   mailCodeFromSite,
   waitsForMailCode,
 } from "@agent/lib/browser-use/mail-code";
@@ -10,6 +12,34 @@ import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "full",
+}));
+
+type AgentMailPage = Awaited<
+  ReturnType<typeof agentMailApi.listAgentMailMessages>
+>;
+type AgentMailLetter = Awaited<
+  ReturnType<typeof agentMailApi.readAgentMailMessage>
+>;
+
+// Bro's own AgentMail inbox: empty unless a test puts letters in.
+const agentInbox = vi.hoisted(() => {
+  const letters: AgentMailLetter[] = [];
+  return { letters };
+});
+vi.mock("@shared/agent-mail/api", () => ({
+  listAgentMailMessages: vi.fn<() => Promise<AgentMailPage>>(async () => ({
+    count: agentInbox.letters.length,
+    messages: agentInbox.letters,
+  })),
+  readAgentMailMessage: vi.fn<
+    (inboxId: string, messageId: string) => Promise<AgentMailLetter>
+  >(async (_inboxId, messageId) => {
+    const letter = agentInbox.letters.find(
+      (item) => item.message_id === messageId
+    );
+    if (!letter) throw new Error("no such letter");
+    return letter;
+  }),
 }));
 
 const scope = accessScopeForUser("better-auth:user-1");
@@ -376,5 +406,174 @@ describe("taking the code from the person's mailbox", () => {
 
     await expect(look(null)).resolves.toEqual({ kind: "no_site" });
     expect(composio.proxy).not.toHaveBeenCalled();
+  });
+});
+
+describe("the link a site's letter confirms the address with", () => {
+  const domain = "inaturalist.org";
+
+  it("takes the one confirmation link on the site's own domain", () => {
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<p>Welcome!</p><a href="https://www.inaturalist.org/users/confirmation?confirmation_token=abc&amp;x=1">Confirm my account</a> <a href="https://www.inaturalist.org/pages/terms">Terms</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBe(
+      "https://www.inaturalist.org/users/confirmation?confirmation_token=abc&x=1"
+    );
+    // The same link as plain text, after the words that name it.
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: "",
+          text: "Подтвердите почту по ссылке:\nhttps://inaturalist.org/a/9f2c.\n\nОтписаться: https://inaturalist.org/unsubscribe/9f2c",
+        },
+        domain
+      )
+    ).toBe("https://inaturalist.org/a/9f2c");
+  });
+
+  it("never takes a link off the site's domain, through a tracker or not https", () => {
+    for (const href of [
+      "https://inaturalist.org.evil.example/confirm?t=1",
+      "https://evilinaturalist.org/confirm?t=1",
+      "https://u123.ct.sendgrid.net/ls/click?upn=confirm",
+      "http://www.inaturalist.org/confirm?t=1",
+      "https://user:pass@www.inaturalist.org/confirm?t=1",
+      "https://www.inaturalist.org:8443/confirm?t=1",
+      "javascript:alert(1)//confirm",
+    ]) {
+      expect(
+        confirmationLinkInLetter(
+          { html: `<a href="${href}">Confirm</a>`, text: "" },
+          domain
+        )
+      ).toBeUndefined();
+    }
+  });
+
+  it("gives no link when it is not plain which one confirms", () => {
+    // Two different confirmation links, or only links that confirm nothing.
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<a href="https://www.inaturalist.org/confirm?t=1">Confirm</a><a href="https://www.inaturalist.org/confirm?t=2">Confirm</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBeUndefined();
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<a href="https://www.inaturalist.org/observations">See observations</a><a href="https://www.inaturalist.org/users/password/edit?reset=1">Confirm a new password</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBeUndefined();
+  });
+});
+
+/** A letter from iNaturalist in Bro's own inbox, as AgentMail reads it. */
+function agentLetter(
+  item: Partial<AgentMailLetter> & { readonly message_id: string }
+): AgentMailLetter {
+  return {
+    from: "iNaturalist <help@inaturalist.org>",
+    inbox_id: "inbox-1",
+    labels: ["received"],
+    thread_id: `thread-${item.message_id}`,
+    timestamp: new Date().toISOString(),
+    to: ["quiet.fox42@agentmail.to"],
+    ...item,
+  };
+}
+
+describe("taking the code or the link from Bro's own mailbox", () => {
+  const signal = new AbortController().signal;
+
+  function lookInAgentMail(site = "https://www.inaturalist.org") {
+    return mailCodeFromSite(scope, {
+      agentMailbox: { inboxId: "inbox-1" },
+      signal,
+      since: new Date(Date.now() - 60_000),
+      site,
+      waitMs: 0,
+    });
+  }
+
+  beforeEach(() => {
+    agentInbox.letters = [];
+  });
+
+  it("takes the code from the site's own letter", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        message_id: "m1",
+        subject: "Your confirmation code",
+        text: "Your code is 482913",
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toMatchObject({
+      code: "482913",
+      domain: "inaturalist.org",
+      kind: "found",
+    });
+  });
+
+  it("takes the confirmation link when the letter has no code", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        html: '<a href="https://www.inaturalist.org/users/confirmation?confirmation_token=abc">Confirm</a>',
+        message_id: "m1",
+        subject: "Confirm your iNaturalist account",
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toMatchObject({
+      domain: "inaturalist.org",
+      kind: "link",
+      url: "https://www.inaturalist.org/users/confirmation?confirmation_token=abc",
+    });
+  });
+
+  it("never takes a letter from another sender, unauthenticated or stale", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        from: "Support <help@inaturalist.org.evil.example>",
+        message_id: "foreign",
+        text: "Your code is 111111",
+      }),
+      agentLetter({
+        from: "someone@gmail.com",
+        message_id: "mailbox",
+        text: "Your code is 222222",
+      }),
+      agentLetter({
+        labels: ["received", "unauthenticated"],
+        message_id: "unchecked",
+        text: "Your code is 333333",
+      }),
+      agentLetter({
+        labels: ["spam"],
+        message_id: "spam",
+        text: "Your code is 444444",
+      }),
+      agentLetter({
+        message_id: "old",
+        text: "Your code is 555555",
+        timestamp: new Date(Date.now() - 5 * 60_000).toISOString(),
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toEqual({
+      domain: "inaturalist.org",
+      kind: "not_found",
+    });
   });
 });
