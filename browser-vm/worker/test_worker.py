@@ -657,6 +657,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         # 04.10: «+7 921 781-88-76» typed after a field's fixed +7 became +7 79217818876, a Kazakh number.
         self.assertIn("type 9217818876", worker.EXTEND_SYSTEM)
         self.assertIn("read the errors the\nform shows", worker.EXTEND_SYSTEM)
+        # GPT Luna ended runs with done right before «К оплате» or «Заплатить» (harness, 05.10).
+        self.assertIn("Call done only when the request is finished", worker.EXTEND_SYSTEM)
 
     async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
         async def browse(agent, on_step_start):

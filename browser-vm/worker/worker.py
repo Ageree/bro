@@ -2360,7 +2360,11 @@ says it could not fill. A phone field that already shows a country code (+7) or 
 the digits after it, never the +7 or 8 again (for +7 921 781-88-76, type 9217818876). Read a form back after
 filling it: a phone with a doubled 7, extra digits or another country's flag was typed wrong, so type it again
 that way rather than hunting the country list. When a form's button seems to do nothing, read the errors the
-form shows before pressing it again. An anti-bot check
+form shows before pressing it again. Fields fill_card filled may still look empty to you, since the browser hides
+secret values from your view of the page: trust its answer and press the form's pay button when the request
+allows paying. Call done only when the request is finished or one of its rules tells you to stop; while the page
+offers the next step of what you were asked to do (a suggestion to pick, a store to choose, «К оплате»,
+«Оплатить»), take that step instead. An anti-bot check
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
 button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:

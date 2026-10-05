@@ -94,7 +94,7 @@ class Scenario:
     about: str
     runs: list
     shop: dict = dataclasses.field(default_factory=dict)  # Shop(...) options
-    signed_in: bool = False  # the browser starts signed in, with the cream in the account's basket
+    signed_in: bool = False  # the browser starts signed in to the person's account
     expect: str = "paid"  # "paid", or "stopped" (NEEDS: password or email_code, nothing paid)
 
 
@@ -209,8 +209,8 @@ def verdict(scenario, shop, runs):
 
 
 async def prepare_signed_in(worker, session, shop):
-    """The browser already signed in with the cream in the account's basket, the session's tab on the shop."""
-    shop.fill_cart()
+    """The browser already signed in. The basket stays empty: Bro's task text has a run take anything already
+    in it out of the order, and GPT Luna emptied it and gave up."""
     sid = shop.new_session(shop_module.EMAIL)
     await worker.cdp_command(await worker.browser_socket(), "Storage.setCookies", {"cookies": [
         {"name": "sid", "value": sid, "domain": SHOP.split("://")[1], "path": "/", "httpOnly": True,
