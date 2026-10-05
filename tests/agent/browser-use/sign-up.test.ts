@@ -184,6 +184,25 @@ describe("an account registered with Bro's own mailbox", () => {
     ).resolves.toEqual({ kind: "saved" });
   });
 
+  it("registers again with Bro's own login an earlier sign-up left", async () => {
+    // 05.10: reCAPTCHA stopped the first sign-up, and the next one only
+    // signed in to an account that was never made.
+    savedLogin(mailbox.email);
+    await expect(
+      agentMailSignUp(scope, "https://www.inaturalist.org")
+    ).resolves.toEqual({
+      email: mailbox.email,
+      kind: "again",
+      origin: "https://www.inaturalist.org",
+      username: "quietfox42",
+    });
+  });
+
+  it("lets only a fresh login be taken out for a form never sent", () => {
+    expect(signUpLine("quietfox42", true)).toContain("ACCOUNT: none");
+    expect(signUpLine("quietfox42", false)).not.toContain("ACCOUNT: none");
+  });
+
   it("registers nothing without a mailbox or an https site", async () => {
     await expect(agentMailSignUp(scope, "http://example.com")).resolves.toBe(
       undefined
