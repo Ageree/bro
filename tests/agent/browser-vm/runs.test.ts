@@ -35,7 +35,7 @@ const composedTask =
   "Errand: 7\nAttempt: 1\nFind the parcel on the courier site";
 // What the VM's agent gets: the composed errand and the line that has it
 // hand an address wall to the anti-bot retry at once.
-const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. If the wall is still there after it, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
+const vmTask = `${composedTask}\n\nIf the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. A reCAPTCHA («I'm not a robot»), hCaptcha or Cloudflare Turnstile check goes to solve_captcha too, before you tick it or open its pictures, and never ask for its audio challenge: that gets this address flagged. Once solve_captcha says the check is solved, leave the check alone and submit the form. If the wall or the check is still there after solve_captcha, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.`;
 
 // The hosts the VM's model may be served from on RouterAI: the main agent's
 // pinned caching host, its skipped ones and those without structured outputs.

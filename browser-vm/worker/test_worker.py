@@ -1683,6 +1683,206 @@ class SliderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((solved, message), (False, "The puzzle was not accepted."))
 
 
+RECAPTCHA_KEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
+SIGNUP = "https://www.inaturalist.org/signup"
+ANCHOR = f"https://www.google.com/recaptcha/api2/anchor?ar=1&k={RECAPTCHA_KEY}&co=aHR0cHM6&hl=ru&size=normal"
+SOLVER_KEY = "2c-secret-key-0123456789"
+SOLVED_TOKEN = "03AFcWeA-solved-token-" + "x" * 300
+# The run's exit as the forwarder holds it: Geonode with a sticky session.
+UPSTREAM = ("proxy.geonode.io", 10001, base64.b64encode(b"geonode_u-session-ab12:pw:1").decode())
+REAL_SLEEP = asyncio.sleep  # before a test replaces it: one that waits for real
+
+
+def captcha_page(widgets, url=SIGNUP, placed=None):
+    """A main-world `evaluate` of one document: its TOKEN_CAPTCHA_STATE, and what the answer script placed."""
+    calls = []
+
+    async def evaluate(expression):
+        calls.append(expression)
+        if expression == worker.TOKEN_CAPTCHA_STATE:
+            return {"url": url, "userAgent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/154.0", "widgets": widgets}
+        return placed if placed is not None else {"fields": 1, "handlers": 1}
+
+    evaluate.calls = calls
+    return evaluate
+
+
+class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()))
+
+    def test_reads_the_sitekey_from_each_vendors_frame(self):
+        self.assertEqual(worker.captcha_in_frame_url(ANCHOR),
+                         {"kind": "recaptcha", "sitekey": RECAPTCHA_KEY, "invisible": False, "enterprise": False})
+        enterprise = worker.captcha_in_frame_url(
+            f"https://www.recaptcha.net/recaptcha/enterprise/anchor?k={RECAPTCHA_KEY}&size=invisible")
+        self.assertEqual((enterprise["invisible"], enterprise["enterprise"]), (True, True))
+        hcaptcha = worker.captcha_in_frame_url("https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html"
+                                               "#frame=checkbox&id=0x&host=example.org"
+                                               "&sitekey=10000000-ffff-ffff-ffff-000000000001")
+        self.assertEqual((hcaptcha["kind"], hcaptcha["sitekey"]), ("hcaptcha", "10000000-ffff-ffff-ffff-000000000001"))
+        turnstile = worker.captcha_in_frame_url("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/"
+                                                "turnstile/if/ov2/av0/rcv/x1y2/0x4AAAAAAAkg0s3sXSBgPUhK/light/fbE/new/normal")
+        self.assertEqual((turnstile["kind"], turnstile["sitekey"]), ("turnstile", "0x4AAAAAAAkg0s3sXSBgPUhK"))
+        self.assertIsNone(worker.captcha_in_frame_url("https://www.google.com/maps/embed?pb=1"))
+        self.assertIsNone(worker.captcha_in_frame_url("https://www.inaturalist.org/frame?k=" + RECAPTCHA_KEY))
+
+    def test_a_widget_one_can_see_comes_before_an_invisible_one_and_v3_last(self):
+        v3_key = "6LcV3aaaAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
+        invisible_key = "6LcInvisAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
+        states = [{"url": SIGNUP, "widgets": [
+            {"url": SIGNUP, "sitekey": v3_key, "hint": "recaptcha", "v3": True},
+            {"url": SIGNUP, "sitekey": invisible_key, "hint": "recaptcha", "invisible": True},
+            {"url": "https://www.inaturalist.org/form", "frameUrl": ANCHOR},
+        ]}]
+        widget = worker.pick_token_captcha(states, [ANCHOR], SIGNUP)
+        self.assertEqual((widget["kind"], widget["sitekey"], widget["url"]),
+                         ("recaptcha", RECAPTCHA_KEY, "https://www.inaturalist.org/form"))
+        only_v3 = worker.pick_token_captcha([{"url": SIGNUP, "widgets": states[0]["widgets"][:1]}], [], SIGNUP)
+        self.assertTrue(only_v3["v3"])
+        # A key the page shows only in a vendor's frame (Turnstile's sits in a closed shadow root) is on the tab.
+        framed = worker.pick_token_captcha([], ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/"
+                                                "turnstile/if/0x4AAAAAAAkg0s3sXSBgPUhK/light"], SIGNUP)
+        self.assertEqual((framed["kind"], framed["url"]), ("turnstile", SIGNUP))
+        self.assertIsNone(worker.pick_token_captcha([{"url": SIGNUP, "widgets": [{"sitekey": "bad key!"}]}], [], SIGNUP))
+
+    def test_the_runs_exit_goes_to_the_service_with_its_login(self):
+        self.assertEqual(worker.solver_proxy(UPSTREAM), {
+            "proxyType": "http", "proxyAddress": "proxy.geonode.io", "proxyPort": 10001,
+            "proxyLogin": "geonode_u-session-ab12", "proxyPassword": "pw:1"})
+        self.assertEqual(worker.solver_proxy(("93.184.216.34", 8080, None)),
+                         {"proxyType": "http", "proxyAddress": "93.184.216.34", "proxyPort": 8080})
+        self.assertIsNone(worker.solver_proxy(("10.0.1.5", 3128, None)))
+        self.assertIsNone(worker.solver_proxy(None))
+
+    async def test_solves_a_recaptcha_through_the_runs_exit_and_puts_the_answer_in_every_document(self):
+        top = captcha_page([{"url": SIGNUP, "frameUrl": ANCHOR}])
+        form = captcha_page([{"url": "https://www.inaturalist.org/form", "sitekey": RECAPTCHA_KEY, "hint": "recaptcha"}],
+                            placed={"fields": 1, "handlers": 1})
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 7}, {"errorId": 0, "status": "processing"},
+                                 {"errorId": 0, "status": "ready", "solution": {"gRecaptchaResponse": SOLVED_TOKEN}}])
+        with self.assertLogs("bro-worker", "DEBUG") as logs:
+            worker.log.debug("start")
+            solved, message = await worker.solve_token_captcha(
+                [top, form], [SIGNUP, ANCHOR], SIGNUP, http, SOLVER_KEY, worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        self.assertIn("submit the form", message)
+        url, body = http.posted[0]
+        self.assertEqual(url, "https://api.2captcha.com/createTask")
+        self.assertEqual(body["task"], {
+            "type": "RecaptchaV2Task", "websiteURL": SIGNUP, "websiteKey": RECAPTCHA_KEY,
+            "userAgent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/154.0", "proxyType": "http",
+            "proxyAddress": "proxy.geonode.io", "proxyPort": 10001, "proxyLogin": "geonode_u-session-ab12",
+            "proxyPassword": "pw:1"})
+        self.assertEqual(http.posted[1][1], {"clientKey": SOLVER_KEY, "taskId": 7})
+        for page in (top, form):
+            answer = page.calls[-1]
+            self.assertTrue(answer.startswith(worker.TOKEN_CAPTCHA_ANSWER))
+            self.assertIn(json.dumps(SOLVED_TOKEN), answer)
+            self.assertIn(json.dumps(RECAPTCHA_KEY), answer)
+        for text in [message, *logs.output]:
+            self.assertNotIn(SOLVER_KEY, text)
+            self.assertNotIn(SOLVED_TOKEN, text)
+
+    async def test_a_proxy_the_service_cannot_use_is_dropped_for_the_second_task(self):
+        http = FakeHttp(answers=[{"errorId": 1, "errorCode": "ERROR_PROXY_CONNECTION_FAILED"},
+                                 {"errorId": 0, "taskId": 8},
+                                 {"errorId": 0, "status": "ready", "solution": {"token": SOLVED_TOKEN}}])
+        page = captcha_page([{"sitekey": "0x4AAAAAAAkg0s3sXSBgPUhK", "hint": "turnstile", "action": "signup",
+                              "cdata": "c1", "url": SIGNUP}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY,
+                                                           worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        self.assertEqual([body["task"]["type"] for _, body in http.posted if "task" in body],
+                         ["TurnstileTask", "TurnstileTaskProxyless"])
+        self.assertEqual((http.posted[1][1]["task"]["action"], http.posted[1][1]["task"]["data"]), ("signup", "c1"))
+        self.assertNotIn("proxyLogin", http.posted[1][1]["task"])
+
+    async def test_an_unsolvable_answer_is_asked_for_once_more_and_then_reported_with_its_code(self):
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 1}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"},
+                                 {"errorId": 0, "taskId": 2}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"}])
+        page = captcha_page([{"sitekey": "10000000-ffff-ffff-ffff-000000000001", "url": SIGNUP, "invisible": True}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY)
+        self.assertEqual((solved, message),
+                         (False, "The solving service could not solve the page's hCaptcha (ERROR_CAPTCHA_UNSOLVABLE)."))
+        tasks = [body["task"] for _, body in http.posted if "task" in body]
+        self.assertEqual([(t["type"], t["isInvisible"]) for t in tasks], [("HCaptchaTaskProxyless", True)] * 2)
+        self.assertEqual(len(page.calls), 1)  # nothing put into the page
+
+    async def test_an_error_of_the_account_ends_at_the_first_task(self):
+        http = FakeHttp(answers=[{"errorId": 10, "errorCode": "ERROR_ZERO_BALANCE", "errorDescription": SOLVER_KEY}])
+        page = captcha_page([{"sitekey": RECAPTCHA_KEY, "hint": "recaptcha", "url": SIGNUP, "enterprise": True,
+                              "s": "data-s-1"}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY)
+        self.assertEqual(message, "The solving service could not solve the page's reCAPTCHA (ERROR_ZERO_BALANCE).")
+        self.assertEqual(http.posted[0][1]["task"]["type"], "RecaptchaV2EnterpriseTaskProxyless")
+        self.assertEqual(http.posted[0][1]["task"]["enterprisePayload"], {"s": "data-s-1"})
+        self.assertEqual(len(http.posted), 1)
+
+    async def test_a_service_that_does_not_answer_in_time_is_given_up(self):
+        class Slow(FakeHttp):
+            @contextlib.asynccontextmanager
+            async def post(self, url, json):
+                self.posted.append((url, json))
+                yield types.SimpleNamespace(json=mock.AsyncMock(
+                    return_value={"errorId": 0, "taskId": 3} if url.endswith("createTask") else {"errorId": 0, "status": "processing"}))
+
+        page = captcha_page([{"sitekey": RECAPTCHA_KEY, "hint": "recaptcha", "url": SIGNUP}])
+        async def short_sleep(_seconds):
+            await REAL_SLEEP(0.01)
+
+        with mock.patch.object(worker.asyncio, "sleep", short_sleep), \
+                mock.patch.object(worker, "TOKEN_SOLVE_S", 0.1):
+            solved, message = await worker.solve_token_captcha([page], [], SIGNUP, Slow(), SOLVER_KEY)
+        self.assertEqual((solved, message), (False, "The solving service did not solve the page's reCAPTCHA in time."))
+
+    async def test_v3_without_a_key_and_a_page_with_no_field_are_reported_as_such(self):
+        v3 = captcha_page([{"sitekey": RECAPTCHA_KEY, "hint": "recaptcha", "v3": True, "url": SIGNUP}])
+        self.assertEqual(await worker.solve_token_captcha([v3], [], SIGNUP, FakeHttp(), SOLVER_KEY),
+                         (False, "This page uses reCAPTCHA v3, which scores the browser without any puzzle: "
+                                 "solve_captcha cannot answer it."))
+        page = captcha_page([{"sitekey": RECAPTCHA_KEY, "hint": "recaptcha", "url": SIGNUP}],
+                            placed={"fields": 0, "handlers": 0})
+        self.assertEqual(await worker.solve_token_captcha([page], [], SIGNUP, FakeHttp(), None),
+                         (False, "The page has a reCAPTCHA, but this browser has no key for the solving service."))
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 1},
+                                 {"errorId": 0, "status": "ready", "solution": {"gRecaptchaResponse": SOLVED_TOKEN}}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY)
+        self.assertEqual((solved, message), (False, "The solving service solved the page's reCAPTCHA, but the page has "
+                                                    "no field to take its answer."))
+
+    async def test_the_action_takes_the_slider_it_sees_then_a_token_captcha_then_the_sliders_way(self):
+        async def mouse(_params):
+            pass
+
+        token_check = mock.AsyncMock(return_value=(True, "solved"))
+        # A slider puzzle on the page (its loader is there): never a token captcha first.
+        with mock.patch.object(worker, "solve_slider", mock.AsyncMock(return_value=(True, "slid"))) as slider:
+            answer = await worker.solve_page_captcha(check_page([{**CLOSED, "captchaId": "c1d2"}]), mouse,
+                                                     FakeHttp(), "k", token_check)
+            self.assertEqual((answer, token_check.await_count, slider.await_count), ((True, "slid"), 0, 1))
+            # A token captcha: its answer, and no check button pressed.
+            answer = await worker.solve_page_captcha(check_page([CLOSED]), mouse, FakeHttp(), "k", token_check)
+            self.assertEqual((answer, slider.await_count), ((True, "solved"), 1))
+        # reCAPTCHA v3 alone still lets the slider's way try, and is what is reported when no slider came.
+        v3 = mock.AsyncMock(return_value=(False, worker.V3_UNSUPPORTED))
+        page = check_page([CLOSED])
+        self.assertEqual(await worker.solve_page_captcha(page, mouse, FakeHttp(), "k", v3),
+                         (False, worker.V3_UNSUPPORTED))
+        self.assertIn(worker.CHECK_BUTTON, page.calls)
+        nothing = mock.AsyncMock(return_value=None)
+        self.assertEqual(await worker.solve_page_captcha(check_page([CLOSED]), mouse, FakeHttp(), "k", nothing),
+                         (False, worker.NO_CAPTCHA))
+        broken = mock.AsyncMock(side_effect=RuntimeError("no frames"))
+        self.assertEqual(await worker.solve_page_captcha(check_page([CLOSED]), mouse, FakeHttp(), "k", broken),
+                         (False, worker.NO_CAPTCHA))
+
+    async def test_a_page_without_a_token_captcha_is_left_to_the_slider(self):
+        page = captcha_page([{"frameUrl": "https://www.youtube.com/embed/x"}])
+        self.assertIsNone(await worker.solve_token_captcha([page], ["https://www.youtube.com/embed/x"], SIGNUP,
+                                                           FakeHttp(), SOLVER_KEY))
+
+
 def card_field(field_id, kind, sure=True, tag="input", max_length=None, placeholder=""):
     return {"id": field_id, "kind": kind, "sure": sure, "tag": tag, "type": "text", "maxLength": max_length,
             "placeholder": placeholder, "options": None}
