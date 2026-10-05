@@ -1215,8 +1215,11 @@ function accountStateLine(aliases: readonly string[]) {
  * order) instead of the basket and «Оформить заказ»; after a sign-in, the
  * page left open before it is a guest's.
  */
+// On predubezhdai.ru (RU 04.10) the «оформить заказ» button of /cart led a
+// signed-in person to a legacy /order form that asked for a patronymic and
+// always failed, while the header's basket icon opened the working /checkout.
 const checkoutRouteLine =
-  "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button («Оформить заказ», «Перейти к оформлению»). Never open a checkout, order or payment page by an address you remember, guess or saw on an earlier run. A checkout page an earlier run left open is this order's only while it still shows this order's items and total; when it does not, when it shows an error, or once you have signed in since it opened, go back to the basket and start the checkout again from its button.";
+  "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button («Оформить заказ», «Перейти к оформлению»). Never open a checkout, order or payment page by an address you remember, guess or saw on an earlier run. A checkout page an earlier run left open is this order's only while it still shows this order's items and total; when it does not, when it shows an error, or once you have signed in since it opened, go back to the basket and start the checkout again from its button. When the checkout a button opens ends on an error page, or asks for something the person's details lack (a patronymic, a field no saved detail fits), try the site's other way into checkout before stopping — the basket or bag icon in the page header, a mini-basket's checkout button — and report which one worked.";
 
 /**
  * How form fields take the person's details: the phone after the field's

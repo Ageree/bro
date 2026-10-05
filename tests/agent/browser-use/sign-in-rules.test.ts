@@ -112,6 +112,11 @@ describe("browser run sign-in rules", () => {
       expect(task).toContain(
         "once you have signed in since it opened, go back to the basket and start the checkout again from its button"
       );
+      // RU 04.10: the /cart button led to a legacy form; the header icon to
+      // the working checkout.
+      expect(task).toContain(
+        "try the site's other way into checkout before stopping — the basket or bag icon in the page header"
+      );
     }
     // A search with nothing to buy has no checkout to start.
     expect(start(login)).not.toContain("Start a checkout only");
