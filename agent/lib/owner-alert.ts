@@ -10,16 +10,36 @@ import { env } from "@shared/environment";
 const telegramApiBaseUrl = "https://api.telegram.org";
 const requestTimeoutMs = 10_000;
 const telegramReplySchema = z.object({ ok: z.boolean() });
+/**
+ * Sent through Bro's own bot, the alert lands in the owner's chat with Bro
+ * and reads as Bro's words, though Bro never sees it (a bot gets no updates
+ * about its own messages): Bro, asked about it, first denied it and then made
+ * up where it came from. The header says whose it is.
+ */
+const viaBroHeader =
+  "⚙️ Служебное уведомление для владельца: его прислала проверка сервера, а не Бро, и Бро его не видит.";
 
 /**
- * Tell the deployment's owner, in their Telegram chat, about a condition only
+ * Where the owner hears alerts, the same pair the host's watchdog uses: the
+ * service bot OPS_ALERT_BOT_TOKEN in OPS_ALERT_CHAT_ID, each falling back to
+ * Bro's own bot and the owner's chat with it. Nothing without a bot and chat.
+ */
+export function ownerAlertTarget() {
+  const botToken = env.OPS_ALERT_BOT_TOKEN ?? env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.OPS_ALERT_CHAT_ID ?? env.TELEGRAM_OWNER_CHAT_ID;
+  if (!botToken || !chatId) return undefined;
+  return { botToken, chatId, viaBro: !env.OPS_ALERT_BOT_TOKEN };
+}
+
+/**
+ * Tell the deployment's owner, in Telegram, about a condition only
  * they can fix: a balance to top up, reports that are not reaching people.
  * What was already said lives in `operational_alerts`, so two ticks that see
  * the same condition cannot both send, and the alert repeats only once
  * `repeatAfterMs` has passed or the value fell to half. An alert nobody
  * received is forgotten at once, so the next tick tries again; a sender that
  * died mid-send leaves a claim that lapses in two minutes. False when nothing
- * was sent: no owner chat is configured, or it was already said.
+ * was sent: no alert chat is configured, or it was already said.
  */
 export async function alertOwner(
   key: string,
@@ -31,9 +51,8 @@ export async function alertOwner(
     readonly value?: number;
   }
 ) {
-  const botToken = env.TELEGRAM_BOT_TOKEN;
-  const ownerChatId = env.TELEGRAM_OWNER_CHAT_ID;
-  if (!botToken || !ownerChatId) return false;
+  const target = ownerAlertTarget();
+  if (!target) return false;
   const now = options.now ?? new Date();
   const claim = await claimOperationalAlert(key, options.value ?? 0, {
     // Without a drop that counts, only time repeats the alert.
@@ -43,7 +62,11 @@ export async function alertOwner(
   });
   if (!claim) return false;
   try {
-    await sendOwnerMessage(botToken, ownerChatId, text);
+    await sendOwnerMessage(
+      target.botToken,
+      target.chatId,
+      target.viaBro ? `${viaBroHeader}\n\n${text}` : text
+    );
   } catch (error) {
     await releaseOperationalAlertClaim(key, claim, now);
     throw error;
@@ -67,13 +90,13 @@ export async function clearOwnerAlert(key: string, now = new Date()) {
 
 async function sendOwnerMessage(
   botToken: string,
-  ownerChatId: string,
+  chatId: string,
   text: string
 ) {
   const response = await fetch(
     `${telegramApiBaseUrl}/bot${botToken}/sendMessage`,
     {
-      body: JSON.stringify({ chat_id: ownerChatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal: AbortSignal.timeout(requestTimeoutMs),

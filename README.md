@@ -287,7 +287,10 @@ other failed turn gets a short apology. To hear about an empty balance before
 people do, set `OPENROUTER_MANAGEMENT_KEY` (the credits endpoint rejects an
 inference key) and `TELEGRAM_OWNER_CHAT_ID`. Every ten minutes the schedule
 reads the OpenRouter balance and, when it falls below
-`OPENROUTER_CREDITS_ALERT_USD` (default 5), messages the owner through the bot.
+`OPENROUTER_CREDITS_ALERT_USD` (default 5), messages the owner. Alerts go
+through a separate service bot, `OPS_ALERT_BOT_TOKEN` in `OPS_ALERT_CHAT_ID`
+(the pair the VM watchdog reads); without it, through Bro's own bot into the
+owner's chat with Bro, under a header saying the message is not Bro's.
 On RouterAI the ordinary `ROUTERAI_API_KEY` reads the balance, already in
 roubles, and the threshold is `ROUTERAI_CREDITS_ALERT_RUB` (default 300).
 The alert repeats once a day while the balance stays low, sooner if it keeps

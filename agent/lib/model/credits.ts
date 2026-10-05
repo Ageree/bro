@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
+import {
+  alertOwner,
+  clearOwnerAlert,
+  ownerAlertTarget,
+} from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
 import { directModelProvider } from "@shared/model/provider";
 import { modelEndpoint } from "./endpoint";
@@ -79,7 +83,7 @@ export function creditCheckDue(now: Date) {
  * An alert without the owner's chat has nowhere to go, so none is read then.
  */
 export async function checkModelCredits(now = new Date()) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_OWNER_CHAT_ID) return;
+  if (!ownerAlertTarget()) return;
   const source = balanceSource();
   if (!source) return;
   try {

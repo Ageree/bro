@@ -18,7 +18,7 @@ eve takes the secret, nothing stuck).
 
 Where alerts go: every alert is a line `alert: …` in journald, always. Then Telegram: OPS_ALERT_BOT_TOKEN and
 OPS_ALERT_CHAT_ID in /etc/bro/env, else the app's own TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_CHAT_ID
-(agent/lib/owner-alert.ts writes to the same chat); the rehearsal stand has no TELEGRAM_BOT_TOKEN, so it gets
+(agent/lib/owner-alert.ts reads the same pair); the rehearsal stand has no TELEGRAM_BOT_TOKEN, so it gets
 the OPS_ALERT_* pair alone. Telegram goes the same way as the bridge and the bot, through tg-egress, so an
 alert about that path rarely arrives there: OPS_ALERT_WEBHOOK_URL (https; the alert's text is POSTed as
 text/plain, the shape of ntfy and similar push services) is a second way that does not depend on it. Composio
