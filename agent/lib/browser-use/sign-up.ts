@@ -185,7 +185,7 @@ export async function settleSignUpLogin(
     return `The sign-up form on ${host} was never sent, so the login prepared for it was taken out of the user's vault; a new sign-up there starts afresh. Never write a password.`;
   }
   if (settlement === "created") {
-    return `The run registered a new account on ${host} with your own AgentMail address ${login.mailbox.email}, and its login is already in the user's vault, so they add nothing by hand. Say in one short sentence that the account is saved in the vault, ${vaultLoginsPlace()}, as «${label}» with ${login.mailbox.email} as its login, and that you sign in there yourself. Never write the password: the vault keeps it.`;
+    return `The run registered a new account on ${host} with your own AgentMail address ${login.mailbox.email}, and its login is already in the user's vault, so they add nothing by hand. Say in one short sentence that the account is saved in the vault, ${vaultLoginsPlace()}, as «${label}», where they can see its login and password with «Показать данные для входа», and that you sign in there yourself. Never write the password: the vault shows it to them.`;
   }
   return `The run did not confirm that the account on ${host} was created. The login prepared for it stays in the user's vault, ${vaultLoginsPlace()}, as «${label}», in case the site did take the form: say so in one short line along with what stopped the registration. Never write the password.`;
 }
