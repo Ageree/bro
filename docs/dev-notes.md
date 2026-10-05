@@ -122,6 +122,15 @@
   старый: `PLAYWRIGHT_BROWSERS_PATH=<scratchpad>` и `playwright install chromium`.
 - Management-ключ OpenRouter проходит `GET /api/v1/key`, но на вызов модели
   отвечает «User not found»: в `OPENROUTER_API_KEY` — только обычный ключ.
+- `ROUTERAI_API_KEY` облачной сессии 05.10 — ключ прода, баланс общий: опыты
+  уменьшают баланс Бро (при нуле он молчит всем). Kimi K3 и Grok 4.7 — 6–8 ₽ за
+  вызов в 20 тыс. токенов; смотрите `/api/v1/credits` до и после.
+- Selectel (05.10): облачные VM без вложенной виртуализации; из облачной
+  сессии SSH закрыт, HTTP на :80 VM открыт, а HTTP-агента с исполнением
+  команд классификатор не пускает — работа VM целиком в cloud-init, итоги
+  статикой (`scripts/selectel-bench/`). Порт прямо в `external-network` не
+  выделяется (нужны своя сеть, роутер и floating IP); `rebuild` VM с сетевым
+  диском cloud-init не перезапускает.
 
 ## Прод на VM
 
@@ -815,7 +824,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   на 443 не проверен, а 30.09 зону выключали без предупреждения.
 - Порядок хостов RouterAI для worker с `require_parameters` молча не
   действует на хостах без `seed`: browser-use шлёт `"seed": null`
-  (fireworks, together). Они к тому же медленнее deepinfra и дороже в 2,3 раза.
+  (fireworks, together). 05.10 Together отдавал DeepSeek V4.1 Flash втрое
+  быстрее deepinfra (вызов browser-use — медиана 2,2 с против 5,6 с), но
+  дороже вдвое; без `require_parameters` его вызовы шли без ошибок
+  (`docs/browser-speed.md`).
+- Узкое место браузерного поручения — LLM шага и число шагов, не VM и профиль:
+  Chrome до CDP — 0,2–0,8 с, профиль 178 МБ распаковывается за 0,35 с. Замеры,
+  гипотезы и сравнение моделей — `docs/browser-speed.md`.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
