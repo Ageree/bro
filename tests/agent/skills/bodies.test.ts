@@ -217,9 +217,10 @@ const moved: Partial<Record<SkillName, readonly string[]>> = {
     "AES-256-GCM",
   ],
   "first-contact": [
-    "если есть `connect_google` — что разбираешь почту",
     "`first-contact`",
-    "два-три коротких пузыря",
+    "два коротких пузыря",
+    "предложи голосовое",
+    "не зови `connect_google`, а сразу читай",
     "Второй раз не знакомься никогда",
   ],
 };

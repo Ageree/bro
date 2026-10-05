@@ -32,6 +32,7 @@ describe("source layout", () => {
     expect(directories("web")).toEqual(["auth", "components", "hooks", "trpc"]);
     expect(files("web")).toEqual([]);
     expect(directories("shared")).toEqual([
+      "agent-mail",
       "browser",
       "calendar",
       "chat",
