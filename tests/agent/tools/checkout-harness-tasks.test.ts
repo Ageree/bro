@@ -30,7 +30,10 @@ import {
 const shop = "https://predubezhdai.ru";
 
 const login = serializeLoginVaultPayload({
-  authentication: { password: ["fixture", "only", "0410"].join("-"), type: "password" },
+  authentication: {
+    password: ["fixture", "only", "0410"].join("-"),
+    type: "password",
+  },
   identifier: { type: "email", value: "savely@example.com" },
   kind: "login",
   origin: shop,

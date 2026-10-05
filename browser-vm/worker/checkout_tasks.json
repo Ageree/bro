@@ -57,32 +57,24 @@
     "login": [
       {
         "alias": "login_username",
-        "allowedDomains": [
-          "predubezhdai.ru"
-        ],
+        "allowedDomains": ["predubezhdai.ru"],
         "value": "savely@example.com"
       },
       {
         "alias": "login_password",
-        "allowedDomains": [
-          "predubezhdai.ru"
-        ],
+        "allowedDomains": ["predubezhdai.ru"],
         "value": "fixture-only-0410"
       }
     ],
     "loginAndCard": [
       {
         "alias": "login_username",
-        "allowedDomains": [
-          "predubezhdai.ru"
-        ],
+        "allowedDomains": ["predubezhdai.ru"],
         "value": "savely@example.com"
       },
       {
         "alias": "login_password",
-        "allowedDomains": [
-          "predubezhdai.ru"
-        ],
+        "allowedDomains": ["predubezhdai.ru"],
         "value": "fixture-only-0410"
       },
       {
