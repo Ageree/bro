@@ -1902,6 +1902,194 @@ class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
                                                            FakeHttp(), SOLVER_KEY))
 
 
+ARKOSE_KEY = "2CB16598-CB82-4CF7-B332-5990DB66F3AB"
+DATADOME_FRAME = ("https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMA&hash=789361B674144528D0B7EE76B3"
+                  "5826&cid=6QAEcL8coBYTi&t=fe&referer=https%3A%2F%2Fshop.example%2F&s=9817")
+
+
+def ready(solution, task_id=1):
+    return [{"errorId": 0, "taskId": task_id}, {"errorId": 0, "status": "ready", "solution": solution}]
+
+
+class MoreCaptchaKindsTest(unittest.IsolatedAsyncioTestCase):
+    """The token kinds past reCAPTCHA, hCaptcha, Turnstile and SmartCaptcha: task names and fields as 2Captcha's
+    API v2 documentation gives them (05.10.2026), and what of the answer goes where."""
+
+    async def asyncSetUp(self):
+        self.enterContext(mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()))
+
+    def test_reads_arkose_and_datadome_frames(self):
+        arkose = worker.captcha_in_frame_url(f"https://client-api.arkoselabs.com/fc/gt2/public_key/{ARKOSE_KEY}")
+        self.assertEqual(arkose, {"kind": "funcaptcha", "sitekey": ARKOSE_KEY, "surl": "client-api.arkoselabs.com"})
+        self.assertEqual(worker.captcha_in_frame_url(f"https://shop-api.arkoselabs.com/v2/x/enforcement.html#pk={ARKOSE_KEY}")
+                         ["sitekey"], ARKOSE_KEY)
+        datadome = worker.captcha_in_frame_url(DATADOME_FRAME)
+        self.assertEqual((datadome["kind"], datadome["captchaUrl"], datadome["banned"]), ("datadome", DATADOME_FRAME, False))
+        self.assertTrue(worker.captcha_in_frame_url(DATADOME_FRAME.replace("t=fe", "t=bv"))["banned"])
+        for frame in (DATADOME_FRAME, "https://client-api.arkoselabs.com/x", "https://service.mtcaptcha.com/mtcv1/x"):
+            self.assertTrue(worker.captcha_vendor_frame(frame), frame)
+        self.assertFalse(worker.captcha_vendor_frame("https://shop.example/captcha-delivery.com"))
+
+    async def test_arkose_goes_through_the_runs_exit_with_its_public_key_and_subdomain(self):
+        http = FakeHttp(answers=ready({"token": SOLVED_TOKEN}))
+        page = captcha_page([{"url": SIGNUP, "sitekey": ARKOSE_KEY, "hint": "funcaptcha", "surl": "shop-api.arkoselabs.com"}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY, worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["websitePublicKey"], task["funcaptchaApiJSSubdomain"], task["proxyPort"]),
+                         ("FunCaptchaTask", ARKOSE_KEY, "shop-api.arkoselabs.com", 10001))
+        self.assertNotIn("websiteKey", task)
+        values = json.dumps({"fc-token": SOLVED_TOKEN, "verification-token": SOLVED_TOKEN, "FunCaptcha-Token": SOLVED_TOKEN})
+        self.assertIn(values, page.calls[-1])
+
+    async def test_mtcaptcha_and_friendly_captcha_v2(self):
+        http = FakeHttp(answers=ready({"token": SOLVED_TOKEN}) + ready({"token": SOLVED_TOKEN}, 2))
+        mtcaptcha = captcha_page([{"url": SIGNUP, "sitekey": "MTPublic-DemoKey9M"}])
+        self.assertTrue((await worker.solve_token_captcha([mtcaptcha], [], SIGNUP, http, SOLVER_KEY))[0])
+        friendly = captcha_page([{"url": SIGNUP, "sitekey": "FCMGEMUD2KTDSQ5H", "hint": "friendly", "version": "v2"}])
+        self.assertTrue((await worker.solve_token_captcha([friendly], [], SIGNUP, http, SOLVER_KEY))[0])
+        tasks = [body["task"] for _, body in http.posted if "task" in body]
+        self.assertEqual([(t["type"], t["websiteKey"], t.get("version")) for t in tasks],
+                         [("MtCaptchaTaskProxyless", "MTPublic-DemoKey9M", None),
+                          ("FriendlyCaptchaTaskProxyless", "FCMGEMUD2KTDSQ5H", "v2")])
+        self.assertIn(json.dumps({"mtcaptcha-verifiedtoken": SOLVED_TOKEN}), mtcaptcha.calls[-1])
+        self.assertIn(json.dumps({"frc-captcha-solution": SOLVED_TOKEN, "frc-captcha-response": SOLVED_TOKEN}),
+                      friendly.calls[-1])
+
+    async def test_geetest_v3_takes_the_latest_challenge_and_fills_its_three_fields(self):
+        gt = "022397c99c9f646f6477822485f30404"
+        http = FakeHttp(answers=ready({"challenge": "c2x", "validate": "v1", "seccode": "v1|jordan"}))
+        page = captcha_page([{"url": SIGNUP, "sitekey": gt, "hint": "geetest3", "challenge": "c1"},
+                             {"url": SIGNUP, "sitekey": gt, "hint": "geetest3", "challenge": "c2"}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY)
+        self.assertTrue(solved, message)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["gt"], task["challenge"]), ("GeeTestTaskProxyless", gt, "c2"))
+        answer = page.calls[-1]
+        self.assertIn(json.dumps({"geetest_challenge": "c2x", "geetest_validate": "v1", "geetest_seccode": "v1|jordan"}),
+                      answer)
+        self.assertTrue(answer.endswith(", null)"))  # no callback gets a GeeTest answer
+        # A gt without a challenge is not a widget to solve.
+        self.assertIsNone(worker.pick_token_captcha([{"url": SIGNUP, "widgets": [
+            {"sitekey": gt, "hint": "geetest3"}]}], [], SIGNUP))
+
+    async def test_datadome_goes_only_through_the_runs_exit_and_reloads_the_page_with_its_cookie(self):
+        cookie = "datadome=4ZXwCBlyHx9ktZhSnycMF; Path=/; Secure; SameSite=Lax"
+        page = captcha_page([{"url": "https://shop.example/", "frameUrl": DATADOME_FRAME}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, FakeHttp(), SOLVER_KEY)
+        self.assertEqual((solved, "own proxy" in message), (False, True))
+        http = FakeHttp(answers=ready({"cookie": cookie}))
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY,
+                                                           worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["captchaUrl"], task["websiteURL"], task["proxyLogin"]),
+                         ("DataDomeSliderTask", DATADOME_FRAME, "https://shop.example/", "geonode_u-session-ab12"))
+        self.assertIn("userAgent", task)
+        self.assertEqual(page.calls[-1], f"{worker.DATADOME_ANSWER}({json.dumps(cookie)})")
+        self.assertNotIn(cookie, message)
+        # A proxy 2Captcha cannot use is not dropped: DataDome has no task without one.
+        http = FakeHttp(answers=[{"errorId": 1, "errorCode": "ERROR_PROXY_CONNECTION_FAILED"}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY,
+                                                           worker.solver_proxy(UPSTREAM))
+        self.assertEqual((solved, len(http.posted)), (False, 1))
+        banned = captcha_page([{"frameUrl": DATADOME_FRAME.replace("t=fe", "t=bv")}])
+        solved, message = await worker.solve_token_captcha([banned], [], SIGNUP, FakeHttp(), SOLVER_KEY)
+        self.assertEqual((solved, "banned" in message), (False, True))
+
+
+def png(width, height):
+    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"\x08\x02\x00\x00\x00"
+
+
+class PictureCaptchaTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()))
+        self.typed, self.moves = [], []
+
+    async def shoot(self):
+        return png(200, 100)
+
+    async def insert_text(self, text):
+        self.typed.append(text)
+
+    async def mouse(self, params):
+        self.moves.append(params)
+
+    async def test_reads_the_characters_and_types_them_into_the_field(self):
+        http = FakeHttp(answers=ready({"text": " w7Kp "}))
+
+        async def evaluate(expression):
+            self.assertEqual(expression, worker.TEXT_CAPTCHA_FIELD)
+            return True
+
+        solved, message = await worker.solve_picture_captcha(
+            http, SOLVER_KEY, self.shoot, worker.text_typer(evaluate, self.insert_text), russian=True)
+        self.assertTrue(solved, message)
+        self.assertEqual(self.typed, ["w7Kp"])
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["comment"]), ("ImageToTextTask", worker.TEXT_COMMENT_RU))
+        self.assertEqual(base64.b64decode(task["body"]), png(200, 100))
+        self.assertNotIn("w7Kp", message)
+
+    async def test_without_a_field_the_run_is_told_the_characters(self):
+        async def evaluate(_expression):
+            return False
+
+        solved, message = await worker.solve_picture_captcha(
+            FakeHttp(answers=ready({"text": "w7Kp"})), SOLVER_KEY, self.shoot, worker.text_typer(evaluate, self.insert_text))
+        self.assertEqual((solved, "«w7Kp»" in message, self.typed), (False, True, []))
+
+    async def test_clicks_the_points_where_they_show_on_the_page(self):
+        http = FakeHttp(answers=ready({"coordinates": [{"x": 50, "y": 25}, {"x": 200, "y": 100}, {"x": "bad"}]}))
+        box = {"x": 300, "y": 400, "w": 100, "h": 50, "pageX": 300, "pageY": 1400}
+        solved, message = await worker.solve_picture_captcha(
+            http, SOLVER_KEY, self.shoot, worker.point_clicker(self.mouse, box), "Click all the bicycles")
+        self.assertTrue(solved, message)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["comment"]), ("CoordinatesTask", "Click all the bicycles"))
+        # The picture is 200x100 px for a 100x50 box: its points land at half their pixel values.
+        pressed = [(m["x"], m["y"]) for m in self.moves if m["type"] == "mousePressed"]
+        self.assertEqual(pressed, [(325, 412.5), (400, 450)])
+
+    async def test_the_picture_is_shot_where_it_sits_in_the_document(self):
+        clips = []
+
+        async def capture(clip):
+            clips.append(clip)
+            return png(1, 1)
+
+        await worker.picture_shooter(capture, {"x": 10, "y": 20, "w": 120, "h": 40, "pageX": 10, "pageY": 820})()
+        self.assertEqual(clips, [{"x": 10, "y": 820, "width": 120, "height": 40}])
+
+    async def test_no_key_a_broken_picture_and_an_unreadable_one(self):
+        finish = mock.AsyncMock()
+        self.assertFalse((await worker.solve_picture_captcha(FakeHttp(), None, self.shoot, finish))[0])
+
+        async def broken():
+            return b"not a png"
+
+        solved, message = await worker.solve_picture_captcha(FakeHttp(), SOLVER_KEY, broken, finish)
+        self.assertEqual((solved, message), (False, "The captcha picture could not be captured (ValueError)."))
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 1}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"},
+                                 {"errorId": 0, "taskId": 2}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"}])
+        solved, message = await worker.solve_picture_captcha(http, SOLVER_KEY, self.shoot, finish)
+        self.assertEqual(message, "The solving service could not read the captcha picture (ERROR_CAPTCHA_UNSOLVABLE).")
+        finish.assert_not_awaited()
+
+    async def test_the_action_reads_a_picture_when_no_token_captcha_is_there(self):
+        async def mouse(_params):
+            pass
+
+        text = mock.AsyncMock(return_value=(True, "typed"))
+        answer = await worker.solve_page_captcha(check_page([CLOSED]), mouse, FakeHttp(), "k",
+                                                 mock.AsyncMock(return_value=None), text)
+        self.assertEqual(answer, (True, "typed"))
+        nothing = await worker.solve_page_captcha(check_page([CLOSED]), mouse, FakeHttp(), "k",
+                                                  mock.AsyncMock(return_value=None), mock.AsyncMock(return_value=None))
+        self.assertEqual(nothing, (False, worker.NO_CAPTCHA))
+
+
 def card_field(field_id, kind, sure=True, tag="input", max_length=None, placeholder=""):
     return {"id": field_id, "kind": kind, "sure": sure, "tag": tag, "type": "text", "maxLength": max_length,
             "placeholder": placeholder, "options": None}

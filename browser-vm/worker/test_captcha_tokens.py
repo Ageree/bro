@@ -8,6 +8,7 @@ of the vendors' scripts, and 2Captcha's API served locally.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import sys
@@ -53,7 +54,16 @@ SMART_FORM = f"""
 <script>function onSmart(token) {{ window.solvedWith = token; }}</script>
 """
 
-V3_PAGE =f"""<form><input name="email"></form>
+# A picture of characters beside its field, as old-style sign-up forms have it, below the fold; and a 300x300
+# picture to click in, which records where it was clicked.
+TEXT_FORM = """<html lang="ru"><form><div style="height:1500px"></div>
+  <img id="captcha_image" width="160" height="60" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='60'%3E%3Ctext x='10' y='40' font-size='30'%3Ew7Kp%3C/text%3E%3C/svg%3E">
+  <input name="email"> <input name="captcha_code" placeholder="Символы с картинки"></form>"""
+CLICK_PAGE = """<p>Нажмите на все велосипеды</p><div id="captcha-challenge" style="margin-top:300px">
+  <canvas id="captcha" width="300" height="300" style="background:#ddd"></canvas></div>
+<script>window.clicks = []; captcha.addEventListener('click', (e) => clicks.push([e.offsetX, e.offsetY]));</script>"""
+
+V3_PAGE = f"""<form><input name="email"></form>
 <script src="http://127.0.0.1:8731/recaptcha/api.js?render={RECAPTCHA_KEY}"></script>"""
 
 # What the form's documents read after a solve: the response fields, the callback's token, the popup.
@@ -100,7 +110,16 @@ class TokenCaptchas(unittest.IsolatedAsyncioTestCase):
             polls[task_id] = polls.get(task_id, 0) + 1
             if polls[task_id] < 2:
                 return web.json_response({"errorId": 0, "status": "processing"})
-            return web.json_response({"errorId": 0, "status": "ready", "solution": {"gRecaptchaResponse": TOKEN}})
+            task = self.tasks[task_id - 1]["task"]
+            if task["type"] == "ImageToTextTask":
+                solution = {"text": "w7Kp"}
+            elif task["type"] == "CoordinatesTask":
+                # The picture's own pixels: the centre of its top-left and bottom-right quarters.
+                width, height = worker.png_size(base64.b64decode(task["body"]))
+                solution = {"coordinates": [{"x": width / 4, "y": height / 4}, {"x": width * 3 / 4, "y": height * 3 / 4}]}
+            else:
+                solution = {"gRecaptchaResponse": TOKEN}
+            return web.json_response({"errorId": 0, "status": "ready", "solution": solution})
 
         self.runners = []
         for port, routes in ((8731, None), (8732, None), (8733, "solver")):
@@ -198,6 +217,87 @@ class TokenCaptchas(unittest.IsolatedAsyncioTestCase):
         worlds, _ = await worker.captcha_worlds(self.browser)
         state = await worlds[0]("({token: document.querySelector('[name=smart-token]').value, solved: window.solvedWith})")
         self.assertEqual(state, {"token": TOKEN, "solved": TOKEN})
+
+    async def picture_tools(self):
+        cdp = await self.browser.get_or_create_cdp_session()
+
+        async def evaluate(expression):
+            answer = await cdp.cdp_client.send.Runtime.evaluate(
+                params={"expression": expression, "returnByValue": True}, session_id=cdp.session_id)
+            return (answer.get("result") or {}).get("value")
+
+        async def insert_text(text):
+            await cdp.cdp_client.send.Input.insertText(params={"text": text}, session_id=cdp.session_id)
+
+        async def mouse(params):
+            await cdp.cdp_client.send.Input.dispatchMouseEvent(params=params, session_id=cdp.session_id)
+
+        async def capture(clip):
+            return await self.browser.take_screenshot(format="png", clip=clip)
+
+        return evaluate, insert_text, mouse, capture
+
+    async def test_characters_in_a_picture_below_the_fold_are_typed_into_its_field(self):
+        import aiohttp
+
+        self.pages["/register"] = TEXT_FORM
+        await self.open("/register")
+        evaluate, insert_text, _mouse, capture = await self.picture_tools()
+        box = await evaluate(f"{worker.CAPTCHA_PICTURE_FIND}('text')")
+        self.assertEqual((box["w"], box["h"], box["russian"]), (160, 60, True))
+        async with aiohttp.ClientSession() as http:
+            solved, message = await worker.solve_picture_captcha(
+                http, SOLVER_KEY, worker.picture_shooter(capture, box), worker.text_typer(evaluate, insert_text),
+                russian=box["russian"])
+        self.assertTrue(solved, message)
+        task = self.tasks[0]["task"]
+        self.assertEqual((task["type"], worker.png_size(base64.b64decode(task["body"]))), ("ImageToTextTask", (160, 60)))
+        self.assertEqual(await evaluate("document.querySelector('[name=captcha_code]').value"), "w7Kp")
+        self.assertEqual(await evaluate("document.querySelector('[name=email]').value"), "")
+
+    async def test_a_picture_to_click_in_is_clicked_where_the_service_says(self):
+        import aiohttp
+
+        self.pages["/check"] = CLICK_PAGE
+        await self.open("/check")
+        evaluate, _insert_text, mouse, capture = await self.picture_tools()
+        self.assertIsNone(await evaluate(f"{worker.CAPTCHA_PICTURE_FIND}('text')"))  # no field: not characters
+        box = await evaluate(f"{worker.CAPTCHA_PICTURE_FIND}('click')")
+        async with aiohttp.ClientSession() as http:
+            solved, message = await worker.solve_picture_captcha(
+                http, SOLVER_KEY, worker.picture_shooter(capture, box), worker.point_clicker(mouse, box),
+                "Нажмите на все велосипеды")
+        self.assertTrue(solved, message)
+        self.assertEqual(self.tasks[0]["task"]["comment"], "Нажмите на все велосипеды")
+        clicks = await evaluate("clicks")
+        self.assertEqual(len(clicks), 2)
+        for (x, y), (ex, ey) in zip(clicks, [(75, 75), (225, 225)]):
+            self.assertAlmostEqual(x, ex, delta=2)
+            self.assertAlmostEqual(y, ey, delta=2)
+
+    async def test_the_page_shows_arkose_mtcaptcha_and_friendly_captcha_by_their_own_marks(self):
+        arkose = "2CB16598-CB82-4CF7-B332-5990DB66F3AB"
+        self.pages["/kinds"] = f"""
+          <div id="arkose" data-pkey="{arkose}" data-callback="onArkose"></div>
+          <input type="hidden" id="FunCaptcha-Token" value="token=1|pk={arkose}|surl=https%3A%2F%2Fshop-api.arkoselabs.com">
+          <div class="frc-captcha" data-sitekey="FCMGEMUD2KTDSQ5H"><input name="frc-captcha-solution"></div>
+          <script>window.mtcaptchaConfig = {{sitekey: 'MTPublic-DemoKey9M'}};
+            function onArkose(token) {{ window.solvedWith = token; }}</script>"""
+        await self.open("/kinds")
+        worlds, frame_urls = await worker.captcha_worlds(self.browser)
+        state = await worlds[0](worker.TOKEN_CAPTCHA_STATE)
+        seen = {(w.get("hint"), w.get("sitekey"), w.get("surl")) for w in state["widgets"]}
+        self.assertLessEqual({("funcaptcha", arkose, None), ("funcaptcha", arkose, "https://shop-api.arkoselabs.com"),
+                              ("friendly", "FCMGEMUD2KTDSQ5H", None), ("mtcaptcha", "MTPublic-DemoKey9M", None)}, seen)
+        # Arkose alone: its token goes into its field and to the widget's callback.
+        await worlds[0]("document.querySelector('.frc-captcha').remove(); delete window.mtcaptchaConfig")
+        solved, message = await self.solve()
+        self.assertTrue(solved, message)
+        task = self.tasks[0]["task"]
+        self.assertEqual((task["type"], task["funcaptchaApiJSSubdomain"]),
+                         ("FunCaptchaTaskProxyless", "shop-api.arkoselabs.com"))
+        self.assertEqual(await worlds[0]("[document.getElementById('FunCaptcha-Token').value, window.solvedWith]"),
+                         [TOKEN, TOKEN])
 
     async def test_v3_a_wrong_key_and_a_page_without_a_captcha(self):
         self.pages["/v3"] = V3_PAGE
