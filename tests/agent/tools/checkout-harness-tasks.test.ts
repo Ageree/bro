@@ -1,4 +1,6 @@
 import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { browserSecretBindings } from "@agent/lib/browser-use/secrets";
 import {
@@ -20,9 +22,10 @@ import {
  * the bindings are the ones a real run gets; the login and the card are the
  * harness's test values.
  *
- * `BRO_CHECKOUT_TASKS_OUT=browser-vm/worker/checkout_tasks.json
- * ./node_modules/.bin/vitest run tests/agent/tools/checkout-harness-tasks`
- * writes them; without it the test only checks they compose.
+ * Each run writes them to `bro-checkout-tasks.json` in the system's temporary
+ * directory; after a change to the texts, run
+ * `./node_modules/.bin/vitest run tests/agent/tools/checkout-harness-tasks`
+ * and copy that file over `browser-vm/worker/checkout_tasks.json`.
  */
 const shop = "https://predubezhdai.ru";
 
@@ -103,28 +106,28 @@ function start(withLogin: boolean, withCard: boolean) {
   });
 }
 
-function continuation(freshBrowser?: "asked") {
-  return composeBrowserContinuation({
-    aliases: bound(true, true).aliases,
-    allowPayment: true,
-    collectImages: false,
-    consent: { by: "person", kind: "confirmed", submission: cream },
-    deliveryAddress: undefined,
-    errand,
-    facts,
-    ...(freshBrowser === undefined ? {} : { freshBrowser }),
-    message: "карту в сейф добавил, запускай оплату",
-    searching: false,
-    site: shop,
-    staging: "person",
-  });
-}
+const followUp = {
+  aliases: bound(true, true).aliases,
+  allowPayment: true,
+  collectImages: false,
+  consent: { by: "person", kind: "confirmed", submission: cream },
+  deliveryAddress: undefined,
+  errand,
+  facts,
+  message: "карту в сейф добавил, запускай оплату",
+  searching: false,
+  site: shop,
+  staging: "person",
+} as const;
 
 describe("checkout harness tasks", () => {
   it("composes the start and the follow-up of the RU 04.10 errand", () => {
     const tasks = {
-      continuation: continuation(),
-      continuationFresh: continuation("asked"),
+      continuation: composeBrowserContinuation(followUp),
+      continuationFresh: composeBrowserContinuation({
+        ...followUp,
+        freshBrowser: "asked",
+      }),
       start: start(true, true),
       startGuest: start(false, true),
       startNoCard: start(true, false),
@@ -134,17 +137,17 @@ describe("checkout harness tasks", () => {
       expect(task).not.toContain(["fixture", "only", "0410"].join("-"));
       expect(task).not.toContain("4276550101324310");
     }
-    const out = process.env.BRO_CHECKOUT_TASKS_OUT;
-    if (out !== undefined && out !== "") {
-      const all = {
-        secrets: {
-          card: secrets(false, true),
-          login: secrets(true, false),
-          loginAndCard: secrets(true, true),
-        },
-        tasks,
-      };
-      writeFileSync(out, `${JSON.stringify(all, null, 2)}\n`);
-    }
+    const all = {
+      secrets: {
+        card: secrets(false, true),
+        login: secrets(true, false),
+        loginAndCard: secrets(true, true),
+      },
+      tasks,
+    };
+    writeFileSync(
+      join(tmpdir(), "bro-checkout-tasks.json"),
+      `${JSON.stringify(all, null, 2)}\n`
+    );
   });
 });

@@ -890,8 +890,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Регрессия оформления заказа — стенд `browser-vm/worker/checkout_harness.py`:
   копия кассы PREDUBEZHDAI (`checkout_shop.py`) под https://predubezhdai.ru и
   yoomoney.ru на 127.0.0.2/3:443 (нужен root), настоящий `run_agent` worker,
-  тексты и секреты — из `composeBrowserTask` (после правки текста перегенерируйте
-  `checkout_tasks.json`, команда — в `tests/agent/tools/checkout-harness-tasks.test.ts`).
+  тексты и секреты — из `composeBrowserTask` (после правки текста обновите
+  `checkout_tasks.json`, как сказано в `tests/agent/tools/checkout-harness-tasks.test.ts`).
   Каждый прогон платный (1–4 ₽). На 127.0.0.1 GPT Luna отказывалась платить «на
   локальном сайте», поэтому — настоящие имена. Предзаполненная корзина стенда —
   «товары до поручения», и модель их убирала: пресеты корзину не наполняют.
