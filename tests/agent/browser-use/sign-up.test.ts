@@ -6,7 +6,10 @@ import {
   generatedPassword,
   registersWithAgentMail,
   saveAgentMailLogin,
+  settleSignUpLogin,
+  signUpAccount,
   signUpLine,
+  signUpSettlement,
   signUpUsername,
   siteAgentMailbox,
 } from "@agent/lib/browser-use/sign-up";
@@ -57,9 +60,15 @@ const saveVaultItem = vi.hoisted(() =>
   )
 );
 
+const deleteVaultItem = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope, id: string) => Promise<boolean>>(() =>
+    Promise.resolve(true)
+  )
+);
+
 vi.mock("@agent/lib/agent-mail/client", () => ({ ensureAgentMailbox }));
 vi.mock("@db/services/vault", () => ({
-  deleteVaultItem: vi.fn<() => Promise<boolean>>(() => Promise.resolve(true)),
+  deleteVaultItem,
   readVaultItems,
   readVaultSecret,
   saveVaultItem,
@@ -203,5 +212,109 @@ describe("an account registered with Bro's own mailbox", () => {
     await expect(
       siteAgentMailbox(scope, "https://www.inaturalist.org")
     ).resolves.toBe(undefined);
+  });
+});
+
+describe("what a settled sign-up leaves in the vault", () => {
+  const startTask = `Зарегистрируйся\n\n${signUpLine("quietfox42", true)}`;
+  const followUpTask = `Bro took the code…\n\n${signUpLine("quietfox42")}`;
+  const ended = { firstAttempt: true, missingSite: false, waitsOnStep: false };
+
+  it("reads the run's word on the account from its footer", () => {
+    expect(signUpAccount("RESULT: ok\nNEEDS: none\nACCOUNT: created")).toBe(
+      "created"
+    );
+    expect(signUpAccount("- **ACCOUNT:** none")).toBe("none");
+    expect(signUpAccount("ACCOUNT: maybe")).toBeUndefined();
+    expect(signUpAccount(null)).toBeUndefined();
+    // Only the start is asked to say a form was never sent.
+    expect(startTask).toContain("ACCOUNT: none when you never submitted");
+    expect(followUpTask).not.toContain("ACCOUNT: none");
+    expect(followUpTask).toContain("ACCOUNT: created once the site accepted");
+  });
+
+  it("tells of the account once it exists and the errand waits on nothing", () => {
+    const created = {
+      result: "NEEDS: none\nACCOUNT: created",
+      task: startTask,
+    };
+    expect(signUpSettlement(created, ended)).toBe("created");
+    expect(signUpSettlement({ ...created, task: followUpTask }, ended)).toBe(
+      "created"
+    );
+    // Still waiting for the letter: nothing to tell yet.
+    expect(
+      signUpSettlement(created, { ...ended, waitsOnStep: true })
+    ).toBeUndefined();
+    // Not a sign-up at all.
+    expect(
+      signUpSettlement({ ...created, task: "Закажи корм" }, ended)
+    ).toBeUndefined();
+  });
+
+  it("takes the login out only when the start surely never sent the form", () => {
+    const unsent = { result: "NEEDS: none\nACCOUNT: none", task: startTask };
+    expect(signUpSettlement(unsent, ended)).toBe("forget");
+    expect(
+      signUpSettlement(
+        { result: null, task: startTask },
+        {
+          ...ended,
+          missingSite: true,
+        }
+      )
+    ).toBe("forget");
+    // A later attempt after a wall: an earlier one may have sent it.
+    expect(signUpSettlement(unsent, { ...ended, firstAttempt: false })).toBe(
+      "kept"
+    );
+    // A follow-up saying «none» cannot undo the start's sign-up.
+    expect(signUpSettlement({ ...unsent, task: followUpTask }, ended)).toBe(
+      "kept"
+    );
+    // A failed run or a refusal without a word: unclear, so it stays.
+    expect(
+      signUpSettlement({ result: "NEEDS: none", task: startTask }, ended)
+    ).toBe("kept");
+  });
+
+  it("says where the login is, never the password", async () => {
+    savedLogin(mailbox.email);
+
+    const line = await settleSignUpLogin(
+      scope,
+      "https://www.inaturalist.org",
+      "created"
+    );
+
+    expect(line).toContain(
+      "as «Аккаунт Бро на www.inaturalist.org» with quiet.fox42@agentmail.to as its login"
+    );
+    expect(line).toContain("раздел «Сейф» → «Входы»");
+    expect(line).toContain("/vault");
+    expect(line).toContain("Never write the password");
+    expect(line).not.toContain("Secret-1!");
+    expect(deleteVaultItem).not.toHaveBeenCalled();
+
+    await expect(
+      settleSignUpLogin(scope, "https://www.inaturalist.org", "kept")
+    ).resolves.toContain("The login prepared for it stays in the user's vault");
+    expect(deleteVaultItem).not.toHaveBeenCalled();
+  });
+
+  it("takes out only Bro's own login for the site", async () => {
+    savedLogin(mailbox.email);
+    await expect(
+      settleSignUpLogin(scope, "https://www.inaturalist.org", "forget")
+    ).resolves.toContain("was taken out of the user's vault");
+    expect(deleteVaultItem).toHaveBeenCalledWith(scope, "vault-1");
+
+    // The person's own login on the site is never touched.
+    deleteVaultItem.mockClear();
+    savedLogin("alice@example.com");
+    await expect(
+      settleSignUpLogin(scope, "https://www.inaturalist.org", "forget")
+    ).resolves.toBeUndefined();
+    expect(deleteVaultItem).not.toHaveBeenCalled();
   });
 });
