@@ -71,6 +71,10 @@ persistent inbox when its workspace is created or next accessed; existing
 agents are provisioned the same way. Chats and temporary task subagents share
 the workspace identity and do not allocate extra inboxes.
 
+`AGENTMAIL_PROXY_URL` optionally routes only these API requests through an
+authenticated HTTP(S) CONNECT proxy. Use it when the provider refuses the
+server's direct egress; HTTPS certificate verification remains enabled.
+
 Bro can show its address and list, read, and send mail using `agent-mail-*`
 tools. These operate only on its workspace's own inbox. Sending requires an
 explicit user request and follows the existing outbound-message rules;

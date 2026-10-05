@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { db, workspaceMemberships, workspaces } from "@db";
 import { provisionAgentMailbox } from "@db/services/agent-mail";
+import { AgentMailError } from "@shared/agent-mail/api";
 
 export async function ensureScope(scope: AccessScope) {
   const createdAt = new Date();
@@ -26,8 +27,11 @@ export async function ensureScope(scope: AccessScope) {
   // The next scope access retries with the same provider client_id.
   try {
     await provisionAgentMailbox(scope);
-  } catch {
-    console.warn("[agent-mail] mailbox provisioning unavailable");
+  } catch (error) {
+    console.warn("[agent-mail] mailbox provisioning unavailable", {
+      status: error instanceof AgentMailError ? error.status : undefined,
+      code: error instanceof AgentMailError ? error.code : undefined,
+    });
   }
 }
 

@@ -23,6 +23,7 @@ const testEnvironment = {
 // for a Cloud.ru key and a real VM, and agent sessions do carry one.
 const unsetEnvironment = [
   "AGENTMAIL_API_KEY",
+  "AGENTMAIL_PROXY_URL",
   "AGENTMAIL_WORKSPACES",
   "BROWSER_BACKEND",
   "BROWSER_HOST_BUNDLE",

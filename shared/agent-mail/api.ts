@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fetch, ProxyAgent } from "undici";
 import { z } from "zod";
 import { env } from "@shared/environment";
 
@@ -6,6 +7,11 @@ const apiOrigin = "https://api.agentmail.to/v0";
 const requestTimeoutMs = 20_000;
 const maximumRetries = 2;
 const maximumRetryDelayMs = 10_000;
+// Only AgentMail requests use this dispatcher; other integrations keep their
+// own network path. TLS verification remains enabled through the CONNECT tunnel.
+const proxy = env.AGENTMAIL_PROXY_URL
+  ? new ProxyAgent(env.AGENTMAIL_PROXY_URL)
+  : undefined;
 
 const providerErrorSchema = z.object({
   code: z
@@ -41,7 +47,7 @@ const providerErrorSchema = z.object({
 });
 
 /** Provider failures expose only status and known codes, never email or secrets. */
-class AgentMailError extends Error {
+export class AgentMailError extends Error {
   override readonly name = "AgentMailError";
 
   constructor(
@@ -114,7 +120,10 @@ const sendResultSchema = z.object({
 
 const idempotencyKeySchema = z.string().regex(/^[A-Za-z\d._~-]{1,256}$/u);
 
-function retryDelay(response: Response, attempt: number) {
+function retryDelay(
+  response: Awaited<ReturnType<typeof fetch>>,
+  attempt: number
+) {
   const retryAfter = response.headers.get("retry-after");
   if (retryAfter === null) return 500 * 2 ** attempt;
   const seconds = Number(retryAfter);
@@ -147,11 +156,12 @@ async function agentMailRequest<Schema extends z.ZodType>(
 
   /* oxlint-disable eslint/no-await-in-loop -- Provider retries must wait for the previous response and its backoff. */
   for (let attempt = 0; ; attempt++) {
-    let response: Response;
+    let response: Awaited<ReturnType<typeof fetch>>;
     try {
       response = await fetch(url, {
         body: options.body === undefined ? null : JSON.stringify(options.body),
         headers,
+        dispatcher: proxy,
         method: options.method ?? "GET",
         redirect: "error",
         signal: AbortSignal.timeout(requestTimeoutMs),
