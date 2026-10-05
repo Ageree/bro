@@ -2418,6 +2418,11 @@ describe("what the report turn retells", () => {
       "The user already said yes to paying up to 2\u00a0100 ₽ for this exact order"
     );
     expect(prompt).toContain("do not ask them «Оплачиваю?» again");
+    // RU 04.10: the run wrote «не могу завершить оплату», and Bro told the
+    // person the payment was sent and had probably gone through.
+    expect(prompt).toContain(
+      "never tell the user the payment was sent, went through or probably went through"
+    );
     expect(prompt).not.toContain("only their plain yes in the next message");
   });
 
