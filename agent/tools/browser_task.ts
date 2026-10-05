@@ -1163,6 +1163,68 @@ function cardLine(aliases: readonly string[]) {
   return `The saved card: if you have the fill_card action, fill the card form with it — it finds the fields in the payment processor's frame too and types the expiry the way its boxes take it — and type a card secret yourself only into a field it says it could not fill. Without it: ${browserSecretAliases.cardNumber} goes into the card number, ${browserSecretAliases.cardExpiry} (MM/YY) into an expiry field that takes both; when the month and the year are separate boxes, no secret holds either alone — stop with NEEDS: info and say so in DETAILS rather than typing ${browserSecretAliases.cardExpiry} into them. ${browserSecretAliases.cardCvc} goes into the CVC, CVV or «Код» field, which shows only dots once filled — dots mean it is filled, not empty. If a field still shows a wrong value after typing, clear it and type it once more, then stop with NEEDS: info and say in DETAILS which field shows what: a value that landed wrong in a field is a typing problem, not a sign that the saved card is wrong.`;
 }
 
+/**
+ * Words that ask for the card saved in Bro's vault: «оплати сохранённой
+ * картой», «данные карты из сейфа».
+ */
+const vaultCardPattern =
+  /(?:сохран\p{L}*|сейф\p{L}*)\s+карт|карт\p{L}*\s+(?:из|в)\s+сейф|saved\s+card|card\s+(?:from|in)\s+(?:the\s+)?vault/iu;
+
+/**
+ * An order to pay with the vault's card when this run has none bound (it is
+ * bound once the person confirms or adds it, on the follow-up). On the
+ * checkout harness (05.10) a run told «данные карты из сейфа» with no card
+ * attached spent fourteen steps probing the shop's account, its saved-cards
+ * API and the payment frame for a card that was never there.
+ */
+function vaultCardLaterLine(options: {
+  readonly aliases: readonly string[];
+  readonly allowPayment: boolean;
+  readonly consent: SubmissionConsent | undefined;
+  readonly errand: string;
+}) {
+  if (
+    !options.allowPayment ||
+    options.aliases.includes(browserSecretAliases.cardNumber)
+  ) {
+    return undefined;
+  }
+  const submission =
+    options.consent?.kind === "confirmed"
+      ? options.consent.submission
+      : undefined;
+  const words = [
+    options.errand,
+    submission?.what,
+    ...(submission?.personalData ?? []),
+  ].join("\n");
+  if (!vaultCardPattern.test(words)) return undefined;
+  return "The saved card this order is to be paid with is not attached to this run: it is bound on the follow-up. Take the order up to the card form (or the page that asks for the card) and stop there with NEEDS: payment, the TOTAL the page shows and, in DETAILS, that the card form is open. Do not look for a saved card on the site — its account, its saved-cards pages, its API or the payment frame — and do not press the pay button with the form empty.";
+}
+
+/**
+ * What the person said yes to, ahead of everything else: on the checkout
+ * harness (05.10) GPT Luna ended runs with done right before «К оплате» or
+ * «Заплатить», calling the payment a financial operation it could not make,
+ * while the same consent sat in the middle of the task; opened with the
+ * person's go-ahead it paid in four runs of four. Only a confirmed
+ * submission with a payment cap has one to give.
+ */
+function goAheadLine(
+  consent: SubmissionConsent | undefined,
+  aliases: readonly string[]
+) {
+  if (consent?.kind !== "confirmed") return undefined;
+  const { submission } = consent;
+  const cap = submission.paymentCapRub;
+  if (cap === undefined) return undefined;
+  const total = formatRub(submission.chargeRub ?? cap);
+  const pay = aliases.includes(browserSecretAliases.cardNumber)
+    ? "Place it, fill the card form with the saved card and press its pay button, until the site shows that the payment went through («Оплата прошла», the order confirmed): that is this errand, not a step to stop short of."
+    : "Place it and take it up to the card form: the saved card comes with the follow-up.";
+  return `The person asked for this order themselves and said yes to paying ${total} for it: ${submission.what}, for ${submission.forWhom}, at ${submission.where}. ${pay}`;
+}
+
 function credentialsLine(aliases: readonly string[], site: string | undefined) {
   if (aliases.length === 0) {
     return "No stored credentials are available for this run. If the site asks you to sign in, stop with NEEDS: password instead of guessing one.";
@@ -1219,7 +1281,7 @@ function accountStateLine(aliases: readonly string[]) {
 // signed-in person to a legacy /order form that asked for a patronymic and
 // always failed, while the header's basket icon opened the working /checkout.
 const checkoutRouteLine =
-  "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button («Оформить заказ», «Перейти к оформлению»). Never open a checkout, order or payment page by an address you remember, guess or saw on an earlier run. A checkout page an earlier run left open is this order's only while it still shows this order's items and total; when it does not, when it shows an error, or once you have signed in since it opened, go back to the basket and start the checkout again from its button. When the checkout a button opens ends on an error page, or asks for something the person's details lack (a patronymic, a field no saved detail fits), try the site's other way into checkout before stopping — the basket or bag icon in the page header, a mini-basket's checkout button — and report which one worked.";
+  "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button («Оформить заказ», «Перейти к оформлению»). Never open a checkout, order or payment page — a payment link or an order's payment page included — by an address you remember, guess or saw on an earlier run: reach a payment page only through the site's own buttons and links on this run (the checkout's pay button, «Оплатить» beside the order in the account). A checkout page an earlier run left open is this order's only while it still shows this order's items and total; when it does not, when it shows an error, or once you have signed in since it opened, go back to the basket and start the checkout again from its button. When the checkout a button opens ends on an error page, or asks for something the person's details lack (a patronymic, a field no saved detail fits), try the site's other way into checkout before stopping — the basket or bag icon in the page header, a mini-basket's checkout button — and report which one worked.";
 
 /**
  * How form fields take the person's details: the phone after the field's
@@ -1263,6 +1325,7 @@ export function composeBrowserTask(options: {
     browserSecretAliases.signinPhone
   );
   return [
+    goAheadLine(options.consent, options.aliases),
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
@@ -1288,6 +1351,7 @@ export function composeBrowserTask(options: {
       ? undefined
       : formFieldsLine,
     credentialsLine(options.aliases, options.site),
+    vaultCardLaterLine(options),
     accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
@@ -1491,6 +1555,7 @@ export function composeBrowserContinuation(options: {
       ? undefined
       : formFieldsLine,
     credentialsLine(options.aliases, options.site),
+    vaultCardLaterLine(options),
     accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),

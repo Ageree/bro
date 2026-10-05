@@ -107,7 +107,7 @@ describe("browser run sign-in rules", () => {
         "Start a checkout only from the site's own basket: open it with the site's basket button or «Корзина» link and press its checkout button"
       );
       expect(task).toContain(
-        "Never open a checkout, order or payment page by an address you remember, guess or saw on an earlier run."
+        "Never open a checkout, order or payment page — a payment link or an order's payment page included — by an address you remember, guess or saw on an earlier run"
       );
       expect(task).toContain(
         "once you have signed in since it opened, go back to the basket and start the checkout again from its button"
