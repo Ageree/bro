@@ -208,25 +208,31 @@ async function savedLoginId(scope: AccessScope, site: string) {
 
 /**
  * How a start that registers with Bro's own mailbox goes: `saved` when the
- * vault already has a login for the site, which the run signs in with
- * rather than registering anew; otherwise the address to register with.
- * Undefined when the workspace has no agent mailbox or the site cannot
- * hold a login.
+ * vault already has the person's login for the site, which the run signs
+ * in with rather than registering anew; `again` when the saved login is
+ * Bro's own from an earlier sign-up, whose account may never have been
+ * made (05.10: reCAPTCHA stopped the first one, and the second only signed
+ * in to nothing) — the run registers with that same login, or signs in
+ * where the site already has the address; otherwise the address to
+ * register with, under a new login. Undefined when the workspace has no
+ * agent mailbox or the site cannot hold a login.
  */
 export async function agentMailSignUp(scope: AccessScope, site: string) {
   const origin = loginOrigin(site);
   if (origin === undefined) return undefined;
   const mailbox = await ensureAgentMailbox(scope);
   if (!mailbox) return undefined;
-  if ((await savedLoginId(scope, site)) !== undefined) {
-    return { kind: "saved" as const };
-  }
-  return {
+  const account = {
     email: mailbox.email,
-    kind: "new" as const,
     origin,
     username: signUpUsername(mailbox.email),
   };
+  if ((await savedLoginId(scope, site)) !== undefined) {
+    return (await siteAgentLogin(scope, site)) === undefined
+      ? { kind: "saved" as const }
+      : { ...account, kind: "again" as const };
+  }
+  return { ...account, kind: "new" as const };
 }
 
 /**
