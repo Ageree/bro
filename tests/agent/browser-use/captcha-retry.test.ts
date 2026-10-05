@@ -236,6 +236,16 @@ describe("the anti-bot retry policy", () => {
     expect(third).toContain("about ten seconds");
   });
 
+  it("sends a check on the workspace's own browser to solve_captcha, not to a solver that is not there", async () => {
+    const { captchaRetryTask } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    const onVm = captchaRetryTask("Зарегистрируйся", 2, "(ref 2)", true);
+
+    expect(onVm).toContain("hand it to the solve_captcha action");
+    expect(onVm).not.toContain("built-in solver");
+  });
+
   it("binds the phone again only where the errand's start was told to sign in with it", async () => {
     const { phoneSignInSentence } =
       await import("@agent/lib/browser-use/secrets");
