@@ -456,7 +456,7 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
 
     expect(await hosts.placeBrowserSandbox(now)).toEqual({
       kind: "starting",
-      retryAfterMs: 240_000,
+      retryAfterMs: 120_000,
     });
     expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
     const [created] = cloud.createCloudRuHostVm.mock.calls[0] ?? [];
@@ -473,7 +473,7 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
     // While it comes up, nobody creates another.
     expect(await hosts.placeBrowserSandbox(minutes(1))).toEqual({
       kind: "starting",
-      retryAfterMs: 60_000,
+      retryAfterMs: 15_000,
     });
     expect(cloud.createCloudRuHostVm).toHaveBeenCalledOnce();
   });
@@ -580,7 +580,7 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
     );
   });
 
-  it("waits a minute, not five, for hosts without the current root to go", async () => {
+  it("waits seconds, not minutes, for hosts without the current root to go", async () => {
     const { hosts, records } = await loadPool();
     await seedHost(records, {
       capacity: {
@@ -599,7 +599,7 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
 
     expect(await hosts.placeBrowserSandbox(now)).toEqual({
       kind: "starting",
-      retryAfterMs: 60_000,
+      retryAfterMs: 15_000,
     });
     expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
     expect(alertOwner).toHaveBeenCalledWith(
@@ -635,7 +635,7 @@ describe("browser sandbox placement", { timeout: 60_000 }, () => {
 
     expect(await hosts.placeBrowserSandbox(now)).toEqual({
       kind: "starting",
-      retryAfterMs: 240_000,
+      retryAfterMs: 120_000,
     });
     expect(cloud.createCloudRuHostVm).not.toHaveBeenCalled();
     expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
@@ -1007,7 +1007,7 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
     // The next sandbox wakes it rather than create a host.
     expect(await hosts.placeBrowserSandbox(minutes(60))).toEqual({
       kind: "starting",
-      retryAfterMs: 60_000,
+      retryAfterMs: 45_000,
     });
     expect(cloud.setCloudRuVmPower).toHaveBeenLastCalledWith(
       "vm-host-1",
@@ -1023,7 +1023,7 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
     // and a person's errand would wait out the health check.
     expect(
       await hosts.placeBrowserSandbox(new Date(minutes(60).getTime() + 10_000))
-    ).toEqual({ kind: "starting", retryAfterMs: 60_000 });
+    ).toEqual({ kind: "starting", retryAfterMs: 15_000 });
     expect(hostClient.readBrowserHostHealth).not.toHaveBeenCalled();
 
     // Not up yet: the errand waits, nobody powers it on twice.
@@ -1033,7 +1033,7 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
     );
     expect(await hosts.placeBrowserSandbox(minutes(61))).toEqual({
       kind: "starting",
-      retryAfterMs: 60_000,
+      retryAfterMs: 15_000,
     });
     expect(cloud.setCloudRuVmPower).toHaveBeenCalledTimes(2);
 
@@ -1074,7 +1074,7 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
 
     expect(await hosts.placeBrowserSandbox(now)).toEqual({
       kind: "starting",
-      retryAfterMs: 60_000,
+      retryAfterMs: 15_000,
     });
 
     expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();

@@ -523,6 +523,83 @@ describe("starting a run on a workspace's browser VM", () => {
     ]);
   });
 
+  it("serves the fast browser's pilot from Together with a short model timeout, and nobody else", async () => {
+    const tunings = async (settings: Record<string, string>) => {
+      worker.startBrowserVmWorkerRun.mockClear();
+      worker.sendBrowserVmWorkerMessage.mockClear();
+      const client = await importWithSettings(
+        { ...browserVmTestEnvironment, ...settings },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      await client.createBrowserUseRun({
+        profileId,
+        search: true,
+        task: composedTask,
+      });
+      await client.createBrowserUseRun({ profileId, task: composedTask });
+      await client.queueBrowserUseSessionMessage(sessionId, "А синий есть?");
+      return [
+        ...worker.startBrowserVmWorkerRun.mock.calls.map(
+          ([, input]) => input.tuning
+        ),
+        worker.sendBrowserVmWorkerMessage.mock.calls[0]?.[2].tuning,
+      ];
+    };
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    worker.sendBrowserVmWorkerMessage.mockImplementation((_vm, id, message) =>
+      Promise.resolve({
+        runId: message.runId ?? "",
+        sessionId: id,
+        status: "started",
+      })
+    );
+    // Together first, DeepInfra behind it, the hosts without structured
+    // outputs still skipped, and no `requireParameters`: with it RouterAI
+    // passes over Together, which takes no `seed`.
+    const fast = {
+      llmTimeoutSeconds: 25,
+      maxActionsPerStep: 8,
+      provider: {
+        ignore: routerAiDeepSeekRouting.ignore,
+        order: ["together", "deepinfra"],
+      },
+      reasoning: "none",
+    };
+
+    expect(
+      await tunings({
+        BROWSER_FAST_WORKSPACES: `other@example.test,${workspaceId}`,
+      })
+    ).toEqual([{ flashMode: true, ...fast }, fast, fast]);
+    expect(await tunings({ BROWSER_FAST_WORKSPACES: "*" })).toEqual([
+      { flashMode: true, ...fast },
+      fast,
+      fast,
+    ]);
+    // Another workspace's pilot changes nothing here.
+    expect(
+      await tunings({ BROWSER_FAST_WORKSPACES: "personal:another" })
+    ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
+    // Another model keeps its own hosts and browser-use's own timeout:
+    // nothing measured how long GPT Luna's reasoning calls take.
+    const [luna] = await tunings({
+      BROWSER_FAST_WORKSPACES: workspaceId,
+      BROWSER_VM_MODEL: "openai/gpt-6-luna",
+    });
+    expect(luna).toEqual({
+      flashMode: true,
+      maxActionsPerStep: 8,
+      provider: { requireParameters: true },
+      reasoning: "medium",
+    });
+  });
+
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({
