@@ -6,9 +6,9 @@ import { env } from "@shared/environment";
  * (BROWSER_FAST_WORKSPACES, docs/browser-speed.md): its errands on its own
  * browser have DeepSeek served by Together first and give up on a call of
  * it stuck past `fastLlmTimeoutSeconds` (`runs.ts`), and run in flash mode
- * when they only search. The list names a workspace by its id or its owner's email, as
- * BROWSER_VM_WORKSPACES does, or everyone with `*`; unset, nobody is, and
- * nothing is looked up. A verdict by the email is remembered for ten
+ * when they only search. The list names a workspace by its id or its
+ * owner's email, as BROWSER_VM_WORKSPACES does, or everyone with `*`; unset,
+ * nobody is, and nothing is looked up. A verdict by the email is remembered for ten
  * minutes: it is asked at every start, follow-up and retry of a queued
  * errand. A failed lookup runs the errand as before rather than failing its
  * start.
