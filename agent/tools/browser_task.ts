@@ -1347,9 +1347,12 @@ export function composeBrowserTask(options: {
   readonly site: string | undefined;
   /**
    * The errand registers an account with Bro's own mailbox: the user name a
-   * form gets (`agent/lib/browser-use/sign-up.ts`).
+   * form gets (`agent/lib/browser-use/sign-up.ts`), and whether this start
+   * saved its login (`fresh`): only then may the run's «never submitted»
+   * take the login out of the vault — one an earlier sign-up left may
+   * belong to an account that exists.
    */
-  readonly signUp?: { readonly username: string };
+  readonly signUp?: { readonly fresh: boolean; readonly username: string };
   /** The person asked for the errand to be done, not only found. */
   readonly staging?: Staging;
 }) {
@@ -1369,7 +1372,9 @@ export function composeBrowserTask(options: {
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
     personStepLine(),
-    options.signUp ? signUpLine(options.signUp.username, true) : undefined,
+    options.signUp
+      ? signUpLine(options.signUp.username, options.signUp.fresh)
+      : undefined,
     options.staging !== undefined && options.consent === undefined
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
@@ -2695,7 +2700,10 @@ const signUpOffRefusal =
   "Nothing was started: this workspace has no AgentMail mailbox of its own, so an account cannot be registered with it. Start the errand without signUpWith.";
 
 /** What Bro hears about the account a start registers with its mailbox. */
-function signUpNote(kind: "new" | "saved") {
+function signUpNote(kind: "again" | "new" | "saved") {
+  if (kind === "again") {
+    return 'The vault already holds your own login for this site from an earlier sign-up, whose account may not exist yet: the run registers with that same login, or signs in where the site already knows the address. You never see the password, so never write or ask for one, and do not ask the user which email to use. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.';
+  }
   return kind === "new"
     ? 'The run registers the account with your own AgentMail address and a password the tool made and saved in the vault as this site\'s login: you never see it, so never write or ask for one. Do not ask the user which email to use or remind them of yours. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.'
     : "A login for this site is already saved in the vault, so the run signs in with it rather than registering a new account.";
@@ -3804,7 +3812,9 @@ async function runBrowserTask(
           facts: facts.details,
           home: facts.home,
           signUp:
-            signUp?.kind === "new" ? { username: signUp.username } : undefined,
+            signUp === undefined || signUp.kind === "saved"
+              ? undefined
+              : { fresh: signUp.kind === "new", username: signUp.username },
           site,
           staging,
         });
@@ -3948,7 +3958,9 @@ async function runBrowserTask(
       note: [
         "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
         nothingDoneYetNote(),
-        signUp?.kind === "new" ? undefined : boundSignInNote(secrets.aliases),
+        signUp === undefined || signUp.kind === "saved"
+          ? boundSignInNote(secrets.aliases)
+          : undefined,
         spend?.decision.allowed
           ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), but that limit never replaces their plain yes to the exact order and total before payment. Report the receipt only if the payment actually completes.`
           : undefined,

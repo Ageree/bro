@@ -9930,9 +9930,9 @@ describe("browser_task registers with Bro's own mailbox", () => {
     );
   });
 
-  it("signs in with a login the vault already has instead of registering again", async () => {
+  it("signs in with the person's own login the vault already has instead of registering", async () => {
     pilot();
-    savedLogin(mailbox.email);
+    savedLogin("alice@example.com");
     resolveBrowserSecretBindings.mockResolvedValue(loginAliases);
 
     const tool = await resolvedBrowserTask(
@@ -9947,6 +9947,29 @@ describe("browser_task registers with Bro's own mailbox", () => {
     );
     expect(continuationNote(result)).toContain(
       "A login for this site is already saved in the vault"
+    );
+  });
+
+  it("registers again with Bro's own login an earlier sign-up left, and never takes it out", async () => {
+    // 05.10: a sign-up reCAPTCHA stopped left its login, and the next
+    // request only signed in to an account that was never made.
+    pilot();
+    savedLogin(mailbox.email);
+    resolveBrowserSecretBindings.mockResolvedValue(loginAliases);
+
+    const tool = await resolvedBrowserTask(
+      [],
+      "зарегистрируйся на iNaturalist"
+    );
+    const result = await tool.execute(signUp, toolContext("better-auth:alice"));
+
+    expect(saveVaultItem).not.toHaveBeenCalled();
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("This errand registers a new account");
+    expect(task).toContain("sign in with the same two secrets instead");
+    expect(task).not.toContain("ACCOUNT: none");
+    expect(continuationNote(result)).toContain(
+      "your own login for this site from an earlier sign-up"
     );
   });
 
@@ -10028,7 +10051,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
           errand: "Зарегистрируйся на iNaturalist",
           facts: undefined,
           home: undefined,
-          signUp: { username: "quietfox42" },
+          signUp: { fresh: true, username: "quietfox42" },
           site: "https://www.inaturalist.org",
         }),
       });
