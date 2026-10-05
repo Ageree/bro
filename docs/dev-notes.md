@@ -833,6 +833,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   быстрее deepinfra (вызов browser-use — медиана 2,2 с против 5,6 с), но
   дороже вдвое; без `require_parameters` его вызовы шли без ошибок
   (`docs/browser-speed.md`).
+- Пилот `BROWSER_FAST_WORKSPACES` (05.10): DeepSeek worker на Together без
+  `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.5), flash
+  для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
+  7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
 - Worker пула едет в корне песочницы, а хост без текущего корня новых
   песочниц не берёт: каждый выкат worker ставит поручения в очередь на 5–16
   минут создания нового хоста. Живые тесты браузера — не сразу после выката

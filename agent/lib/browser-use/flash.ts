@@ -1,3 +1,4 @@
+import { fastBrowserPilot } from "@agent/lib/browser-vm/pilot";
 import { listsWorkspace } from "@agent/lib/workspace-list";
 import type { browserRuns } from "@db/schema/browser-runs";
 import { browserRunTaskOrigin } from "@db/services/browser-runs";
@@ -22,22 +23,24 @@ type BrowserRunRecord = typeof browserRuns.$inferSelect;
 /**
  * Whether the workspace is in the pilot: FLASH_SEARCH_WORKSPACES names it by
  * workspace id or owner's email, as BROWSER_VM_WORKSPACES does, or everyone
- * with `*`. Unset, nobody is, and nothing is looked up. A failed lookup of
- * the email keeps the errand in full mode rather than failing its start.
+ * with `*`; the fast browser's pilot (`fastBrowserPilot`) brings flash mode
+ * along. Unset, nobody is, and nothing is looked up. A failed lookup of the
+ * email keeps the errand in full mode rather than failing its start.
  */
 export async function flashSearchPilot(scope: {
   readonly userId?: string;
   readonly workspaceId: string;
 }) {
   const list = env.FLASH_SEARCH_WORKSPACES ?? [];
-  if (list.length === 0) return false;
   if (list.includes("*")) return true;
-  try {
-    return await listsWorkspace(list, scope);
-  } catch (error) {
-    console.warn("[flash-search] pilot lookup failed", { cause: error });
-    return false;
+  if (list.length > 0) {
+    try {
+      if (await listsWorkspace(list, scope)) return true;
+    } catch (error) {
+      console.warn("[flash-search] pilot lookup failed", { cause: error });
+    }
   }
+  return fastBrowserPilot(scope);
 }
 
 /**

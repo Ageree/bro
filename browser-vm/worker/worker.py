@@ -76,7 +76,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.4"
+VERSION = "2026-10-05.5"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -136,7 +136,9 @@ UNWIND_S = 15
 NEW_REQUEST = "<sys>A new request starts here: the steps above served an earlier one in this session.</sys>"
 # What Bro may tune of the browser-use agent per run (`tuning`); a run without it is the agent as before.
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
-TUNING_LIMITS = {"maxActionsPerStep": (1, 10)}
+# `llmTimeoutSeconds` is browser-use's `llm_timeout`: its own is 90 s for DeepSeek, and a call stuck on its
+# host held a whole step that long (docs/browser-speed.md); past it the agent takes the step again.
+TUNING_LIMITS = {"maxActionsPerStep": (1, 10), "llmTimeoutSeconds": (10, 180)}
 # Bro's `tuning.provider`: which upstream hosts of the model's service (RouterAI, OpenRouter) may serve the
 # run, in the service's own `provider` routing names. A slug may name a variant (`deepinfra/fp8`).
 PROVIDER_SLUG = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,63}$")
@@ -920,7 +922,7 @@ def tuned_agent_options(tuning):
     """browser-use's own names for what Bro tuned. Its history is never trimmed (`max_history_items`): a
     trimmed history changes the prompt right after the task at every step, and the prompt cache that holds
     two thirds of every step's input is lost (docs/agent-costs.md, section 3.3)."""
-    names = {"flashMode": "flash_mode", "maxActionsPerStep": "max_actions_per_step"}
+    names = {"flashMode": "flash_mode", "llmTimeoutSeconds": "llm_timeout", "maxActionsPerStep": "max_actions_per_step"}
     return {name: tuning[key] for key, name in names.items() if key in tuning}
 
 

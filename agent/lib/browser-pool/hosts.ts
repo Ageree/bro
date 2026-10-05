@@ -55,15 +55,25 @@ type BrowserHostCapacity = NonNullable<BrowserHost["capacity"]>;
 
 /** A create, a check or a deletion request is answered well inside this. */
 const leaseMs = 2 * 60_000;
-/** A host boots and sets itself up in 3–4 minutes, 6 at worst. */
-const hostCreateRetryMs = 4 * 60_000;
-/** A host on its way up: the errand looks again in a minute. */
-const hostBootingRetryMs = 60_000;
+/**
+ * After a create the errand first looks again this long later: no new host
+ * was up sooner (127 s in `ru.AZ-3`, 288 s in `ru.AZ-1` on 04.10, 16 minutes
+ * at worst); from then on it looks as for a host on its way up.
+ */
+const hostCreateRetryMs = 2 * 60_000;
+/**
+ * A host on its way up: the errand looks again this soon, so it starts
+ * within seconds of the host coming up rather than up to a minute later
+ * (docs/browser-speed.md, section 6). A look asks Cloud.ru and `hostd` only
+ * once the host's last step is `risingCheckMs` old.
+ */
+const hostBootingRetryMs = 15_000;
 /**
  * A stopped host powered on again: `running` after about 77 s and `hostd`
- * ready after about 92 (04.10, `ru.AZ-1`, `gen-2-8`).
+ * ready after about 92 (04.10, `ru.AZ-1`, `gen-2-8`). The errand first looks
+ * just before that, then as for a host on its way up.
  */
-const hostWakeRetryMs = 60_000;
+const hostWakeRetryMs = 75_000;
 /**
  * A host on its way up is asked about by a placement only this long after
  * its last step: none woke in under 77 s, nor booted to `hostd` in under 60.

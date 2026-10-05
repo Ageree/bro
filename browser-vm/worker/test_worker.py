@@ -446,17 +446,17 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         await self.settled("r1")
         options = FakeAgent.built[0].options
         self.assertEqual(options["extend_system_message"], worker.EXTEND_SYSTEM)
-        self.assertFalse({"flash_mode", "max_actions_per_step", "max_history_items"} & options.keys())
+        self.assertFalse({"flash_mode", "llm_timeout", "max_actions_per_step", "max_history_items"} & options.keys())
         self.assertNotIn("extra_body", options["llm"])
 
     async def test_tuning_reaches_the_agent_and_the_model(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
                                      "tuning": {"flashMode": True, "maxActionsPerStep": 8, "reasoning": "none",
-                                                "provider": ROUTING, "later": 1}})
+                                                "llmTimeoutSeconds": 25, "provider": ROUTING, "later": 1}})
         await self.settled("r1")
         options = FakeAgent.built[0].options
-        self.assertEqual({k: options[k] for k in ("flash_mode", "max_actions_per_step")},
-                         {"flash_mode": True, "max_actions_per_step": 8})
+        self.assertEqual({k: options[k] for k in ("flash_mode", "llm_timeout", "max_actions_per_step")},
+                         {"flash_mode": True, "llm_timeout": 25, "max_actions_per_step": 8})
         self.assertNotIn("max_history_items", options)  # a trimmed history loses the prompt cache
         self.assertEqual(options["llm"]["extra_body"],
                          {"extra_body": {"reasoning": {"enabled": False}, "provider": SENT_ROUTING}})
@@ -480,7 +480,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_wrong_tuning_is_refused_before_anything_starts(self):
         for tuning in ({"maxActionsPerStep": 50}, {"flashMode": "yes"}, {"reasoning": "lots"},
-                       {"maxActionsPerStep": True}, [], {"provider": "deepinfra"}, {"provider": []},
+                       {"maxActionsPerStep": True}, {"llmTimeoutSeconds": 5}, {"llmTimeoutSeconds": 25.5},
+                       [], {"provider": "deepinfra"}, {"provider": []},
                        {"provider": {"order": "deepinfra"}}, {"provider": {"order": [1]}},
                        {"provider": {"order": ["Deep Infra"]}}, {"provider": {"ignore": [""]}}, {"provider": {"order": ["deepinfra\n"]}},
                        {"provider": {"ignore": [f"host{i}" for i in range(33)]}},

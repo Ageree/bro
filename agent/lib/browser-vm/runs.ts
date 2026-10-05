@@ -27,6 +27,7 @@ import {
   prepareBrowserVmSession,
   touchBrowserVm,
 } from "./lifecycle";
+import { fastBrowserPilot } from "./pilot";
 import {
   BrowserVmWorkerError,
   browserVmCdpUrl,
@@ -87,6 +88,22 @@ const routerAiHostsWithoutStructuredOutputs = [
 ];
 
 /**
+ * DeepSeek's hosts on RouterAI in the fast browser's pilot
+ * (`fastBrowserPilot`): Together first — on 05.10 a browser-use call took a
+ * median 2.2 s there against 5.5 s on DeepInfra, at twice the price of a
+ * step (docs/browser-speed.md) — and DeepInfra behind it.
+ */
+const fastDeepSeekOrder = ["together", "deepinfra"];
+/**
+ * How long a model call may take in the fast browser's pilot before
+ * browser-use gives it up and takes the step again: its own default is 90 s
+ * for DeepSeek (75 s for other models), and on 05.10 a call stuck on its
+ * host held a step that long in 5 runs of 21, while the slowest call that
+ * answered took 18.5 s.
+ */
+const fastLlmTimeoutSeconds = 25;
+
+/**
  * How the VM's browser-use agent runs (bench of 01.10, `docs/agent-costs.md`,
  * section 3.3): DeepSeek's hidden reasoning off — browser-use has the model
  * think in its answer anyway, and the hidden tokens were a third of the
@@ -96,36 +113,54 @@ const routerAiHostsWithoutStructuredOutputs = [
  * reasoning: only the start of an errand that only searches runs in it
  * (`search`, decided in `agent/lib/browser-use/flash.ts`), never one that
  * signs in or stages a checkout, and never a follow-up message. Without
- * `search` the tuning is what it always was, key for key.
+ * `search` and `fast` the tuning is what it always was, key for key.
  *
  * Its hosts are the main agent's (`providerRouting`: the pinned caching
  * host, the broken ones skipped) less those without structured outputs.
  * The main agent's ROUTERAI_PROVIDER_* do not apply: they tune another
  * model and service, and a pinned host there would lift its skip here.
+ * In the fast browser's pilot (`fast`) DeepSeek on RouterAI is served by
+ * Together first, without `requireParameters`: browser-use sends
+ * `seed: null`, and with the parameters required RouterAI passes over
+ * Together, which takes no `seed`; the hosts without structured outputs
+ * stay skipped by name. A stuck call is given up after
+ * `fastLlmTimeoutSeconds`, which a worker older than 2026-10-05.5 ignores.
  */
-function runTuning(model: string, search = false) {
+function runTuning(
+  model: string,
+  {
+    fast = false,
+    search = false,
+  }: { readonly fast?: boolean; readonly search?: boolean } = {}
+) {
   const service = browserVmLlmService();
-  const provider =
+  const deepSeekOnRouterAi =
+    service === "routerai" && model.startsWith("deepseek/");
+  const together = fast && deepSeekOnRouterAi;
+  const routing =
     service === undefined
       ? undefined
-      : {
-          ...providerRouting(model, {
-            provider: service,
-            providerIgnore:
-              service === "routerai" && model.startsWith("deepseek/")
-                ? routerAiHostsWithoutStructuredOutputs
-                : [],
-            providerOrder: undefined,
-          }),
-          requireParameters: true,
-        };
+      : providerRouting(model, {
+          provider: service,
+          providerIgnore: deepSeekOnRouterAi
+            ? routerAiHostsWithoutStructuredOutputs
+            : [],
+          providerOrder: together ? fastDeepSeekOrder : undefined,
+        });
+  const provider =
+    service === undefined || together
+      ? routing
+      : { ...routing, requireParameters: true };
   // GPT Luna on RouterAI answers with no `choices` at all when reasoning is
   // off and the parameters are required, so every step failed. It reasons
   // instead: checkouts are what it is picked for (RU 04.10, a local
   // browser-use run on a test form passed with low and medium alike).
   const reasoning = model.startsWith("deepseek/") ? "none" : "medium";
   const tuning = { maxActionsPerStep: 8, provider, reasoning } as const;
-  return search ? { flashMode: true, ...tuning } : tuning;
+  const timed = fast
+    ? { ...tuning, llmTimeoutSeconds: fastLlmTimeoutSeconds }
+    : tuning;
+  return search ? { flashMode: true, ...timed } : timed;
 }
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
@@ -256,6 +291,7 @@ export async function createBrowserVmRun(input: {
     workspaceId,
   });
   const llm = browserVmLlm();
+  const fast = await fastBrowserPilot({ workspaceId });
   const accepted = await startRun(vm, {
     captcha: browserVmCaptcha(),
     id,
@@ -269,7 +305,7 @@ export async function createBrowserVmRun(input: {
     sessionId,
     task,
     timeoutSeconds: runTimeoutSeconds,
-    tuning: runTuning(llm.model, input.search),
+    tuning: runTuning(llm.model, { fast, search: input.search }),
   });
   // The worker has it: the record says what the worker says from here. The
   // run is acting already, so a write that fails does not fail the start:
@@ -426,6 +462,7 @@ export async function queueBrowserVmSessionMessage(
   await recordBrowserVmRun({ id: runId, sessionId, task: text, workspaceId });
   let queued: Awaited<ReturnType<typeof sendBrowserVmWorkerMessage>>;
   const llm = browserVmLlm();
+  const fast = await fastBrowserPilot({ workspaceId });
   try {
     queued = await sendBrowserVmWorkerMessage(vm, sessionId, {
       llm,
@@ -433,7 +470,7 @@ export async function queueBrowserVmSessionMessage(
       text,
       // A follow-up started from the message runs on this tuning instead
       // of the session's, so it never inherits a search's flash mode.
-      tuning: runTuning(llm.model),
+      tuning: runTuning(llm.model, { fast }),
     });
   } catch (error) {
     // Refused: no run was started under the id. An answer lost on the way

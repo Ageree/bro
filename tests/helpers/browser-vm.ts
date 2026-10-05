@@ -32,6 +32,7 @@ export const browserPoolTestEnvironment = {
 /** Every setting of the backend a test may stub, cleared between tests. */
 const browserVmSettings = [
   "BROWSER_BACKEND",
+  "BROWSER_FAST_WORKSPACES",
   "BROWSER_HOST_BUNDLE",
   "BROWSER_HOST_FLAVOR",
   "BROWSER_HOST_IDLE_MINUTES",

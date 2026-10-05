@@ -219,6 +219,13 @@ export const env = createEnv({
     BROWSER_BACKEND: z
       .enum(["browser-use", "cloudru", "pool"])
       .default("browser-use"),
+    // The pilot of the fast browser: workspace ids or owners' emails, or `*`
+    // for every workspace, whose errands on their own browser have DeepSeek
+    // served by Together first (three times DeepInfra's speed on 05.10, at
+    // twice its price), give up on a model call stuck past 25 s, and run in
+    // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
+    // docs/browser-speed.md). Unset, every errand runs as before.
+    BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
     // Hosts of the browser pool: Cloud.ru VMs from the stock Ubuntu image that
     // cloud-init sets up (`browser-vm/host/boot.py`). A host bills its flavor
     // by the hour while it lives, so one with no live sandbox for the idle
