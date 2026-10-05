@@ -6,6 +6,7 @@ import {
   readAgentMailMessage,
 } from "@shared/agent-mail/api";
 import { googleWorkspaceAuthConfigId } from "@shared/google-workspace/connection";
+import { fetchPublic } from "@agent/lib/sandbox/public-fetch";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { googleClient } from "@agent/lib/google-workspace/client";
 import {
@@ -371,19 +372,21 @@ const confirmWordPattern =
 const otherLinkPattern =
   /unsubscrib|opt-?out|отпис\p{L}*|privacy|terms|policy|preferences|settings|reset|password/iu;
 
+/** A link in a letter and the words that name it. */
+interface LetterLink {
+  readonly label: string;
+  readonly url: URL;
+}
+
 /**
- * The one link a site's letter carries to confirm the address, or none when
- * it is not plain which one that is: an https link on the site's own
- * registrable domain or a subdomain of it, without a user name, a password
- * or a port, that its address or its words call a confirmation, and not an
- * unsubscribe, a policy or a password reset. Two different such links make
- * it unclear, and an unclear letter gives no link. A link through a mail
- * service's click tracker is on another domain and is never taken.
+ * Every https link a letter carries, without a user name, a password or a
+ * port, with the words that name it: an anchor's own text, or for a bare
+ * link in the text the words since the link before it.
  */
-export function confirmationLinkInLetter(
-  letter: { readonly html: string; readonly text: string },
-  domain: string
-) {
+function lettersLinks(letter: {
+  readonly html: string;
+  readonly text: string;
+}): LetterLink[] {
   const anchors = [
     ...letter.html.matchAll(
       /<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,1000}?)<\/a\s*>/giu
@@ -404,33 +407,164 @@ export function confirmationLinkInLetter(
       };
     }
   );
-  const links = new Set(
-    [...anchors, ...bare].flatMap(({ href, label }) => {
-      const url = URL.parse(href);
-      if (
-        url?.protocol !== "https:" ||
-        url.username !== "" ||
-        url.password !== "" ||
-        url.port !== "" ||
-        !under(url.hostname, domain)
-      ) {
-        return [];
-      }
-      const where = decodedPart(`${url.pathname}${url.search}`);
-      if (otherLinkPattern.test(where)) return [];
-      return confirmWordPattern.test(where) || confirmWordPattern.test(label)
-        ? [url.href]
-        : [];
-    })
+  return [...anchors, ...bare].flatMap(({ href, label }) => {
+    const url = URL.parse(href);
+    return plainHttps(url) ? [{ label, url }] : [];
+  });
+}
+
+/** An https address with no user name, password or port of its own. */
+function plainHttps(url: URL | null): url is URL {
+  return (
+    url?.protocol === "https:" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.port === ""
   );
-  return links.size === 1 ? [...links][0] : undefined;
+}
+
+/**
+ * Whether a link reads as the one that confirms the address: its address or
+ * its words say so, and its address is no unsubscribe, policy or reset.
+ */
+function confirms({ label, url }: LetterLink) {
+  const where = decodedPart(`${url.pathname}${url.search}`);
+  if (otherLinkPattern.test(where)) return false;
+  return confirmWordPattern.test(where) || confirmWordPattern.test(label);
+}
+
+/** The one address of `links`, or none when there are none or several. */
+function onlyOne(links: readonly LetterLink[]) {
+  const distinct = new Set(links.map(({ url }) => url.href));
+  return distinct.size === 1 ? [...distinct][0] : undefined;
+}
+
+/**
+ * The one link a site's letter carries to confirm the address, or none when
+ * it is not plain which one that is: an https link on the site's own
+ * registrable domain or a subdomain of it, without a user name, a password
+ * or a port, that its address or its words call a confirmation, and not an
+ * unsubscribe, a policy or a password reset. Two different such links make
+ * it unclear, and an unclear letter gives no link. A link through a mail
+ * service's click tracker is on another domain: `trackedConfirmationLink`.
+ */
+export function confirmationLinkInLetter(
+  letter: { readonly html: string; readonly text: string },
+  domain: string
+) {
+  return onlyOne(
+    lettersLinks(letter).filter(
+      (link) => under(link.url.hostname, domain) && confirms(link)
+    )
+  );
+}
+
+/**
+ * The one confirmation link of a letter that has none on the site's own
+ * domain but one through a mail service's click tracker (SendGrid, Mailgun,
+ * Mailchimp, Amazon SES, Unisender, Sendsay…): on another host, named a
+ * confirmation by its words. Where it leads is checked before it is taken
+ * (`trackedLinkTarget`).
+ */
+export function trackedConfirmationLink(
+  letter: { readonly html: string; readonly text: string },
+  domain: string
+) {
+  return onlyOne(
+    lettersLinks(letter).filter(
+      (link) => !under(link.url.hostname, domain) && confirms(link)
+    )
+  );
+}
+
+/** How many requests a tracker's chain of redirects may take. */
+const trackerHops = 5;
+const trackerHopTimeoutMs = 5_000;
+
+const redirectStatuses: ReadonlySet<number> = new Set([
+  301, 302, 303, 307, 308,
+]);
+
+/**
+ * Where a click tracker's link leads, or none: its redirects are read one
+ * by one and never followed by themselves — each hop an https request to a
+ * public address only (`fetchPublic`), without cookies, its body left
+ * unread, at most `trackerHops` of them — and the chain counts only once it
+ * points at https on the site's own domain. That address is not requested:
+ * the run opens it in its browser. Reaching the tracker is the click it
+ * counts, and nothing more.
+ */
+export async function trackedLinkTarget(
+  link: string,
+  domain: string,
+  signal: AbortSignal
+) {
+  let hop = URL.parse(link);
+  for (let request = 0; request <= trackerHops; request++) {
+    if (!plainHttps(hop)) return undefined;
+    if (under(hop.hostname, domain)) return hop.href;
+    if (request === trackerHops) return undefined;
+    let response: Response;
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each hop is read only once the one before named it.
+      response = await fetchPublic(hop, {
+        headers: { accept: "text/html", "user-agent": trackerUserAgent },
+        signal: AbortSignal.any([
+          signal,
+          AbortSignal.timeout(trackerHopTimeoutMs),
+        ]),
+      });
+    } catch (error) {
+      // Never the address: it carries the tracker's token.
+      console.warn("[browser-use] a tracked link could not be read", {
+        cause: error instanceof Error ? error.name : "error",
+        hop: request,
+      });
+      return undefined;
+    }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The body is never read: only the hop's headers say where it leads.
+    await response.body?.cancel().catch(() => undefined);
+    const location = response.headers.get("location");
+    if (!redirectStatuses.has(response.status) || location === null) {
+      return undefined;
+    }
+    hop = URL.parse(location, hop);
+  }
+  return undefined;
+}
+
+/** A browser's own words, which trackers answer with a plain redirect. */
+const trackerUserAgent =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
+/**
+ * The confirmation link of a letter: on the site's own domain, or else
+ * through a click tracker that leads there. A tracker link already tried in
+ * this look is not requested again.
+ */
+async function letterConfirmationLink(
+  letter: { readonly html: string; readonly text: string },
+  domain: string,
+  options: { readonly signal: AbortSignal; readonly tried: Set<string> }
+) {
+  const direct = confirmationLinkInLetter(letter, domain);
+  if (direct !== undefined) return direct;
+  const tracked = trackedConfirmationLink(letter, domain);
+  if (tracked === undefined || options.tried.has(tracked)) return undefined;
+  options.tried.add(tracked);
+  return trackedLinkTarget(tracked, domain, options.signal);
 }
 
 /**
  * The newest code, or else the confirmation link, in letters from `domain`
  * that reached Bro's own AgentMail inbox since `since`.
  */
-async function lookInAgentMail(inboxId: string, domain: string, since: Date) {
+async function lookInAgentMail(
+  inboxId: string,
+  domain: string,
+  since: Date,
+  options: { readonly signal: AbortSignal; readonly tried: Set<string> }
+) {
   const page = await listAgentMailMessages(inboxId, { limit: 20 });
   const fresh = page.messages
     .map((item) => ({ item, receivedAt: Date.parse(item.timestamp) }))
@@ -460,7 +594,8 @@ async function lookInAgentMail(inboxId: string, domain: string, since: Date) {
     if (code !== undefined) {
       return { code, kind: "found" as const, receivedAt: at };
     }
-    const url = confirmationLinkInLetter({ html, text }, domain);
+    // oxlint-disable-next-line eslint/no-await-in-loop -- A tracker's chain is read only for the letter at hand.
+    const url = await letterConfirmationLink({ html, text }, domain, options);
     if (url !== undefined) {
       return { kind: "link" as const, receivedAt: at, url };
     }
@@ -482,10 +617,15 @@ async function mailboxLook(
 ) {
   const { agentMailbox } = options;
   if (agentMailbox !== undefined) {
+    // Tracker links already requested in this wait, each one click only.
+    const tried = new Set<string>();
     return {
       kind: "look" as const,
       look: (since: Date) =>
-        lookInAgentMail(agentMailbox.inboxId, domain, since),
+        lookInAgentMail(agentMailbox.inboxId, domain, since, {
+          signal: options.signal,
+          tried,
+        }),
     };
   }
   let accountId: string | undefined;
