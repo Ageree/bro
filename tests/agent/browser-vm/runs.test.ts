@@ -586,14 +586,14 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(
       await tunings({ BROWSER_FAST_WORKSPACES: "personal:another" })
     ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
-    // Another model keeps its own hosts; only the timeout comes along.
+    // Another model keeps its own hosts and browser-use's own timeout:
+    // nothing measured how long GPT Luna's reasoning calls take.
     const [luna] = await tunings({
       BROWSER_FAST_WORKSPACES: workspaceId,
       BROWSER_VM_MODEL: "openai/gpt-6-luna",
     });
     expect(luna).toEqual({
       flashMode: true,
-      llmTimeoutSeconds: 25,
       maxActionsPerStep: 8,
       provider: { requireParameters: true },
       reasoning: "medium",

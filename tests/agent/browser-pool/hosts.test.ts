@@ -1007,7 +1007,7 @@ describe("browser host sleep", { timeout: 60_000 }, () => {
     // The next sandbox wakes it rather than create a host.
     expect(await hosts.placeBrowserSandbox(minutes(60))).toEqual({
       kind: "starting",
-      retryAfterMs: 75_000,
+      retryAfterMs: 45_000,
     });
     expect(cloud.setCloudRuVmPower).toHaveBeenLastCalledWith(
       "vm-host-1",

@@ -70,10 +70,11 @@ const hostCreateRetryMs = 2 * 60_000;
 const hostBootingRetryMs = 15_000;
 /**
  * A stopped host powered on again: `running` after about 77 s and `hostd`
- * ready after about 92 (04.10, `ru.AZ-1`, `gen-2-8`). The errand first looks
- * just before that, then as for a host on its way up.
+ * ready after about 92 (04.10, `ru.AZ-1`, `gen-2-8`), 48 s in `ru.AZ-3`. The
+ * errand first looks when a look may ask about it (`risingCheckMs`), then
+ * as for a host on its way up.
  */
-const hostWakeRetryMs = 75_000;
+const hostWakeRetryMs = 45_000;
 /**
  * A host on its way up is asked about by a placement only this long after
  * its last step: none woke in under 77 s, nor booted to `hostd` in under 60.

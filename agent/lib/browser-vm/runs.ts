@@ -95,11 +95,12 @@ const routerAiHostsWithoutStructuredOutputs = [
  */
 const fastDeepSeekOrder = ["together", "deepinfra"];
 /**
- * How long a model call may take in the fast browser's pilot before
- * browser-use gives it up and takes the step again: its own default is 90 s
- * for DeepSeek (75 s for other models), and on 05.10 a call stuck on its
- * host held a step that long in 5 runs of 21, while the slowest call that
- * answered took 18.5 s.
+ * How long a DeepSeek call may take in the fast browser's pilot before
+ * browser-use gives it up and takes the step again: its own default is 90 s,
+ * and on 05.10 a call stuck on its host held a step that long in 5 runs of
+ * 21, while the slowest DeepSeek call that answered took 18.5 s. Another
+ * model keeps browser-use's own: GPT Luna reasons, and nothing measured its
+ * calls; four timeouts in a row end a run (`max_failures`).
  */
 const fastLlmTimeoutSeconds = 25;
 
@@ -123,7 +124,7 @@ const fastLlmTimeoutSeconds = 25;
  * Together first, without `requireParameters`: browser-use sends
  * `seed: null`, and with the parameters required RouterAI passes over
  * Together, which takes no `seed`; the hosts without structured outputs
- * stay skipped by name. A stuck call is given up after
+ * stay skipped by name, and a stuck call is given up after
  * `fastLlmTimeoutSeconds`, which a worker older than 2026-10-05.6 ignores.
  */
 function runTuning(
@@ -157,7 +158,7 @@ function runTuning(
   // browser-use run on a test form passed with low and medium alike).
   const reasoning = model.startsWith("deepseek/") ? "none" : "medium";
   const tuning = { maxActionsPerStep: 8, provider, reasoning } as const;
-  const timed = fast
+  const timed = together
     ? { ...tuning, llmTimeoutSeconds: fastLlmTimeoutSeconds }
     : tuning;
   return search ? { flashMode: true, ...timed } : timed;
@@ -279,6 +280,7 @@ export async function createBrowserVmRun(input: {
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
   const task = `${input.task}\n\n${addressWallLine}`;
+  const fast = await fastBrowserPilot({ workspaceId });
   // Recorded before the worker is asked: a start whose answer is lost still
   // has a row to be found by, and the task outlives the VM. Until the
   // worker takes it the run is only being sent (`dispatching`), and a
@@ -291,7 +293,6 @@ export async function createBrowserVmRun(input: {
     workspaceId,
   });
   const llm = browserVmLlm();
-  const fast = await fastBrowserPilot({ workspaceId });
   const accepted = await startRun(vm, {
     captcha: browserVmCaptcha(),
     id,

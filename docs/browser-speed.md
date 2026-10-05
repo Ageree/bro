@@ -318,15 +318,16 @@ DeepInfra, полный режим. Вместе с первым раундом 
 - DeepSeek worker на RouterAI — `order: ["together", "deepinfra"]` без
   `requireParameters`, хосты без structured outputs по-прежнему в `ignore`
   (`runTuning` в `agent/lib/browser-vm/runs.ts`);
-- `llmTimeoutSeconds: 25` — `llm_timeout` browser-use; его понимает worker с
-  2026-10-05.6, старый ключ пропускает, так что таймаут заработает с
-  выкатом нового корня песочницы;
+- `llmTimeoutSeconds: 25` — `llm_timeout` browser-use, только у DeepSeek на
+  RouterAI (другие модели, например GPT Luna с рассуждением, не мерили). Его
+  понимает worker с 2026-10-05.6, старый ключ пропускает, так что таймаут
+  заработает с выкатом нового корня песочницы;
 - flash-режим для поиска, как у `FLASH_SEARCH_WORKSPACES` (`flash.ts`).
 
 Вне пилота тело запроса к worker прежнее байт в байт (`runs.test.ts`). Откат —
 убрать воркспейс из списка. Паузы очереди пула (раздел 6) сокращены для всех
 воркспейсов пула: поднимающийся хост проверяется раз в 15 с, первый раз —
-через 75 с после включения и через 2 минуты после создания
+через 45 с после включения и через 2 минуты после создания
 (`agent/lib/browser-pool/hosts.ts`).
 
 Гипотеза 3 — настройка, а не код: `BROWSER_HOST_FLAVOR` в `prod.json` на
