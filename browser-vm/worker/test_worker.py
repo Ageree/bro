@@ -1699,6 +1699,7 @@ class FakeCardFrame:
         self.url, self.fields, self.refuses = url, fields, set(refuses)
         self.values = {field["id"]: "" for field in fields}
         self.focused = None
+        self.pay_button = None
 
     async def call(self, expression, *args):
         if expression == worker.FIND_CARD_FIELDS:
@@ -1711,6 +1712,8 @@ class FakeCardFrame:
             return ""
         if expression == worker.CARD_FIELD_VALUE:
             return self.values[args[0]]
+        if expression == worker.CARD_PAY_BUTTON:
+            return self.pay_button
         return True
 
     async def send(self, *_):
@@ -1814,6 +1817,26 @@ class CardFormTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Could not fill expiry year", message)
         self.assertIn("NEEDS: info", message)
         self.assertNotIn("card_expiry_year", message)
+
+    async def test_a_filled_form_names_its_pay_button_and_a_second_call_types_nothing(self):
+        # GPT Luna could not see the card's values, called fill_card five times and never paid (harness, 05.10).
+        frame = FakeCardFrame("https://yoomoney.ru/frame", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")])
+        frame.pay_button = "Заплатить 2 100 ₽"
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertIn("Filled card number", message)
+        self.assertIn("The form's pay button is «Заплатить 2 100 ₽»: press it to pay, as your task allows.", message)
+        typed = dict(frame.values)
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertTrue(message.startswith("Every field already held the saved card (card ending 4310)"), message)
+        self.assertIn("calling fill_card again changes nothing", message)
+        self.assertIn("«Заплатить 2 100 ₽»", message)
+        self.assertEqual(frame.values, typed)
+        frame.pay_button = None
+        self.assertNotIn("pay button", (await worker.fill_card_form([frame], CARD))[1])
 
     async def test_no_card_form_fills_nothing(self):
         frame = FakeCardFrame("https://shop.ru/", [card_field(0, "cvc", sure=False)])

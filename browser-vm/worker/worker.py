@@ -75,7 +75,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.2"
+VERSION = "2026-10-05.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1900,6 +1900,16 @@ CARD_FIELD_PICK = r"""((id, wanted) => { const el = (globalThis.__broCard || [])
   el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true}));
   el.blur(); return el.value; })"""
 CARD_FIELD_BLUR = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (el) el.blur(); return true; })"""
+# The pay button of the card's own form («Заплатить 2 100 ₽»), named back to the run once the card is in.
+CARD_PAY_BUTTON = r"""(() => {
+  const pay = /^(заплатить|оплатить|подтвердить оплату|pay\b)/i;
+  for (const el of document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')) {
+    const text = (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+    const box = el.getBoundingClientRect();
+    if (text && pay.test(text) && !el.disabled && box.width > 0 && box.height > 0) return text.slice(0, 60);
+  }
+  return null;
+})()"""
 
 
 def card_secrets(sensitive_data, page_url):
@@ -2137,6 +2147,7 @@ async def fill_card_form(frames, card):
         return False, ("No card number field on this page or in its frames. Open the payment step with the card "
                        "form (choose «Банковская карта» if the site asks how to pay) and call fill_card again.")
     done, failed = [], []
+    typed = False  # whether any field needed typing: a second call finds the form already filled
     for step in steps:
         frame = frames[step["frame"]]
         field_id = step["field"]["id"]
@@ -2159,6 +2170,7 @@ async def fill_card_form(frames, card):
                             await frame.send("Input", "dispatchKeyEvent", {"type": "keyUp", "key": "Backspace",
                                                                          "code": "Backspace", "windowsVirtualKeyCode": 8})
                     await frame.type(text)
+                    typed = True
                     await asyncio.sleep(0.2)
                     if card_value_ok(step, card, await frame.call(CARD_FIELD_VALUE, field_id)):
                         ok = True
@@ -2204,9 +2216,19 @@ async def fill_card_form(frames, card):
         return False, text.strip()
     # The run cannot see a password field's value: told only «filled», it spent twelve steps trying to read the
     # CVC out of the processor's frame, and opened that frame in a tab of its own (bench of 04.10.2026).
-    return True, text + (" Each field was read back from the page after typing and holds the card's value; a CVC "
-                         "field shows you nothing or dots, and that is the value. Do not check or retype the fields: "
-                         "go on with the errand, and pay only as your task allows.")
+    text += (" Each field was read back from the page after typing and holds the card's value; a CVC field shows "
+             "you nothing or dots, and that is the value. Do not check or retype the fields: go on with the errand, "
+             "and pay only as your task allows.")
+    if not typed:
+        # GPT Luna, unable to see the values, called fill_card five times in a row and never paid (harness, 05.10).
+        text = (f"Every field already held the saved card (card ending {card['number'][-4:]}), read back from the "
+                "page just now: nothing needed typing, and calling fill_card again changes nothing.")
+    button = None
+    with contextlib.suppress(Exception):
+        button = await frames[steps[0]["frame"]].call(CARD_PAY_BUTTON)
+    if isinstance(button, str) and button:
+        text += f" The form's pay button is «{button}»: press it to pay, as your task allows."
+    return True, text
 
 
 def slider_gap(background_png, piece_png):
