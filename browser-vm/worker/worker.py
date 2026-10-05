@@ -76,7 +76,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.4"
+VERSION = "2026-10-05.5"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1868,6 +1868,7 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
     if (typeof fn === 'function' && !handlers.some((h) => h.fn === fn)) handlers.push({win, fn});
   };
   for (const {win, doc} of documents) {
+    let placed = 0;
     for (const el of deep(doc, 'textarea, input')) {
       const id = el.id || '';
       const name = names.find((n) => el.name === n || id === n || id.startsWith(n + '-'));
@@ -1875,8 +1876,23 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
       el.value = values[name];
       el.dispatchEvent(new win.Event('input', {bubbles: true}));
       el.dispatchEvent(new win.Event('change', {bubbles: true}));
-      fields += 1;
+      placed += 1;
     }
+    // The widget's own script never ran (reCAPTCHA «cannot contact the service» from a flagged exit), so
+    // there is no field for the token: the form that holds the widget gets one, which it sends as it would.
+    if (!placed && arg !== null && names.length) {
+      const widget = deep(doc, '[data-sitekey]').find((el) => el.getAttribute('data-sitekey') === sitekey);
+      const form = widget && widget.closest('form');
+      if (form) {
+        const field = doc.createElement('textarea');
+        field.name = names[0];
+        field.style.display = 'none';
+        field.value = values[names[0]];
+        form.appendChild(field);
+        placed += 1;
+      }
+    }
+    fields += placed;
     if (arg !== null) {
       for (const el of deep(doc, '[data-sitekey], [data-pkey]')) {
         const key = el.getAttribute('data-sitekey') || el.getAttribute('data-pkey');
@@ -2855,8 +2871,14 @@ def token_answer(kind, solution):
 
 async def two_captcha_token(http, key, widget, proxy=None, user_agent=None):
     """The answer for `widget` (`token_answer`), through the run's exit first: a proxy the service could not
-    use is dropped for the second task where the kind has a proxyless variant, and an answer it found
-    unsolvable is asked for once more. At most TOKEN_TASKS tasks."""
+    use, or one through which it found the check unsolvable, is dropped for the second task where the kind
+    has a proxyless variant, and an unsolvable answer is asked for once more. A plain reCAPTCHA v2 goes
+    without the proxy from the start: its token is not tied to an address, while the run's exit is often the
+    one Google already flagged — on 05.10 every task through it came back ERROR_CAPTCHA_UNSOLVABLE for the
+    iNaturalist sign-up. At most TOKEN_TASKS tasks."""
+    proxyless = TOKEN_KINDS[widget["kind"]][2]
+    if proxy and proxyless and widget["kind"] == "recaptcha" and not widget.get("enterprise"):
+        proxy = None
     for task_number in range(1, TOKEN_TASKS + 1):
         try:
             solution = await two_captcha_task(http, key, token_task(widget, proxy, user_agent))
@@ -2864,8 +2886,8 @@ async def two_captcha_token(http, key, widget, proxy=None, user_agent=None):
         except SolverRefused as refused:
             if task_number == TOKEN_TASKS:
                 raise
-            if "PROXY" in refused.code and proxy and TOKEN_KINDS[widget["kind"]][2]:
-                log.warning("2Captcha could not use the run's proxy (%s); asking without it", refused.code)
+            if proxy and proxyless and ("PROXY" in refused.code or refused.code in TOKEN_RETRIED):
+                log.warning("2Captcha could not solve through the run's proxy (%s); asking without it", refused.code)
                 proxy = None
             elif refused.code not in TOKEN_RETRIED:
                 raise
@@ -3022,7 +3044,9 @@ async def element_box(browser_session, cdp, index):
     if node is None:
         return f"There is no element {index} on the page now."
     if getattr(node, "target_id", None) != browser_session.agent_focus_target_id:
-        return "That picture sits in a frame of another site, which solve_captcha cannot take a picture of."
+        return ("That picture sits in a frame of another site — a reCAPTCHA or hCaptcha challenge, which is "
+                "answered without its pictures: call solve_captcha with no arguments instead, once; if that does "
+                "not solve it, stop with NEEDS: captcha.")
     with contextlib.suppress(Exception):
         await cdp.cdp_client.send.DOM.scrollIntoViewIfNeeded(params={"backendNodeId": node.backend_node_id},
                                                              session_id=cdp.session_id)
