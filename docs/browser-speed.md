@@ -319,7 +319,7 @@ DeepInfra, полный режим. Вместе с первым раундом 
   `requireParameters`, хосты без structured outputs по-прежнему в `ignore`
   (`runTuning` в `agent/lib/browser-vm/runs.ts`);
 - `llmTimeoutSeconds: 25` — `llm_timeout` browser-use; его понимает worker с
-  2026-10-05.5, старый ключ пропускает, так что таймаут заработает с
+  2026-10-05.6, старый ключ пропускает, так что таймаут заработает с
   выкатом нового корня песочницы;
 - flash-режим для поиска, как у `FLASH_SEARCH_WORKSPACES` (`flash.ts`).
 

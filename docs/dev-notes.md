@@ -834,7 +834,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   дороже вдвое; без `require_parameters` его вызовы шли без ошибок
   (`docs/browser-speed.md`).
 - Пилот `BROWSER_FAST_WORKSPACES` (05.10): DeepSeek worker на Together без
-  `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.5), flash
+  `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.6), flash
   для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
   7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
 - Worker пула едет в корне песочницы, а хост без текущего корня новых

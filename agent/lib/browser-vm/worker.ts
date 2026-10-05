@@ -167,7 +167,7 @@ const hostsSchema = z
  * worker older than 2026-10-01.1 ignores it, one older than 2026-10-03.1
  * ignores `provider`: which hosts of the model's service may serve the run,
  * in its `provider` routing (`requireParameters` is `require_parameters`).
- * One older than 2026-10-05.5 ignores `llmTimeoutSeconds`, browser-use's
+ * One older than 2026-10-05.6 ignores `llmTimeoutSeconds`, browser-use's
  * `llm_timeout`: how long a model call may take before the step is taken
  * again.
  */

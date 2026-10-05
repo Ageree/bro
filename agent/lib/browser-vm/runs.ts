@@ -124,7 +124,7 @@ const fastLlmTimeoutSeconds = 25;
  * `seed: null`, and with the parameters required RouterAI passes over
  * Together, which takes no `seed`; the hosts without structured outputs
  * stay skipped by name. A stuck call is given up after
- * `fastLlmTimeoutSeconds`, which a worker older than 2026-10-05.5 ignores.
+ * `fastLlmTimeoutSeconds`, which a worker older than 2026-10-05.6 ignores.
  */
 function runTuning(
   model: string,
