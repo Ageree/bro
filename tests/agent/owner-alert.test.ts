@@ -19,18 +19,24 @@ import {
   releaseOperationalAlertClaim,
 } from "@db/services/operational-alerts";
 import type * as EnvModule from "@shared/environment";
+import { z } from "zod";
 import { alertOwner } from "@agent/lib/owner-alert";
+
+const capture = vi.hoisted(() => ({
+  // The alert reads its settings at run time, so a test flips them in place.
+  // SAFETY: The mock factory fills this object with the real environment before any test runs.
+  env: {} as Record<string, number | string | undefined>,
+}));
 
 vi.mock("@shared/environment", async (importOriginal) => {
   const original = await importOriginal<typeof EnvModule>();
-  return {
-    ...original,
-    env: {
-      ...original.env,
-      TELEGRAM_BOT_TOKEN: "telegram-test-token",
-      TELEGRAM_OWNER_CHAT_ID: "1001",
-    },
-  };
+  Object.assign(capture.env, original.env, {
+    OPS_ALERT_BOT_TOKEN: undefined,
+    OPS_ALERT_CHAT_ID: undefined,
+    TELEGRAM_BOT_TOKEN: "telegram-test-token",
+    TELEGRAM_OWNER_CHAT_ID: "1001",
+  });
+  return { ...original, env: capture.env };
 });
 
 const client = new PGlite();
@@ -131,5 +137,76 @@ describe("owner alerts", () => {
 
     await expect(alertAt(minutesLater(4))).resolves.toBe(false);
     expect(network).toHaveBeenCalledOnce();
+  });
+});
+
+describe("where owner alerts go", () => {
+  const alertBodySchema = z.object({ chat_id: z.string(), text: z.string() });
+
+  function sent(network: ReturnType<typeof stubTelegram>) {
+    const [input, init] = network.mock.calls[0] ?? [];
+    if (input === undefined) throw new Error("Nothing was sent.");
+    return {
+      body: alertBodySchema.parse(JSON.parse(z.string().parse(init?.body))),
+      url: new Request(input).url,
+    };
+  }
+
+  beforeEach(async () => {
+    await database.delete(schema.operationalAlerts);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    capture.env.OPS_ALERT_BOT_TOKEN = undefined;
+    capture.env.OPS_ALERT_CHAT_ID = undefined;
+  });
+
+  it("writes through the service bot, not Bro's, once it is configured", async () => {
+    capture.env.OPS_ALERT_BOT_TOKEN = "ops-test-token";
+    capture.env.OPS_ALERT_CHAT_ID = "2002";
+    const network = stubTelegram();
+
+    await expect(alertAt(start)).resolves.toBe(true);
+
+    const { body, url } = sent(network);
+    expect(url).toBe("https://api.telegram.org/botops-test-token/sendMessage");
+    expect(body).toEqual({ chat_id: "2002", text: "Баланс кончился" });
+  });
+
+  it("marks an alert through Bro's own bot as not Bro's", async () => {
+    const network = stubTelegram();
+
+    await expect(alertAt(start)).resolves.toBe(true);
+
+    const { body, url } = sent(network);
+    expect(url).toBe(
+      "https://api.telegram.org/bottelegram-test-token/sendMessage"
+    );
+    expect(body.chat_id).toBe("1001");
+    expect(body.text).toMatch(/^⚙️ Служебное уведомление для владельца/u);
+    expect(body.text).toContain("не Бро");
+    expect(body.text.endsWith("\n\nБаланс кончился")).toBe(true);
+  });
+
+  it("keeps the service chat with Bro's bot when no service bot is given", async () => {
+    capture.env.OPS_ALERT_CHAT_ID = "-1003003";
+    const network = stubTelegram();
+
+    await expect(alertAt(start)).resolves.toBe(true);
+
+    expect(sent(network).body.chat_id).toBe("-1003003");
+  });
+
+  it("sends nothing without a chat", async () => {
+    capture.env.TELEGRAM_OWNER_CHAT_ID = undefined;
+    const network = stubTelegram();
+
+    try {
+      await expect(alertAt(start)).resolves.toBe(false);
+    } finally {
+      capture.env.TELEGRAM_OWNER_CHAT_ID = "1001";
+    }
+    expect(network).not.toHaveBeenCalled();
   });
 });
