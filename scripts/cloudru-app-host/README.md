@@ -210,8 +210,8 @@ host.py rollback bro-app-1                         # ещё раз — на ре
    нет; `host.py env` без флага его убирает;
 7. `~/.bro-app-host/env/<профиль>.json` (`0600`, ведёт оператор):
    `TELEGRAM_OWNER_CHAT_ID` (на Vercel его нет), `YOOKASSA_SHOP_ID` и
-   `YOOKASSA_SECRET_KEY` (их нет и в сессии), `OPS_ALERT_CHAT_ID`,
-   `OPS_ALERT_WEBHOOK_URL` и всё, что надо перекрыть (и базы, если они
+   `YOOKASSA_SECRET_KEY` (их нет и в сессии), `OPS_ALERT_BOT_TOKEN`,
+   `OPS_ALERT_CHAT_ID`, `OPS_ALERT_WEBHOOK_URL` и всё, что надо перекрыть (и базы, если они
    другие); `null` удаляет имя.
 
 Прод (`--profile prod`, не `--dry-run`) не уходит, если не найдено имя из
@@ -367,7 +367,8 @@ host.py pg status      # кластер, диск, базы, пользоват�
 `systemctl is-active` и порт 443. Лежит дольше 5 минут — сообщение владельцу,
 повтор не чаще раза в час, и сообщение о восстановлении. Бот и чат —
 `OPS_ALERT_BOT_TOKEN`/`OPS_ALERT_CHAT_ID` из `/etc/bro/env`, иначе
-`TELEGRAM_BOT_TOKEN`/`TELEGRAM_OWNER_CHAT_ID` приложения. Состояние —
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_OWNER_CHAT_ID` приложения; та же пара — у
+тревог самого приложения (`agent/lib/owner-alert.ts`). Состояние —
 `/var/lib/bro/watchdog.json`; несданное сообщение (и о восстановлении)
 уходит на следующем тике.
 

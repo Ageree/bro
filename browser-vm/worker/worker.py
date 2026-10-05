@@ -58,6 +58,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -75,7 +76,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.3"
+VERSION = "2026-10-05.4"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1229,10 +1230,16 @@ class Worker:
             return (ActionResult(extracted_content=message, long_term_memory=message) if filled
                     else ActionResult(error=message))
 
-        @tools.action("Get past a site's anti-bot check with a slider puzzle (GeeTest), such as Avito's «Доступ "
-                      "ограничен» page. Call it once on the check page: it presses the check's button itself, "
-                      "waits for the puzzle, moves the slider and says whether the page let it through.")
-        async def solve_captcha(browser_session):
+        @tools.action("Get past a captcha. Call it once on the page with the check, before you tick it, open its "
+                      "pictures or audio, or drag anything: it finds the check itself — reCAPTCHA, hCaptcha, Cloudflare "
+                      "Turnstile, Yandex SmartCaptcha, Arkose, MTCaptcha, Friendly Captcha, GeeTest, DataDome, a "
+                      "slider page such as Avito's «Доступ ограничен», or characters in a picture beside a field — "
+                      "has it solved (up to two minutes), puts the answer into the page and says what to do next. "
+                      "For a picture to click in that it did not solve (\"select all squares with…\", \"click the "
+                      "icons in order\"), call it again with the check's instruction text (and the picture's element "
+                      "index, if it has one): it clicks the points itself. With only an index it reads the characters "
+                      "in that picture into the captcha field.")
+        async def solve_captcha(browser_session, index: int | None = None, instruction: str | None = None):
             cdp = await browser_session.get_or_create_cdp_session()
 
             async def evaluate(expression):
@@ -1244,9 +1251,41 @@ class Worker:
             async def mouse(params):
                 await cdp.cdp_client.send.Input.dispatchMouseEvent(params=params, session_id=cdp.session_id)
 
+            async def insert_text(text):
+                await cdp.cdp_client.send.Input.insertText(params={"text": text}, session_id=cdp.session_id)
+
+            async def capture(clip):
+                return await browser_session.take_screenshot(format="png", clip=clip)
+
+            key = (session.captcha or {}).get("twoCaptchaKey")
+            instruction = (instruction or "").strip()[:300] or None
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as http:
-                solved, message = await solve_slider(evaluate, mouse, http,
-                                                     (session.captcha or {}).get("twoCaptchaKey"))
+                if index is not None or instruction:
+                    # A picture the run names, or else the page's largest captcha picture, to click in or read.
+                    box = (await element_box(browser_session, cdp, index) if index is not None
+                           else await evaluate(f"{CAPTCHA_PICTURE_FIND}('click')")
+                           or "solve_captcha found no captcha picture on the page: give its element index.")
+                    if isinstance(box, str):
+                        solved, message = False, box
+                    else:
+                        finish = point_clicker(mouse, box) if instruction else text_typer(evaluate, insert_text)
+                        solved, message = await solve_picture_captcha(http, key, picture_shooter(capture, box), finish,
+                                                                      instruction)
+                else:
+                    async def token_check():
+                        worlds, frame_urls = await captcha_worlds(browser_session)
+                        return await solve_token_captcha(worlds, frame_urls, await browser_session.get_current_page_url(),
+                                                         http, key, solver_proxy(self.forwarder.upstream))
+
+                    async def text_check():
+                        box = await evaluate(f"{CAPTCHA_PICTURE_FIND}('text')")
+                        if not isinstance(box, dict):
+                            return None
+                        return await solve_picture_captcha(http, key, picture_shooter(capture, box),
+                                                           text_typer(evaluate, insert_text),
+                                                           russian=bool(box.get("russian")))
+
+                    solved, message = await solve_page_captcha(evaluate, mouse, http, key, token_check, text_check)
             return (ActionResult(extracted_content=message, long_term_memory=message) if solved
                     else ActionResult(error=message))
 
@@ -1715,6 +1754,201 @@ GEETEST_ANSWER = r"""((answer) => {
   return true;
 })"""
 
+# --- Captchas a solving service answers (token widgets, DataDome, pictures) ------------------------------
+
+# A token captcha is answered by a string the site's server checks with the captcha's vendor: 2Captcha solves
+# it from the widget's sitekey and the page's address, and the answer goes where the widget itself puts it
+# (its hidden response field) and to the callback the page gave the widget. Opening the picture challenge
+# and then its audio one got the exit flagged by reCAPTCHA (iNaturalist sign-up, RU 05.10), so the run asks
+# for this first. Both scripts run in the page's own world (the callbacks live there) of one document and
+# reach its same-origin frames themselves; a cross-origin frame is another target, evaluated on its own.
+CAPTCHA_DOCUMENTS = r"""
+  const documents = [];
+  const visit = (win, depth) => {
+    let doc;
+    try { doc = win.document; if (!doc || !doc.documentElement) return; } catch (e) { return; }
+    if (documents.some((d) => d.doc === doc)) return;
+    documents.push({win, doc});
+    if (depth < 5) for (let i = 0; i < Math.min(win.frames.length, 40); i++) visit(win.frames[i], depth + 1);
+  };
+  visit(window, 0);
+  const deep = (doc, selector) => {
+    const found = [];
+    const walk = (root) => {
+      found.push(...root.querySelectorAll(selector));
+      for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+    };
+    walk(doc);
+    return found;
+  };
+  // The parameter objects reCAPTCHA keeps per widget (sitekey, size, callback, s) in ___grecaptcha_cfg.
+  const recaptchaParams = (win) => {
+    const params = [];
+    let clients = null;
+    try { clients = win.___grecaptcha_cfg && win.___grecaptcha_cfg.clients; } catch (e) { return params; }
+    if (!clients) return params;
+    const seen = new Set();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || seen.has(node) || depth > 6 || seen.size > 3000) return;
+      seen.add(node);
+      if ('nodeType' in node || node === win) return;
+      if (typeof node.sitekey === 'string') params.push(node);
+      for (const key of Object.keys(node)) { try { walk(node[key], depth + 1); } catch (e) {} }
+    };
+    for (const id of Object.keys(clients)) walk(clients[id], 0);
+    return params;
+  };
+"""
+
+# What token captchas the documents hold: sitekeys from the widgets' own attributes and globals, reCAPTCHA's
+# config, a GeeTest v3 widget's last `get.php` request (its gt and challenge), and the vendors' frames (whose
+# addresses Python reads, `captcha_in_frame_url`); a reCAPTCHA v3 key is the one its script is loaded with
+# (`render=<key>`), which v2 never is.
+TOKEN_CAPTCHA_STATE = "(() => {" + CAPTCHA_DOCUMENTS + r"""
+  const widgets = [];
+  for (const {win, doc} of documents) {
+    let url = '';
+    try { url = String(win.location.href); } catch (e) {}
+    let enterprise = false;
+    try { enterprise = Boolean(win.grecaptcha && win.grecaptcha.enterprise); } catch (e) {}
+    const scripts = [...doc.querySelectorAll('script[src]')].map((s) => s.src);
+    const friendlyV2 = scripts.some((src) => /@friendlycaptcha\/sdk/.test(src));
+    const add = (widget) => widgets.push({url, enterprise, ...widget});
+    for (const el of deep(doc, '[data-sitekey]')) {
+      const cls = String(el.className || '');
+      add({sitekey: el.getAttribute('data-sitekey'), invisible: el.getAttribute('data-size') === 'invisible',
+           hint: /h-captcha/.test(cls) ? 'hcaptcha' : /cf-turnstile/.test(cls) ? 'turnstile'
+             : /smart-captcha/.test(cls) ? 'smartcaptcha' : /frc-captcha/.test(cls) ? 'friendly'
+             : /mtcaptcha/.test(cls) ? 'mtcaptcha' : /g-recaptcha/.test(cls) ? 'recaptcha' : null,
+           version: /frc-captcha/.test(cls) && friendlyV2 ? 'v2' : null,
+           s: el.getAttribute('data-s'), action: el.getAttribute('data-action'), cdata: el.getAttribute('data-cdata')});
+    }
+    for (const el of deep(doc, '[data-pkey]')) add({sitekey: el.getAttribute('data-pkey'), hint: 'funcaptcha'});
+    for (const el of deep(doc, 'input[name=fc-token], #FunCaptcha-Token')) {
+      const pk = /(?:^|\|)pk=([\w-]+)/.exec(el.value || ''), surl = /(?:^|\|)surl=([^|]+)/.exec(el.value || '');
+      if (pk) add({sitekey: pk[1], hint: 'funcaptcha', surl: surl ? decodeURIComponent(surl[1]) : null});
+    }
+    try {
+      const config = win.mtcaptchaConfig;
+      if (config && typeof config.sitekey === 'string') add({sitekey: config.sitekey, hint: 'mtcaptcha'});
+    } catch (e) {}
+    let loaded = [];
+    try { loaded = win.performance.getEntriesByType('resource').map((entry) => entry.name); } catch (e) {}
+    for (const src of [...scripts, ...loaded]) {
+      const v3 = /\/recaptcha\/(api|enterprise)\.js\?(?:[^#]*&)?render=([\w-]{20,})/.exec(src);
+      if (v3) add({sitekey: v3[2], hint: 'recaptcha', v3: true, enterprise: v3[1] === 'enterprise'});
+      if (/\/\/api[\w-]*\.geetest\.com\/get\.php\?/.test(src)) {
+        const params = new URL(src).searchParams;
+        if (params.get('gt') && params.get('challenge')) {
+          add({sitekey: params.get('gt'), hint: 'geetest3', challenge: params.get('challenge')});
+        }
+      }
+    }
+    for (const frame of deep(doc, 'iframe')) if (frame.src) add({frameUrl: frame.src});
+    for (const params of recaptchaParams(win)) {
+      add({sitekey: params.sitekey, hint: 'recaptcha', invisible: params.size === 'invisible',
+           s: typeof params.s === 'string' ? params.s : null});
+    }
+  }
+  return {url: location.href, userAgent: navigator.userAgent, widgets};
+})()"""
+
+# Puts a solved answer where the widget would (`values`: its response fields by name or id, in every
+# document), hides a challenge the page still shows so the run does not go on working it, and calls the
+# page's callbacks for that sitekey with `arg` after this script has returned (one may submit the form and
+# take the document away).
+TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS + r"""
+  const names = Object.keys(values);
+  let fields = 0;
+  const handlers = [];
+  const handler = (win, fn) => {
+    if (typeof fn === 'string') {
+      try { fn = fn.split('.').reduce((object, key) => (object == null ? object : object[key]), win); } catch (e) { fn = null; }
+    }
+    if (typeof fn === 'function' && !handlers.some((h) => h.fn === fn)) handlers.push({win, fn});
+  };
+  for (const {win, doc} of documents) {
+    for (const el of deep(doc, 'textarea, input')) {
+      const id = el.id || '';
+      const name = names.find((n) => el.name === n || id === n || id.startsWith(n + '-'));
+      if (!name) continue;
+      el.value = values[name];
+      el.dispatchEvent(new win.Event('input', {bubbles: true}));
+      el.dispatchEvent(new win.Event('change', {bubbles: true}));
+      fields += 1;
+    }
+    if (arg !== null) {
+      for (const el of deep(doc, '[data-sitekey], [data-pkey]')) {
+        const key = el.getAttribute('data-sitekey') || el.getAttribute('data-pkey');
+        if (key === sitekey && el.getAttribute('data-callback')) handler(win, el.getAttribute('data-callback'));
+      }
+      if (kind === 'recaptcha') for (const params of recaptchaParams(win)) if (params.sitekey === sitekey) handler(win, params.callback);
+    }
+    for (const frame of deep(doc, 'iframe')) {
+      if (!/\/recaptcha\/(api2|enterprise)\/bframe|hcaptcha\.com\/.*frame=challenge/.test(frame.src || '')) continue;
+      let box = frame;
+      while (box.parentElement && box.parentElement !== doc.body) box = box.parentElement;
+      box.style.visibility = 'hidden';
+    }
+  }
+  for (const {win, fn} of handlers) win.setTimeout(() => { try { fn(arg); } catch (e) {} }, 0);
+  return {fields, handlers: handlers.length};
+})"""
+
+# A DataDome wall is passed by the cookie 2Captcha's answer carries: set on the page's own host, which then
+# loads again with it.
+DATADOME_ANSWER = r"""((cookie) => {
+  document.cookie = cookie;
+  setTimeout(() => location.reload(), 0);
+  return true;
+})"""
+
+# A picture captcha in the top document (its boxes are the page's own coordinates), named for a captcha:
+# in `text` mode characters in an image or canvas beside a field to type them into — which is marked for
+# TEXT_CAPTCHA_FIELD, and without which there is none —, in `click` mode the largest such picture, to click
+# in. Its box in the viewport and in the document (for a screenshot), scrolled into view.
+CAPTCHA_PICTURE_FIND = r"""((mode) => {
+  const named = (el) => /captcha|капч|kcaptcha|securimage|antibot|secret_?code|checkcode|code_?img|imgcode|challenge/i
+    .test([el.id, el.className, el.getAttribute('name'), el.getAttribute('alt'), el.getAttribute('title'),
+           el.getAttribute('src'), el.parentElement && el.parentElement.id, el.parentElement && el.parentElement.className].join(' '));
+  const size = (el) => { const b = el.getBoundingClientRect(); return [b.width, b.height]; };
+  const fits = (el) => { const [w, h] = size(el);
+    return mode === 'text' ? w >= 40 && h >= 15 && w <= 700 && h <= 300 : w >= 100 && h >= 60 && w <= 1000 && h <= 1000; };
+  const pictures = [...document.querySelectorAll('img, canvas')].filter((el) => named(el) && fits(el));
+  if (mode !== 'text') pictures.sort((a, b) => size(b)[0] * size(b)[1] - size(a)[0] * size(a)[1]);
+  const picture = pictures[0];
+  if (!picture) return null;
+  let field = null;
+  if (mode === 'text') {
+    const typable = (el) => !el.disabled && !el.readOnly && ['text', 'tel', 'number', 'search', ''].includes(el.type || '')
+      && el.getClientRects().length > 0;
+    const fieldNamed = (el) => /captcha|капч|code|код|символ|answer|verif|check|letters|digits/i
+      .test([el.name, el.id, el.className, el.placeholder, el.getAttribute('aria-label')].join(' '));
+    const scope = picture.closest('form') || document;
+    const inputs = [...scope.querySelectorAll('input')].filter(typable);
+    const after = inputs.filter((el) => picture.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    field = inputs.find(fieldNamed) || after[0] || null;
+    if (!field) return null;
+    for (const old of document.querySelectorAll('[data-bro-captcha-field]')) old.removeAttribute('data-bro-captcha-field');
+    field.setAttribute('data-bro-captcha-field', '1');
+  }
+  picture.scrollIntoView({block: 'center'});
+  const b = picture.getBoundingClientRect();
+  const lang = (document.documentElement.lang || '').toLowerCase();
+  return {x: b.x, y: b.y, w: b.width, h: b.height, pageX: b.x + scrollX, pageY: b.y + scrollY,
+          russian: lang.startsWith('ru') || /[а-яё]/i.test(document.title)};
+})"""
+
+# Focuses the field CAPTCHA_PICTURE_FIND chose (or, after it, one named for a captcha) and clears it.
+TEXT_CAPTCHA_FIELD = r"""(() => {
+  const field = document.querySelector('[data-bro-captcha-field]')
+    || [...document.querySelectorAll('input')].find((el) => /captcha|капч/i.test([el.name, el.id, el.placeholder].join(' ')));
+  if (!field) return false;
+  field.focus();
+  field.value = '';
+  return true;
+})()"""
+
 
 # --- Bank card forms ------------------------------------------------------------------------------------
 
@@ -2101,8 +2335,9 @@ class CardFrame:
             await asyncio.sleep(0.03)
 
 
-async def card_frames(browser_session):
-    """The frames of the agent's tab, its own document first."""
+async def tab_frames(browser_session):
+    """The frames of the agent's tab as browser-use lists them (dicts with `id`, `url`, `frameTargetId`),
+    its own document first."""
     all_frames, _ = await browser_session.get_all_frames()
     tab = browser_session.agent_focus_target_id
 
@@ -2119,9 +2354,14 @@ async def card_frames(browser_session):
             frame, count = all_frames[frame["parentFrameId"]], count + 1
         return count
 
+    return [frame for frame in sorted(all_frames.values(), key=depth) if root(frame).get("frameTargetId") == tab]
+
+
+async def card_frames(browser_session):
+    """The frames of the agent's tab, its own document first."""
     frames = []
-    for frame in sorted(all_frames.values(), key=depth):
-        if root(frame).get("frameTargetId") != tab or not str(frame.get("url", "")).startswith(("http", "about:")):
+    for frame in await tab_frames(browser_session):
+        if not str(frame.get("url", "")).startswith(("http", "about:")):
             continue
         with contextlib.suppress(Exception):
             cdp_session = await browser_session.get_or_create_cdp_session(frame["frameTargetId"], focus=False)
@@ -2338,7 +2578,7 @@ async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
         await asyncio.sleep(6)
         return True, "The check passed without a puzzle; the page is moving on."
     if state is None:
-        return False, "No slider puzzle opened on this page: its check is of another kind."
+        return False, NO_SLIDER
     for _ in range(attempts):
         try:
             async with http.get(state["bgUrl"]) as response:
@@ -2370,6 +2610,493 @@ async def solve_slider(evaluate, mouse, http, two_captcha_key=None, attempts=2):
         return False, "The service solved the puzzle, but this page has no field to take its answer."
     return False, "The puzzle was not accepted."
 
+
+TWO_CAPTCHA_API = "https://api.2captcha.com"
+# How long solve_captcha waits for 2Captcha, all its tasks together: a token takes 15–90 s, and the action
+# has to end inside browser-use's step timeout (180 s) with the model's own call in that step.
+TOKEN_SOLVE_S = 120
+TOKEN_POLL_S = 5
+TOKEN_TASKS = 2  # a second task only after a proxy the service could not use, or an unsolvable answer
+TOKEN_RETRIED = ("ERROR_CAPTCHA_UNSOLVABLE", "ERROR_NO_SLOT_AVAILABLE")
+# The token captchas 2Captcha's API v2 answers (task names as its documentation gives them, checked
+# 05.10.2026): the name the model hears, the task type (its proxyless variant adds "Proxyless") and
+# whether that variant exists, and the fields of the page that take the answer. GeeTest v4 is the slider
+# path's; Amazon WAF (the voucher goes through AWS's own script), Cloudflare's challenge page (its
+# parameters only show by intercepting `turnstile.render` before the page runs) and Lemin are not done.
+TOKEN_KINDS = {
+    "recaptcha": ("reCAPTCHA", "RecaptchaV2Task", True, ("g-recaptcha-response",)),
+    "hcaptcha": ("hCaptcha", "HCaptchaTask", True, ("h-captcha-response", "g-recaptcha-response")),
+    "turnstile": ("Cloudflare Turnstile check", "TurnstileTask", True, ("cf-turnstile-response", "g-recaptcha-response")),
+    "smartcaptcha": ("Yandex SmartCaptcha", "YandexSmartCaptchaTask", True, ("smart-token",)),
+    "funcaptcha": ("Arkose Labs (FunCaptcha) check", "FunCaptchaTask", True,
+                   ("fc-token", "verification-token", "FunCaptcha-Token")),
+    "mtcaptcha": ("MTCaptcha", "MtCaptchaTask", True, ("mtcaptcha-verifiedtoken",)),
+    "friendly": ("Friendly Captcha", "FriendlyCaptchaTask", True, ("frc-captcha-solution", "frc-captcha-response")),
+    "geetest3": ("GeeTest check", "GeeTestTask", True, ("geetest_challenge", "geetest_validate", "geetest_seccode")),
+    "datadome": ("DataDome check", "DataDomeSliderTask", False, ()),
+}
+CAPTCHA_NAMES = {kind: spec[0] for kind, spec in TOKEN_KINDS.items()}
+RECAPTCHA_HOSTS = {"www.google.com", "google.com", "www.recaptcha.net", "recaptcha.net", "recaptcha.google.com"}
+SITEKEY = re.compile(r"^[\w-]{12,120}$")
+TURNSTILE_KEY = re.compile(r"^0x[\w-]{16,}$")
+HCAPTCHA_KEY = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+ARKOSE_KEY = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$")
+SMARTCAPTCHA_HOST = "smartcaptcha.yandexcloud.net"
+SMARTCAPTCHA_KEY = re.compile(r"^ysc\d_[\w-]+$")
+VENDOR_DOMAINS = ("hcaptcha.com", "arkoselabs.com", "funcaptcha.com", "mtcaptcha.com", "captcha-delivery.com")
+SOLVER_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+NO_SLIDER = "No slider puzzle opened on this page: its check is of another kind."
+V3_UNSUPPORTED = ("This page uses reCAPTCHA v3, which scores the browser without any puzzle: solve_captcha "
+                  "cannot answer it.")
+NO_CAPTCHA = ("solve_captcha found no captcha it knows on this page (reCAPTCHA, hCaptcha, Turnstile, Yandex "
+              "SmartCaptcha, Arkose, MTCaptcha, Friendly Captcha, GeeTest, DataDome, a slider or characters in a "
+              "picture). If the check is a picture to click in, call solve_captcha again with the picture's "
+              "element index and the check's instruction.")
+# What the worker tells the solving service's people about a picture.
+TEXT_COMMENT = "Type the characters shown in the picture"
+TEXT_COMMENT_RU = "Type the characters shown in the picture; they may be Cyrillic"
+
+
+class SolverRefused(Exception):
+    """2Captcha's error code for a task: only the code, which never carries the key or an answer."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def solver_code(answer):
+    code = answer.get("errorCode") if isinstance(answer, dict) else None
+    return code if isinstance(code, str) and SOLVER_CODE.match(code) else "ERROR_UNKNOWN"
+
+
+def first(params, name):
+    return (params.get(name) or [None])[0]
+
+
+def captcha_in_frame_url(url):
+    """The token captcha a vendor's frame belongs to, by the frame's address: {kind, sitekey, ...}, or None."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url))
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return None
+    query, fragment = urllib.parse.parse_qs(parsed.query), urllib.parse.parse_qs(parsed.fragment)
+    if host in RECAPTCHA_HOSTS:
+        match = re.search(r"/recaptcha/(api2|enterprise)/(anchor|bframe)", parsed.path)
+        if not match:
+            return None
+        return {"kind": "recaptcha", "sitekey": first(query, "k"),
+                "invisible": first(query, "size") == "invisible", "enterprise": match.group(1) == "enterprise"}
+    if host == "hcaptcha.com" or host.endswith(".hcaptcha.com"):
+        key = first(fragment, "sitekey") or first(query, "sitekey")
+        return {"kind": "hcaptcha", "sitekey": key, "invisible": first(fragment, "size") == "invisible"} if key else None
+    if host == SMARTCAPTCHA_HOST:
+        key = first(query, "sitekey")
+        return {"kind": "smartcaptcha", "sitekey": key} if key else None
+    if host == "challenges.cloudflare.com" and "/turnstile/" in parsed.path:
+        key = next((part for part in parsed.path.split("/") if TURNSTILE_KEY.match(part)), None)
+        return {"kind": "turnstile", "sitekey": key} if key else None
+    if host.endswith(("arkoselabs.com", "funcaptcha.com")):
+        key = first(query, "pk") or first(fragment, "pk") or next(
+            (part for part in parsed.path.split("/") if ARKOSE_KEY.match(part)), None)
+        return {"kind": "funcaptcha", "sitekey": key, "surl": host} if key else None
+    if (host == "captcha-delivery.com" or host.endswith(".captcha-delivery.com")) and parsed.path.startswith("/captcha"):
+        # `t=bv`: the address is banned outright, and no answer lifts that.
+        return {"kind": "datadome", "sitekey": "datadome", "captchaUrl": str(url), "banned": first(query, "t") == "bv"}
+    return None
+
+
+def captcha_vendor_frame(url):
+    """Whether a frame is a captcha vendor's own (its widget or challenge): never evaluated in."""
+    try:
+        host = (urllib.parse.urlsplit(str(url)).hostname or "").lower()
+    except ValueError:
+        return False
+    return (host in RECAPTCHA_HOSTS or host in ("challenges.cloudflare.com", SMARTCAPTCHA_HOST)
+            or any(host == domain or host.endswith("." + domain) for domain in VENDOR_DOMAINS))
+
+
+def sitekey_kind(sitekey, hint):
+    if hint in CAPTCHA_NAMES:
+        return hint
+    if TURNSTILE_KEY.match(sitekey):
+        return "turnstile"
+    if SMARTCAPTCHA_KEY.match(sitekey):
+        return "smartcaptcha"
+    if sitekey.startswith("MTPublic-"):
+        return "mtcaptcha"
+    return "hcaptcha" if HCAPTCHA_KEY.match(sitekey) else "recaptcha"
+
+
+def pick_token_captcha(states, frame_urls, page_url):
+    """The token captcha to solve from what the documents (`states`, TOKEN_CAPTCHA_STATE) and the tab's
+    frame addresses show: {kind, sitekey, url, invisible, enterprise, v3, banned, and what its task takes},
+    a widget one can see before an invisible one; None when there is none."""
+    top = next((s.get("url") for s in states if isinstance(s.get("url"), str)), None)
+    fallback = top if str(top or "").startswith("http") else page_url
+    found = {}
+    sightings = [w for s in states for w in (s.get("widgets") or []) if isinstance(w, dict)]
+    sightings += [{"frameUrl": url} for url in frame_urls]
+    for sighting in sightings:
+        if sighting.get("frameUrl"):
+            framed = captcha_in_frame_url(sighting["frameUrl"])
+            if not framed:
+                continue
+            sighting = {**{k: v for k, v in sighting.items() if k != "frameUrl"}, **framed, "hint": framed["kind"]}
+        key = sighting.get("sitekey")
+        if not isinstance(key, str) or not (SITEKEY.match(key) or sighting.get("hint") == "datadome"):
+            continue
+        kind = sitekey_kind(key, sighting.get("hint"))
+        widget = found.setdefault((kind, key), {"kind": kind, "sitekey": key, "url": None, "invisible": False,
+                                                "enterprise": False, "v3": False, "banned": False})
+        url = sighting.get("url")
+        if widget["url"] is None and isinstance(url, str) and url.startswith("http"):
+            widget["url"] = url
+        for flag in ("invisible", "enterprise", "v3", "banned"):
+            widget[flag] = widget[flag] or sighting.get(flag) is True
+        for field in ("s", "action", "cdata", "surl", "version", "captchaUrl", "challenge"):
+            value = sighting.get(field)
+            if isinstance(value, str) and value and len(value) < 4000:
+                # A GeeTest challenge is good once: the widget's latest request has the one it shows.
+                widget[field] = value if field == "challenge" else widget.get(field) or value
+    for widget in found.values():
+        widget["url"] = widget["url"] or fallback
+    widgets = [w for w in found.values() if w["url"] and (w["kind"] != "geetest3" or w.get("challenge"))]
+    widgets.sort(key=lambda w: (w["v3"], w["invisible"]))
+    return widgets[0] if widgets else None
+
+
+def solver_proxy(upstream):
+    """The run's own exit for 2Captcha's proxy tasks, from the forwarder's upstream: the token then comes
+    from the address the site sees the browser on. None when there is none the service could reach."""
+    if not upstream:
+        return None
+    host, port, auth = upstream
+    with contextlib.suppress(ValueError):
+        if not ipaddress.ip_address(host).is_global:
+            return None
+    proxy = {"proxyType": "http", "proxyAddress": str(host), "proxyPort": int(port)}
+    if auth:
+        login, _, password = base64.b64decode(auth).decode().partition(":")
+        proxy.update(proxyLogin=login, proxyPassword=password)
+    return proxy
+
+
+def token_task(widget, proxy=None, user_agent=None):
+    """2Captcha's task for a token captcha, the proxy variant when `proxy` is given."""
+    kind = widget["kind"]
+    enterprise = kind == "recaptcha" and widget.get("enterprise")
+    name = "RecaptchaV2EnterpriseTask" if enterprise else TOKEN_KINDS[kind][1]
+    task = {"type": name if proxy else f"{name}Proxyless", "websiteURL": widget["url"]}
+    if kind == "funcaptcha":
+        task["websitePublicKey"] = widget["sitekey"]
+        # The widget's own API host (`surl`, often a site's `<name>-api.arkoselabs.com`), without a scheme.
+        surl = urllib.parse.urlsplit(widget["surl"]).hostname if "://" in widget.get("surl", "") else widget.get("surl")
+        if surl:
+            task["funcaptchaApiJSSubdomain"] = surl
+    elif kind == "geetest3":
+        task.update(gt=widget["sitekey"], challenge=widget["challenge"])
+    elif kind == "datadome":
+        task["captchaUrl"] = widget["captchaUrl"]
+    else:
+        task["websiteKey"] = widget["sitekey"]
+    if kind in ("recaptcha", "hcaptcha") and widget.get("invisible"):
+        task["isInvisible"] = True
+    if kind == "recaptcha" and widget.get("s"):
+        task.update({"enterprisePayload": {"s": widget["s"]}} if enterprise else {"recaptchaDataSValue": widget["s"]})
+    if kind == "turnstile":
+        task.update({k: widget[f] for k, f in (("action", "action"), ("data", "cdata")) if widget.get(f)})
+    if kind == "friendly" and widget.get("version") == "v2":
+        task["version"] = "v2"
+    if user_agent:
+        task["userAgent"] = user_agent
+    return {**task, **(proxy or {})}
+
+
+async def two_captcha_task(http, key, task):
+    """Run one 2Captcha task to its solution (a dict); SolverRefused with the service's code when it gives none."""
+    async with http.post(f"{TWO_CAPTCHA_API}/createTask", json={"clientKey": key, "task": task}) as response:
+        created = await response.json(content_type=None)
+    if not isinstance(created, dict) or created.get("errorId") or not created.get("taskId"):
+        raise SolverRefused(solver_code(created))
+    while True:
+        await asyncio.sleep(TOKEN_POLL_S)
+        async with http.post(f"{TWO_CAPTCHA_API}/getTaskResult",
+                             json={"clientKey": key, "taskId": created["taskId"]}) as response:
+            result = await response.json(content_type=None)
+        if not isinstance(result, dict) or result.get("errorId"):
+            raise SolverRefused(solver_code(result))
+        if result.get("status") == "ready":
+            if not isinstance(result.get("solution"), dict):
+                raise SolverRefused("ERROR_EMPTY_ANSWER")
+            return result["solution"]
+
+
+def short_text(value, limit=20000):
+    return isinstance(value, str) and 0 < len(value) <= limit
+
+
+def token_answer(kind, solution):
+    """What of a solution goes into the page: a token (a string), GeeTest's three fields, DataDome's cookie."""
+    if kind == "geetest3":
+        values = {f"geetest_{part}": solution.get(part) for part in ("challenge", "validate", "seccode")}
+        if all(short_text(value, 1000) for value in values.values()):
+            return values
+    elif kind == "datadome":
+        if short_text(solution.get("cookie"), 8000) and solution["cookie"].startswith("datadome="):
+            return solution["cookie"]
+    else:
+        token = solution.get("gRecaptchaResponse") or solution.get("token")
+        if short_text(token):
+            return token
+    raise SolverRefused("ERROR_EMPTY_ANSWER")
+
+
+async def two_captcha_token(http, key, widget, proxy=None, user_agent=None):
+    """The answer for `widget` (`token_answer`), through the run's exit first: a proxy the service could not
+    use is dropped for the second task where the kind has a proxyless variant, and an answer it found
+    unsolvable is asked for once more. At most TOKEN_TASKS tasks."""
+    for task_number in range(1, TOKEN_TASKS + 1):
+        try:
+            solution = await two_captcha_task(http, key, token_task(widget, proxy, user_agent))
+            return token_answer(widget["kind"], solution)
+        except SolverRefused as refused:
+            if task_number == TOKEN_TASKS:
+                raise
+            if "PROXY" in refused.code and proxy and TOKEN_KINDS[widget["kind"]][2]:
+                log.warning("2Captcha could not use the run's proxy (%s); asking without it", refused.code)
+                proxy = None
+            elif refused.code not in TOKEN_RETRIED:
+                raise
+    raise SolverRefused("ERROR_UNKNOWN")
+
+
+async def solve_token_captcha(worlds, frame_urls, page_url, http, key, proxy=None):
+    """Answer the page's token captcha (TOKEN_KINDS) through 2Captcha and say how it went: (solved, message),
+    or None when the page has none. `worlds` evaluate page JavaScript in the main world of each document the
+    tab holds out of process, its own first; `frame_urls` are all its frames' addresses. The message never
+    holds the key, the proxy login or the answer."""
+    states = []
+    for evaluate in worlds:
+        with contextlib.suppress(Exception):
+            state = await asyncio.wait_for(evaluate(TOKEN_CAPTCHA_STATE), 10)
+            if isinstance(state, dict):
+                states.append(state)
+    widget = pick_token_captcha(states, frame_urls, page_url)
+    if widget is None:
+        return None
+    kind = widget["kind"]
+    name = CAPTCHA_NAMES[kind]
+    if widget["v3"]:
+        return False, V3_UNSUPPORTED
+    if widget["banned"]:
+        return False, "DataDome has banned this network address outright: no answer lifts that, another address is needed."
+    if not key:
+        return False, f"The page has a {name}, but this browser has no key for the solving service."
+    if kind == "datadome" and not proxy:
+        return False, "The page has a DataDome check, which the solving service answers only through this browser's own proxy, and there is none."
+    user_agent = next((s["userAgent"] for s in states if isinstance(s.get("userAgent"), str)), None)
+    try:
+        answer = await asyncio.wait_for(two_captcha_token(http, key, widget, proxy, user_agent), TOKEN_SOLVE_S)
+    except asyncio.TimeoutError:
+        return False, f"The solving service did not solve the page's {name} in time."
+    except SolverRefused as refused:
+        return False, f"The solving service could not solve the page's {name} ({refused.code})."
+    except Exception as error:  # the service unreachable or answering nonsense: named by type only
+        return False, f"The solving service could not be reached for the page's {name} ({type(error).__name__})."
+    if kind == "datadome":
+        if not worlds:
+            return False, f"The solving service solved the page's {name}, but the page could not take its pass."
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(worlds[0](f"{DATADOME_ANSWER}({json.dumps(answer)})"), 10)
+        await asyncio.sleep(5)  # the page loads again with the pass
+        return True, (f"The page's {name} is solved and the page loaded again with its pass: carry on with the "
+                      "errand. If the check comes back, stop with NEEDS: captcha.")
+    values = answer if isinstance(answer, dict) else {field: answer for field in TOKEN_KINDS[kind][3]}
+    arg = None if isinstance(answer, dict) else answer
+    script = (f"{TOKEN_CAPTCHA_ANSWER}({json.dumps(kind)}, {json.dumps(widget['sitekey'])}, {json.dumps(values)}, "
+              f"{json.dumps(arg)})")
+    fields = handlers = 0
+    for evaluate in worlds:
+        with contextlib.suppress(Exception):
+            placed = await asyncio.wait_for(evaluate(script), 10)
+            if isinstance(placed, dict):
+                fields += int(placed.get("fields") or 0)
+                handlers += int(placed.get("handlers") or 0)
+    if not fields and not handlers:
+        return False, f"The solving service solved the page's {name}, but the page has no field to take its answer."
+    await asyncio.sleep(3)  # a callback may submit the form or move the page on by itself
+    return True, (f"The page's {name} is solved: its answer is in the page. Do not tick the check, open its "
+                  "pictures or audio, or call solve_captcha again: submit the form now (press its button unless "
+                  "the page has already moved on) and check that it went through.")
+
+
+def png_size(png):
+    """A PNG's width and height, from its header."""
+    if len(png) < 24 or png[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+
+
+async def solve_picture_captcha(http, key, shoot, finish, instruction=None, russian=False):
+    """Have 2Captcha's people read a picture captcha `shoot()` returns (PNG bytes): the characters in it
+    (ImageToTextTask), or, given the check's `instruction`, the points to click (CoordinatesTask). `finish`
+    gets the answer — the text, or the points as fractions of the picture's width and height — and says
+    what it did with it.
+    (solved, message); the message never holds the key."""
+    if not key:
+        return False, "The page's picture captcha needs the solving service, and this browser has no key for it."
+    try:
+        picture = await shoot()
+        png_size(picture)
+    except Exception as error:
+        return False, f"The captcha picture could not be captured ({type(error).__name__})."
+    body = base64.b64encode(picture).decode()
+    if instruction:
+        task = {"type": "CoordinatesTask", "body": body, "comment": instruction[:300]}
+    else:
+        task = {"type": "ImageToTextTask", "body": body, "comment": TEXT_COMMENT_RU if russian else TEXT_COMMENT}
+
+    async def solved():
+        for task_number in range(1, TOKEN_TASKS + 1):
+            try:
+                return await two_captcha_task(http, key, task)
+            except SolverRefused as refused:
+                if task_number == TOKEN_TASKS or refused.code not in TOKEN_RETRIED:
+                    raise
+        raise SolverRefused("ERROR_UNKNOWN")
+
+    try:
+        solution = await asyncio.wait_for(solved(), TOKEN_SOLVE_S)
+    except asyncio.TimeoutError:
+        return False, "The solving service did not read the captcha picture in time."
+    except SolverRefused as refused:
+        return False, f"The solving service could not read the captcha picture ({refused.code})."
+    except Exception as error:
+        return False, f"The solving service could not be reached for the captcha picture ({type(error).__name__})."
+    if instruction:
+        points = [(p["x"], p["y"]) for p in solution.get("coordinates") or []
+                  if isinstance(p, dict) and isinstance(p.get("x"), (int, float)) and isinstance(p.get("y"), (int, float))]
+        if not 0 < len(points) <= 20:
+            return False, "The solving service found nothing to click in the captcha picture."
+        width, height = png_size(picture)
+        return await finish([(min(max(x / width, 0), 1), min(max(y / height, 0), 1)) for x, y in points])
+    text = solution.get("text")
+    if not isinstance(text, str) or not 0 < len(text.strip()) <= 40 or "\n" in text:
+        return False, "The solving service could not read the captcha picture (ERROR_EMPTY_ANSWER)."
+    return await finish(text.strip())
+
+
+async def solve_page_captcha(evaluate, mouse, http, key, token_check, text_check=None):
+    """solve_captcha without an element: the page's GeeTest slider when it shows one, else its token captcha
+    (`token_check()`, solve_token_captcha for the page), else characters in a picture (`text_check()`, None
+    when there is no such picture), else the slider's way, which presses a check button first — not before
+    the others, since on a sign-up form that button would submit it. A page whose only captcha is reCAPTCHA
+    v3 (sites load it everywhere) still gets the other ways."""
+    state = await evaluate(GEETEST_STATE)
+    answered = None
+    if not (puzzle_open(state) or (state or {}).get("captchaId")):
+        for check in (token_check, text_check):
+            if check is None:
+                continue
+            try:
+                found = await check()
+            except Exception as error:  # the page could not be read for one: the next way is tried
+                log.warning("captcha not looked for: %s", type(error).__name__)
+                continue
+            if found is not None and found[1] != V3_UNSUPPORTED:
+                return found
+            answered = answered or found
+    solved, message = await solve_slider(evaluate, mouse, http, key)
+    if message == NO_SLIDER:
+        return False, answered[1] if answered else NO_CAPTCHA
+    return solved, message
+
+
+async def element_box(browser_session, cdp, index):
+    """The box of the agent's element `index` (scrolled into view) in the viewport and the document, or a
+    message why there is none. Only an element of the tab's own process: a frame of another site has
+    coordinates of its own."""
+    node = await browser_session.get_element_by_index(index)
+    if node is None:
+        return f"There is no element {index} on the page now."
+    if getattr(node, "target_id", None) != browser_session.agent_focus_target_id:
+        return "That picture sits in a frame of another site, which solve_captcha cannot take a picture of."
+    with contextlib.suppress(Exception):
+        await cdp.cdp_client.send.DOM.scrollIntoViewIfNeeded(params={"backendNodeId": node.backend_node_id},
+                                                             session_id=cdp.session_id)
+    rect = await browser_session.get_element_coordinates(node.backend_node_id, cdp)
+    if rect is None or rect.width < 10 or rect.height < 10:
+        return f"Element {index} has no visible picture."
+    metrics = await cdp.cdp_client.send.Page.getLayoutMetrics(session_id=cdp.session_id)
+    viewport = metrics.get("cssVisualViewport") or {}
+    return {"x": rect.x, "y": rect.y, "w": rect.width, "h": rect.height,
+            "pageX": rect.x + viewport.get("pageX", 0), "pageY": rect.y + viewport.get("pageY", 0)}
+
+
+def picture_shooter(capture, box):
+    """`shoot` for solve_picture_captcha: the page's pixels in `box` (its document coordinates), as PNG."""
+    async def shoot():
+        return await capture({"x": box["pageX"], "y": box["pageY"], "width": box["w"], "height": box["h"]})
+
+    return shoot
+
+
+def text_typer(evaluate, insert_text):
+    """`finish` for characters: typed into the captcha field, or told to the run when there is none."""
+    async def finish(text):
+        if not await evaluate(TEXT_CAPTCHA_FIELD):
+            return False, (f"The captcha picture reads «{text}», but solve_captcha found no field for it: type it "
+                           "into the captcha field yourself, then submit the form.")
+        await insert_text(text)
+        return True, ("Typed the captcha picture's characters into its field. Submit the form now; if the page says "
+                      "they are wrong, call solve_captcha once more for the new picture.")
+
+    return finish
+
+
+def point_clicker(mouse, box):
+    """`finish` for a picture to click in: each point (as fractions of the picture) clicked where it shows."""
+    async def finish(points):
+        for fx, fy in points:
+            x, y = box["x"] + fx * box["w"], box["y"] + fy * box["h"]
+            for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
+                await mouse({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1})
+                await asyncio.sleep(0.08)
+            await asyncio.sleep(0.5)
+        return True, (f"Clicked the {len(points)} point(s) the solving service chose in the captcha picture. Press "
+                      "the check's own confirm button if it has one, then look whether the page let you through.")
+
+    return finish
+
+
+async def captcha_worlds(browser_session):
+    """Main-world `evaluate`s of the agent's tab — its own document and each out-of-process frame of it but a
+    captcha vendor's (a same-process frame is reached from its parent) — and the addresses of all its frames."""
+    worlds, targets, urls = [], set(), []
+    for frame in await tab_frames(browser_session):
+        url = str(frame.get("url", ""))
+        urls.append(url)
+        target = frame.get("frameTargetId")
+        if not target or target in targets:
+            continue
+        targets.add(target)
+        if captcha_vendor_frame(url) or not url.startswith(("http", "about:")):
+            continue
+        with contextlib.suppress(Exception):
+            worlds.append(main_world(await browser_session.get_or_create_cdp_session(target, focus=False)))
+    return worlds, urls
+
+
+def main_world(cdp_session):
+    async def evaluate(expression):
+        answer = await cdp_session.cdp_client.send.Runtime.evaluate(
+            params={"expression": expression, "returnByValue": True}, session_id=cdp_session.session_id)
+        return (answer.get("result") or {}).get("value")
+
+    return evaluate
+
 EXTEND_SYSTEM = """
 Workspace: a file you are asked to save under report/ is saved with the save_screenshot action (a whole
 visible page, e.g. report/final.png) or save_element_picture (one item photo, by element index). Never
@@ -2386,9 +3113,12 @@ form shows before pressing it again. Fields fill_card filled may still look empt
 secret values from your view of the page: trust its answer and press the form's pay button when the request
 allows paying. Call done only when the request is finished or one of its rules tells you to stop; while the page
 offers the next step of what you were asked to do (a suggestion to pick, a store to choose, «К оплате»,
-«Оплатить»), take that step instead. An anti-bot check
-page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
-button and solves it; never press or drag it yourself. To read a long list
+«Оплатить»), take that step instead. Any captcha or anti-bot
+check (a slider puzzle, «I'm not a robot», hCaptcha, Turnstile, Yandex SmartCaptcha, characters in a picture,
+pictures to click) goes to the solve_captcha action first, before you tick, drag, type or click anything in
+it; never ask for an audio challenge, which gets this network address flagged. Once solve_captcha says the
+check is solved, leave the check alone and do what it says, usually submit the form. A picture to click in
+that it did not find goes to it again with the check's instruction text. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:
 (async () => { ... })()) over scrolling and reading it screen by screen, and take each option's link (the
 href of its anchor) in that same call rather than hunting for the links one find_elements call at a time.

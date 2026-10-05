@@ -118,6 +118,7 @@ export async function saveVaultItem(
     await deleteEncryptedSecret(scope, id);
     throw error;
   }
+  return id;
 }
 
 /**

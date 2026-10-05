@@ -25,6 +25,7 @@ const applicationEnvironment = [
   "MODEL_PROVIDER",
   "NODE_ENV",
   "OPENROUTER_*",
+  "OPS_ALERT_*",
   "PAID_*",
   "PRICE_RUB",
   "ROUTERAI_*",

@@ -138,8 +138,19 @@ import {
   mailCodeBinding,
   mailCodeFromSite,
   mailCodeInstruction,
+  mailLinkInstruction,
   waitsForMailCode,
 } from "@agent/lib/browser-use/mail-code";
+import {
+  agentMailSignUp,
+  forgetAgentMailLogin,
+  registersWithAgentMail,
+  saveAgentMailLogin,
+  signUpLine,
+  signUpUsername,
+  siteAgentMailbox,
+} from "@agent/lib/browser-use/sign-up";
+import { agentMailboxEnabled } from "@db/services/agent-mail";
 import {
   gosuslugiCodeNote,
   gosuslugiSignInRule,
@@ -328,6 +339,26 @@ const shortTexts: BrowserTaskTexts = {
 
 const inputSchema = browserTaskSchema(fullTexts);
 const shortInputSchema = browserTaskSchema(shortTexts);
+
+/**
+ * `signUpWith`, in full or short: only a workspace with its own AgentMail
+ * mailbox has it, so everyone else's tool keeps its bytes
+ * (`tests/agent/tools/flag-off.test.ts`).
+ */
+const signUpTexts = {
+  full: 'Only on start, in a turn the user\'s own message started, when they asked you to register or create an account on this site (or their errand needs one and they asked for it): "agent_mail" registers it with your own AgentMail address and a password the tool makes and saves in the vault, so later errands on this site sign in by themselves. It shares none of the user\'s details, so it is not acting in their name: no allowSubmit, no submission, no card and no question about which email — start it at once, with site. Leave allowSubmit and allowPayment out. Their name, phone, own email, address or a payment still go only by the usual rules. The site\'s letter comes to your mailbox: on NEEDS: email_code continue with codeFrom "mail", which takes the code or the confirmation link from it.',
+  short:
+    '"agent_mail" on start, in the user\'s own turn, when they asked for an account on this site: the run registers with your own AgentMail address and a password the tool makes and saves. None of their details, so no allowSubmit, no submission, no question; pass site. On NEEDS: email_code continue with codeFrom "mail".',
+};
+
+function withSignUp(schema: typeof inputSchema, text: string) {
+  return schema.extend({
+    signUpWith: z.enum(["agent_mail"]).optional().describe(text),
+  });
+}
+
+const signUpInputSchema = withSignUp(inputSchema, signUpTexts.full);
+const shortSignUpInputSchema = withSignUp(shortInputSchema, signUpTexts.short);
 
 /**
  * `running` only means the run was handed the errand. A second after
@@ -653,7 +684,8 @@ function commitmentLine(
   consent: SubmissionConsent | undefined,
   deliveryAddress = false,
   phoneSignIn = false,
-  ownStaging = false
+  ownStaging = false,
+  signUp = false
 ) {
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
@@ -686,7 +718,9 @@ function commitmentLine(
   }
   if (ownStaging) return ownStagingCommitment;
   return [
-    "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never make an appointment, register, sign up, apply or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
+    signUp
+      ? "The person has not approved acting in their name on this errand. Register only the one account the sign-up paragraph describes, with Bro's own mailbox and nothing of theirs; beyond it never book or reserve anything (not even with free cancellation), never make an appointment, apply, subscribe to anything paid or place an order, and never submit a contact form, request, application, callback or message to a business or a person."
+      : "The person has not approved acting in their name on this errand. Never book or reserve anything (not even with free cancellation), never make an appointment, register, sign up, apply or place an order, and never submit a contact form, request, application, callback or message to a business or a person.",
     `${
       deliveryAddress
         ? "Never type the person's name, phone number or email into any site, and their address only where the delivery-address paragraph below allows."
@@ -1311,6 +1345,11 @@ export function composeBrowserTask(options: {
   readonly facts: string | undefined;
   readonly home: string | undefined;
   readonly site: string | undefined;
+  /**
+   * The errand registers an account with Bro's own mailbox: the user name a
+   * form gets (`agent/lib/browser-use/sign-up.ts`).
+   */
+  readonly signUp?: { readonly username: string };
   /** The person asked for the errand to be done, not only found. */
   readonly staging?: Staging;
 }) {
@@ -1330,6 +1369,7 @@ export function composeBrowserTask(options: {
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
     personStepLine(),
+    options.signUp ? signUpLine(options.signUp.username, true) : undefined,
     options.staging !== undefined && options.consent === undefined
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
@@ -1339,7 +1379,13 @@ export function composeBrowserTask(options: {
     publicServiceLine(options.errand),
     homeLine(options.home),
     searchLine(),
-    commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
+    commitmentLine(
+      options.consent,
+      address !== undefined,
+      phoneSignIn,
+      own,
+      options.signUp !== undefined
+    ),
     options.staging !== undefined || options.consent !== undefined
       ? checkoutRouteLine
       : undefined,
@@ -1352,7 +1398,8 @@ export function composeBrowserTask(options: {
       : formFieldsLine,
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
-    accountStateLine(options.aliases),
+    // The account does not exist yet: nothing to check a sign-in against.
+    options.signUp ? undefined : accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
@@ -1508,14 +1555,19 @@ export function composeBrowserContinuation(options: {
   readonly message: string;
   readonly searching: boolean;
   readonly site: string | undefined;
+  /** The errand registers an account with Bro's own mailbox. */
+  readonly signUp?: { readonly username: string };
   /** The person asked for the errand to be done, not only found. */
   readonly staging?: Staging;
   /** The last run broke off with a payment allowed (`brokeOffPaying`). */
   readonly brokeOff?: boolean;
 }) {
   // A follow-up on a finished order only looks: nothing to stage or deliver
-  // anew.
-  const staging = options.done === true ? undefined : options.staging;
+  // anew. A sign-up with Bro's own mailbox stages nothing of the person's.
+  const staging =
+    options.done === true || options.signUp !== undefined
+      ? undefined
+      : options.staging;
   const own = stagesForPerson(options.consent, staging);
   const address =
     options.consent || own || options.done === true
@@ -1535,6 +1587,7 @@ export function composeBrowserContinuation(options: {
       .filter((line) => line !== undefined)
       .join("\n"),
     personStepLine(),
+    options.signUp ? signUpLine(options.signUp.username) : undefined,
     options.brokeOff === true ? brokeOffLine : undefined,
     options.done === true && options.consent === undefined
       ? errandDoneLine
@@ -1542,7 +1595,13 @@ export function composeBrowserContinuation(options: {
     staging !== undefined && options.consent === undefined
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
-    commitmentLine(options.consent, address !== undefined, phoneSignIn, own),
+    commitmentLine(
+      options.consent,
+      address !== undefined,
+      phoneSignIn,
+      own,
+      options.signUp !== undefined
+    ),
     options.done !== true &&
     (staging !== undefined || options.consent !== undefined)
       ? checkoutRouteLine
@@ -1844,7 +1903,7 @@ function paymentCapLine(capRub: number, breakdown = "") {
   return `Payment is pre-approved up to ${formatRub(capRub)} in total${breakdown}, including every fee, deposit and cancellation penalty. Before you confirm, check the final amount on the page. If it is higher, if a fee appears that was not counted, or if it is a subscription or a repeating charge, do not pay — ${stop}. ${recurring} ${roubles} A paid order still ends with ORDER and TOTAL filled in as usual; a payment that went through without an order number still reports its TOTAL.`;
 }
 
-type BrowserTaskInput = Partial<z.infer<typeof inputSchema>>;
+type BrowserTaskInput = Partial<z.infer<typeof signUpInputSchema>>;
 
 type ModeContext = Parameters<typeof resolveModeValue>[0];
 
@@ -2610,6 +2669,75 @@ function mailCodeTakenNote(domain: string) {
 }
 
 /**
+ * The same for a letter to Bro's own mailbox: the account is the agent's,
+ * so there is nothing to ask the person or remind them of.
+ */
+function agentMailTakenNote(domain: string, what: "code" | "link") {
+  return `The ${what === "code" ? "code" : "confirmation link"} ${domain} emailed to your own AgentMail address was taken from your mailbox — ${domain}'s own letter — and handed to the run${what === "code" ? " as a secret: you never see it" : ""}. Do not ask the user for it or tell them to check any mail; say in one short line that the registration goes on, and do not say the account is confirmed before the outcome says so.`;
+}
+
+/** What the model does when the site's letter is not in Bro's own mailbox. */
+function agentMailMissingNote(why: string) {
+  return `Nothing was sent: ${why}. The site writes to your own AgentMail address, not to the user, so do not ask them for a code or to check their mail: tell them in one short line that the registration waits for the site's letter, and continue with codeFrom "mail" again when they next write.`;
+}
+
+/**
+ * A sign-up with Bro's own mailbox that cannot go: refused before anything
+ * is saved or started, with what to do instead.
+ */
+const signUpWithConsentRefusal =
+  "Nothing was started: signUpWith \"agent_mail\" registers an account with your own mailbox and none of the user's details, so it never goes with allowSubmit or allowPayment. Start it without them; anything in the user's name comes after, by the usual rules.";
+const signUpOutsidePersonRefusal =
+  "Nothing was started: an account is registered with your own mailbox only on the user's own request, in a turn their message started. Tell them what the run found, and register only if they ask.";
+const signUpWithoutSiteRefusal =
+  'Nothing was started: signUpWith "agent_mail" needs the site to register on — its https origin, such as https://www.example.com.';
+const signUpOffRefusal =
+  "Nothing was started: this workspace has no AgentMail mailbox of its own, so an account cannot be registered with it. Start the errand without signUpWith.";
+
+/** What Bro hears about the account a start registers with its mailbox. */
+function signUpNote(kind: "new" | "saved") {
+  return kind === "new"
+    ? 'The run registers the account with your own AgentMail address and a password the tool made and saved in the vault as this site\'s login: you never see it, so never write or ask for one. Do not ask the user which email to use or remind them of yours. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.'
+    : "A login for this site is already saved in the vault, so the run signs in with it rather than registering a new account.";
+}
+
+/** `work`'s result, with `undo` done first when it throws. */
+async function undoneOnFailure<T>(
+  undo: () => Promise<void>,
+  work: () => Promise<T>
+) {
+  try {
+    return await work();
+  } catch (error) {
+    await undo();
+    throw error;
+  }
+}
+
+/**
+ * The account a start registers with Bro's own mailbox (`signUpWith`), or
+ * a refusal: only in the person's own turn, on a site, without anything in
+ * their name.
+ */
+async function signUpFor(
+  input: BrowserTaskInput,
+  scope: AccessScope,
+  byPerson: boolean
+) {
+  if (input.signUpWith === undefined) return undefined;
+  if (actsForPerson(input)) throw new Error(signUpWithConsentRefusal);
+  if (!byPerson) throw new Error(signUpOutsidePersonRefusal);
+  if (input.site === undefined) throw new Error(signUpWithoutSiteRefusal);
+  const signUp = await agentMailSignUp(scope, input.site);
+  if (signUp === undefined) {
+    throw new Error(
+      agentMailboxEnabled(scope) ? signUpWithoutSiteRefusal : signUpOffRefusal
+    );
+  }
+  return signUp;
+}
+
+/**
  * The code a run stopped for, from the site's own letter in the person's
  * mailbox (`mailCodeFromSite`), or an error that tells the model why not. Only in
  * a conversation — the person's turn or a report of their errand — and only
@@ -2640,31 +2768,56 @@ async function codeFromMail(
   if (row.browserReleasedAt instanceof Date) {
     throw new Error(closedPageMailCodeRefusal);
   }
+  // The errand's account is Bro's own: the site wrote to its mailbox.
+  const agentMailbox = await siteAgentMailbox(scope, row.site);
   // One look in the mail per stop: a run that was itself handed a code from
   // the mail and stopped for another goes to the person, unless they ask
   // for another look themselves.
   if (!byPerson && handedMailCode(row.task)) {
     throw new Error(
-      mailCodeMissingNote(
-        "a code from the user's mail already went to this errand and the site asked for another, so it is not taken again without them"
-      )
+      agentMailbox === undefined
+        ? mailCodeMissingNote(
+            "a code from the user's mail already went to this errand and the site asked for another, so it is not taken again without them"
+          )
+        : agentMailMissingNote(
+            "a code or a link from your own mailbox already went to this errand and the site asked again, so it is not taken again in a report turn"
+          )
     );
   }
   const found = await mailCodeFromSite(scope, {
+    agentMailbox,
     signal: context.abortSignal,
     since: row.createdAt,
     site: row.site,
   });
   console.info("[browser-use] code from mail", {
-    // Never the code itself.
+    // Never the code or the link itself.
     domain: found.kind === "no_site" ? undefined : found.domain,
+    mailbox: agentMailbox === undefined ? "person" : "agent",
     result: found.kind,
     runId: row.id,
   });
   if (found.kind === "found") {
-    return { code: found.code, domain: found.domain };
+    return {
+      code: found.code,
+      domain: found.domain,
+      kind: "code" as const,
+      mailbox: agentMailbox === undefined ? undefined : ("agent" as const),
+    };
+  }
+  if (found.kind === "link") {
+    return { domain: found.domain, kind: "link" as const, url: found.url };
   }
   const sender = found.kind === "no_site" ? "the site" : found.domain;
+  if (agentMailbox !== undefined) {
+    throw new Error(
+      agentMailMissingNote(
+        found.kind === "not_found"
+          ? `no letter with a code or a confirmation link from ${sender} reached your own AgentMail inbox since the run asked for it — Bro looked for a minute`
+          : "your own AgentMail inbox could not be read just now"
+      )
+    );
+  }
   const why = {
     no_site:
       "this errand has no site of its own to match the site's letter to, so the code was not taken from the mail",
@@ -3075,6 +3228,11 @@ export async function browserTaskApproval(
     return "not-applicable";
   }
   if (!actsForPerson(input)) return "not-applicable";
+  // A sign-up with Bro's own mailbox never asks the person: one that comes
+  // with a consent is refused rather than put on a card.
+  if (input.signUpWith !== undefined) {
+    return { reason: signUpWithConsentRefusal, type: "denied" };
+  }
   if (!inConversation(context)) {
     return { reason: backgroundConsentRefusal, type: "denied" };
   }
@@ -3509,7 +3667,7 @@ async function continueQueuedErrand(
  * does not make it so.
  */
 async function runBrowserTask(
-  input: z.infer<typeof inputSchema>,
+  input: z.infer<typeof signUpInputSchema>,
   context: ToolContext,
   heard: readonly string[],
   turn: ReturnType<typeof personWordsThisTurn>
@@ -3532,11 +3690,17 @@ async function runBrowserTask(
     if (!onVm && !browserUseCloudConfigured()) {
       return { note: browserServiceOffNote, status: "unavailable" };
     }
+    // An account registered with Bro's own mailbox acts in nobody's name.
+    const signUp = await signUpFor(input, scope, byPerson);
     // Paying for an errand is asking for it to be done in one's name.
     const consent = await consentFromInput(input, context, scope, spoken);
     // What the person meant decides it, not the errand the model wrote,
-    // which on 25.09 said «ничего не бронировать» to «забронируй».
-    const staging = stagingFor(input.personWants, byPerson);
+    // which on 25.09 said «ничего не бронировать» to «забронируй». A
+    // sign-up with Bro's own mailbox stages nothing of the person's.
+    const staging =
+      signUp === undefined
+        ? stagingFor(input.personWants, byPerson)
+        : undefined;
     // Their phone and email reach the run only with their details: without
     // them, the errand and the site the model wrote lose them too, here and
     // as stored.
@@ -3588,119 +3752,143 @@ async function runBrowserTask(
     const placeholder = spend?.decision.allowed
       ? spend.placeholder
       : held?.placeholder;
-    const started = await releasedOnFailure(placeholder, async () => {
-      // The monthly ceiling is checked before anything is provisioned: a
-      // refused errand must not cost a remote profile or a bound secret.
-      const quota = await browserRunQuotaGate(scope);
-      if (!quota.allowed) {
-        return { kind: "quota_exhausted" as const, note: quota.note };
+    // The login a sign-up saved in the vault for this run, taken out again
+    // when the run never starts.
+    let signUpLogin: string | undefined;
+    const forgetSignUpLogin = async () => {
+      if (signUpLogin !== undefined) {
+        await forgetAgentMailLogin(scope, signUpLogin);
       }
-      const [profileId, secrets, facts] = await Promise.all([
-        workspaceProfileId(scope, onVm),
-        resolveBrowserSecretBindings(scope, {
+    };
+    const started = await undoneOnFailure(forgetSignUpLogin, () =>
+      releasedOnFailure(placeholder, async () => {
+        // The monthly ceiling is checked before anything is provisioned: a
+        // refused errand must not cost a remote profile or a bound secret.
+        const quota = await browserRunQuotaGate(scope);
+        if (!quota.allowed) {
+          return { kind: "quota_exhausted" as const, note: quota.note };
+        }
+        // Saved before the secrets are read, so the run is bound to it as to
+        // any login of the site's (`login_username`, `login_password`).
+        if (signUp?.kind === "new") {
+          signUpLogin = await saveAgentMailLogin(scope, signUp);
+        }
+        const [profileId, secrets, facts] = await Promise.all([
+          workspaceProfileId(scope, onVm),
+          resolveBrowserSecretBindings(scope, {
+            allowPayment,
+            // Only an errand the person asked for signs in with their phone:
+            // a scheduled or background run never sends them a code.
+            phoneSignIn: byPerson,
+            site: input.site,
+          }),
+          browserRunFacts(scope),
+        ]);
+        // Written before the VM is woken or touched: who waits for this
+        // errand decides how long its VM stays up after it.
+        if (isBrowserVmId(profileId)) {
+          await keepBrowserVmForErrand(scope.workspaceId, byPerson);
+        }
+        const task = composeBrowserTask({
+          aliases: secrets.aliases,
           allowPayment,
-          // Only an errand the person asked for signs in with their phone:
-          // a scheduled or background run never sends them a code.
-          phoneSignIn: byPerson,
-          site: input.site,
-        }),
-        browserRunFacts(scope),
-      ]);
-      // Written before the VM is woken or touched: who waits for this
-      // errand decides how long its VM stays up after it.
-      if (isBrowserVmId(profileId)) {
-        await keepBrowserVmForErrand(scope.workspaceId, byPerson);
-      }
-      const task = composeBrowserTask({
-        aliases: secrets.aliases,
-        allowPayment,
-        consent,
-        collectImages: input.collectImages === true,
-        deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
-          ? deliveryAddressFor(facts.addresses, errand)
-          : undefined,
-        errand:
-          spend?.decision.allowed && input.withinSpendLimit
-            ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
-            : sent,
-        facts: facts.details,
-        home: facts.home,
-        site,
-        staging,
-      });
-      // Another errand of the workspace in a browser on the same account
-      // may be signing in: this one waits for it and starts signed in,
-      // rather than sending a second code that cancels the first.
-      const waitsForAccount = await accountInUse(scope.workspaceId, input.site);
-      if (waitsForAccount !== undefined) {
-        return {
-          aliases: secrets.aliases,
-          kind: "queued" as const,
-          profileId,
-          task,
-          waitsForAccount,
-        };
-      }
-      // While errands wait for a browser, the cap was full a minute ago:
-      // this one joins the back of the line instead of taking the slot
-      // the first in line is about to get.
-      if (await browserQueueOccupied(scope.workspaceId, profileId)) {
-        return {
-          aliases: secrets.aliases,
-          kind: "queued" as const,
-          profileId,
-          task,
-        };
-      }
-      // Only an errand that searches runs in flash mode: nothing allowed in
-      // the person's name, nothing to stage, nothing bound. A queued one is
-      // decided again from its row when it starts (`flash.ts`).
-      const search = await errandSearches(scope, {
-        bindings: secrets.bindings,
-        paymentAllowed: allowPayment,
-        staged: staging !== undefined,
-        submits: consent !== undefined,
-      });
-      try {
-        const run = await createBrowserUseRun({
-          customProxy: customProxy(),
-          maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-          model: env.BROWSER_USE_MODEL,
-          profileId,
-          proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-          search,
-          secretBindings: secrets.bindings,
-          task,
+          consent,
+          collectImages: input.collectImages === true,
+          deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
+            ? deliveryAddressFor(facts.addresses, errand)
+            : undefined,
+          errand:
+            spend?.decision.allowed && input.withinSpendLimit
+              ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
+              : sent,
+          facts: facts.details,
+          home: facts.home,
+          signUp:
+            signUp?.kind === "new" ? { username: signUp.username } : undefined,
+          site,
+          staging,
         });
-        return { kind: "started" as const, profileId, run, secrets };
-      } catch (error) {
-        if (browserUseBusy(error)) {
+        // Another errand of the workspace in a browser on the same account
+        // may be signing in: this one waits for it and starts signed in,
+        // rather than sending a second code that cancels the first.
+        const waitsForAccount = await accountInUse(
+          scope.workspaceId,
+          input.site
+        );
+        if (waitsForAccount !== undefined) {
           return {
             aliases: secrets.aliases,
             kind: "queued" as const,
             profileId,
-            retryAfterMs: error.retryAfterMs,
+            task,
+            waitsForAccount,
+          };
+        }
+        // While errands wait for a browser, the cap was full a minute ago:
+        // this one joins the back of the line instead of taking the slot
+        // the first in line is about to get.
+        if (await browserQueueOccupied(scope.workspaceId, profileId)) {
+          return {
+            aliases: secrets.aliases,
+            kind: "queued" as const,
+            profileId,
             task,
           };
         }
-        if (browserUseOutOfCredits(error)) {
-          await reportBrowserUseOutOfCredits(error);
-          return { kind: "no_credits" as const };
+        // Only an errand that searches runs in flash mode: nothing allowed in
+        // the person's name, nothing to stage, nothing bound. A queued one is
+        // decided again from its row when it starts (`flash.ts`).
+        const search = await errandSearches(scope, {
+          bindings: secrets.bindings,
+          paymentAllowed: allowPayment,
+          staged: staging !== undefined,
+          submits: consent !== undefined,
+        });
+        try {
+          const run = await createBrowserUseRun({
+            customProxy: customProxy(),
+            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+            model: env.BROWSER_USE_MODEL,
+            profileId,
+            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+            search,
+            secretBindings: secrets.bindings,
+            task,
+          });
+          return { kind: "started" as const, profileId, run, secrets };
+        } catch (error) {
+          if (browserUseBusy(error)) {
+            return {
+              aliases: secrets.aliases,
+              kind: "queued" as const,
+              profileId,
+              retryAfterMs: error.retryAfterMs,
+              task,
+            };
+          }
+          if (browserUseOutOfCredits(error)) {
+            await reportBrowserUseOutOfCredits(error);
+            return { kind: "no_credits" as const };
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      })
+    );
     if (started.kind === "quota_exhausted") {
       if (placeholder) await releaseReservation(placeholder);
       return { note: started.note, status: "quota_exhausted" };
     }
     if (started.kind === "no_credits") {
       if (placeholder) await releaseReservation(placeholder);
+      await forgetSignUpLogin();
       return { note: browserUseOutOfCreditsNote, status: "unavailable" };
     }
     // Where the person's sign-in is kept, a code is said to be unlikely,
     // never ruled out; Госуслуги keeps its warning (`keptSignInNote`).
-    const kept = await keptSignInNote(scope.workspaceId, input.site);
+    const kept =
+      signUp === undefined
+        ? await keptSignInNote(scope.workspaceId, input.site)
+        : signUpNote(signUp.kind);
     if (started.kind === "queued") {
       // The errand waits with everything the person decided for it: the
       // card they confirmed and the payment they allowed start with it.
@@ -3760,7 +3948,7 @@ async function runBrowserTask(
       note: [
         "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
         nothingDoneYetNote(),
-        boundSignInNote(secrets.aliases),
+        signUp?.kind === "new" ? undefined : boundSignInNote(secrets.aliases),
         spend?.decision.allowed
           ? `The payment fits the standing spend limit the user set (${formatRub(spend.decision.exposureRub)} reserved, ${formatRub(spend.decision.remainingAfterRub)} left this month), but that limit never replaces their plain yes to the exact order and total before payment. Report the receipt only if the payment actually completes.`
           : undefined,
@@ -3888,7 +4076,9 @@ async function runBrowserTask(
       ? await browserRunTaskOrigin(scope, row)
       : "start";
     const message = mail
-      ? mailCodeInstruction(mail.domain)
+      ? mail.kind === "code"
+        ? mailCodeInstruction(mail.domain, mail.mailbox)
+        : mailLinkInstruction(mail.domain, mail.url)
       : words === null
         ? coordinatorInstruction(contacts.text(task))
         : personInstruction(said, task, contacts.text);
@@ -4035,7 +4225,7 @@ async function runBrowserTask(
         // Only a code the person sent in this turn, or the one the site's own
         // letter carries, goes into the page.
         const typed =
-          mail?.code ??
+          (mail?.kind === "code" ? mail.code : undefined) ??
           (personCodeToType(said, words)
             ? oneTimeCodeFromMessage(said)
             : undefined);
@@ -4051,7 +4241,7 @@ async function runBrowserTask(
         const carriesCode =
           closed !== "step" &&
           closed !== "forgotten" &&
-          (mail !== undefined ||
+          (mail?.kind === "code" ||
             oneTimeCodesIn(said, { awaitingCode: codeAwaited(row) }).length >
               0);
 
@@ -4168,15 +4358,21 @@ async function runBrowserTask(
           }),
           browserRunFacts(scope),
         ]);
-        const secrets = mail
-          ? {
-              aliases: [...bound.aliases, browserSecretAliases.emailCode],
-              bindings: [
-                ...bound.bindings,
-                mailCodeBinding(mail.code, mail.domain),
-              ],
-            }
-          : bound;
+        // An errand that registers with Bro's own mailbox goes on doing so,
+        // while the site's saved login is still that mailbox's.
+        const signUpMailbox = registersWithAgentMail(replaced)
+          ? await siteAgentMailbox(scope, row.site)
+          : undefined;
+        const secrets =
+          mail?.kind === "code"
+            ? {
+                aliases: [...bound.aliases, browserSecretAliases.emailCode],
+                bindings: [
+                  ...bound.bindings,
+                  mailCodeBinding(mail.code, mail.domain),
+                ],
+              }
+            : bound;
         const profileId =
           forgotten || row.profileId === null
             ? await workspaceProfileId(scope, onVm)
@@ -4212,6 +4408,10 @@ async function runBrowserTask(
           freshBrowser: closed,
           message: withCodeEntry(instruction, codeEntry, carriesCode),
           searching: mail ? false : followUpSearches(said, row.outcome),
+          signUp:
+            signUpMailbox === undefined
+              ? undefined
+              : { username: signUpUsername(signUpMailbox.email) },
           site: sentSite,
           // An errand the person asked to be done stays so until they say
           // otherwise; a search stays a search.
@@ -4461,7 +4661,11 @@ async function runBrowserTask(
               freshGosuslugiNote(site, secrets.aliases)
             ),
         "The outcome arrives as a new message; do not poll for it.",
-        mail ? mailCodeTakenNote(mail.domain) : undefined,
+        mail === undefined
+          ? undefined
+          : mail.kind === "link" || mail.mailbox === "agent"
+            ? agentMailTakenNote(mail.domain, mail.kind)
+            : mailCodeTakenNote(mail.domain),
         nothingDoneYetNote(),
         boundSignInNote(secrets.aliases),
         contacts.note(),
@@ -4661,6 +4865,9 @@ export default defineDynamic({
       const turn = personWordsThisTurn(context.messages, step);
       // The skills pilot's turns read the short description and schema.
       const short = skillsLayout(context) === "core";
+      // Only a workspace with its own AgentMail mailbox registers with it.
+      const scope = approvalScope(context);
+      const signUp = scope !== undefined && agentMailboxEnabled(scope);
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);
@@ -4679,7 +4886,13 @@ export default defineDynamic({
         description: short
           ? shortBrowserTaskDescription
           : browserTaskDescription,
-        inputSchema: short ? shortInputSchema : inputSchema,
+        inputSchema: short
+          ? signUp
+            ? shortSignUpInputSchema
+            : shortInputSchema
+          : signUp
+            ? signUpInputSchema
+            : inputSchema,
         execute: (input, toolContext) =>
           startsUsed && input.action === "start"
             ? Promise.resolve({

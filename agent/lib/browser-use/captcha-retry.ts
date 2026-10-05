@@ -61,7 +61,9 @@ const retryMarker = "[Retry after an anti-bot check]";
  * waiting advice is Browser Use's own: its solver works a challenge by
  * itself, and a reload or a click in the middle restarts it. On the
  * workspace's own browser VM (`onVm`) the attempt gets a new tab of the one
- * browser there, whose address stays unless the VM's exit went bad.
+ * browser there, whose address stays unless the VM's exit went bad, and no
+ * solver runs by itself: the check goes to the worker's `solve_captcha`, as
+ * the VM's own task line says (`addressWallLine` in `browser-vm/runs.ts`).
  */
 export function captchaRetryTask(
   previousTask: string,
@@ -82,7 +84,9 @@ export function captchaRetryTask(
       retryMarker,
       `An anti-bot check, or a connection that would not load the site, stopped the previous attempt, so this is attempt ${String(attempt)} of ${String(maximumCaptchaAttempts)}: ${fresh}.`,
       start,
-      "When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
+      onVm
+        ? "When a check appears, hand it to the solve_captcha action as this task's rule about it says, rather than working the check yourself."
+        : "When a check appears, first give the browser's built-in solver about ten seconds without reloading or clicking into it; then solve whatever is still there yourself.",
     ].join(" "),
     reference,
   ].join("\n\n");

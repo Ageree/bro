@@ -852,7 +852,7 @@ export const env = createEnv({
       )
       .optional(),
     // The owner's own Telegram chat with the bot, where operational alerts
-    // such as a running-out OpenRouter balance go.
+    // such as a running-out model balance go when OPS_ALERT_CHAT_ID is unset.
     TELEGRAM_OWNER_CHAT_ID: z
       .string()
       .trim()
@@ -862,6 +862,19 @@ export const env = createEnv({
       )
       .optional(),
     TELEGRAM_WEBHOOK_SECRET_TOKEN: requiredValue.optional(),
+    // A service bot for operational alerts (`agent/lib/owner-alert.ts`) and
+    // the chat it writes to, the pair the host's watchdog reads too. Without
+    // the bot an alert goes through Bro's own bot, into the owner's chat with
+    // Bro, under a header saying it is not Bro's.
+    OPS_ALERT_BOT_TOKEN: requiredValue.optional(),
+    OPS_ALERT_CHAT_ID: z
+      .string()
+      .trim()
+      .refine(
+        (value) => /^-?\d+$|^@[A-Za-z0-9_]{5,32}$/u.test(value),
+        "OPS_ALERT_CHAT_ID must be a numeric Telegram chat id or an @channel"
+      )
+      .optional(),
     // Whether the FREE_*/PAID_* ceilings above and the paywall are enforced
     // at all. Off by default: the closed beta runs with no usage limits, by
     // the owner's decision. "on" restores the per-day/per-month ceilings and
