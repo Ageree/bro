@@ -76,7 +76,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-05.5"
+VERSION = "2026-10-05.6"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1260,7 +1260,22 @@ class Worker:
             key = (session.captcha or {}).get("twoCaptchaKey")
             instruction = (instruction or "").strip()[:300] or None
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as http:
+                async def token_check():
+                    worlds, frame_urls = await captcha_worlds(browser_session)
+                    return await solve_token_captcha(worlds, frame_urls, await browser_session.get_current_page_url(),
+                                                     http, key, solver_proxy(self.forwarder.upstream))
+
+                # A page with a token captcha is answered by its token whatever the run names: on 05.10 the run
+                # kept sending reCAPTCHA's own tiles here, which no click of ours gets past.
+                answered = None
                 if index is not None or instruction:
+                    with contextlib.suppress(Exception):
+                        answered = await token_check()
+                    if answered is not None and answered[1] == V3_UNSUPPORTED:
+                        answered = None
+                if answered is not None:
+                    solved, message = answered
+                elif index is not None or instruction:
                     # A picture the run names, or else the page's largest captcha picture, to click in or read.
                     box = (await element_box(browser_session, cdp, index) if index is not None
                            else await evaluate(f"{CAPTCHA_PICTURE_FIND}('click')")
@@ -1272,11 +1287,6 @@ class Worker:
                         solved, message = await solve_picture_captcha(http, key, picture_shooter(capture, box), finish,
                                                                       instruction)
                 else:
-                    async def token_check():
-                        worlds, frame_urls = await captcha_worlds(browser_session)
-                        return await solve_token_captcha(worlds, frame_urls, await browser_session.get_current_page_url(),
-                                                         http, key, solver_proxy(self.forwarder.upstream))
-
                     async def text_check():
                         box = await evaluate(f"{CAPTCHA_PICTURE_FIND}('text')")
                         if not isinstance(box, dict):
@@ -1860,6 +1870,7 @@ TOKEN_CAPTCHA_STATE = "(() => {" + CAPTCHA_DOCUMENTS + r"""
 TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS + r"""
   const names = Object.keys(values);
   let fields = 0;
+  let enabled = 0;
   const handlers = [];
   const handler = (win, fn) => {
     if (typeof fn === 'string') {
@@ -1869,6 +1880,7 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
   };
   for (const {win, doc} of documents) {
     let placed = 0;
+    const forms = new Set();
     for (const el of deep(doc, 'textarea, input')) {
       const id = el.id || '';
       const name = names.find((n) => el.name === n || id === n || id.startsWith(n + '-'));
@@ -1876,6 +1888,7 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
       el.value = values[name];
       el.dispatchEvent(new win.Event('input', {bubbles: true}));
       el.dispatchEvent(new win.Event('change', {bubbles: true}));
+      if (el.form) forms.add(el.form);
       placed += 1;
     }
     // The widget's own script never ran (reCAPTCHA «cannot contact the service» from a flagged exit), so
@@ -1889,10 +1902,22 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
         field.style.display = 'none';
         field.value = values[names[0]];
         form.appendChild(field);
+        forms.add(form);
         placed += 1;
       }
     }
     fields += placed;
+    // Sites keep the form's submit button disabled until the widget's callback runs, and a widget whose
+    // script never loaded runs none (iNaturalist, 05.10: «Создать учётную запись» stayed disabled): the
+    // button the callback would have enabled is enabled here, in the forms that hold the answer.
+    for (const form of forms) {
+      for (const button of form.querySelectorAll('button[disabled], input[type=submit][disabled], input[type=image][disabled]')) {
+        if (button.tagName === 'BUTTON' && (button.getAttribute('type') || 'submit').toLowerCase() !== 'submit') continue;
+        button.disabled = false;
+        button.removeAttribute('aria-disabled');
+        enabled += 1;
+      }
+    }
     if (arg !== null) {
       for (const el of deep(doc, '[data-sitekey], [data-pkey]')) {
         const key = el.getAttribute('data-sitekey') || el.getAttribute('data-pkey');
@@ -1908,7 +1933,7 @@ TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, values, arg) => {" + CAPTCHA_DOCUMENTS 
     }
   }
   for (const {win, fn} of handlers) win.setTimeout(() => { try { fn(arg); } catch (e) {} }, 0);
-  return {fields, handlers: handlers.length};
+  return {fields, handlers: handlers.length, enabled};
 })"""
 
 # A DataDome wall is passed by the cookie 2Captcha's answer carries: set on the page's own host, which then
@@ -2939,18 +2964,22 @@ async def solve_token_captcha(worlds, frame_urls, page_url, http, key, proxy=Non
     arg = None if isinstance(answer, dict) else answer
     script = (f"{TOKEN_CAPTCHA_ANSWER}({json.dumps(kind)}, {json.dumps(widget['sitekey'])}, {json.dumps(values)}, "
               f"{json.dumps(arg)})")
-    fields = handlers = 0
+    fields = handlers = enabled = 0
     for evaluate in worlds:
         with contextlib.suppress(Exception):
             placed = await asyncio.wait_for(evaluate(script), 10)
             if isinstance(placed, dict):
                 fields += int(placed.get("fields") or 0)
                 handlers += int(placed.get("handlers") or 0)
+                enabled += int(placed.get("enabled") or 0)
     if not fields and not handlers:
         return False, f"The solving service solved the page's {name}, but the page has no field to take its answer."
     await asyncio.sleep(3)  # a callback may submit the form or move the page on by itself
-    return True, (f"The page's {name} is solved: its answer is in the page. Do not tick the check, open its "
-                  "pictures or audio, or call solve_captcha again: submit the form now (press its button unless "
+    unlocked = (" Its submit button, which the check had kept disabled, is enabled now; an alert that the "
+                "captcha service cannot be reached does not matter any more: the site checks the answer itself."
+                if enabled else "")
+    return True, (f"The page's {name} is solved: its answer is in the page.{unlocked} Do not tick the check, open "
+                  "its pictures or audio, or call solve_captcha again: submit the form now (press its button unless "
                   "the page has already moved on) and check that it went through.")
 
 
