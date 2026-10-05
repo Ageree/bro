@@ -205,7 +205,7 @@ describe("agent instructions", () => {
     );
     // Mail is offered only where Google can be connected at all.
     expect(selected?.content).toContain(
-      "если есть `connect_google` — что разбираешь почту"
+      "если есть `connect_google` и Google ещё не подключён"
     );
   });
 
@@ -429,16 +429,19 @@ describe("agent instructions", () => {
     );
   });
 
-  it("greets a first-contact turn in short Russian bubbles", async () => {
+  it("greets a first-contact turn briefly and asks the person about themselves", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();
     if (!resolve) return;
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).toContain("`first-contact`");
-    expect(selected?.content).toContain("два-три коротких пузыря");
-    expect(selected?.content).toContain("`browser_task`");
+    expect(selected?.content).toContain("два коротких пузыря");
+    expect(selected?.content).toContain("предложи голосовое");
     expect(selected?.content).toContain("Второй раз не знакомься никогда");
+    expect(selected?.content).toContain(
+      "не зови `connect_google`, а сразу читай"
+    );
   });
 
   it("keeps resumed scheduled turns in worker mode", async () => {
