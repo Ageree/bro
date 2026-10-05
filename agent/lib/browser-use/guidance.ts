@@ -70,6 +70,17 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
 };
 
 /**
+ * A run stopped on the payment step of an errand the person already said yes
+ * to paying for, at a total within that yes. Bro asked «Оплачиваю?» again
+ * and again on one order — after a closed page, a card missing from the
+ * vault, a run told only to look (RU 04.10): the person answers it once.
+ */
+export function approvedPaymentInstruction(approvedRub: number) {
+  const cap = `${approvedRub.toLocaleString("ru-RU")} ₽`;
+  return `The user already said yes to paying up to ${cap} for this exact order, and the run's Total is within it: do not ask them «Оплачиваю?» again, and never write a run task telling it not to pay. If Details names something only the user can do or fix — a 3-D Secure confirmation, a card the site refuses, a total above ${cap}, a changed order — tell them exactly that in your one message. Otherwise continue this run now with browser_task continue on this run id, personWants "done" and no allowSubmit, allowPayment or submission (their yes stays with the errand and binds the card), and a task telling it to complete the payment of this order with the saved card; in your one message say in one short line that you are finishing the payment they approved. If the errand above already says the payment was pre-approved and the run still stopped on it, do not continue it again: tell the user what stops it. Nothing is paid until a run reports the order or the charge (Order, Charges): until then never tell the user the payment was sent, went through or probably went through — when the report says it was not paid or the run could not pay, say exactly that.`;
+}
+
+/**
  * What the coordinator does about what a settled run stopped on, whenever
  * its outcome reaches the conversation: in the run's own report turn, or
  * handed over by `browser_task` when the person asks «ну что там?» first.

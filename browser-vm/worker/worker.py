@@ -37,6 +37,7 @@ Routes (all but a plain /v1/health need a token):
   POST /v1/sessions/<id>/action           {action, params}: click/input/select/scroll/keys/back/navigate
   GET  /v1/sessions/<id>/screenshot       JPEG of the session's tab
   GET  /v1/files?session=&prefix=         files a run saved (report/…), newest first
+                                          (trail/<run id>/: each step's shot and steps.jsonl, for developers)
   GET  /v1/files/<session>/<path>         download one
   GET  /v1/dl/<token>/<session>/<path>    the same by URL alone (token scoped to the session)
   PUT  /v1/uploads/<name>                 a file for the agent to upload to a site
@@ -66,6 +67,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -73,7 +75,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-03.1"
+VERSION = "2026-10-05.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -90,6 +92,7 @@ CANDIDATE_IMPORTS = (
     ("browser_use.browser.events", ("SwitchTabEvent",)),
     ("browser_use.agent.message_manager.views", ("HistoryItem",)),
     ("browser_use.agent.views", ("AgentState",)),
+    ("browser_use.utils", ("match_url_with_domain_pattern",)),
     ("httpx", ("AsyncClient", "Timeout")),
     ("cv2", ()),
     ("numpy", ()),
@@ -365,6 +368,209 @@ async def close_tab(target_id):
         await cdp_command(await browser_socket(), "Target.closeTarget", {"targetId": target_id})
 
 
+class SiteErrors:
+    """The site's own requests (XHR and fetch) that its server refused during a run, read off the tab's CDP
+    socket beside the agent's. PREDUBEZHDAI sent «Оплатить» to /order/error on every run for two hours
+    (RU 04.10) while the same order went through on the person's phone: the page showed no reason, the
+    agent was asked twice to hook the requests with `evaluate` and did not, and nobody ever saw the
+    server's answer. Now the report carries it, whatever the agent does.
+
+    Kept small and blind to what was sent: the address without its query, the status and the start of the
+    answer, with every secret's value cut out of it.
+
+    The report alone came too late: on 04.10 the server answered the order with 400 «Пожалуйста, введите
+    корректный номер телефона», «deliveryMethod must be a valid enum value», the page silently went to
+    /order/error, and the run's model, never shown the answer, retried blindly and reported what it had not
+    done. So a refusal of the site's own write (POST, PUT, PATCH, DELETE to the page's own site) is also told
+    to the agent at its next step (`notices`), a few per run, each answer once. A refused GET is the page
+    probing the account in the background (/api/user, /api/user/cart answer 401 or 404 to a guest on every
+    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it."""
+
+    LIMIT = 8
+    BODY = 600
+    NOTICES = 3  # told to the agent per run
+    NOTICE_BODY = 400
+    # How long a notice waits for the refused answer's body before it goes without it.
+    BODY_WAIT_S = 3
+    WRITES = ("POST", "PUT", "PATCH", "DELETE")
+
+    def __init__(self):
+        self.entries = []
+        self.requests = {}  # requestId → (method, address, the page's own site) of the site's own requests
+        self.refused = {}  # requestId → entry still waiting for its body
+        self.tasks = {}  # the tabs listened to (target id, or socket address) → their listening task
+        self.ws = None  # the socket `handle` and `send` use when not given one (a test feeds events by hand)
+        self.next_id = 1
+        self.bodies = {}  # (socket, command id) → requestId
+        self.told = set()  # (method, address, status, answer) the agent was already told
+        self.notices_sent = 0
+
+    def start(self, websocket_url, target=None):
+        """Listen to one more tab of the run. The agent moves into a tab a link opens, or opens one itself
+        (`navigate` with `new_tab`), and the checkout happens there: on the checkout harness's shop
+        (checkout_harness.py, 04.10) a DeepSeek run did, and two of its three refused orders were never seen."""
+        key = target or websocket_url
+        if key not in self.tasks:
+            self.tasks[key] = asyncio.create_task(self.listen(websocket_url))
+
+    def watches(self, target):
+        return target in self.tasks
+
+    async def stop(self):
+        if self.tasks:
+            # Bodies asked for just before the end still come in: give them a moment.
+            await asyncio.sleep(0.3)
+            for task in self.tasks.values():
+                task.cancel()
+            for task in self.tasks.values():
+                with contextlib.suppress(BaseException):
+                    await task
+
+    async def listen(self, websocket_url):
+        with contextlib.suppress(Exception):
+            async with aiohttp.ClientSession() as http:
+                async with http.ws_connect(websocket_url, max_msg_size=64 * 1024 * 1024, timeout=10) as ws:
+                    # Each socket numbers its own commands.
+                    socket = types.SimpleNamespace(ws=ws, next_id=1)
+                    await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000}, socket)
+                    async for message in ws:
+                        with contextlib.suppress(Exception):
+                            await self.handle(json.loads(message.data), socket)
+
+    async def send(self, method, params, socket=None):
+        socket = socket or self
+        command = socket.next_id
+        socket.next_id += 1
+        await socket.ws.send_json({"id": command, "method": method, "params": params})
+        return command
+
+    async def handle(self, data, socket=None):
+        socket = socket or self
+        method, params = data.get("method"), data.get("params") or {}
+        request_id = params.get("requestId")
+        if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
+            request = params.get("request") or {}
+            url = request.get("url", "")
+            self.requests[request_id] = (request.get("method", "GET").upper(), url,
+                                         same_site(url, params.get("documentURL") or ""))
+        elif method == "Network.responseReceived" and request_id in self.requests:
+            status = (params.get("response") or {}).get("status") or 0
+            if status >= 400:
+                self.refused[request_id] = self.record(request_id, str(status))
+        elif method == "Network.loadingFinished" and request_id in self.refused:
+            command = await self.send("Network.getResponseBody", {"requestId": request_id}, socket)
+            self.bodies[(id(socket), command)] = request_id
+        elif method == "Network.loadingFailed" and request_id in self.requests:
+            if not params.get("canceled"):
+                self.record(request_id, params.get("errorText") or "failed")
+        elif "id" in data and (id(socket), data["id"]) in self.bodies:
+            entry = self.refused.pop(self.bodies.pop((id(socket), data["id"])), None)
+            result = data.get("result") or {}
+            if entry is not None and not result.get("base64Encoded"):
+                body = result.get("body", "")
+                # JSON as servers send it often escapes every Cyrillic letter: read it as the person would.
+                with contextlib.suppress(ValueError):
+                    body = json.dumps(json.loads(body), ensure_ascii=False)
+                entry["answer"] = body[: self.BODY]
+
+    def record(self, request_id, status):
+        method, url, own = self.requests.get(request_id, ("GET", "", False))
+        address = url.split("?")[0].split("#")[0]
+        # A write of the page's own site its server answered with an HTTP status: what the agent is told.
+        write = own and method in self.WRITES and status.isdigit()
+        entry = {"status": status, "method": method, "address": address, "answer": "", "write": write,
+                 "count": 1, "at": time.monotonic()}
+        if not write:
+            # The same probe refused on every page is one line of the report.
+            for kept in self.entries:
+                if not kept["write"] and (kept["status"], kept["method"], kept["address"]) == (status, method, address):
+                    kept["count"] += 1
+                    return entry
+        if len(self.entries) < self.LIMIT:
+            self.entries.append(entry)
+        elif write:
+            # Background probes filled the report first: a refused write takes the oldest one's place.
+            probe = next((kept for kept in self.entries if not kept["write"]), None)
+            if probe is not None:
+                self.entries.remove(probe)
+                self.entries.append(entry)
+        return entry
+
+    def notices(self, secrets=None):
+        """What to tell the agent before its next step: each refused write of the site not told yet, once its
+        answer is in (or did not come within `BODY_WAIT_S`), each distinct answer once, `NOTICES` a run."""
+        clean = secret_cleaner(secrets)
+        waiting = [id(entry) for entry in self.refused.values()]
+        told = []
+        for entry in self.entries:
+            if not entry["write"] or entry.get("told") or self.notices_sent >= self.NOTICES:
+                continue
+            if id(entry) in waiting and time.monotonic() - entry["at"] < self.BODY_WAIT_S:
+                continue
+            entry["told"] = True
+            answer = clean(entry["answer"])[: self.NOTICE_BODY]
+            key = (entry["method"], entry["address"], entry["status"], answer)
+            if key in self.told:
+                continue
+            self.told.add(key)
+            self.notices_sent += 1
+            told.append(f"The site's server refused {entry['method']} {clean(entry['address'])}: {entry['status']}"
+                        + (f" — {answer}" if answer else " (no answer text)")
+                        + ". The browser saw this request; the page may not show why. Fix what the answer names "
+                          "(a field, a choice, a format) before trying again, and do not report success for it.")
+        return told
+
+    def report(self, secrets=None):
+        if not self.entries:
+            return ""
+        clean = secret_cleaner(secrets)
+
+        def line(e):
+            times = f" (×{e['count']})" if e["count"] > 1 else ""
+            return (f"- {e['status']} {e['method']} {clean(e['address'])}{times}"
+                    + (f" — {clean(e['answer'])}" if e["answer"] else ""))
+
+        return ("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
+                "server refused during this run):\n" + "\n".join(map(line, self.entries)) + "\n\n")
+
+
+def secret_cleaner(secrets):
+    """A function that cuts every secret's value (three characters or longer) out of a text and folds its
+    whitespace: what the worker writes or tells from a page passes through it."""
+    values = sorted({str(v) for v in flat_secret_values(secrets) if len(str(v)) >= 3}, key=len, reverse=True)
+
+    def clean(text):
+        text = str(text or "")
+        for value in values:
+            text = text.replace(value, "<secret>")
+        return " ".join(text.split())
+
+    return clean
+
+
+def same_site(url, document_url):
+    """Whether a request goes to the page's own site: the same host or one under the same last two labels
+    (api.shop.ru for shop.ru). A tracker's or a payment processor's request is not the site's own."""
+    def site(address):
+        try:
+            host = (urllib.parse.urlsplit(address).hostname or "").rstrip(".")
+        except ValueError:
+            return None
+        return ".".join(host.split(".")[-2:]) if host else None
+
+    request_site = site(url)
+    return request_site is not None and request_site == site(document_url)
+
+
+def flat_secret_values(secrets):
+    """Every value of sensitive_data, flat or keyed by domain."""
+    for value in (secrets or {}).values():
+        if isinstance(value, dict):
+            yield from value.values()
+        elif value:
+            yield value
+
+
 async def screenshot(target_id, quality=80):
     targets = {t["id"]: t for t in await page_targets()}
     target = targets.get(target_id)
@@ -374,6 +580,114 @@ async def screenshot(target_id, quality=80):
         await cdp_command(await browser_socket(), "Target.activateTarget", {"targetId": target_id})
     shot = await cdp_command(target["webSocketDebuggerUrl"], "Page.captureScreenshot",
                              {"format": "jpeg", "quality": quality}, timeout=20)
+    return base64.b64decode(shot["data"])
+
+
+def tell_agent(agent, text):
+    """Put a line of the worker's in front of the agent at the step about to start, in its history for good: on
+    the result of the step before, as browser-use itself reports a captcha it waited for, or, when that step
+    left no output to hang it on (its answer failed to parse, or none came before), as a line of its own."""
+    if getattr(agent.state, "last_model_output", None) is not None:
+        from browser_use import ActionResult
+
+        agent.state.last_result = [*(agent.state.last_result or []), ActionResult(long_term_memory=text)]
+    else:
+        from browser_use.agent.message_manager.views import HistoryItem
+
+        agent.state.message_manager_state.agent_history_items.append(HistoryItem(system_message=f"<sys>{text}</sys>"))
+
+
+# --- Step trail ----------------------------------------------------------------------------------------
+
+# What each step of a run did, for developers: nobody could tell afterwards what a run had seen and done at
+# each step (RU 04.10: an order sent to /order/error while the run claimed success). A small JPEG of the
+# page after each step and a line of steps.jsonl, under trail/<run id>/ of the session's workspace. Not
+# under report/: Bro sends every picture there to the person, and lists only that folder (newest first,
+# a hundred at most) — step shots there would crowd out the item photos. Read like report files, with a
+# worker token: GET /v1/files?session=<id>&prefix=trail/<run id>/ and GET /v1/files/<session>/<path>.
+TRAIL = "trail"
+TRAIL_SHOTS = 40  # the last shots of a run kept; steps.jsonl keeps every line
+TRAIL_RUNS = 20  # run trails kept on the VM, the newest
+TRAIL_QUALITY = 35
+TRAIL_SCALE = 0.5
+TRAIL_SHOT_S = 3  # a shot that takes longer is skipped, the line still written
+TRAIL_TEXT = 300
+
+
+def prune_trails(keep=TRAIL_RUNS):
+    """Keep the newest `keep` run trails of the VM, whatever their session: older ones are removed."""
+    trails = [path for path in SESSIONS.glob(f"*/{TRAIL}/*") if path.is_dir()]
+    trails.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in trails[keep:]:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def trail_line(summary, url, errors, clean):
+    """A step's line of steps.jsonl: Bro's step summary (action names and element indexes, never what was
+    typed), the page after the step without its query, and the step's errors, each with every secret's
+    value cut out."""
+    line = {}
+    if summary:
+        line.update(goal=clean(summary.get("goal"))[:TRAIL_TEXT], title=clean(summary.get("title"))[:200],
+                    actions=summary.get("actions") or [])
+        if summary.get("tokens") is not None:
+            line["tokens"] = summary["tokens"]
+    if url:
+        line["url"] = clean(str(url).split("?")[0].split("#")[0])[:500]
+    if errors:
+        line["errors"] = [clean(error)[:TRAIL_TEXT] for error in errors[:5]]
+    return line
+
+
+class StepTrail:
+    """One run's trail: `record` writes a step's shot and line, skipping what fails or takes too long. A
+    trail never fails or holds a run."""
+
+    def __init__(self, directory, secrets=None):
+        self.directory = Path(directory)
+        self.clean = secret_cleaner(secrets)
+        self.count = 0
+        self.shots = []  # file names of the shots on disk, oldest first
+
+    async def record(self, shoot, summary=None, url=None, errors=()):
+        """`shoot()` answers the page's JPEG. Runs right after a step, between the agent's steps."""
+        self.count += 1
+        number = self.count
+        shot = None
+        try:
+            shot = await asyncio.wait_for(shoot(), TRAIL_SHOT_S)
+        except Exception:  # a slow or failed shot: the line goes without one
+            pass
+        line = {"step": number, "at": now_iso(), **trail_line(summary, url, list(errors), self.clean)}
+        if shot:
+            line["shot"] = f"{number:03d}.jpg"
+        try:
+            await asyncio.to_thread(self.write, line, shot)
+        except Exception:
+            log.warning("trail: step %s was not written", number)
+
+    def write(self, line, shot):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        if shot:
+            (self.directory / line["shot"]).write_bytes(shot)
+            self.shots.append(line["shot"])
+            while len(self.shots) > TRAIL_SHOTS:
+                (self.directory / self.shots.pop(0)).unlink(missing_ok=True)
+        with (self.directory / "steps.jsonl").open("a") as steps:
+            steps.write(json.dumps(line) + "\n")
+
+
+async def page_jpeg(browser):
+    """A small JPEG of what the agent's tab shows: its viewport at half scale, low quality (tens of KB)."""
+    cdp = await browser.get_or_create_cdp_session()
+    params = {"format": "jpeg", "quality": TRAIL_QUALITY}
+    with contextlib.suppress(Exception):
+        metrics = await cdp.cdp_client.send.Page.getLayoutMetrics(session_id=cdp.session_id)
+        view = metrics.get("cssVisualViewport") or {}
+        if view.get("clientWidth") and view.get("clientHeight"):
+            params["clip"] = {"x": view.get("pageX", 0), "y": view.get("pageY", 0), "width": view["clientWidth"],
+                              "height": view["clientHeight"], "scale": TRAIL_SCALE}
+    shot = await cdp.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp.session_id)
     return base64.b64decode(shot["data"])
 
 
@@ -903,6 +1217,18 @@ class Worker:
             return ActionResult(extracted_content=f"Entered the code into {where}.",
                                 long_term_memory="Entered the one-time code.")
 
+        @tools.action("Fill the page's bank card form (number, expiry, CVC, cardholder) with the saved card. Always "
+                      "use this for a card form instead of typing card secrets yourself: it finds the fields in the "
+                      "payment processor's frame too, types each one (a month box, a year box, a single MM/YY field, "
+                      "a select) the way that field takes it, and checks each kept its value.")
+        async def fill_card(browser_session):
+            card = card_secrets(session.sensitive_data, await browser_session.get_current_page_url())
+            if card is None:
+                return ActionResult(error="No saved card is bound to this site for this run.")
+            filled, message = await fill_card_form(await card_frames(browser_session), card)
+            return (ActionResult(extracted_content=message, long_term_memory=message) if filled
+                    else ActionResult(error=message))
+
         @tools.action("Get past a site's anti-bot check with a slider puzzle (GeeTest), such as Avito's «Доступ "
                       "ограничен» page. Call it once on the check page: it presses the check's button itself, "
                       "waits for the puzzle, moves the slider and says whether the page let it through.")
@@ -1010,8 +1336,27 @@ class Worker:
             return run.cancel_requested or time.monotonic() > deadline
 
         pending_messages = []  # this step's batch: folded back if the step is cut off before it finishes
+        site_errors = SiteErrors()
+        trail = StepTrail(session.workspace / TRAIL / run.id, session.sensitive_data)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(prune_trails, TRAIL_RUNS - 1)
+        steps_before = 0  # run.steps when the current step started: a step whose output failed adds none
 
         async def read_messages(_):
+            nonlocal steps_before
+            steps_before = len(run.steps)
+            # A tab the agent moved into (a link that opens one, its own `navigate` with `new_tab`) is listened to
+            # from now on: the checkout it goes through there is the run's too.
+            with contextlib.suppress(Exception):
+                focus = getattr(browser, "agent_focus_target_id", None)
+                if focus and not site_errors.watches(focus):
+                    targets = {t["id"]: t for t in await page_targets()}
+                    site_errors.start(targets[focus]["webSocketDebuggerUrl"], focus)
+            # The site's refusals of what the last step sent: the next model call sees them, whatever the
+            # page shows (it may show nothing and move on).
+            with contextlib.suppress(Exception):
+                for notice in site_errors.notices(session.sensitive_data):
+                    tell_agent(agent, notice)
             # Read right before the model's next call, so that call can act on them. The last step (only
             # `done` is left) and one about to be stopped leave them for the follow-up run instead.
             pending_messages.clear()
@@ -1020,6 +1365,16 @@ class Worker:
                 run.messages = []
                 for message in pending_messages:
                     agent.add_new_task(message)
+
+        async def step_ended(_):
+            summary = run.steps[-1] if len(run.steps) > steps_before else None
+            errors = [result.error for result in (getattr(agent.state, "last_result", None) or [])
+                      if getattr(result, "error", None)]
+            url = None
+            with contextlib.suppress(Exception):
+                url = await asyncio.wait_for(browser.get_current_page_url(), 2)
+            with contextlib.suppress(Exception):
+                await trail.record(lambda: page_jpeg(browser), summary, url, errors)
 
         agent = Agent(
             task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
@@ -1038,9 +1393,13 @@ class Worker:
             **tuned_agent_options(tuning),
         )
         run.agent = agent
+        with contextlib.suppress(Exception):
+            targets = {t["id"]: t for t in await page_targets()}
+            site_errors.start(targets[session.tab]["webSocketDebuggerUrl"], session.tab)
         try:
-            history = await agent.run(max_steps=max_steps, on_step_start=read_messages)
+            history = await agent.run(max_steps=max_steps, on_step_start=read_messages, on_step_end=step_ended)
         finally:
+            await site_errors.stop()
             # browser-use swallows an InterruptedError raised by `should_stop` mid-step (a cancel or the
             # deadline landing while the LLM call or an action was in flight) and returns normally, with
             # `agent.state.stopped` the only sign that the step which just read `pending_messages` never
@@ -1054,6 +1413,9 @@ class Worker:
         with contextlib.suppress(Exception):
             session.agent_state = agent.state.model_dump(mode="json")
         final = history.final_result()
+        errors_seen = site_errors.report(session.sensitive_data)
+        if errors_seen:
+            final = errors_seen + (final or "")
         run.success = history.is_successful()
         run.usage = usage_summary(history, agent, billed)
         with contextlib.suppress(Exception):
@@ -1354,6 +1716,521 @@ GEETEST_ANSWER = r"""((answer) => {
 })"""
 
 
+# --- Bank card forms ------------------------------------------------------------------------------------
+
+# The model never sees a card's values, so it cannot tell which field took what: on a ЮKassa checkout it
+# typed card_expiry («01/31») into both two-character boxes of the expiry and got 01/01, read the CVC's
+# dots as empty and told the person their saved card was wrong (RU 04.10). `fill_card` finds the fields
+# itself, in every frame of the tab (a processor's own cross-origin frame too), types each the way that
+# field takes it and reads it back.
+CARD_ALIASES = {"number": "card_number", "expiry": "card_expiry", "cvc": "card_cvc", "holder": "card_holder"}
+CARD_KINDS = ("number", "exp", "month", "year", "cvc", "holder")
+
+# Runs in an isolated world of one frame: lists the card fields of that document, kept in a global of the
+# world for the calls that follow. A field is named by its autocomplete token, its own attributes and
+# labels, or else the text right before it. Words of the rest of a checkout (a passport, a loyalty card, a
+# phone, an intercom or promo code) rule a field out; a loose word («код», «ММ», «номер») counts only after
+# the card number of the same document, and a cardholder field needs words about the card itself. Each
+# field says how far it sits from the card number in the DOM tree, for `card_plan` to take the nearest.
+FIND_CARD_FIELDS = r"""(() => {
+  const all = [];
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('input, select')) all.push(el);
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(document);
+  const skipped = /^(hidden|checkbox|radio|submit|button|reset|file|image|range|color|date|datetime-local|week|time|email|search|url)$/;
+  const shown = (el) => {
+    if (el.disabled || el.readOnly || skipped.test(el.type || '')) return false;
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    return box.width > 2 && box.height > 2 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const fields = all.filter(shown);
+  const clean = (text) => (text || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const own = (el) => {
+    const parts = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.title,
+      el.getAttribute('data-testid'), el.getAttribute('data-qa'), el.getAttribute('data-name')];
+    for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
+      const node = el.getRootNode().getElementById ? el.getRootNode().getElementById(id) : null;
+      if (node) parts.push(node.textContent);
+    }
+    for (const label of el.labels || []) parts.push(label.textContent);
+    return clean(parts.filter(Boolean).join(' | '));
+  };
+  // The text right before the field, as a label above or beside it reads: earlier siblings first, then
+  // the parent's. A sibling that is another field is passed over (the «/» between two expiry boxes); one
+  // that holds other fields belongs to them and ends the search.
+  const before = (el) => {
+    let node = el;
+    for (let depth = 0; depth < 4 && node; depth += 1, node = node.parentElement) {
+      for (let sib = node.previousSibling; sib; sib = sib.previousSibling) {
+        if (sib.nodeType === 1 && sib.matches('input, select')) continue;
+        if (sib.nodeType === 1 && sib.querySelector('input, select')) return '';
+        const text = clean(sib.nodeType === 3 ? sib.textContent : sib.innerText);
+        if (/[a-zа-я]/.test(text)) return text.length <= 60 ? text : '';
+      }
+    }
+    return '';
+  };
+  const word = (source) => new RegExp('(?<![a-zа-я0-9])(?:' + source + ')(?![a-zа-я0-9])');
+  const strong = {
+    cvc: /cvc|cvv|cvn|security.?code|securitycode|card.?verif|код безопасности|код карты|секретный код|csc(?![a-z])|(?<![a-z])cid(?![a-z])/,
+    holder: /cardholder|card.?holder|holder.?name|name.?on.?card|держател|владел.{0,12}карт|имя.{0,16}карт/,
+    month: /exp.{0,8}month|expmonth|card.?month|cc.?month|месяц.{0,10}(срок|оконч)/,
+    year: /exp.{0,8}year|expyear|card.?year|cc.?year|год.{0,10}(срок|оконч)/,
+    exp: /expir|exp.?date|expdate|cc.?exp|card.?exp|valid.?(thru|till|until|to)|срок действия|действ\S* до|дата окончания/,
+    number: /card.?num|cardnumber|card.?no(?![a-z])|ccnum|cc.?number|номер карты|номер банковской карты|card number|(?<![a-z])pan(?![a-z])/,
+  };
+  const loose = {
+    cvc: word('код|code|cvc2|cvv2'),
+    month: word('month|mm|мм|месяц|мес'),
+    year: word('year|yy|yyyy|гг|гггг|год'),
+    exp: word('exp|срок|valid|expiry'),
+    number: word('номер|number|card|карта|карты'),
+  };
+  const both = (text) => loose.month.test(text) && loose.year.test(text);
+  // A run of 13–19 digits or mask characters: a card number's placeholder. A phone's mask is a phone.
+  const digitsLike = (el) => {
+    const marks = ((el.placeholder || '').match(/[\d•*x·_]/g) || []).length;
+    return el.type !== 'tel' && marks >= 13 && marks <= 19 && /^[\d•*x·_\s-]+$/.test(el.placeholder);
+  };
+  // Fields of the rest of a checkout that read like a card's: a passport's expiry, a loyalty or gift card's
+  // number, a birth month, a phone, a promo or intercom code. None of them is ever the card.
+  const elsewhere = /паспорт|passport|документ|рожд|birth|участник|лояльн|loyal|бонус|bonus|подароч|gift|сертификат|certificat|frequent|телефон|phone|mobile|промо|promo|купон|coupon|скидк|discount|(?<![a-z])sms|смс|домофон|intercom|подъезд|квартир|этаж|снилс|(?<![а-я])инн(?![а-я])|полис|пассажир|passenger|транспорт|тройк/;
+  const byAutocomplete = (el) => {
+    const token = clean(el.getAttribute('autocomplete'));
+    if (/cc-number/.test(token)) return 'number';
+    if (/cc-exp-month/.test(token)) return 'month';
+    if (/cc-exp-year/.test(token)) return 'year';
+    if (/cc-exp/.test(token)) return 'exp';
+    if (/cc-csc/.test(token)) return 'cvc';
+    if (/cc-name|cc-given-name|cc-family-name/.test(token)) return 'holder';
+    return null;
+  };
+  const strongKind = (text) => {
+    if (!text) return null;
+    if (strong.cvc.test(text)) return 'cvc';
+    if (strong.holder.test(text)) return 'holder';
+    if (strong.month.test(text)) return 'month';
+    if (strong.year.test(text)) return 'year';
+    if (strong.exp.test(text) || /(?<![a-zа-я])(mm|мм) ?\/ ?(yy|гг)/.test(text)) return 'exp';
+    if (strong.number.test(text)) return 'number';
+    return null;
+  };
+  const looseKind = (text) => {
+    if (!text) return null;
+    if (both(text)) return 'exp';
+    if (loose.cvc.test(text)) return 'cvc';
+    if (loose.month.test(text)) return 'month';
+    if (loose.year.test(text)) return 'year';
+    if (loose.exp.test(text)) return 'exp';
+    if (loose.number.test(text)) return 'number';
+    return null;
+  };
+  const optionsKind = (el) => {
+    if (el.tagName !== 'SELECT') return null;
+    const numbers = [...el.options].map((option) => parseInt((option.value || option.text).replace(/\D/g, ''), 10))
+      .filter((value) => !Number.isNaN(value));
+    const months = new Set(numbers.filter((value) => value >= 0 && value <= 12));
+    if (months.size >= 12 && numbers.length <= 13) return 'month';
+    const years = numbers.filter((value) => (value >= 2020 && value <= 2099) || (value >= 20 && value <= 99));
+    return years.length >= 3 && years.length >= numbers.length - 1 ? 'year' : null;
+  };
+  const rows = fields.map((el, index) => {
+    const mine = own(el), around = before(el);
+    let kind = byAutocomplete(el), sure = kind !== null, auto = sure;
+    if (!kind && elsewhere.test(mine + ' | ' + around)) return {el, index, kind: null, sure: false, auto};
+    // A select of months or years is the card's only beside words about the card or its expiry.
+    if (!kind && el.tagName === 'SELECT') kind = optionsKind(el), sure = kind !== null && /exp|срок|card|карт/.test(mine + ' ' + around);
+    if (!kind && (kind = strongKind(mine))) sure = true;
+    if (!kind && digitsLike(el)) kind = 'number', sure = true;
+    if (!kind && (kind = (both(mine) ? 'exp' : null) || strongKind(around))) sure = kind !== 'holder' || strong.holder.test(around);
+    if (!kind) kind = looseKind(mine) || (el.tagName === 'SELECT' ? optionsKind(el) : null) || looseKind(around);
+    return {el, index, kind, sure, auto};
+  });
+  // The card number the rest is measured from: one the page marks with autocomplete first, then a named one.
+  const number = rows.find((row) => row.kind === 'number' && row.auto) || rows.find((row) => row.kind === 'number' && row.sure);
+  const chain = (el) => { const up = []; for (let node = el; node; node = node.parentNode || node.host) up.push(node); return up; };
+  const distance = (el) => {
+    if (!number) return null;
+    const mine = chain(el), theirs = new Map(chain(number.el).map((node, depth) => [node, depth]));
+    const shared = mine.findIndex((node) => theirs.has(node));
+    return shared < 0 ? null : shared + theirs.get(mine[shared]);
+  };
+  const after = (el) => {
+    if (!number) return false;
+    const position = number.el.compareDocumentPosition(el);
+    return Boolean(position & Node.DOCUMENT_POSITION_DISCONNECTED || position & Node.DOCUMENT_POSITION_FOLLOWING);
+  };
+  // A field nothing names, after the card number in the same document: what its length allows.
+  for (const row of rows) {
+    if (row.kind || !number || !after(row.el) || row.el.tagName === 'SELECT' || elsewhere.test(own(row.el))) continue;
+    const max = row.el.maxLength;
+    if (max === 5 || max === 7) row.kind = 'exp';
+    else if (max === 2) row.kind = rows.some((other) => other.kind === 'month') ? 'year' : 'month';
+    else if (max === 3 || (max === 4 && row.el.type === 'password')) row.kind = 'cvc';
+    else if (row.el.type === 'password') row.kind = 'cvc';
+  }
+  // A loosely named field counts only after the card number of its own document; a cardholder field only
+  // when named for sure.
+  const kept = rows.filter((row) => row.kind && (row.sure || (row.kind !== 'holder' && after(row.el))));
+  globalThis.__broCard = kept.map((row) => row.el);
+  return kept.map((row, id) => ({
+    id, kind: row.kind, sure: row.sure, auto: row.auto, distance: row === number ? 0 : distance(row.el),
+    tag: row.el.tagName.toLowerCase(), type: row.el.type || '',
+    maxLength: row.el.maxLength > 0 ? row.el.maxLength : null, placeholder: row.el.placeholder || '',
+    options: row.el.tagName === 'SELECT' ? [...row.el.options].map((o) => [o.value, o.text]).slice(0, 120) : null,
+  }));
+})()"""
+
+# On one field the find call above kept, in the same isolated world. Focus also moves the frame's focus,
+# so the key events that follow land in it.
+CARD_FIELD_FOCUS = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (!el || !el.isConnected) return false;
+  el.scrollIntoView({block: 'center', inline: 'nearest'}); el.focus(); return true; })"""
+CARD_FIELD_CLEAR = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (!el) return null;
+  const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, '');
+  el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true}));
+  if (el.value && el.select) el.select(); return el.value; })"""
+CARD_FIELD_VALUE = r"""((id) => { const el = (globalThis.__broCard || [])[id]; return el && el.isConnected ? el.value : null; })"""
+CARD_FIELD_PICK = r"""((id, wanted) => { const el = (globalThis.__broCard || [])[id]; if (!el) return null;
+  const option = [...el.options].find((o) => wanted.includes(o.value.trim()) || wanted.includes(o.text.trim()));
+  if (!option) return null;
+  el.focus(); el.value = option.value;
+  el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true}));
+  el.blur(); return el.value; })"""
+CARD_FIELD_BLUR = r"""((id) => { const el = (globalThis.__broCard || [])[id]; if (el) el.blur(); return true; })"""
+# The pay button of the card's own form («Заплатить 2 100 ₽»), named back to the run once the card is in.
+CARD_PAY_BUTTON = r"""(() => {
+  const pay = /^(заплатить|оплатить|подтвердить оплату|pay\b)/i;
+  for (const el of document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')) {
+    const text = (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+    const box = el.getBoundingClientRect();
+    if (text && pay.test(text) && !el.disabled && box.width > 0 && box.height > 0) return text.slice(0, 60);
+  }
+  return null;
+})()"""
+
+
+def card_secrets(sensitive_data, page_url):
+    """The saved card as the run's secrets hold it for this page, or None: bound to the top page's site
+    and its payment processors only, the same rule browser-use applies to a typed <secret>."""
+    from browser_use.utils import match_url_with_domain_pattern
+
+    values, patterns = {}, []
+    for pattern, content in (sensitive_data or {}).items():
+        if isinstance(content, dict) and page_url and match_url_with_domain_pattern(page_url, pattern):
+            values.update(content)
+        if isinstance(content, dict) and CARD_ALIASES["number"] in content:
+            patterns.append(pattern)
+    number = re.sub(r"\D", "", values.get(CARD_ALIASES["number"]) or "")
+    expiry = re.fullmatch(r"\s*(\d{1,2})\s*/\s*(\d{2}|\d{4})\s*", values.get(CARD_ALIASES["expiry"]) or "")
+    if not 12 <= len(number) <= 19 or not expiry:
+        return None
+    return {"number": number, "month": f"{int(expiry[1]):02d}", "year": expiry[2][-2:],
+            "cvc": re.sub(r"\D", "", values.get(CARD_ALIASES["cvc"]) or ""),
+            "holder": (values.get(CARD_ALIASES["holder"]) or "").strip(), "sites": patterns}
+
+
+def card_digits(value):
+    return re.sub(r"\D", "", value or "")
+
+
+def four_digit_year(field):
+    """A year box that wants 2031, not 31."""
+    placeholder = (field.get("placeholder") or "").lower()
+    return (field.get("maxLength") or 0) >= 4 or bool(re.search(r"yyyy|гггг", placeholder))
+
+
+def expiry_with_long_year(field):
+    """A single expiry field that wants 01/2031."""
+    return bool(re.search(r"yyyy|гггг", (field.get("placeholder") or "").lower()))
+
+
+def card_plan(frames, card, origins=None, bound=None):
+    """Which field takes what. `frames` is each frame's list from FIND_CARD_FIELDS, top document first, and
+    `origins` their origins. Everything is anchored to the card number: the one the page marks with
+    autocomplete, else one named for sure, in a frame on a site the card is bound to (`bound`: the shop and
+    its payment processors) before any other, then in the frame that holds the most of the card. Each other kind is
+    the field nearest to it in its own frame; only a kind that frame lacks comes from another frame of the
+    same origin (Stripe keeps each field in a frame of its own), and only when named for sure — never from
+    the shop's page around a processor's frame. Two expiry boxes (selects, or inputs of up to 4 characters)
+    beside the number are its month and year. Each step: the frame, the field, the kind and the texts to try
+    in turn (a select: the option values or texts it may pick)."""
+    numbers = [(index, field) for index, fields in enumerate(frames) for field in fields if field["kind"] == "number"
+               and field["sure"]]
+    if not numbers:
+        return []
+
+    def number_rank(item):
+        index, field = item
+        return (not field.get("auto"), not (bound or [True] * len(frames))[index],
+                -len({other["kind"] for other in frames[index]}), index)
+
+    home, number = min(numbers, key=number_rank)
+    origin = (origins or [None] * len(frames))[home]
+    local = [field for field in frames[home] if field is not number]
+    boxes = [field for field in local if field["kind"] == "exp"
+             and (field["tag"] == "select" or 0 < (field.get("maxLength") or 0) <= 4)]
+    if len(boxes) == 2 and not any(field["kind"] in ("month", "year") for field in local):
+        renamed = {id(boxes[0]): "month", id(boxes[1]): "year"}
+        local = [{**field, "kind": renamed[id(field)]} if id(field) in renamed else field for field in local]
+
+    def nearest(fields):
+        return min(fields, key=lambda field: (field.get("distance") is None, field.get("distance") or 0,
+                                              not field["sure"], field["id"]), default=None)
+
+    chosen = {"number": (home, number)}
+    for kind in CARD_KINDS[1:]:
+        field = nearest([field for field in local if field["kind"] == kind])
+        if field is not None:
+            chosen[kind] = (home, field)
+            continue
+        others = [(index, field) for index, fields in enumerate(frames) if index != home
+                  and (origins or [None] * len(frames))[index] == origin
+                  for field in fields if field["kind"] == kind and field["sure"]]
+        if others:
+            chosen[kind] = others[0]
+    # One expiry field and a box beside it: both boxes are the more specific reading, a lone box is not.
+    if "exp" in chosen and ("month" in chosen) != ("year" in chosen):
+        chosen.pop("month", None)
+        chosen.pop("year", None)
+    elif "month" in chosen and "year" in chosen:
+        chosen.pop("exp", None)
+    elif "exp" not in chosen:
+        chosen.pop("month", None)
+        chosen.pop("year", None)
+    month, year = card["month"], card["year"]
+    steps = []
+    for kind in CARD_KINDS:
+        if kind not in chosen or (kind == "holder" and not card["holder"]) or (kind == "cvc" and not card["cvc"]):
+            continue
+        frame_index, field = chosen[kind]
+        if field["tag"] == "select":
+            wanted = {"month": [month, str(int(month))], "year": [f"20{year}", year]}.get(kind)
+            if wanted:
+                steps.append({"frame": frame_index, "field": field, "kind": kind, "pick": wanted})
+            continue
+        long_year = [f"{month}/20{year}", f"{month} / 20{year}", f"{month}20{year}"]
+        short_year = [f"{month}/{year}", f"{month} / {year}", f"{month}{year}"]
+        texts = {
+            "number": [card["number"]],
+            "exp": long_year + short_year if expiry_with_long_year(field) else short_year + long_year,
+            "month": [month],
+            "year": [f"20{year}", year] if four_digit_year(field) else [year, f"20{year}"],
+            "cvc": [card["cvc"]],
+            "holder": [card["holder"]],
+        }[kind]
+        steps.append({"frame": frame_index, "field": field, "kind": kind, "texts": texts})
+    return steps
+
+
+def card_value_ok(step, card, value):
+    """Whether the field now holds what it should, however the page formats it. A select holds the option
+    picked for it (its value may be anything: 0 for January)."""
+    if value is None:
+        return False
+    if "pick" in step:
+        return value == step.get("picked")
+    kind, digits = step["kind"], card_digits(value)
+    month, year = card["month"], card["year"]
+    if kind == "number":
+        return digits == card["number"]
+    if kind == "cvc":
+        return digits == card["cvc"]
+    if kind == "holder":
+        return re.sub(r"\s+", " ", value).strip().lower() == re.sub(r"\s+", " ", card["holder"]).lower()
+    if kind == "month":
+        return digits != "" and int(digits) == int(month)
+    if kind == "year":
+        if four_digit_year(step["field"]) and step["field"]["tag"] != "select":
+            return digits == f"20{year}"
+        return digits in (year, f"20{year}")
+    # One expiry field: the month and the year, with a separator unless the field has room for four digits
+    # only. A plain field keeps «0131» as typed, and a site reads it as no date.
+    field = step["field"]
+    if digits not in (f"{month}{year}", f"{month}20{year}"):
+        return False
+    return field.get("maxLength") in (4, 6) or not value.strip().isdigit()
+
+
+CARD_KIND_NAMES = {"number": "card number", "exp": "expiry", "month": "expiry month", "year": "expiry year",
+                   "cvc": "CVC", "holder": "cardholder name"}
+
+
+def card_key_events(char):
+    """keyDown, char and keyUp for one character, as a person's keyboard sends them."""
+    if char.isdigit():
+        key, code, vk = char, f"Digit{char}", ord(char)
+    elif char == "/":
+        key, code, vk = "/", "Slash", 191
+    elif char == " ":
+        key, code, vk = " ", "Space", 32
+    elif char.isascii() and char.isalpha():
+        key, code, vk = char, f"Key{char.upper()}", ord(char.upper())
+    else:
+        key, code, vk = char, "", 0
+    down = {"type": "keyDown", "key": key, "code": code, "windowsVirtualKeyCode": vk}
+    return [down, {"type": "char", "text": char, "key": char}, {**down, "type": "keyUp"}]
+
+
+class CardFrame:
+    """One frame of the tab, through the CDP session of the target that holds it (an out-of-process frame
+    has its own), in an isolated world of its own: the page's scripts never see these calls."""
+
+    def __init__(self, cdp_session, frame_id, url):
+        self.cdp, self.frame_id, self.url, self.context = cdp_session, frame_id, url, None
+
+    async def send(self, domain, method, params=None):
+        return await getattr(getattr(self.cdp.cdp_client.send, domain), method)(
+            params=params or {}, session_id=self.cdp.session_id)
+
+    async def call(self, expression, *args):
+        if self.context is None:
+            world = await self.send("Page", "createIsolatedWorld", {"frameId": self.frame_id, "worldName": "bro-card"})
+            self.context = world["executionContextId"]
+        source = expression if not args else f"({expression})({', '.join(json.dumps(arg) for arg in args)})"
+        answer = await self.send("Runtime", "evaluate", {"expression": source, "contextId": self.context,
+                                                         "returnByValue": True})
+        return (answer.get("result") or {}).get("value")
+
+    async def type(self, text):
+        for char in text:
+            for event in card_key_events(char):
+                await self.send("Input", "dispatchKeyEvent", event)
+            await asyncio.sleep(0.03)
+
+
+async def card_frames(browser_session):
+    """The frames of the agent's tab, its own document first."""
+    all_frames, _ = await browser_session.get_all_frames()
+    tab = browser_session.agent_focus_target_id
+
+    def root(frame):
+        seen = set()
+        while frame.get("parentFrameId") in all_frames and frame["id"] not in seen:
+            seen.add(frame["id"])
+            frame = all_frames[frame["parentFrameId"]]
+        return frame
+
+    def depth(frame):
+        count = 0
+        while frame.get("parentFrameId") in all_frames and count < 20:
+            frame, count = all_frames[frame["parentFrameId"]], count + 1
+        return count
+
+    frames = []
+    for frame in sorted(all_frames.values(), key=depth):
+        if root(frame).get("frameTargetId") != tab or not str(frame.get("url", "")).startswith(("http", "about:")):
+            continue
+        with contextlib.suppress(Exception):
+            cdp_session = await browser_session.get_or_create_cdp_session(frame["frameTargetId"], focus=False)
+            frames.append(CardFrame(cdp_session, frame["id"], frame.get("url", "")))
+    return frames
+
+
+async def fill_card_form(frames, card):
+    """Fill the card form across `frames` and say what happened, never with a value in it."""
+    found = []
+    for frame in frames:
+        fields = None
+        with contextlib.suppress(Exception):
+            fields = await frame.call(FIND_CARD_FIELDS)
+        found.append(fields if isinstance(fields, list) else [])
+    from browser_use.utils import match_url_with_domain_pattern
+
+    origins = [urllib.parse.urlsplit(frame.url)[:2] for frame in frames]
+    bound = [any(match_url_with_domain_pattern(frame.url, site) for site in card.get("sites") or [])
+             for frame in frames]
+    steps = card_plan(found, card, origins, bound)
+    if not steps:
+        return False, ("No card number field on this page or in its frames. Open the payment step with the card "
+                       "form (choose «Банковская карта» if the site asks how to pay) and call fill_card again.")
+    done, failed = [], []
+    typed = False  # whether any field needed typing: a second call finds the form already filled
+    for step in steps:
+        frame = frames[step["frame"]]
+        field_id = step["field"]["id"]
+        ok = False
+        try:
+            if "pick" in step:
+                step["picked"] = await frame.call(CARD_FIELD_PICK, field_id, step["pick"])
+                ok = step["picked"] is not None
+            else:
+                value = await frame.call(CARD_FIELD_VALUE, field_id)
+                ok = card_value_ok(step, card, value)
+                for text in [] if ok else step["texts"]:
+                    if not await frame.call(CARD_FIELD_FOCUS, field_id):
+                        break
+                    if await frame.call(CARD_FIELD_VALUE, field_id):
+                        await frame.call(CARD_FIELD_CLEAR, field_id)
+                        if await frame.call(CARD_FIELD_VALUE, field_id):
+                            await frame.send("Input", "dispatchKeyEvent", {"type": "keyDown", "key": "Backspace",
+                                                                         "code": "Backspace", "windowsVirtualKeyCode": 8})
+                            await frame.send("Input", "dispatchKeyEvent", {"type": "keyUp", "key": "Backspace",
+                                                                         "code": "Backspace", "windowsVirtualKeyCode": 8})
+                    await frame.type(text)
+                    typed = True
+                    await asyncio.sleep(0.2)
+                    if card_value_ok(step, card, await frame.call(CARD_FIELD_VALUE, field_id)):
+                        ok = True
+                        break
+        except Exception:  # noqa: BLE001 - a frame that navigated away or detached
+            ok = False
+        (done if ok else failed).append(step)
+    # The last field's own checks run when it loses focus; a page may also reformat or clear a field when
+    # the next one fills, so every field is read once more at the end.
+    with contextlib.suppress(Exception):
+        last = steps[-1]
+        await frames[last["frame"]].call(CARD_FIELD_BLUR, last["field"]["id"])
+    await asyncio.sleep(0.3)
+    for step in list(done):
+        value = None
+        with contextlib.suppress(Exception):
+            value = await frames[step["frame"]].call(CARD_FIELD_VALUE, step["field"]["id"])
+        if not card_value_ok(step, card, value):
+            done.remove(step)
+            failed.append(step)
+    # Part of a card number or a code left in a field that did not take it is worth nothing to the form and
+    # stays on the page for anyone to read.
+    for step in failed:
+        with contextlib.suppress(Exception):
+            await frames[step["frame"]].call(CARD_FIELD_CLEAR, step["field"]["id"])
+    names = lambda items: ", ".join(CARD_KIND_NAMES[step["kind"]] for step in items)  # noqa: E731
+    hosts = sorted({urllib.parse.urlsplit(frames[step["frame"]].url).hostname or "the page" for step in done})
+    text = f"Filled {names(done)} (card ending {card['number'][-4:]})" + (f" in {', '.join(hosts)}" if hosts else "") + "."
+    kinds = {step["kind"] for step in steps}
+    if not kinds & {"exp", "month"}:
+        text += " This form shows no expiry field yet."
+    if "cvc" not in kinds:
+        text += " This form shows no CVC field yet."
+    if failed:
+        # Only the whole expiry is a secret: a month or a year alone would be hidden wherever those two digits
+        # show on the page (agent/lib/browser-use/secrets.ts), so a box of them is left to the person.
+        aliases = [CARD_ALIASES.get({"exp": "expiry"}.get(step["kind"], step["kind"])) for step in failed
+                   if step["kind"] not in ("month", "year")]
+        advice = (f" Type it yourself with its secret ({', '.join(aliases)})." if aliases else "")
+        if any(step["kind"] in ("month", "year") for step in failed):
+            advice += " The month and year boxes have no secrets of their own: stop with NEEDS: info and say which box."
+        text = (text if done else "") + f" Could not fill {names(failed)}: the field did not keep the value.{advice}"
+        return False, text.strip()
+    # The run cannot see a password field's value: told only «filled», it spent twelve steps trying to read the
+    # CVC out of the processor's frame, and opened that frame in a tab of its own (bench of 04.10.2026).
+    text += (" Each field was read back from the page after typing and holds the card's value; a CVC field shows "
+             "you nothing or dots, and that is the value. Do not check or retype the fields: go on with the errand, "
+             "and pay only as your task allows.")
+    if not typed:
+        # GPT Luna, unable to see the values, called fill_card five times in a row and never paid (harness, 05.10).
+        text = (f"Every field already held the saved card (card ending {card['number'][-4:]}), read back from the "
+                "page just now: nothing needed typing, and calling fill_card again changes nothing.")
+    button = None
+    with contextlib.suppress(Exception):
+        button = await frames[steps[0]["frame"]].call(CARD_PAY_BUTTON)
+    if isinstance(button, str) and button:
+        text += f" The form's pay button is «{button}»: press it to pay, as your task allows."
+    return True, text
+
+
 def slider_gap(background_png, piece_png):
     """Where the piece fits: the x of its left edge in the background's own pixels, the background's width
     and how well it matched. The piece is matched by its edges against the background's, which finds the
@@ -1499,7 +2376,17 @@ visible page, e.g. report/final.png) or save_element_picture (one item photo, by
 use web archives, caches or mirrors (web.archive.org and the like) instead of the live site: if the live
 site does not open, say so. Credentials and codes come as <secret>alias</secret> placeholders: type the
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
-one-time code you are given goes in with the enter_code action, never digit by digit. An anti-bot check
+one-time code you are given goes in with the enter_code action, never digit by digit. A bank card form goes in
+with the fill_card action, never field by field; type a card secret yourself only into a field fill_card
+says it could not fill. A phone field that already shows a country code (+7) or a mask keeps it: type only
+the digits after it, never the +7 or 8 again (for +7 921 781-88-76, type 9217818876). Read a form back after
+filling it: a phone with a doubled 7, extra digits or another country's flag was typed wrong, so type it again
+that way rather than hunting the country list. When a form's button seems to do nothing, read the errors the
+form shows before pressing it again. Fields fill_card filled may still look empty to you, since the browser hides
+secret values from your view of the page: trust its answer and press the form's pay button when the request
+allows paying. Call done only when the request is finished or one of its rules tells you to stop; while the page
+offers the next step of what you were asked to do (a suggestion to pick, a store to choose, «К оплате»,
+«Оплатить»), take that step instead. An anti-bot check
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
 button and solves it; never press or drag it yourself. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:

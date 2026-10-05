@@ -21,6 +21,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -290,8 +291,8 @@ class FakeAgent:
     def stop(self):
         self.state.stopped = True
 
-    async def run(self, max_steps, on_step_start=None):
-        self.max_steps = max_steps
+    async def run(self, max_steps, on_step_start=None, on_step_end=None):
+        self.max_steps, self.on_step_end = max_steps, on_step_end or FakeAgent.no_hook
         return await FakeAgent.script(self, on_step_start or FakeAgent.no_hook)
 
     @staticmethod
@@ -330,7 +331,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         FakeAgent.built, FakeAgent.script = [], one_step
         views = types.SimpleNamespace(AgentState=FakeAgentState)
         message_views = types.SimpleNamespace(HistoryItem=lambda system_message: system_message)
-        browser_use = types.SimpleNamespace(Agent=FakeAgent, ChatOpenRouter=lambda **options: options)
+        browser_use = types.SimpleNamespace(Agent=FakeAgent, ChatOpenRouter=lambda **options: options,
+                                            ActionResult=lambda **fields: fields)
         test = self
 
         async def browser_session(self, session, options):
@@ -546,6 +548,117 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                          [{"in": 20_000, "cached": 0, "out": 300, "calls": 1},
                           {"in": 26_000, "cached": 19_000, "out": 350, "calls": 2}])
         self.assertEqual([step["goal"] for step in run.steps], ["Search.", "Read."])
+
+    async def test_the_site_refusing_a_write_reaches_the_next_step_and_each_step_leaves_a_trail(self):
+        refused = "The site's server refused POST https://shop.test/api/order: 400 — Введите корректный номер."
+        told = [["A line before any step."], [refused], []]
+
+        class Refusals:
+            def start(self, url, target=None):
+                pass
+
+            def watches(self, target):
+                return True
+
+            async def stop(self):
+                pass
+
+            def notices(self, secrets):
+                return told.pop(0) if told else []
+
+            def report(self, secrets):
+                return ""
+
+        async def jpeg(browser):
+            return b"\xff\xd8small"
+
+        self.enterContext(mock.patch.object(worker, "SiteErrors", Refusals))
+        self.enterContext(mock.patch.object(worker, "page_jpeg", jpeg))
+        seen = {}
+
+        async def two_steps(agent, on_step_start):
+            step = agent.options["register_new_step_callback"]
+            # Step 1: no step before it to hang a line on, so the line is a history item of its own.
+            await on_step_start(agent)
+            seen["history"] = list(agent.state.message_manager_state.agent_history_items)
+            await step(types.SimpleNamespace(url="https://shop.test/cart", title="Корзина"),
+                       types.SimpleNamespace(next_goal="Pay as owner-pass.", action=[]), 1)
+            agent.state.last_model_output = object()
+            agent.state.last_result = [types.SimpleNamespace(error="Typing owner-pass failed.")]
+            await agent.on_step_end(agent)
+            # Step 2: the refusal goes on step 1's result, which the model reads next. Its output fails.
+            await on_step_start(agent)
+            seen["result"] = list(agent.state.last_result)
+            agent.state.last_result = []
+            await agent.on_step_end(agent)
+            return FakeHistory(True)
+
+        FakeAgent.script = two_steps
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Order the kettle.",
+                                     "secrets": [{"alias": "password", "value": "owner-pass",
+                                                  "allowedDomains": ["shop.test"]}]})
+        await self.settled("r1")
+        self.assertEqual(seen["history"], ["<sys>A line before any step.</sys>"])
+        self.assertEqual(seen["result"][-1], {"long_term_memory": refused})
+        trail = worker.SESSIONS / worker.disk_name("s1") / worker.TRAIL / "r1"
+        lines = [json.loads(line) for line in (trail / "steps.jsonl").read_text().splitlines()]
+        self.assertEqual([(line["step"], line.get("shot")) for line in lines], [(1, "001.jpg"), (2, "002.jpg")])
+        self.assertEqual((lines[0]["goal"], lines[0]["errors"], lines[0]["url"]),
+                         ("Pay as <secret>.", ["Typing <secret> failed."], "https://shop.test/"))
+        self.assertNotIn("goal", lines[1])  # a step whose output failed has no summary of its own
+        self.assertEqual((trail / "002.jpg").read_bytes(), b"\xff\xd8small")
+        self.assertNotIn("owner-pass", (trail / "steps.jsonl").read_text())
+
+    async def test_a_tab_the_agent_moves_into_is_listened_to_from_its_next_step(self):
+        # A DeepSeek run on the checkout harness's shop opened the site in a new tab and ordered there: two of
+        # its three refused orders were never seen while only the first tab was listened to.
+        started = []
+
+        class Listener:
+            def __init__(self):
+                self.tabs = set()
+
+            def start(self, url, target=None):
+                started.append((url, target))
+                self.tabs.add(target)
+
+            def watches(self, target):
+                return target in self.tabs
+
+            async def stop(self):
+                pass
+
+            def notices(self, secrets):
+                return []
+
+            def report(self, secrets):
+                return ""
+
+        async def page_targets():
+            return [{"id": tab, "type": "page", "webSocketDebuggerUrl": f"ws://cdp/{tab}"} for tab in self.chrome.tabs]
+
+        self.enterContext(mock.patch.object(worker, "SiteErrors", Listener))
+        self.enterContext(mock.patch.object(worker, "page_targets", page_targets))
+
+        async def moves_to_a_new_tab(agent, on_step_start):
+            browser = agent.options["browser_session"]
+            await on_step_start(agent)
+            browser.agent_focus_target_id = await self.chrome.new_tab()
+            await on_step_start(agent)
+            await on_step_start(agent)
+            return FakeHistory(True)
+
+        FakeAgent.script = moves_to_a_new_tab
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Order the kettle."})
+        await self.settled("r1")
+        self.assertEqual(started, [("ws://cdp/T1", "T1"), ("ws://cdp/T2", "T2")])
+
+    def test_the_agent_types_a_phone_after_the_fields_own_country_code(self):
+        # 04.10: «+7 921 781-88-76» typed after a field's fixed +7 became +7 79217818876, a Kazakh number.
+        self.assertIn("type 9217818876", worker.EXTEND_SYSTEM)
+        self.assertIn("read the errors the\nform shows", worker.EXTEND_SYSTEM)
+        # GPT Luna ended runs with done right before «К оплате» or «Заплатить» (harness, 05.10).
+        self.assertIn("Call done only when the request is finished", worker.EXTEND_SYSTEM)
 
     async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
         async def browse(agent, on_step_start):
@@ -1568,6 +1681,350 @@ class SliderTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(worker, "slider_gap", side_effect=ValueError("bad picture")):
             solved, message = await worker.solve_slider(check_page([PUZZLE]), self.mouse, FakeHttp())
         self.assertEqual((solved, message), (False, "The puzzle was not accepted."))
+
+
+def card_field(field_id, kind, sure=True, tag="input", max_length=None, placeholder=""):
+    return {"id": field_id, "kind": kind, "sure": sure, "tag": tag, "type": "text", "maxLength": max_length,
+            "placeholder": placeholder, "options": None}
+
+
+CARD = {"number": "4276550101324310", "month": "01", "year": "31", "cvc": "249", "holder": "SAVELY SOLOVYEV"}
+
+
+class FakeCardFrame:
+    """A frame of fields as FIND_CARD_FIELDS lists them; typing keeps at most `maxLength` characters, as the
+    browser does, and a field in `refuses` keeps nothing."""
+
+    def __init__(self, url, fields, refuses=()):
+        self.url, self.fields, self.refuses = url, fields, set(refuses)
+        self.values = {field["id"]: "" for field in fields}
+        self.focused = None
+        self.pay_button = None
+
+    async def call(self, expression, *args):
+        if expression == worker.FIND_CARD_FIELDS:
+            return self.fields
+        if expression == worker.CARD_FIELD_FOCUS:
+            self.focused = args[0]
+            return True
+        if expression == worker.CARD_FIELD_CLEAR:
+            self.values[args[0]] = ""
+            return ""
+        if expression == worker.CARD_FIELD_VALUE:
+            return self.values[args[0]]
+        if expression == worker.CARD_PAY_BUTTON:
+            return self.pay_button
+        return True
+
+    async def send(self, *_):
+        return {}
+
+    async def type(self, text):
+        field = next(f for f in self.fields if f["id"] == self.focused)
+        if field["id"] not in self.refuses:
+            self.values[field["id"]] = (self.values[field["id"]] + text)[:field["maxLength"] or None]
+
+
+class CardFormTest(unittest.IsolatedAsyncioTestCase):
+    """fill_card's choices, without a browser: `test_card_forms.py` runs the same against Chrome."""
+
+    def setUp(self):
+        utils = types.SimpleNamespace(match_url_with_domain_pattern=lambda url, pattern: False)
+        self.enterContext(mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(utils=utils),
+                                                        "browser_use.utils": utils}))
+
+    def test_the_card_comes_from_the_secrets_of_the_top_pages_site_only(self):
+        def matches(url, pattern):
+            host = urllib.parse.urlsplit(url).hostname
+            return host == pattern.removeprefix("https://*.") or host.endswith("." + pattern.removeprefix("https://*."))
+
+        sensitive = {"https://*.shop.ru": {"card_number": "4276 5501 0132 4310", "card_expiry": "1/31",
+                                           "card_cvc": "249", "card_holder": "SAVELY SOLOVYEV"},
+                     "https://*.yoomoney.ru": {"login_password": "x"}}
+        fake = types.SimpleNamespace(match_url_with_domain_pattern=matches)
+        with mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(utils=fake), "browser_use.utils": fake}):
+            self.assertEqual(worker.card_secrets(sensitive, "https://pay.shop.ru/checkout"),
+                             {**CARD, "sites": ["https://*.shop.ru"]})
+            self.assertIsNone(worker.card_secrets(sensitive, "https://other.ru/checkout"))
+
+    def test_two_expiry_boxes_take_the_month_and_the_year(self):
+        # RU 04.10: ЮKassa's boxes each took «01/31» whole and kept 01/01.
+        frames = [[], [card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+                       card_field(3, "cvc", sure=False)]]
+        steps = worker.card_plan(frames, CARD)
+        self.assertEqual([(step["frame"], step["kind"], step["texts"]) for step in steps],
+                         [(1, "number", ["4276550101324310"]), (1, "month", ["01"]), (1, "year", ["31", "2031"]),
+                          (1, "cvc", ["249"])])
+
+    def test_a_loose_field_counts_only_beside_the_card_number(self):
+        # «Код домофона» on the shop's own page is not the CVC of a card form in the processor's frame.
+        frames = [[card_field(0, "cvc", sure=False)], [card_field(0, "number"), card_field(1, "exp")]]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
+                         [(1, "number"), (1, "exp")])
+        # The card number's own frame first; another frame of the same origin only for what it lacks (Stripe
+        # keeps each field in a frame of its own), never the shop's page around a processor's frame.
+        frames = [[card_field(0, "number"), card_field(1, "cvc", sure=False)], [card_field(0, "cvc")]]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD)],
+                         [(0, "number"), (0, "cvc")])
+        frames = [[card_field(0, "exp")], [card_field(0, "number")], [card_field(0, "exp")], [card_field(0, "cvc")]]
+        origins = [("https", "shop.ru"), ("https", "js.stripe.com"), ("https", "js.stripe.com"), ("https", "js.stripe.com")]
+        self.assertEqual([(step["frame"], step["kind"]) for step in worker.card_plan(frames, CARD, origins)],
+                         [(1, "number"), (2, "exp"), (3, "cvc")])
+
+    def test_the_field_nearest_to_the_card_number_wins(self):
+        frames = [[card_field(0, "cvc", sure=False), card_field(1, "number"), card_field(2, "cvc", sure=False)]]
+        frames[0][0]["distance"], frames[0][1]["distance"], frames[0][2]["distance"] = 6, 0, 2
+        self.assertEqual([step["field"]["id"] for step in worker.card_plan(frames, CARD)], [1, 2])
+
+    def test_a_number_on_a_site_the_card_is_bound_to_comes_first(self):
+        frames = [[card_field(0, "number")], [card_field(0, "number"), card_field(1, "cvc")]]
+        self.assertEqual(worker.card_plan(frames, CARD, bound=[True, False])[0]["frame"], 0)
+        self.assertEqual(worker.card_plan(frames, CARD, bound=[False, True])[0]["frame"], 1)
+        self.assertEqual(worker.card_plan([[card_field(0, "cvc"), card_field(1, "exp")]], CARD), [])
+
+    def test_each_expiry_field_wants_its_own_shape(self):
+        single = {"kind": "exp", "field": card_field(0, "exp", placeholder="MM/YY")}
+        self.assertTrue(worker.card_value_ok(single, CARD, "01/31"))
+        self.assertTrue(worker.card_value_ok(single, CARD, "01 / 31"))
+        self.assertFalse(worker.card_value_ok(single, CARD, "0131"))
+        self.assertFalse(worker.card_value_ok(single, CARD, "01/01"))
+        self.assertFalse(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp")}, CARD, "0131"))
+        self.assertTrue(worker.card_value_ok({"kind": "exp", "field": card_field(0, "exp", max_length=4)}, CARD, "0131"))
+        long_year = {"kind": "year", "field": card_field(0, "year", max_length=4)}
+        self.assertTrue(worker.card_value_ok(long_year, CARD, "2031"))
+        self.assertFalse(worker.card_value_ok(long_year, CARD, "31"))
+        self.assertEqual(worker.card_plan([[card_field(0, "number"), card_field(1, "exp", placeholder="ММ/ГГГГ")]],
+                                          CARD)[1]["texts"][0], "01/2031")
+
+    async def test_fills_the_boxes_and_says_so_without_a_value(self):
+        frame = FakeCardFrame("https://yoomoney.ru/checkout", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")])
+        filled, message = await worker.fill_card_form([FakeCardFrame("https://shop.ru/", []), frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertEqual(frame.values, {0: "4276550101324310", 1: "01", 2: "31", 3: "249"})
+        self.assertIn("in yoomoney.ru", message)
+        self.assertIn("Do not check or retype the fields", message)
+        for secret in ("4276550101324310", "249"):
+            self.assertNotIn(secret, message)
+
+    async def test_a_box_that_keeps_nothing_is_reported_with_what_to_do(self):
+        frame = FakeCardFrame("https://shop.ru/", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")], refuses={2})
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertFalse(filled)
+        self.assertIn("Could not fill expiry year", message)
+        self.assertIn("NEEDS: info", message)
+        self.assertNotIn("card_expiry_year", message)
+
+    async def test_a_filled_form_names_its_pay_button_and_a_second_call_types_nothing(self):
+        # GPT Luna could not see the card's values, called fill_card five times and never paid (harness, 05.10).
+        frame = FakeCardFrame("https://yoomoney.ru/frame", [
+            card_field(0, "number"), card_field(1, "exp", max_length=2), card_field(2, "exp", max_length=2),
+            card_field(3, "cvc")])
+        frame.pay_button = "Заплатить 2 100 ₽"
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertIn("Filled card number", message)
+        self.assertIn("The form's pay button is «Заплатить 2 100 ₽»: press it to pay, as your task allows.", message)
+        typed = dict(frame.values)
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertTrue(filled, message)
+        self.assertTrue(message.startswith("Every field already held the saved card (card ending 4310)"), message)
+        self.assertIn("calling fill_card again changes nothing", message)
+        self.assertIn("«Заплатить 2 100 ₽»", message)
+        self.assertEqual(frame.values, typed)
+        frame.pay_button = None
+        self.assertNotIn("pay button", (await worker.fill_card_form([frame], CARD))[1])
+
+    async def test_no_card_form_fills_nothing(self):
+        frame = FakeCardFrame("https://shop.ru/", [card_field(0, "cvc", sure=False)])
+        filled, message = await worker.fill_card_form([frame], CARD)
+        self.assertFalse(filled)
+        self.assertIn("No card number field", message)
+        self.assertEqual(frame.values, {0: ""})
+
+
+class FakeSocket:
+    """The CDP socket SiteErrors listens on: what it sends."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, data):
+        self.sent.append(data)
+
+
+class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
+    """SiteErrors fed CDP events by hand; test_site_errors runs it against a real Chrome."""
+
+    PAGE = "https://shop.ru/checkout"
+
+    async def asyncSetUp(self):
+        self.errors = worker.SiteErrors()
+        self.errors.ws = FakeSocket()
+        self.ids = itertools.count(1)
+
+    async def request(self, method, url, status, body=None, kind="XHR"):
+        request_id = f"q{next(self.ids)}"
+        await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": request_id, "type": kind, "documentURL": self.PAGE,
+            "request": {"method": method, "url": url}}})
+        await self.errors.handle({"method": "Network.responseReceived",
+                                  "params": {"requestId": request_id, "response": {"status": status}}})
+        await self.errors.handle({"method": "Network.loadingFinished", "params": {"requestId": request_id}})
+        if body is not None and status >= 400:
+            command = self.errors.ws.sent[-1]["id"]
+            await self.errors.handle({"id": command, "result": {"body": body}})
+
+    async def test_a_refused_write_is_told_once_and_a_probe_never(self):
+        secrets = {"https://*.shop.ru": {"phone": "+79217818876"}}
+        await self.request("GET", "https://shop.ru/api/user", 401, '{"error": "unauthorized"}')
+        await self.request("GET", "https://api.shop.ru/api/user/cart?x=1", 404, "")
+        await self.request("POST", "https://api.shop.ru/api/orders?session=s3cr3t", 400,
+                           '{"errors": ["Пожалуйста, введите корректный номер телефона +79217818876",'
+                           ' "deliveryMethod must be a valid enum value"]}')
+        notices = self.errors.notices(secrets)
+        self.assertEqual(len(notices), 1)
+        self.assertIn("refused POST https://api.shop.ru/api/orders: 400 — ", notices[0])
+        self.assertIn("Пожалуйста, введите корректный номер телефона <secret>", notices[0])
+        self.assertIn("deliveryMethod must be a valid enum value", notices[0])
+        self.assertIn("do not report success", notices[0])
+        for hidden in ("s3cr3t", "79217818876", "/api/user"):
+            self.assertNotIn(hidden, notices[0])
+        self.assertEqual(self.errors.notices(secrets), [])
+        # The same refusal again with the same answer is not told twice; a new answer is.
+        await self.request("POST", "https://api.shop.ru/api/orders", 400,
+                           '{"errors": ["deliveryMethod must be a valid enum value"]}')
+        await self.request("POST", "https://api.shop.ru/api/orders", 400,
+                           '{"errors": ["Пожалуйста, введите корректный номер телефона +79217818876",'
+                           ' "deliveryMethod must be a valid enum value"]}')
+        self.assertEqual(len(self.errors.notices(secrets)), 1)
+        # The report keeps everything, the probes too.
+        report = self.errors.report(secrets)
+        self.assertIn("401 GET https://shop.ru/api/user", report)
+        self.assertIn("404 GET https://api.shop.ru/api/user/cart", report)
+
+    async def test_a_third_party_request_or_a_read_is_not_told_and_notices_are_capped(self):
+        await self.request("POST", "https://mc.yandex.ru/watch", 403, "forbidden")
+        await self.request("PUT", "https://shop.ru/api/cart", 500, "")
+        await self.request("GET", "https://shop.ru/api/slots", 500, "oops")
+        notices = self.errors.notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn("refused PUT https://shop.ru/api/cart: 500 (no answer text)", notices[0])
+        for number in range(5):
+            await self.request("DELETE", f"https://shop.ru/api/cart/{number}", 409, "gone")
+        self.assertEqual(len(self.errors.notices()), worker.SiteErrors.NOTICES - 1)
+
+    async def test_a_notice_waits_a_moment_for_its_answer(self):
+        await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": "q", "type": "Fetch", "documentURL": self.PAGE,
+            "request": {"method": "POST", "url": "https://shop.ru/api/orders"}}})
+        await self.errors.handle({"method": "Network.responseReceived",
+                                  "params": {"requestId": "q", "response": {"status": 422}}})
+        self.assertEqual(self.errors.notices(), [])
+        with mock.patch.object(worker.SiteErrors, "BODY_WAIT_S", 0):
+            self.assertIn("422 (no answer text)", self.errors.notices()[0])
+
+    async def test_two_tabs_number_their_commands_apart(self):
+        # Each tab's socket asks for bodies with its own command ids, from 1: an answer goes to its own request.
+        tabs = [types.SimpleNamespace(ws=FakeSocket(), next_id=1) for _ in range(2)]
+        for tab, (request_id, body) in zip(tabs, (("a", "phone must be a valid phone number"),
+                                                 ("b", "deliveryMethod must be a valid enum value"))):
+            await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+                "requestId": request_id, "type": "XHR", "documentURL": self.PAGE,
+                "request": {"method": "POST", "url": f"https://shop.ru/api/{request_id}"}}}, tab)
+            await self.errors.handle({"method": "Network.responseReceived",
+                                      "params": {"requestId": request_id, "response": {"status": 400}}}, tab)
+            await self.errors.handle({"method": "Network.loadingFinished", "params": {"requestId": request_id}}, tab)
+            self.assertEqual(tab.ws.sent[-1]["id"], 1)
+        await self.errors.handle({"id": 1, "result": {"body": "deliveryMethod must be a valid enum value"}}, tabs[1])
+        await self.errors.handle({"id": 1, "result": {"body": "phone must be a valid phone number"}}, tabs[0])
+        report = self.errors.report()
+        self.assertIn("POST https://shop.ru/api/a — phone must be a valid phone number", report)
+        self.assertIn("POST https://shop.ru/api/b — deliveryMethod must be a valid enum value", report)
+
+    async def test_probes_never_crowd_a_refused_write_out_of_the_report(self):
+        for number in range(worker.SiteErrors.LIMIT + 2):
+            await self.request("GET", f"https://shop.ru/api/probe{number}", 404, "")
+            await self.request("GET", f"https://shop.ru/api/probe{number}", 404, "")
+        await self.request("POST", "https://shop.ru/api/orders", 400, "bad phone")
+        report = self.errors.report()
+        self.assertIn("400 POST https://shop.ru/api/orders — bad phone", report)
+        self.assertIn("404 GET https://shop.ru/api/probe1 (×2)", report)
+        self.assertEqual(len(self.errors.entries), worker.SiteErrors.LIMIT)
+
+
+class StepTrailTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.object(worker, "SESSIONS", self.root / "sessions"))
+        self.secrets = {"https://*.shop.ru": {"password": "hunter22", "card_cvc": "249"}}
+
+    def lines(self, trail):
+        return [json.loads(line) for line in (trail.directory / "steps.jsonl").read_text().splitlines()]
+
+    async def test_a_step_line_has_no_secret_no_query_and_no_typed_text(self):
+        trail = worker.StepTrail(self.root / "t", self.secrets)
+        summary = worker.step_summary(
+            types.SimpleNamespace(url="https://shop.ru/pay?token=t0k", title="Оплата hunter22"),
+            types.SimpleNamespace(next_goal="Type hunter22 and 249.", action=[types.SimpleNamespace(
+                model_dump=lambda exclude_none: {"input": {"index": 7, "text": "hunter22"}})]), 3)
+
+        async def shoot():
+            return b"\xff\xd8jpeg"
+
+        await trail.record(shoot, summary, "https://shop.ru/pay?token=t0k#x", ["Field rejected hunter22"])
+        line = self.lines(trail)[0]
+        self.assertEqual(line["step"], 1)
+        self.assertEqual((line["url"], line["goal"], line["title"], line["errors"], line["actions"], line["shot"]),
+                         ("https://shop.ru/pay", "Type <secret> and <secret>.", "Оплата <secret>",
+                          ["Field rejected <secret>"], [{"action": "input", "index": 7}], "001.jpg"))
+        written = (trail.directory / "steps.jsonl").read_text()
+        for secret in ("hunter22", "249", "t0k"):
+            self.assertNotIn(secret, written)
+        self.assertEqual((trail.directory / "001.jpg").read_bytes(), b"\xff\xd8jpeg")
+
+    async def test_only_the_last_shots_are_kept_and_a_failed_or_slow_shot_skips_only_the_picture(self):
+        trail = worker.StepTrail(self.root / "t")
+
+        async def shoot():
+            return b"jpeg"
+
+        async def broken():
+            raise RuntimeError("tab is gone")
+
+        async def slow():
+            await asyncio.sleep(5)
+
+        self.enterContext(mock.patch.object(worker, "TRAIL_SHOTS", 3))
+        self.enterContext(mock.patch.object(worker, "TRAIL_SHOT_S", 0.05))
+        for _ in range(5):
+            await trail.record(shoot)
+        await trail.record(broken)
+        await trail.record(slow)
+        self.assertEqual(sorted(p.name for p in trail.directory.glob("*.jpg")), ["003.jpg", "004.jpg", "005.jpg"])
+        self.assertEqual([line.get("shot") for line in self.lines(trail)],
+                         ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", None, None])
+
+    async def test_a_trail_that_cannot_be_written_does_not_fail_the_step(self):
+        (self.root / "file").write_text("")
+        trail = worker.StepTrail(self.root / "file" / "t")
+
+        async def shoot():
+            return b"jpeg"
+
+        await trail.record(shoot)  # no exception
+
+    def test_only_the_newest_run_trails_stay_on_the_vm(self):
+        for number, session in enumerate(["a", "b", "a", "c"]):
+            path = worker.SESSIONS / session / worker.TRAIL / f"r{number}"
+            path.mkdir(parents=True)
+            os.utime(path, (1000 + number, 1000 + number))
+        worker.prune_trails(2)
+        kept = sorted(p.name for p in worker.SESSIONS.glob(f"*/{worker.TRAIL}/*"))
+        self.assertEqual(kept, ["r2", "r3"])
 
 
 if __name__ == "__main__":

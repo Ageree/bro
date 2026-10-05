@@ -112,8 +112,12 @@
 ## Worker, модели и сайты
 
 - Модели из РФ: OpenRouter, OpenAI и Anthropic отвечают 403, RouterAI
-  (`routerai.ru/api/v1`, `GET /key` как у OpenRouter) работает; luna через
-  RouterAI ломает JSON шага — агент на `deepseek/deepseek-v4.1-flash`. Ключ
+  (`routerai.ru/api/v1`, `GET /key` как у OpenRouter) работает. GPT Luna
+  через RouterAI отвечает без `choices`, лишь если рассуждение выключено и
+  `require_parameters` включён: ей `reasoning: medium` (`runTuning`), DeepSeek —
+  `none`. Модель агента — `BROWSER_VM_MODEL`. Но Luna отказывается вводить
+  карту («не могу завершить оплату»), хотя вход и оформление проходит: на
+  проде браузер — DeepSeek (04.10 он довёл ЮKassa до 3-D Secure). Ключ
   Foundation Models Cloud.ru — отдельный: ключ доступа даёт лишь список моделей.
 - Steel Cloud из Cloud.ru нестабилен (Cloudflare); его капчи и прокси — только
   при ≥ $10 купленного баланса; self-host steel-browser окна не даёт и на Avito
