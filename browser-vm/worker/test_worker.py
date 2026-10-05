@@ -1756,7 +1756,7 @@ class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(worker.solver_proxy(("10.0.1.5", 3128, None)))
         self.assertIsNone(worker.solver_proxy(None))
 
-    async def test_solves_a_recaptcha_through_the_runs_exit_and_puts_the_answer_in_every_document(self):
+    async def test_solves_a_plain_recaptcha_without_the_runs_exit_and_puts_the_answer_in_every_document(self):
         top = captcha_page([{"url": SIGNUP, "frameUrl": ANCHOR}])
         form = captcha_page([{"url": "https://www.inaturalist.org/form", "sitekey": RECAPTCHA_KEY, "hint": "recaptcha"}],
                             placed={"fields": 1, "handlers": 1})
@@ -1770,11 +1770,10 @@ class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("submit the form", message)
         url, body = http.posted[0]
         self.assertEqual(url, "https://api.2captcha.com/createTask")
+        # A plain v2 token is not tied to an address, and the run's exit is the one Google flagged (05.10).
         self.assertEqual(body["task"], {
-            "type": "RecaptchaV2Task", "websiteURL": SIGNUP, "websiteKey": RECAPTCHA_KEY,
-            "userAgent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/154.0", "proxyType": "http",
-            "proxyAddress": "proxy.geonode.io", "proxyPort": 10001, "proxyLogin": "geonode_u-session-ab12",
-            "proxyPassword": "pw:1"})
+            "type": "RecaptchaV2TaskProxyless", "websiteURL": SIGNUP, "websiteKey": RECAPTCHA_KEY,
+            "userAgent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/154.0"})
         self.assertEqual(http.posted[1][1], {"clientKey": SOLVER_KEY, "taskId": 7})
         for page in (top, form):
             answer = page.calls[-1]
@@ -1798,6 +1797,19 @@ class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
                          ["TurnstileTask", "TurnstileTaskProxyless"])
         self.assertEqual((http.posted[1][1]["task"]["action"], http.posted[1][1]["task"]["data"]), ("signup", "c1"))
         self.assertNotIn("proxyLogin", http.posted[1][1]["task"])
+
+    async def test_a_check_unsolvable_through_the_runs_exit_is_asked_again_without_it(self):
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 5},
+                                 {"errorId": 1, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"},
+                                 {"errorId": 0, "taskId": 6},
+                                 {"errorId": 0, "status": "ready", "solution": {"gRecaptchaResponse": SOLVED_TOKEN}}])
+        page = captcha_page([{"sitekey": "10000000-ffff-ffff-ffff-000000000001", "hint": "hcaptcha", "url": SIGNUP}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY,
+                                                           worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        tasks = [body["task"] for _, body in http.posted if "task" in body]
+        self.assertEqual([task["type"] for task in tasks], ["HCaptchaTask", "HCaptchaTaskProxyless"])
+        self.assertNotIn("proxyLogin", tasks[1])
 
     async def test_a_yandex_smartcaptcha_from_its_frame_or_its_widget_goes_as_its_own_task(self):
         key = "ysc1_DAo8nFPdNCMHkAwYxIUJFxW5IIJd9ITGIOvF4KqF7f2d"

@@ -196,6 +196,19 @@ class TokenCaptchas(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(SOLVER_KEY, text)
             self.assertNotIn(TOKEN, text)
 
+    async def test_recaptcha_whose_script_never_loaded_gets_a_field_in_its_form(self):
+        # From a flagged exit reCAPTCHA «cannot contact the service»: its widget div stays empty, with no
+        # response field for the token (iNaturalist sign-up, 05.10).
+        self.pages["/signup"] = (f'<form id="signup"><input name="email"><div class="g-recaptcha" '
+                                 f'data-sitekey="{RECAPTCHA_KEY}"></div><button>Sign up</button></form>')
+        await self.open("/signup")
+        solved, message = await self.solve()
+        self.assertTrue(solved, message)
+        self.assertEqual(self.tasks[0]["task"]["type"], "RecaptchaV2TaskProxyless")
+        worlds, _ = await worker.captcha_worlds(self.browser)
+        sent = await worlds[0]("new FormData(document.getElementById('signup')).get('g-recaptcha-response')")
+        self.assertEqual(sent, TOKEN)
+
     async def test_hcaptcha_in_a_same_origin_frame_with_a_data_callback(self):
         self.pages["/form"] = HCAPTCHA_FORM
         self.pages["/signup"] = '<iframe src="/form" width=600 height=500></iframe>'
