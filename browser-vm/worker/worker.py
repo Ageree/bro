@@ -1230,8 +1230,8 @@ class Worker:
             return (ActionResult(extracted_content=message, long_term_memory=message) if filled
                     else ActionResult(error=message))
 
-        @tools.action("Get past a captcha: a reCAPTCHA («I'm not a robot», visible or invisible), an hCaptcha or a "
-                      "Cloudflare Turnstile check on a form, or an anti-bot page with a slider puzzle (GeeTest), "
+        @tools.action("Get past a captcha: a reCAPTCHA («I'm not a robot», visible or invisible), an hCaptcha, a "
+                      "Cloudflare Turnstile or a Yandex SmartCaptcha check on a form, or an anti-bot page with a slider puzzle (GeeTest), "
                       "such as Avito's «Доступ ограничен». Call it once on the page with the check, before you tick "
                       "the check or open its pictures or audio: it has the check solved (up to two minutes), puts "
                       "the answer into the page and says whether to submit the form; a slider page it presses, "
@@ -1725,7 +1725,7 @@ GEETEST_ANSWER = r"""((answer) => {
   return true;
 })"""
 
-# --- Token captchas (reCAPTCHA v2, hCaptcha, Cloudflare Turnstile) ---------------------------------------
+# --- Token captchas (reCAPTCHA v2, hCaptcha, Cloudflare Turnstile, Yandex SmartCaptcha) -------------------
 
 # A token captcha is answered by a string the site's server checks with the captcha's vendor: 2Captcha solves
 # it from the widget's sitekey and the page's address, and the answer goes where the widget itself puts it
@@ -1786,7 +1786,7 @@ TOKEN_CAPTCHA_STATE = "(() => {" + CAPTCHA_DOCUMENTS + r"""
       const cls = String(el.className || '');
       add({sitekey: el.getAttribute('data-sitekey'), invisible: el.getAttribute('data-size') === 'invisible',
            hint: /h-captcha/.test(cls) ? 'hcaptcha' : /cf-turnstile/.test(cls) ? 'turnstile'
-             : /g-recaptcha/.test(cls) ? 'recaptcha' : null,
+             : /smart-captcha/.test(cls) ? 'smartcaptcha' : /g-recaptcha/.test(cls) ? 'recaptcha' : null,
            s: el.getAttribute('data-s'), action: el.getAttribute('data-action'), cdata: el.getAttribute('data-cdata')});
     }
     for (const frame of deep(doc, 'iframe')) if (frame.src) add({frameUrl: frame.src});
@@ -1807,7 +1807,7 @@ TOKEN_CAPTCHA_STATE = "(() => {" + CAPTCHA_DOCUMENTS + r"""
 # sitekey after this script has returned (one may submit the form and take the document away).
 TOKEN_CAPTCHA_ANSWER = "((kind, sitekey, token) => {" + CAPTCHA_DOCUMENTS + r"""
   const names = {recaptcha: ['g-recaptcha-response'], hcaptcha: ['h-captcha-response', 'g-recaptcha-response'],
-                 turnstile: ['cf-turnstile-response', 'g-recaptcha-response']}[kind] || [];
+                 turnstile: ['cf-turnstile-response', 'g-recaptcha-response'], smartcaptcha: ['smart-token']}[kind] || [];
   let fields = 0;
   const handlers = [];
   const handler = (win, fn) => {
@@ -2509,17 +2509,20 @@ TOKEN_SOLVE_S = 120
 TOKEN_POLL_S = 5
 TOKEN_TASKS = 2  # a second task only after a proxy the service could not use, or an unsolvable answer
 TOKEN_RETRIED = ("ERROR_CAPTCHA_UNSOLVABLE", "ERROR_NO_SLOT_AVAILABLE")
-CAPTCHA_NAMES = {"recaptcha": "reCAPTCHA", "hcaptcha": "hCaptcha", "turnstile": "Cloudflare Turnstile check"}
+CAPTCHA_NAMES = {"recaptcha": "reCAPTCHA", "hcaptcha": "hCaptcha", "turnstile": "Cloudflare Turnstile check",
+                 "smartcaptcha": "Yandex SmartCaptcha"}
 RECAPTCHA_HOSTS = {"www.google.com", "google.com", "www.recaptcha.net", "recaptcha.net", "recaptcha.google.com"}
 SITEKEY = re.compile(r"^[\w-]{20,100}$")
 TURNSTILE_KEY = re.compile(r"^0x[\w-]{16,}$")
 HCAPTCHA_KEY = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+SMARTCAPTCHA_HOST = "smartcaptcha.yandexcloud.net"
+SMARTCAPTCHA_KEY = re.compile(r"^ysc\d_[\w-]+$")
 SOLVER_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 NO_SLIDER = "No slider puzzle opened on this page: its check is of another kind."
 V3_UNSUPPORTED = ("This page uses reCAPTCHA v3, which scores the browser without any puzzle: solve_captcha "
                   "cannot answer it.")
 NO_CAPTCHA = ("No captcha solve_captcha can answer is on this page (it answers reCAPTCHA v2, hCaptcha, Cloudflare "
-              "Turnstile and slider puzzles): the check is of another kind.")
+              "Turnstile, Yandex SmartCaptcha and slider puzzles): the check is of another kind.")
 
 
 class SolverRefused(Exception):
@@ -2554,6 +2557,9 @@ def captcha_in_frame_url(url):
         key = (fragment.get("sitekey") or query.get("sitekey") or [None])[0]
         return {"kind": "hcaptcha", "sitekey": key, "invisible": (fragment.get("size") or [""])[0] == "invisible"} \
             if key else None
+    if host == SMARTCAPTCHA_HOST:
+        key = (query.get("sitekey") or [None])[0]
+        return {"kind": "smartcaptcha", "sitekey": key} if key else None
     if host == "challenges.cloudflare.com" and "/turnstile/" in parsed.path:
         key = next((part for part in parsed.path.split("/") if TURNSTILE_KEY.match(part)), None)
         return {"kind": "turnstile", "sitekey": key} if key else None
@@ -2567,7 +2573,7 @@ def captcha_vendor_frame(url):
     except ValueError:
         return False
     return (host in RECAPTCHA_HOSTS or host == "hcaptcha.com" or host.endswith(".hcaptcha.com")
-            or host == "challenges.cloudflare.com")
+            or host == "challenges.cloudflare.com" or host == SMARTCAPTCHA_HOST)
 
 
 def sitekey_kind(sitekey, hint):
@@ -2575,6 +2581,8 @@ def sitekey_kind(sitekey, hint):
         return hint
     if TURNSTILE_KEY.match(sitekey):
         return "turnstile"
+    if SMARTCAPTCHA_KEY.match(sitekey):
+        return "smartcaptcha"
     return "hcaptcha" if HCAPTCHA_KEY.match(sitekey) else "recaptcha"
 
 
@@ -2635,9 +2643,9 @@ def token_task(widget, proxy=None, user_agent=None):
     kind = widget["kind"]
     enterprise = kind == "recaptcha" and widget.get("enterprise")
     name = {"recaptcha": "RecaptchaV2EnterpriseTask" if enterprise else "RecaptchaV2Task",
-            "hcaptcha": "HCaptchaTask", "turnstile": "TurnstileTask"}[kind]
+            "hcaptcha": "HCaptchaTask", "turnstile": "TurnstileTask", "smartcaptcha": "YandexSmartCaptchaTask"}[kind]
     task = {"type": name if proxy else f"{name}Proxyless", "websiteURL": widget["url"], "websiteKey": widget["sitekey"]}
-    if kind != "turnstile" and widget.get("invisible"):
+    if kind in ("recaptcha", "hcaptcha") and widget.get("invisible"):
         task["isInvisible"] = True
     if kind == "recaptcha" and widget.get("s"):
         task.update({"enterprisePayload": {"s": widget["s"]}} if enterprise else {"recaptchaDataSValue": widget["s"]})
@@ -2794,8 +2802,8 @@ allows paying. Call done only when the request is finished or one of its rules t
 offers the next step of what you were asked to do (a suggestion to pick, a store to choose, «К оплате»,
 «Оплатить»), take that step instead. An anti-bot check
 page with a slider puzzle (drag a piece into its gap) goes to the solve_captcha action, which presses its
-button and solves it; never press or drag it yourself. A reCAPTCHA («I'm not a robot»), hCaptcha or
-Cloudflare Turnstile check goes to solve_captcha as well, before you tick it or open its pictures; never ask
+button and solves it; never press or drag it yourself. A reCAPTCHA («I'm not a robot»), hCaptcha,
+Cloudflare Turnstile or Yandex SmartCaptcha check goes to solve_captcha as well, before you tick it or open its pictures; never ask
 for its audio challenge, which gets this network address flagged. Once solve_captcha says the check is
 solved, leave the check alone and submit the form. To read a long list
 or table, prefer one evaluate call that returns the data (wrap the code in an async IIFE:

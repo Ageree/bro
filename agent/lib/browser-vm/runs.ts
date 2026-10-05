@@ -167,7 +167,7 @@ export function browserVmReconcileConfigured() {
  * one well, and left to press the button itself it gave up before the
  * puzzle drew, so the worker's `solve_captcha` does all of it: presses the
  * button, waits, places the piece (or hands it to 2Captcha). A reCAPTCHA,
- * hCaptcha or Turnstile on a form goes to it too, before the agent opens the
+ * hCaptcha, Turnstile or Yandex SmartCaptcha on a form goes to it too, before the agent opens the
  * picture challenge: on 05.10 the iNaturalist sign-up run asked reCAPTCHA
  * for its audio challenge and got the exit flagged («Повторите попытку
  * позже»), while 2Captcha answers it with a token. Any other check, or a
@@ -175,7 +175,7 @@ export function browserVmReconcileConfigured() {
  * once.
  */
 const addressWallLine =
-  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. A reCAPTCHA («I'm not a robot»), hCaptcha or Cloudflare Turnstile check goes to solve_captcha too, before you tick it or open its pictures, and never ask for its audio challenge: that gets this address flagged. Once solve_captcha says the check is solved, leave the check alone and submit the form. If the wall or the check is still there after solve_captcha, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
+  "If the site blocks this network address (for example «Доступ ограничен: проблема с IP»), call the solve_captcha action once: it gets past the site's check itself. A reCAPTCHA («I'm not a robot»), hCaptcha, Cloudflare Turnstile or Yandex SmartCaptcha check goes to solve_captcha too, before you tick it or open its pictures, and never ask for its audio challenge: that gets this address flagged. Once solve_captcha says the check is solved, leave the check alone and submit the form. If the wall or the check is still there after solve_captcha, or the check is of another kind, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
 
 /**
  * Start a run on the workspace's VM, powering the VM on or creating it

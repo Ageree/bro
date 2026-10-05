@@ -45,7 +45,15 @@ HCAPTCHA_FORM = f"""
 <script>function onCaptcha(token) {{ window.solvedWith = token; }}</script>
 """
 
-V3_PAGE = f"""<form><input name="email"></form>
+SMART_KEY = "ysc1_DAo8nFPdNCMHkAwYxIUJFxW5IIJd9ITGIOvF4KqF7f2d"
+# Yandex SmartCaptcha as its widget leaves a form: the container with the key, the hidden smart-token input.
+SMART_FORM = f"""
+<form><div class="smart-captcha" data-sitekey="{SMART_KEY}" data-callback="onSmart">
+  <input type="hidden" name="smart-token" value=""></div></form>
+<script>function onSmart(token) {{ window.solvedWith = token; }}</script>
+"""
+
+V3_PAGE =f"""<form><input name="email"></form>
 <script src="http://127.0.0.1:8731/recaptcha/api.js?render={RECAPTCHA_KEY}"></script>"""
 
 # What the form's documents read after a solve: the response fields, the callback's token, the popup.
@@ -179,6 +187,17 @@ class TokenCaptchas(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tasks[0]["task"]["websiteURL"], "http://127.0.0.1:8731/form")
         form = await self.read("8731/form")
         self.assertEqual((form["fields"], form["solvedWith"]), ([TOKEN, TOKEN], TOKEN))
+
+    async def test_yandex_smartcaptcha_on_the_page_itself(self):
+        self.pages["/login"] = SMART_FORM
+        await self.open("/login")
+        solved, message = await self.solve()
+        self.assertTrue(solved, message)
+        self.assertEqual((self.tasks[0]["task"]["type"], self.tasks[0]["task"]["websiteKey"]),
+                         ("YandexSmartCaptchaTaskProxyless", SMART_KEY))
+        worlds, _ = await worker.captcha_worlds(self.browser)
+        state = await worlds[0]("({token: document.querySelector('[name=smart-token]').value, solved: window.solvedWith})")
+        self.assertEqual(state, {"token": TOKEN, "solved": TOKEN})
 
     async def test_v3_a_wrong_key_and_a_page_without_a_captcha(self):
         self.pages["/v3"] = V3_PAGE

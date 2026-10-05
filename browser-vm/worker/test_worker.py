@@ -1798,6 +1798,25 @@ class TokenCaptchaTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((http.posted[1][1]["task"]["action"], http.posted[1][1]["task"]["data"]), ("signup", "c1"))
         self.assertNotIn("proxyLogin", http.posted[1][1]["task"])
 
+    async def test_a_yandex_smartcaptcha_from_its_frame_or_its_widget_goes_as_its_own_task(self):
+        key = "ysc1_DAo8nFPdNCMHkAwYxIUJFxW5IIJd9ITGIOvF4KqF7f2d"
+        framed = worker.captcha_in_frame_url(f"https://smartcaptcha.yandexcloud.net/checkbox?sitekey={key}&hl=ru")
+        self.assertEqual(framed, {"kind": "smartcaptcha", "sitekey": key})
+        self.assertTrue(worker.captcha_vendor_frame("https://smartcaptcha.yandexcloud.net/checkbox"))
+        self.assertEqual(worker.sitekey_kind(key, None), "smartcaptcha")
+        http = FakeHttp(answers=[{"errorId": 0, "taskId": 4},
+                                 {"errorId": 0, "status": "ready", "solution": {"token": SOLVED_TOKEN}}])
+        page = captcha_page([{"url": SIGNUP, "sitekey": key, "hint": "smartcaptcha", "invisible": True}])
+        solved, message = await worker.solve_token_captcha([page], [], SIGNUP, http, SOLVER_KEY,
+                                                           worker.solver_proxy(UPSTREAM))
+        self.assertTrue(solved, message)
+        self.assertIn("Yandex SmartCaptcha", message)
+        task = http.posted[0][1]["task"]
+        self.assertEqual((task["type"], task["websiteKey"], task["proxyLogin"]),
+                         ("YandexSmartCaptchaTask", key, "geonode_u-session-ab12"))
+        self.assertNotIn("isInvisible", task)  # not a field of this task
+        self.assertTrue(page.calls[-1].startswith(worker.TOKEN_CAPTCHA_ANSWER + '("smartcaptcha"'))
+
     async def test_an_unsolvable_answer_is_asked_for_once_more_and_then_reported_with_its_code(self):
         http = FakeHttp(answers=[{"errorId": 0, "taskId": 1}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"},
                                  {"errorId": 0, "taskId": 2}, {"errorId": 12, "errorCode": "ERROR_CAPTCHA_UNSOLVABLE"}])
