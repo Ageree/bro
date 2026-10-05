@@ -554,8 +554,11 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         told = [["A line before any step."], [refused], []]
 
         class Refusals:
-            def start(self, url):
+            def start(self, url, target=None):
                 pass
+
+            def watches(self, target):
+                return True
 
             async def stop(self):
                 pass
@@ -605,6 +608,57 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("goal", lines[1])  # a step whose output failed has no summary of its own
         self.assertEqual((trail / "002.jpg").read_bytes(), b"\xff\xd8small")
         self.assertNotIn("owner-pass", (trail / "steps.jsonl").read_text())
+
+    async def test_a_tab_the_agent_moves_into_is_listened_to_from_its_next_step(self):
+        # A DeepSeek run on the checkout harness's shop opened the site in a new tab and ordered there: two of
+        # its three refused orders were never seen while only the first tab was listened to.
+        started = []
+
+        class Listener:
+            def __init__(self):
+                self.tabs = set()
+
+            def start(self, url, target=None):
+                started.append((url, target))
+                self.tabs.add(target)
+
+            def watches(self, target):
+                return target in self.tabs
+
+            async def stop(self):
+                pass
+
+            def notices(self, secrets):
+                return []
+
+            def report(self, secrets):
+                return ""
+
+        async def page_targets():
+            return [{"id": tab, "type": "page", "webSocketDebuggerUrl": f"ws://cdp/{tab}"} for tab in self.chrome.tabs]
+
+        self.enterContext(mock.patch.object(worker, "SiteErrors", Listener))
+        self.enterContext(mock.patch.object(worker, "page_targets", page_targets))
+
+        async def moves_to_a_new_tab(agent, on_step_start):
+            browser = agent.options["browser_session"]
+            await on_step_start(agent)
+            browser.agent_focus_target_id = await self.chrome.new_tab()
+            await on_step_start(agent)
+            await on_step_start(agent)
+            return FakeHistory(True)
+
+        FakeAgent.script = moves_to_a_new_tab
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Order the kettle."})
+        await self.settled("r1")
+        self.assertEqual(started, [("ws://cdp/T1", "T1"), ("ws://cdp/T2", "T2")])
+
+    def test_the_agent_types_a_phone_after_the_fields_own_country_code(self):
+        # 04.10: «+7 921 781-88-76» typed after a field's fixed +7 became +7 79217818876, a Kazakh number.
+        self.assertIn("type 9217818876", worker.EXTEND_SYSTEM)
+        self.assertIn("read the errors the\nform shows", worker.EXTEND_SYSTEM)
+        # GPT Luna ended runs with done right before «К оплате» or «Заплатить» (harness, 05.10).
+        self.assertIn("Call done only when the request is finished", worker.EXTEND_SYSTEM)
 
     async def test_a_run_records_the_proxy_bytes_it_moved_and_keeps_them_across_a_restart(self):
         async def browse(agent, on_step_start):
@@ -1849,6 +1903,24 @@ class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.errors.notices(), [])
         with mock.patch.object(worker.SiteErrors, "BODY_WAIT_S", 0):
             self.assertIn("422 (no answer text)", self.errors.notices()[0])
+
+    async def test_two_tabs_number_their_commands_apart(self):
+        # Each tab's socket asks for bodies with its own command ids, from 1: an answer goes to its own request.
+        tabs = [types.SimpleNamespace(ws=FakeSocket(), next_id=1) for _ in range(2)]
+        for tab, (request_id, body) in zip(tabs, (("a", "phone must be a valid phone number"),
+                                                 ("b", "deliveryMethod must be a valid enum value"))):
+            await self.errors.handle({"method": "Network.requestWillBeSent", "params": {
+                "requestId": request_id, "type": "XHR", "documentURL": self.PAGE,
+                "request": {"method": "POST", "url": f"https://shop.ru/api/{request_id}"}}}, tab)
+            await self.errors.handle({"method": "Network.responseReceived",
+                                      "params": {"requestId": request_id, "response": {"status": 400}}}, tab)
+            await self.errors.handle({"method": "Network.loadingFinished", "params": {"requestId": request_id}}, tab)
+            self.assertEqual(tab.ws.sent[-1]["id"], 1)
+        await self.errors.handle({"id": 1, "result": {"body": "deliveryMethod must be a valid enum value"}}, tabs[1])
+        await self.errors.handle({"id": 1, "result": {"body": "phone must be a valid phone number"}}, tabs[0])
+        report = self.errors.report()
+        self.assertIn("POST https://shop.ru/api/a — phone must be a valid phone number", report)
+        self.assertIn("POST https://shop.ru/api/b — deliveryMethod must be a valid enum value", report)
 
     async def test_probes_never_crowd_a_refused_write_out_of_the_report(self):
         for number in range(worker.SiteErrors.LIMIT + 2):

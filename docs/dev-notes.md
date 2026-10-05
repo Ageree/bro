@@ -887,6 +887,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `steps.jsonl`, без секретов и введённого текста), не `report/`: всё из
   `report/` Бро шлёт человеку картинками, а листинг режет на 100 файлов.
   Читать — `GET /v1/files?session=…&prefix=trail/` токеном worker.
+- Регрессия оформления заказа — стенд `browser-vm/worker/checkout_harness.py`:
+  копия кассы PREDUBEZHDAI (`checkout_shop.py`) под https://predubezhdai.ru и
+  yoomoney.ru на 127.0.0.2/3:443 (нужен root), настоящий `run_agent` worker,
+  тексты и секреты — из `composeBrowserTask` (после правки текста обновите
+  `checkout_tasks.json`, как сказано в `tests/agent/tools/checkout-harness-tasks.test.ts`).
+  Каждый прогон платный (1–4 ₽). На 127.0.0.1 GPT Luna отказывалась платить «на
+  локальном сайте», поэтому — настоящие имена. Предзаполненная корзина стенда —
+  «товары до поручения», и модель их убирала: пресеты корзину не наполняют.
 - Логин Госуслуг вводится только на gosuslugi.ru и дан лишь госсайтам из
   закрытого списка (`public-services.ts`): вход отдаёт сайту профиль человека.
 - Статуса «ждёт ввода» у Browser Use нет: правило «сразу кончай с
