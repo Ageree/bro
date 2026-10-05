@@ -10,6 +10,7 @@ import {
 } from "@web/components/ui/dialog";
 import { LoginForm } from "./form";
 import { ChromeImportPanel } from "./import";
+import { BroLoginReveal } from "./reveal";
 import {
   useVaultSection,
   VaultItemBrowser,
@@ -21,10 +22,14 @@ import {
 import { useVaultSetup } from "../setup";
 
 export function VaultLogins({
+  broLoginIds,
   items,
 }: {
+  /** Logins Bro registered with its own mailbox, decided on the server. */
+  readonly broLoginIds: readonly string[];
   readonly items: readonly VaultItem[];
 }) {
+  const broLogins = new Set(broLoginIds);
   const searchParams = useSearchParams();
   const setup = useVaultSetup();
   const requestedSetup = setup?.kind === "login" ? setup : undefined;
@@ -57,6 +62,11 @@ export function VaultLogins({
             </DialogHeader>
             <VaultItemBrowser
               items={items}
+              renderRowExtra={(item) =>
+                broLogins.has(item.id) ? (
+                  <BroLoginReveal id={item.id} />
+                ) : undefined
+              }
               searchId="vault-search-logins"
               title="Входы"
             />

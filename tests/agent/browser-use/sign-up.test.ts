@@ -288,7 +288,7 @@ describe("what a settled sign-up leaves in the vault", () => {
     );
 
     expect(line).toContain(
-      "as «Аккаунт Бро на www.inaturalist.org» with quiet.fox42@agentmail.to as its login"
+      "as «Аккаунт Бро на www.inaturalist.org», where they can see its login and password with «Показать данные для входа»"
     );
     expect(line).toContain("раздел «Сейф» → «Входы»");
     expect(line).toContain("/vault");

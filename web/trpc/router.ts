@@ -10,6 +10,7 @@ import {
   selectWorkspaceModel,
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
+import { revealBroLogin } from "@db/services/bro-logins";
 import {
   forgetMemory,
   listCurrentMemories,
@@ -158,6 +159,15 @@ export const appRouter = createTRPCRouter({
     remove: protectedProcedure
       .input(z.object({ id: z.string().min(1) }))
       .mutation(({ ctx, input }) => deleteVaultItem(ctx.scope, input.id)),
+    // Only a login Bro registered with its own mailbox is read back
+    // (`revealBroLogin`); anything else is not found, with no word on why.
+    reveal: protectedProcedure
+      .input(z.object({ id: z.string().min(1).max(200) }))
+      .mutation(async ({ ctx, input }) => {
+        const login = await revealBroLogin(ctx.scope, input.id);
+        if (login === undefined) throw new TRPCError({ code: "NOT_FOUND" });
+        return login;
+      }),
   },
   models: {
     list: protectedProcedure.query(readModelCatalog),
