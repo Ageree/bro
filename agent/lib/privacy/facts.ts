@@ -56,7 +56,13 @@ export function keptData(
  */
 export function dataProcessors(
   modelId: string,
-  { memoryDigest = false }: { readonly memoryDigest?: boolean } = {}
+  {
+    memoryDigest = false,
+    agentMail = false,
+  }: {
+    readonly memoryDigest?: boolean;
+    readonly agentMail?: boolean;
+  } = {}
 ) {
   const direct = directModelProviderName();
   return [
@@ -83,6 +89,11 @@ export function dataProcessors(
     ...(composioConfigured()
       ? [
           "Доступ к Google, Notion, Slack и другим подключённым приложениям держит Composio: там хранятся ключи от этих аккаунтов, и через него идут запросы к ним.",
+        ]
+      : []),
+    ...(agentMail
+      ? [
+          "Собственную почту Бро обслуживает AgentMail: сервис хранит адрес ящика агента, входящие и отправленные письма и видит их адресатов и содержимое. Личный Gmail человека — отдельное подключение. В базе Бро хранятся привязка ящика и идентификаторы отправок для защиты от повторной отправки.",
         ]
       : []),
     ...(supermemoryConfigured()

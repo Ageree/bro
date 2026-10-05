@@ -1,6 +1,8 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { db, workspaceMemberships, workspaces } from "@db";
+import { provisionAgentMailbox } from "@db/services/agent-mail";
+import { AgentMailError } from "@shared/agent-mail/api";
 
 export async function ensureScope(scope: AccessScope) {
   const createdAt = new Date();
@@ -21,6 +23,16 @@ export async function ensureScope(scope: AccessScope) {
         target: [workspaceMemberships.workspaceId, workspaceMemberships.userId],
       });
   });
+  // Email is optional: provider quota or downtime must not prevent login.
+  // The next scope access retries with the same provider client_id.
+  try {
+    await provisionAgentMailbox(scope);
+  } catch (error) {
+    console.warn("[agent-mail] mailbox provisioning unavailable", {
+      status: error instanceof AgentMailError ? error.status : undefined,
+      code: error instanceof AgentMailError ? error.code : undefined,
+    });
+  }
 }
 
 /**

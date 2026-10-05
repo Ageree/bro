@@ -175,6 +175,16 @@ const browserVmProxySchema = z
 
 export const env = createEnv({
   server: {
+    AGENTMAIL_API_KEY: trimmedValue.optional(),
+    AGENTMAIL_PROXY_URL: z
+      .url()
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "AGENTMAIL_PROXY_URL must be an HTTP or HTTPS proxy URL"
+      )
+      .optional(),
+    // Empty/unset disables provisioning; * enables it for every workspace.
+    AGENTMAIL_WORKSPACES: workspaceListSchema.optional(),
     // Required
     DATABASE_URL: databaseUrlSchema,
 

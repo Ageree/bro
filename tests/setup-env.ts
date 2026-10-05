@@ -22,6 +22,9 @@ const testEnvironment = {
 // delete a real browser or profile, so tests stub their own. The same goes
 // for a Cloud.ru key and a real VM, and agent sessions do carry one.
 const unsetEnvironment = [
+  "AGENTMAIL_API_KEY",
+  "AGENTMAIL_PROXY_URL",
+  "AGENTMAIL_WORKSPACES",
   "BROWSER_BACKEND",
   "BROWSER_HOST_BUNDLE",
   "BROWSER_HOST_NAME_PREFIX",
