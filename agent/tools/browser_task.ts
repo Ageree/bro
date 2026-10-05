@@ -1369,7 +1369,7 @@ export function composeBrowserTask(options: {
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
     personStepLine(),
-    options.signUp ? signUpLine(options.signUp.username) : undefined,
+    options.signUp ? signUpLine(options.signUp.username, true) : undefined,
     options.staging !== undefined && options.consent === undefined
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
