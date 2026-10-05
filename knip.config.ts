@@ -28,6 +28,7 @@ export default {
     "scripts/costs/step-context.ts",
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
+    "scripts/cloudru-app-host/ops/agent-mail.ts",
     "taze.config.ts",
     // End-to-end runs against real clouds, by hand (docs/browser-pool.md).
     "tests/e2e/**/*.e2e.ts",

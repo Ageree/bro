@@ -175,6 +175,9 @@ const browserVmProxySchema = z
 
 export const env = createEnv({
   server: {
+    AGENTMAIL_API_KEY: trimmedValue.optional(),
+    // Empty/unset disables provisioning; * enables it for every workspace.
+    AGENTMAIL_WORKSPACES: workspaceListSchema.optional(),
     // Required
     DATABASE_URL: databaseUrlSchema,
 

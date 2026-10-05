@@ -589,6 +589,7 @@ def assemble(stage, version, commit):
     # ops/store.py signs Object Storage requests the way the session does.
     shutil.copy2(REPO / "scripts/cloudru-sandbox-probe/s3.py", stage / "ops/s3.py")
     shutil.copy2(BUILDS / "migrate.mjs", stage / "ops/migrate.mjs")
+    shutil.copy2(BUILDS / "agent-mail.mjs", stage / "ops/agent-mail.mjs")
     node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout.strip()
     world_version = json.loads((world / "package.json").read_text())["version"]
     (stage / "release.json").write_text(json.dumps({
@@ -636,6 +637,11 @@ def cmd_build(args):
          "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
         env)
     stage = BUILDS / "stage"
+    run(["pnpm", "exec", "esbuild", "scripts/cloudru-app-host/ops/agent-mail.ts", "--bundle", "--platform=node",
+         "--target=node24", "--format=esm", f"--outfile={BUILDS / 'agent-mail.mjs'}",
+         "--external:pg-native", "--log-level=warning",
+         "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
+        env)
     assemble(stage, version, commit)
     archive = BUILDS / f"{version}.tar.zst"
     run(["tar", "-C", str(stage), "-I", "zstd -19 -T0", "-cf", str(archive), "."], env)
@@ -690,7 +696,7 @@ REQUIRED = ("DATABASE_URL", "WORKFLOW_POSTGRES_URL", "BETTER_AUTH_URL", "BETTER_
 # as production's), Supermemory or Composio (connected accounts copied from production could send mail);
 # nothing that bills with no scheduler to settle it: Browser Use, the browser VM and pool pilots, the code
 # sandbox pilot. The operator brings one back in stand.json when a rehearsal needs it on purpose.
-STAND_DROPPED = re.compile(r"(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
+STAND_DROPPED = re.compile(r"AGENTMAIL_.*|(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
                            r"SUPERMEMORY_API_KEY|COMPOSIO_API_KEY|BROWSER_VM_TWOCAPTCHA_API_KEY|"
                            r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES")
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
@@ -705,6 +711,7 @@ BLOB = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_).*")
 # ROUTERAI_API_KEY came to Vercel after vercel-production.json was read; TELEGRAM_OWNER_CHAT_ID is not on
 # Vercel at all (the owner gives it in prod.json).
 SENSITIVE_ON_VERCEL = {
+    "AGENTMAIL_API_KEY",
     "BROWSER_USE_API_KEY", "BROWSER_USE_WEBHOOK_SECRET", "BROWSER_VM_LLM_API_KEY", "BROWSER_VM_PROXY",
     "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET",
     "COMPOSIO_API_KEY", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",

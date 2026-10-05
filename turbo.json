@@ -5,6 +5,7 @@
       "dependsOn": ["^build:app"],
       "env": [
         "ACCESS_*",
+        "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_BACKEND",
@@ -40,6 +41,7 @@
       "dependsOn": ["db:migrate:deploy"],
       "env": [
         "ACCESS_*",
+        "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_BACKEND",
@@ -83,6 +85,7 @@
       "cache": false,
       "passThroughEnv": [
         "ACCESS_*",
+        "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_BACKEND",
@@ -128,6 +131,7 @@
       "cache": false,
       "passThroughEnv": [
         "ACCESS_*",
+        "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "BROWSER_BACKEND",

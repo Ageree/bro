@@ -5,6 +5,7 @@ import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { agentMailboxEnabled } from "@db/services/agent-mail";
 import {
   dataProcessors,
   keptData,
@@ -74,7 +75,10 @@ export const privacy = defineTool({
     ]);
     return {
       kept: keptData({ conversationLog }),
-      processors: dataProcessors(modelId, { memoryDigest }),
+      processors: dataProcessors(modelId, {
+        memoryDigest,
+        agentMail: agentMailboxEnabled(scope),
+      }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
       remove: [memoryRemoval(), ...removalOutsideMemory()],

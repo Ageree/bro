@@ -62,6 +62,32 @@ by [`docs/migrate-from-convex.md`](docs/migrate-from-convex.md).
 Treat `SECRET_ENCRYPTION_KEY` as production key material: losing it loses the
 vault, and rotating it requires re-encrypting existing vault values.
 
+### AgentMail: the agent's own email
+
+Set `AGENTMAIL_API_KEY` on the server and `AGENTMAIL_WORKSPACES` to a
+comma-separated list of workspace IDs for a pilot, or `*` for every agent.
+Without both, AgentMail is disabled. Every workspace agent receives one
+persistent inbox when its workspace is created or next accessed; existing
+agents are provisioned the same way. Chats and temporary task subagents share
+the workspace identity and do not allocate extra inboxes.
+
+Bro can show its address and list, read, and send mail using `agent-mail-*`
+tools. These operate only on its workspace's own inbox. Sending requires an
+explicit user request and follows the existing outbound-message rules;
+incoming mail never authorizes actions. This integration does not start turns
+automatically when mail arrives. The user's Gmail remains a separate service.
+
+The Free plan currently includes 3 inboxes and 3,000 emails/month (100/day).
+Provider quota or downtime leaves the agent usable; inbox provisioning retries
+on its next access with the same `client_id`. Repeated sends use AgentMail's
+idempotency header and a persistent receipt; an interrupted send older than
+23 hours is refused because the provider expires its send key after 24 hours.
+
+For an existing production agent, run
+`python scripts/cloudru-app-host/host.py ops bro-app-1 agent-mail.sh provision WORKSPACE_ID`.
+The `self-test` action sends one message to that agent's own address and checks
+real send, replay, list, and read. It does not contact the owner's Gmail.
+
 ### File storage
 
 Images and file attachments live in a private bucket of Object Storage on
