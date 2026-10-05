@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as agentMailApi from "@shared/agent-mail/api";
+import type * as publicFetch from "@agent/lib/sandbox/public-fetch";
 import {
   authenticatedFrom,
   codeInLetter,
+  confirmationLinkInLetter,
+  trackedConfirmationLink,
+  trackedLinkTarget,
   mailCodeFromSite,
   waitsForMailCode,
 } from "@agent/lib/browser-use/mail-code";
@@ -10,6 +15,43 @@ import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "full",
+}));
+
+type AgentMailPage = Awaited<
+  ReturnType<typeof agentMailApi.listAgentMailMessages>
+>;
+type AgentMailLetter = Awaited<
+  ReturnType<typeof agentMailApi.readAgentMailMessage>
+>;
+
+// The public-only fetch a click tracker's redirects are read with: no
+// network here unless a test answers.
+const network = vi.hoisted(() => ({
+  fetchPublic: vi.fn<typeof publicFetch.fetchPublic>(),
+}));
+vi.mock("@agent/lib/sandbox/public-fetch", () => ({
+  fetchPublic: network.fetchPublic,
+}));
+
+// Bro's own AgentMail inbox: empty unless a test puts letters in.
+const agentInbox = vi.hoisted(() => {
+  const letters: AgentMailLetter[] = [];
+  return { letters };
+});
+vi.mock("@shared/agent-mail/api", () => ({
+  listAgentMailMessages: vi.fn<() => Promise<AgentMailPage>>(async () => ({
+    count: agentInbox.letters.length,
+    messages: agentInbox.letters,
+  })),
+  readAgentMailMessage: vi.fn<
+    (inboxId: string, messageId: string) => Promise<AgentMailLetter>
+  >(async (_inboxId, messageId) => {
+    const letter = agentInbox.letters.find(
+      (item) => item.message_id === messageId
+    );
+    if (!letter) throw new Error("no such letter");
+    return letter;
+  }),
 }));
 
 const scope = accessScopeForUser("better-auth:user-1");
@@ -376,5 +418,357 @@ describe("taking the code from the person's mailbox", () => {
 
     await expect(look(null)).resolves.toEqual({ kind: "no_site" });
     expect(composio.proxy).not.toHaveBeenCalled();
+  });
+});
+
+describe("the link a site's letter confirms the address with", () => {
+  const domain = "inaturalist.org";
+
+  it("takes the one confirmation link on the site's own domain", () => {
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<p>Welcome!</p><a href="https://www.inaturalist.org/users/confirmation?confirmation_token=abc&amp;x=1">Confirm my account</a> <a href="https://www.inaturalist.org/pages/terms">Terms</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBe(
+      "https://www.inaturalist.org/users/confirmation?confirmation_token=abc&x=1"
+    );
+    // The same link as plain text, after the words that name it.
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: "",
+          text: "Подтвердите почту по ссылке:\nhttps://inaturalist.org/a/9f2c.\n\nОтписаться: https://inaturalist.org/unsubscribe/9f2c",
+        },
+        domain
+      )
+    ).toBe("https://inaturalist.org/a/9f2c");
+  });
+
+  it("never takes a link off the site's domain, through a tracker or not https", () => {
+    for (const href of [
+      "https://inaturalist.org.evil.example/confirm?t=1",
+      "https://evilinaturalist.org/confirm?t=1",
+      "https://u123.ct.sendgrid.net/ls/click?upn=confirm",
+      "http://www.inaturalist.org/confirm?t=1",
+      "https://user:pass@www.inaturalist.org/confirm?t=1",
+      "https://www.inaturalist.org:8443/confirm?t=1",
+      "javascript:alert(1)//confirm",
+    ]) {
+      expect(
+        confirmationLinkInLetter(
+          { html: `<a href="${href}">Confirm</a>`, text: "" },
+          domain
+        )
+      ).toBeUndefined();
+    }
+  });
+
+  it("gives no link when it is not plain which one confirms", () => {
+    // Two different confirmation links, or only links that confirm nothing.
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<a href="https://www.inaturalist.org/confirm?t=1">Confirm</a><a href="https://www.inaturalist.org/confirm?t=2">Confirm</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBeUndefined();
+    expect(
+      confirmationLinkInLetter(
+        {
+          html: '<a href="https://www.inaturalist.org/observations">See observations</a><a href="https://www.inaturalist.org/users/password/edit?reset=1">Confirm a new password</a>',
+          text: "",
+        },
+        domain
+      )
+    ).toBeUndefined();
+  });
+});
+
+/** A letter from iNaturalist in Bro's own inbox, as AgentMail reads it. */
+function agentLetter(
+  item: Partial<AgentMailLetter> & { readonly message_id: string }
+): AgentMailLetter {
+  return {
+    from: "iNaturalist <help@inaturalist.org>",
+    inbox_id: "inbox-1",
+    labels: ["received"],
+    thread_id: `thread-${item.message_id}`,
+    timestamp: new Date().toISOString(),
+    to: ["quiet.fox42@agentmail.to"],
+    ...item,
+  };
+}
+
+describe("taking the code or the link from Bro's own mailbox", () => {
+  const signal = new AbortController().signal;
+
+  function lookInAgentMail(site = "https://www.inaturalist.org") {
+    return mailCodeFromSite(scope, {
+      agentMailbox: { inboxId: "inbox-1" },
+      signal,
+      since: new Date(Date.now() - 60_000),
+      site,
+      waitMs: 0,
+    });
+  }
+
+  beforeEach(() => {
+    agentInbox.letters = [];
+  });
+
+  it("takes the code from the site's own letter", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        message_id: "m1",
+        subject: "Your confirmation code",
+        text: "Your code is 482913",
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toMatchObject({
+      code: "482913",
+      domain: "inaturalist.org",
+      kind: "found",
+    });
+  });
+
+  it("takes the confirmation link when the letter has no code", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        html: '<a href="https://www.inaturalist.org/users/confirmation?confirmation_token=abc">Confirm</a>',
+        message_id: "m1",
+        subject: "Confirm your iNaturalist account",
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toMatchObject({
+      domain: "inaturalist.org",
+      kind: "link",
+      url: "https://www.inaturalist.org/users/confirmation?confirmation_token=abc",
+    });
+  });
+
+  it("never takes a letter from another sender, unauthenticated or stale", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        from: "Support <help@inaturalist.org.evil.example>",
+        message_id: "foreign",
+        text: "Your code is 111111",
+      }),
+      agentLetter({
+        from: "someone@gmail.com",
+        message_id: "mailbox",
+        text: "Your code is 222222",
+      }),
+      agentLetter({
+        labels: ["received", "unauthenticated"],
+        message_id: "unchecked",
+        text: "Your code is 333333",
+      }),
+      agentLetter({
+        labels: ["spam"],
+        message_id: "spam",
+        text: "Your code is 444444",
+      }),
+      agentLetter({
+        message_id: "old",
+        text: "Your code is 555555",
+        timestamp: new Date(Date.now() - 5 * 60_000).toISOString(),
+      }),
+    ];
+
+    await expect(lookInAgentMail()).resolves.toEqual({
+      domain: "inaturalist.org",
+      kind: "not_found",
+    });
+  });
+});
+
+/** A hop that answers with a redirect to `location`. */
+function redirect(location: string, status = 302) {
+  return new Response(null, { headers: { location }, status });
+}
+
+describe("a confirmation link behind a mail service's click tracker", () => {
+  const domain = "inaturalist.org";
+  const tracker = "https://u12345.ct.sendgrid.net/ls/click?upn=abc";
+  const confirmation =
+    "https://www.inaturalist.org/users/confirmation?confirmation_token=abc";
+  const signal = new AbortController().signal;
+
+  /** The tracker's chain: each request answered with the next answer. */
+  function chain(...answers: Response[]) {
+    for (const answer of answers) {
+      network.fetchPublic.mockResolvedValueOnce(answer);
+    }
+  }
+
+  beforeEach(() => {
+    network.fetchPublic.mockReset();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  it("finds the one tracked link the letter calls a confirmation", () => {
+    const html = `<a href="${tracker}">Confirm your email</a><a href="https://u12345.ct.sendgrid.net/ls/click?upn=unsub">Unsubscribe</a>`;
+
+    expect(confirmationLinkInLetter({ html, text: "" }, domain)).toBe(
+      undefined
+    );
+    expect(trackedConfirmationLink({ html, text: "" }, domain)).toBe(tracker);
+    // Two tracked confirmations make it unclear.
+    expect(
+      trackedConfirmationLink(
+        {
+          html: `${html}<a href="https://u12345.ct.sendgrid.net/ls/click?upn=other">Подтвердить</a>`,
+          text: "",
+        },
+        domain
+      )
+    ).toBe(undefined);
+  });
+
+  it("takes where the chain lands on the site's own domain, without opening it", async () => {
+    chain(
+      redirect("https://click.example-esp.com/r/2"),
+      redirect(confirmation, 301)
+    );
+
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      confirmation
+    );
+    // Only the tracker's hops are requested, never the site's own link,
+    // and none of them with a cookie.
+    expect(network.fetchPublic.mock.calls.map(([url]) => url.href)).toEqual([
+      tracker,
+      "https://click.example-esp.com/r/2",
+    ]);
+    const [, init] = network.fetchPublic.mock.calls[0] ?? [];
+    expect(new Headers(init?.headers).has("cookie")).toBe(false);
+  });
+
+  it("follows a relative Location on the tracker's own host", async () => {
+    chain(
+      redirect("/r/2"),
+      redirect(
+        "https://inaturalist.org/users/confirmation?confirmation_token=abc"
+      )
+    );
+
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      "https://inaturalist.org/users/confirmation?confirmation_token=abc"
+    );
+    expect(network.fetchPublic.mock.calls[1]?.[0].href).toBe(
+      "https://u12345.ct.sendgrid.net/r/2"
+    );
+  });
+
+  it("rejects a chain that lands on another domain or ends without a redirect", async () => {
+    // A look-alike host is one more hop, not the site: where it ends is not.
+    chain(
+      redirect("https://inaturalist.org.evil.example/confirm"),
+      new Response("<html>Confirmed!</html>", { status: 200 })
+    );
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      undefined
+    );
+
+    chain(new Response("<html>Thanks</html>", { status: 200 }));
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      undefined
+    );
+  });
+
+  it("rejects a hop over plain http, even to the site", async () => {
+    chain(
+      redirect("https://click.example-esp.com/r/2"),
+      redirect(
+        "http://www.inaturalist.org/users/confirmation?confirmation_token=abc"
+      )
+    );
+
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      undefined
+    );
+    await expect(
+      trackedLinkTarget(
+        "http://u12345.ct.sendgrid.net/ls/click",
+        domain,
+        signal
+      )
+    ).resolves.toBe(undefined);
+    expect(network.fetchPublic).toHaveBeenCalledTimes(2);
+  });
+
+  it("never reaches a private address", async () => {
+    const actual = await vi.importActual<typeof publicFetch>(
+      "@agent/lib/sandbox/public-fetch"
+    );
+    // The tracker points inside the network; the real public-only fetch
+    // refuses that hop before a byte leaves.
+    network.fetchPublic.mockImplementation(async (url, init) =>
+      url.hostname === "u12345.ct.sendgrid.net"
+        ? redirect("https://10.0.0.5/users/confirmation")
+        : actual.fetchPublic(url, init)
+    );
+
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      undefined
+    );
+    await expect(
+      trackedLinkTarget("https://169.254.169.254/latest", domain, signal)
+    ).resolves.toBe(undefined);
+  });
+
+  it("gives up after five hops", async () => {
+    chain(
+      ...Array.from({ length: 5 }, (_, index) =>
+        redirect(`https://click.example-esp.com/r/${String(index + 1)}`)
+      ),
+      redirect(confirmation)
+    );
+
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      undefined
+    );
+    expect(network.fetchPublic).toHaveBeenCalledTimes(5);
+
+    // Five requests that land on the site are fine.
+    network.fetchPublic.mockReset();
+    chain(
+      ...Array.from({ length: 4 }, (_, index) =>
+        redirect(`https://click.example-esp.com/r/${String(index + 1)}`)
+      ),
+      redirect(confirmation)
+    );
+    await expect(trackedLinkTarget(tracker, domain, signal)).resolves.toBe(
+      confirmation
+    );
+  });
+
+  it("hands the run the site's link from a tracked letter in Bro's mailbox", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        html: `<a href="${tracker}">Confirm your iNaturalist account</a>`,
+        message_id: "m1",
+        subject: "Confirm your account",
+      }),
+    ];
+    chain(redirect(confirmation));
+
+    await expect(
+      mailCodeFromSite(scope, {
+        agentMailbox: { inboxId: "inbox-1" },
+        signal,
+        since: new Date(Date.now() - 60_000),
+        site: "https://www.inaturalist.org",
+        waitMs: 0,
+      })
+    ).resolves.toMatchObject({ kind: "link", url: confirmation });
   });
 });

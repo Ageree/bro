@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as BroLogins from "@db/services/bro-logins";
 import * as Chats from "@db/services/chats";
 import * as MemoryRecords from "@db/services/memory/records";
 import * as Settings from "@db/services/settings";
@@ -31,6 +32,8 @@ const readAppMock = vi.spyOn(ConnectedApps, "readConnectedApp");
 const startAppMock = vi.spyOn(ConnectedApps, "startConnectedAppAuthorization");
 const disconnectAppMock = vi.spyOn(ConnectedApps, "disconnectConnectedApp");
 
+const revealMock = vi.spyOn(BroLogins, "revealBroLogin");
+
 const scopeKeysMock = vi.spyOn(MemoryRecords, "listMemoryScopeKeys");
 const listMemoriesMock = vi.spyOn(MemoryRecords, "listCurrentMemories");
 const updateMemoryMock = vi.spyOn(MemoryRecords, "updateMemory");
@@ -58,6 +61,27 @@ const memory = (category: "fact" | "rule", revision = 2) => ({
 
 describe("appRouter", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("reads back Bro's own login for its workspace, and nothing else", async () => {
+    revealMock.mockImplementation(async (_scope, id) =>
+      id === "bro"
+        ? { email: "quiet.fox42@agentmail.to", password: "Gen3rated!Pass" }
+        : undefined
+    );
+    const vault = appRouter.createCaller({
+      origin: "https://example.com",
+      scope,
+    }).vault;
+
+    await expect(vault.reveal({ id: "bro" })).resolves.toEqual({
+      email: "quiet.fox42@agentmail.to",
+      password: "Gen3rated!Pass",
+    });
+    expect(revealMock).toHaveBeenCalledWith(scope, "bro");
+    await expect(vault.reveal({ id: "own" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+  });
 
   it("passes the authenticated scope to a chat write", async () => {
     saveChatMock.mockResolvedValue(undefined);

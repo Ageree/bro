@@ -187,12 +187,17 @@ export function VaultSectionBackButton({
   );
 }
 
+/** What a section adds under one of its rows, such as Bro's own login. */
+type VaultRowExtra = (item: VaultItem) => ReactNode;
+
 export function VaultItemBrowser({
   items,
+  renderRowExtra,
   searchId,
   title,
 }: {
   readonly items: readonly VaultItem[];
+  readonly renderRowExtra?: VaultRowExtra;
   readonly searchId: string;
   readonly title: string;
 }) {
@@ -250,7 +255,7 @@ export function VaultItemBrowser({
         }}
       >
         {visibleItems.length > 0 ? (
-          <VaultItemList items={visibleItems} />
+          <VaultItemList items={visibleItems} renderRowExtra={renderRowExtra} />
         ) : query.trim() ? (
           <p className="type-fine py-10 text-center text-muted-foreground">
             Ничего не нашлось по «{query.trim()}»
@@ -267,19 +272,31 @@ export function VaultItemBrowser({
 
 export function VaultItemList({
   items,
+  renderRowExtra,
 }: {
   readonly items: readonly VaultItem[];
+  readonly renderRowExtra?: VaultRowExtra;
 }) {
   return (
     <ul className="list-none">
       {items.map((item) => (
-        <VaultItemRow item={item} key={item.id} />
+        <VaultItemRow
+          extra={renderRowExtra?.(item)}
+          item={item}
+          key={item.id}
+        />
       ))}
     </ul>
   );
 }
 
-function VaultItemRow({ item }: { readonly item: VaultItem }) {
+function VaultItemRow({
+  extra,
+  item,
+}: {
+  readonly extra?: ReactNode;
+  readonly item: VaultItem;
+}) {
   const router = useRouter();
   const remove = api.vault.remove.useMutation({
     onSuccess: () => {
@@ -296,6 +313,7 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
             {item.account}
           </p>
         ) : null}
+        {extra}
       </div>
       <Button
         aria-label={`Удалить ${item.label}`}

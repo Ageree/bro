@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import { formatRub } from "@shared/spending/limit";
 import type * as browserUseHost from "@agent/lib/browser-use/host";
+import type * as browserUseSignUp from "@agent/lib/browser-use/sign-up";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 
@@ -272,6 +273,17 @@ vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
+}));
+// The vault's side of a sign-up with Bro's own mailbox; the decision itself
+// is the real one.
+const settleSignUpLogin = vi.hoisted(() =>
+  vi.fn<typeof browserUseSignUp.settleSignUpLogin>(() =>
+    Promise.resolve(undefined)
+  )
+);
+vi.mock("@agent/lib/browser-use/sign-up", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseSignUp>()),
+  settleSignUpLogin,
 }));
 vi.mock("@agent/channels/photon", () => ({ default: { id: "photon" } }));
 // A browser VM stays up for the reply while a run waits for the person.
@@ -2683,3 +2695,68 @@ function sessionHandle(status: "accepted" | "session_not_active") {
   }));
   return { attachSession, send };
 }
+
+describe("settling a sign-up with Bro's own mailbox", () => {
+  async function settled(result: string, task?: string) {
+    const { signUpLine } = await import("@agent/lib/browser-use/sign-up");
+    ledger.row = { ...row, site: "https://www.inaturalist.org" };
+    readBrowserRun.mockResolvedValue(ledger.row);
+    claimBrowserRunCompletion.mockReset();
+    claimBrowserRunCompletion
+      .mockResolvedValueOnce({ ...ledger.row, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result,
+      sessionId: "session-1",
+      status: "completed",
+      task:
+        task ??
+        `Зарегистрируйся на iNaturalist\n\n${signUpLine("quietfox42", true)}`,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+    await settleBrowserRun({ to }, runId);
+    return send.mock.calls[0]?.[0] ?? "";
+  }
+
+  it("tells the person where the new account's login is", async () => {
+    settleSignUpLogin.mockResolvedValueOnce("Say the login is in the vault.");
+
+    const prompt = await settled(
+      "Аккаунт создан.\nRESULT: зарегистрирован\nNEEDS: none\nACCOUNT: created"
+    );
+
+    expect(settleSignUpLogin).toHaveBeenCalledWith(
+      { userId: row.createdByUserId, workspaceId: row.workspaceId },
+      "https://www.inaturalist.org",
+      "created"
+    );
+    expect(prompt).toContain("Say the login is in the vault.");
+  });
+
+  it("decides nothing while the run waits for the confirmation letter", async () => {
+    await settled(
+      "RESULT: форма отправлена\nNEEDS: email_code\nDETAILS: ссылка в письме\nACCOUNT: created"
+    );
+
+    expect(settleSignUpLogin).not.toHaveBeenCalled();
+  });
+
+  it("takes the login out only when the start never sent the form", async () => {
+    await settled("RESULT: сайт не открылся\nNEEDS: none\nACCOUNT: none");
+    expect(settleSignUpLogin.mock.calls[0]?.[2]).toBe("forget");
+
+    settleSignUpLogin.mockClear();
+    await settled("RESULT: что-то пошло не так\nNEEDS: none");
+    expect(settleSignUpLogin.mock.calls[0]?.[2]).toBe("kept");
+  });
+
+  it("leaves every other run's report as it was", async () => {
+    await settled("RESULT: ordered\nNEEDS: none", "Order the usual");
+
+    expect(settleSignUpLogin).not.toHaveBeenCalled();
+  });
+});

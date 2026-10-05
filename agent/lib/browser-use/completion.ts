@@ -70,6 +70,7 @@ import {
   releaseEndedRunBrowser,
 } from "./release";
 import { recordRunSignIns } from "./sign-ins";
+import { settleSignUpLogin, signUpSettlement } from "./sign-up";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -273,13 +274,28 @@ export async function settleBrowserRun(
     signedIn: parsed.signedIn,
     signedInNone: parsed.signedInNone,
   });
+  // A run that registered with Bro's own mailbox: the login saved for it
+  // before it started is kept, and the person hears where, or taken out.
+  const signUp = signUpSettlement(run, {
+    firstAttempt: claimed.captchaAttempt === 1,
+    missingSite: missingSite !== undefined,
+    waitsOnStep: keepsPage(parsed.needs),
+  });
+  const signUpLine =
+    signUp === undefined
+      ? undefined
+      : await settleSignUpLogin(
+          { userId: claimed.createdByUserId, workspaceId: claimed.workspaceId },
+          claimed.site,
+          signUp
+        );
   await reportBrowserRun(
     delivery,
     claimed.id,
     browserRunReport(
       // A stopped browser's live view is dead: the report does not offer it.
       released ? { ...claimed, liveViewUrl: null } : claimed,
-      { ...reportFacts, images, spend }
+      { ...reportFacts, images, signUp: signUpLine, spend }
     )
   );
   return { kind: "settled" as const };
@@ -734,6 +750,8 @@ function browserRunReport(
     readonly next?: string;
     readonly ordered?: boolean;
     readonly outcome: string;
+    /** What became of the login saved for a sign-up with Bro's mailbox. */
+    readonly signUp?: string;
     readonly spend?: string;
     /** The network error a walled run named as its own outcome. */
     readonly unreachable?: string;
@@ -770,6 +788,7 @@ function browserRunReport(
       : undefined,
     imagesBlock(images),
     options.spend,
+    options.signUp,
     deliveryInstruction(needs, {
       approvedRub: options.approvedRub,
       booking: options.booking,
