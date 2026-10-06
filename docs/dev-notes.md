@@ -131,6 +131,11 @@
   статикой (`scripts/selectel-bench/`). Порт прямо в `external-network` не
   выделяется (нужны своя сеть, роутер и floating IP); `rebuild` VM с сетевым
   диском cloud-init не перезапускает.
+- Хост пула на Selectel (06.10, `HFL2.2-8192-64-AMD`, ru-7a) с cloud-init
+  `boot.py` — `ready` за ≈ 2 минуты, Chrome в песочнице за 2,4 с. Но Geonode
+  (`BROWSER_VM_PROXY`) с адресов Selectel отвечает на CONNECT «403 Invalid
+  Request» (два диапазона), а с Cloud.ru тот же логин — 200: без своего
+  прокси для Selectel пул там не работает. Квота проекта в ru-1 нулевая.
 
 ## Прод на VM
 
