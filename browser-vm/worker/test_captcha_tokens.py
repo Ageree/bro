@@ -199,15 +199,20 @@ class TokenCaptchas(unittest.IsolatedAsyncioTestCase):
     async def test_recaptcha_whose_script_never_loaded_gets_a_field_in_its_form(self):
         # From a flagged exit reCAPTCHA «cannot contact the service»: its widget div stays empty, with no
         # response field for the token (iNaturalist sign-up, 05.10).
+        # The site keeps its submit button disabled until the widget's callback, which never runs then.
         self.pages["/signup"] = (f'<form id="signup"><input name="email"><div class="g-recaptcha" '
-                                 f'data-sitekey="{RECAPTCHA_KEY}"></div><button>Sign up</button></form>')
+                                 f'data-sitekey="{RECAPTCHA_KEY}"></div><button type="button" disabled>Help'
+                                 f'</button><button id="go" disabled>Sign up</button></form>')
         await self.open("/signup")
         solved, message = await self.solve()
         self.assertTrue(solved, message)
+        self.assertIn("is enabled now", message)
         self.assertEqual(self.tasks[0]["task"]["type"], "RecaptchaV2TaskProxyless")
         worlds, _ = await worker.captcha_worlds(self.browser)
         sent = await worlds[0]("new FormData(document.getElementById('signup')).get('g-recaptcha-response')")
         self.assertEqual(sent, TOKEN)
+        buttons = await worlds[0]("[...document.querySelectorAll('button')].map((b) => b.disabled)")
+        self.assertEqual(buttons, [True, False])
 
     async def test_hcaptcha_in_a_same_origin_frame_with_a_data_callback(self):
         self.pages["/form"] = HCAPTCHA_FORM

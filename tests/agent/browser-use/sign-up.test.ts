@@ -245,6 +245,17 @@ describe("what a settled sign-up leaves in the vault", () => {
     );
     expect(signUpAccount("- **ACCOUNT:** none")).toBe("none");
     expect(signUpAccount("ACCOUNT: maybe")).toBeUndefined();
+    // The run answers in the errand's language too (iNaturalist, 05.10).
+    expect(
+      signUpAccount(
+        "ACCOUNT: создан (сайт принял регистрацию; email подтверждён)"
+      )
+    ).toBe("created");
+    expect(signUpAccount("ACCOUNT: зарегистрирован")).toBe("created");
+    expect(signUpAccount("ACCOUNT: не создан, форма не отправлена")).toBe(
+      "none"
+    );
+    expect(signUpAccount("ACCOUNT: нет")).toBe("none");
     expect(signUpAccount(null)).toBeUndefined();
     // Only the start is asked to say a form was never sent.
     expect(startTask).toContain("ACCOUNT: none when you never submitted");

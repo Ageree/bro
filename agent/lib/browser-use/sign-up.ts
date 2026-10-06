@@ -107,14 +107,22 @@ export function signUpLine(username: string, start = false) {
 
 /**
  * What a sign-up run said of the account in its footer: `created` once the
- * site took the form, `none` when it never sent it, or nothing it said.
+ * site took the form, `none` when it never sent it, or nothing it said. The
+ * run writes in the errand's language too: on 05.10 the follow-up that
+ * confirmed iNaturalist's address answered «ACCOUNT: создан (…)», and Bro
+ * was told the account was not confirmed.
  */
 export function signUpAccount(result: string | null | undefined) {
   const value =
-    /^[ \t]*(?:[-*•]+[ \t]*)?\**ACCOUNT\**[ \t]*:[ \t]*\**[ \t]*([a-z]+)/imu
+    /^[ \t]*(?:[-*•]+[ \t]*)?\**ACCOUNT\**[ \t]*:[ \t]*\**[ \t]*(.*)$/imu
       .exec(result ?? "")?.[1]
       ?.toLowerCase();
-  return value === "created" || value === "none" ? value : undefined;
+  if (value === undefined) return undefined;
+  if (/^(?:none|не\s|нет)/u.test(value)) return "none" as const;
+  if (/^(?:created|создан|зарегистрирован)/u.test(value)) {
+    return "created" as const;
+  }
+  return undefined;
 }
 
 /**
