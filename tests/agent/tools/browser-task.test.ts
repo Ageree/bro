@@ -10217,7 +10217,7 @@ describe("browser_task signs in with a login the person sent", () => {
       expect(text).not.toContain(login.password);
     }
     expect(continuationNote(result)).toContain(
-      "The login and password the user sent are saved in their vault as «Вход на my.ranepa.ru» and bound to this run"
+      "The login and password the user sent are now saved in their vault as «Вход на my.ranepa.ru»: every run on this site started from now on signs in with them"
     );
   });
 
@@ -10307,7 +10307,113 @@ describe("browser_task signs in with a login the person sent", () => {
     const result = await tool.execute(start, toolContext("better-auth:alice"));
 
     expect(saveVaultItem).not.toHaveBeenCalled();
-    expect(continuationNote(result)).toContain("already in their vault");
+    expect(continuationNote(result)).toContain("were already in their vault");
+  });
+
+  it("starts a run of its own even when the login was saved by a call refused before", async () => {
+    // The first call saved the login and was refused after; the second
+    // finds it in the vault, and the live run still never had it.
+    readBrowserRunForScope.mockResolvedValue({ ...browserRunRow(), site });
+    readVaultItems.mockResolvedValue([
+      {
+        account: "my.ranepa.ru · Username · st•••",
+        hasSecret: true,
+        id: "vault-login",
+        kind: "login",
+        label: "Вход на my.ranepa.ru",
+      },
+    ]);
+    readVaultSecret.mockResolvedValue(
+      serializeLoginVaultPayload({
+        authentication: { password: login.password, type: "password" },
+        identifier: { type: "username", value: login.identifier },
+        kind: "login",
+        origin: site,
+        version: 2,
+      })
+    );
+    const tool = await resolvedBrowserTask(
+      [],
+      `логин ${login.identifier} пароль ${login.password}`
+    );
+
+    await tool.execute(
+      {
+        action: "continue",
+        login,
+        personSaid: `логин ${login.identifier}`,
+        personWants: "look",
+        runId,
+        task: "Войди с логином и паролем, которые прислал человек",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(saveVaultItem).not.toHaveBeenCalled();
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).toHaveBeenCalledOnce();
+  });
+
+  it("tells an errand still queued to sign in with the login", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(),
+      id: "queued:errand-1",
+      pendingTask: "Войди в личный кабинет",
+      sessionId: null,
+      site,
+      status: "queued",
+    });
+    const said = `логин ${login.identifier} пароль ${login.password}`;
+    const tool = await resolvedBrowserTask([], said);
+
+    await tool.execute(
+      {
+        action: "continue",
+        login,
+        personSaid: `логин ${login.identifier}`,
+        personWants: "look",
+        runId: "queued:errand-1",
+        task: "Войди с логином и паролем, которые прислал человек",
+      },
+      toolContext("better-auth:alice")
+    );
+
+    const [, update] = updateQueuedBrowserRun.mock.calls[0] ?? [];
+    expect(String(update?.pendingTask)).toContain(
+      "it is attached as the secrets login_username and login_password"
+    );
+    expect(String(update?.pendingTask)).not.toContain(login.password);
+  });
+
+  it("refuses a Госуслуги login saved as a site's own on a site that signs in through Госуслуги", async () => {
+    const tool = await resolvedBrowserTask(
+      [],
+      `логин ${login.identifier} пароль ${login.password}`
+    );
+
+    await expect(
+      tool.execute(
+        { ...start, site: "https://www.mos.ru" },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("this site signs in through Госуслуги");
+    expect(saveVaultItem).not.toHaveBeenCalled();
+  });
+
+  it("takes a photo only from the person's last few messages", async () => {
+    const tool = await resolvedBrowserTask([], "войди в мой кабинет", [
+      photo,
+      vaultOnly,
+      ...["а ещё", "и вот", "ну"].flatMap((text) => [
+        { content: text, role: "user" as const },
+        vaultOnly,
+      ]),
+    ]);
+
+    await expect(
+      tool.execute(start, toolContext("better-auth:alice"))
+    ).rejects.toThrow("this password is not in the user's recent messages");
+    expect(saveVaultItem).not.toHaveBeenCalled();
   });
 
   it("refuses a password the person neither typed nor showed on a photo", async () => {

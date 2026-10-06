@@ -152,6 +152,7 @@ import {
 } from "@agent/lib/browser-use/sign-up";
 import {
   givenLoginNote,
+  givenLoginQueuedLine,
   givenLoginRefusal,
   givenLoginSchema,
   givenPasswordShownRefusal,
@@ -3624,6 +3625,8 @@ async function continueQueuedErrand(
     readonly consent: SubmissionConsent | undefined;
     /** What this call's card or standing permission allowed to pay, held. */
     readonly heldPlaceholder: string | undefined;
+    /** The person's own login was saved for the site on this call. */
+    readonly loginSaved: boolean;
     readonly message: string;
     readonly scope: AccessScope;
   }
@@ -3642,6 +3645,7 @@ async function continueQueuedErrand(
   const pendingTask = [
     row.pendingTask ?? row.task,
     `Update from the person before this errand started, which takes precedence over the errand above: ${options.message}`,
+    options.loginSaved ? givenLoginQueuedLine : undefined,
     options.confirmedNow ? commitmentLine(options.consent) : undefined,
     paysNow
       ? "Paying on this errand is now approved as stated here: the earlier line saying nothing was approved to pay no longer applies."
@@ -3714,7 +3718,12 @@ async function runWithGivenLogin(
       : undefined;
   const site = row?.site ?? input.site;
   const refusal =
-    givenPasswordShownRefusal(login, [input.task, input.personSaid]) ??
+    givenPasswordShownRefusal(login, [
+      input.task,
+      input.personSaid,
+      input.site,
+      JSON.stringify(input.submission),
+    ]) ??
     givenLoginRefusal(login, {
       byPerson: turnWords(context, turn).personTurn,
       site,
@@ -3722,12 +3731,14 @@ async function runWithGivenLogin(
     });
   if (refusal) throw new Error(refusal);
   const saved = await savePersonLogin(scope, site ?? "", login);
+  // A run already going may have started before the login was saved, by
+  // this call or an earlier one that was refused after saving it.
   const result = await runBrowserTask(
     input,
     context,
     heard,
     turn,
-    saved?.kind === "saved"
+    saved !== undefined
   );
   if (saved === undefined) return result;
   return {
@@ -4208,6 +4219,7 @@ async function runBrowserTask(
           confirmedNow,
           consent,
           heldPlaceholder: heldForQueue?.placeholder,
+          loginSaved,
           message,
           scope,
         }),
