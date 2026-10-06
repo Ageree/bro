@@ -837,6 +837,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.6), flash
   для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
   7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
+  Сменить его прогретому хосту — удалить VM хоста через Compute API, не
+  трогая адрес: пул сам уберёт запись и адрес и создаст новый. Пока Cloud.ru
+  удаляет VM, reconcile пишет 422 `vm_can_not_be_deleted_from_current_state`
+  и шлёт тревогу «хост упал» — это ожидаемо.
+- Номер worker (`VERSION`) берите из свежего `origin/bro-next` перед PR и
+  сверяйте с открытыми PR: 05.10 две сессии дважды выпустили разные worker под
+  одним номером (`.5`, `.6`). Какой worker в корне пула, видно лишь в самом
+  архиве (`opt/bro/worker/worker.py` в `pool/rootfs/<корень>.tar.zst`).
 - Worker пула едет в корне песочницы, а хост без текущего корня новых
   песочниц не берёт: каждый выкат worker ставит поручения в очередь на 5–16
   минут создания нового хоста. Живые тесты браузера — не сразу после выката
