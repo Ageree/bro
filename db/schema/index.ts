@@ -15,6 +15,7 @@ export * from "./memory";
 export * from "./onboarding-requests";
 export * from "./operational-alerts";
 export * from "./orders";
+export * from "./phone";
 export * from "./proactive";
 export * from "./schedules";
 export * from "./sessions";

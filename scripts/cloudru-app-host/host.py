@@ -590,6 +590,8 @@ def assemble(stage, version, commit):
     shutil.copy2(REPO / "scripts/cloudru-sandbox-probe/s3.py", stage / "ops/s3.py")
     shutil.copy2(BUILDS / "migrate.mjs", stage / "ops/migrate.mjs")
     shutil.copy2(BUILDS / "agent-mail.mjs", stage / "ops/agent-mail.mjs")
+    shutil.copy2(BUILDS / "phone-setup.mjs", stage / "ops/phone-setup.mjs")
+    shutil.copy2(BUILDS / "phone-adopt.mjs", stage / "ops/phone-adopt.mjs")
     node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout.strip()
     world_version = json.loads((world / "package.json").read_text())["version"]
     (stage / "release.json").write_text(json.dumps({
@@ -642,6 +644,12 @@ def cmd_build(args):
          "--external:pg-native", "--log-level=warning",
          "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
         env)
+    for name in ("setup", "adopt"):
+        run(["pnpm", "exec", "esbuild", f"scripts/phone/{name}.ts", "--bundle", "--platform=node",
+             "--target=node24", "--format=esm", f"--outfile={BUILDS / f'phone-{name}.mjs'}",
+             "--external:pg-native", "--log-level=warning",
+             "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
+            env)
     assemble(stage, version, commit)
     archive = BUILDS / f"{version}.tar.zst"
     run(["tar", "-C", str(stage), "-I", "zstd -19 -T0", "-cf", str(archive), "."], env)
@@ -715,6 +723,7 @@ SENSITIVE_ON_VERCEL = {
     "BROWSER_USE_API_KEY", "BROWSER_USE_WEBHOOK_SECRET", "BROWSER_VM_LLM_API_KEY", "BROWSER_VM_PROXY",
     "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET",
     "COMPOSIO_API_KEY", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",
+    "MTS_EXOLVE_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_PROXY_URL",
     "OPENROUTER_API_KEY", "SANDBOX_SIGNING_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME",
     "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET_TOKEN", "YOOKASSA_SECRET_KEY", "YOOKASSA_SHOP_ID",
     "MODEL_PROVIDER", "ROUTERAI_API_KEY"}

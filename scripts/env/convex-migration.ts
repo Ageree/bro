@@ -19,6 +19,5 @@ export const convexMigrationEnv = createEnv({
  * driver and only then loads the services.
  */
 export function selectNeonHttpDriver() {
-  // oxlint-disable-next-line turbo/no-undeclared-env-vars -- This CLI sets the driver for its own process; no Turbo task reads it.
   process.env.DATABASE_DRIVER = "neon-http";
 }

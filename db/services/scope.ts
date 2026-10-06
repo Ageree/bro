@@ -3,14 +3,16 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import { db, workspaceMemberships, workspaces } from "@db";
 import { provisionAgentMailbox } from "@db/services/agent-mail";
 import { AgentMailError } from "@shared/agent-mail/api";
+import { enqueueNewWorkspacePhone } from "@db/services/phone";
 
 export async function ensureScope(scope: AccessScope) {
   const createdAt = new Date();
   await db.transaction(async (transaction) => {
-    await transaction
+    const created = await transaction
       .insert(workspaces)
       .values({ createdAt, id: scope.workspaceId })
-      .onConflictDoNothing({ target: workspaces.id });
+      .onConflictDoNothing({ target: workspaces.id })
+      .returning({ id: workspaces.id });
     await transaction
       .insert(workspaceMemberships)
       .values({
@@ -22,6 +24,7 @@ export async function ensureScope(scope: AccessScope) {
       .onConflictDoNothing({
         target: [workspaceMemberships.workspaceId, workspaceMemberships.userId],
       });
+    if (created.length > 0) await enqueueNewWorkspacePhone(transaction, scope);
   });
   // Email is optional: provider quota or downtime must not prevent login.
   // The next scope access retries with the same provider client_id.

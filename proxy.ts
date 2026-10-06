@@ -15,6 +15,8 @@ export async function proxy(request: NextRequest) {
     pathname === "/api/yookassa" ||
     // The owner's cost report checks its own bearer token.
     pathname === "/api/usage-costs" ||
+    pathname === "/api/phone/initiation" ||
+    pathname === "/api/phone/post-call" ||
     pathname.startsWith("/api/auth/") ||
     // The VM's watchdog and a release's switch ask without a session; off
     // the VM the route is a 404 that asks the database nothing.

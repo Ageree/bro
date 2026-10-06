@@ -83,6 +83,27 @@ describe("auth proxy matcher", () => {
     );
   });
 
+  it("exempts only the two self-authenticating phone webhooks, not a phone prefix", async () => {
+    const responses = await Promise.all(
+      ["initiation", "post-call"].map(
+        async (route) =>
+          await proxy(
+            new NextRequest(`https://example.com/api/phone/${route}`, {
+              method: "POST",
+            })
+          )
+      )
+    );
+    for (const response of responses)
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(getAuthSession).not.toHaveBeenCalled();
+    const other = await proxy(
+      new NextRequest("https://example.com/api/phone/status")
+    );
+    expect(other.status).toBe(307);
+    expect(other.headers.get("location")).toContain("/sign-in");
+  });
+
   it("leaves provider webhook verification to the Eve channel", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/eve/v1/browser-use", {

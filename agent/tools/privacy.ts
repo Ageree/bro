@@ -6,6 +6,8 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
+import { phonePilot, readPhoneNumber } from "@db/services/phone";
+import { env } from "@shared/environment";
 import {
   dataProcessors,
   keptData,
@@ -64,6 +66,10 @@ export const privacy = defineTool({
       throw new Error("An authenticated user is required.");
     }
     const scope = scopeFromPrincipal(auth);
+    const phone =
+      phonePilot(scope) ||
+      (env.PHONE_AGENT_ID !== undefined &&
+        (await readPhoneNumber(scope)) !== null);
     const [modelId, google, memoryDigest, conversationLog] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
@@ -74,14 +80,23 @@ export const privacy = defineTool({
       crossChannelPilot(scope),
     ]);
     return {
-      kept: keptData({ conversationLog }),
+      kept: keptData({ conversationLog, phone }),
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
+        phone,
       }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
-      remove: [memoryRemoval(), ...removalOutsideMemory()],
+      remove: [
+        memoryRemoval(),
+        ...removalOutsideMemory(),
+        ...(phone
+          ? [
+              "phone-disable выключает звонки, но сохраняет номер и ежемесячную плату. Постоянное освобождение требует отдельного подтверждения phone-release; operator-required означает, что оператор должен проверить отключение и плата может продолжаться. Удаление памяти не освобождает платный номер.",
+            ]
+          : []),
+      ],
       reply,
     };
   },
