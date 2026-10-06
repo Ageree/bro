@@ -558,9 +558,10 @@ def build_env(**extra):
     provider is the VM's all the same: agent/tools/web_search.ts picks its tool once, when the module loads, so
     the build bakes the choice in, and the Gateway's tool (no MODEL_PROVIDER) makes RouterAI refuse every turn."""
     env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/root"), "NODE_ENV": "production",
-           **STUB_ENV, "MODEL_PROVIDER": ON_THE_VM["MODEL_PROVIDER"], "ROUTERAI_API_KEY": "build-only", **extra}
+           **STUB_ENV, "MODEL_PROVIDER": ON_THE_VM["MODEL_PROVIDER"], "ROUTERAI_API_KEY": "build-only", **extra,
+           "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0", "CI": "1"}
     for name in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
-                 "https_proxy", "http_proxy", "no_proxy"):
+                 "https_proxy", "http_proxy", "no_proxy", "COREPACK_HOME"):
         if os.environ.get(name):
             env[name] = os.environ[name]
     return env
