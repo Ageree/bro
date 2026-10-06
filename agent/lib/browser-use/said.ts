@@ -97,6 +97,35 @@ export function personMessages(messages: readonly ModelMessage[]) {
     .map((message) => messageText(message));
 }
 
+/** Whether a message carries a picture: a photo or a screenshot. */
+function carriesPhoto(message: ModelMessage) {
+  return (
+    Array.isArray(message.content) &&
+    message.content.some(
+      (part) =>
+        part.type === "image" ||
+        (part.type === "file" && part.mediaType.startsWith("image/"))
+    )
+  );
+}
+
+/**
+ * The person's last `count` messages, oldest first, never a turn Bro opened
+ * for itself: what they wrote, and whether a photo came with it.
+ */
+export function recentPersonMessages(
+  messages: readonly ModelMessage[],
+  count: number
+) {
+  return messages
+    .filter((message) => startsTurn(message) && isPersonMessage(message))
+    .slice(-count)
+    .map((message) => ({
+      photo: carriesPhoto(message),
+      text: messageText(message),
+    }));
+}
+
 /**
  * The person's messages that end at `opening`: it, and any they sent right
  * before it with nothing of Bro's between — «739204» and a second later

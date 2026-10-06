@@ -22,7 +22,8 @@ const setup = { browser: true, images: true };
 
 /** The tools that read short in the pilot, and the most each may take. */
 const shortened = {
-  browser_task: 1_950,
+  // 2 050 since `login`: a login and password the person sent themselves.
+  browser_task: 2_050,
   connect_google: 400,
   "gmail-send": 700,
   route_time: 450,
