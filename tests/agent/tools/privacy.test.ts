@@ -51,6 +51,7 @@ const optionalServices = [
   "BROWSER_USE_SIGN_IN_REFRESH_DAYS",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_PROXY",
+  "BROWSER_VM_PROXY_FALLBACK",
   "BROWSER_VM_SIGNING_KEY",
   "CLOUDRU_BROWSER_IMAGE",
   "CLOUDRU_KEY_ID",
@@ -387,6 +388,22 @@ describe("privacy", () => {
     expect(facts.serverLocation()).toContain("Cloud.ru (зона ru.AZ-3, Россия)");
     expect(facts.serverLocation()).toContain(
       "остальных сервисов, Бро не знает"
+    );
+  });
+
+  it("names the browser's second proxy too, when there is one", async () => {
+    const { facts } = await withServices({
+      ...browserVmTestEnvironment,
+      BROWSER_VM_PROXY:
+        "premium-residential.geonode.com:9000:geonode_bro-session-{session}:secret",
+      BROWSER_VM_PROXY_FALLBACK:
+        "gate.nodemaven.com:8080:bro-country-ru-sid-{session}-ttl-24h:secret",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).toContain(
+      "через резидентный прокси Geonode или NodeMaven: прокси видит, на какие сайты он заходит"
     );
   });
 
