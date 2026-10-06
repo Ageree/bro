@@ -131,6 +131,11 @@
   статикой (`scripts/selectel-bench/`). Порт прямо в `external-network` не
   выделяется (нужны своя сеть, роутер и floating IP); `rebuild` VM с сетевым
   диском cloud-init не перезапускает.
+- Хост пула на Selectel (06.10, `HFL2.2-8192-64-AMD`, ru-7a) с cloud-init
+  `boot.py` — `ready` за ≈ 2 минуты, Chrome в песочнице за 2,4 с. Но Geonode
+  (`BROWSER_VM_PROXY`) с адресов Selectel отвечает на CONNECT «403 Invalid
+  Request» (два диапазона), а с Cloud.ru тот же логин — 200: без своего
+  прокси для Selectel пул там не работает. Квота проекта в ru-1 нулевая.
 
 ## Прод на VM
 
@@ -837,10 +842,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.6), flash
   для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
   7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
-  Сменить его прогретому хосту — удалить VM хоста через Compute API, не
-  трогая адрес: пул сам уберёт запись и адрес и создаст новый. Пока Cloud.ru
-  удаляет VM, reconcile пишет 422 `vm_can_not_be_deleted_from_current_state`
-  и шлёт тревогу «хост упал» — это ожидаемо.
+  VM хоста руками не удаляйте: 06.10 `DELETE /v1/vms/{id}` без тела увёл VM
+  и её диск в `error_deleting`. Повторный DELETE и кнопка консоли там
+  заблокированы, снимает только поддержка, а VM держит квоту. Запись хоста
+  при этом занимает место под `BROWSER_HOST_MAX` (по умолчанию 1), и новый
+  хост не создаётся, пока не поднять и квоту, и `BROWSER_HOST_MAX`.
 - Номер worker (`VERSION`) берите из свежего `origin/bro-next` перед PR и
   сверяйте с открытыми PR: 05.10 две сессии дважды выпустили разные worker под
   одним номером (`.5`, `.6`). Какой worker в корне пула, видно лишь в самом
