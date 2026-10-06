@@ -134,8 +134,12 @@
 - Хост пула на Selectel (06.10, `HFL2.2-8192-64-AMD`, ru-7a) с cloud-init
   `boot.py` — `ready` за ≈ 2 минуты, Chrome в песочнице за 2,4 с. Но Geonode
   (`BROWSER_VM_PROXY`) с адресов Selectel отвечает на CONNECT «403 Invalid
-  Request» (два диапазона), а с Cloud.ru тот же логин — 200: без своего
-  прокси для Selectel пул там не работает. Квота проекта в ru-1 нулевая.
+  Request» (два диапазона), а с Cloud.ru тот же логин — 200. NodeMaven пускает
+  и Selectel, и Cloud.ru (`docs/browser-speed.md`, раздел 8). Квота проекта
+  в ru-1 нулевая. В ru-7a после пересоздания сети и роутера VM не отвечали
+  ни снаружи, ни изнутри, хотя всё было `ACTIVE`; в ru-7b та же схема
+  заработала сразу. Проверяйте связь маленькой VM, прежде чем искать
+  причину в cloud-init.
 
 ## Прод на VM
 
@@ -809,6 +813,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
   прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
   Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
+- Резидентных прокси своего браузера (VM и пул) два: `BROWSER_VM_PROXY`
+  (Geonode; с адресов Selectel на CONNECT — 403 «Invalid Request») и
+  необязательный `BROWSER_VM_PROXY_FALLBACK` (NodeMaven,
+  `gate.nodemaven.com:8080:<логин>-country-ru-sid-{session}-ttl-24h:<пароль>`,
+  `.gov.ru` режет 407). Если все ротации прокси не дали российского выхода
+  или он отказал логину, Бро переводит воркспейс на другой и оставляет там;
+  запуск и продолжение не переезжают. Где воркспейс, говорит сама сессия в
+  `proxy_session` (`r` — первый прокси порядка, `s` — второй;
+  `agent/lib/browser-vm/proxy.ts`), без миграции. Пилот
+  `BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES` ставит запасной первым — туда же
+  уходит и уже сохранённая сессия; снятие пилота возвращает её. Без
+  `BROWSER_VM_PROXY_FALLBACK` запросы прежние.
 
 - Хост пула в простое выключается (`stopped`), а не удаляется, и его будит
   следующая песочница или сообщение человека (`agent/hooks/browser-prewarm.ts`):

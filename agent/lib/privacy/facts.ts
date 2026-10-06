@@ -129,9 +129,11 @@ function browserVms() {
   const modelService = /(?:^|\.)routerai\.ru$/iu.test(modelHost)
     ? "RouterAI"
     : `сервис ${modelHost}`;
-  const proxyService = /geonode/iu.test(proxyHost)
-    ? "Geonode"
-    : `сервис ${proxyHost}`;
+  const fallbackHost = env.BROWSER_VM_PROXY_FALLBACK?.host;
+  const proxyService =
+    fallbackHost === undefined
+      ? proxyServiceAt(proxyHost)
+      : `${proxyServiceAt(proxyHost)} или ${proxyServiceAt(fallbackHost)}`;
   return [
     `Поручения на сайтах выполняет браузер Бро на виртуальной машине в облаке Cloud.ru (${browserVmZone()}), у каждого человека своей: он видит страницы и данные, нужные поручению, и получает пароль или карту из сейфа только на время запуска и только для сайта поручения. На диске машины, даже выключенной, хранятся профиль браузера с куки сайтов, куда он входил, тексты и итоги поручений и снимки страниц.`,
     `Браузером на этой машине управляет языковая модель ${env.BROWSER_VM_MODEL} через ${modelService}: модель видит текст поручения и страницы, которые открывает браузер.`,
@@ -142,6 +144,13 @@ function browserVms() {
           "Если сайт закрывается головоломкой-капчей, которую браузер не собрал сам, её решает сервис 2Captcha: он видит адрес страницы и саму капчу, но не данные человека.",
         ]),
   ];
+}
+
+/** A residential proxy by the provider its host names, or by the host. */
+function proxyServiceAt(host: string) {
+  if (/geonode/iu.test(host)) return "Geonode";
+  if (/nodemaven/iu.test(host)) return "NodeMaven";
+  return `сервис ${host}`;
 }
 
 /**

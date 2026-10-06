@@ -17,13 +17,38 @@ export async function fastBrowserPilot(scope: {
   readonly userId?: string;
   readonly workspaceId: string;
 }) {
-  const list = env.BROWSER_FAST_WORKSPACES ?? [];
+  return inPilot("browser-fast", env.BROWSER_FAST_WORKSPACES, scope);
+}
+
+/**
+ * Whether the workspace's browser tries BROWSER_VM_PROXY_FALLBACK before
+ * BROWSER_VM_PROXY (BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES): the owner
+ * tries the second provider on production this way first. The list reads
+ * as BROWSER_FAST_WORKSPACES does, and a failed lookup keeps the usual order.
+ */
+export async function proxyFallbackFirstPilot(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  return inPilot(
+    "browser-proxy",
+    env.BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES,
+    scope
+  );
+}
+
+async function inPilot(
+  pilot: string,
+  entries: readonly string[] | undefined,
+  scope: { readonly userId?: string; readonly workspaceId: string }
+) {
+  const list = entries ?? [];
   if (list.length === 0) return false;
   if (list.includes("*")) return true;
   try {
     return await listsWorkspaceRemembered(list, scope);
   } catch (error) {
-    console.warn("[browser-fast] pilot lookup failed", { cause: error });
+    console.warn(`[${pilot}] pilot lookup failed`, { cause: error });
     return false;
   }
 }

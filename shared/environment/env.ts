@@ -143,35 +143,38 @@ const pastedKeySchema = z
 // colon. `{session}` in the username is where the sticky-session token of one
 // workspace goes (`agent/lib/browser-vm/proxy.ts`): a shared exit would let a
 // site tie every person's errands together.
-const browserVmProxySchema = z
-  .string()
-  .trim()
-  .transform((value) => {
-    const [host = "", port = "", username = "", ...password] = value.split(":");
-    return {
-      host,
-      password: password.join(":"),
-      port: Number(port),
-      username,
-    };
-  })
-  .pipe(
-    z.object({
-      host: z.string().min(1, "BROWSER_VM_PROXY needs a host"),
-      password: z.string().min(1, "BROWSER_VM_PROXY needs a password"),
-      port: z
-        .number()
-        .int("BROWSER_VM_PROXY needs a port number")
-        .positive("BROWSER_VM_PROXY needs a port number")
-        .max(65_535, "BROWSER_VM_PROXY needs a port number"),
-      username: z
-        .string()
-        .refine(
-          (value) => value.includes("{session}"),
-          "BROWSER_VM_PROXY needs {session} in its username"
-        ),
+function browserVmProxySchema(name: string) {
+  return z
+    .string()
+    .trim()
+    .transform((value) => {
+      const [host = "", port = "", username = "", ...password] =
+        value.split(":");
+      return {
+        host,
+        password: password.join(":"),
+        port: Number(port),
+        username,
+      };
     })
-  );
+    .pipe(
+      z.object({
+        host: z.string().min(1, `${name} needs a host`),
+        password: z.string().min(1, `${name} needs a password`),
+        port: z
+          .number()
+          .int(`${name} needs a port number`)
+          .positive(`${name} needs a port number`)
+          .max(65_535, `${name} needs a port number`),
+        username: z
+          .string()
+          .refine(
+            (value) => value.includes("{session}"),
+            `${name} needs {session} in its username`
+          ),
+      })
+    );
+}
 
 export const env = createEnv({
   server: {
@@ -466,7 +469,20 @@ export const env = createEnv({
     // 2Captcha, for a slider puzzle the VM's worker could not place itself:
     // it gets the puzzle and the page's address, nothing of the person.
     BROWSER_VM_TWOCAPTCHA_API_KEY: pastedKeySchema.optional(),
-    BROWSER_VM_PROXY: browserVmProxySchema.optional(),
+    BROWSER_VM_PROXY: browserVmProxySchema("BROWSER_VM_PROXY").optional(),
+    // A second residential proxy, in the same form (NodeMaven:
+    // `gate.nodemaven.com:8080:<login>-country-ru-sid-{session}-ttl-24h:<password>`).
+    // A workspace whose rotations on its proxy give no usable Russian exit,
+    // or whose proxy refuses Bro's login, moves to the other one and stays
+    // there (`agent/lib/browser-vm/proxy.ts`). Unset, there is one proxy.
+    BROWSER_VM_PROXY_FALLBACK: browserVmProxySchema(
+      "BROWSER_VM_PROXY_FALLBACK"
+    ).optional(),
+    // The pilot of the second proxy: workspace ids or owners' emails, or `*`
+    // for every workspace, whose browser tries BROWSER_VM_PROXY_FALLBACK
+    // first and BROWSER_VM_PROXY after it. Without the fallback it changes
+    // nothing.
+    BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES: workspaceListSchema.optional(),
     // Each VM's worker key is derived from this one and the workspace id, so
     // the key a VM holds opens no other VM (`agent/lib/browser-vm/token.ts`).
     BROWSER_VM_SIGNING_KEY: z
