@@ -6,6 +6,8 @@ import {
 } from "node:crypto";
 import { and, eq, gt, lt } from "drizzle-orm";
 import { z } from "zod";
+import { ImapFlow } from "imapflow";
+import { createTransport } from "nodemailer";
 import { db, mailAuthorizations, mailConnections, mailSends } from "@db";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
 import { ensureScope } from "@db/services/scope";
@@ -17,7 +19,9 @@ import {
 } from "@shared/mail/providers";
 import {
   mailProviderNames,
+  mailServerHosts,
   type MailAccess,
+  type MailCredentials,
   type MailProvider,
 } from "@shared/mail/schema";
 
@@ -45,6 +49,8 @@ class MailOAuthError extends Error {
     );
   }
 }
+
+export class MailAccessError extends Error {}
 
 function connectionWhere(scope: AccessScope, provider: MailProvider) {
   return and(
@@ -196,6 +202,11 @@ export async function finishMailAuthorization(
       } catch {
         throw new MailOAuthError("unavailable");
       }
+      await verifyMailCredentials(provider, {
+        email,
+        accessToken: token.access_token,
+        access: attempt.access,
+      });
       const encryptedTokens = await encryptMailSecret(
         scope,
         provider,
@@ -226,7 +237,8 @@ export async function finishMailAuthorization(
     await cancelMailAuthorization(scope, provider, state).catch(
       () => undefined
     );
-    if (error instanceof MailOAuthError) throw error;
+    if (error instanceof MailOAuthError || error instanceof MailAccessError)
+      throw error;
     throw new MailOAuthError("unavailable");
   }
 }
@@ -254,7 +266,7 @@ export async function cancelMailAuthorization(
 export async function getMailCredentials(
   scope: AccessScope,
   provider: MailProvider
-) {
+): Promise<MailCredentials> {
   if (!mailEnabled(scope) || !mailProviderConfigured(provider)) {
     throw new Error("Подключение этой почты на сервере не настроено.");
   }
@@ -343,6 +355,77 @@ export async function getMailCredentials(
   });
   if (!result.credentials) throw new Error(result.refused);
   return result.credentials;
+}
+
+async function verifyMailCredentials(
+  provider: MailProvider,
+  credentials: MailCredentials
+) {
+  const client = new ImapFlow({
+    host: mailServerHosts[provider].imap,
+    port: 993,
+    secure: true,
+    auth: { user: credentials.email, accessToken: credentials.accessToken },
+    tls: { rejectUnauthorized: true, minVersion: "TLSv1.2" },
+    logger: false,
+    logRaw: false,
+    emitLogs: false,
+    disableAutoIdle: true,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 30_000,
+  });
+  client.on("response", () => {
+    if (!client.authenticated && client.secureConnection) {
+      client.capabilities.delete("AUTH=OAUTHBEARER");
+      client.capabilities.set("AUTH=XOAUTH2", true);
+    }
+  });
+  client.on("error", () => {
+    client.close();
+  });
+  const deadline = setTimeout(() => {
+    client.close();
+  }, 60_000);
+  try {
+    await client.connect();
+    await client.mailboxOpen("INBOX", { readOnly: true });
+  } catch {
+    throw new MailAccessError("Почтовый сервер не подтвердил доступ IMAP.");
+  } finally {
+    await client.logout().catch(() => {
+      client.close();
+    });
+    clearTimeout(deadline);
+    client.close();
+  }
+  if (credentials.access === "read_only") return;
+  const transport = createTransport({
+    host: mailServerHosts[provider].smtp,
+    port: 465,
+    secure: true,
+    authMethod: "XOAUTH2",
+    forceAuth: true,
+    auth: {
+      type: "OAuth2",
+      user: credentials.email,
+      accessToken: credentials.accessToken,
+    },
+    tls: { rejectUnauthorized: true, minVersion: "TLSv1.2" },
+    logger: false,
+    debug: false,
+    dnsTimeout: 15_000,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 30_000,
+  });
+  try {
+    await transport.verify();
+  } catch {
+    throw new MailAccessError("Почтовый сервер не подтвердил доступ SMTP.");
+  } finally {
+    transport.close();
+  }
 }
 
 export async function disconnectMail(

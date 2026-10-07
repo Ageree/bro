@@ -15,14 +15,10 @@ import { z } from "zod";
 
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { MailProvider } from "@shared/mail/schema";
+import { mailServerHosts } from "@shared/mail/schema";
 import type { MessageAddressObject, SearchObject } from "imapflow";
 import type { AddressObject, ParsedMail } from "mailparser";
 import type { SMTPTransportOptions } from "nodemailer";
-
-const endpoints = {
-  mailru: { imap: "imap.mail.ru", smtp: "smtp.mail.ru" },
-  yandex: { imap: "imap.yandex.com", smtp: "smtp.yandex.com" },
-} satisfies Record<MailProvider, { imap: string; smtp: string }>;
 
 const maxMessageBytes = 10 * 1024 * 1024;
 const maxTextLength = 100_000;
@@ -153,7 +149,7 @@ async function withImap<T>(
   operation: (client: ImapFlow) => Promise<T>
 ) {
   const client = new ImapFlow({
-    host: endpoints[provider].imap,
+    host: mailServerHosts[provider].imap,
     port: 993,
     secure: true,
     auth: { user: credentials.email, accessToken: credentials.accessToken },
@@ -395,42 +391,6 @@ async function composeMessage(
   };
 }
 
-export async function verifyMailAccount(
-  scope: AccessScope,
-  provider: MailProvider
-) {
-  const credentials = await getMailCredentials(scope, provider);
-  await withImap(provider, credentials, async (client) => {
-    await client.mailboxOpen("INBOX", { readOnly: true });
-  });
-  if (credentials.access === "full") {
-    const transport = createTransport({
-      ...smtpOptions,
-      host: endpoints[provider].smtp,
-      auth: {
-        type: "OAuth2",
-        user: credentials.email,
-        accessToken: credentials.accessToken,
-      },
-    });
-    try {
-      await transport.verify();
-    } catch {
-      throw new MailClientError(
-        "The mail server did not confirm SMTP access. Reconnect the account and check its mail access settings."
-      );
-    } finally {
-      transport.close();
-    }
-  }
-  return {
-    provider,
-    access: credentials.access,
-    imapVerified: true,
-    smtpVerified: credentials.access === "full",
-  };
-}
-
 export async function searchMail(
   scope: AccessScope,
   input: {
@@ -646,7 +606,7 @@ export async function sendMail(
   }
   const transport = createTransport({
     ...smtpOptions,
-    host: endpoints[input.provider].smtp,
+    host: mailServerHosts[input.provider].smtp,
     auth: {
       type: "OAuth2",
       user: credentials.email,

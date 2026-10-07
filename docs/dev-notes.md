@@ -84,6 +84,9 @@
   `Record<string, unknown>`: внешнее разбирайте схемой zod, варианты — по `kind`.
 - Формат проверяет `oxfmt` (`pnpm format:check`), не Prettier: `npx prettier`
   переформатирует TypeScript иначе, и CI падает. Чините `pnpm exec oxfmt <файлы>`.
+- Oxc/knip резервируют до 6 GiB виртуальной памяти под raw-transfer. На
+  облачной машине с 4 GiB и `vm.overcommit_memory=0` это падает даже без
+  расхода RAM; `sudo sysctl -w vm.overcommit_memory=1` разрешает резервирование.
 - Перед последовательным `pnpm check --concurrency=1` запустите
   `pnpm types:generate`: иначе type-aware lint не видит сгенерированные
   `PageProps` и ложно сообщает об unsafe-типах.

@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyMailAccount } from "@agent/lib/mail/client";
 import {
   cancelMailAuthorization,
-  disconnectMail,
   finishMailAuthorization,
+  MailAccessError,
 } from "@db/services/mail";
 import { applicationOrigin } from "@shared/environment/origin";
 import { mailProviderSchema } from "@shared/mail/schema";
@@ -42,13 +41,7 @@ export async function GET(
         callback.data.code,
         callback.data.state
       );
-      try {
-        await verifyMailAccount(scope, provider.data);
-        url.searchParams.set("mailStatus", "connected");
-      } catch {
-        await disconnectMail(scope, provider.data);
-        url.searchParams.set("mailStatus", "mail_unavailable");
-      }
+      url.searchParams.set("mailStatus", "connected");
     } else {
       const state = z
         .string()
@@ -58,6 +51,8 @@ export async function GET(
         await cancelMailAuthorization(scope, provider.data, state.data);
     }
   } catch (error) {
+    if (error instanceof MailAccessError)
+      url.searchParams.set("mailStatus", "mail_unavailable");
     if (error instanceof UnauthenticatedError) {
       url.pathname = "/sign-in";
       url.search = "";

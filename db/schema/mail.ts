@@ -8,15 +8,15 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 import { workspaceMemberships } from "./workspaces";
-import { mailAccessSchema, mailProviderSchema } from "@shared/mail/schema";
+import { mailAccessLevels, mailProviders } from "@shared/mail/schema";
 
 export const mailConnections = pgTable(
   "mail_connections",
   {
     workspaceId: text("workspace_id").notNull(),
     userId: text("user_id").notNull(),
-    provider: text("provider", { enum: mailProviderSchema.options }).notNull(),
-    access: text("access", { enum: mailAccessSchema.options }).notNull(),
+    provider: text("provider", { enum: mailProviders }).notNull(),
+    access: text("access", { enum: mailAccessLevels }).notNull(),
     email: text("email").notNull(),
     encryptedTokens: text("encrypted_tokens").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
@@ -50,8 +50,8 @@ export const mailAuthorizations = pgTable(
     stateHash: text("state_hash").primaryKey(),
     workspaceId: text("workspace_id").notNull(),
     userId: text("user_id").notNull(),
-    provider: text("provider", { enum: mailProviderSchema.options }).notNull(),
-    access: text("access", { enum: mailAccessSchema.options }).notNull(),
+    provider: text("provider", { enum: mailProviders }).notNull(),
+    access: text("access", { enum: mailAccessLevels }).notNull(),
     redirectUri: text("redirect_uri").notNull(),
     encryptedVerifier: text("encrypted_verifier").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -80,7 +80,7 @@ export const mailSends = pgTable(
   {
     workspaceId: text("workspace_id").notNull(),
     userId: text("user_id").notNull(),
-    provider: text("provider", { enum: mailProviderSchema.options }).notNull(),
+    provider: text("provider", { enum: mailProviders }).notNull(),
     operationId: text("operation_id").notNull(),
     payloadHash: text("payload_hash").notNull(),
     status: text("status", {

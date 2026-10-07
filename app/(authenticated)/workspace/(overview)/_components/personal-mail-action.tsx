@@ -13,16 +13,21 @@ export function PersonalMailAction({
   readonly state: Awaited<ReturnType<typeof readMailConnection>>["state"];
 }) {
   const update = api.personalMail.update.useMutation({
-    onSuccess: ({ redirectTo }) => window.location.assign(redirectTo),
-    onError: () =>
-      window.location.assign(`/workspace?mail=${provider}&mailStatus=failed`),
+    onSuccess: ({ redirectTo }) => {
+      window.location.assign(redirectTo);
+    },
+    onError: () => {
+      window.location.assign(`/workspace?mail=${provider}&mailStatus=failed`);
+    },
   });
   if (state === "unavailable") return <span>Нужна настройка</span>;
   if (state === "connected") {
     return (
       <Button
         disabled={update.isPending}
-        onClick={() => update.mutate({ action: "disconnect", provider })}
+        onClick={() => {
+          update.mutate({ action: "disconnect", provider });
+        }}
         size="act-sm"
         type="button"
         variant="act"
@@ -35,9 +40,9 @@ export function PersonalMailAction({
     <span className="flex flex-wrap justify-end gap-x-4 gap-y-1">
       <Button
         disabled={update.isPending}
-        onClick={() =>
-          update.mutate({ action: "connect", provider, access: "full" })
-        }
+        onClick={() => {
+          update.mutate({ action: "connect", provider, access: "full" });
+        }}
         size="act-sm"
         type="button"
         variant="act"
@@ -46,9 +51,9 @@ export function PersonalMailAction({
       </Button>
       <Button
         disabled={update.isPending}
-        onClick={() =>
-          update.mutate({ action: "connect", provider, access: "read_only" })
-        }
+        onClick={() => {
+          update.mutate({ action: "connect", provider, access: "read_only" });
+        }}
         size="act-sm"
         type="button"
         variant="act"
