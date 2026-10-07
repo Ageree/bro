@@ -22,7 +22,7 @@ import {
  */
 
 /** The cap of a document the person sends, so any of them can go. */
-export const attachmentByteCap = documentByteCap;
+export const attachmentByteCap = 10 * 1024 * 1024;
 /** The files one message to the task agent brings along. */
 export const attachmentsPerMessage = 10;
 
@@ -116,9 +116,10 @@ export class InboxStorageError extends Error {
 export async function putInbox(
   key: string,
   bytes: Uint8Array,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maximumBytes = attachmentByteCap
 ) {
-  if (bytes.byteLength > attachmentByteCap) {
+  if (bytes.byteLength > Math.min(maximumBytes, documentByteCap)) {
     throw new InboxStorageError("A file in the inbox may be at most 10 MB.");
   }
   const response = await request(
@@ -149,7 +150,8 @@ export const inboxFreshMs = 5 * 60_000;
  */
 export async function getInbox(
   key: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maximumBytes = attachmentByteCap
 ): Promise<
   | { readonly kind: "missing" }
   | { readonly kind: "stale" }
@@ -169,12 +171,12 @@ export async function getInbox(
     return { kind: "stale" };
   }
   const length = Number(response.headers.get("content-length") ?? "0");
-  if (length > attachmentByteCap) {
+  if (length > Math.min(maximumBytes, documentByteCap)) {
     await response.body?.cancel();
     throw new InboxStorageError("The file in the inbox is over 10 MB.");
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > attachmentByteCap) {
+  if (bytes.byteLength > Math.min(maximumBytes, documentByteCap)) {
     throw new InboxStorageError("The file in the inbox is over 10 MB.");
   }
   return { bytes, kind: "file" };
@@ -552,7 +554,8 @@ export async function sandboxHasFile(
 export async function readSandboxFileWithin(
   sandbox: Pick<SandboxSession, "readFile">,
   path: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maximumBytes = attachmentByteCap
 ) {
   const stream = await sandbox.readFile({ abortSignal: signal, path });
   if (stream === null) return null;
@@ -564,10 +567,10 @@ export async function readSandboxFileWithin(
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > attachmentByteCap) break;
+    if (total > Math.min(maximumBytes, documentByteCap)) break;
     chunks.push(value);
   }
-  if (total > attachmentByteCap) {
+  if (total > Math.min(maximumBytes, documentByteCap)) {
     await reader.cancel().catch(() => undefined);
     return "oversize" as const;
   }

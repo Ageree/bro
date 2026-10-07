@@ -82,10 +82,10 @@ describe("Telegram channel configuration", () => {
     ).resolves.toBe("telegram-test-bot-token");
   });
 
-  it("accepts inbound images and PDFs up to ten megabytes", () => {
+  it("accepts inbound images and PDFs up to twenty mebibytes", () => {
     expect(capture.config?.uploadPolicy).toEqual({
       allowedMediaTypes: ["image/*", "application/pdf"],
-      maxBytes: 10 * 1024 * 1024,
+      maxBytes: 20 * 1024 * 1024,
     });
   });
 });

@@ -30,6 +30,10 @@ import {
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import {
+  browserFilesEnabled,
+  personBrowserFiles,
+} from "@agent/lib/browser-use/files";
+import {
   cardToolsBeforeOutcomeNote,
   cardToolsRefuseBeforeOutcomeNote,
   owedStepsNote,
@@ -264,7 +268,11 @@ export default defineAgent({
           ),
           // The task agent works for the person's own requests; a report
           // or a worker never starts one.
-          resolveModeValue(ctx, { interactive: true }) === true && !reportTurn
+          resolveModeValue(ctx, { interactive: true }) === true &&
+          (!reportTurn ||
+            (kind === "browser-report" &&
+              browserFilesEnabled(scope.workspaceId) &&
+              personBrowserFiles(ctx.messages).length > 0))
             ? taskAgentPilot(scope, step)
             : false,
           // Old tool results go as short traces (docs/roadmap.md, 28).
@@ -392,6 +400,7 @@ export default defineAgent({
           // In the pilot a turn keeps one tool set from its first step to
           // its last (`turnTools`).
           ...turnTools({
+            browserFiles: browserFilesEnabled(scope.workspaceId),
             askedQuestion: turnAskedQuestion(ctx.messages),
             cardsHeld,
             heldForAnswer,

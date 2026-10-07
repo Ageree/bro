@@ -15,6 +15,7 @@ import {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { browserFilesEnabled } from "@agent/lib/browser-use/files";
 import {
   fallbackDeliveryText,
   replyLanguageFor,
@@ -25,6 +26,7 @@ import { withApprovalCard } from "@shared/chat/approval-card";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
+import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
   type OutboundFile,
@@ -136,7 +138,7 @@ export default telegramChannel({
   },
   uploadPolicy: {
     allowedMediaTypes: ["image/*", "application/pdf"],
-    maxBytes: 10 * 1024 * 1024,
+    maxBytes: pdfByteCap,
   },
   events: {
     // eve's own handler starts the indicator; a turn the person opened keeps
@@ -363,8 +365,9 @@ export default telegramChannel({
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all. Spreadsheets
-    // and documents reach the model only where the task agent gets them.
+    // and documents reach the model only where task or browser files are on.
     const media = await telegramMediaTurn(message, {
+      browserFiles: browserFilesEnabled(scope.workspaceId),
       documents: taskFilesEnabled(scope.workspaceId),
     });
     if (media?.notice) await context.telegram.sendMessage(media.notice);

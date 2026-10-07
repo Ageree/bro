@@ -6,11 +6,17 @@ import { opensAsBackgroundTask } from "@agent/lib/delivery/turn-sends";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
+  browserFilesEnabled,
+  browserFileStepPaths,
+} from "@agent/lib/browser-use/files";
+import { documentByteCap } from "@agent/lib/inbound-media/media-type";
+import {
   attachmentsPerMessage,
   inboxKey,
   namedAttachmentPaths,
   pathMatchesBytes,
   putInbox,
+  markSandboxHoldsPersonFiles,
   type PersonSend,
   putPersonSend,
   readSandboxFileWithin,
@@ -205,24 +211,53 @@ export default defineHook({
       try {
         const calls = taskCalls(event.data);
         if (calls.length === 0) return;
-        if (!taskFilesGuarded() || !personCaller(ctx)) return;
-        if (!personTurn(ctx, event.data)) return;
+        if (!taskFilesGuarded()) return;
         const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
         if (caller === null) return;
         const { workspaceId } = scopeFromPrincipal(caller);
+        const browserPaths =
+          browserFilesEnabled(workspaceId) &&
+          reportedBrowserRunId(caller) !== undefined
+            ? browserFileStepPaths({
+                sessionId: ctx.session.id,
+                stepIndex: event.data.stepIndex,
+                turnId: event.data.turnId,
+              })
+            : [];
+        const browserContinuation = browserPaths.length > 0;
+        if (
+          !browserContinuation &&
+          (!personCaller(ctx) || !personTurn(ctx, event.data))
+        )
+          return;
+        if (browserContinuation) {
+          const sandbox = await ctx.getSandbox();
+          await markSandboxHoldsPersonFiles(
+            {
+              parentSessionId: ctx.session.id,
+              sandboxId: sandbox.id,
+              workspaceId,
+            },
+            AbortSignal.timeout(callsBudgetMs)
+          );
+        }
         // The task agent each call starts or continues stays on the web
         // only when the person's turn made the call (`keepOffWebUnlessSent`),
         // which a conversation marked before the files pilot was cleared
         // still asks: recorded wherever Object Storage is.
-        const recorded = await recordPersonSends({
-          sends: calls.flatMap(({ send }) =>
-            send === undefined ? [] : [send]
-          ),
-          sessionId: ctx.session.id,
-          workspaceId,
-        });
+        const recorded = browserContinuation
+          ? 0
+          : await recordPersonSends({
+              sends: calls.flatMap(({ send }) =>
+                send === undefined ? [] : [send]
+              ),
+              sessionId: ctx.session.id,
+              workspaceId,
+            });
         if (!taskFilesOfCaller(ctx)) return;
-        const paths = namedPaths(calls);
+        const paths = namedPaths(calls).filter(
+          (path) => !browserContinuation || browserPaths.includes(path)
+        );
         if (paths.length === 0) {
           console.info("[task-files] calls", { recorded });
           return;
@@ -282,13 +317,21 @@ async function mirror(input: {
   );
   let failed = 0;
   let mirrored = 0;
+  const limit: [] | [number] = browserFilesEnabled(input.workspaceId)
+    ? [documentByteCap]
+    : [];
   for (const path of input.paths) {
     if (deadline.aborted || Date.now() >= input.deadlineAt) break;
     try {
       // A file at the path may have grown far past any the person sent: it
       // is read only up to the cap.
       // oxlint-disable-next-line eslint/no-await-in-loop -- One file at a time, within the step's budget.
-      const bytes = await readSandboxFileWithin(input.sandbox, path, deadline);
+      const bytes = await readSandboxFileWithin(
+        input.sandbox,
+        path,
+        deadline,
+        ...limit
+      );
       if (
         bytes === null ||
         bytes === "oversize" ||
@@ -302,7 +345,8 @@ async function mirror(input: {
       await putInbox(
         inboxKey(input.workspaceId, input.sessionId, path),
         bytes,
-        deadline
+        deadline,
+        ...limit
       );
       mirrored += 1;
     } catch {

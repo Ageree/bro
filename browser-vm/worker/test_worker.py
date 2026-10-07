@@ -11,6 +11,8 @@ import contextlib
 import hashlib
 import hmac
 import importlib.util
+import inspect
+import io
 import itertools
 import json
 import os
@@ -282,6 +284,7 @@ class FakeAgent:
 
     def __init__(self, **options):
         self.options, self.added = options, []
+        self.available_file_paths = options["available_file_paths"]
         self.state = options["injected_agent_state"] or FakeAgentState()
         FakeAgent.built.append(self)
 
@@ -325,6 +328,7 @@ async def one_step(agent, on_step_start):
 class RunsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.build_tools = worker.Worker.tools
         self.chrome = FakeChrome()
         self.stop_hook = None
         self.exits = mock.Mock()  # os._exit after an update
@@ -400,6 +404,319 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 return run
             await asyncio.sleep(0.01)
         self.fail(f"run {run_id} did not end")
+
+    async def put_file(self, session_id="s1", name="resume.pdf", data=b"%PDF-1.7\x00\xffsynthetic", site="https://shop.test",
+                       token=None):
+        query = urllib.parse.urlencode({"site": site})
+        return await self.client.put(f"/v1/sessions/{session_id}/uploads/{name}?{query}", data=data, headers={
+            "Authorization": f"Bearer {token or fresh_token()}", "Content-Type": "application/pdf"})
+
+    async def test_binary_upload_is_scoped_persistent_and_idempotent_on_name_and_bytes(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        data = b"%PDF-1.7\x00\xffsynthetic"
+        source = worker.ROOT / "synthetic.pdf"
+        source.write_bytes(data)
+        with source.open("rb") as stream:
+            response = await self.put_file(data=stream)
+        self.assertEqual(response.status, 200)
+        first = await response.json()
+        self.assertEqual(Path(first["path"]).read_bytes(), data)
+        self.assertEqual(first["size"], len(data))
+        self.assertIn(self.worker.sessions["s1"].workspace / "uploads", Path(first["path"]).parents)
+        self.assertEqual(await (await self.put_file(data=data)).json(), first)
+        self.assertEqual((await self.put_file(data=data, site="https://evil.test")).status, 409)
+        other = await (await self.put_file(data=b"different")).json()
+        self.assertNotEqual(other["path"], first["path"])
+        self.assertEqual(Path(first["path"]).read_bytes(), data)
+        self.worker = self.restart()
+        self.assertEqual(await (await self.put_file(data=data)).json(), first)
+        await self.worker.start_run({"id": "r2", "sessionId": "s2", "llm": LLM, "task": "Open another shop."})
+        await self.settled("r2")
+        second = await (await self.put_file(session_id="s2", data=data)).json()
+        self.assertNotEqual(second["path"], first["path"])
+
+    async def test_upload_requires_a_live_known_session_and_matching_token_scope(self):
+        self.assertEqual((await self.put_file()).status, 404)
+        self.assertEqual(self.worker.sessions, {})
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        self.assertEqual((await self.put_file(token=cdp_token("s2"))).status, 403)
+        self.assertEqual((await self.put_file(token=cdp_token("s1"))).status, 200)
+        self.assertEqual((await self.call("POST", "/v1/sessions/s1/release"))[1], {"status": "stopped"})
+        self.worker = self.restart()
+        session = self.worker.sessions["s1"]
+        self.assertEqual(session.latest_run_id, "r1")
+        self.assertFalse((session.workspace / "uploads").exists())
+        self.assertTrue(session.released)
+        self.assertIsNone(session.tab)
+        self.assertEqual((await self.put_file(token=cdp_token("s2"))).status, 403)
+        self.assertTrue(session.released)
+        self.assertIsNone(session.tab)
+        built, runs = len(FakeAgent.built), list(self.worker.runs)
+        ensure_tab = self.worker.ensure_tab
+
+        async def lease_tab(leased_session, *, locked=False):
+            self.assertTrue(self.worker.lock.locked())
+            self.assertTrue(locked)
+            self.assertIs(leased_session, session)
+            return await ensure_tab(leased_session, locked=locked)
+
+        with mock.patch.object(self.worker, "ensure_tab", side_effect=lease_tab):
+            response = await self.put_file(token=cdp_token("s1"))
+        self.assertEqual(response.status, 200)
+        answer = await response.json()
+        self.assertEqual(Path(answer["path"]).read_bytes(), b"%PDF-1.7\x00\xffsynthetic")
+        self.assertFalse(session.released)
+        tab = session.tab
+        self.assertIn(tab, self.chrome.tabs)
+        self.assertEqual(self.worker.sessions, {"s1": session})
+        self.assertEqual((len(FakeAgent.built), list(self.worker.runs)), (built, runs))
+        self.assertEqual(json.loads(worker.TABS_FILE.read_text())["s1"]["tab"], tab)
+        status, follow_up = await self.call("POST", "/v1/runs", {
+            "id": "r2", "sessionId": "s1", "llm": LLM, "task": "Attach only the approved file."})
+        self.assertEqual((status, follow_up["sessionId"]), (202, "s1"))
+        await self.settled("r2")
+        self.assertIs(self.worker.sessions["s1"], session)
+        self.assertEqual(session.tab, tab)
+        self.assertEqual(FakeAgent.built[-1].options["available_file_paths"], [answer["path"]])
+        opening, open_tab, continue_agent = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        new_tab = worker.new_tab
+        browser_session = self.worker.browser_session
+        opened = self.chrome.opened
+        tabs = set(self.chrome.tabs)
+
+        async def delayed_tab():
+            opening.set()
+            await open_tab.wait()
+            return await new_tab()
+
+        async def delayed_browser(warming, options):
+            await continue_agent.wait()
+            return await browser_session(warming, options)
+
+        with mock.patch.object(worker, "new_tab", side_effect=delayed_tab), mock.patch.object(
+                self.worker, "browser_session", side_effect=delayed_browser):
+            status, warm_up = await self.call("POST", "/v1/runs", {
+                "id": "r3", "sessionId": "s3", "llm": LLM, "task": "Wait for the approved file."})
+            self.assertEqual((status, warm_up["sessionId"]), (202, "s3"))
+            warming = self.worker.sessions["s3"]
+            self.assertFalse(warming.released)
+            self.assertIsNone(warming.tab)
+            self.assertEqual((await self.put_file(session_id="s3", token=cdp_token("s2"))).status, 403)
+            pending = asyncio.create_task(self.put_file(session_id="s3", token=cdp_token("s3")))
+            await self.reached(opening)
+            continue_agent.set()
+            await asyncio.sleep(0.02)
+            open_tab.set()
+            response = await pending
+            self.assertEqual(response.status, 200)
+            staged = await response.json()
+            await self.settled("r3")
+        self.assertEqual(Path(staged["path"]).read_bytes(), b"%PDF-1.7\x00\xffsynthetic")
+        self.assertEqual(FakeAgent.built[-1].options["available_file_paths"], [staged["path"]])
+        self.assertEqual(self.chrome.opened, opened + 1)
+        self.assertEqual(warming.tabs, {warming.tab})
+        self.assertEqual(set(self.chrome.tabs), tabs | {warming.tab})
+        self.assertEqual((await self.client.put("/v1/uploads/legacy.txt", data=b"synthetic", headers={
+            "Authorization": f"Bearer {fresh_token()}"})).status, 404)
+
+    async def test_upload_rejects_bad_names_origins_empty_and_oversize_without_echoing_data(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        for name in (".hidden", "bad%20name.pdf", "bad%0Aname", "x" * 101, "resume%2Fsecret.pdf", "r%C3%A9sum%C3%A9.pdf"):
+            with self.subTest(name=name):
+                self.assertEqual((await self.put_file(name=name)).status, 400)
+        for site in ("http://shop.test", "https://user:password@shop.test", "https://shop.test/path",
+                     "https://shop.test?secret=x", "https://shop.test#x", "https://", "https://shop.test:bad",
+                     "https://shop.test\\evil", "https://shop.test\n", "https://shop.test?", "https://shop.test#"):
+            with self.subTest(site=site):
+                response = await self.put_file(site=site)
+                self.assertEqual(response.status, 400)
+                self.assertNotIn("password", await response.text())
+        self.assertEqual((await self.put_file(data=b"")).status, 400)
+        response = await self.put_file(data=io.BytesIO(b"sensitive-fixture" + b"x" * (20 * 1024 * 1024)))
+        self.assertEqual(response.status, 413)
+        self.assertNotIn("sensitive-fixture", await response.text())
+
+        async def chunks():
+            for _ in range(321):
+                yield b"x" * 65536
+
+        self.assertEqual((await self.put_file(data=chunks())).status, 413)
+        self.assertFalse((self.worker.sessions["s1"].workspace / "uploads").exists())
+
+    async def test_exact_upload_size_limit_and_release_during_transport(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        response = await self.put_file(data=io.BytesIO(b"x" * (20 * 1024 * 1024)))
+        self.assertEqual(response.status, 200)
+        answer = await response.json()
+        self.assertEqual((Path(answer["path"]).stat().st_size, answer["size"]), (20 * 1024 * 1024,) * 2)
+        began, resume = asyncio.Event(), asyncio.Event()
+
+        async def chunks():
+            yield b"begin"
+            began.set()
+            await resume.wait()
+            yield b"end"
+
+        pending = asyncio.create_task(self.put_file(name="pending.txt", data=chunks()))
+        await self.reached(began)
+        status, released = await self.call("POST", "/v1/sessions/s1/release")
+        self.assertEqual((status, released), (200, {"status": "stopped"}))
+        resume.set()
+        self.assertEqual((await pending).status, 409)
+        self.assertFalse((self.worker.sessions["s1"].workspace / "uploads").exists())
+
+    async def test_inbound_uploads_are_not_listed_or_downloadable_as_report_files(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        answer = await (await self.put_file()).json()
+        session = self.worker.sessions["s1"]
+        report = session.workspace / "report"
+        report.mkdir(exist_ok=True)
+        (report / "result.txt").write_text("result")
+        listed = (await self.call("GET", "/v1/files?session=s1"))[1]["files"]
+        self.assertFalse(any(file["path"].startswith("uploads/") for file in listed))
+        self.assertIn("report/result.txt", [file["path"] for file in listed])
+        relative = Path(answer["path"]).relative_to(session.workspace).as_posix()
+        self.assertEqual((await self.client.get(f"/v1/files/s1/{relative}", headers={
+            "Authorization": f"Bearer {fresh_token()}"})).status, 404)
+        self.assertEqual((await self.client.get(f"/v1/dl/{cdp_token('s1')}/s1/{relative}")).status, 404)
+        (report / "alias.txt").symlink_to(answer["path"])
+        self.assertNotIn("report/alias.txt", [file["path"] for file in
+                         (await self.call("GET", "/v1/files?session=s1&prefix=report/"))[1]["files"]])
+
+    async def test_upload_action_checks_ownership_listing_validity_and_current_origin_before_reading(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        session = self.worker.sessions["s1"]
+        answer = await (await self.put_file()).json()
+        calls = []
+
+        async def original_upload(*, params, browser_session, available_file_paths, file_system, **kwargs):
+            calls.append((params.path, available_file_paths, file_system))
+            return {"extracted_content": "uploaded"}
+
+        async def original_read(*, params, available_file_paths, file_system, **kwargs):
+            calls.append((params.file_name, available_file_paths, file_system))
+            return {"extracted_content": "read"}
+
+        class Tools:
+            def __init__(self):
+                self.registry = types.SimpleNamespace(registry=types.SimpleNamespace(actions={
+                    "upload_file": types.SimpleNamespace(function=original_upload),
+                    "read_file": types.SimpleNamespace(function=original_read)}))
+
+            def action(self, description):
+                return lambda function: function
+
+        self.enterContext(mock.patch.object(sys.modules["browser_use"], "Tools", Tools, create=True))
+        tools = self.build_tools(self.worker, session, self.worker.runs["r1"])
+        action = tools.registry.registry.actions["upload_file"].function
+        read = tools.registry.registry.actions["read_file"].function
+        self.assertEqual(inspect.signature(action), inspect.signature(original_upload))
+        selected = types.SimpleNamespace(target_id="top-target", frame_id="top-frame")
+        file_input = types.SimpleNamespace(target_id="frame-target", frame_id="upload-frame")
+        frames = mock.AsyncMock(return_value={"frameTree": {"frame": {
+            "id": "upload-frame", "securityOrigin": "https://shop.test", "url": "https://shop.test/form"}}})
+        cdp = types.SimpleNamespace(session_id="frame-session", cdp_client=types.SimpleNamespace(
+            send=types.SimpleNamespace(Page=types.SimpleNamespace(getFrameTree=frames))))
+        browser = types.SimpleNamespace(
+            get_current_page_url=mock.AsyncMock(return_value="https://shop.test/form?q=x"),
+            get_selector_map=mock.AsyncMock(return_value={1: selected}),
+            find_file_input_near_element=mock.Mock(return_value=file_input),
+            get_or_create_cdp_session=mock.AsyncMock(return_value=cdp))
+        params = types.SimpleNamespace(path=answer["path"], index=1)
+        context = {"browser_session": browser, "available_file_paths": [answer["path"]], "file_system": object(),
+                   "page_url": "https://evil.test", "cdp_client": None}
+        self.assertEqual(await action(params=params, **context), {"extracted_content": "uploaded"})
+        self.assertEqual(len(calls), 1)
+        browser.get_or_create_cdp_session.assert_awaited_once_with(target_id="frame-target", focus=False)
+        frames.assert_awaited_once_with(session_id="frame-session")
+        for origin in ("https://evil.test/form", "http://shop.test/form", "https://shop.test:8443/form",
+                       "https://sub.shop.test/form", "https://user:password@shop.test/form", "about:blank"):
+            with self.subTest(origin=origin):
+                browser.get_current_page_url.return_value = origin
+                self.assertIn("error", await action(params=params, **context))
+                self.assertEqual(len(calls), 1)
+        browser.get_current_page_url.return_value = "https://shop.test/"
+        browser.get_current_page_url.side_effect = RuntimeError("unavailable")
+        self.assertIn("error", await action(params=params, **context))
+        browser.get_current_page_url.side_effect = None
+        frames.return_value = {"frameTree": {"frame": {"id": "top-frame", "securityOrigin": "https://shop.test"},
+                              "childFrames": [{"frame": {"id": "upload-frame", "securityOrigin": "https://evil.test"}}]}}
+        self.assertIn("error", await action(params=params, **context))
+        self.assertEqual(len(calls), 1)
+        for tree in ({}, {"frameTree": {"frame": {"id": "missing-frame", "securityOrigin": "https://shop.test"}}},
+                     {"frameTree": {"frame": {"id": "upload-frame", "url": "https://shop.test/form"}}}):
+            frames.return_value = tree
+            self.assertIn("error", await action(params=params, **context))
+            self.assertEqual(len(calls), 1)
+        frames.return_value = {"frameTree": {"frame": {"id": "upload-frame", "securityOrigin": "https://shop.test"}}}
+        browser.get_selector_map.return_value = {}
+        self.assertIn("error", await action(params=params, **context))
+        browser.get_selector_map.return_value = {1: selected}
+        browser.find_file_input_near_element.return_value = None
+        self.assertIn("error", await action(params=params, **context))
+        self.assertEqual(len(calls), 1)
+        browser.find_file_input_near_element.return_value = file_input
+        self.assertIn("error", await action(params=params, **{**context, "available_file_paths": []}))
+        other_session = worker.Session("s2")
+        other = other_session.workspace / "uploads" / "other.pdf"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"private")
+        legacy = worker.UPLOADS / "legacy.pdf"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b"legacy private")
+        unknown = session.workspace / "uploads" / "unknown.pdf"
+        unknown.write_bytes(b"unlisted")
+        alias = session.workspace / "alias.pdf"
+        alias.symlink_to(other)
+        for path in (str(other), str(legacy), str(unknown), str(alias)):
+            with self.subTest(path=path):
+                context["available_file_paths"] = [path]
+                self.assertIn("error", await action(params=types.SimpleNamespace(path=path, index=1), **context))
+                self.assertIn("error", await read(params=types.SimpleNamespace(file_name=path), **context))
+                self.assertEqual(len(calls), 1)
+        context["available_file_paths"] = [answer["path"]]
+        Path(answer["path"]).write_bytes(b"x" * answer["size"])
+        self.assertIn("error", await action(params=params, **context))
+        self.assertEqual(len(calls), 1)
+        report_path = str(session.workspace / "report" / "generated.txt")
+        self.assertEqual(await action(params=types.SimpleNamespace(path=report_path, index=1), **context),
+                         {"extracted_content": "uploaded"})
+
+    async def test_uploads_refresh_before_a_live_step_and_continue_only_in_their_session(self):
+        waiting, proceed = asyncio.Event(), asyncio.Event()
+        seen = []
+
+        async def steps(agent, on_step_start):
+            await on_step_start(agent)
+            seen.append(list(agent.available_file_paths))
+            waiting.set()
+            await proceed.wait()
+            await on_step_start(agent)
+            seen.append(list(agent.available_file_paths))
+            return FakeHistory(True)
+
+        worker.UPLOADS.mkdir()
+        (worker.UPLOADS / "legacy.txt").write_text("private")
+        FakeAgent.script = steps
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.reached(waiting)
+        answer = await (await self.put_file()).json()
+        proceed.set()
+        await self.settled("r1")
+        self.assertEqual(seen, [[], [answer["path"]]])
+        FakeAgent.script = one_step
+        await self.call("POST", "/v1/sessions/s1/messages", {"text": "Upload the resume.", "runId": "r2"})
+        await self.settled("r2")
+        self.assertEqual(FakeAgent.built[-1].options["available_file_paths"], [answer["path"]])
+        await self.worker.start_run({"id": "r3", "sessionId": "s2", "llm": LLM, "task": "Open another shop."})
+        await self.settled("r3")
+        self.assertEqual(FakeAgent.built[-1].options["available_file_paths"], [])
 
     async def test_a_follow_up_run_has_its_own_request_and_step_budget(self):
         async def forty_five_steps(agent, on_step_start):

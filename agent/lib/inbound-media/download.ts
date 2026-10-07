@@ -5,7 +5,7 @@
 
 export const downloadTimeoutMs = 15_000;
 /**
- * A spreadsheet or document for the task agent is up to 10 MB
+ * An inbound document is up to 20 MiB
  * (`documentByteCap`), and Telegram on Cloud.ru loses packets
  * (docs/dev-notes.md, «Сеть Cloud.ru»): it gets longer than a photo.
  */

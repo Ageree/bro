@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { defineState, type SessionParent } from "eve/context";
 import { defineHook, type HookContext } from "eve/hooks";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { browserFilesEnabled } from "@agent/lib/browser-use/files";
+import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   attachmentsPerMessage,
   conversationHoldsPersonFiles,
@@ -429,7 +431,10 @@ async function receiveOne(
   if (await sandboxHasFile(input.sandbox, path, signal)) return undefined;
   const stored = await getInbox(
     inboxKey(input.workspaceId, input.sessionId, path),
-    signal
+    signal,
+    ...(browserFilesEnabled(input.workspaceId)
+      ? ([documentByteCap] as const)
+      : ([] as const))
   );
   if (stored.kind === "missing") return notSent;
   if (stored.kind === "stale") return sentEarlier;

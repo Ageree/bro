@@ -70,6 +70,7 @@ const toolGroupEntries = {
   apps: "apps",
   ask_question: "core",
   browser_task: "core",
+  browser_files: "core",
   calculate: "core",
   "calendar-check-availability": "google",
   "calendar-create-event": "google",

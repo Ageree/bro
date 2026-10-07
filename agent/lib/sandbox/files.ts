@@ -1,4 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { z } from "zod";
+import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { presignStoredObject } from "@shared/object-storage/s3";
 import { applicationOrigin } from "@shared/environment/origin";
 import { sandboxFileLinkSignature, sandboxFileLinkValid } from "./keys";
@@ -19,6 +21,15 @@ const redirectSeconds = 10 * 60;
 
 /** Characters of a shared file's name, its extension included. */
 const maximumNameCharacters = 120;
+
+const fileOwnerSchema = z.object({
+  mediaType: z.string().min(1),
+  name: z.string().min(1),
+  sessionId: z.string().min(1),
+  sha256: z.string().regex(/^[a-f\d]{64}$/u),
+  size: z.number().int().positive().max(maximumSharedFileBytes),
+  workspaceId: z.string().min(1),
+});
 
 /**
  * A file name a messenger shows as is: no path, no control characters, at
@@ -66,6 +77,7 @@ export async function shareSandboxFile(input: {
   readonly bytes: Uint8Array;
   readonly mediaType: string;
   readonly name: string;
+  readonly owner?: { readonly sessionId: string; readonly workspaceId: string };
 }) {
   if (input.bytes.byteLength > maximumSharedFileBytes) {
     throw new Error("A shared file may be at most 10 MB.");
@@ -88,6 +100,29 @@ export async function shareSandboxFile(input: {
     );
   }
   await response.body?.cancel();
+  if (input.owner !== undefined) {
+    const owned = await fetch(
+      presignStoredObject({
+        expiresSeconds: 300,
+        key: `sandbox/file-owners/${id}.json`,
+        method: "PUT",
+      }),
+      {
+        body: JSON.stringify({
+          ...input.owner,
+          mediaType: input.mediaType,
+          name,
+          sha256: createHash("sha256").update(input.bytes).digest("hex"),
+          size: input.bytes.byteLength,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PUT",
+        signal: AbortSignal.timeout(uploadTimeoutMs),
+      }
+    );
+    if (!owned.ok) throw new Error("The file's ownership could not be stored.");
+    await owned.body?.cancel();
+  }
   const url = new URL(
     `${sandboxFilesPath}/${id}/${encodeURIComponent(name)}`,
     applicationOrigin()
@@ -174,4 +209,59 @@ export function isSharedFileLink(value: string) {
     signedObjectKey({ id, name, signature: url.searchParams.get("sig") }) !==
     undefined
   );
+}
+
+export async function readOwnedSharedFile(
+  value: string,
+  owner: { readonly sessionId: string; readonly workspaceId: string }
+) {
+  if (!isSharedFileLink(value)) return undefined;
+  const url = new URL(value);
+  const [id, segment] = url.pathname
+    .slice(`${sandboxFilesPath}/`.length)
+    .split("/");
+  if (id === undefined || segment === undefined) return undefined;
+  const name = decodeURIComponent(segment);
+  const metadata = await fetch(
+    presignStoredObject({
+      expiresSeconds: 300,
+      key: `sandbox/file-owners/${id}.json`,
+      method: "GET",
+    }),
+    { redirect: "error", signal: AbortSignal.timeout(uploadTimeoutMs) }
+  );
+  if (!metadata.ok) {
+    await metadata.body?.cancel();
+    return undefined;
+  }
+  const record = fileOwnerSchema.safeParse(await metadata.json()).data;
+  if (
+    record === undefined ||
+    record.workspaceId !== owner.workspaceId ||
+    record.sessionId !== owner.sessionId ||
+    record.name !== name
+  )
+    return undefined;
+  const result = await downloadWithin(
+    new URL(
+      presignStoredObject({
+        expiresSeconds: 300,
+        key: objectKey(id, name),
+        method: "GET",
+      })
+    ),
+    maximumSharedFileBytes,
+    { redirect: "error", timeoutMs: uploadTimeoutMs }
+  );
+  if (
+    result.kind !== "bytes" ||
+    result.bytes.byteLength !== record.size ||
+    createHash("sha256").update(result.bytes).digest("hex") !== record.sha256
+  )
+    return undefined;
+  return {
+    bytes: new Uint8Array(result.bytes),
+    mediaType: record.mediaType,
+    name: record.name,
+  };
 }

@@ -38,7 +38,7 @@ import {
  * (`worker_failed_version`). One that failed for a passing cause is tried
  * again after `retryAfterMs`, not in every errand's path. Only a newer
  * version is rolled out, never an older one over a newer worker. Sandboxes
- * of the pool are left alone: their worker comes with the root file system.
+ * of the files pilot also update the worker that came with their root.
  */
 
 type BrowserVm = typeof browserVms.$inferSelect;
@@ -78,18 +78,23 @@ const datedVersion = /^(?<day>\d{4}-\d{2}-\d{2})\.(?<count>\d+)$/u;
 /**
  * The published worker when this VM's worker should get it before the
  * errand: an older version answers, the worker is idle and the VM was not
- * just handed to an errand, the VM is a workspace's own (not a sandbox of
- * the pool), the version has not failed on it, and no attempt is under way
- * or failed a moment ago. Asks nothing of anyone.
+ * just handed to an errand, the VM is a workspace's own or a files-pilot
+ * sandbox, the version has not failed on it, and no attempt is under way
+ * or failed a moment ago. A freshly started sandbox is not handed out yet.
+ * Asks nothing of anyone.
  */
 export function browserVmWorkerDue(
   vm: BrowserVm,
   health: WorkerHealth,
-  now: Date
+  now: Date,
+  beforeHandout = false
 ) {
   const published = env.BROWSER_VM_WORKER;
   if (published === undefined) return undefined;
-  if (vm.sandboxState !== null || vm.hostId !== null) return undefined;
+  const pooled = vm.sandboxState !== null || vm.hostId !== null;
+  if (pooled && !browserPoolWorkerRolloutEnabled(vm.workspaceId)) {
+    return undefined;
+  }
   // Without the bucket there is nothing to fetch: said once, in the docs.
   if (!objectStorageConfigured()) return undefined;
   if (health.busy || !newer(published.version, health.worker)) {
@@ -97,8 +102,15 @@ export function browserVmWorkerDue(
   }
   if (vm.workerFailedVersion === published.version) return undefined;
   if (since(vm.workerRolloutAt, now) < retryAfterMs) return undefined;
-  if (since(vm.lastUsedAt, now) < handedOutMs) return undefined;
+  if (!(pooled && beforeHandout) && since(vm.lastUsedAt, now) < handedOutMs) {
+    return undefined;
+  }
   return published;
+}
+
+export function browserPoolWorkerRolloutEnabled(workspaceId: string) {
+  const workspaces = env.BROWSER_VM_FILES_WORKSPACES ?? [];
+  return workspaces.includes("*") || workspaces.includes(workspaceId);
 }
 
 /**
@@ -146,9 +158,10 @@ export async function browserVmIdleForWorker(vm: BrowserVm, now: Date) {
 export async function rollOutBrowserVmWorker(
   vm: BrowserVm,
   health: WorkerHealth,
-  now: Date
+  now: Date,
+  beforeHandout = false
 ) {
-  const published = browserVmWorkerDue(vm, health, now);
+  const published = browserVmWorkerDue(vm, health, now, beforeHandout);
   if (published === undefined) return false;
   const { version } = published;
   const deadline = Date.now() + rolloutBudgetMs;

@@ -42,6 +42,7 @@ import {
   resetBrowserVmWorkerProfile,
   sendBrowserVmWorkerMessage,
   startBrowserVmWorkerRun,
+  uploadBrowserVmWorkerFile,
 } from "./worker";
 
 /**
@@ -918,6 +919,26 @@ function mayBeRunning(vm: BrowserVm) {
 async function readyVm(workspaceId: string) {
   const vm = await readBrowserVm(workspaceId);
   return vm === undefined ? undefined : up(vm);
+}
+
+export async function uploadBrowserVmSessionFile(
+  sessionId: string,
+  file: Omit<Parameters<typeof uploadBrowserVmWorkerFile>[1], "sessionId">
+) {
+  const now = new Date();
+  const started = await ensureBrowserVm(browserVmWorkspace(sessionId), now);
+  if (started.kind === "starting") {
+    throw new BrowserUseError(
+      429,
+      "browser-vm",
+      "The browser is starting.",
+      started.retryAfterMs
+    );
+  }
+  await keepAwake(started.vm, now);
+  return onWorker(async () =>
+    uploadBrowserVmWorkerFile(started.vm, { ...file, sessionId })
+  );
 }
 
 /**

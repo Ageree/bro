@@ -7,6 +7,12 @@ import {
 import { readCloudRuVm } from "@agent/lib/browser-vm/cloudru";
 import { browserVmIdleStopDue } from "@agent/lib/browser-vm/idle";
 import {
+  browserPoolWorkerRolloutEnabled,
+  browserVmIdleForWorker,
+  browserVmWorkerDue,
+  rollOutBrowserVmWorker,
+} from "@agent/lib/browser-vm/rollout";
+import {
   BrowserVmWorkerError,
   parkBrowserVmWorker,
   readBrowserVmWorkerHealth,
@@ -293,7 +299,12 @@ async function leaseFreed(workspaceId: string, now: Date) {
  */
 async function ensureUnderLease(record: BrowserVm, now: Date) {
   if (record.state === "deleting") return starting(transitionRetryMs);
-  if (record.sandboxState === "running") return readyForErrand(record, now);
+  if (
+    record.sandboxState === "running" &&
+    !browserPoolWorkerRolloutEnabled(record.workspaceId)
+  ) {
+    return readyForErrand(record, now);
+  }
   const claimed = await claimBrowserVmLease(
     record.workspaceId,
     now,
@@ -304,7 +315,7 @@ async function ensureUnderLease(record: BrowserVm, now: Date) {
     if (claimed.state === "deleting") return starting(transitionRetryMs);
     switch (claimed.sandboxState) {
       case "running": {
-        return await readyForErrand(claimed, now);
+        return await readyForErrand(claimed, now, true);
       }
       case "starting":
       case "restoring":
@@ -341,7 +352,7 @@ async function followForErrand(vm: BrowserVm, now: Date) {
   }
   switch (after?.sandboxState) {
     case "running": {
-      return readyForErrand(after, now);
+      return readyForErrand(after, now, true, vm.sandboxState !== "parking");
     }
     case "absent":
     case "parked":
@@ -499,23 +510,43 @@ function overdue(vm: BrowserVm, now: Date, afterMs: number) {
  * errand itself. So a sandbox a warm-up started seconds ago serves the
  * errand instead of sending it to the queue for a minute.
  */
-async function readyForErrand(vm: BrowserVm, now: Date) {
+async function readyForErrand(
+  vm: BrowserVm,
+  now: Date,
+  held = false,
+  beforeHandout = false
+) {
   if (vm.profileResetPending) return starting(transitionRetryMs);
   const host = await holdingHost(vm);
   if (host === undefined || !(await hostVmStillThere(host))) {
     return starting(transitionRetryMs);
   }
-  const health = await workerHealth(vm);
+  let health = await workerHealth(vm);
   if (
     health === undefined ||
     !(health.busy || (health.configured && (health.chrome || !health.proxy)))
   ) {
     return starting(transitionRetryMs);
   }
+  if (
+    held &&
+    browserVmWorkerDue(vm, health, now, beforeHandout) !== undefined &&
+    (await browserVmIdleForWorker(vm, now))
+  ) {
+    await rollOutBrowserVmWorker(vm, health, now, beforeHandout);
+    health = await workerHealth(vm);
+    if (
+      health === undefined ||
+      !(health.busy || (health.configured && (health.chrome || !health.proxy)))
+    ) {
+      return starting(transitionRetryMs);
+    }
+  }
   const touched = await updateBrowserVm(
     vm.workspaceId,
     { lastUsedAt: now },
-    now
+    now,
+    held ? (vm.leaseUntil ?? undefined) : undefined
   );
   return touched.state === "ready" && touched.sandboxState === "running"
     ? { kind: "ready" as const, vm: touched }
@@ -602,7 +633,9 @@ async function bringUp(record: BrowserVm, now: Date, warm = false) {
     return starting(transitionRetryMs);
   }
   const running = await markRunning(placedRow, sandbox.fallback, now);
-  return { kind: "ready" as const, vm: running };
+  return browserPoolWorkerRolloutEnabled(vm.workspaceId)
+    ? readyForErrand(running, now, true, true)
+    : { kind: "ready" as const, vm: running };
 }
 
 /**
@@ -641,6 +674,9 @@ async function markRunning(
           ? null
           : `The snapshot was not restored (${fallback}); the sandbox started from its profile.`,
       lastUsedAt: now,
+      workerRolloutAt: browserPoolWorkerRolloutEnabled(vm.workspaceId)
+        ? null
+        : vm.workerRolloutAt,
       sandboxState: "running",
       state: "ready",
     },
