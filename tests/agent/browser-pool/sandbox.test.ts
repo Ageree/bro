@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
+import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +24,10 @@ const secondAddress = "45.132.176.118";
 /** `browserSandboxId("ws_alice")`: `ws-` and 40 hex of its SHA-256. */
 const aliceSandbox = "ws-8bca567ef1568ecb0e07516230ad0a9d19700e02";
 
+function unusedFileSandboxIo(): never {
+  throw new Error("Owned shared files need no sandbox I/O");
+}
+
 const hostClient = vi.hoisted(() => ({
   deleteBrowserHostSandbox: vi.fn<typeof hostModule.deleteBrowserHostSandbox>(),
   deleteBrowserSandbox: vi.fn<typeof hostModule.deleteBrowserSandbox>(),
@@ -37,6 +43,8 @@ const worker = vi.hoisted(() => ({
     vi.fn<typeof workerModule.readBrowserVmWorkerHealth>(),
   resetBrowserVmWorkerProfile:
     vi.fn<typeof workerModule.resetBrowserVmWorkerProfile>(),
+  updateBrowserVmWorkerCode:
+    vi.fn<typeof workerModule.updateBrowserVmWorkerCode>(),
 }));
 const cloud = vi.hoisted(() => ({
   createCloudRuHostVm: vi.fn<typeof cloudRuModule.createCloudRuHostVm>(),
@@ -76,6 +84,7 @@ const contents = new Map<string, string>();
 const databases: PGlite[] = [];
 
 beforeEach(() => {
+  vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", "");
   bucket.clear();
   contents.clear();
   vi.stubGlobal("fetch", objectStorage);
@@ -112,6 +121,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", "");
   clearBrowserVmSettings();
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -282,6 +292,283 @@ async function loadPool(settings: Record<string, string> = {}) {
 }
 
 type Pool = Awaited<ReturnType<typeof loadPool>>;
+
+describe("files-pilot pool worker rollout", { timeout: 60_000 }, () => {
+  const code = 'VERSION = "2026-10-06.3"\n';
+  const checksum = createHash("sha256").update(code).digest("hex");
+  const published = `2026-10-06.3:workers/files.py:${checksum}`;
+
+  it("upgrades under the start lease before handout and again after a profile-only wake", async () => {
+    vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", alice.workspaceId);
+    const pool = await loadPool({ BROWSER_VM_WORKER: published });
+    await seedHost(pool, 1);
+    await seedAlice(pool, { sandboxState: "parked", state: "stopped" });
+    contents.set("workers/files.py", code);
+    worker.updateBrowserVmWorkerCode.mockImplementation(async (vm) => {
+      const current = await pool.vms.readBrowserVm(alice.workspaceId);
+      expect(current?.leaseUntil).toBeInstanceOf(Date);
+      expect(current?.sandboxState).toBe("running");
+      expect(current?.workerRolloutAt).toBeInstanceOf(Date);
+      expect(current?.generation).toBe(vm.generation);
+      worker.readBrowserVmWorkerHealth.mockResolvedValue(
+        health({ worker: "2026-10-06.3" })
+      );
+    });
+
+    await pool.sandboxes.prewarmBrowserSandbox(alice.workspaceId, now);
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledOnce();
+    const warmed = await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now);
+    expect(warmed.kind).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledOnce();
+
+    await pool.vms.updateBrowserVm(alice.workspaceId, {
+      host: null,
+      hostId: null,
+      sandboxState: "parked",
+      state: "stopped",
+    });
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(health());
+    const woken = await pool.lifecycle.ensureBrowserVm(
+      alice.workspaceId,
+      minutes(1)
+    );
+    expect(woken.kind).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledTimes(2);
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenLastCalledWith(
+      expect.objectContaining({ generation: 2 }),
+      new TextEncoder().encode(code),
+      checksum,
+      expect.any(Number)
+    );
+    expect(
+      (await pool.vms.readBrowserVm(alice.workspaceId))?.leaseUntil
+    ).toBeNull();
+  });
+
+  it("leaves flag-off, recently handed-out and busy sandboxes on their existing worker", async () => {
+    const pool = await loadPool({ BROWSER_VM_WORKER: published });
+    await seedRunning(pool, 10);
+    expect(
+      (await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)).kind
+    ).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+
+    vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", alice.workspaceId);
+    const pilot = await loadPool({ BROWSER_VM_WORKER: published });
+    await seedRunning(pilot, 0);
+    contents.set("workers/files.py", code);
+    expect(
+      (await pilot.lifecycle.ensureBrowserVm(alice.workspaceId, now)).kind
+    ).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+
+    await pilot.vms.updateBrowserVm(alice.workspaceId, {
+      lastUsedAt: minutes(-10),
+    });
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(health({ busy: true }));
+    expect(
+      (await pilot.lifecycle.ensureBrowserVm(alice.workspaceId, now)).kind
+    ).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+  });
+
+  it("does not restart an idle worker with an open run", async () => {
+    vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", alice.workspaceId);
+    const pool = await loadPool({ BROWSER_VM_WORKER: published });
+    await seedRunning(pool, 10);
+    await pool.vms.recordBrowserVmRun({
+      id: `vm:${alice.workspaceId}:r:open`,
+      sessionId: `vm:${alice.workspaceId}:s:open`,
+      task: "An errand is being dispatched",
+      workspaceId: alice.workspaceId,
+    });
+    contents.set("workers/files.py", code);
+    expect(
+      (await pool.lifecycle.ensureBrowserVm(alice.workspaceId, now)).kind
+    ).toBe("ready");
+    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
+  });
+});
+
+describe(
+  "recovering a files errand after a profile-only park",
+  { timeout: 60_000 },
+  () => {
+    it.each([false, true])(
+      "binds only the recovered run in the same root conversation (wrong root: %s)",
+      async (wrongRoot) => {
+        vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", alice.workspaceId);
+        const pool = await loadPool();
+        const records = await import("@db/services/browser-runs");
+        const { BrowserUseError } =
+          await import("@agent/lib/browser-use/errors");
+        const { browserTask } = await import("@agent/tools/browser_task");
+        const references = await import("@agent/lib/browser-use/files");
+        const shared = await import("@agent/lib/sandbox/files");
+        const source = "https://example.test/eve/v1/sandbox-files/owned.pdf";
+        const bytes = new TextEncoder().encode("synthetic PDF");
+        vi.spyOn(references, "reportedSharedFileLinks").mockReturnValue([
+          source,
+        ]);
+        vi.spyOn(shared, "readOwnedSharedFile").mockResolvedValue({
+          bytes,
+          mediaType: "application/pdf",
+          name: "owned.pdf",
+        });
+        const original = await records.createBrowserRun(alice, {
+          conversationChannel: "eve",
+          conversationId: "root-1",
+          id: "old-run",
+          profileId: `vm:${alice.workspaceId}:p1`,
+          rootSessionId: "root-1",
+          sessionId: `vm:${alice.workspaceId}:s:old`,
+          site: "https://example.test",
+          status: "done",
+          task: "Inspect the file requirement",
+        });
+        const recoveredSession = `vm:${alice.workspaceId}:s:recovered`;
+        const continueErrand = vi
+          .spyOn(browserTask, "execute")
+          .mockImplementationOnce(async () => {
+            await records.createBrowserRun(
+              alice,
+              {
+                conversationChannel: "eve",
+                conversationId: "root-1",
+                id: "recovered-run",
+                profileId: original.profileId,
+                rootSessionId: wrongRoot ? "another-root" : "root-1",
+                sessionId: recoveredSession,
+                site: original.site,
+                status: "running",
+                task: "Await approved files",
+              },
+              original.id
+            );
+            return {
+              note: "Recovered",
+              runId: "recovered-run",
+              status: "running",
+            };
+          })
+          .mockResolvedValue({
+            note: "Attached",
+            runId: "attachment-run",
+            status: "running",
+          });
+        const upload = vi
+          .spyOn(pool.runs, "uploadBrowserVmSessionFile")
+          .mockRejectedValueOnce(
+            new BrowserUseError(404, "browser-vm", "no such session")
+          )
+          .mockResolvedValue({
+            path: "/workspace/uploads/owned.pdf",
+            size: bytes.byteLength,
+          });
+        const context = {
+          abortSignal: new AbortController().signal,
+          callId: "file-call",
+          async getSandbox() {
+            return {
+              delete: unusedFileSandboxIo,
+              id: "unused-sandbox",
+              readBinaryFile: unusedFileSandboxIo,
+              readFile: unusedFileSandboxIo,
+              readTextFile: unusedFileSandboxIo,
+              removePath: unusedFileSandboxIo,
+              resolvePath: (path: string) => path,
+              run: unusedFileSandboxIo,
+              setNetworkPolicy: unusedFileSandboxIo,
+              spawn: unusedFileSandboxIo,
+              stop: unusedFileSandboxIo,
+              writeBinaryFile: unusedFileSandboxIo,
+              writeFile: unusedFileSandboxIo,
+              writeTextFile: unusedFileSandboxIo,
+            };
+          },
+          getSkill() {
+            throw new Error("No skill is needed");
+          },
+          getToken() {
+            throw new Error("No token is needed");
+          },
+          requireAuth() {
+            throw new Error("No inline auth is needed");
+          },
+          session: {
+            auth: {
+              current: {
+                attributes: { workspaceId: alice.workspaceId },
+                authenticator: "authjs",
+                principalId: alice.userId,
+                principalType: "user",
+              },
+              initiator: null,
+            },
+            id: "root-1",
+            turn: { id: "turn-1", sequence: 1 },
+          },
+          toolName: "browser_files",
+        } satisfies ToolContext;
+        const { default: files } = await import("@agent/tools/browser_files");
+        const resolve = files.events["step.started"];
+        if (!resolve) throw new Error("Files must resolve per step");
+        const tools = await resolve({}, {
+          channel: { kind: "channel:eve" },
+          messages: [{ content: "Attach the approved file", role: "user" }],
+          model: null,
+          session: context.session,
+        } satisfies DynamicResolveContext);
+        if (!tools || "execute" in tools)
+          throw new Error("The files tool must resolve");
+        const result = await tools.browser_files.execute(
+          {
+            action: "upload",
+            sources: [source],
+            runId: original.id,
+            site: original.site ?? "",
+          },
+          context
+        );
+        expect(continueErrand.mock.calls[0]?.[0]).toMatchObject({
+          action: "continue",
+          personWants: "look",
+          runId: original.id,
+        });
+        expect(continueErrand.mock.calls[0]?.[0].task).toContain(
+          "Do not inspect or act on the website"
+        );
+        expect(continueErrand.mock.calls[0]?.[1].session).toMatchObject({
+          id: "root-1",
+          auth: { current: { authenticator: "browser-files" } },
+        });
+        expect(result).toMatchObject(
+          wrongRoot
+            ? {
+                files: [],
+                status: "browser_unavailable",
+              }
+            : {
+                runId: "attachment-run",
+                status: "uploaded",
+              }
+        );
+        expect(upload.mock.calls.map(([session]) => session)).toEqual([
+          original.sessionId,
+          ...(wrongRoot ? [] : [recoveredSession]),
+        ]);
+        expect(continueErrand.mock.calls.map(([input]) => input.runId)).toEqual(
+          wrongRoot ? [original.id] : [original.id, "recovered-run"]
+        );
+        expect(
+          continueErrand.mock.calls[1]?.[0].task?.includes(
+            "/workspace/uploads/owned.pdf"
+          )
+        ).toBe(wrongRoot ? undefined : true);
+      }
+    );
+  }
+);
 
 /** A ready host in `slot`, as the host watchdog would leave it. */
 async function seedHost(

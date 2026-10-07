@@ -607,6 +607,47 @@ describe("browser VM worker client", () => {
     expect(headers.get("authorization")).toMatch(/^Bearer v1\./u);
   });
 
+  it("uploads binary bytes with their MIME type and a session-scoped signature", async () => {
+    const { token, worker } = await loadWorker();
+    const bytes = new Uint8Array([0, 255, 80, 68, 70]);
+    const sent: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
+      sent.push({ init, url });
+      return Promise.resolve(
+        Response.json({ path: "/private/uploads/abc/resume.pdf", size: 5 })
+      );
+    });
+
+    expect(
+      await worker.uploadBrowserVmWorkerFile(vm, {
+        bytes,
+        mediaType: "application/pdf",
+        name: "resume.pdf",
+        sessionId,
+        site: "https://shop.test:8443",
+      })
+    ).toEqual({ path: "/private/uploads/abc/resume.pdf", size: 5 });
+    const [call] = sent;
+    const headers = new Headers(call?.init.headers);
+    expect(call?.url).toBe(
+      `${origin}/v1/sessions/${encodeURIComponent(sessionId)}/uploads/resume.pdf?site=https%3A%2F%2Fshop.test%3A8443`
+    );
+    expect(call?.init.method).toBe("PUT");
+    expect(call?.init.body).toBe(bytes);
+    expect(headers.get("content-type")).toBe("application/pdf");
+    expect(
+      verifiedClaims(
+        token.browserVmKey(workspaceId),
+        (headers.get("authorization") ?? "").slice("Bearer ".length)
+      )
+    ).toEqual({
+      env: workspaceId,
+      exp: nowSeconds + 300,
+      gen: vm.generation,
+      ses: sessionId,
+    });
+  });
+
   it("asks the worker to close Chrome on a park only when told, with longer to answer", async () => {
     const { worker } = await loadWorker();
     const calls = stubWorker(

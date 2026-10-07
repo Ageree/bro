@@ -239,6 +239,34 @@ const fileListSchema = z.object({
   ),
 });
 
+const uploadInputSchema = z.object({
+  mediaType: z
+    .string()
+    .regex(/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?![\s\S])/u),
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?![\s\S])/u),
+  sessionId: z.string().min(1),
+  site: z
+    .url({ protocol: /^https$/u })
+    .refine((site) => {
+      const url = new URL(site);
+      return (
+        /^https:\/\/[^\s/?#\\]+$/u.test(site) &&
+        url.username === "" &&
+        url.password === ""
+      );
+    })
+    .transform((site) => new URL(site).origin),
+});
+
+const uploadedFileSchema = z.object({
+  path: z.string().min(1),
+  size: z
+    .number()
+    .int()
+    .positive()
+    .max(20 * 1024 * 1024),
+});
+
 const chromeControlSchema = z.object({
   chrome: z.boolean(),
   output: z.string(),
@@ -457,6 +485,37 @@ export async function listBrowserVmWorkerFiles(
   ).files;
 }
 
+export async function uploadBrowserVmWorkerFile(
+  vm: BrowserVmTarget,
+  input: z.input<typeof uploadInputSchema> & {
+    readonly bytes: Uint8Array<ArrayBuffer>;
+  }
+) {
+  const metadata = uploadInputSchema.parse(input);
+  if (
+    input.bytes.byteLength === 0 ||
+    input.bytes.byteLength > 20 * 1024 * 1024
+  ) {
+    throw new Error("A browser upload must contain 1 byte to 20 MiB.");
+  }
+  const query = new URLSearchParams({ site: metadata.site });
+  return uploadedFileSchema.parse(
+    await request(
+      vm,
+      "PUT",
+      `/v1/sessions/${encodeURIComponent(metadata.sessionId)}/uploads/${encodeURIComponent(metadata.name)}?${query.toString()}`,
+      {
+        file: {
+          bytes: input.bytes,
+          headers: { "content-type": metadata.mediaType },
+        },
+        session: metadata.sessionId,
+        timeoutMs: writeTimeoutMs,
+      }
+    )
+  );
+}
+
 /**
  * A URL that downloads one saved file with a plain GET, as a Browser Use
  * presigned URL did: the token rides in the path, is scoped to the session
@@ -629,7 +688,7 @@ async function readOrMissing<T>(read: () => Promise<T>) {
 
 async function request(
   vm: BrowserVmTarget,
-  method: "DELETE" | "GET" | "POST",
+  method: "DELETE" | "GET" | "POST" | "PUT",
   path: string,
   options: {
     readonly body?: unknown;
@@ -639,6 +698,7 @@ async function request(
       readonly headers: Readonly<Record<string, string>>;
     };
     readonly signed?: boolean;
+    readonly session?: string;
     readonly timeoutMs: number;
   }
 ) {
@@ -650,6 +710,7 @@ async function request(
   if (options.signed !== false) {
     const token = signBrowserVmToken({
       generation: vm.generation,
+      session: options.session,
       workspaceId: vm.workspaceId,
     });
     headers.set("authorization", `Bearer ${token}`);

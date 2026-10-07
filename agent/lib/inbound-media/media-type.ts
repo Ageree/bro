@@ -9,7 +9,7 @@
 /** eve inlines an image into the model context only up to this size. */
 export const inlineImageByteCap = 3 * 1024 * 1024;
 /** Matches the Telegram channel's `uploadPolicy` for PDFs. */
-export const pdfByteCap = 10 * 1024 * 1024;
+export const pdfByteCap = 20 * 1024 * 1024;
 /**
  * OpenRouter's transcription endpoint stops accepting audio around here.
  * RouterAI's limit was not measured, so the same cap applies there.
@@ -20,7 +20,7 @@ export const audioByteCap = 25 * 1024 * 1024;
  * (TASK_FILES_WORKSPACES); the object store's copy for the task agent
  * (`attachmentByteCap` in `agent/lib/sandbox/inbox.ts`) takes this cap.
  */
-export const documentByteCap = 10 * 1024 * 1024;
+export const documentByteCap = 20 * 1024 * 1024;
 
 function ascii(bytes: Uint8Array, offset: number, length: number) {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));

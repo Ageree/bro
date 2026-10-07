@@ -38,6 +38,7 @@ export interface StepToolSet {
  * to the turn as the task agent's pilot does.
  */
 export function turnTools(step: {
+  readonly browserFiles?: boolean;
   /** The turn already put an `ask_question` to the person. */
   readonly askedQuestion: boolean;
   /** A browser report's turn before its message (`cardToolsBeforeOutcome`). */
@@ -59,9 +60,17 @@ export function turnTools(step: {
   const task = step.taskAgent ? [] : [taskAgentTool];
   const offeredTools =
     step.kind === "background-task"
-      ? backgroundTaskTurnTools
+      ? step.browserFiles
+        ? ["browser_files", ...backgroundTaskTurnTools]
+        : backgroundTaskTurnTools
       : step.stableContext && step.kind === "browser-report"
-        ? reportTurnTools
+        ? step.browserFiles
+          ? [
+              "browser_files",
+              ...(step.taskAgent ? [taskAgentTool] : []),
+              ...reportTurnTools,
+            ]
+          : reportTurnTools
         : undefined;
   const withheldTools = step.stableContext
     ? [...askQuestion, ...held, ...task]

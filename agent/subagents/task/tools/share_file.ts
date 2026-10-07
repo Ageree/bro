@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import {
   maximumSharedFileBytes,
@@ -98,10 +99,18 @@ export default defineTool({
     }
     if (bytes.byteLength === 0) throw new Error(`The file ${path} is empty.`);
     const fileName = sharedFileName(name ?? path);
+    const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
     const shared = await shareSandboxFile({
       bytes,
       mediaType: mediaTypeOf(fileName, bytes),
       name: fileName,
+      owner:
+        caller?.principalType === "user"
+          ? {
+              sessionId: ctx.session.parent?.rootSessionId ?? ctx.session.id,
+              workspaceId: scopeFromPrincipal(caller).workspaceId,
+            }
+          : undefined,
     });
     return {
       bytes: shared.bytes,

@@ -102,6 +102,32 @@ describe("the one-time codes a follow-up carries", () => {
     ).toEqual(["482913"]);
   });
 
+  it("does not mistake an approved upload's origin or hashed path for a code, but still guards actual codes", () => {
+    const path =
+      "/var/lib/bro/sessions/1e800f84b6a00605268a18f1e2cbdf8d/uploads/ae5f3a20d1e20daed19b50b10da83a99512fe02a7240c9b01d6c2a723f3754f1/231075c914b5190d-full-test-scan-upload.pdf";
+    const transfer = `The file-transfer approval supplied exactly these files for attachment in this errand on https://example.test:8099:\n${JSON.stringify([{ path, name: "full-test-scan-upload.pdf" }])}\nAttach only these files where this errand requires them.`;
+    const waiting = { awaitingCode: true };
+    expect(oneTimeCodesIn(transfer, waiting)).toEqual([]);
+    expect(
+      codesNotFromPerson(
+        oneTimeCodesIn(`${transfer}\nSMS: 739204`, waiting),
+        []
+      )
+    ).toEqual(["739204"]);
+    expect(
+      oneTimeCodesIn("https://example.test:8099/?code=739204", waiting)
+    ).toEqual(["739204"]);
+    expect(oneTimeCodesIn("https://:8099", waiting)).toEqual(["8099"]);
+    const credentialUrl = new URL("https://example.test:8099");
+    credentialUrl.username = "auth";
+    credentialUrl.password = ["739", "204"].join("");
+    expect(oneTimeCodesIn(credentialUrl.href, waiting)).toContain("739204");
+    expect(
+      oneTimeCodesIn(path.replace("/uploads/", "/uploads/../"), waiting)
+    ).toContain("231075");
+    expect(oneTimeCodesIn(`/different${path}`, waiting)).toContain("231075");
+  });
+
   it("finds a code with punctuation around it", () => {
     for (const text of [
       "Пользователь прислал код: 739204.",

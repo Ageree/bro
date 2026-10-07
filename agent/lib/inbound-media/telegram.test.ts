@@ -283,6 +283,112 @@ describe("Telegram media turn", () => {
     ).toHaveLength(1);
   });
 
+  it.each([11_347_345, undefined])(
+    "accepts the 11,347,345-byte DOC002.pdf with reported size %s",
+    async (fileSize) => {
+      const bytes = new Uint8Array(11_347_345);
+      bytes.set(pdf);
+      serveTelegram({ next: { bytes, contentType: "application/pdf" } });
+      const { telegramMediaTurn } = await loadTelegramMedia();
+
+      const message = telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "DOC002.pdf",
+          file_size: fileSize,
+          mime_type: "application/pdf",
+        },
+      });
+
+      await expect(telegramMediaTurn(message)).resolves.toEqual({
+        message: "[файл: DOC002.pdf (application/pdf), слишком большой]",
+        notice: undefined,
+      });
+      fetchMock.mockClear();
+      const turn = await telegramMediaTurn(message, { browserFiles: true });
+
+      expect(turn?.notice).toBeUndefined();
+      if (!Array.isArray(turn?.message)) {
+        throw new Error("Expected DOC002.pdf bytes, not a refusal note.");
+      }
+      const file = turn.message.find((part) => part.type === "file");
+      expect({ filename: file?.filename, mediaType: file?.mediaType }).toEqual({
+        filename: "DOC002.pdf",
+        mediaType: "application/pdf",
+      });
+      expect(
+        Buffer.from(z.string().parse(file?.data), "base64").equals(
+          Buffer.from(bytes)
+        )
+      ).toBe(true);
+      expect(turn.message[0]).toEqual({ text: "[документ]", type: "text" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it("preserves a large image document's original bytes in the browser-files pilot", async () => {
+    const bytes = new Uint8Array(3 * 1024 * 1024 + 1);
+    bytes.set(jpeg);
+    serveTelegram({ next: { bytes } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    const turn = await telegramMediaTurn(
+      telegramMessage({
+        document: {
+          file_id: "d",
+          file_name: "original.jpg",
+          file_size: bytes.byteLength,
+          mime_type: "image/jpeg",
+        },
+      }),
+      { browserFiles: true }
+    );
+
+    expect(turn?.notice).toBeUndefined();
+    if (!Array.isArray(turn?.message)) {
+      throw new Error(
+        "Expected the pilot to preserve the original image file."
+      );
+    }
+    const file = turn.message.find((part) => part.type === "file");
+    expect({ filename: file?.filename, mediaType: file?.mediaType }).toEqual({
+      filename: "original.jpg",
+      mediaType: "image/jpeg",
+    });
+    expect(
+      Buffer.from(z.string().parse(file?.data), "base64").equals(
+        Buffer.from(bytes)
+      )
+    ).toBe(true);
+    expect(turn.message[0]).toEqual({
+      text: "[файл: original.jpg (image/jpeg)]",
+      type: "text",
+    });
+  });
+
+  it("gracefully refuses streamed PDF bytes above 20 MiB without size metadata", async () => {
+    const bytes = new Uint8Array(20 * 1024 * 1024 + 1);
+    bytes.set(pdf);
+    serveTelegram({ next: { bytes } });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+
+    await expect(
+      telegramMediaTurn(
+        telegramMessage({
+          document: {
+            file_id: "d",
+            file_name: "large.pdf",
+            mime_type: "application/pdf",
+          },
+        }),
+        { browserFiles: true }
+      )
+    ).resolves.toEqual({
+      message: "[файл: large.pdf (application/pdf), слишком большой]",
+      notice: undefined,
+    });
+  });
+
   it("keeps a sender's file name to one line of its note", async () => {
     const { telegramMediaTurn } = await loadTelegramMedia();
     const turn = await telegramMediaTurn(

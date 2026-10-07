@@ -34,6 +34,7 @@ import {
  * ignores voice notes entirely.
  */
 const telegramApiBaseUrl = "https://api.telegram.org";
+const legacyDocumentByteCap = 10 * 1024 * 1024;
 
 const fileSchema = z.object({
   file_id: z.string().min(1),
@@ -190,12 +191,11 @@ async function photoItem(
 async function taskDocumentItem(
   document: z.infer<typeof documentSchema>,
   name: string,
-  mediaType: string
+  mediaType: string,
+  browserFiles: boolean
 ): Promise<InboundMediaItem> {
-  if (
-    document.file_size !== undefined &&
-    document.file_size > documentByteCap
-  ) {
+  const cap = browserFiles ? documentByteCap : legacyDocumentByteCap;
+  if (document.file_size !== undefined && document.file_size > cap) {
     return {
       kind: "note",
       text: fileNote(name, mediaType, "слишком большой"),
@@ -203,7 +203,7 @@ async function taskDocumentItem(
   }
   const download = await downloadTelegramFile(
     document.file_id,
-    documentByteCap,
+    cap,
     documentDownloadTimeoutMs
   );
   if (download.kind === "oversize") {
@@ -231,6 +231,14 @@ async function taskDocumentItem(
   }
   if (isImageMediaType(sniffed)) {
     if (download.bytes.byteLength > inlineImageByteCap) {
+      if (browserFiles) {
+        return {
+          data: download.bytes,
+          filename: name,
+          kind: "document",
+          mediaType: sniffed,
+        };
+      }
       return {
         kind: "note",
         text: fileNote(name, sniffed, "слишком большой"),
@@ -259,7 +267,8 @@ async function taskDocumentItem(
 
 async function documentItem(
   document: z.infer<typeof documentSchema>,
-  documents: boolean
+  documents: boolean,
+  browserFiles: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(document.mime_type);
   const name = document.file_name ?? "file";
@@ -270,18 +279,33 @@ async function documentItem(
       ? documentMediaType(document.file_name, declared)
       : undefined;
     if (taskType !== undefined && document.file_name !== undefined) {
-      return taskDocumentItem(document, document.file_name, taskType);
+      return taskDocumentItem(
+        document,
+        document.file_name,
+        taskType,
+        browserFiles
+      );
     }
     return { kind: "note", text: fileNote(document.file_name, declared) };
   }
-  const cap = isPdf ? pdfByteCap : inlineImageByteCap;
+  const cap = browserFiles
+    ? isPdf
+      ? pdfByteCap
+      : documentByteCap
+    : isPdf
+      ? legacyDocumentByteCap
+      : inlineImageByteCap;
   if (document.file_size !== undefined && document.file_size > cap) {
     return {
       kind: "note",
       text: fileNote(document.file_name, declared, "слишком большой"),
     };
   }
-  const download = await downloadTelegramFile(document.file_id, cap);
+  const download = await downloadTelegramFile(
+    document.file_id,
+    cap,
+    browserFiles ? documentDownloadTimeoutMs : downloadTimeoutMs
+  );
   if (download.kind === "oversize") {
     return {
       kind: "note",
@@ -304,9 +328,15 @@ async function documentItem(
     return { data: download.bytes, filename: name, kind: "pdf" };
   }
   if (isImageMediaType(mediaType)) {
-    // A document labelled PDF was fetched under the PDF cap, but the bytes
-    // are an image and eve inlines images only up to the smaller cap.
     if (download.bytes.byteLength > inlineImageByteCap) {
+      if (browserFiles && isImageMediaType(sniffMediaType(download.bytes))) {
+        return {
+          data: download.bytes,
+          filename: name,
+          kind: "document",
+          mediaType,
+        };
+      }
       return {
         kind: "note",
         text: fileNote(document.file_name, mediaType, "слишком большой"),
@@ -344,20 +374,28 @@ async function voiceItem(
 /**
  * The turn for a Telegram message that carries a photo, document, voice note,
  * audio file, or video note, or `undefined` when it carries none and eve's
- * default text turn applies. `documents` (`taskFilesEnabled`) also hands the
- * model the spreadsheets and documents the task agent can open; without it
- * they stay a note and are never downloaded.
+ * default text turn applies. `documents` (`taskFilesEnabled`) or `browserFiles`
+ * also hands the model allowlisted documents; without either they stay a note
+ * and are never downloaded. `browserFiles` preserves verified image documents
+ * above the inline cap as staged files and raises the document cap to 20 MiB.
  */
 export async function telegramMediaTurn(
   message: TelegramMessage,
-  { documents = false }: { readonly documents?: boolean } = {}
+  {
+    documents = false,
+    browserFiles = false,
+  }: { readonly documents?: boolean; readonly browserFiles?: boolean } = {}
 ): Promise<InboundTurn | undefined> {
   const parsed = mediaMessageSchema.safeParse(message.raw);
   if (!parsed.success) return undefined;
   const media = parsed.data;
   const tasks: Promise<InboundMediaItem>[] = [];
   if (media.photo && media.photo.length > 0) tasks.push(photoItem(media.photo));
-  if (media.document) tasks.push(documentItem(media.document, documents));
+  if (media.document) {
+    tasks.push(
+      documentItem(media.document, documents || browserFiles, browserFiles)
+    );
+  }
   if (media.voice) {
     tasks.push(
       voiceItem(media.voice, baseMediaType(media.voice.mime_type), undefined)

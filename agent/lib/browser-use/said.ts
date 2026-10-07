@@ -80,7 +80,7 @@ function answersThisTurn(messages: readonly ModelMessage[]) {
 }
 
 /** A message the person wrote, not one Bro opened a turn with. */
-function isPersonMessage(message: ModelMessage) {
+export function isPersonMessage(message: ModelMessage) {
   if (message.role !== "user") return false;
   const kind = taggedMessageSchema.safeParse(message).data?.kind ?? "user";
   return kind === "user" && !isBackgroundTurnText(messageText(message));
@@ -478,6 +478,9 @@ const codeContextReach = 25;
  * number only with a digit on its far side.
  */
 const digitGroupPattern = /(?<!\d|\d[.,:])\d(?:[  -]?\d){3,7}(?!\d|[.,:]\d)/gu;
+const uploadedFileReferencePattern =
+  /(?<![\p{L}\p{N}/._-])\/var\/lib\/bro\/sessions\/[a-f\d]{32}\/uploads\/[a-f\d]{64}\/[A-Za-z\d][A-Za-z\d._-]{0,99}(?![A-Za-z\d./_-])/gu;
+const webReferencePattern = /https?:\/\/[^\s<>"']+/gu;
 
 /** A currency after a number: «4 890 ₽», «1500 руб», «15 %». */
 const currencyAfterPattern =
@@ -598,9 +601,27 @@ export function oneTimeCodeRanges(
   text: string,
   options: { readonly awaitingCode: boolean }
 ) {
+  const references = [...text.matchAll(uploadedFileReferencePattern)].map(
+    (match) => [match.index, match.index + match[0].length] as const
+  );
+  for (const match of text.matchAll(webReferencePattern)) {
+    const reference = match[0].replace(/[.,:;)]*$/u, "");
+    const url = URL.parse(reference);
+    const authority = /^https?:\/\/[^/?#]+/u.exec(reference)?.[0];
+    if (
+      url !== null &&
+      !url.username &&
+      !url.password &&
+      !reference.includes("\\") &&
+      authority !== undefined
+    ) {
+      references.push([match.index, match.index + authority.length]);
+    }
+  }
   return [...text.matchAll(digitGroupPattern)].flatMap((match) => {
     const start = match.index;
     const end = start + match[0].length;
+    if (references.some(([from, to]) => from <= start && end <= to)) return [];
     const before = text.slice(0, start);
     const after = text.slice(end);
     if (idBefore(before) && codeAfterPattern.test(after)) return [];
