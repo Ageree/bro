@@ -87,6 +87,10 @@
 - Oxc/knip резервируют до 6 GiB виртуальной памяти под raw-transfer. На
   облачной машине с 4 GiB и `vm.overcommit_memory=0` это падает даже без
   расхода RAM; `sudo sysctl -w vm.overcommit_memory=1` разрешает резервирование.
+- На машине с 4 GiB `pnpm build` и `pnpm build:eve` убивает физический OOM
+  даже с ограничением JS heap; 4 GiB swap позволяют собрать оба. Webpack не
+  запасной путь для eve 0.62: он не разбирает `using` в клиенте eve, поэтому
+  оставляйте стандартный Turbopack.
 - Перед последовательным `pnpm check --concurrency=1` запустите
   `pnpm types:generate`: иначе type-aware lint не видит сгенерированные
   `PageProps` и ложно сообщает об unsafe-типах.
