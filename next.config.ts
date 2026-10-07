@@ -9,6 +9,11 @@ const nextConfig: NextConfig = {
   // The dev badge sits in the bottom-left corner over «Выйти» at the foot of
   // the rail and takes its taps; build errors still open the overlay.
   devIndicators: false,
+  logging: {
+    incomingRequests: {
+      ignore: [/\/api\/personal-mail\/[^/?]+\/callback(?:\?|$)/u],
+    },
+  },
   serverExternalPackages: ["supermemory"],
 };
 
