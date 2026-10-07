@@ -819,6 +819,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
   прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
   Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
+- В browser-use 0.13.10 обычный file input не имеет `frame_id`: CDP ставит
+  его на владеющий HTML-узел. Для проверки origin поля worker ищет ближайшего
+  владельца в том же `target_id` и сверяет `Page.getFrameTree.securityOrigin`;
+  URL верхней страницы не доказывает принадлежность поля сайту.
 
 - Хост пула в простое выключается (`stopped`), а не удаляется, и его будит
   следующая песочница или сообщение человека (`agent/hooks/browser-prewarm.ts`):

@@ -687,6 +687,29 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         report_path = str(session.workspace / "report" / "generated.txt")
         self.assertEqual(await action(params=types.SimpleNamespace(path=report_path, index=1), **context),
                          {"extracted_content": "uploaded"})
+        await self.put_file()
+        owner = types.SimpleNamespace(target_id="frame-target", frame_id="upload-frame", parent_node=None)
+        parent = types.SimpleNamespace(target_id="frame-target", frame_id=None, parent_node=owner)
+        file_input.frame_id = None
+        file_input.parent_node = parent
+        before = len(calls)
+        self.assertEqual(await action(params=params, **context), {"extracted_content": "uploaded"})
+        self.assertEqual(len(calls), before + 1)
+        browser.get_or_create_cdp_session.assert_awaited_with(target_id="frame-target", focus=False)
+        for ancestor in (None,
+                         types.SimpleNamespace(target_id="top-target", frame_id="upload-frame", parent_node=None),
+                         types.SimpleNamespace(target_id="top-target", frame_id=None, parent_node=owner),
+                         types.SimpleNamespace(target_id="frame-target", frame_id=None, parent_node=None)):
+            with self.subTest(ancestor=ancestor):
+                file_input.parent_node = ancestor
+                self.assertIn("error", await action(params=params, **context))
+                self.assertEqual(len(calls), before + 1)
+        file_input.parent_node = parent
+        for origin in ("https://evil.test", "http://shop.test", "null", ""):
+            with self.subTest(frame_origin=origin):
+                frames.return_value = {"frameTree": {"frame": {"id": "upload-frame", "securityOrigin": origin}}}
+                self.assertIn("error", await action(params=params, **context))
+                self.assertEqual(len(calls), before + 1)
 
     async def test_uploads_refresh_before_a_live_step_and_continue_only_in_their_session(self):
         waiting, proceed = asyncio.Event(), asyncio.Event()

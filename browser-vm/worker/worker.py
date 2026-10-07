@@ -77,7 +77,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-06.4"
+VERSION = "2026-10-06.5"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1257,17 +1257,22 @@ class Worker:
                 with contextlib.suppress(Exception):
                     selected = (await browser_session.get_selector_map()).get(params.index)
                     file_input = browser_session.find_file_input_near_element(selected) if selected is not None else None
-                    if file_input is not None and file_input.target_id and file_input.frame_id:
-                        cdp = await browser_session.get_or_create_cdp_session(target_id=file_input.target_id, focus=False)
-                        tree = await cdp.cdp_client.send.Page.getFrameTree(session_id=cdp.session_id)
-                        pending = [tree.get("frameTree", {})]
-                        while pending:
-                            node = pending.pop()
-                            frame = node.get("frame", {})
-                            if frame.get("id") == file_input.frame_id:
-                                frame_origin = https_origin(frame.get("securityOrigin"), True)
-                                break
-                            pending.extend(node.get("childFrames") or [])
+                    if file_input is not None and file_input.target_id:
+                        target_id = file_input.target_id
+                        owner = file_input
+                        while owner is not None and owner.target_id == target_id and not owner.frame_id:
+                            owner = owner.parent_node
+                        if owner is not None and owner.target_id == target_id and owner.frame_id:
+                            cdp = await browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
+                            tree = await cdp.cdp_client.send.Page.getFrameTree(session_id=cdp.session_id)
+                            pending = [tree.get("frameTree", {})]
+                            while pending:
+                                node = pending.pop()
+                                frame = node.get("frame", {})
+                                if frame.get("id") == owner.frame_id:
+                                    frame_origin = https_origin(frame.get("securityOrigin"), True)
+                                    break
+                                pending.extend(node.get("childFrames") or [])
                 if frame_origin != record["site"]:
                     return ActionResult(error="The selected file input must belong to the bound HTTPS site.")
             return await original_upload(*args, params=params, browser_session=browser_session,
