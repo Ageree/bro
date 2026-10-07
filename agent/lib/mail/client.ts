@@ -278,6 +278,10 @@ async function findFolder(
     ) ??
     folders.find((entry) => aliases[kind].includes(entry.name.toLowerCase()));
   if (!folder) {
+    if (kind === "Archive") {
+      const created = await client.mailboxCreate("Archive");
+      return created.path;
+    }
     throw new MailClientError(
       `The server has no identifiable ${kind.toLowerCase()} folder.`
     );
@@ -321,10 +325,15 @@ async function composeMessage(
     const originalTo = parsedAddresses(parsed.to);
     const originalCc = parsedAddresses(parsed.cc);
     const replyTo = parsedAddresses(parsed.replyTo);
+    const otherRecipients = originalTo.filter(
+      (address) => address.address.toLowerCase() !== self
+    );
     const targets = from.some(
       (address) => address.address.toLowerCase() === self
     )
-      ? originalTo.filter((address) => address.address.toLowerCase() !== self)
+      ? otherRecipients.length
+        ? otherRecipients
+        : originalTo
       : replyTo.length
         ? replyTo
         : from;
@@ -481,19 +490,14 @@ export async function readMail(
     }
     const message = await client.fetchOne(
       input.uid,
-      { source: { maxLength: maxMessageBytes + 1 } },
+      { source: true },
       { uid: true }
     );
     if (!message) throw new MailClientError("The message no longer exists.");
     if (!message.source)
       throw new MailClientError("The message no longer exists.");
-    if (
-      message.source.length > maxMessageBytes ||
-      message.source.length !== metadata.size
-    ) {
-      throw new MailClientError(
-        "The message could not be fetched completely within the size limit."
-      );
+    if (message.source.length > maxMessageBytes) {
+      throw new MailClientError("The message exceeds the 10 MB reading limit.");
     }
     const parsed = await simpleParser(message.source, {
       skipImageLinks: true,
@@ -613,10 +617,12 @@ export async function sendMail(
       accessToken: credentials.accessToken,
     },
   });
+  let sendStage = "prepare";
   try {
     const message = await withImap(input.provider, credentials, (client) =>
       composeMessage(client, credentials.email, normalized)
     );
+    sendStage = "smtp";
     const receipt = await transport.sendMail({
       raw: message.raw,
       envelope: message.envelope,
@@ -641,17 +647,27 @@ export async function sendMail(
       );
     }
     let sentCopySaved = false;
+    let sentCopyStage = "connect";
     try {
       await withImap(input.provider, credentials, async (client) => {
+        sentCopyStage = "find-folder";
         const sentFolder = await findFolder(client, "Sent");
-        await client.mailboxOpen(sentFolder, { readOnly: true });
-        const existing = await client.search(
-          { header: { "message-id": message.messageId } },
-          { uid: true }
-        );
-        if (!existing)
-          throw new MailClientError("The sent copy could not be checked.");
-        if (existing.length) return;
+        sentCopyStage = "open-folder";
+        const mailbox = await client.mailboxOpen(sentFolder, {
+          readOnly: true,
+        });
+        sentCopyStage = "read-recent-copies";
+        const recent = mailbox.exists
+          ? await client.fetchAll(
+              `${String(Math.max(1, mailbox.exists - 49))}:*`,
+              { envelope: true }
+            )
+          : [];
+        if (
+          recent.some((copy) => copy.envelope?.messageId === message.messageId)
+        )
+          return;
+        sentCopyStage = "append-copy";
         const copy = await client.append(sentFolder, message.raw, ["\\Seen"]);
         if (!copy)
           throw new MailClientError("The sent copy was not confirmed.");
@@ -659,7 +675,7 @@ export async function sendMail(
       sentCopySaved = true;
     } catch {
       warnings.push(
-        "SMTP accepted the message, but saving its Sent copy failed or is uncertain. Do not resend the message."
+        `SMTP accepted the message, but saving its Sent copy failed or is uncertain at ${sentCopyStage}. Do not resend the message.`
       );
     }
     return {
@@ -672,12 +688,40 @@ export async function sendMail(
       sentCopySaved,
       warning: warnings.length ? warnings.join(" ") : null,
     };
-  } catch {
+  } catch (error) {
     await uncertainMailSend(scope, input.provider, operationId).catch(
       () => false
     );
+    const failure = z
+      .object({
+        code: z
+          .enum([
+            "EAUTH",
+            "EENVELOPE",
+            "EMESSAGE",
+            "ECONNECTION",
+            "ESOCKET",
+            "ETIMEDOUT",
+            "ESTREAM",
+            "EDATA",
+          ])
+          .optional(),
+        responseCode: z.number().int().min(100).max(599).optional(),
+        response: z.string().max(2048).optional(),
+      })
+      .safeParse(error);
+    const category =
+      failure.success && /spam/iu.test(failure.data.response ?? "")
+        ? "spam"
+        : failure.success &&
+            /captcha|verify|verification/iu.test(failure.data.response ?? "")
+          ? "verification"
+          : "unspecified";
+    const detail = failure.success
+      ? `${failure.data.code ?? "unknown"}/${String(failure.data.responseCode ?? 0)}/${category}`
+      : "unknown";
     throw new MailClientError(
-      "The send failed or delivery is uncertain. This operation will not be retried; check Sent and the recipients before creating a new send."
+      `The send failed or delivery is uncertain at ${sendStage} (${detail}). This operation will not be retried; check Sent and the recipients before creating a new send.`
     );
   } finally {
     transport.close();
