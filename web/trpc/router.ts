@@ -11,6 +11,9 @@ import {
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { revealBroLogin } from "@db/services/bro-logins";
+import { disconnectMail } from "@db/services/mail";
+import { mailAccessSchema, mailProviderSchema } from "@shared/mail/schema";
+import { mailEnabled, mailProviderConfigured } from "@shared/mail/providers";
 import {
   forgetMemory,
   listCurrentMemories,
@@ -82,6 +85,36 @@ export const appRouter = createTRPCRouter({
             ctx.scope.userId,
             callbackUrl.toString()
           ),
+        };
+      }),
+  },
+  personalMail: {
+    update: protectedProcedure
+      .input(
+        z.object({
+          action: z.enum(["connect", "disconnect"]),
+          provider: mailProviderSchema,
+          access: mailAccessSchema.default("full"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (
+          !mailEnabled(ctx.scope) ||
+          !mailProviderConfigured(input.provider)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Подключение этой почты пока недоступно.",
+          });
+        }
+        if (input.action === "disconnect") {
+          await disconnectMail(ctx.scope, input.provider);
+          return {
+            redirectTo: `/workspace?mail=${input.provider}&mailStatus=disconnected`,
+          };
+        }
+        return {
+          redirectTo: `/api/personal-mail/${input.provider}/connect?access=${input.access}`,
         };
       }),
   },

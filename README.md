@@ -403,6 +403,37 @@ Gotchas:
 - Google Contacts search uses a provider-side lazy cache, so a contact created
   moments ago may not appear immediately.
 
+## Personal Mail.ru and Yandex mail
+
+These integrations use the providers' OAuth directly, then IMAP and SMTP over
+TLS. They do not use Composio. Set `MAILRU_MAIL_CLIENT_ID`,
+`MAILRU_MAIL_CLIENT_SECRET`, `YANDEX_MAIL_CLIENT_ID`, and
+`YANDEX_MAIL_CLIENT_SECRET` for the providers you offer. Enable the pilot with
+`MAIL_WORKSPACES` containing workspace ids (or `*` for all workspaces).
+
+Register each exact callback on the application's public origin:
+`/api/personal-mail/mailru/callback` and
+`/api/personal-mail/yandex/callback`. Mail.ru needs
+`openid email mail.imap offline_access`; its endpoints are resolved through
+OpenID discovery. Yandex needs `login:email`, `mail:imap_ro` for read-only,
+and `mail:imap_full mail:smtp` for full access. These permissions must be
+enabled in the provider application, not merely passed in an authorization
+URL. Yandex also requires IMAP and OAuth access enabled in mailbox settings.
+
+People connect from `/workspace` or `connect_mail`. OAuth state is short-lived,
+single-use and bound to the signed-in workspace; both providers use PKCE.
+Tokens and PKCE verifiers are encrypted with the installation encryption key
+and never returned to the agent. Connection completion checks actual IMAP
+access and, for full access, SMTP authentication without sending a message.
+
+The `mail-*` tools search and read messages without marking them read, save
+plain-text drafts, send plain-text messages, and make reversible flag/move
+changes. Read-only blocks every write; Mail.ru's broader IMAP permission is
+restricted locally by Bro. Attachments are metadata only. SMTP sends have
+durable replay protection; an uncertain delivery is never automatically sent
+again. Disconnecting deletes the local tokens, not the mailbox or the
+provider's consent; revoke that consent in the provider's account settings.
+
 ## Local development
 
 The **Deploy with Vercel** flow above is the simplest way to run OpenInstinct. It

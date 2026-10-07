@@ -14,6 +14,9 @@ import {
 } from "@web/components/paper/document";
 import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
+import { readMailConnection } from "@db/services/mail";
+import { mailEnabled } from "@shared/mail/providers";
+import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { wakeProactiveWatch } from "@db/services/proactive";
@@ -49,6 +52,7 @@ import { resolveTimeZone } from "@shared/user-profile/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
+import { PersonalMailAction } from "./_components/personal-mail-action";
 import { ModelSelector } from "./_components/model-selector";
 import { SpendLimitSection } from "./_components/spend-limit-section";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
@@ -80,12 +84,19 @@ const vaultKindLabels: Partial<Record<VaultPreviewItem["kind"], string>> = {
 };
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
-  const { google, status } = await searchParams;
+  const { google, status, mail, mailStatus } = await searchParams;
   const shownApps = cabinetAppSchema.options.filter((app) =>
     connectedAppConfigured(app)
   );
   const requestHeaders = await headers();
   const scope = await requireRequestScope();
+  const mailConnections = mailEnabled(scope)
+    ? await Promise.all(
+        mailProviderSchema.options.map((provider) =>
+          readMailConnection(scope, provider)
+        )
+      )
+    : [];
   const telegramConfigured = telegramLinkConfigured();
   const [
     session,
@@ -180,6 +191,33 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       {google === "disconnected" ? (
         <Flash>Google отключён. {googleWorkspaceDisconnectNotice}</Flash>
       ) : null}
+      {mailStatus === "connected" &&
+      mailConnections.some(
+        (connection) =>
+          connection.provider === mail && connection.state === "connected"
+      ) ? (
+        <Flash>Почта подключена. Доступ к почтовому серверу проверен.</Flash>
+      ) : null}
+      {mailStatus === "failed" ? (
+        <Flash>
+          Почта не подключена. Проверь настройки OAuth-приложения и попробуй ещё
+          раз.
+        </Flash>
+      ) : null}
+      {mailStatus === "mail_unavailable" ? (
+        <Flash>
+          Вход выполнен, но почтовый сервер не дал доступ к ящику. Разреши
+          приложению IMAP и SMTP; для Яндекса также включи IMAP и OAuth-токены в
+          настройках почты. Подключение не сохранено.
+        </Flash>
+      ) : null}
+      {mailStatus === "disconnected" ? (
+        <Flash>
+          Доступ Бро к этому ящику отключён, сохранённые токены удалены. Письма
+          и черновики остались в почте. Чтобы отозвать разрешение самому
+          OAuth-приложению, отключи его в настройках Mail.ru или Яндекс ID.
+        </Flash>
+      ) : null}
 
       <LimitsSection paid={billing.paid} paidUntil={billing.paidUntil} />
       <SpendLimitSection
@@ -207,6 +245,28 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
               {googleWorkspaceDescription(googleWorkspace)}
             </p>
           </Row>
+          {mailConnections.map((connection) => (
+            <Row
+              key={connection.provider}
+              side={
+                <PersonalMailAction
+                  provider={connection.provider}
+                  state={connection.state}
+                />
+              }
+            >
+              <p>{mailProviderNames[connection.provider]}</p>
+              <p className="type-status text-muted-foreground">
+                {connection.state === "connected"
+                  ? `${connection.email} · ${connection.access === "read_only" ? "Только чтение: Бро не меняет и не отправляет письма." : "Бро читает почту, сохраняет черновики и отправляет письма по твоей просьбе."}`
+                  : "Подключи свой ящик: поиск и чтение писем, черновики и отправка. Пароль Бро не получает."}
+                {connection.provider === "mailru" &&
+                connection.state !== "connected"
+                  ? " В режиме «только чтение» запись запрещает сам Бро, хотя Mail.ru выдаёт приложению общий доступ IMAP."
+                  : ""}
+              </p>
+            </Row>
+          ))}
           {appConnections.map(({ app, connection }) => (
             <Row
               key={app}
