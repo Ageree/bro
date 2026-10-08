@@ -426,13 +426,12 @@ export async function searchMail(
     throw new MailClientError("Search date is invalid.");
   const query: SearchObject = {
     all: true,
-    text: input.text === undefined ? undefined : checkHeader(input.text),
-    from: input.from === undefined ? undefined : checkHeader(input.from),
-    subject:
-      input.subject === undefined ? undefined : checkHeader(input.subject),
-    since,
-    seen: input.unread === undefined ? undefined : !input.unread,
   };
+  if (input.unread !== undefined) query.seen = !input.unread;
+  if (since) query.since = since;
+  if (input.text !== undefined) query.text = checkHeader(input.text);
+  if (input.from !== undefined) query.from = checkHeader(input.from);
+  if (input.subject !== undefined) query.subject = checkHeader(input.subject);
   const credentials = await getMailCredentials(scope, input.provider);
   return withImap(input.provider, credentials, async (client) => {
     const mailbox = await client.mailboxOpen(mailboxPath, { readOnly: true });
