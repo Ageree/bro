@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { z } from "zod";
 import type * as PhoneService from "@db/services/phone";
 import type * as Database from "@db";
+import type { SessionAuthContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import {
   ContextContainer,
@@ -680,7 +681,7 @@ integration("phone persistence against isolated real Postgres", () => {
     ).toBe(false);
   });
 
-  it("rejects stale report token A after reclaiming B in the real delivery module and stops after bounded attempts", async () => {
+  it("keeps one token across reclaims, rejects a foreign or delivered token in the real delivery module and stops after bounded attempts", async () => {
     await activeNumber();
     const planned = await services.planOutboundCall(alice, request());
     await closeFixture(planned.row.id);
@@ -699,13 +700,12 @@ integration("phone persistence against isolated real Postgres", () => {
     const [second] = await services.claimPhoneReports();
     if (!second?.reportLeaseToken)
       throw new Error("Missing second report lease.");
-    expect(second.reportLeaseToken).not.toBe(first.reportLeaseToken);
+    // A copy that waited past the lease still belongs to this report.
+    expect(second.reportLeaseToken).toBe(first.reportLeaseToken);
+    expect(second.reportAttempts).toBe(first.reportAttempts + 1);
+    const foreign = randomUUID();
     expect(
-      await services.renewPhoneReportLease(
-        alice,
-        planned.row.id,
-        first.reportLeaseToken
-      )
+      await services.renewPhoneReportLease(alice, planned.row.id, foreign)
     ).toBe(false);
     expect(
       await services.renewPhoneReportLease(
@@ -761,7 +761,7 @@ integration("phone persistence against isolated real Postgres", () => {
     }
     try {
       await contextStorage.run(new ContextContainer(), async () => {
-        const old = deliveryContext(first.reportLeaseToken ?? "");
+        const old = deliveryContext(foreign);
         const resolveMessaging = messaging.events["step.started"];
         if (!resolveMessaging) throw new Error("Missing messaging resolver.");
         const tools = await resolveMessaging(
@@ -813,10 +813,264 @@ integration("phone persistence against isolated real Postgres", () => {
       vi.resetModules();
     }
     await testPool().query(
-      "update phone_calls set report_delivered_at=null,report_attempts=10,report_lease_until=null where id=$1",
+      "update phone_calls set report_delivered_at=null,report_attempts=5,report_lease_until=null where id=$1",
       [planned.row.id]
     );
     expect(await services.claimPhoneReports()).toEqual([]);
+  });
+
+  describe("settling a report by its turn, against the real hook", () => {
+    type ReportEvent =
+      | "action.result"
+      | "step.started"
+      | "turn.cancelled"
+      | "turn.completed"
+      | "turn.failed"
+      | "turn.started";
+
+    const sent = {
+      callId: "report-send",
+      isError: false,
+      kind: "tool-result" as const,
+      output: { kind: "message" as const, text: "Звонок завершён." },
+      toolName: "send_message",
+    };
+
+    /** Runs the real report hook inside an eve context, the way eve emits. */
+    async function withReportHook(
+      call: { callId: string; token: string },
+      run: (
+        emit: (
+          name: ReportEvent,
+          as?: "report" | "person",
+          data?: { status?: "completed"; result?: typeof sent }
+        ) => Promise<void>
+      ) => Promise<void>
+    ) {
+      const { default: hook } = await import("@agent/hooks/phone-report");
+      const guardDatabase = await import("@db");
+      const session = (as: "report" | "person") => {
+        const current: SessionAuthContext =
+          as === "report"
+            ? {
+                authenticator: "phone-result",
+                principalId: alice.userId,
+                principalType: "user",
+                attributes: {
+                  workspaceId: alice.workspaceId,
+                  phoneCallId: call.callId,
+                  phoneReportToken: call.token,
+                },
+              }
+            : {
+                authenticator: "telegram",
+                principalId: alice.userId,
+                principalType: "user",
+                attributes: { workspaceId: alice.workspaceId },
+              };
+        return {
+          auth: { current, initiator: null },
+          id: route.sessionId,
+          turn: { id: "turn_3", sequence: 3 },
+        };
+      };
+      try {
+        await contextStorage.run(new ContextContainer(), () =>
+          run(async (name, as = "report", data = {}) => {
+            await hook.events?.[name]?.(
+              // SAFETY: the hook reads only the fields this test supplies.
+              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A partial event stands in for the stream event.
+              { data } as never,
+              {
+                agent: { name: "test-agent" },
+                channel: { continuationToken: route.sessionId },
+                getSandbox: () => {
+                  throw new Error("No sandbox is needed.");
+                },
+                getSkill: () => {
+                  throw new Error("No skill is needed.");
+                },
+                session: session(as),
+              }
+            );
+          })
+        );
+      } finally {
+        if (
+          "end" in guardDatabase.db.$client &&
+          guardDatabase.db !== database?.db
+        )
+          await guardDatabase.db.$client.end();
+        vi.resetModules();
+      }
+    }
+
+    async function leasedReport() {
+      await activeNumber();
+      const planned = await services.planOutboundCall(alice, request());
+      await closeFixture(planned.row.id);
+      const [claimed] = await services.claimPhoneReports();
+      if (claimed?.id !== planned.row.id || !claimed.reportLeaseToken)
+        throw new Error("Missing report lease.");
+      return { callId: claimed.id, token: claimed.reportLeaseToken };
+    }
+
+    async function reportRow(id: string) {
+      const found = await testPool().query(
+        "select report_delivered_at, report_lease_token, report_lease_until, report_attempts from phone_calls where id=$1",
+        [id]
+      );
+      return z
+        .object({
+          report_delivered_at: z.date().nullable(),
+          report_lease_token: z.string().nullable(),
+          report_lease_until: z.date().nullable(),
+          report_attempts: z.number(),
+        })
+        .parse(found.rows[0]);
+    }
+
+    async function expireLease(id: string) {
+      await testPool().query(
+        "update phone_calls set report_lease_until=now()-interval '1 second' where id=$1",
+        [id]
+      );
+    }
+
+    it("delivers a report once when its turn ends without a send_message, and never claims it again", async () => {
+      const call = await leasedReport();
+      await withReportHook(call, async (emit) => {
+        await emit("turn.started");
+        await emit("step.started");
+        await emit("turn.completed");
+      });
+      const row = await reportRow(call.callId);
+      expect(row.report_delivered_at).toBeInstanceOf(Date);
+      expect(row.report_lease_token).toBeNull();
+      await expireLease(call.callId);
+      expect(await services.claimPhoneReports()).toEqual([]);
+      expect((await reportRow(call.callId)).report_attempts).toBe(1);
+    });
+
+    it("lets a copy that ran after the lease expired settle the report instead of being sent again", async () => {
+      const call = await leasedReport();
+      // The queued turn did not start within the lease: the report is
+      // claimed again, under the same token.
+      await expireLease(call.callId);
+      const [again] = await services.claimPhoneReports();
+      expect(again?.reportLeaseToken).toBe(call.token);
+      expect(again?.reportAttempts).toBe(2);
+      // The first copy runs late and gets its message through.
+      await withReportHook(call, async (emit) => {
+        await emit("turn.started");
+        await emit("action.result", "report", {
+          status: "completed",
+          result: sent,
+        });
+        await emit("turn.completed");
+      });
+      expect((await reportRow(call.callId)).report_delivered_at).toBeInstanceOf(
+        Date
+      );
+      // The second copy finds the report delivered: nothing is sent, and
+      // nothing is claimed.
+      expect(
+        await services.renewPhoneReportLease(alice, call.callId, call.token)
+      ).toBe(false);
+      await expireLease(call.callId);
+      expect(await services.claimPhoneReports()).toEqual([]);
+    });
+
+    it("holds an accepted report for its turn without touching a delivered or foreign one", async () => {
+      const call = await leasedReport();
+      await services.holdPhoneReportForTurn(call.callId, randomUUID());
+      const before = await reportRow(call.callId);
+      await services.holdPhoneReportForTurn(call.callId, call.token);
+      const held = await reportRow(call.callId);
+      expect(held.report_lease_until?.getTime()).toBeGreaterThan(
+        (before.report_lease_until?.getTime() ?? 0) + 4 * 60_000
+      );
+      // Nobody sends it again while the turn waits.
+      expect(await services.claimPhoneReports()).toEqual([]);
+      await services.finishPhoneReport(call.callId, call.token, true);
+      await services.holdPhoneReportForTurn(call.callId, call.token);
+      expect((await reportRow(call.callId)).report_lease_until).toBeNull();
+    });
+
+    it("keeps renewing and settling a report after a person's message steered into its turn", async () => {
+      const call = await leasedReport();
+      await withReportHook(call, async (emit) => {
+        await emit("turn.started");
+        await expireLease(call.callId);
+        // From here on `auth.current` is the person's.
+        await emit("step.started", "person");
+        expect(
+          (await reportRow(call.callId)).report_lease_until?.getTime()
+        ).toBeGreaterThan(Date.now());
+        await emit("action.result", "person", {
+          status: "completed",
+          result: sent,
+        });
+      });
+      expect((await reportRow(call.callId)).report_delivered_at).toBeInstanceOf(
+        Date
+      );
+    });
+
+    it("settles a steered report turn that ends without a message, and ignores a person's turn that never was a report", async () => {
+      const call = await leasedReport();
+      await withReportHook(call, async (emit) => {
+        // A person's turn with the same id is not a report: it settles
+        // nothing.
+        await emit("turn.started", "person");
+        await emit("turn.completed", "person");
+        expect((await reportRow(call.callId)).report_delivered_at).toBeNull();
+        await emit("turn.started");
+        await emit("turn.completed", "person");
+      });
+      expect((await reportRow(call.callId)).report_delivered_at).toBeInstanceOf(
+        Date
+      );
+    });
+
+    it("counts a cancelled report turn as settled, like a browser report", async () => {
+      const call = await leasedReport();
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        await withReportHook(call, async (emit) => {
+          await emit("turn.started");
+          await emit("turn.cancelled");
+        });
+        expect(warn).toHaveBeenCalledWith(
+          "[phone] report turn cancelled before a message",
+          expect.objectContaining({ callId: call.callId })
+        );
+      } finally {
+        warn.mockRestore();
+      }
+      expect((await reportRow(call.callId)).report_delivered_at).toBeInstanceOf(
+        Date
+      );
+      await expireLease(call.callId);
+      expect(await services.claimPhoneReports()).toEqual([]);
+    });
+
+    it("puts a failed report turn back in line with a backoff and the same token", async () => {
+      const call = await leasedReport();
+      await withReportHook(call, async (emit) => {
+        await emit("turn.started");
+        await emit("turn.failed");
+      });
+      const row = await reportRow(call.callId);
+      expect(row.report_delivered_at).toBeNull();
+      expect(await services.claimPhoneReports()).toEqual([]);
+      await expireLease(call.callId);
+      const [retry] = await services.claimPhoneReports();
+      expect(retry?.reportLeaseToken).toBe(call.token);
+      expect(retry?.reportAttempts).toBe(2);
+    });
   });
 
   it("prevents workspace deletion from orphaning a paid resource or its release tombstone", async () => {

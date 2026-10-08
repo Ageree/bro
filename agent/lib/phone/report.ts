@@ -1,6 +1,10 @@
 import type { AttachSessionFn } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
-import { claimPhoneReports, finishPhoneReport } from "@db/services/phone";
+import {
+  claimPhoneReports,
+  finishPhoneReport,
+  holdPhoneReportForTurn,
+} from "@db/services/phone";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import photon from "@agent/channels/photon";
 import telegram from "@agent/channels/telegram";
@@ -81,13 +85,25 @@ export async function deliverPhoneReports(delivery: {
         }
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<never>((_resolve, reject) => {
+      const deadline = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => {
-          reject(new Error("Report dispatch timed out."));
+          resolve("timeout");
         }, 20_000);
       });
       try {
-        await Promise.race([dispatch(), deadline]);
+        const outcome = await Promise.race([
+          dispatch().then(() => "accepted" as const),
+          deadline,
+        ]);
+        // Accepted, or not answered yet: eve may take the report after the
+        // wait ended, so it counts as handed over either way. The turn's
+        // start renews the lease and its end settles the report; a resend
+        // beside it was a second paid turn.
+        if (outcome === "timeout")
+          console.warn("[phone] report dispatch timed out", {
+            callId: row.id,
+          });
+        await holdPhoneReportForTurn(row.id, token);
       } catch {
         await finishPhoneReport(row.id, token, false);
       } finally {
