@@ -3,7 +3,7 @@ import type { ApprovalContext } from "eve/tools/approval";
 import { reportCardHold } from "@agent/lib/delivery/report-cards";
 import { z } from "zod";
 import { googleWorkspaceAccess } from "@agent/lib/google-workspace/client";
-import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
+import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import { googleAccessOptions } from "@agent/lib/privacy/google-access";
@@ -62,7 +62,7 @@ type ConnectGoogleResult = z.infer<typeof connectGoogleResultSchema>;
  * consent screen showed, and the person is told so (EN D9: an honest scope).
  */
 export const googleAccessAbilities = {
-  full: "Полный доступ: Бро читает почту, календарь, контакты и Диск, сохраняет черновики и разбирает входящие (больше трёх писем за раз — через карточку). Отправляет письма, создаёт, переносит и удаляет события, правит Таблицы и Документы — каждый раз только после карточки подтверждения, где видно, что именно уйдёт.",
+  full: "Полный доступ: Бро читает почту, календарь, контакты и Диск, сохраняет черновики, разбирает входящие, отправляет письма, создаёт, переносит и удаляет события, правит Таблицы и Документы по поручению человека без карточек подтверждения. Сохранённые запреты человека продолжают действовать.",
   read_only:
     "Только чтение: Бро читает почту, календарь, контакты и Диск и ничего не отправляет, не сохраняет черновиков, не архивирует и не меняет в календаре и документах. Этот запрет держит сам Бро до всякой карточки, даже если экран согласия Google показывал доступ шире. Вернуть полный доступ можно, только если человек сам попросит (connect_google с access `full`).",
 } as const satisfies Record<
@@ -80,7 +80,7 @@ const connectedReply =
 
 /** A full grant is not the only one on offer (RU d14: «только на чтение»). */
 const readOnlyAlternative =
-  "Эта ссылка подключает Google с полным доступом (отправка и изменения — только после карточки подтверждения). Можно подключить и только на чтение: тогда Бро ничего не отправляет и не меняет — достаточно написать «только чтение».";
+  "Эта ссылка подключает Google с полным доступом (отправка и изменения — по поручению человека без карточек подтверждения). Можно подключить и только на чтение: тогда Бро ничего не отправляет и не меняет — достаточно написать «только чтение».";
 
 const notConnectedDetail =
   "Google не подключён: Бро сейчас не читает почту, календарь, контакты и Диск и ничего в них не меняет. Ссылку не выпускал. На «что у тебя осталось?» перескажи `keeps`. Ссылку на подключение (connect_google с action `connect`) предлагай, только если человек сам хочет подключить Google снова.";
@@ -110,12 +110,6 @@ const connectGoogleInputSchema = z.object({
     ),
 });
 
-// Disconnecting and changing the level both revoke the current grant: the
-// person's own message does it at once, a turn Bro opened waits for their
-// card; a status read, a plain check or a reconnect at the same level
-// never asks.
-// In a browser report's turn nothing of it comes before the report's
-// message (`reportCardHold`).
 async function connectGoogleApproval(
   ctx: ApprovalContext<z.input<typeof connectGoogleInputSchema>>
 ) {
@@ -125,7 +119,13 @@ async function connectGoogleApproval(
     (ctx.toolInput?.action !== "status" &&
       ctx.toolInput?.access !== undefined &&
       ctx.toolInput.access !== (await googleWorkspaceAccess(ctx)))
-    ? ownTurnApproval(ctx)
+    ? startedByPerson(ctx)
+      ? "not-applicable"
+      : {
+          reason:
+            "Nothing changed: Google connections and access levels change only in a turn the user's own message started.",
+          type: "denied" as const,
+        }
     : "not-applicable";
 }
 

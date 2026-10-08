@@ -180,30 +180,30 @@ describe("spend_limit changes", () => {
         { action: "set", category: "", limitRub: 3000, merchant: "" },
         undefined
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
-  it("asks the person to confirm only what widens the permission", () => {
+  it("applies valid budget changes without a confirmation card", () => {
     // A new rule, and a higher one, let Bro pay more.
     expect(
       spendLimitApproval({ action: "set", limitRub: 3000 }, undefined)
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(spendLimitApproval({ action: "set", limitRub: 7000 }, monthly)).toBe(
-      "user-approval"
+      "not-applicable"
     );
     expect(
       spendLimitApproval(
         { action: "set", limitRub: 1000, merchant: "ozon.ru" },
         { ...monthly, rules: [] }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // Lifting an exclusion lets the general rule pay that shop again.
     expect(
       spendLimitApproval(
         { action: "include", merchant: "wb.ru" },
         { ...monthly, excludedMerchants: ["wb.ru"] }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // A narrower rule under the general one only adds a ceiling.
     expect(
       spendLimitApproval(
@@ -249,7 +249,9 @@ describe("spend_limit changes", () => {
       )
     ).toContain("For every shop, leave merchant out.");
     // A call that cannot be read at all is treated as widening.
-    expect(spendLimitApproval(undefined, monthly)).toBe("user-approval");
+    expect(spendLimitApproval(undefined, monthly)).toMatchObject({
+      type: "denied",
+    });
   });
 
   /**
@@ -276,7 +278,7 @@ describe("spend_limit changes", () => {
     ).toContain("For every shop, leave merchant out.");
   });
 
-  it("asks before clearing a ceiling that sits under a broader rule", () => {
+  it("clears a ceiling under a broader rule without a card", () => {
     // 5 000 ₽ overall and 500 ₽ on ozon.ru: clearing the ozon.ru rule lifts
     // ozon.ru to 5 000 ₽.
     const withShop = {
@@ -297,7 +299,7 @@ describe("spend_limit changes", () => {
         { action: "clear", merchant: "https://www.ozon.ru/" },
         withShop
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
 
     // A category rule crossing a shop rule is a ceiling on their overlap too.
     const crossing = {
@@ -309,7 +311,7 @@ describe("spend_limit changes", () => {
     };
     expect(
       spendLimitApproval({ action: "clear", merchant: "ozon.ru" }, crossing)
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // Clearing everything leaves nothing to pay under.
     expect(spendLimitApproval({ action: "clear" }, withShop)).toBe(
       "not-applicable"
@@ -351,7 +353,7 @@ describe("spend_limit changes", () => {
 
     expect(
       spendLimitApproval({ action: "clear", merchant: "ozon.ru" }, nested)
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // Raising the subdomain's own rule past the parent's changes nothing a
     // payment can use, and lowering it only narrows.
     expect(
@@ -471,7 +473,7 @@ describe("spend_limit in a turn the page wrote", () => {
     );
     expect(
       await approvalOf({ action: "set", limitRub: 9000 }, "photon-imessage")
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 });
 

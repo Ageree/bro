@@ -200,9 +200,9 @@ describe("workstream memory", () => {
 
     expect(await forgetDecision("later", named)).toBe("not-applicable");
     // A turn Bro opened speaks for nobody: there it waits for the card.
-    expect(await forgetDecision("later", named, "browser-result")).toBe(
-      "user-approval"
-    );
+    expect(
+      await forgetDecision("later", named, "browser-result")
+    ).toMatchObject({ type: "denied" });
     // A title other than the saved one is refused; the model is told the
     // saved title.
     const misnamed = await forgetDecision("later", {
@@ -242,7 +242,7 @@ describe("workstream memory", () => {
 
   // RU 25.09 (d14): «удали всё, что ты про меня помнишь» takes all the
   // saved work at once; owner 26.09: without a card.
-  it("forgets all the saved work at once at the person's word, and on one card in a turn Bro opened", async () => {
+  it("forgets all saved work at the person's word and denies deletion from reports", async () => {
     const first = context("first");
     const later = context("later");
     const firstTools = await workstreamMemory.provider.tools(first);
@@ -268,9 +268,9 @@ describe("workstream memory", () => {
     };
 
     expect(await forgetAllDecision("later", everything)).toBe("not-applicable");
-    expect(await forgetAllDecision("later", everything, "browser-result")).toBe(
-      "user-approval"
-    );
+    expect(
+      await forgetAllDecision("later", everything, "browser-result")
+    ).toMatchObject({ type: "denied" });
     // This conversation's own work goes at once.
     expect(
       await forgetAllDecision("later", {

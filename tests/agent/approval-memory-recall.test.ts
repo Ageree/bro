@@ -5,6 +5,7 @@ import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { browserTaskApproval } from "@agent/tools/browser_task";
 import { spendLimitApproval } from "@agent/tools/spend_limit";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 /**
  * eve's memory recall helpers are internal, so the test loads the patched
@@ -48,6 +49,25 @@ const lock = {
   scopeKey: "workspace",
   slot: "profile",
 };
+
+const browserSubmission = {
+  forWhom: "Алиса",
+  personalData: ["имя", "адрес"],
+  kind: "order" as const,
+  what: "заказ корма для кота",
+  where: "shop.example",
+};
+
+vi.mock("@db/services/browser-runs", () => ({
+  readLatestBrowserRunForScope: async () => ({
+    completedAt: null,
+    delegatedByPerson: false,
+    id: "run_1",
+    rootSessionId: "session-1",
+    status: "running",
+    submission: { ...browserSubmission, chargeRub: 1500, paymentCapRub: 1500 },
+  }),
+}));
 
 function recall(operationId: string, content: string) {
   return {
@@ -102,19 +122,16 @@ const gatedCalls = [
           action: "continue",
           allowPayment: true,
           runId: "run_1",
-          submission: {
-            forWhom: "Алиса",
-            personalData: ["имя", "адрес"],
-            kind: "order",
-            what: "заказ корма для кота",
-            where: "shop.example",
-          },
+          submission: browserSubmission,
         },
         {
           session: {
             auth: {
               current: {
-                attributes: {},
+                attributes: {
+                  workspaceId:
+                    accessScopeForUser("better-auth:alice").workspaceId,
+                },
                 authenticator: "photon-imessage",
                 issuer: "photon",
                 principalId: "better-auth:alice",
@@ -136,6 +153,33 @@ const gatedCalls = [
 ];
 
 describe("an approved tool call after a memory recall", () => {
+  it("does not let a legacy card pay without an authenticated workspace", async () => {
+    expect(
+      await browserTaskApproval(
+        {
+          action: "continue",
+          allowPayment: true,
+          runId: "run_1",
+          submission: browserSubmission,
+        },
+        {
+          session: {
+            auth: {
+              current: {
+                attributes: {},
+                authenticator: "photon-imessage",
+                issuer: "photon",
+                principalId: "better-auth:alice",
+                principalType: "user",
+              },
+              initiator: null,
+            },
+          },
+        }
+      )
+    ).toMatchObject({ type: "denied" });
+  });
+
   it.for(gatedCalls)(
     "runs $toolName once when the recalled memory changed while the approval waited",
     async ({ input, policy, toolName }) => {

@@ -21,12 +21,18 @@ function session(authenticator: string) {
 }
 
 describe("a schedule set up outside the person's own turn", () => {
-  it("waits for their card in a browser report's turn, and not in theirs", async () => {
+  it("continues delegated scheduling after a browser report but denies workers", async () => {
     // The page writes a report turn's text, and a schedule's prompt is run
     // later by a worker as the person's own task.
     const { scheduleApproval } = await import("@agent/tools/schedules");
 
-    expect(scheduleApproval(session("browser-result"))).toBe("user-approval");
+    expect(scheduleApproval(session("browser-result"))).toBe("not-applicable");
+    expect(scheduleApproval(session("scheduled-worker"))).toMatchObject({
+      type: "denied",
+    });
+    expect(scheduleApproval(session("background-task"))).toMatchObject({
+      type: "denied",
+    });
     expect(scheduleApproval(session("photon-imessage"))).toBe("not-applicable");
     expect(scheduleApproval(session("telegram-webhook"))).toBe(
       "not-applicable"
