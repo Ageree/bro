@@ -58,6 +58,28 @@ describe("outbound saved rules", () => {
     expect(calls.generate).not.toHaveBeenCalled();
   });
 
+  it("checks the authenticated initiator when a resumed turn has no current caller", async () => {
+    const original = context();
+    const resumed = {
+      ...original,
+      session: {
+        ...original.session,
+        auth: { current: null, initiator: original.session.auth.current },
+      },
+    };
+    expect(
+      await outboundRuleApproval(resumed, JSON.stringify({ action: "upload" }))
+    ).toBe("not-applicable");
+
+    calls.rules.mockResolvedValue([
+      { index: 7, text: "Never share documents" },
+    ]);
+    calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 7 } });
+    expect(
+      await outboundRuleApproval(resumed, JSON.stringify({ action: "upload" }))
+    ).toMatchObject({ type: "denied" });
+  });
+
   it("blocks a matching prohibition without echoing the action", async () => {
     calls.rules.mockResolvedValue([{ index: 7, text: "Never write Mum" }]);
     calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 7 } });
@@ -92,14 +114,26 @@ describe("outbound saved rules", () => {
     );
   });
 
-  it("requires the person's card before an action from a browser report", async () => {
+  it("does not add a card to an allowed follow-through from a browser report", async () => {
     expect(
       await outboundRuleApproval(
         context("browser-result"),
         JSON.stringify({ to: "mum@example.com" })
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(calls.generate).not.toHaveBeenCalled();
+  });
+
+  it("still checks saved prohibitions during autonomous follow-through", async () => {
+    calls.rules.mockResolvedValue([{ index: 7, text: "Never write Mum" }]);
+    calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 7 } });
+
+    expect(
+      await outboundRuleApproval(
+        context("browser-result"),
+        JSON.stringify({ to: "mum@example.com" })
+      )
+    ).toMatchObject({ type: "denied" });
   });
 
   it("fails closed when a saved rule cannot be evaluated", async () => {

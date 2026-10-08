@@ -108,6 +108,23 @@ const cardOptions = [
 ];
 
 describe("approvals", () => {
+  it.each(["scheduled-worker", "scheduled-result", "background-task", "app"])(
+    "denies new app actions from %s without a card",
+    async (authenticator) => {
+      const decisions = await Promise.all([
+        decide(notionSearch, { query: "Plans" }, authenticator),
+        decide(notionRead, { id: "page-1", kind: "page" }, authenticator),
+        decide(slackRead, { from: "#general", limit: 30 }, authenticator),
+        decide(slackSearch, { count: 20, query: "plans" }, authenticator),
+        decide(notionAddTask, { title: "Q3 planning" }, authenticator),
+        decide(slackSendMessage, { text: "Hi", to: "Sam" }, authenticator),
+      ]);
+      expect(decisions).toMatchObject(
+        Array.from({ length: 6 }, () => ({ type: "denied" }))
+      );
+    }
+  );
+
   it("shows the Notion task and the Slack message on their cards", () => {
     const notion = withApprovalCard(
       {
@@ -143,7 +160,7 @@ describe("approvals", () => {
     );
   });
 
-  it("does what the person asked in their own turn and asks in a turn Bro opened", async () => {
+  it("runs delegated actions without cards in person and interactive browser-report turns", async () => {
     const decisions = await Promise.all(
       ["photon-imessage", "browser-result"].map(async (authenticator) => [
         await decide(notionSearch, { query: "Пароли" }, authenticator),
@@ -161,7 +178,7 @@ describe("approvals", () => {
 
     expect(decisions).toEqual([
       Array.from({ length: 6 }, () => "not-applicable"),
-      Array.from({ length: 6 }, () => "user-approval"),
+      Array.from({ length: 6 }, () => "not-applicable"),
     ]);
   });
 
@@ -760,7 +777,7 @@ describe("connect_app", () => {
     expect(composio.accounts.map(({ id }) => id)).toEqual(["ca_notion"]);
   });
 
-  it("disconnects at the person's word and asks only in a turn Bro opened", async () => {
+  it("disconnects at the person's word and denies disconnecting from reports", async () => {
     expect(await decide(connectApp, { action: "connect", app: "slack" })).toBe(
       "not-applicable"
     );
@@ -773,7 +790,7 @@ describe("connect_app", () => {
         { action: "disconnect", app: "slack" },
         "browser-result"
       )
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
   });
 });
 

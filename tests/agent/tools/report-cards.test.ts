@@ -31,7 +31,7 @@ vi.mock("@agent/lib/memory/rule-approval", () => ({
 }));
 vi.mock("@agent/lib/google-workspace/client", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  googleWriteApproval: async () => "user-approval",
+  googleWriteApproval: async () => "not-applicable",
 }));
 vi.mock("@agent/lib/google-workspace/calendar", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -140,7 +140,7 @@ describe("a browser report's card tools before its message", () => {
     );
   });
 
-  it("ask on their card once the turn's message went out", async () => {
+  it("run without a card once the turn's message went out", async () => {
     services.reportDelivered.mockReturnValue(true);
     expect(
       await decide(
@@ -148,7 +148,7 @@ describe("a browser report's card tools before its message", () => {
         reportContext("calendar-create-event"),
         event
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("refuse when the turn's state cannot be read", async () => {
@@ -172,7 +172,7 @@ describe("a browser report's card tools before its message", () => {
         reportContext("calendar-create-event"),
         event
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(services.reportDelivered).not.toHaveBeenCalled();
   });
 
@@ -356,7 +356,7 @@ function messageAndCard() {
       await Promise.resolve();
       seen.push(delivered);
       return delivered
-        ? ("user-approval" as const)
+        ? ("not-applicable" as const)
         : { reason: reportCardHoldRefusal, type: "denied" as const };
     },
     tools: {

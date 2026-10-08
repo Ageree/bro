@@ -8,17 +8,12 @@ import { defineTool } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import {
-  ownTurnApproval,
-  resolveModeValue,
-  startedByPerson,
-} from "@agent/lib/mode";
+import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
 import { adoptCutoverMemory } from "@agent/lib/memory/namespace";
 import { ruleAccessNote } from "@agent/lib/privacy/google-access";
 import { afterForgetting } from "@agent/lib/privacy/removal";
-import { forgetAllCardFits } from "@shared/chat/approval-card";
 import { eraseConversationLines } from "@agent/lib/conversation/erase";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import {
@@ -161,7 +156,12 @@ export async function memoryRemovalApproval(
   session: TurnSession,
   input: z.infer<typeof removeMemoryInputSchema> | undefined
 ): Promise<ApprovalStatus> {
-  if (input === undefined) return "user-approval";
+  if (input === undefined) {
+    return {
+      reason: "Nothing was forgotten: the call's input is missing.",
+      type: "denied",
+    };
+  }
   const record = await readMemorySource(scope, scopeKey, input.index);
   // Nothing current to forget: the call only confirms it is gone.
   if (record === null) return "not-applicable";
@@ -186,7 +186,13 @@ export async function memoryRemovalApproval(
       type: "denied",
     };
   }
-  return ownTurnApproval({ session });
+  return startedByPerson({ session })
+    ? "not-applicable"
+    : {
+        reason:
+          "Nothing was forgotten: memories saved in another conversation can be forgotten only in a turn the user's own message started.",
+        type: "denied",
+      };
 }
 
 /**
@@ -195,9 +201,7 @@ export async function memoryRemovalApproval(
  * answered it with «одной командой выполнить не могу» and a list to choose
  * from. The rule of `memoryRemovalApproval` holds for each record: a call
  * that names one differently is sent back with the texts to name, and in the
- * person's own turn the rest goes without a card. In a turn Bro opened, one
- * card lists every text another conversation saved, and a card too long for
- * a messenger is sent back to be split.
+ * person's own turn the rest goes without a card.
  */
 export async function memoryBulkRemovalApproval(
   scope: AccessScope,
@@ -205,7 +209,12 @@ export async function memoryBulkRemovalApproval(
   session: TurnSession,
   input: z.infer<typeof forgetAllInputSchema> | undefined
 ): Promise<ApprovalStatus> {
-  if (input === undefined) return "user-approval";
+  if (input === undefined) {
+    return {
+      reason: "Nothing was forgotten: the call's input is missing.",
+      type: "denied",
+    };
+  }
   // An empty list forgets no memory, only the person's own messages the
   // recap keeps: that is theirs to ask for, never a page's or an email's.
   if (input.records.length === 0) {
@@ -246,19 +255,11 @@ export async function memoryBulkRemovalApproval(
     return "not-applicable";
   }
   if (startedByPerson({ session })) return "not-applicable";
-  if (
-    !forgetAllCardFits(
-      "memory",
-      input.records.map(({ text }) => text)
-    )
-  ) {
-    return {
-      reason:
-        "Nothing was forgotten: the card listing all these texts would be too long for a messenger. Split the records into two or more calls; each gets its own card.",
-      type: "denied",
-    };
-  }
-  return "user-approval";
+  return {
+    reason:
+      "Nothing was forgotten: memories saved in another conversation can be forgotten only in a turn the user's own message started.",
+    type: "denied",
+  };
 }
 
 /**

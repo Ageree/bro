@@ -386,6 +386,13 @@
       "when": 1791446784602,
       "tag": "0054_huge_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791460390871,
+      "tag": "0055_browser_delegation",
+      "breakpoints": true
     }
   ]
 }

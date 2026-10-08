@@ -64,7 +64,7 @@ const personAuthenticators = new Set([
  * Whether this turn was started by the person's own message. The report of a
  * browser run is an interactive turn too, but its text is the page's, not
  * the person's: a standing permission or an earlier confirmation must never
- * act on it, only a card the person answers.
+ * act on it.
  */
 export function startedByPerson(context: AgentModeContext) {
   if (resolveModeValue(context, { interactive: true }) !== true) return false;
@@ -75,19 +75,26 @@ export function startedByPerson(context: AgentModeContext) {
   );
 }
 
-/**
- * The approval of an action in the person's name that is not a payment — an
- * email or a Slack message, a calendar change, a Notion task, forgetting a
- * memory. The person asked for it in their own message, so it is done
- * without a card: the one question Bro still asks is before paying (owner,
- * 26.09). A turn Bro opened — a browser run's report, a schedule's report —
- * speaks for nobody, since a page or an email writes its text: there nothing
- * runs until the person decides on its card.
- */
 export function ownTurnApproval(context: AgentModeContext) {
-  return startedByPerson(context)
-    ? ("not-applicable" as const)
-    : ("user-approval" as const);
+  const { current, initiator } = context.session.auth;
+  const backgroundTask =
+    current?.authenticator === "background-task" ||
+    initiator?.authenticator === "background-task";
+  if (!backgroundTask && startedByPerson(context))
+    return "not-applicable" as const;
+  if (
+    !backgroundTask &&
+    resolveModeValue(context, { interactive: true }) === true &&
+    current?.principalType === "user" &&
+    current.authenticator === "browser-result"
+  ) {
+    return "not-applicable" as const;
+  }
+  return {
+    reason:
+      "Nothing was done: this action needs a user-delegated interactive conversation. Background workers and untrusted callers cannot authorize it.",
+    type: "denied" as const,
+  };
 }
 
 /**

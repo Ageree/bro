@@ -107,6 +107,78 @@ describe("connect_google execution", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    {
+      authenticator: "photon-imessage",
+      expected: ["not-applicable", "not-applicable"],
+    },
+    {
+      authenticator: "browser-result",
+      expected: [{ type: "denied" }, { type: "denied" }],
+    },
+    {
+      authenticator: "background-task",
+      expected: [{ type: "denied" }, { type: "denied" }],
+    },
+  ])(
+    "changes access and disconnects only at the person's request: $authenticator",
+    async ({ authenticator, expected }) => {
+      const approval = connectGoogle.approval;
+      if (!approval) throw new Error("connect_google has no policy.");
+      const policy = "request" in approval ? approval.request : approval;
+      const context = toolContext();
+      const current = context.session.auth.current;
+      if (!current) throw new Error("The fixture must have a caller.");
+      const session = {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: { ...current, authenticator },
+        },
+      };
+      const decisions = await Promise.all(
+        [
+          { action: "disconnect" as const },
+          { action: "connect" as const, access: "read_only" as const },
+        ].map(async (toolInput) =>
+          policy({ ...context, session, approvedTools: new Set(), toolInput })
+        )
+      );
+      expect(decisions).toMatchObject(expected);
+    }
+  );
+
+  it("widens read-only access without a card only at the person's own request", async () => {
+    settings.access.mockResolvedValue("read_only");
+    const approval = connectGoogle.approval;
+    if (!approval) throw new Error("connect_google has no policy.");
+    const policy = "request" in approval ? approval.request : approval;
+    const context = toolContext();
+    const current = context.session.auth.current;
+    if (!current) throw new Error("The fixture must have a caller.");
+    expect(
+      await policy({
+        ...context,
+        approvedTools: new Set(),
+        toolInput: { action: "connect", access: "full" },
+      })
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await policy({
+        ...context,
+        session: {
+          ...context.session,
+          auth: {
+            ...context.session.auth,
+            current: { ...current, authenticator: "authjs" },
+          },
+        },
+        approvedTools: new Set(),
+        toolInput: { action: "connect", access: "full" },
+      })
+    ).toBe("not-applicable");
+  });
+
   it("reports the connected Google account without minting a link", async () => {
     composio.connect({
       displayName: "ada@example.com",
@@ -260,7 +332,7 @@ describe("connect_google execution", () => {
     expect(googleAccessAbilities.full).not.toContain("connect_google");
     // Read-only is Bro's own rule, said as such, whatever Google showed.
     expect(googleAccessAbilities.read_only).toContain("держит сам Бро");
-    expect(googleAccessAbilities.full).toContain("карточки подтверждения");
+    expect(googleAccessAbilities.full).toContain("без карточек подтверждения");
   });
 
   it("says Google is not connected on a status read without minting a link or changing the level", async () => {
@@ -311,7 +383,7 @@ describe("connect_google execution", () => {
     expect(googleWorkspaceDisconnectNotice).toMatch(/стирается по просьбе/u);
   });
 
-  it("asks before disconnecting or changing the level, not before connecting", async () => {
+  it("denies disconnecting or changing access from untrusted callers but keeps status and same-level checks", async () => {
     const approval = connectGoogle.approval;
     if (approval === undefined) {
       throw new Error("connect_google has no policy.");
@@ -323,10 +395,12 @@ describe("connect_google execution", () => {
       readonly action: "connect" | "disconnect" | "status";
     }) => policy({ ...context, approvedTools: new Set(), toolInput });
 
-    expect(await decide({ action: "disconnect" })).toBe("user-approval");
-    expect(await decide({ access: "read_only", action: "connect" })).toBe(
-      "user-approval"
-    );
+    expect(await decide({ action: "disconnect" })).toMatchObject({
+      type: "denied",
+    });
+    expect(
+      await decide({ access: "read_only", action: "connect" })
+    ).toMatchObject({ type: "denied" });
     expect(await decide({ access: "full", action: "connect" })).toBe(
       "not-applicable"
     );

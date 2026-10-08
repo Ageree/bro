@@ -198,16 +198,16 @@ describe("Google Workspace", () => {
     });
   });
 
-  it("asks before sending or creating and lets drafts and inbox tidying run", async () => {
+  it("runs delegated sends calendar changes drafts and inbox tidying without cards", async () => {
     settings.access.mockResolvedValue("full");
     composio.connect({ toolkit: "googlesuper", userId });
 
-    expect(await approvalOf(gmailSend)).toBe("user-approval");
-    expect(await approvalOf(calendarCreateEvent)).toBe("user-approval");
-    expect(await approvalOf(calendarUpdateEvent)).toBe("user-approval");
-    expect(await approvalOf(calendarDeleteEvent)).toBe("user-approval");
+    expect(await approvalOf(gmailSend)).toBe("not-applicable");
+    expect(await approvalOf(calendarCreateEvent)).toBe("not-applicable");
+    expect(await approvalOf(calendarUpdateEvent)).toBe("not-applicable");
+    expect(await approvalOf(calendarDeleteEvent)).toBe("not-applicable");
     expect(await approvalOf(gmailDraft)).toBe("not-applicable");
-    expect(await approvalOf(gmailUpdate)).toBe("user-approval");
+    expect(await approvalOf(gmailUpdate)).toBe("not-applicable");
     expect(settings.access).toHaveBeenCalledWith(scope);
     expect(gmailSearch.approval).toBeUndefined();
     expect(gmailReadThread.approval).toBeUndefined();
@@ -231,7 +231,7 @@ describe("Google Workspace", () => {
       Array.from({ length: 4 }, () => "not-applicable")
     );
     expect(await approvalsIn("browser-result")).toEqual(
-      Array.from({ length: 4 }, () => "user-approval")
+      Array.from({ length: 4 }, () => "not-applicable")
     );
     expect(
       await approvalOf(
@@ -242,16 +242,16 @@ describe("Google Workspace", () => {
     ).toBe("not-applicable");
   });
 
-  it("asks before changing more than three emails at once", async () => {
+  it("runs delegated bulk mail changes without cards", async () => {
     settings.access.mockResolvedValue("full");
     composio.connect({ toolkit: "googlesuper", userId });
 
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(3), update: "archive" })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(
       await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(
       await approvalOf(
         gmailUpdate,
@@ -264,7 +264,7 @@ describe("Google Workspace", () => {
         messageIds: ids(12),
         update: "mark_read",
       })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     // The messages the turn already changed count too.
     expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 2)).toBe(false);
     expect(gmailUpdateNeedsApproval({ messageIds: ["x"] }, 3)).toBe(true);
@@ -274,7 +274,7 @@ describe("Google Workspace", () => {
         messageIds: ["a", "a", "b", "b", "c"],
         update: "mark_read",
       })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("shows no write card while Google is not connected, and says so", async () => {
@@ -295,19 +295,19 @@ describe("Google Workspace", () => {
       await approvalOf(gmailUpdate, { messageIds: ids(4), update: "archive" })
     ).toEqual(refusal);
     // No card to show: a draft or a small tidy-up meets eve's sign-in card.
-    expect(await approvalOf(gmailDraft)).toBe("not-applicable");
+    expect(await approvalOf(gmailDraft)).toEqual(refusal);
     expect(googleNotConnectedWriteRefusal).toContain("connect_google");
     expect(googleNotConnectedWriteRefusal).toContain("не подключён");
   });
 
-  it("still shows the card when Composio cannot say just now", async () => {
+  it("does not request a card when Composio cannot say just now", async () => {
     settings.access.mockResolvedValue("full");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     composio.fetch.mockResolvedValue(
       Response.json({ error: { message: "down" } }, { status: 502 })
     );
 
-    expect(await approvalOf(gmailSend)).toBe("user-approval");
+    expect(await approvalOf(gmailSend)).toBe("not-applicable");
   });
 
   it("refuses every write in a read-only workspace before any prompt", async () => {
@@ -321,7 +321,7 @@ describe("Google Workspace", () => {
     expect(await approvalOf(calendarUpdateEvent)).toEqual(refusal);
     expect(await approvalOf(calendarDeleteEvent)).toEqual(refusal);
     expect(
-      await googleWriteApproval(sessionContext(), "user-approval")
+      await googleWriteApproval(sessionContext(), "not-applicable")
     ).toEqual(refusal);
     // The person chose read-only: Bro says the action is unavailable and
     // does not push for full access (RU d06).
@@ -369,7 +369,7 @@ async function approvalOf<TInput>(
   });
 }
 
-function sessionContext(authenticator = "google-workspace-test") {
+function sessionContext(authenticator = "browser-result") {
   return {
     async getSandbox() {
       throw new Error("Sandbox access is outside this focused test.");

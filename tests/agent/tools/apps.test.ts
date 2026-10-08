@@ -223,7 +223,7 @@ describe("apps run", () => {
     };
 
     expect(await approvalOf(input)).toBe("not-applicable");
-    expect(await approvalOf(input, "browser-result")).toBe("user-approval");
+    expect(await approvalOf(input, "browser-result")).toBe("not-applicable");
     settings.access.mockResolvedValue("read_only");
     expect(await approvalOf(input)).toEqual({
       reason: googleReadOnlyWriteRefusal,
@@ -243,7 +243,7 @@ describe("apps run", () => {
     ).resolves.toMatchObject({ status: "done", wrote: true });
   });
 
-  it("asks in a turn Bro opened before a tool whose name says it writes, whatever its tags", async () => {
+  it("allows delegated writes in browser follow-through while identifying writes regardless of tags", async () => {
     expect(
       await approvalOf(
         {
@@ -254,7 +254,7 @@ describe("apps run", () => {
         },
         "browser-result"
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("refuses Google mail through apps and a tool of another app", async () => {
@@ -337,6 +337,21 @@ describe("apps run", () => {
 });
 
 describe("apps approval policy", () => {
+  it.each(["scheduled-worker", "scheduled-result", "background-task", "app"])(
+    "denies new actions from %s instead of requesting a card",
+    async (authenticator) => {
+      const input = {
+        action: "run" as const,
+        app: "google" as const,
+        arguments: '{"spreadsheet_id":"sheet-1","range":"A:C"}',
+        tool: "GOOGLESUPER_GET_SPREADSHEET_VALUES",
+      };
+      await expect(approvalOf(input, authenticator)).resolves.toMatchObject({
+        type: "denied",
+      });
+    }
+  );
+
   const readSheet = {
     action: "run" as const,
     app: "google" as const,
@@ -344,8 +359,10 @@ describe("apps approval policy", () => {
     tool: "GOOGLESUPER_GET_SPREADSHEET_VALUES",
   };
 
-  it("asks the person even for a read in the report of a browser run", async () => {
-    expect(await approvalOf(readSheet, "browser-result")).toBe("user-approval");
+  it("runs reads without a card in interactive browser follow-through", async () => {
+    expect(await approvalOf(readSheet, "browser-result")).toBe(
+      "not-applicable"
+    );
     expect(await approvalOf(readSheet, "telegram-webhook")).toBe(
       "not-applicable"
     );
@@ -395,7 +412,7 @@ describe("apps approval policy", () => {
     ).resolves.toMatchObject({ type: "denied" });
   });
 
-  it("refuses a write in a turn Bro opened that its card cannot show whole", async () => {
+  it("runs delegated writes without approval-card length restrictions", async () => {
     const write = {
       action: "run" as const,
       app: "todoist" as const,
@@ -411,10 +428,8 @@ describe("apps approval policy", () => {
         { ...write, arguments: JSON.stringify({ content: "x".repeat(3_000) }) },
         "browser-result"
       )
-    ).toBe("user-approval");
-    await expect(approvalOf(long, "browser-result")).resolves.toMatchObject({
-      type: "denied",
-    });
+    ).toBe("not-applicable");
+    expect(await approvalOf(long, "browser-result")).toBe("not-applicable");
     expect(await approvalOf(long)).toBe("not-applicable");
   });
 });

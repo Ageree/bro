@@ -529,6 +529,7 @@ export async function startQueuedBrowserRun(
       {
         conversationChannel: current.conversationChannel,
         conversationId: current.conversationId,
+        delegatedByPerson: current.delegatedByPerson,
         id: run.id,
         paymentAllowed: current.paymentAllowed,
         profileId: current.profileId,

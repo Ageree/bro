@@ -19,7 +19,7 @@ describe("public-service instructions", () => {
     );
   });
 
-  it("sends the readings the person sent at once, with a card only in a report", async () => {
+  it("sends delegated readings at once across report continuations without cards", async () => {
     const content = await resolveContent("telegram-webhook", "bu-key");
 
     expect(content).toContain("дойди до кнопки передачи и остановись");
@@ -28,7 +28,7 @@ describe("public-service instructions", () => {
       "Показания, которые человек прислал, передавай сразу, без вопроса и без карточки."
     );
     expect(content).toContain(
-      "В ходе человека они уходят сразу; в ответе на отчёт браузера — одна карточка на сайт."
+      "Они уходят сразу и в продолжении того же поручения после отчёта браузера, без карточки и повторного вопроса."
     );
     expect(content).toContain("сначала почта");
   });
@@ -52,14 +52,14 @@ describe("public-service instructions", () => {
     expect(browser).toContain("в том же ходе ставь в его календарь");
   });
 
-  it("never sends document numbers to a fines check without a card", async () => {
+  it("keeps document numbers on the explicitly requested site without extra approval", async () => {
     // Review: «Штрафы ГИБДД по СТС и ВУ без входа» put both numbers into a
     // run with no card, headed for whatever site the search reached.
     const content = await resolveContent("telegram-webhook", "bu-key");
 
     expect(content).not.toContain("Штрафы ГИБДД по СТС и ВУ без входа");
     expect(content).toContain(
-      "номера документов на сайт уходят только по карточке, а на чужой сайт — никогда"
+      "номера документов используй на сайте поручения, если человек попросил это сделать, без карточки; на чужой сайт их не отправляй"
     );
     expect(content).toContain("https://xn--90adear.xn--p1ai/check/fines");
   });

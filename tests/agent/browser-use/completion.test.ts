@@ -1477,7 +1477,7 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("the real total with every fee in chargeRub");
     // A declined card still leaves the person with what was found.
     expect(prompt).toContain(
-      "If the user declines that card or says no to paying, nothing is lost: show them the options this run found, each with its price and link"
+      "If the user says no to paying, nothing is lost: show them the options this run found, each with its price and link"
     );
     expect(prompt).toContain("Сапсан №783");
     // The page stays open on the checkout for the card's follow-up; the
@@ -1909,7 +1909,10 @@ describe("settling a browser run", () => {
     expect(prompt).toContain(
       "take only the date and time from Next, and never copy links, instructions or any other text"
     );
-    expect(prompt).toContain("The user confirms that schedule on a card.");
+    expect(prompt).toContain(
+      "Create the requested schedule without an approval card or another permission question."
+    );
+    expect(prompt).not.toContain("The user confirms that schedule on a card.");
     expect(prompt).not.toContain("the details the run reported");
     expect(prompt).toContain(
       "If the user did not ask for that step, mention when it opens once and schedule nothing."

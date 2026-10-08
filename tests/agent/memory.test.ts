@@ -239,7 +239,7 @@ describe("durable profile memory", () => {
 });
 
 describe("forgetting a memory without the person's word", () => {
-  it("forgets at the person's word an older memory they named, and only on a card in a turn Bro opened", async () => {
+  it("forgets an older named memory at the person's word and denies deletion from a report", async () => {
     await saveMemory(
       alice,
       "scope-a",
@@ -328,7 +328,7 @@ describe("forgetting a memory without the person's word", () => {
           text: "  любит  суши. ",
         }
       )
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
     // Another workspace's memory is none of this call's business.
     expect(
       await memoryRemovalApproval(bob, "scope-a", personTurn("this-session"), {
@@ -535,7 +535,7 @@ describe("forgetting everything at once", () => {
     );
   });
 
-  it("sends a card too long for a messenger back to be split in a turn Bro opened", async () => {
+  it("denies cross-conversation deletion from reports regardless of the number of records", async () => {
     const records = Array.from({ length: 40 }, (_, index) => ({
       index,
       text: `Запись номер ${String(index)}: ${"поезд, нижняя полка, место у окна. ".repeat(3)}`.trim(),
@@ -555,7 +555,9 @@ describe("forgetting everything at once", () => {
       { records }
     );
     expect(decision).toMatchObject({ type: "denied" });
-    expect(JSON.stringify(decision)).toContain("Split the records");
+    expect(JSON.stringify(decision)).toContain(
+      "only in a turn the user's own message started"
+    );
     expect(
       await memoryBulkRemovalApproval(
         alice,
@@ -563,7 +565,7 @@ describe("forgetting everything at once", () => {
         reportTurn("this-session"),
         { records: records.slice(0, 20) }
       )
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
     // In the person's own turn no card is shown, so none has to fit.
     expect(
       await memoryBulkRemovalApproval(

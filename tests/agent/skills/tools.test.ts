@@ -215,8 +215,8 @@ const carried = {
     ["revoke", '`standing_permission` с `action: "revoke"`'],
     ["nothing to revoke", "`revoke` не вызывай"],
     [
-      "only in the person's turn",
-      "Разрешение действует только в ходе, который начал сам человек",
+      "permission changes only in the person's turn",
+      "Постоянное разрешение меняет только сам человек своими словами.",
     ],
   ],
   schedules: [

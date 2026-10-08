@@ -123,16 +123,16 @@ describe("standing_permission changes", () => {
 });
 
 describe("standing_permission approval", () => {
-  it("asks once on a card for a new or wider permission", () => {
+  it("allows new or wider permissions without a card", () => {
     expect(
       standingPermissionApproval({ action: "allow", kind: "table" }, undefined)
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
     expect(
       standingPermissionApproval(
         { action: "allow", kind: "taxi", maxRub: 3000 },
         { ...monthly, actions: [taxi] }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("takes permission away, or restates it, without a card", () => {
@@ -152,13 +152,13 @@ describe("standing_permission approval", () => {
     );
   });
 
-  it("asks again for a higher monthly ceiling", () => {
+  it("allows a higher monthly ceiling without a card", () => {
     expect(
       standingPermissionApproval(
         { action: "allow", kind: "taxi", maxRub: 1500, monthRub: 30_000 },
         { ...monthly, actions: [taxi] }
       )
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
   it("never lets one permission cost more than 30 000 ₽ an errand", () => {
@@ -167,7 +167,7 @@ describe("standing_permission approval", () => {
         { action: "allow", kind: "order", maxRub: 10_000_000 },
         undefined
       )
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
     expect(
       inputSchemaAccepts({ action: "allow", kind: "order", maxRub: 30_000 })
     ).toBe(true);
@@ -176,10 +176,10 @@ describe("standing_permission approval", () => {
     ).toBe(false);
   });
 
-  it("treats a call it cannot read as widening", () => {
-    expect(standingPermissionApproval(undefined, undefined)).toBe(
-      "user-approval"
-    );
+  it("denies a call it cannot read without a card", () => {
+    expect(standingPermissionApproval(undefined, undefined)).toMatchObject({
+      type: "denied",
+    });
   });
 
   /**
@@ -422,7 +422,7 @@ describe("standing_permission in a turn the page wrote", () => {
     );
     expect(
       await approvalOf({ action: "allow", kind: "table" }, "photon-imessage")
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 });
 
