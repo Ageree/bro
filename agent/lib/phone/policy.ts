@@ -44,12 +44,44 @@ export function recordPhoneAction(
     toolName: context.toolName,
     inputHash: createHash("sha256").update(serializedInput).digest("hex"),
   };
+  // A call keeps its place when approval runs again: its position among the
+  // turn's calls (`phoneActionsBefore`) is what the per-turn cap counts.
   phoneActions.update((state) => ({
-    actions: [
-      ...state.actions.filter((known) => known.callId !== context.callId),
-      action,
-    ].slice(-50),
+    actions: (state.actions.some((known) => known.callId === context.callId)
+      ? state.actions.map((known) =>
+          known.callId === context.callId ? action : known
+        )
+      : [...state.actions, action]
+    ).slice(-50),
   }));
+}
+
+/** Outbound calls one turn of the person may place. */
+export const phoneCallsPerTurn = 2;
+
+/**
+ * How many calls of the same tool were recorded before this one in the turn
+ * it originates from (`phoneActionTurn`). Approval runs for every call of a
+ * step before the first executes, so parallel calls are counted too.
+ */
+export function phoneActionsBefore(
+  context: Pick<ToolContext, "session" | "callId" | "toolName">,
+  originatingTurn: string
+) {
+  try {
+    const calls = phoneActions
+      .get()
+      .actions.filter(
+        (known) =>
+          known.sessionId === context.session.id &&
+          known.turnId === originatingTurn &&
+          known.toolName === context.toolName
+      );
+    const at = calls.findIndex((known) => known.callId === context.callId);
+    return at === -1 ? calls.length : at;
+  } catch {
+    return phoneCallsPerTurn;
+  }
 }
 
 export function phoneActionTurn(
