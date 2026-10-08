@@ -549,6 +549,11 @@ export const env = createEnv({
     COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID: trimmedValue.optional(),
     COMPOSIO_NOTION_AUTH_CONFIG_ID: trimmedValue.optional(),
     COMPOSIO_SLACK_AUTH_CONFIG_ID: trimmedValue.optional(),
+    MAILRU_MAIL_CLIENT_ID: trimmedValue.optional(),
+    MAILRU_MAIL_CLIENT_SECRET: trimmedValue.optional(),
+    YANDEX_MAIL_CLIENT_ID: trimmedValue.optional(),
+    YANDEX_MAIL_CLIENT_SECRET: trimmedValue.optional(),
+    MAIL_WORKSPACES: workspaceListSchema.optional(),
     // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
     // TCP client; `neon-http` exists for a maintenance run from a machine that
     // can only reach the database over HTTPS.
