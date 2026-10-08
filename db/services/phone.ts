@@ -953,6 +953,21 @@ export async function acknowledgePhoneEvents(conversationId: string) {
     );
 }
 
+/**
+ * Sends of one call's report, over its first 24 hours. A hand-over is a paid
+ * model turn and a chat message, so a report that keeps failing stops early;
+ * its result stays available through `phone-status`.
+ */
+const maximumReportAttempts = 5;
+
+/**
+ * How long a report the conversation accepted may wait for its turn. With
+ * `turnPolicy: "queue"` it waits behind a turn the person started, which can
+ * run for minutes; sent again after the plain lease, a second copy was a second
+ * paid turn. The turn's start renews the lease and its end settles the report.
+ */
+const handedOverLeaseMs = 10 * 60_000;
+
 export async function claimPhoneReports() {
   requirePhoneTransactions();
   return db.transaction(async (transaction) => {
@@ -966,7 +981,7 @@ export async function claimPhoneReports() {
           sql`${phoneCalls.sessionId} is not null`,
           sql`${phoneCalls.conversationId} is not null`,
           sql`${phoneCalls.conversationChannel} is not null`,
-          lt(phoneCalls.reportAttempts, 10),
+          lt(phoneCalls.reportAttempts, maximumReportAttempts),
           or(
             isNull(phoneCalls.reportStartedAt),
             gt(
@@ -988,7 +1003,12 @@ export async function claimPhoneReports() {
         const [updated] = await transaction
           .update(phoneCalls)
           .set({
-            reportLeaseToken: randomUUID(),
+            // One token for the life of the report: a copy that waited in
+            // the conversation's queue past the lease still belongs to this
+            // report and settles it, instead of being refused as stale
+            // while the next copy goes out again. Delivery clears it, so a
+            // copy that comes after the report landed sends nothing.
+            reportLeaseToken: row.reportLeaseToken ?? randomUUID(),
             reportLeaseUntil: new Date(Date.now() + 5 * 60_000),
             reportAttempts: row.reportAttempts + 1,
             reportStartedAt: row.reportStartedAt ?? new Date(),
@@ -1002,13 +1022,14 @@ export async function claimPhoneReports() {
   });
 }
 
+/** Settles a report turn; true when this call marked the report delivered. */
 export async function finishPhoneReport(
   id: string,
   token: string,
   delivered: boolean
 ) {
   if (delivered) {
-    await db
+    const rows = await db
       .update(phoneCalls)
       .set({
         reportDeliveredAt: new Date(),
@@ -1016,9 +1037,14 @@ export async function finishPhoneReport(
         reportLeaseUntil: null,
       })
       .where(
-        and(eq(phoneCalls.id, id), eq(phoneCalls.reportLeaseToken, token))
-      );
-    return;
+        and(
+          eq(phoneCalls.id, id),
+          eq(phoneCalls.reportLeaseToken, token),
+          isNull(phoneCalls.reportDeliveredAt)
+        )
+      )
+      .returning({ id: phoneCalls.id });
+    return rows.length > 0;
   }
   await db
     .update(phoneCalls)
@@ -1026,6 +1052,25 @@ export async function finishPhoneReport(
       reportLeaseUntil: sql`now() + make_interval(secs => least(60 * power(2, greatest(${phoneCalls.reportAttempts} - 1, 0)), 3600)::int)`,
     })
     .where(and(eq(phoneCalls.id, id), eq(phoneCalls.reportLeaseToken, token)));
+  return false;
+}
+
+/**
+ * The conversation took the report, or may have: nobody sends it again until
+ * its turn had time to start. A dispatch that timed out is the same, since
+ * eve may have accepted it after the caller stopped waiting.
+ */
+export async function holdPhoneReportForTurn(id: string, token: string) {
+  await db
+    .update(phoneCalls)
+    .set({ reportLeaseUntil: new Date(Date.now() + handedOverLeaseMs) })
+    .where(
+      and(
+        eq(phoneCalls.id, id),
+        eq(phoneCalls.reportLeaseToken, token),
+        isNull(phoneCalls.reportDeliveredAt)
+      )
+    );
 }
 
 export async function renewPhoneReportLease(
