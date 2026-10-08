@@ -570,7 +570,7 @@ function walledInstruction(unreachable: string | undefined) {
 }
 
 const newSitePermissionLine =
-  "Acting and paying on the new site need their own permission, because an approval for the original shop does not carry over: a booking, order or application there is a new errand, so pass allowSubmit with its own submission (chargeRub when it is paid) and the user confirms it on one new approval card — this report is not their message, so no standing permission stands in for it here — or pay with a fresh withinSpendLimit decision.";
+  "A new site never inherits the original shop's payment consent. Keep searching and staging within the user's original conditions; a free submission on the same delegated errand needs no approval card, while a new purchase waits for one text question naming this exact order and total and the user's plain yes. Never use withinSpendLimit to skip that question or invent consent when a tool refuses a new errand.";
 
 /**
  * An errand whose site's name does not exist: an address made up rather
