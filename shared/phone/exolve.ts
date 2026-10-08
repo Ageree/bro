@@ -115,7 +115,11 @@ async function sipInventory(
   return page.sips.concat(await sipInventory(offset + 100));
 }
 
-export async function quoteNumber() {
+/**
+ * `held` are numbers another workspace's row already owns: they stay in the
+ * provider's free list but cannot be quoted (the number is unique in our table).
+ */
+export async function quoteNumber(held: ReadonlySet<string> = new Set()) {
   try {
     if (!env.MTS_EXOLVE_API_KEY)
       throw new PhonePreflightError("NOT_CONFIGURED");
@@ -129,7 +133,8 @@ export async function quoteNumber() {
       .filter(
         (entry) =>
           entry.number_options.incoming_calls &&
-          entry.number_options.outgoing_calls
+          entry.number_options.outgoing_calls &&
+          !held.has(`+${entry.number_code}`)
       )
       .toSorted(
         (a, b) =>
@@ -235,32 +240,44 @@ export async function purchaseNumber(input: z.input<typeof purchase>) {
       sipFee.subscription_fee;
     if (balance.balance < requiredRub)
       throw new PhonePreflightError("INSUFFICIENT_FUNDS");
+    // A Lock alone charges nothing: only Buy, which needs the reservation id,
+    // spends money. So a Lock that fails (someone else took the number, a
+    // timeout) is no purchase attempt, as long as the provider confirms the
+    // number is still not ours: the quote can be taken again.
+    let reservation;
+    try {
+      reservation = await request(
+        "/number/v1/Lock",
+        {
+          number_code: code,
+          seconds: 300,
+          description: "Bro dedicated voice number",
+        },
+        z
+          .object({
+            Id: z
+              .union([
+                z.string().regex(/^\d+$/u),
+                z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+              ])
+              .optional(),
+            id: z
+              .union([
+                z.string().regex(/^\d+$/u),
+                z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+              ])
+              .optional(),
+          })
+          .refine((entry) => entry.Id !== undefined || entry.id !== undefined),
+        true
+      );
+    } catch {
+      if (!(await findOwnedNumber(value.candidate)))
+        throw new PhonePreflightError("CANDIDATE_UNAVAILABLE");
+      mutationAttempted = true;
+      throw new Error("Exolve reservation failed for an owned number.");
+    }
     mutationAttempted = true;
-    const reservation = await request(
-      "/number/v1/Lock",
-      {
-        number_code: code,
-        seconds: 300,
-        description: "Bro dedicated voice number",
-      },
-      z
-        .object({
-          Id: z
-            .union([
-              z.string().regex(/^\d+$/u),
-              z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-            ])
-            .optional(),
-          id: z
-            .union([
-              z.string().regex(/^\d+$/u),
-              z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-            ])
-            .optional(),
-        })
-        .refine((entry) => entry.Id !== undefined || entry.id !== undefined),
-      true
-    );
     await request(
       "/number/v1/Buy",
       { number_code: code, reserve_uid: reservation.Id ?? reservation.id },
