@@ -821,6 +821,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   ведёт новым ходом.
 - `GET /api/v1/credits` — только management-ключ (`OPENROUTER_MANAGEMENT_KEY`).
   Плагин `web` без `engine` у `openai/*` медленный и без ссылок: берём `exa`.
+- Результат инструмента модель пересказывает человеку: имя провайдера, статус и
+  текст его ошибки («RouterAI 402 Insufficient balance») в результат не кладите.
+  Модели достаётся нейтральная причина, подробности — в `console.warn`
+  (`WebSearchError.reason` в `agent/lib/web-search/search.ts`, `generate_image`).
 - `web_fetch` помнит отказ хоста лишь в разговоре: память инстанса закрывала
   сайт всем. Ограничитель Nominatim и OSRM — на инстанс, общего нет
   (`agent/lib/routes/openstreetmap.ts`).

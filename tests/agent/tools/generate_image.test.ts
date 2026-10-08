@@ -554,6 +554,14 @@ describe("generate_image", () => {
       "The image model refused the request (400): Request blocked by content policy"
     );
 
+    // The owner's problems never reach the person in the provider's words.
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ error: "Insufficient balance" }, { status: 402 })
+    );
+    await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
+      /^The image service is not available right now\. (?!.*Insufficient)/u
+    );
+
     fetchMock.mockResolvedValueOnce(Response.json({ data: [] }));
     await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
       "returned no picture"
