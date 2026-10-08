@@ -1,0 +1,1 @@
+ALTER TABLE "browser_runs" ADD COLUMN "delegated_by_person" boolean DEFAULT false NOT NULL;

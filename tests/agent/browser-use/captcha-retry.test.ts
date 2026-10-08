@@ -118,6 +118,7 @@ function parkedRow(captchaAttempt: number) {
     conversationId: "imessage:chat-1",
     createdAt: new Date(),
     createdByUserId: "better-auth:alice",
+    delegatedByPerson: true,
     id: runId,
     liveViewUrl: null,
     outcome: "Needs: captcha",
@@ -297,6 +298,7 @@ describe("the anti-bot retry policy", () => {
     expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
       captchaAttempt: 2,
       conversationId: "imessage:chat-1",
+      delegatedByPerson: true,
       id: retryRunId,
       paymentAllowed: true,
       replyAnchorMessageId: "message-1",

@@ -10,7 +10,6 @@ import {
   type QuestionResponse,
   QuestionSubmit,
 } from "@web/components/ai-elements/question";
-import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import type { InputResponse } from "eve/client";
@@ -104,10 +103,14 @@ export function InputRequestActions({
   readonly part: EveDynamicToolPart;
 }) {
   const requested = part.toolMetadata?.eve?.inputRequest;
-  if (!requested) return null;
-  // eve titles a card «Approve tool call: <tool>»; the person reads what it
-  // lets through instead — the booking, the standing permission, the limit.
-  // The web chat speaks Russian, as the rest of the product does.
+  if (
+    !requested ||
+    part.toolMetadata.eve.inputResponse !== undefined ||
+    part.state !== "approval-requested"
+  ) {
+    return null;
+  }
+
   const inputRequest = withApprovalCard(
     {
       ...requested,
@@ -115,51 +118,31 @@ export function InputRequestActions({
     },
     "ru"
   );
-  const [title, ...details] = inputRequest.prompt.split("\n");
-
-  const inputResponse = part.toolMetadata.eve.inputResponse;
-  const selectedOption = inputRequest.options?.find(
-    (option) => option.id === inputResponse?.optionId
-  );
 
   return (
-    <Alert variant="warning">
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>
-        {details.length > 0 ? (
-          <p className="whitespace-pre-line">{details.join("\n")}</p>
-        ) : null}
-        {inputResponse ? (
-          <p>
-            Responded:{" "}
-            {selectedOption?.label ??
-              inputResponse.text ??
-              inputResponse.optionId}
-          </p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {inputRequest.options?.map((option) => (
-              <Button
-                disabled={!canRespond}
-                key={option.id}
-                onClick={() => {
-                  void onInputResponses([
-                    {
-                      optionId: option.id,
-                      requestId: inputRequest.requestId,
-                    },
-                  ]);
-                }}
-                size="sm"
-                type="button"
-                variant={option.style === "danger" ? "destructive" : "default"}
-              >
-                {option.label}
-              </Button>
-            ))}
-          </div>
-        )}
-      </AlertDescription>
-    </Alert>
+    <div className="space-y-2">
+      <p className="type-body whitespace-pre-line">{inputRequest.prompt}</p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {inputRequest.options?.map((option) => (
+          <Button
+            disabled={!canRespond}
+            key={option.id}
+            onClick={() => {
+              void onInputResponses([
+                {
+                  optionId: option.id,
+                  requestId: inputRequest.requestId,
+                },
+              ]);
+            }}
+            size="act-sm"
+            type="button"
+            variant={option.style === "danger" ? "quiet" : "act"}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </div>
+    </div>
   );
 }

@@ -2,7 +2,11 @@ import { parseInputResponses, resolveTextToResponses } from "eve/client";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import type { ApprovalContext, ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
-import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import {
+  ownTurnApproval,
+  resolveModeValue,
+  startedByPerson,
+} from "@agent/lib/mode";
 import { reportCardHold } from "@agent/lib/delivery/report-cards";
 import { answerableThisTurn } from "@agent/lib/schedules/question";
 import {
@@ -41,17 +45,10 @@ import {
 } from "@db/services/subscriptions";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 
-/**
- * A schedule's prompt is later run by a worker as the person's own task,
- * with their mail and the web at hand. In a turn the person did not start —
- * a browser run's report, whose text the page writes — a schedule could carry
- * the page's words into that task, so it waits for the person's card showing
- * what it will do and when. In their own turn it goes ahead as asked.
- */
 export function scheduleApproval(
   context: Parameters<typeof startedByPerson>[0]
 ): ApprovalStatus {
-  return startedByPerson(context) ? "not-applicable" : "user-approval";
+  return ownTurnApproval(context);
 }
 
 /**

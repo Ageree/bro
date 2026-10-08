@@ -7,18 +7,13 @@ import {
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import {
-  ownTurnApproval,
-  resolveModeValue,
-  startedByPerson,
-} from "@agent/lib/mode";
+import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { comparableMemoryText } from "@shared/memory/schema";
 import {
   adoptCutoverMemory,
   memoryNamespace,
 } from "@agent/lib/memory/namespace";
 import { afterForgetting } from "@agent/lib/privacy/removal";
-import { forgetAllCardFits } from "@shared/chat/approval-card";
 import { eraseConversationLines } from "@agent/lib/conversation/erase";
 import {
   adoptWorkstreams,
@@ -130,12 +125,14 @@ export default defineMemory({
           inputSchema: findWorkstreamsSchema,
           execute: (input) => findWorkstreams(scope, key, input),
         }),
-        // «Удали всё, что ты про меня помнишь» (RU d14, 25.09) takes all the
-        // saved work with it: one call, and one card listing every title
-        // another conversation saved, as each would have on its own.
         forget_all: defineTool({
           approval: async ({ session, toolInput }) => {
-            if (toolInput === undefined) return "user-approval";
+            if (toolInput === undefined) {
+              return {
+                reason: "Nothing was forgotten: the call's input is missing.",
+                type: "denied",
+              };
+            }
             const named = await Promise.all(
               toolInput.workstreams.map(async ({ id, title }) => ({
                 id,
@@ -166,19 +163,11 @@ export default defineMemory({
               return "not-applicable";
             }
             if (startedByPerson({ session })) return "not-applicable";
-            if (
-              !forgetAllCardFits(
-                "workstreams",
-                toolInput.workstreams.map(({ title }) => title)
-              )
-            ) {
-              return {
-                reason:
-                  "Nothing was forgotten: the card listing all these titles would be too long for a messenger. Split them into two or more calls; each gets its own card.",
-                type: "denied",
-              };
-            }
-            return "user-approval";
+            return {
+              reason:
+                "Nothing was forgotten: workstreams saved in another conversation can be forgotten only in a turn the user's own message started.",
+              type: "denied",
+            };
           },
           description:
             "Forget several saved workstreams in one call: everything the user asked to forget, including all of them when they ask you to forget everything you know about them — do not ask which ones. List each by its id and its title exactly as saved: the index names current and elsewhere work, and workstreams__find with an empty query lists the rest, completed work included. Call it only for saved work: with none saved, there is nothing to forget. In a turn the user's own message started they all go at once, without a card. Erases saved content and source references; does not cancel any running job or schedule.",
@@ -263,7 +252,12 @@ export default defineMemory({
           // names its saved title, as a profile memory does, rather than a
           // slug; in the person's own turn it then goes without a card.
           approval: async ({ session, toolInput }) => {
-            if (toolInput === undefined) return "user-approval";
+            if (toolInput === undefined) {
+              return {
+                reason: "Nothing was forgotten: the call's input is missing.",
+                type: "denied",
+              };
+            }
             const workstream = await readWorkstream(scope, key, toolInput.id);
             if (!workstream?.content) return "not-applicable";
             if (workstream.sessionId === session.id) return "not-applicable";
@@ -277,7 +271,13 @@ export default defineMemory({
                 type: "denied",
               };
             }
-            return ownTurnApproval({ session });
+            return startedByPerson({ session })
+              ? "not-applicable"
+              : {
+                  reason:
+                    "Nothing was forgotten: workstreams saved in another conversation can be forgotten only in a turn the user's own message started.",
+                  type: "denied",
+                };
           },
           description:
             "Forget a workstream the user named themselves; to forget several, or everything you know about the user, use workstreams__forget_all. When the request is unclear, forget nothing: ask one short question and wait for the answer. Read it first and pass its current revision and its title exactly as saved; in a turn the user's own message started it goes at once, without a card. Erases saved content and source references; existing conversation history is unchanged. Does not cancel any running job or schedule.",

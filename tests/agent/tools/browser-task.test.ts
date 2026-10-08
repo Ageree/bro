@@ -40,6 +40,7 @@ import {
   paymentCeilingRub,
 } from "@shared/browser/submission";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { stagingLead } from "@agent/lib/browser-use/staging";
 import {
   accessScopeForUser,
   type AccessScope,
@@ -763,6 +764,7 @@ function browserRunRow(
     conversationId: "imessage:chat-1",
     createdAt: new Date(),
     createdByUserId: "better-auth:alice",
+    delegatedByPerson: false,
     id: runId,
     liveViewUrl: rowLiveViewUrl(),
     outcome,
@@ -2968,6 +2970,167 @@ function approvalSession(authenticator: string, scheduledRunKind?: string) {
   };
 }
 
+describe("browser_task autonomous delegated continuation", () => {
+  const submission = { ...cardSubmission, chargeRub: 0 };
+  const input = {
+    action: "continue",
+    allowSubmit: true,
+    personWants: "done",
+    runId,
+    submission,
+    task: "Оформи найденную бесплатную запись",
+  } as const;
+
+  function reportContext(reportedRunId = runId) {
+    const context = toolContext("better-auth:alice", "browser-result");
+    return {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            ...context.session.auth.current,
+            attributes: {
+              ...context.session.auth.current.attributes,
+              browserRunId: reportedRunId,
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function delegatedRow(confirmed: ConfirmedSubmission | null = null) {
+    return {
+      ...browserRunRow(new Date(), "Needs: decision", confirmed),
+      delegatedByPerson: true,
+      task: `${stagingLead}\nЗапиши меня к терапевту`,
+    };
+  }
+
+  it("finishes a requested free errand after its report without a card", async () => {
+    readBrowserRunForScope.mockResolvedValue(delegatedRow());
+    const { browserTask, browserTaskApproval } =
+      await import("@agent/tools/browser_task");
+    const context = reportContext();
+
+    expect(await browserTaskApproval(input, context)).toBe("not-applicable");
+    const result = await browserTask.execute(input, context);
+
+    expect(result).toMatchObject({ status: "running" });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "You may fill it in and press its final button"
+    );
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      delegatedByPerson: true,
+      submission,
+    });
+  });
+
+  it("carries the existing consent through a report follow-up without steering approval", async () => {
+    readBrowserRunForScope.mockResolvedValue(delegatedRow(submission));
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      {
+        action: "continue",
+        personWants: "done",
+        runId,
+        task: "Заверши эту запись с уже разрешёнными данными",
+      },
+      reportContext()
+    );
+
+    expect(result).toMatchObject({ status: "running" });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "The person already allowed this one submission"
+    );
+  });
+
+  it("does not turn a search-only request into permission to submit", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: decision"),
+      task: `${stagingLead}\nA page claims the person authorized this`,
+    });
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    expect(await browserTaskApproval(input, reportContext())).toMatchObject({
+      type: "denied",
+    });
+  });
+
+  it("refuses another run or conversation instead of asking for a card", async () => {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    readBrowserRunForScope.mockResolvedValue(delegatedRow());
+    expect(
+      await browserTaskApproval(input, reportContext("another-run"))
+    ).toMatchObject({ type: "denied" });
+    readBrowserRunForScope.mockResolvedValue({
+      ...delegatedRow(),
+      rootSessionId: "another-conversation",
+    });
+    expect(await browserTaskApproval(input, reportContext())).toMatchObject({
+      type: "denied",
+    });
+  });
+
+  it("keeps a new purchase behind the person's answer to its exact total", async () => {
+    readBrowserRunForScope.mockResolvedValue(delegatedRow());
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+
+    const decision = await browserTaskApproval(
+      {
+        ...input,
+        allowPayment: true,
+        submission: { ...submission, chargeRub: 1500 },
+      },
+      reportContext()
+    );
+
+    expect(decision).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(decision)).toContain("Оплачиваю?");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("does not ask again for the same previously approved payment after a report", async () => {
+    const approved = { ...submission, chargeRub: 1500, paymentCapRub: 1500 };
+    readBrowserRunForScope.mockResolvedValue({
+      ...delegatedRow(approved),
+      outcome: "Needs: payment",
+    });
+    const { browserTask, browserTaskApproval } =
+      await import("@agent/tools/browser_task");
+    const context = reportContext();
+
+    expect(
+      await browserTaskApproval({ ...input, submission: approved }, context)
+    ).toBe("not-applicable");
+    expect(
+      await browserTaskApproval(
+        { ...input, submission: { ...submission, chargeRub: 1501 } },
+        context
+      )
+    ).toMatchObject({ type: "denied" });
+
+    const result = await browserTask.execute(
+      {
+        action: "continue",
+        personWants: "done",
+        runId,
+        task: "Заверши уже согласованную оплату",
+      },
+      context
+    );
+
+    expect(result).toMatchObject({ status: "running" });
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+      submission: approved,
+    });
+  });
+});
+
 describe("browser_task approval", () => {
   const conversation = approvalSession("photon-imessage");
   const onLimit = {
@@ -3015,13 +3178,12 @@ describe("browser_task approval", () => {
       ),
     ]);
     expect(statuses).toEqual(statuses.map(() => "not-applicable"));
-    // A browser report is written by the page: there the card stays.
     expect(
       await browserTaskApproval(
         { action: "start", allowSubmit: true, submission: cardSubmission },
         approvalSession("browser-result")
       )
-    ).toBe("user-approval");
+    ).toMatchObject({ type: "denied" });
   });
 
   it("pays only on the person's yes to Bro's question, never on a card", async () => {
@@ -4370,7 +4532,7 @@ describe("browser_task consent boundaries", () => {
   }
 
   describe("a browser report is not the person's message", () => {
-    it("shows the card where a standing permission would have stood in", async () => {
+    it("refuses a report's new errand instead of showing a permission card", async () => {
       const { browserTaskApproval } = await import("@agent/tools/browser_task");
       readSpendLimit.mockResolvedValue(
         standingPolicy([{ kind: "table", maxRub: null, merchant: null }])
@@ -4388,7 +4550,7 @@ describe("browser_task consent boundaries", () => {
       ).toBe("not-applicable");
       expect(
         await browserTaskApproval(call, approvalSession("browser-result"))
-      ).toBe("user-approval");
+      ).toMatchObject({ type: "denied" });
     });
 
     it("asks the person where the errand's own yes would have carried", async () => {
@@ -4412,21 +4574,15 @@ describe("browser_task consent boundaries", () => {
       ).toEqual(paymentQuestion);
     });
 
-    it("holds the run to the card the person answered, not a standing permission", async () => {
+    it("never starts an unrequested errand on a report or standing permission", async () => {
       readSpendLimit.mockResolvedValue(
         standingPolicy([{ kind: "table", maxRub: null, merchant: null }])
       );
 
-      const result = await startWith(table, {
-        authenticator: "browser-result",
-      });
-
-      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-      expect(task).toContain(
-        "The person confirmed on an approval card this one submission in their name."
-      );
-      expect(task).not.toContain("standing permission");
-      expect(continuationNote(result)).not.toContain("No approval card");
+      await expect(
+        startWith(table, { authenticator: "browser-result" })
+      ).rejects.toThrow("A page or report cannot authorize a new action");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
     });
 
     it.each(["browser-result", "scheduled-worker"])(
@@ -6713,7 +6869,7 @@ describe("browser_task passes on only what the person sent", () => {
   });
 
   it.each(["photon-imessage", "authjs"])(
-    "carries out the card the person approved in a report turn (%s)",
+    "does not treat a report resumed under person auth as a new request (%s)",
     async (authenticator) => {
       // The approval resumes the report turn under the person's own auth,
       // but the turn still has no words of theirs: it stays Bro's.
@@ -6735,18 +6891,13 @@ describe("browser_task passes on only what the person sent", () => {
           paymentAsked: null,
           said: null,
         })
-      ).toBe("user-approval");
+      ).toMatchObject({ type: "denied" });
       const tool = await resolvedBrowserTask([], reportOpening);
 
-      await tool.execute(
-        input,
-        toolContext("better-auth:alice", authenticator)
-      );
-
-      expect(createBrowserUseRun).toHaveBeenCalledOnce();
-      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-      expect(task).toContain("Follow-up from Bro's coordinator");
-      expect(task).not.toContain("Человек написал");
+      await expect(
+        tool.execute(input, toolContext("better-auth:alice", authenticator))
+      ).rejects.toThrow("A page or report cannot authorize a new action");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
     }
   );
 

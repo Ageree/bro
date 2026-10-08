@@ -265,6 +265,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         captchaAttempt: attempt,
         conversationChannel: row.conversationChannel,
         conversationId: row.conversationId,
+        delegatedByPerson: row.delegatedByPerson,
         id: run.id,
         paymentAllowed: row.paymentAllowed,
         profileId: row.profileId,

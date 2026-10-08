@@ -932,11 +932,30 @@ function schedulePrompt(
     .join("\n");
 }
 
+const browserFilesCallSchema = z.object({
+  action: z.literal("upload"),
+  site: z.url(),
+  sources: z.array(z.string()).min(1).max(10),
+});
+
 /** The approval card's text for the call, read from its input, or none. */
 function cardPrompt(
   action: { readonly input: unknown; readonly toolName: string },
   language: CardLanguage
 ) {
+  if (action.toolName === "browser_files") {
+    const call = browserFilesCallSchema.safeParse(action.input);
+    if (!call.success) return undefined;
+    const files = call.data.sources
+      .map((source) =>
+        oneLine((URL.parse(source)?.pathname ?? source).split("/").at(-1) ?? "")
+      )
+      .join(", ");
+    const site = URL.parse(call.data.site)?.origin;
+    return language === "ru"
+      ? `Передать выбранные файлы на ${site ?? "сайт поручения"}?\nФайлы: ${files}`
+      : `Transfer the selected files to ${site ?? "the errand's site"}?\nFiles: ${files}`;
+  }
   const text = cardText[language];
   if (action.toolName === "browser_task") {
     const call = confirmedCallSchema.safeParse(action.input);

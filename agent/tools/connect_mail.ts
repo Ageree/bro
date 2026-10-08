@@ -1,7 +1,7 @@
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { reportCardHold } from "@agent/lib/delivery/report-cards";
-import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
+import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { disconnectMail, readMailConnection } from "@db/services/mail";
 import { applicationOrigin } from "@shared/environment/origin";
@@ -57,8 +57,15 @@ export const connectMail = defineTool({
   approval: async (context) => {
     const held = await reportCardHold(context.session);
     if (held !== undefined) return { reason: held, type: "denied" as const };
+    const changeApproval = startedByPerson(context)
+      ? ("not-applicable" as const)
+      : {
+          reason:
+            "Nothing changed: mail connections and access levels change only in a turn the user's own message started.",
+          type: "denied" as const,
+        };
     if (context.toolInput?.action === "disconnect") {
-      return ownTurnApproval(context);
+      return changeApproval;
     }
     if (
       context.toolInput?.action === "status" ||
@@ -71,11 +78,11 @@ export const connectMail = defineTool({
       context.toolInput.provider
     );
     return context.toolInput.access !== connection.access
-      ? ownTurnApproval(context)
+      ? changeApproval
       : "not-applicable";
   },
   description:
-    "Check, connect or disconnect the person's Mail.ru or Yandex mail for this workspace; Gmail continues to use connect_google. Use action status when asked whether this mail is connected: it only reports the account, access and abilities, never creates a link or changes access. Action connect returns connected when the existing grant matches, otherwise authorize with a safe application URL: deliver url and notice with send_message as a link; the person must open it in a browser and sign in to the same Bro cabinet account before provider consent. previousConnectionRemoved means the old local grant was deleted and Bro has no access until consent finishes. Bro never asks the person to paste OAuth tokens or passwords and never receives them in tool results. Access read_only allows only search and reading; full also allows drafts, sending and reversible mailbox changes. Relay abilities, including Mail.ru's locally enforced read-only limitation. Omit access to keep the current level (full for a first connection). Never automatically upgrade read_only or suggest widening it; request full only if the person explicitly asks. Action disconnect removes Bro's locally stored grant only: it does not delete messages or revoke the provider's consent, which the person can revoke in the provider's settings. Relay the disconnect notice. Not_configured means this provider is unavailable on this deployment, never success. A connection link does not mean consent is complete. The person's own request to disconnect or change the level proceeds without a card; a turn Bro started itself needs their card.",
+    "Check, connect or disconnect the person's Mail.ru or Yandex mail for this workspace; Gmail continues to use connect_google. Use action status when asked whether this mail is connected: it only reports the account, access and abilities, never creates a link or changes access. Action connect returns connected when the existing grant matches, otherwise authorize with a safe application URL: deliver url and notice with send_message as a link; the person must open it in a browser and sign in to the same Bro cabinet account before provider consent. previousConnectionRemoved means the old local grant was deleted and Bro has no access until consent finishes. Bro never asks the person to paste OAuth tokens or passwords and never receives them in tool results. Access read_only allows only search and reading; full also allows drafts, sending and reversible mailbox changes. Relay abilities, including Mail.ru's locally enforced read-only limitation. Omit access to keep the current level (full for a first connection). Never automatically upgrade read_only or suggest widening it; request full only if the person explicitly asks. Action disconnect removes Bro's locally stored grant only: it does not delete messages or revoke the provider's consent, which the person can revoke in the provider's settings. Relay the disconnect notice. Not_configured means this provider is unavailable on this deployment, never success. A connection link does not mean consent is complete. The person's own request to disconnect or change the level proceeds without a card; connection changes from browser reports or background workers are denied.",
   inputSchema,
   async execute(input, context) {
     const held = await reportCardHold(context.session);
