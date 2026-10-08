@@ -27,6 +27,8 @@ import {
   turnSends,
 } from "../lib/delivery/turn-sends";
 import { stepStartedEventSchema } from "../lib/turn-kind/step";
+import { phoneReportCaller } from "@agent/lib/phone/report-caller";
+import { renewPhoneReportTurn } from "@agent/lib/phone/report-lease";
 
 /** What a conversation channel can do with a delivered message. */
 interface ChannelDelivery {
@@ -153,26 +155,37 @@ function defineSendMessage(
   pastAnswer: boolean,
   loadSkill: boolean,
   taskReport: boolean,
-  earlyReply: boolean
+  earlyReply: boolean,
+  phoneReport: boolean
 ) {
   return defineTool({
     description:
       "Send exactly one user-visible message to the current conversation. This is the delivery path for questions, progress updates, blockers, and final answers that need words. Choose kind message for plain text, private image artifacts, and HTTPS attachments; text and attachments may be combined. Text is delivered exactly as written, so write it like a brief natural text message and do not use Markdown. On Telegram and iMessage attachments are downloaded and uploaded to the conversation, so the person receives real photos and files; the web chat renders them from the URL. Give the direct HTTPS URL of the file itself, such as an image URL, never a page that contains it; to send the photos from a page, call find_images with the page URL first and attach the image URLs it returns. Up to 10 attachments ride on one message and each must be about 10 MB or smaller; an attachment that cannot be downloaded falls back to a link. Set replyTo to record which message is being answered: use current for an ordinary answer, clarification, status update, or follow-up prompted by the current user message, including when the user changes topics; use task with a task ID from Eve's Task state for delayed background work; and use automation with the automation ID supplied by a scheduled report. Omit replyTo only when the message is genuinely standalone and does not answer any particular user message, such as an unsolicited announcement or proactive notice, or when no applicable handle is available. Use only handles present in the current context. Choose kind link with a URL to send a standalone native preview. Put an ordinary URL in message text when a preview is not wanted. When you list options, keep each price and fact with the option it was found for, and say «все» or «ни один» only of the options you checked. Call send_message multiple times only when you intentionally want separate messages. Call it directly without an assistant-text preamble, and do not repeat delivered content afterward.",
     inputSchema: sendMessageOutputSchema,
     execute(message, context) {
-      if (pastAnswer) return { skipped: "past" as const };
-      const outgoing = withoutBookkeeping(message);
-      if (!outgoing) return { skipped: "sentinel" as const };
-      const refused = sendRefusal(outgoing, turn, earlyReply);
-      if (refused) return refused;
-      markTurnDelivered(context.session);
-      // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
-      const sent = taskReport ? withoutFetchedUrls(outgoing) : outgoing;
-      return sent.kind === "message" && sent.text !== undefined
-        ? { ...sent, text: withGroupedRoubles(sent.text) }
-        : sent;
+      const emit = () => {
+        if (pastAnswer) return { skipped: "past" as const };
+        const outgoing = withoutBookkeeping(message);
+        if (!outgoing) return { skipped: "sentinel" as const };
+        const refused = sendRefusal(outgoing, turn, earlyReply);
+        if (refused) return refused;
+        markTurnDelivered(context.session);
+        // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
+        const sent = taskReport ? withoutFetchedUrls(outgoing) : outgoing;
+        return sent.kind === "message" && sent.text !== undefined
+          ? { ...sent, text: withGroupedRoubles(sent.text) }
+          : sent;
+      };
+      if (!phoneReport) return emit();
+      return renewPhoneReportTurn(context).then((current) =>
+        current ? emit() : { skipped: "phone-stale" as const }
+      );
     },
     toModelOutput(output) {
+      if ("skipped" in output && output.skipped === "phone-stale")
+        return toolOutput.text(
+          "Not sent: this phone report is stale or already delivered. End this turn silently; do not repeat, rephrase or react to it."
+        );
       const refused = sendRefusalSchema.safeParse(output).data;
       if (refused && "skipped" in refused) {
         return toolOutput.text(skippedSendNotice(refused.skipped));
@@ -203,7 +216,11 @@ function defineSendMessage(
   });
 }
 
-function defineReactToMessage(delivery: ChannelDelivery, pastAnswer: boolean) {
+function defineReactToMessage(
+  delivery: ChannelDelivery,
+  pastAnswer: boolean,
+  phoneReport: boolean
+) {
   const toggle = delivery.reactions === "toggle";
   return defineTool({
     description: toggle
@@ -212,11 +229,18 @@ function defineReactToMessage(delivery: ChannelDelivery, pastAnswer: boolean) {
     inputSchema: toggle
       ? reactToMessageOutputSchema
       : addReactionToMessageOutputSchema,
-    execute(reaction) {
+    execute(reaction, context) {
       // An error result is no reaction: channels post only what parses as
       // one.
       if (pastAnswer) throw new Error(pastAnswerReaction);
-      return reaction;
+      if (!phoneReport) return reaction;
+      return renewPhoneReportTurn(context).then((current) => {
+        if (!current)
+          throw new Error(
+            "Not sent: stale or delivered phone reports cannot react."
+          );
+        return reaction;
+      });
     },
     toModelOutput() {
       return toolOutput.text(
@@ -233,6 +257,8 @@ export default defineDynamic({
     "step.started": async (event, context) => {
       const delivery = channelDelivery.get(context.channel.kind ?? "");
       const pastAnswer = reportPastAnswer(context);
+      const phoneReport =
+        phoneReportCaller(context.session.auth.current) !== undefined;
       const send_message = defineSendMessage(
         turnSends(context.messages),
         pastAnswer,
@@ -241,19 +267,25 @@ export default defineDynamic({
         skillsLayout(context) === "core",
         // By the conversation's mark, not the files pilot alone: a report
         // carries the files' content after the flag is cleared too.
-        turnOpenedByBackgroundTask(context.messages) &&
-          (await reportTurnHoldsFiles(context)),
+        phoneReport ||
+          (turnOpenedByBackgroundTask(context.messages) &&
+            (await reportTurnHoldsFiles(context))),
         // The verdict the model's resolver got for this turn, which tells
         // the model to send the heads-up (`earlyReplyNote`).
         await earlyReplyPilotOfCaller(
           context,
           stepStartedEventSchema.safeParse(event).data
-        )
+        ),
+        phoneReport
       );
       const messageOnly = { send_message };
       const interactive = delivery
         ? {
-            react_to_message: defineReactToMessage(delivery, pastAnswer),
+            react_to_message: defineReactToMessage(
+              delivery,
+              pastAnswer,
+              phoneReport
+            ),
             send_message,
           }
         : messageOnly;

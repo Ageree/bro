@@ -45,6 +45,7 @@ describe("source layout", () => {
       "memory",
       "model",
       "object-storage",
+      "phone",
       "photon",
       "schedules",
       "spending",

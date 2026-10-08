@@ -2,6 +2,7 @@ import type { DynamicResolveContext } from "eve";
 import type { ModelMessage } from "ai";
 import { turnCompaction } from "@agent/lib/compaction/mid-turn";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { phoneReportCaller } from "@agent/lib/phone/report-caller";
 import { turnOpenedByBackgroundTask } from "@agent/lib/delivery/turn-sends";
 import { resolveModeValue } from "@agent/lib/mode";
 import type { StepIdentity } from "./step";
@@ -20,6 +21,7 @@ export type TurnKind =
   | "background-task"
   | "browser-report"
   | "person"
+  | "phone-report"
   | "proactive-worker"
   | "scheduled-report"
   | "scheduled-worker";
@@ -52,6 +54,7 @@ export function turnKind(
 }
 
 function callerTurnKind(context: Parameters<typeof turnKind>[0]): TurnKind {
+  if (phoneReportCaller(context.session.auth.current)) return "phone-report";
   if (reportedBrowserRunId(context.session.auth.current) !== undefined) {
     return "browser-report";
   }

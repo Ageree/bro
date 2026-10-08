@@ -22,6 +22,7 @@ export default {
     "evals/evals.config.ts",
     // A one-off maintenance CLI, run by hand rather than from package.json.
     "scripts/migrate-from-convex.ts",
+    "scripts/phone/*.ts",
     // Copies Vercel Blob to Object Storage by hand (docs/cloudru-migration.md).
     "scripts/cloudru-app-host/blob-to-s3.ts",
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).

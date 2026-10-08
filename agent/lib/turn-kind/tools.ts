@@ -54,24 +54,28 @@ export function turnTools(step: {
   readonly taskAgent: boolean;
 }): StepToolSet {
   const reportTurn =
-    step.kind === "browser-report" || step.kind === "scheduled-report";
+    step.kind === "browser-report" ||
+    step.kind === "scheduled-report" ||
+    step.kind === "phone-report";
   const askQuestion = reportTurn || step.askedQuestion ? ["ask_question"] : [];
   const held = step.heldForAnswer ? actionsHeldForAnswer : [];
   const task = step.taskAgent ? [] : [taskAgentTool];
   const offeredTools =
-    step.kind === "background-task"
-      ? step.browserFiles
-        ? ["browser_files", ...backgroundTaskTurnTools]
-        : backgroundTaskTurnTools
-      : step.stableContext && step.kind === "browser-report"
+    step.kind === "phone-report"
+      ? ["send_message", "react_to_message", "phone-status", "calculate"]
+      : step.kind === "background-task"
         ? step.browserFiles
-          ? [
-              "browser_files",
-              ...(step.taskAgent ? [taskAgentTool] : []),
-              ...reportTurnTools,
-            ]
-          : reportTurnTools
-        : undefined;
+          ? ["browser_files", ...backgroundTaskTurnTools]
+          : backgroundTaskTurnTools
+        : step.stableContext && step.kind === "browser-report"
+          ? step.browserFiles
+            ? [
+                "browser_files",
+                ...(step.taskAgent ? [taskAgentTool] : []),
+                ...reportTurnTools,
+              ]
+            : reportTurnTools
+          : undefined;
   const withheldTools = step.stableContext
     ? [...askQuestion, ...held, ...task]
     : [

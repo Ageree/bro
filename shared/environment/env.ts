@@ -175,6 +175,29 @@ const browserVmProxySchema = z
 
 export const env = createEnv({
   server: {
+    PHONE_AUTO_PROVISION: z.enum(["on", "off"]).default("off"),
+    PHONE_WORKSPACES: workspaceListSchema.optional(),
+    PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
+    PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
+    MTS_EXOLVE_API_KEY: trimmedValue.optional(),
+    ELEVENLABS_API_KEY: trimmedValue.optional(),
+    ELEVENLABS_PROXY_URL: z
+      .url()
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "ELEVENLABS_PROXY_URL must be an HTTP or HTTPS proxy URL"
+      )
+      .optional(),
+    PHONE_AGENT_ID: trimmedValue.optional(),
+    PHONE_MAX_ACTIVE_NUMBERS: z.coerce.number().int().positive().optional(),
+    PHONE_MAX_SETUP_RUB: z.coerce.number().int().min(0).max(1000).default(600),
+    PHONE_MAX_MONTHLY_RUB: z.coerce.number().int().min(0).max(500).default(155),
+    PHONE_MAX_SIP_MONTHLY_RUB: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(95)
+      .default(0),
     AGENTMAIL_API_KEY: trimmedValue.optional(),
     AGENTMAIL_PROXY_URL: z
       .url()

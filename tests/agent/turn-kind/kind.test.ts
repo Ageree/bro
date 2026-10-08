@@ -57,6 +57,25 @@ describe("the tools of a step", () => {
     taskAgent: false,
   };
 
+  it("keeps phone reports read/delivery-only even when browser file preparation is enabled", () => {
+    for (const stableContext of [false, true]) {
+      const tools = turnTools({
+        ...quiet,
+        kind: "phone-report",
+        browserFiles: true,
+        stableContext,
+        taskAgent: true,
+      });
+      expect(tools.offeredTools).toEqual([
+        "send_message",
+        "react_to_message",
+        "phone-status",
+        "calculate",
+      ]);
+      expect(tools.withheldTools).toContain("ask_question");
+    }
+  });
+
   it("withholds outside the pilot what it withheld before", () => {
     expect(
       turnTools({

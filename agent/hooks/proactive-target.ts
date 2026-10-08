@@ -22,7 +22,8 @@ export default defineHook({
       // is not necessarily where the person talks now.
       if (
         caller?.principalType !== "user" ||
-        caller.authenticator === "browser-result"
+        caller.authenticator === "browser-result" ||
+        caller.authenticator === "phone-result"
       ) {
         return;
       }
