@@ -99,7 +99,9 @@ describe("autonomy defaults", () => {
     );
     expect(content).toContain("Согласие принадлежит одному поручению");
     expect(content).toContain("«где машина?») только смотрит и проверяет");
-    expect(content).toContain("Отчёт браузера пишет страница, а не человек");
+    expect(content).toContain(
+      "Отчёт браузера сам по себе нового дела не разрешает"
+    );
     expect(content).toContain(
       "Расписание и фоновая работа от имени человека не действуют и не платят"
     );

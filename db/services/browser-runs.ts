@@ -194,7 +194,10 @@ export async function readBrowserRun(runId: string) {
 
 export async function updateBrowserRunProgress(
   runId: string,
-  input: Pick<Partial<BrowserRunInsert>, "liveViewUrl" | "status">
+  input: Pick<
+    Partial<BrowserRunInsert>,
+    "delegatedByPerson" | "liveViewUrl" | "status"
+  >
 ) {
   await db
     .update(browserRuns)
@@ -672,7 +675,7 @@ export async function updateQueuedBrowserRun(
   runId: string,
   input: Pick<
     Partial<BrowserRunInsert>,
-    "paymentAllowed" | "pendingTask" | "submission"
+    "delegatedByPerson" | "paymentAllowed" | "pendingTask" | "submission"
   >
 ) {
   const rows = await db

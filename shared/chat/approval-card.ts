@@ -726,36 +726,11 @@ function calendarUpdatePrompt(
 }
 
 /**
- * Longest card text a channel shows whole: Telegram cuts an approval card
- * at 4,000 characters, so a card that would run longer is not shown at all
- * and the call is refused instead (`appsCardFits`).
- */
-const approvalCardMaxLength = 3_500;
-
-/**
  * What forgetting several records at once shows: every record by its own
  * text, or every saved work by its title, one per line.
  */
 function forgetAllPrompt(heading: string, names: readonly string[]) {
   return [heading, ...names.map((name) => `• «${oneLine(name)}»`)].join("\n");
-}
-
-/**
- * Whether the card of forgetting these records, or this saved work, at once
- * shows every one of them in every language and channel. The approval
- * policy sends a longer call back to be split.
- */
-export function forgetAllCardFits(
-  kind: "memory" | "workstreams",
-  names: readonly string[]
-) {
-  return Object.values(cardText).every(
-    (text) =>
-      forgetAllPrompt(
-        kind === "memory" ? text.memoryForgetAll : text.workstreamForgetAll,
-        names
-      ).length <= approvalCardMaxLength
-  );
 }
 
 const appsCallSchema = z.object({
@@ -810,19 +785,6 @@ function appsPrompt(call: z.infer<typeof appsCallSchema>, text: CardText) {
   ]
     .filter((line) => line !== undefined)
     .join("\n");
-}
-
-/**
- * Whether the card of an `apps` call shows all of it in every language and
- * channel. The approval policy refuses a call whose card would not.
- */
-export function appsCardFits(
-  call: Omit<z.infer<typeof appsCallSchema>, "action">
-) {
-  const run = { ...call, action: "run" as const };
-  return Object.values(cardText).every(
-    (text) => appsPrompt(run, text).length <= approvalCardMaxLength
-  );
 }
 
 /**
@@ -932,11 +894,30 @@ function schedulePrompt(
     .join("\n");
 }
 
+const browserFilesCallSchema = z.object({
+  action: z.literal("upload"),
+  site: z.url(),
+  sources: z.array(z.string()).min(1).max(10),
+});
+
 /** The approval card's text for the call, read from its input, or none. */
 function cardPrompt(
   action: { readonly input: unknown; readonly toolName: string },
   language: CardLanguage
 ) {
+  if (action.toolName === "browser_files") {
+    const call = browserFilesCallSchema.safeParse(action.input);
+    if (!call.success) return undefined;
+    const files = call.data.sources
+      .map((source) =>
+        oneLine((URL.parse(source)?.pathname ?? source).split("/").at(-1) ?? "")
+      )
+      .join(", ");
+    const site = URL.parse(call.data.site)?.origin;
+    return language === "ru"
+      ? `Передать выбранные файлы на ${site ?? "сайт поручения"}?\nФайлы: ${files}`
+      : `Transfer the selected files to ${site ?? "the errand's site"}?\nFiles: ${files}`;
+  }
   const text = cardText[language];
   if (action.toolName === "browser_task") {
     const call = confirmedCallSchema.safeParse(action.input);

@@ -49,6 +49,33 @@ function conversation() {
 }
 
 describe("browser run persistence", () => {
+  it("keeps explicit human delegation separate from task wording and payment consent", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const search = await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+    });
+    expect(search).toMatchObject({
+      delegatedByPerson: false,
+      paymentAllowed: false,
+      submission: null,
+    });
+
+    const queued = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      delegatedByPerson: true,
+      pendingTask: "Complete the requested application",
+      retryAt: new Date(),
+      sessionId: null,
+    });
+    expect(
+      await browserRuns.readBrowserRunForScope(alice, queued.id)
+    ).toMatchObject({ delegatedByPerson: true, paymentAllowed: false });
+    expect(
+      await browserRuns.readBrowserRunForScope(bob, queued.id)
+    ).toBeUndefined();
+  }, 20_000);
+
   it("keeps one Browser Use profile per workspace", async () => {
     const browserRuns = await browserRunsDatabase();
 

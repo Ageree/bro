@@ -18,8 +18,6 @@ import {
   gmailReadThreadInputSchema,
   gmailSearchInputSchema,
   gmailUpdateInputSchema,
-  gmailUpdateNeedsApproval,
-  gmailUpdateWithoutApproval,
   readGmailAttachment,
   readGmailThread,
   searchGmail,
@@ -35,7 +33,6 @@ import {
   repliableGmailMessageIds,
   turnComposedEmail,
   turnDeclinedGmailSend,
-  turnGmailUpdates,
   turnVoice,
   turnReadLimits,
   turnReads,
@@ -282,27 +279,18 @@ function failedAttachment(request: GmailAttachmentRequest, reason: string) {
   };
 }
 
-/**
- * `updatedInTurn` is how many messages this turn already changed, so the
- * approval card counts the whole turn rather than one call.
- */
-function defineGmailUpdate(updatedInTurn: number) {
+function defineGmailUpdate() {
   return defineTool({
     approval: async (ctx) => {
       const rule = await outboundRuleApproval(
         ctx,
         JSON.stringify(ctx.toolInput)
       );
-      if (rule !== "not-applicable" && rule !== "user-approval") return rule;
-      return googleWriteApproval(
-        ctx,
-        rule === "user-approval" ||
-          gmailUpdateNeedsApproval(ctx.toolInput, updatedInTurn)
-          ? ownTurnApproval(ctx)
-          : "not-applicable"
-      );
+      if (rule !== "not-applicable") return rule;
+      return googleWriteApproval(ctx, ownTurnApproval(ctx));
     },
-    description: `Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never needs marking it read. Changing more than ${String(gmailUpdateWithoutApproval)} messages in one turn, across all calls, waits for the person's card only in a turn Bro opened itself (a browser report); in the person's own turn it is done at once. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.`,
+    description:
+      "Apply one reversible Gmail state change to exact message IDs: archive, move to inbox, mark read or unread, or star or unstar. Change only messages the person explicitly asked to change; reading an email never authorizes marking it read. User-delegated changes run without an approval card, including bulk changes and follow-through from a browser report in the interactive conversation. Background workers cannot authorize new changes. Account security alerts (sign-in, security, password and verification-code emails) are never archived: they stay in the inbox and come back in keptSecurityAlerts.",
     inputSchema: gmailUpdateInputSchema,
     async execute(input, ctx) {
       const updated = await updateGmail(ctx, input.messageIds, input.update);
@@ -320,7 +308,7 @@ function defineGmailUpdate(updatedInTurn: number) {
   });
 }
 
-export const gmailUpdate = defineGmailUpdate(0);
+export const gmailUpdate = defineGmailUpdate();
 
 const replyFlow =
   "To answer an email, find it with gmail-search or gmail-read-thread and pass its Gmail `id` as replyToMessageId: the tool then threads the email under that message (threadId, In-Reply-To, References) and keeps the thread's subject. Send the reply to the person who wrote that message (its `from`, or its Reply-To) unless told otherwise. Never answer an email as a new message without replyToMessageId.";
@@ -408,10 +396,10 @@ function defineGmailSend(
         JSON.stringify(ctx.toolInput)
       );
       const access =
-        rule === "not-applicable" || rule === "user-approval"
-          ? await googleWriteApproval(ctx, rule)
+        rule === "not-applicable"
+          ? await googleWriteApproval(ctx, ownTurnApproval(ctx))
           : rule;
-      return access === "not-applicable" || access === "user-approval"
+      return access === "not-applicable"
         ? (replyBeforeRead(ctx.toolInput, readMessageIds) ??
             voiceUnfollowed(ctx.toolInput, voices) ??
             access)
@@ -420,8 +408,8 @@ function defineGmailSend(
     // The skills pilot's turns read it in a few lines: the rest is in the
     // google skill's body, which comes with the tool.
     description: short
-      ? `Send an email from the user's Gmail. «Ответь …», «напиши ей по письму, что …» mean this tool. Asked for in the person's own message, it goes at once: no card, never ask «отправить?»; in a turn Bro opened (a browser report) they decide on a card. Put the exact recipients, subject and full text in the call. For a reply, read the thread with gmail-read-thread \`forReply: true\` first and write in the person's voice from its \`yourEarlierEmails\`. A rule the person saved outranks this. A declined card: save the same email with gmail-draft. ${replyFlow}`
-      : `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. In a turn Bro opened itself (a browser report), the person decides on a card instead. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. If the person declines a card, save the same email with gmail-draft and tell them it waits in their Drafts. ${replyFlow}`,
+      ? `Send an email from the user's Gmail. «Ответь …», «напиши ей по письму, что …» mean this tool. Asked for in the person's own message, it goes at once: no card, never ask «отправить?»; interactive browser-report follow-through also runs without a card; background workers cannot authorize new sends. Put the exact recipients, subject and full text in the call. For a reply, read the thread with gmail-read-thread \`forReply: true\` first and write in the person's voice from its \`yourEarlierEmails\`. A rule the person saved outranks this. ${replyFlow}`
+      : `Send an email from the authenticated user's Gmail account. «Ответь …», «reply to …», «напиши ей по письму, что …» mean this tool. When the person asked for the email in their own message, it goes at once — no card, and never ask «отправить?» or send the text for review first; afterwards tell them in one line whom it went to and what it said. Interactive browser-report follow-through also runs without a card; background workers cannot authorize new sends. Put the exact recipients, subject, and full text in the call. A rule the person saved («никогда не пиши маме», «никому не пиши без моего ок») outranks this: never send what it forbids, and where it asks for their ok, ask once in text and send only after their yes. Write in the person's own voice: for a reply, read the thread with gmail-read-thread \`forReply: true\` first and follow its \`yourEarlierEmails\` — greeting, «вы» or «ты», sign-off, length; a reply to a message whose thread was not read that way in this conversation is refused. ${replyFlow}`,
     inputSchema: gmailComposeSchema,
     async execute(input, ctx) {
       const sent = await sendGmail(ctx, input);
@@ -518,7 +506,7 @@ export default defineDynamic({
             voices,
             skillsLayout(context) === "core"
           ),
-          "gmail-update": defineGmailUpdate(turnGmailUpdates(context.messages)),
+          "gmail-update": gmailUpdate,
         },
         "proactive-worker": {
           "gmail-read-thread": defineGmailReadThread(reads, null),

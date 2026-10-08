@@ -115,6 +115,7 @@ export const browserRuns = pgTable(
     // when the errand may only look. The errand's follow-ups and background
     // retries carry it; a new errand starts without one.
     submission: jsonb("submission").$type<ConfirmedSubmission>(),
+    delegatedByPerson: boolean("delegated_by_person").notNull().default(false),
     // Whether the person started the errand in their own turn, rather than a
     // schedule, a background worker or a report turn. A browser VM stays up
     // longer after the person's errand (`agent/lib/browser-vm/idle.ts`); its

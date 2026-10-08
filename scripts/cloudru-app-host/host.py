@@ -706,10 +706,12 @@ REQUIRED = ("DATABASE_URL", "WORKFLOW_POSTGRES_URL", "BETTER_AUTH_URL", "BETTER_
 # nothing that bills with no scheduler to settle it: Browser Use, the browser VM and pool pilots, the code
 # sandbox pilot. The operator brings one back in stand.json when a rehearsal needs it on purpose.
 STAND_DROPPED = re.compile(r"AGENTMAIL_.*|(TELEGRAM_|IMESSAGE_|YOOKASSA_|BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
+                           r"MAILRU_MAIL_.*|YANDEX_MAIL_.*|MAIL_WORKSPACES|"
                            r"SUPERMEMORY_API_KEY|COMPOSIO_API_KEY|BROWSER_VM_TWOCAPTCHA_API_KEY|"
                            r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES")
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
 PRODUCTION_STORES = re.compile(r"(BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
+                               r"MAILRU_MAIL_.*|YANDEX_MAIL_.*|"
                                r"COMPOSIO_API_KEY")
 # Keys of Vercel Blob: on the VM the installation secrets are given outright (installation-secrets.json) and
 # files live in Object Storage, so no profile gets them (they would reach production's Blob store).
@@ -721,6 +723,7 @@ BLOB = re.compile(r"(BLOB_|EVE_MEMORY_BLOB_).*")
 # Vercel at all (the owner gives it in prod.json).
 SENSITIVE_ON_VERCEL = {
     "AGENTMAIL_API_KEY", "AGENTMAIL_PROXY_URL",
+    "MAILRU_MAIL_CLIENT_ID", "MAILRU_MAIL_CLIENT_SECRET", "YANDEX_MAIL_CLIENT_ID", "YANDEX_MAIL_CLIENT_SECRET",
     "BROWSER_USE_API_KEY", "BROWSER_USE_WEBHOOK_SECRET", "BROWSER_VM_LLM_API_KEY", "BROWSER_VM_PROXY",
     "BROWSER_VM_SIGNING_KEY", "BROWSER_VM_TWOCAPTCHA_API_KEY", "CLOUDRU_KEY_ID", "CLOUDRU_KEY_SECRET",
     "COMPOSIO_API_KEY", "IMESSAGE_PROJECT_ID", "IMESSAGE_PROJECT_SECRET", "IMESSAGE_WEBHOOK_SECRET",

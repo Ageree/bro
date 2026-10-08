@@ -135,7 +135,7 @@ describe("Gmail reads in one turn", () => {
 });
 
 describe("Gmail changes in one turn", () => {
-  it("asks for the fourth message a turn changes, split across calls", async () => {
+  it("changes further delegated messages without a bulk approval card", async () => {
     const update = await resolveGmailTool("gmail-update", [
       Object.assign(
         { content: "triage my inbox", role: "user" as const },
@@ -181,7 +181,7 @@ describe("Gmail changes in one turn", () => {
           auth: {
             current: {
               attributes: { workspaceId: "personal:workspace" },
-              authenticator: "eve",
+              authenticator: "browser-result",
               principalId: "user-1",
               principalType: "user",
             },
@@ -190,7 +190,7 @@ describe("Gmail changes in one turn", () => {
         },
         toolInput: { messageIds: ["d"], update: "archive" },
       })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 });
 
@@ -294,7 +294,7 @@ describe("a reply before its thread was read", () => {
     { kind: "user" }
   );
 
-  it("shows no card until the thread with the person's voice is read", async () => {
+  it("refuses a reply until the thread with the person's voice is read", async () => {
     expect(await sendApproval([asked], reply)).toEqual({
       reason: replyBeforeReadRefusal,
       type: "denied",
@@ -302,10 +302,10 @@ describe("a reply before its thread was read", () => {
     // A brand-new email has no thread to read.
     expect(
       await sendApproval([asked], { ...reply, replyToMessageId: undefined })
-    ).toBe("user-approval");
+    ).toBe("not-applicable");
   });
 
-  it("shows the card once the thread was read for a reply, in this turn or before", async () => {
+  it("runs the reply without a card once its thread was read in this turn or before", async () => {
     const approval = await sendApproval(
       [
         ...threadRead(
@@ -317,7 +317,7 @@ describe("a reply before its thread was read", () => {
       ],
       reply
     );
-    expect(approval).toBe("user-approval");
+    expect(approval).toBe("not-applicable");
   });
 
   it("does not count a plain read, which brought no voice", async () => {
@@ -365,7 +365,7 @@ describe("a reply before its thread was read", () => {
       ],
       { ...reply, replyToMessageId: "m-old" }
     );
-    expect(approval).toBe("user-approval");
+    expect(approval).toBe("not-applicable");
   });
 });
 
@@ -528,12 +528,12 @@ describe("a reply in the person's usual voice", () => {
     );
   });
 
-  it("shows the card for a reply that opens and closes as the person does", async () => {
+  it("runs without a card for a reply that opens and closes as the person does", async () => {
     const approval = await sendApproval([asked, ...voiceRead], {
       ...reply,
       body: "Ирина Павловна, добрый день.\n\nВ четверг не смогу, могу в понедельник в 12:30.\n\nСпасибо, хорошего дня!\nСавелий",
     });
-    expect(approval).toBe("user-approval");
+    expect(approval).toBe("not-applicable");
   });
 
   it("reminds once a turn: the same letter again is what the person wants", async () => {
@@ -555,7 +555,7 @@ describe("a reply in the person's usual voice", () => {
       ],
       stock
     );
-    expect(approval).toBe("user-approval");
+    expect(approval).toBe("not-applicable");
   });
 
   it("holds no letter to someone else to that voice", async () => {
@@ -565,7 +565,7 @@ describe("a reply in the person's usual voice", () => {
       subject: "Отчёт",
       to: ["sam@example.com"],
     });
-    expect(approval).toBe("user-approval");
+    expect(approval).toBe("not-applicable");
   });
 });
 
@@ -586,7 +586,7 @@ async function sendApproval(
       auth: {
         current: {
           attributes: { workspaceId: "personal:workspace" },
-          authenticator: "eve",
+          authenticator: "browser-result",
           principalId: "user-1",
           principalType: "user",
         },
@@ -621,7 +621,7 @@ async function resolveGmailTool<
         auth: {
           current: {
             attributes: { workspaceId: "personal:workspace" },
-            authenticator: "eve",
+            authenticator: "browser-result",
             principalId: "user-1",
             principalType: "user",
           },

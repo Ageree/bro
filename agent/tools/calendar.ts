@@ -16,7 +16,7 @@ import {
 import { googleWriteApproval } from "@agent/lib/google-workspace/client";
 import { reportCardHold } from "@agent/lib/delivery/report-cards";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
-import { resolveModeValue } from "@agent/lib/mode";
+import { ownTurnApproval, resolveModeValue } from "@agent/lib/mode";
 import { googleWorkspaceConfigured } from "@shared/google-workspace/connection";
 
 async function calendarWriteApproval(context: ApprovalContext) {
@@ -24,8 +24,8 @@ async function calendarWriteApproval(context: ApprovalContext) {
     context,
     JSON.stringify(context.toolInput)
   );
-  return rule === "not-applicable" || rule === "user-approval"
-    ? googleWriteApproval(context, rule)
+  return rule === "not-applicable"
+    ? googleWriteApproval(context, ownTurnApproval(context))
     : rule;
 }
 
@@ -57,8 +57,6 @@ const overlapNote =
   "`overlapsWith` lists other events at the same time: tell the person about the clash plainly, as a fact («в 15:30 у тебя уже «Стоматолог»»).";
 
 export const calendarCreateEvent = defineTool({
-  // A browser report's calendar card comes after its message
-  // (`reportCardHold`).
   approval: async (context) => {
     const held = await reportCardHold(context.session);
     return held === undefined

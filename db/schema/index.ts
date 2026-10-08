@@ -11,6 +11,7 @@ export * from "./conversation-log";
 export * from "./drive-files";
 export * from "./generated-images";
 export * from "./gmail-attachments";
+export * from "./mail";
 export * from "./memory";
 export * from "./onboarding-requests";
 export * from "./operational-alerts";

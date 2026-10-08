@@ -3,6 +3,47 @@ import type { BrowserSubmission } from "@shared/browser/submission";
 import { formatRub } from "@shared/spending/limit";
 import { withApprovalCard } from "./approval-card";
 
+describe("legacy pending file transfers", () => {
+  it.each(["ru", "en"] as const)(
+    "names the selected files and bound origin in %s without exposing link tokens",
+    (language) => {
+      const request = {
+        action: {
+          input: {
+            action: "upload",
+            site: "https://example.test/upload?private=test-only",
+            sources: [
+              "/workspace/attachments/test-document.pdf",
+              "https://files.example.test/prepared.pdf?token=test-only",
+            ],
+          },
+          toolName: "browser_files",
+        },
+        kind: "tool-approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "cancel", label: "Cancel" },
+        ],
+        prompt: "Approve tool call: browser_files",
+      };
+      const localized = withApprovalCard(request, language);
+
+      expect(localized.prompt).toContain("https://example.test");
+      expect(localized.prompt).toContain("test-document.pdf, prepared.pdf");
+      expect(localized.prompt).not.toContain("test-only");
+      expect(localized.prompt).not.toContain("/workspace/");
+      expect(localized.prompt).not.toContain("Approve tool call");
+      expect(localized.options.map(({ id }) => id)).toEqual([
+        "approve",
+        "cancel",
+      ]);
+      expect(localized.options[0]?.label).toBe(
+        language === "ru" ? "Подтвердить" : "Approve"
+      );
+    }
+  );
+});
+
 /** The card eve parks for a `browser_task` call that submits this. */
 function approval(submission: BrowserSubmission) {
   return {
