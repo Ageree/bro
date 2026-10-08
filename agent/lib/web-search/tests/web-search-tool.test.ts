@@ -478,7 +478,12 @@ describe("web_search tool selection", () => {
     await vi.runAllTimersAsync();
 
     const text = await pending;
-    expect(text).toContain("search failed: OpenRouter 503");
+    expect(text).toContain(
+      "search failed: the search service is not available right now."
+    );
+    // The backend's name and words stay in the log: the model would repeat them.
+    expect(text).not.toMatch(/OpenRouter|RouterAI|503|upstream/u);
+    expect(text).toContain("Never quote a provider");
     // Both engines were already asked; the model should not hammer them.
     expect(text).toContain("Do not repeat this query as is");
     expect(text).toContain(

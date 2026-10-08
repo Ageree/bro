@@ -106,13 +106,23 @@ export interface WebSearchResult {
   readonly url: string;
 }
 
-/** A search attempt that failed, and whether the other engine is worth a try. */
-class WebSearchError extends Error {
+/**
+ * A search attempt that failed, and whether the other engine is worth a try.
+ * `message` carries the backend's name and its own words for the log; `reason`
+ * is all the model may hear, since it repeats the reason to the person.
+ */
+export class WebSearchError extends Error {
+  readonly reason: string;
   readonly retryable: boolean;
 
-  constructor(message: string, retryable: boolean) {
+  constructor(
+    message: string,
+    retryable: boolean,
+    reason = "the search service is not available right now"
+  ) {
     super(message);
     this.name = "WebSearchError";
+    this.reason = reason;
     this.retryable = retryable;
   }
 }
@@ -176,7 +186,7 @@ async function searchOnce(
   }
   const results = readResults(completion, maxResults(endpoint));
   if (results.length === 0) {
-    throw new WebSearchError("nothing was found", true);
+    throw new WebSearchError("nothing was found", true, "nothing was found");
   }
   return results;
 }

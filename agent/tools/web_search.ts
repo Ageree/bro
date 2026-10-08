@@ -5,6 +5,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { directModelActive } from "@shared/model/provider";
 import {
   searchWeb,
+  WebSearchError,
   type WebSearchInput,
   webSearchInputSchema,
   type WebSearchResult,
@@ -27,14 +28,20 @@ export const directWebSearch = defineTool({
         : results;
     } catch (error) {
       if (ctx.abortSignal.aborted) throw error;
-      return `search failed: ${failureReason(error)}. Do not repeat this query as is: try one shorter or differently worded query${input.sites ? " or drop sites" : ""}, or read a page you already know with web_fetch. A source that stays unread is named in the reply as not checked, with why — not left out, and not the ground for «nothing fits».`;
+      // The backend's name, status and words are for the log: the model
+      // repeats a reason to the person, and RouterAI's «402 Insufficient
+      // balance» is not theirs to read.
+      console.warn("[web_search] search failed", { cause: error });
+      return `search failed: ${failureReason(error)}. Never quote a provider, a status code or an error text to the person. Do not repeat this query as is: try one shorter or differently worded query${input.sites ? " or drop sites" : ""}, or read a page you already know with web_fetch. A source that stays unread is named in the reply as not checked, with why — not left out, and not the ground for «nothing fits».`;
     }
   },
 });
 
 function failureReason(cause: unknown) {
-  if (!(cause instanceof Error)) return "the search could not be completed";
-  return cause.name === "TimeoutError" ? "the search timed out" : cause.message;
+  if (cause instanceof WebSearchError) return cause.reason;
+  return cause instanceof Error && cause.name === "TimeoutError"
+    ? "the search timed out"
+    : "the search could not be completed";
 }
 
 /**

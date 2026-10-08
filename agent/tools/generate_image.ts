@@ -355,6 +355,23 @@ async function generateImage(
       ? (failureStatus(error?.code) ?? 502)
       : response.status;
     const reason = error?.message?.trim().slice(0, 300);
+    // Credit, key and outage failures are the owner's to fix, and the model
+    // repeats what it reads to the person: they are told only that it is down.
+    if (
+      status === 401 ||
+      status === 402 ||
+      status === 403 ||
+      status === 429 ||
+      status >= 500
+    ) {
+      console.warn("[generate_image] the image model failed", {
+        reason,
+        status,
+      });
+      throw new Error(
+        "The image service is not available right now. Never quote a provider, a status code or an error text to the person."
+      );
+    }
     throw new Error(
       `The image model refused the request (${String(status)}): ${reason !== undefined && reason.length > 0 ? reason : "no details"}`
     );
