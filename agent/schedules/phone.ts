@@ -9,6 +9,7 @@ import {
   updatePhoneCall,
 } from "@db/services/phone";
 import { findConversation, readConversation } from "@shared/phone/elevenlabs";
+import { alertPhoneOperator } from "@agent/lib/phone/alert";
 import { deliverPhoneReports } from "@agent/lib/phone/report";
 import { provisionNewWorkspacePhones } from "@db/services/phone/lifecycle";
 
@@ -24,6 +25,7 @@ export default defineSchedule({
       return;
     waitUntil(
       provisionNewWorkspacePhones()
+        .then(() => alertPhoneOperator())
         .then(() => reconcile())
         .then(() => deliverPhoneReports({ attachSession, to }))
         .catch(() => {

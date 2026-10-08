@@ -19,6 +19,7 @@ import {
   listPhoneCalls,
   planOutboundCall,
   phonePilot,
+  readHeldPhoneNumbers,
   readPhoneNumber,
   readPhoneNumberRequest,
   recordCallAccepted,
@@ -117,7 +118,7 @@ const quote = defineTool({
       };
     const known = await readPhoneNumber(scope);
     if (known && known.state !== "quoted") return publicNumber(known);
-    const quoted = await quoteNumber();
+    const quoted = await quoteNumber(await readHeldPhoneNumbers(scope));
     domesticPhoneSchema.parse(quoted.candidate);
     if (
       ![quoted.setupRub, quoted.monthlyRub, quoted.sipMonthlyRub].every(

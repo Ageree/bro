@@ -843,4 +843,180 @@ integration("phone persistence against isolated real Postgres", () => {
       services.adoptPhoneNumber(alice, resource(), route)
     ).rejects.toThrow("already has a binding");
   });
+
+  describe("number quotes held by other workspaces", () => {
+    const quote = {
+      setupRub: 600,
+      monthlyRub: 155,
+      sipMonthlyRub: 0,
+    };
+    const held = "+74950000071";
+
+    it("keeps a fresh quote, a failed activation and a released row out of every other workspace's quote", async () => {
+      await services.savePhoneQuote(
+        bob,
+        { ...quote, number: held, quotedAt: new Date() },
+        route
+      );
+      expect([...(await services.readHeldPhoneNumbers(alice))]).toContain(held);
+      await expect(
+        services.savePhoneQuote(
+          alice,
+          { ...quote, number: held, quotedAt: new Date() },
+          route
+        )
+      ).rejects.toMatchObject({ code: "CANDIDATE_UNAVAILABLE" });
+      expect([...(await services.readHeldPhoneNumbers(bob))]).not.toContain(
+        held
+      );
+      await testPool().query(
+        "update phone_numbers set state='released', stage='ready', number_id='phone-test:released' where workspace_id=$1",
+        [bob.workspaceId]
+      );
+      expect([...(await services.readHeldPhoneNumbers(alice))]).toContain(held);
+      await expect(
+        services.savePhoneQuote(
+          alice,
+          { ...quote, number: held, quotedAt: new Date() },
+          route
+        )
+      ).rejects.toMatchObject({ code: "CANDIDATE_UNAVAILABLE" });
+      const other = await testPool().query(
+        "select state from phone_numbers where workspace_id=$1",
+        [bob.workspaceId]
+      );
+      expect(other.rows).toEqual([{ state: "released" }]);
+    });
+
+    it("takes over a quote nobody activated for a day, but never a row past the quote stage", async () => {
+      const old = new Date(Date.now() - 25 * 60 * 60_000);
+      await services.savePhoneQuote(
+        bob,
+        { ...quote, number: held, quotedAt: old },
+        route
+      );
+      expect([...(await services.readHeldPhoneNumbers(alice))]).not.toContain(
+        held
+      );
+      const taken = await services.savePhoneQuote(
+        alice,
+        { ...quote, number: held, quotedAt: new Date() },
+        route
+      );
+      expect(taken).toMatchObject({
+        number: held,
+        workspaceId: alice.workspaceId,
+        state: "quoted",
+      });
+      const rows = await testPool().query(
+        "select workspace_id from phone_numbers where number=$1",
+        [held]
+      );
+      expect(rows.rows).toHaveLength(1);
+      await testPool().query("delete from phone_numbers where number=$1", [
+        held,
+      ]);
+      await services.savePhoneQuote(
+        bob,
+        { ...quote, number: held, quotedAt: old },
+        route
+      );
+      await testPool().query(
+        "update phone_numbers set state='uncertain', stage='buying' where workspace_id=$1",
+        [bob.workspaceId]
+      );
+      expect([...(await services.readHeldPhoneNumbers(alice))]).toContain(held);
+      await expect(
+        services.savePhoneQuote(
+          alice,
+          { ...quote, number: held, quotedAt: new Date() },
+          route
+        )
+      ).rejects.toMatchObject({ code: "CANDIDATE_UNAVAILABLE" });
+      expect(
+        (
+          await testPool().query(
+            "select state,stage from phone_numbers where workspace_id=$1",
+            [bob.workspaceId]
+          )
+        ).rows
+      ).toEqual([{ state: "uncertain", stage: "buying" }]);
+    });
+  });
+
+  it("polls never-checked calls first and rotates every polled call, so a stuck few cannot starve the rest", async () => {
+    await activeNumber();
+    const planned = await Promise.all(
+      Array.from({ length: 22 }, () =>
+        services.planOutboundCall(alice, request())
+      )
+    );
+    const ids = planned.map(({ row }) => row.id);
+    await testPool().query(
+      "update phone_calls set checked_at=now()-interval '1 hour' where id=any($1::text[])",
+      [ids.slice(0, 20)]
+    );
+    const first = (await services.listPhonePolls()).map(({ call }) => call.id);
+    expect(first).toHaveLength(20);
+    expect(first).toEqual(expect.arrayContaining(ids.slice(20)));
+    const unchecked = await testPool().query(
+      "select count(*)::int as count from phone_calls where id=any($1::text[]) and checked_at is null",
+      [ids]
+    );
+    expect(z.object({ count: z.number() }).parse(unchecked.rows[0]).count).toBe(
+      0
+    );
+    const second = (await services.listPhonePolls()).map(({ call }) => call.id);
+    expect(new Set([...first, ...second])).toEqual(new Set(ids));
+  });
+
+  it("clears call data of reports that can no longer be delivered, never one still inside its window", async () => {
+    await activeNumber();
+    const cases = {
+      delivered: "report_delivered_at=now()",
+      exhausted: "report_attempts=10",
+      windowPassed:
+        "report_attempts=3, report_started_at=now()-interval '25 hours'",
+      withoutRoute: "session_id=null, conversation_id=null",
+      withinWindow:
+        "report_attempts=3, report_started_at=now()-interval '2 hours'",
+      notStarted: "report_attempts=0",
+    };
+    const old = await Promise.all(
+      Object.entries(cases).map(async ([name, patch]) => {
+        const call = await services.planOutboundCall(alice, request());
+        await closeFixture(call.row.id);
+        await testPool().query(
+          `update phone_calls set target='+74950000002', summary='private summary', created_at=now()-interval '31 days', ${patch} where id=$1`,
+          [call.row.id]
+        );
+        return [name, call.row.id] as const;
+      })
+    );
+    const recent = await services.planOutboundCall(alice, request());
+    await closeFixture(recent.row.id);
+    await testPool().query(
+      "update phone_calls set target='+74950000002', summary='private summary', report_attempts=10 where id=$1",
+      [recent.row.id]
+    );
+    await services.prunePhoneData();
+    const kept = new Set<string>();
+    await Promise.all(
+      [...old, ["recentExhausted", recent.row.id] as const].map(
+        async ([name, id]) => {
+          const row = await testPool().query(
+            "select summary from phone_calls where id=$1",
+            [id]
+          );
+          const { summary } = z
+            .object({ summary: z.string().nullable() })
+            .parse(row.rows[0]);
+          if (summary !== null) kept.add(name);
+        }
+      )
+    );
+    expect(kept).toEqual(
+      new Set(["withinWindow", "notStarted", "recentExhausted"])
+    );
+  });
 });

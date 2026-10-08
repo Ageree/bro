@@ -24,6 +24,7 @@ import {
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
+import { PhonePreflightError } from "@shared/phone/errors";
 
 export function requirePhoneTransactions() {
   if (env.DATABASE_DRIVER === "neon-http")
@@ -305,6 +306,41 @@ export async function readInboundPhoneScope(
   return row ?? null;
 }
 
+/**
+ * A quote nobody activated for a day holds a number but no money: no purchase
+ * started (stage `quoted`), no provider resource, no lease. Another workspace
+ * may take the number over; any row past the quote stage never.
+ */
+const staleQuoteMs = 24 * 60 * 60_000;
+
+function staleQuote(now: Date) {
+  return and(
+    eq(phoneNumbers.state, "quoted"),
+    eq(phoneNumbers.stage, "quoted"),
+    isNull(phoneNumbers.numberId),
+    isNull(phoneNumbers.leaseToken),
+    lt(phoneNumbers.quotedAt, new Date(now.getTime() - staleQuoteMs))
+  );
+}
+
+/**
+ * Numbers another workspace's row holds, so a new quote skips them: the
+ * number is unique in our table, and the provider still lists a number as free
+ * while a quote, a failed activation or a released row of ours holds it.
+ */
+export async function readHeldPhoneNumbers(scope: AccessScope) {
+  const rows = await db
+    .select({ number: phoneNumbers.number })
+    .from(phoneNumbers)
+    .where(
+      and(
+        ne(phoneNumbers.workspaceId, scope.workspaceId),
+        sql`not (${staleQuote(new Date())})`
+      )
+    );
+  return new Set(rows.map((row) => row.number));
+}
+
 export async function savePhoneQuote(
   scope: AccessScope,
   quote: Pick<
@@ -315,6 +351,9 @@ export async function savePhoneQuote(
 ) {
   requirePhoneTransactions();
   return db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended('phone:allocation', 0))`
+    );
     await lockWorkspace(transaction, scope.workspaceId);
     await requireOwner(transaction, scope);
     let currentRoute = route;
@@ -340,6 +379,23 @@ export async function savePhoneQuote(
       .from(phoneNumbers)
       .where(eq(phoneNumbers.workspaceId, scope.workspaceId));
     if (known && known.state !== "quoted") return known;
+    const [holder] = await transaction
+      .select({ id: phoneNumbers.id })
+      .from(phoneNumbers)
+      .where(
+        and(
+          eq(phoneNumbers.number, quote.number),
+          ne(phoneNumbers.workspaceId, scope.workspaceId)
+        )
+      );
+    if (holder) {
+      // The allocation lock is held, so the holder is not being activated.
+      const [taken] = await transaction
+        .delete(phoneNumbers)
+        .where(and(eq(phoneNumbers.id, holder.id), staleQuote(new Date())))
+        .returning({ id: phoneNumbers.id });
+      if (!taken) throw new PhonePreflightError("CANDIDATE_UNAVAILABLE");
+    }
     const [row] = await transaction
       .insert(phoneNumbers)
       .values({
@@ -363,6 +419,19 @@ export async function savePhoneQuote(
     if (!row) throw new Error("Could not persist phone quote.");
     return row;
   });
+}
+
+/** Numbers that wait for the operator: a purchase or a release nobody can verify. */
+export async function listPhoneOperatorRequired() {
+  return db
+    .select({
+      id: phoneNumbers.id,
+      number: phoneNumbers.number,
+      stage: phoneNumbers.stage,
+      updatedAt: phoneNumbers.updatedAt,
+    })
+    .from(phoneNumbers)
+    .where(eq(phoneNumbers.state, "operator-required"));
 }
 
 export async function claimPhoneActivation(
@@ -767,14 +836,34 @@ export async function listPhoneCalls(scope: AccessScope, callId?: string) {
   );
 }
 
+/**
+ * The 20 open calls checked longest ago, never-checked ones first (a new
+ * inbound call has no `checked_at`). Each is marked checked here, whatever the
+ * poll does with it: a call whose poll returns early or fails still rotates to
+ * the back, so a few stuck calls cannot starve the rest of the queue.
+ */
 export async function listPhonePolls() {
-  return db
-    .select({ call: phoneCalls, number: phoneNumbers })
-    .from(phoneCalls)
-    .innerJoin(phoneNumbers, eq(phoneCalls.numberRecordId, phoneNumbers.id))
-    .where(isNull(phoneCalls.completedAt))
-    .orderBy(asc(phoneCalls.checkedAt))
-    .limit(20);
+  return db.transaction(async (transaction) => {
+    const rows = await transaction
+      .select({ call: phoneCalls, number: phoneNumbers })
+      .from(phoneCalls)
+      .innerJoin(phoneNumbers, eq(phoneCalls.numberRecordId, phoneNumbers.id))
+      .where(isNull(phoneCalls.completedAt))
+      .orderBy(sql`${phoneCalls.checkedAt} asc nulls first`)
+      .limit(20)
+      .for("update", { of: phoneCalls, skipLocked: true });
+    if (rows.length)
+      await transaction
+        .update(phoneCalls)
+        .set({ checkedAt: new Date() })
+        .where(
+          inArray(
+            phoneCalls.id,
+            rows.map(({ call }) => call.id)
+          )
+        );
+    return rows;
+  });
 }
 
 export async function updatePhoneCall(
@@ -1099,7 +1188,25 @@ export async function prunePhoneData(now = new Date()) {
     .where(
       and(
         lt(phoneCalls.createdAt, before),
-        sql`${phoneCalls.reportDeliveredAt} is not null`
+        or(
+          sql`${phoneCalls.reportDeliveredAt} is not null`,
+          // A finished call whose report can no longer be delivered: out of
+          // attempts, past the 24 h window `claimPhoneReports` allows, or
+          // with no report route at all. One still inside its window waits.
+          and(
+            sql`${phoneCalls.completedAt} is not null`,
+            or(
+              gt(phoneCalls.reportAttempts, 9),
+              lt(
+                phoneCalls.reportStartedAt,
+                new Date(now.getTime() - 24 * 60 * 60_000)
+              ),
+              isNull(phoneCalls.sessionId),
+              isNull(phoneCalls.conversationId),
+              isNull(phoneCalls.conversationChannel)
+            )
+          )
+        )
       )
     );
   await db

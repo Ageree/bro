@@ -5,6 +5,7 @@ import {
   claimPhoneNumberRequests,
   finishPhoneNumberRequest,
   phonePilot,
+  readHeldPhoneNumbers,
   readPhoneNumber,
   savePhoneQuote,
 } from "@db/services/phone";
@@ -42,10 +43,13 @@ export async function activatePhone(
         }
         await update({ numberId: owned.numberId, stage: "owned" });
       } else {
-        if (row.stage !== "quoted")
-          throw new Error(
-            "Purchase is ambiguous; operator reconciliation is required before any new purchase."
-          );
+        if (row.stage !== "quoted") {
+          // Stage `buying` without an owned number: the purchase may have
+          // been charged. Never buy again, and stop retrying: the operator
+          // is alerted by the schedule.
+          await update({ state: "operator-required" }, true);
+          return row;
+        }
         await update({ stage: "buying" });
         retryStage = "quoted";
         const bought = await exolve.purchaseNumber({
@@ -229,7 +233,9 @@ export async function provisionNewWorkspacePhones() {
           return;
         }
         if (!number || (number.state === "quoted" && !number.numberId)) {
-          const quote = await exolve.quoteNumber();
+          const quote = await exolve.quoteNumber(
+            await readHeldPhoneNumbers(scope)
+          );
           domesticPhoneSchema.parse(quote.candidate);
           if (
             ![quote.setupRub, quote.monthlyRub, quote.sipMonthlyRub].every(
