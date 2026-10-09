@@ -8,7 +8,7 @@ scripts/cloudru-app-host/host.py when BRO_CLOUD=selectel; runnable alone for the
   python cloud.py pg create [--flavor 2-4096-32]  the PostgreSQL 18 cluster bro-pg in bro-net's subnet
   python cloud.py pg status                    cluster, address, users, databases
 
-Region and zone: SELECTEL_REGION (ru-3) and SELECTEL_ZONE (ru-3a), env or ~/.bro-selectel/api.env. A server
+Region and zone: SELECTEL_REGION (ru-3) and SELECTEL_ZONE (ru-3b: ru-3a had no room on 09.10), env or ~/.bro-selectel/api.env. A server
 reaches the internet through the router; its public address is a floating IP (a port straight on the
 external network is refused, 05.10). The app VM boots Ubuntu 22.04 on a local-disk flavor: it keeps no data
 (the database is the managed cluster, files are in S3), so recreating it is the way to change its host code.
@@ -23,7 +23,7 @@ import time
 from api import call, setting
 
 REGION = setting("SELECTEL_REGION", "ru-3")
-ZONE = setting("SELECTEL_ZONE", "ru-3a")
+ZONE = setting("SELECTEL_ZONE", "ru-3b")
 CLOUD = f"https://{REGION}.cloud.api.selcloud.ru"
 COMPUTE = f"{CLOUD}/compute/v2.1"
 NETWORK = f"{CLOUD}/network/v2.0"
