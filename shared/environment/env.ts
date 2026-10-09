@@ -365,6 +365,58 @@ export const env = createEnv({
         "BROWSER_HOST_RUNSC_RELEASE must be a dated gVisor release such as 20260914"
       )
       .optional(),
+    // Where the pool's hosts come from. `cloudru` (the default): Bro creates,
+    // powers off and deletes Cloud.ru VMs. `static`: the hosts are servers an
+    // operator provisioned once (cloud-init from
+    // scripts/browser-pool/static-host-cloud-init.ts) and listed in
+    // BROWSER_HOST_STATIC; Bro never creates, powers, reboots or deletes
+    // anything for them, and they are always on.
+    BROWSER_HOST_CLOUD: z.enum(["cloudru", "static"]).default("cloudru"),
+    // `<host id>@<public IPv4>`, comma-separated: the hosts of the `static`
+    // pool. A host id matches [a-z0-9-]{1,63} (it is also the host's identity
+    // in its token key).
+    BROWSER_HOST_STATIC: z
+      .string()
+      .transform((value, context) => {
+        const hosts: { id: string; address: string }[] = [];
+        for (const entry of value.split(",")) {
+          const text = entry.trim();
+          if (text.length === 0) continue;
+          const [id, address, ...rest] = text.split("@");
+          if (
+            id === undefined ||
+            address === undefined ||
+            rest.length > 0 ||
+            !/^[a-z\d-]{1,63}$/u.test(id) ||
+            !z.ipv4().safeParse(address).success
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: `BROWSER_HOST_STATIC entry "${text}" must be <host id>@<public IPv4>, the id matching [a-z0-9-]{1,63}`,
+            });
+            return z.NEVER;
+          }
+          if (
+            hosts.some((host) => host.id === id || host.address === address)
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: `BROWSER_HOST_STATIC lists "${text}" twice`,
+            });
+            return z.NEVER;
+          }
+          hosts.push({ address, id });
+        }
+        if (hosts.length === 0) {
+          context.addIssue({
+            code: "custom",
+            message: "BROWSER_HOST_STATIC must list at least one host",
+          });
+          return z.NEVER;
+        }
+        return hosts;
+      })
+      .optional(),
     // Workspace ids, or the emails of their owners, whose browser runs in a
     // sandbox of the pool whatever BROWSER_BACKEND says. They count as VM
     // workspaces everywhere else in Bro.
@@ -968,6 +1020,16 @@ export const env = createEnv({
           code: "custom",
           message: "MODEL_PROVIDER=routerai needs ROUTERAI_API_KEY",
           path: ["ROUTERAI_API_KEY"],
+        });
+      }
+      if (
+        value.BROWSER_HOST_CLOUD === "static" &&
+        value.BROWSER_HOST_STATIC === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "BROWSER_HOST_CLOUD=static needs BROWSER_HOST_STATIC",
+          path: ["BROWSER_HOST_STATIC"],
         });
       }
       if (

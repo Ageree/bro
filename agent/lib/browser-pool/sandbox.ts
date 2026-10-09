@@ -4,7 +4,6 @@ import {
   browserStateConfigured,
   usesBrowserPool,
 } from "@agent/lib/browser-vm/backend";
-import { readCloudRuVm } from "@agent/lib/browser-vm/cloudru";
 import { browserVmIdleStopDue } from "@agent/lib/browser-vm/idle";
 import {
   browserPoolWorkerRolloutEnabled,
@@ -38,6 +37,7 @@ import {
   releaseBrowserVmLease,
   updateBrowserVm,
 } from "@db/services/browser-vms";
+import { readCloudRuVm } from "./cloud";
 import {
   BrowserHostError,
   browserStateSetKey,
@@ -50,6 +50,7 @@ import {
   startBrowserSandbox,
 } from "./host";
 import {
+  isStaticBrowserHost,
   placeBrowserSandbox,
   prewarmBrowserPool,
   reconcileBrowserHosts,
@@ -1281,6 +1282,9 @@ async function holdingHost(vm: BrowserVm) {
  * reconcile fails it within the minute.
  */
 async function hostVmStillThere(host: BrowserHost) {
+  // A static host is no Cloud.ru VM: nothing to ask Cloud.ru, and its
+  // `hostd` and the worker's health answer for it.
+  if (isStaticBrowserHost(host)) return true;
   if (host.vmId === null) return false;
   try {
     const cloud = await readCloudRuVm(host.vmId);

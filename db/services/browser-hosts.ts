@@ -75,6 +75,34 @@ export async function claimBrowserHostSlot(
 }
 
 /**
+ * Record a host an operator provisioned (`BROWSER_HOST_CLOUD=static`) as
+ * `booting`, unless its record exists: no VM, no floating IP, the address
+ * given. Undefined when the record is already there.
+ */
+export async function insertStaticBrowserHost(
+  host: {
+    readonly address: string;
+    readonly bootConfig: string | null;
+    readonly id: string;
+  },
+  now: Date
+) {
+  const [row] = await db
+    .insert(browserHosts)
+    .values({
+      address: host.address,
+      bootConfig: host.bootConfig,
+      id: host.id,
+      state: "booting",
+      stateChangedAt: now,
+      vmName: host.id,
+    })
+    .onConflictDoNothing({ target: browserHosts.id })
+    .returning();
+  return row;
+}
+
+/**
  * Claim the right to create, check or delete the host for `leaseMs`, as
  * `claimBrowserVmLease` does for a workspace's VM. The row as claimed, or
  * undefined when another caller holds a live lease (or there is no record).

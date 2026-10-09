@@ -945,6 +945,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   её тоже держит — пробная VM не влезет, пока владелец не поднимет квоту.
   3 ГБ песочницы на 4-гигабайтном флейворе не помещаются (`hostd` держит
   1 ГБ), а 2,5 ГБ на `lowcost10-2-4` упирались в память на WB и Маркете.
+- Пул на своих серверах (`BROWSER_HOST_CLOUD=static`, 09.10, раздел 6
+  `docs/browser-pool.md`): в `agent/lib/browser-pool/hosts.ts` режим целиком
+  обходит Compute API (вызовы Cloud.ru идут через `browser-pool/cloud.ts`),
+  а `hostVmStillThere` в `sandbox.ts` для такого хоста не спрашивает VM.
+  Скрипту `scripts/browser-pool/static-host-cloud-init.ts` нужен
+  `--experimental-transform-types`: граф приложения использует parameter
+  properties. Скрытые вызовы Compute API остаются у `private-route.ts`
+  (`CLOUDRU_PRIVATE_ROUTING`): на сервере вне Cloud.ru держите `off`.
 - Зона `ru.AZ-3` 04.10 снова включена и втрое быстрее AZ-1: новый хост —
   127 с до `ready`, включение — 48 с (AZ-1 — 288–352 и 92–145 с). Пул в неё
   не переведён: доступ VM Бро из AZ-1 к хосту в AZ-3 по приватному адресу

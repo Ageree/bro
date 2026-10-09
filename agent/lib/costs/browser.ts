@@ -174,6 +174,9 @@ export async function recordBrowserSandboxUptime(
   startedAt: Date,
   until: Date
 ) {
+  // A static host is a server with a fixed price, not a Cloud.ru flavor
+  // billed by the hour: nothing is charged to a workspace for its time.
+  if (env.BROWSER_HOST_CLOUD === "static") return true;
   const flavor = env.BROWSER_HOST_FLAVOR;
   const flavorMb = Number(/-(?<gb>\d+)$/u.exec(flavor)?.groups?.gb) * 1024;
   const sandboxesMb = flavorMb - browserHostReserveMb;

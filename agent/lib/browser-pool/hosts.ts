@@ -1,5 +1,5 @@
 import { browserPoolConfigured } from "@agent/lib/browser-vm/backend";
-import { alertOwner } from "@agent/lib/owner-alert";
+import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import {
   CloudRuError,
   CloudRuUnsentError,
@@ -9,13 +9,14 @@ import {
   findCloudRuVmByName,
   readCloudRuVm,
   setCloudRuVmPower,
-} from "@agent/lib/browser-vm/cloudru";
+} from "./cloud";
 import type { browserHosts } from "@db/schema/browser-hosts";
 import {
   claimBrowserHostLease,
   claimBrowserHostSlot,
   countLiveSandboxesOnHost,
   deleteBrowserHostRecord,
+  insertStaticBrowserHost,
   listBrowserHosts,
   readBrowserHost,
   releaseBrowserHostLease,
@@ -48,6 +49,16 @@ import { presignStoredObject } from "@shared/object-storage/s3";
  *
  * Every step on a host runs under its record's lease, like a workspace's VM
  * (`agent/lib/browser-vm/lifecycle.ts`).
+ *
+ * With BROWSER_HOST_CLOUD=`static` the hosts are servers an operator
+ * provisioned once and listed in BROWSER_HOST_STATIC, and none of the above
+ * about VMs applies: Bro creates, powers, reboots and deletes nothing, and
+ * never asks Cloud.ru about a host (`reconcileStaticHosts`). A listed host is
+ * recorded `booting`, `ready` once its `hostd` answers, `failed` when it goes
+ * silent and `ready` again as soon as it answers; it never drains or sleeps,
+ * whatever the idle time or the warm hours say, and is never created past the
+ * list. A pool of them with no room says so and asks again soon: there is no
+ * host on its way up to wait for.
  */
 
 type BrowserHost = typeof browserHosts.$inferSelect;
@@ -330,6 +341,37 @@ function onCurrentBoot(host: BrowserHost) {
   );
 }
 
+/** Whether the hosts are the operator's servers, not Cloud.ru VMs. */
+function staticMode() {
+  return env.BROWSER_HOST_CLOUD === "static";
+}
+
+function staticEntry(id: string) {
+  return staticMode()
+    ? env.BROWSER_HOST_STATIC?.find((entry) => entry.id === id)
+    : undefined;
+}
+
+/**
+ * Whether the host is one of BROWSER_HOST_STATIC's, recorded as such: no VM
+ * and no floating IP behind it. A record of the same id with a Cloud.ru VM
+ * is a leftover of the `cloudru` mode and is not one.
+ */
+export function isStaticBrowserHost(
+  host: Pick<BrowserHost, "floatingIpId" | "id" | "vmId">
+) {
+  return (
+    staticEntry(host.id) !== undefined &&
+    host.vmId === null &&
+    host.floatingIpId === null
+  );
+}
+
+/** Whether a sandbox may be placed on the host at all. */
+function placeable(host: BrowserHost) {
+  return !staticMode() || isStaticBrowserHost(host);
+}
+
 /**
  * A ready host with room for one more sandbox, or how long the errand
  * should wait for one. Hosts are filled one after another (the fullest
@@ -349,7 +391,8 @@ export async function placeBrowserSandbox(
   now = new Date(),
   { inServiceOnly = false }: { readonly inServiceOnly?: boolean } = {}
 ) {
-  const hosts = await listBrowserHosts();
+  // In the `static` mode a record outside the list takes no sandbox.
+  const hosts = (await listBrowserHosts()).filter(placeable);
   // The ready hosts, fullest first; then the draining ones, which an empty
   // host is before it is deleted: taking one back is quicker than a new one.
   const serving = hosts
@@ -408,6 +451,8 @@ export async function placeBrowserSandbox(
     }
     return starting(hostBootingRetryMs);
   }
+  // Static hosts are always on: none is woken or made for the errand.
+  if (staticMode()) return starting(await staticNoRoom(hosts, read));
   // A sleeping host is up in a minute and a half, a new one in five.
   const sleeping = hosts.find((host) => host.state === "stopped");
   if (sleeping !== undefined)
@@ -431,6 +476,8 @@ function onItsWayUp(host: BrowserHost) {
  * back into service. Never throws: the turn goes on whatever Cloud.ru says.
  */
 export async function prewarmBrowserPool(now = new Date()) {
+  // Static hosts are always on: there is nothing to warm up.
+  if (staticMode()) return;
   try {
     const hosts = await listBrowserHosts();
     if (hosts.some((host) => host.state === "ready" || onItsWayUp(host))) {
@@ -461,6 +508,8 @@ export async function prewarmBrowserPool(now = new Date()) {
  * A sleeping host set up otherwise than a new one is replaced, not woken.
  */
 export async function browserPoolWait(now = new Date()) {
+  // Static hosts are always on, so a start waits for room, never for a host.
+  if (staticMode()) return { minutes: 1, phase: "ready" as const };
   const hosts = await listBrowserHosts();
   if (
     hosts.some(
@@ -577,6 +626,10 @@ async function backInService(host: BrowserHost, now: Date) {
  * Never throws; a host another step holds is left for the next round.
  */
 export async function reconcileBrowserHosts(now = new Date()) {
+  if (staticMode()) {
+    await reconcileStaticHosts(now);
+    return;
+  }
   const hosts = await listBrowserHosts();
   const warm = keptWarm(hosts, now);
   await Promise.all(
@@ -696,6 +749,10 @@ async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
   const host = await claimBrowserHostLease(id, now, leaseMs);
   if (host === undefined) return;
   try {
+    if (staticMode()) {
+      await tendStaticMode(host, now);
+      return;
+    }
     switch (host.state) {
       case "creating": {
         await settleCreate(host, now);
@@ -727,6 +784,268 @@ async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
   } finally {
     await releaseBrowserHostLease(id, host.leaseUntil ?? undefined);
   }
+}
+
+/**
+ * The `static` mode's round: record every listed host that has no record,
+ * then look after every record, listed or not. Nothing here reaches
+ * Cloud.ru.
+ */
+async function reconcileStaticHosts(now: Date) {
+  try {
+    const bootConfig = browserHostBootConfig();
+    await Promise.all(
+      (env.BROWSER_HOST_STATIC ?? []).map(async (entry) =>
+        insertStaticBrowserHost(
+          { address: entry.address, bootConfig, id: entry.id },
+          now
+        )
+      )
+    );
+  } catch (error) {
+    console.warn("[browser-pool] the static hosts could not be recorded", {
+      cause: error,
+    });
+  }
+  const hosts = await listBrowserHosts();
+  await Promise.all(
+    hosts.map(async (host) => {
+      try {
+        await reconcileBrowserHost(host.id, now);
+      } catch (error) {
+        console.warn("[browser-pool] the host could not be reconciled", {
+          cause: error,
+          hostId: host.id,
+          state: host.state,
+        });
+      }
+    })
+  );
+}
+
+/** The key of a failed static host's alert: one per host, not per VM. */
+function staticFailedAlertKey(host: BrowserHost) {
+  return `browser-host-failed:${host.id}:static`;
+}
+
+/**
+ * One record in the `static` mode, under its lease. A listed host is
+ * followed up, kept ready and failed or revived by what its `hostd` says;
+ * any other record (a host taken off the list, or a Cloud.ru host left over
+ * from the `cloudru` mode) takes no new sandbox and goes once it holds none.
+ */
+async function tendStaticMode(host: BrowserHost, now: Date) {
+  const entry = staticEntry(host.id);
+  if (entry === undefined || !isStaticBrowserHost(host)) {
+    if (entry !== undefined) {
+      console.warn(
+        "[browser-pool] a listed static host id belongs to a Cloud.ru host's record",
+        { hostId: host.id }
+      );
+    }
+    await dropUnlistedHost(host, now);
+    return;
+  }
+  // The operator moved the host to another address: it is looked at anew.
+  const current =
+    host.address === entry.address
+      ? host
+      : await writeHeld(
+          host,
+          {
+            address: entry.address,
+            capacity: null,
+            lastSeenAt: null,
+            state: "booting",
+          },
+          now
+        );
+  switch (current.state) {
+    case "booting": {
+      await tendStaticBooting(current, now);
+      break;
+    }
+    case "failed": {
+      await tendStaticFailed(current, now);
+      break;
+    }
+    default: {
+      await tendStaticReady(current, now);
+    }
+  }
+}
+
+/** A static host nobody has heard from yet: ready once `hostd` says so. */
+async function tendStaticBooting(host: BrowserHost, now: Date) {
+  const health = await readBrowserHostHealth(host).catch(() => undefined);
+  const stage = health?.stage ?? null;
+  if (stage === "ready") {
+    const capacity = await readBrowserHostCapacity(host);
+    await writeHeld(
+      host,
+      {
+        capacity: summary(capacity),
+        emptySince: now,
+        lastError: null,
+        lastSeenAt: now,
+        state: "ready",
+      },
+      now
+    );
+    return;
+  }
+  if (stage?.startsWith("failed") === true) {
+    await failStaticHost(
+      host,
+      `The host did not set itself up: ${stage}.`,
+      now
+    );
+    return;
+  }
+  if (overdue(host, now, bootFailAfterMs)) {
+    await failStaticHost(
+      host,
+      `The host was not ready ${String(bootFailAfterMs / 60_000)} minutes after it was recorded (stage ${stage ?? "unknown"}).`,
+      now
+    );
+    return;
+  }
+  if (health !== undefined) await writeHeld(host, { lastSeenAt: now }, now);
+}
+
+/** A failed static host is ready again the moment its `hostd` answers. */
+async function tendStaticFailed(host: BrowserHost, now: Date) {
+  const capacity = await readBrowserHostCapacity(host).catch(() => undefined);
+  if (capacity === undefined) return;
+  await writeHeld(
+    host,
+    {
+      capacity: summary(capacity),
+      emptySince: now,
+      lastError: null,
+      lastSeenAt: now,
+      state: "ready",
+    },
+    now
+  );
+  try {
+    await clearOwnerAlert(staticFailedAlertKey(host), now);
+  } catch (error) {
+    console.warn("[browser-pool] the host's alert could not be cleared", {
+      cause: error,
+      hostId: host.id,
+    });
+  }
+}
+
+/**
+ * A ready static host: its `hostd` answers, or it is failed after
+ * `silentFailAfterMs`. It stays `ready` however long it is empty. One
+ * without the current sandbox root takes only what `fits` lets it, and the
+ * owner is told to update it.
+ */
+async function tendStaticReady(host: BrowserHost, now: Date) {
+  const capacity = await readBrowserHostCapacity(host).catch(() => undefined);
+  if (capacity === undefined) {
+    const seen = host.lastSeenAt ?? host.stateChangedAt;
+    if (now.getTime() - seen.getTime() >= silentFailAfterMs) {
+      await failStaticHost(host, "The host's hostd stopped answering.", now);
+    }
+    return;
+  }
+  const held = summary(capacity);
+  if (outdatedRoot(held)) await alertOutdatedStaticHost(host);
+  const occupied =
+    (await countLiveSandboxesOnHost(host.id)) > 0 || held.sandboxes > 0;
+  await writeHeld(
+    host,
+    {
+      capacity: held,
+      emptySince: occupied ? null : (host.emptySince ?? now),
+      lastError: null,
+      lastSeenAt: now,
+      state: "ready",
+    },
+    now
+  );
+}
+
+/**
+ * A record the `static` mode does not serve: it takes no new sandbox
+ * (`draining`, which placement ignores here) and its record goes once no
+ * sandbox is on it. Bro deletes no VM: a Cloud.ru host left over from the
+ * `cloudru` mode keeps running and billing until the operator deletes its VM
+ * and floating IP at Cloud.ru.
+ */
+async function dropUnlistedHost(host: BrowserHost, now: Date) {
+  const live = await countLiveSandboxesOnHost(host.id);
+  if (host.state === "ready" || host.state === "draining") {
+    const draining =
+      host.state === "ready"
+        ? await writeHeld(host, { state: "draining" }, now)
+        : host;
+    if (live > 0) return;
+    const capacity = await readBrowserHostCapacity(draining).catch(
+      () => undefined
+    );
+    if (capacity !== undefined && summary(capacity).sandboxes > 0) return;
+  } else if (live > 0 && !overdue(host, now, strandedWaitMs)) {
+    // Its sandboxes are taken back to their sets first, as for a failed host.
+    return;
+  }
+  await deleteBrowserHostRecord(host.id);
+}
+
+async function failStaticHost(host: BrowserHost, reason: string, now: Date) {
+  console.warn("[browser-pool] a static host failed", {
+    hostId: host.id,
+    reason,
+    state: host.state,
+  });
+  await writeHeld(host, { lastError: reason, state: "failed" }, now);
+  await alert(
+    staticFailedAlertKey(host),
+    `Хост пула браузеров ${host.id} (${host.address ?? "без адреса"}) не отвечает: ${reason}\nБро с ним ничего не делает: проверь сервер. Как только hostd снова ответит, хост вернётся в работу.`
+  );
+}
+
+/** One alert per host, repeated as every alert is. */
+async function alertOutdatedStaticHost(host: BrowserHost) {
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  if (rootfs === undefined) return;
+  await alert(
+    `browser-host-outdated:${host.id}`,
+    [
+      `Хост пула браузеров ${host.id} (${host.address ?? "без адреса"}) без корня песочницы ${rootfs.version}: новые песочницы на него не ставятся, пока он не обновлён.`,
+      `Бро хосты не обновляет: обнови сервер сам (cloud-init для него печатает scripts/browser-pool/static-host-cloud-init.ts ${host.id}).`,
+    ].join("\n")
+  );
+}
+
+/**
+ * No static host has room. Those that answer without the current root are
+ * told of (the owner updates them); all of them in service and full is a
+ * full pool. Nothing is made or woken: the errand looks again soon, since a
+ * sandbox parks whenever an errand ends.
+ */
+async function staticNoRoom(
+  hosts: readonly BrowserHost[],
+  read: ReadonlyMap<string, BrowserHostCapacity>
+) {
+  const answering = hosts.filter((host) => read.has(host.id));
+  const outdated = answering.filter((host) =>
+    outdatedRoot(read.get(host.id) ?? null)
+  );
+  await Promise.all(
+    outdated.map(async (host) => alertOutdatedStaticHost(host))
+  );
+  if (answering.length > 0 && outdated.length === 0) {
+    await alert(
+      "browser-pool-full",
+      `Все хосты пула браузеров заняты (BROWSER_HOST_STATIC: ${hosts.map((host) => host.id).join(", ")}): поручения ждут, пока освободится место. Если так часто, добавь хост в BROWSER_HOST_STATIC.`
+    );
+  }
+  return hostBootingRetryMs;
 }
 
 /**

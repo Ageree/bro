@@ -44,6 +44,18 @@ export function browserPoolConfigured() {
 }
 
 /**
+ * Whether Bro can reach what the pool's hosts run on: the Cloud.ru key that
+ * creates and powers their VMs. Static hosts (BROWSER_HOST_CLOUD=static) are
+ * servers an operator provisioned; Bro asks Cloud.ru nothing for them.
+ */
+function browserHostComputeConfigured() {
+  return (
+    env.BROWSER_HOST_CLOUD === "static" ||
+    (env.CLOUDRU_KEY_ID !== undefined && env.CLOUDRU_KEY_SECRET !== undefined)
+  );
+}
+
+/**
  * Whether sandboxes can be parked into sets and restored from them: the
  * Cloud.ru key with its Object Storage tenant, the bucket, and the key the
  * sets are sealed with. Less than `browserPoolConfigured`, which new
@@ -52,8 +64,7 @@ export function browserPoolConfigured() {
  */
 export function browserStateConfigured() {
   return (
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
+    browserHostComputeConfigured() &&
     env.CLOUDRU_S3_TENANT_ID !== undefined &&
     env.BROWSER_STATE_BUCKET !== undefined &&
     env.BROWSER_STATE_KEY !== undefined

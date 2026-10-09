@@ -23,6 +23,8 @@ export default {
     // A one-off maintenance CLI, run by hand rather than from package.json.
     "scripts/migrate-from-convex.ts",
     "scripts/phone/*.ts",
+    // Prints the cloud-init of a static browser-pool host, run by the operator.
+    "scripts/browser-pool/static-host-cloud-init.ts",
     // Copies Vercel Blob to Object Storage by hand (docs/cloudru-migration.md).
     "scripts/cloudru-app-host/blob-to-s3.ts",
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).
