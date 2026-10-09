@@ -32,6 +32,10 @@ describe("what the page shows when the person is through", () => {
   });
 });
 
+function reportOf(ending: Parameters<typeof loginHandoffReport>[1]) {
+  return loginHandoffReport("ozon.ru", ending);
+}
+
 describe("the report of a sign-in", () => {
   it("is a note of Bro's own that names the site and asks for nothing else", () => {
     const report = loginHandoffReport("ozon.ru", {
@@ -46,15 +50,13 @@ describe("the report of a sign-in", () => {
   });
 
   it("says what each ending was", () => {
-    const text = (ending: Parameters<typeof loginHandoffReport>[1]) =>
-      loginHandoffReport("ozon.ru", ending);
-    expect(text({ kind: "done", signedIn: false })).toContain(
+    expect(reportOf({ kind: "done", signedIn: false })).toContain(
       "still shows a sign-in form"
     );
-    expect(text({ kind: "done", signedIn: null })).toContain(
+    expect(reportOf({ kind: "done", signedIn: null })).toContain(
       "could not be checked"
     );
-    expect(text({ kind: "expired" })).toContain("closed before");
-    expect(text({ kind: "failed" })).toContain("had trouble");
+    expect(reportOf({ kind: "expired" })).toContain("closed before");
+    expect(reportOf({ kind: "failed" })).toContain("had trouble");
   });
 });

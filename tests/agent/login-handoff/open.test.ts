@@ -6,14 +6,14 @@ import type {
   prepareBrowserVmSession,
 } from "@agent/lib/browser-vm/lifecycle";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
-import type { loginHandoffs } from "@db/schema/login-handoffs";
+import { handoffRow } from "@tests/helpers/login-handoff";
 import type {
   claimLoginHandoff,
   readLoginHandoff,
 } from "@db/services/login-handoffs";
 
 vi.hoisted(() => {
-  process.env.BROWSER_VM_SIGNING_KEY = "11".repeat(32);
+  vi.stubEnv("BROWSER_VM_SIGNING_KEY", "11".repeat(32));
 });
 
 const services = vi.hoisted(() => ({
@@ -54,23 +54,12 @@ import {
   ownsLoginHandoff,
 } from "@agent/lib/login-handoff/open";
 
-type Row = typeof loginHandoffs.$inferSelect;
-
 const now = new Date("2026-10-09T12:00:00Z");
 
-const row = {
+const row = handoffRow({
   allowedDomains: ["ozon.ru", "yandex.ru"],
   deviceHash: deviceHash("secret"),
-  domain: "ozon.ru",
-  id: "link-1",
-  siteUrl: "https://www.ozon.ru/",
-  viewUntil: new Date(now.getTime() + 600_000),
-  workerId: "h_worker",
-  workspaceId: "workspace:alice",
-  createdByUserId: "alice",
-  // SAFETY: the opener reads only these columns.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
-} as Row;
+});
 
 // SAFETY: the opener passes the record on and reads nothing of it.
 // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
@@ -96,6 +85,10 @@ beforeEach(() => {
   });
 });
 
+function refused(status: number) {
+  return new BrowserVmWorkerError(status, "/v1/handoff", "");
+}
+
 describe("opening a sign-in link", () => {
   it("keeps only a hash of the device's secret, and links nobody can guess", () => {
     expect(deviceHash("secret")).toMatch(/^[\da-f]{64}$/u);
@@ -114,7 +107,7 @@ describe("opening a sign-in link", () => {
     expect(opened.viewer.url).toBe(
       "wss://203-0-113-5.sslip.io/v1/handoff/h_worker/ws"
     );
-    const claims = JSON.parse(
+    const claims: unknown = JSON.parse(
       Buffer.from(
         opened.viewer.token.split(".")[1] ?? "",
         "base64url"
@@ -156,19 +149,17 @@ describe("opening a sign-in link", () => {
   });
 
   it("tells a busy browser, an old worker and a failure apart", async () => {
-    const worker = (status: number) =>
-      new BrowserVmWorkerError(status, "/v1/handoff", "");
-    services.open.mockRejectedValueOnce(worker(409));
+    services.open.mockRejectedValueOnce(refused(409));
     expect(
       (await openLoginHandoff({ deviceSecret: "secret", id: "link-1" }, now))
         .kind
     ).toBe("busy");
-    services.open.mockRejectedValueOnce(worker(404));
+    services.open.mockRejectedValueOnce(refused(404));
     expect(
       (await openLoginHandoff({ deviceSecret: "secret", id: "link-1" }, now))
         .kind
     ).toBe("unsupported");
-    services.open.mockRejectedValueOnce(worker(500));
+    services.open.mockRejectedValueOnce(refused(500));
     expect(
       (await openLoginHandoff({ deviceSecret: "secret", id: "link-1" }, now))
         .kind

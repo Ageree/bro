@@ -162,7 +162,9 @@ describe("the sign-in link tool", () => {
         role: "user",
       },
     ];
-    await expect(make("evil.example", report)).rejects.toThrow();
+    await expect(make("evil.example", report)).rejects.toThrow(
+      "own message opened"
+    );
     expect(services.create).not.toHaveBeenCalled();
   });
 

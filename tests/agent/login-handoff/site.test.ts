@@ -43,7 +43,10 @@ describe("the site a sign-in link opens", () => {
       "https://[::1]/",
       "javascript:alert(1)",
     ]) {
-      expect(handoffSite(written).kind, written).toBe("refused");
+      expect({ kind: handoffSite(written).kind, written }).toEqual({
+        kind: "refused",
+        written,
+      });
     }
   });
 

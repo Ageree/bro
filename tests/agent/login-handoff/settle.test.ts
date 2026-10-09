@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { handoffRow } from "@tests/helpers/login-handoff";
 import type { recordHandoffSignIn } from "@agent/lib/browser-use/sign-ins";
 import type {
   cancelBrowserVmWorkerHandoff,
@@ -57,33 +58,7 @@ const now = new Date("2026-10-09T12:00:00Z");
 const minutes = (count: number) => count * 60_000;
 
 function row(overrides: Partial<Row> = {}): Row {
-  return {
-    allowedDomains: ["ozon.ru"],
-    claimedAt: new Date(now.getTime() - minutes(5)),
-    conversationChannel: "telegram",
-    conversationId: "telegram:1",
-    createdAt: new Date(now.getTime() - minutes(6)),
-    createdByUserId: "alice",
-    deviceHash: "phone",
-    domain: "ozon.ru",
-    expiresAt: new Date(now.getTime() + minutes(20)),
-    finishedAt: null,
-    id: "link-1",
-    replyAnchorMessageId: null,
-    report: null,
-    reportAttempts: 0,
-    reportClaimedAt: null,
-    reportDeliveredAt: null,
-    resultHost: null,
-    rootSessionId: null,
-    signedIn: null,
-    siteUrl: "https://www.ozon.ru/",
-    state: "claimed",
-    viewUntil: new Date(now.getTime() + minutes(10)),
-    workerId: "h_worker",
-    workspaceId: "workspace:alice",
-    ...overrides,
-  };
+  return handoffRow(overrides, now);
 }
 
 // SAFETY: the settler reads only the host of the VM record.
@@ -118,9 +93,7 @@ function handed(
 beforeEach(() => {
   vi.clearAllMocks();
   services.readVm.mockResolvedValue(vm);
-  // SAFETY: the settler reads only whether the end was written.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
-  services.end.mockResolvedValue(row() as never);
+  services.end.mockResolvedValue(row());
   services.cancel.mockResolvedValue(undefined);
 });
 

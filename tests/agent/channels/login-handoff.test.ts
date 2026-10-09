@@ -5,7 +5,7 @@ import type {
   ownsLoginHandoff,
 } from "@agent/lib/login-handoff/open";
 import type { settleLoginHandoff } from "@agent/lib/login-handoff/settle";
-import type { loginHandoffs } from "@db/schema/login-handoffs";
+import { handoffRow } from "@tests/helpers/login-handoff";
 import type { readBrowserVm } from "@db/services/browser-vms";
 import type {
   endLoginHandoff,
@@ -14,8 +14,8 @@ import type {
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 
 vi.hoisted(() => {
-  process.env.LOGIN_HANDOFF_WORKSPACES = "*";
-  process.env.BETTER_AUTH_URL = "https://bro.example.test";
+  vi.stubEnv("LOGIN_HANDOFF_WORKSPACES", "*");
+  vi.stubEnv("BETTER_AUTH_URL", "https://bro.example.test");
 });
 
 const services = vi.hoisted(() => ({
@@ -49,20 +49,11 @@ vi.mock("@db/services/login-handoffs", () => ({
 
 import channel from "@agent/channels/login-handoff";
 
-type Row = typeof loginHandoffs.$inferSelect;
-
 const origin = "https://bro.example.test";
-const claimed = {
+const claimed = handoffRow({
   deviceHash: "x",
-  domain: "ozon.ru",
   expiresAt: new Date(Date.now() + 600_000),
-  id: "link-1",
-  state: "claimed",
-  workerId: "h_worker",
-  workspaceId: "workspace:alice",
-  // SAFETY: the routes read only these columns.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
-} as Row;
+});
 
 async function call(
   method: "GET" | "POST",
