@@ -210,6 +210,11 @@ const createRunInputSchema = z.object({
    * — an anti-bot wall has already judged the current one. Cloud ignores it.
    */
   freshExit: z.boolean().optional(),
+  /**
+   * A VM profile only: a person's turn waits for the start, so the search
+   * for an exit is cut short and the errand queues. Cloud ignores it.
+   */
+  inTurn: z.boolean().optional(),
   maxCostUsd: z.number().positive().optional(),
   model: z.string().min(1).optional(),
   profileId: z.string().min(1).optional(),

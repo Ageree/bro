@@ -232,6 +232,11 @@ export async function createBrowserVmRun(input: {
    * session, rotated as `prepareBrowserVmSession` always does.
    */
   readonly freshExit?: boolean;
+  /**
+   * A person's turn waits for the start: the search for an exit stops after
+   * a short while and the errand queues (`prepareBrowserVmSession`).
+   */
+  readonly inTurn?: boolean;
   readonly profileId: string;
   /** The errand only searches: its agent runs in flash mode (`runTuning`). */
   readonly search?: boolean;
@@ -276,6 +281,7 @@ export async function createBrowserVmRun(input: {
   // follow-up of a walled errand.
   const vm = await prepareBrowserVmSession(started.vm, now, {
     freshExit: input.freshExit,
+    inTurn: input.inTurn,
     rotate: input.sessionId === undefined,
   });
   const id = newBrowserVmRunId(workspaceId);
