@@ -48,6 +48,7 @@ vi.mock("@db/services/login-handoffs", () => ({
   readLoginHandoff: services.read,
 }));
 
+import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { BrowserVmWorkerError } from "@agent/lib/browser-vm/worker";
 import {
   deviceHash,
@@ -155,6 +156,19 @@ describe("opening a sign-in link", () => {
     });
     expect(services.open).not.toHaveBeenCalled();
     expect(services.mark).not.toHaveBeenCalled();
+  });
+
+  it("asks again later while no Russian exit is found, without failing", async () => {
+    services.prepare.mockRejectedValueOnce(
+      new BrowserUseError(429, "proxy", "no Russian exit", 300_000)
+    );
+    expect(
+      await openLoginHandoff({ deviceSecret: "secret", id: "link-1" }, now)
+    ).toEqual({ kind: "starting", retryAfterMs: 10_000 });
+    expect(services.open).not.toHaveBeenCalled();
+    expect(services.prepare.mock.calls[0]?.[2]).toMatchObject({
+      inTurn: true,
+    });
   });
 
   it("tells a busy browser, an old worker and a failure apart", async () => {
