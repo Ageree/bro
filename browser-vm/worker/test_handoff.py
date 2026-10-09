@@ -1,0 +1,279 @@
+"""The login handoff against a real Chrome: python -m unittest test_handoff (in browser-vm/worker).
+
+Needs a Chromium, so CI skips it: set BRO_HANDOFF_CHROME to the binary (in a cloud session:
+/opt/pw-browsers/chromium-*/chrome-linux/chrome). A person's side is played by a WebSocket client that
+speaks the viewer protocol: it sees frames, taps a form, types, and is stopped at a link that leaves the
+site. `*.localhost` names stand in for the site and for another one: Chrome resolves them to loopback.
+"""
+
+import asyncio
+import base64
+import contextlib
+import hashlib
+import hmac
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import aiohttp
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+sys.path.insert(0, str(Path(__file__).parent))
+import worker  # noqa: E402
+
+CHROME = os.environ.get("BRO_HANDOFF_CHROME")
+KEY = hmac.new(bytes.fromhex("22" * 32), b"bro-browser-vm:ws_handoff", hashlib.sha256).digest()
+CONFIG = {"environment": "ws_handoff", "key": KEY}
+ORIGIN = "https://bro.test"
+HANDOFF_ID = "handoff_abc123"
+
+
+def sign(session=None, ttl=300):
+    claims = {"env": "ws_handoff", "gen": 1, "exp": int(time.time()) + ttl}
+    if session is not None:
+        claims["ses"] = session
+    payload = base64.urlsafe_b64encode(json.dumps(claims, separators=(",", ":")).encode()).rstrip(b"=").decode()
+    signature = hmac.new(KEY, f"v1.{payload}".encode(), hashlib.sha256).digest()
+    return f"v1.{payload}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+# Elements sit at fixed places so the test can tap them by coordinates.
+LOGIN = """<!doctype html><meta charset=utf-8><body style="margin:0">
+<form method=post action=/login>
+<input id=u name=u style="position:absolute;left:40px;top:40px;width:300px;height:40px">
+<input id=p name=p type=password style="position:absolute;left:40px;top:100px;width:300px;height:40px">
+<button type=submit style="position:absolute;left:400px;top:100px">Войти</button>
+</form>
+<a href="http://other.localhost:{port}/" style="position:absolute;left:40px;top:200px;font-size:30px">elsewhere</a>
+<button type=button onclick="window.open('/popup')" style="position:absolute;left:40px;top:300px;width:200px;height:50px">provider</button>
+<button type=button onclick="window.open('http://other.localhost:{port}/other')" style="position:absolute;left:40px;top:380px;width:200px;height:50px">stranger</button>
+</body>"""
+POPUP = """<!doctype html><meta charset=utf-8><body style="margin:0">
+<button type=button onclick="window.close()" style="position:absolute;left:40px;top:40px;width:200px;height:50px">allow</button></body>"""
+HOME = "<!doctype html><meta charset=utf-8><body style='margin:0'><h1>signed in</h1></body>"
+
+
+class Handoff(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        if not CHROME:
+            self.skipTest("set BRO_HANDOFF_CHROME to a Chromium binary")
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.seen = {}  # what the site's server was sent
+
+        async def login_page(request):
+            return web.Response(text=LOGIN.replace("{port}", str(self.site_port)), content_type="text/html")
+
+        async def login(request):
+            form = await request.post()
+            self.seen["form"] = dict(form)
+            response = web.HTTPSeeOther("/home")
+            response.set_cookie("sid", "s3cret")  # no expiry: a session cookie
+            return response
+
+        async def home(request):
+            self.seen["cookie"] = request.cookies.get("sid")
+            return web.Response(text=HOME, content_type="text/html")
+
+        async def other(request):
+            self.seen["other"] = True
+            return web.Response(text="<h1>other</h1>", content_type="text/html")
+
+        site = web.Application()
+        async def popup(request):
+            return web.Response(text=POPUP, content_type="text/html")
+
+        site.add_routes([web.get("/popup", popup), web.get("/", login_page), web.post("/login", login), web.get("/home", home),
+                         web.get("/other", other)])
+        self.site = web.AppRunner(site)
+        await self.site.setup()
+        tcp = web.TCPSite(self.site, "127.0.0.1", 0)
+        await tcp.start()
+        self.site_port = tcp._server.sockets[0].getsockname()[1]
+        self.addAsyncCleanup(self.site.cleanup)
+
+        self.cdp_port = self.site_port + 1
+        profile = root / "profile"
+        self.chrome = subprocess.Popen(
+            [CHROME, f"--user-data-dir={profile}", f"--remote-debugging-port={self.cdp_port}", "--headless=new",
+             "--no-sandbox", "--no-first-run", "--no-proxy-server", "--disable-gpu", "about:blank"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (self.chrome.kill(), self.chrome.wait()))
+        for _ in range(100):
+            try:
+                async with aiohttp.ClientSession() as http:
+                    async with http.get(f"http://127.0.0.1:{self.cdp_port}/json/version"):
+                        break
+            except aiohttp.ClientError:
+                await asyncio.sleep(0.1)
+
+        self.flushed = []
+
+        async def flush(timeout=20):
+            self.flushed.append(True)
+            return "closed"
+
+        for target, name, value in [
+            (worker, "ROOT", root), (worker, "RUNS", root / "runs"), (worker, "SESSIONS", root / "sessions"),
+            (worker, "UPLOADS", root / "uploads"), (worker, "GENERATION_FILE", root / "generation"),
+            (worker, "TABS_FILE", root / "tabs.json"), (worker, "load_config", lambda: CONFIG),
+            (worker, "CDP_HTTP", f"http://127.0.0.1:{self.cdp_port}"), (worker, "close_chrome_for_park", flush),
+            (worker, "HANDOFF_SCHEMES", ("http", "https")), (worker, "HANDOFF_PORTS", (None, 80, 443, self.site_port)),
+        ]:
+            self.enterContext(mock.patch.object(target, name, value))
+        worker.worker = worker.Worker()
+        worker.worker.generation = 1
+        self.server = TestServer(worker.application())
+        self.client = TestClient(self.server)
+        await self.client.start_server()
+        self.addAsyncCleanup(self.client.close)
+
+    def url(self, host, path="/"):
+        return f"http://{host}.localhost:{self.site_port}{path}"
+
+    async def open(self, **overrides):
+        body = {"id": HANDOFF_ID, "url": self.url("app"), "domains": ["app.localhost"], "origin": ORIGIN, **overrides}
+        return await self.client.post("/v1/handoff", json=body, headers={"Authorization": f"Bearer {sign()}"})
+
+    async def viewer(self, token=None, origin=ORIGIN):
+        socket = await self.client.ws_connect(f"/v1/handoff/{HANDOFF_ID}/ws", headers={"Origin": origin})
+        await socket.send_json({"t": "auth", "token": token or sign(f"h:{HANDOFF_ID}")})
+        return socket
+
+    @staticmethod
+    async def until(socket, kind, timeout=15, **match):
+        """The next message of this kind (and fields), skipping frames and the rest."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            message = await asyncio.wait_for(socket.receive(), max(deadline - time.monotonic(), 0.1))
+            if message.type != aiohttp.WSMsgType.TEXT:
+                raise AssertionError(f"socket closed while waiting for {kind}: {message.type}")
+            body = json.loads(message.data)
+            if body.get("t") == kind and all(body.get(k) == v for k, v in match.items()):
+                return body
+        raise AssertionError(f"no {kind} {match}")
+
+    async def test_the_person_signs_in_and_the_session_cookie_stays_in_the_profile(self):
+        opened = await self.open()
+        self.assertEqual(opened.status, 200, await opened.text())
+        self.assertTrue(worker.worker.busy())  # no run, park or update while the person signs in
+        socket = await self.viewer()
+        url = await self.until(socket, "url", host="app.localhost")
+        self.assertEqual((url["secure"], url["ok"]), (False, True))
+        frame = await self.until(socket, "frame")
+        self.assertGreater(frame["w"], 100)
+        self.assertTrue(base64.b64decode(frame["d"]).startswith(b"\xff\xd8"))  # a JPEG
+        await socket.send_json({"t": "tap", "x": 100, "y": 60})
+        await socket.send_json({"t": "text", "s": "alice"})
+        await socket.send_json({"t": "tap", "x": 100, "y": 120})
+        await socket.send_json({"t": "text", "s": "pa55 word"})
+        await socket.send_json({"t": "key", "k": "Enter"})
+        for _ in range(100):  # the form posts and the site answers with the page after the sign-in
+            if self.seen.get("cookie"):
+                break
+            await asyncio.sleep(0.1)
+        self.assertEqual(self.seen["form"], {"u": "alice", "p": "pa55 word"})
+        self.assertEqual(self.seen["cookie"], "s3cret")
+        await socket.send_json({"t": "done"})
+        await self.until(socket, "done")
+        for _ in range(100):
+            state = await (await self.client.get(f"/v1/handoff/{HANDOFF_ID}", headers={"Authorization": f"Bearer {sign()}"})).json()
+            if state["state"] == "done":
+                break
+            await asyncio.sleep(0.1)
+        self.assertEqual(state["state"], "done")
+        self.assertEqual(state["result"]["host"], "app.localhost")
+        self.assertEqual(state["result"]["passwordField"], False)
+        self.assertTrue(state["result"]["allowed"])
+        self.assertEqual(self.flushed, [True])  # Chrome was told to write the cookies
+        self.assertFalse(worker.worker.busy())
+        async with aiohttp.ClientSession() as http:
+            async with http.get(f"http://127.0.0.1:{self.cdp_port}/json/list") as response:
+                pages = [t for t in await response.json() if t["type"] == "page"]
+        self.assertEqual(len(pages), 1)  # the sign-in tab is closed, one page is left for Chrome to live on
+
+    async def test_a_link_that_leaves_the_site_is_refused_before_it_loads(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "url", host="app.localhost")
+        await socket.send_json({"t": "tap", "x": 60, "y": 215})
+        blocked = await self.until(socket, "blocked")
+        self.assertEqual(blocked["host"], "other.localhost")
+        await asyncio.sleep(0.5)
+        self.assertNotIn("other", self.seen)  # the request never went out
+        await socket.send_json({"t": "cancel"})
+        await self.until(socket, "cancel")
+
+    async def test_a_window_the_page_opens_is_followed_and_one_to_another_site_is_not(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "url", host="app.localhost")
+        await socket.send_json({"t": "tap", "x": 100, "y": 325})  # «provider»: opens a page of the site
+        await self.until(socket, "popup")
+        await asyncio.sleep(0.5)
+        await socket.send_json({"t": "tap", "x": 100, "y": 65})  # «allow»: the window closes itself
+        await self.until(socket, "popup-closed")
+        await socket.send_json({"t": "tap", "x": 100, "y": 405})  # «stranger»: a window on another site
+        await self.until(socket, "blocked")
+        await asyncio.sleep(0.5)
+        self.assertNotIn("other", self.seen)
+        await socket.send_json({"t": "cancel"})
+        await self.until(socket, "cancel")
+
+    async def test_nothing_but_the_typed_messages_gets_through(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "url", host="app.localhost")
+        for message in ({"t": "cdp", "method": "Network.getAllCookies"}, {"t": "key", "k": "F12"},
+                        {"t": "key", "k": "a"}, {"t": "tap", "x": "10", "y": 5}, {"t": "text", "s": 5},
+                        {"t": "navigate", "url": "file:///etc/passwd"}):
+            await socket.send_json(message)
+        await socket.send_json({"t": "tap", "x": 100, "y": 60})
+        await socket.send_json({"t": "text", "s": "x\ny\x00z"})
+        await socket.send_json({"t": "cancel"})
+        await self.until(socket, "cancel")
+
+    async def test_the_viewer_socket_wants_the_page_origin_and_its_own_token(self):
+        await self.open()
+        with self.assertRaises(aiohttp.WSServerHandshakeError):
+            await self.client.ws_connect(f"/v1/handoff/{HANDOFF_ID}/ws", headers={"Origin": "https://evil.test"})
+        for token in (sign(), sign("h:someone_else"), sign(f"h:{HANDOFF_ID}", ttl=-5), "nonsense"):
+            socket = await self.viewer(token)
+            message = await socket.receive()
+            self.assertEqual(json.loads(message.data), {"t": "error", "reason": "unauthorized"})
+            await socket.close()
+        # What the person's browser holds opens no other route of the worker.
+        scoped = {"Authorization": f"Bearer {sign(f'h:{HANDOFF_ID}')}"}
+        for method, path in (("GET", "/v1/runs"), ("GET", f"/v1/handoff/{HANDOFF_ID}"), ("POST", "/v1/park"),
+                             ("GET", "/v1/files?session=x")):
+            response = await self.client.request(method, path, headers=scoped)
+            self.assertEqual(response.status, 401, path)
+        response = await self.client.get(f"/v1/cdp/{sign(f'h:{HANDOFF_ID}')}/json")
+        self.assertEqual(response.status, 401)
+
+    async def test_a_second_handoff_waits_and_the_same_id_is_answered_again(self):
+        self.assertEqual((await self.open()).status, 200)
+        self.assertEqual((await self.open()).status, 200)  # a lost answer, asked again
+        other = await self.open(id="another_one_1")
+        self.assertEqual(other.status, 409)
+
+    async def test_it_expires_and_cancels(self):
+        await self.open(ttlSeconds=60)
+        handoff = worker.worker.handoff
+        await worker.end_handoff(handoff, "expired")
+        self.assertEqual(handoff.state, "expired")
+        self.assertFalse(worker.worker.busy())
+        self.assertEqual(self.flushed, [])  # nobody looked: no cookies to write
+        self.assertEqual((await self.open(id="fresh_handoff_2")).status, 200)
+        response = await self.client.post("/v1/handoff/fresh_handoff_2/cancel", headers={"Authorization": f"Bearer {sign()}"})
+        self.assertEqual((await response.json())["state"], "cancelled")
+
+
+if __name__ == "__main__":
+    unittest.main()

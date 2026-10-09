@@ -325,6 +325,54 @@ async def one_step(agent, on_step_start):
     return FakeHistory(True)
 
 
+class HandoffRulesTest(unittest.TestCase):
+    """What the person's side may show and send in a login handoff (`handoff_url_allowed`, `handoff_input`);
+    the real Chrome is in test_handoff.py."""
+
+    DOMAINS = ["wildberries.ru", "wb.ru"]
+
+    def test_only_https_pages_inside_the_site_may_be_shown(self):
+        allowed = ["https://www.wildberries.ru/security/login", "https://wb.ru/", "https://id.wb.ru:443/x?a=1#b",
+                   "about:blank"]
+        refused = ["http://www.wildberries.ru/", "https://wildberries.ru.evil.test/", "https://evilwildberries.ru/",
+                   "https://user:pass@www.wildberries.ru/", "https://www.wildberries.ru:8443/", "file:///etc/passwd",
+                   "chrome://settings", "devtools://devtools/bundled/inspector.html", "javascript:alert(1)",
+                   "data:text/html,hi", "https://127.0.0.1/", "https://[::1]/", "https://wildberries.ru@evil.test/", ""]
+        for url in allowed:
+            self.assertTrue(worker.handoff_url_allowed(url, self.DOMAINS), url)
+        for url in refused:
+            self.assertFalse(worker.handoff_url_allowed(url, self.DOMAINS), url)
+
+    def test_a_message_becomes_a_few_typed_calls_and_nothing_else(self):
+        tap = worker.handoff_input({"t": "tap", "x": 10, "y": 20.5}, 1366, 900)
+        self.assertEqual([call[0] for call in tap], ["Input.dispatchMouseEvent"] * 3)
+        self.assertEqual([call[1]["type"] for call in tap], ["mouseMoved", "mousePressed", "mouseReleased"])
+        self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["x"], 1366)
+        self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["y"], 0)
+        self.assertEqual(worker.handoff_input({"t": "text", "s": "a\nb\x00c\x7f"}, 1, 1),
+                         [("Input.insertText", {"text": "abc"})])
+        self.assertEqual(len(worker.handoff_input({"t": "text", "s": "x" * 5000}, 1, 1)[0][1]["text"]), 200)
+        enter = worker.handoff_input({"t": "key", "k": "Enter"}, 1, 1)
+        self.assertEqual([call[1]["type"] for call in enter], ["keyDown", "keyUp"])
+        self.assertEqual(enter[0][1]["text"], "\r")
+        scroll = worker.handoff_input({"t": "scroll", "x": 5, "y": 5, "dy": 99999}, 100, 100)
+        self.assertEqual(scroll[0][1]["deltaY"], 1200)
+        for message in ({"t": "cdp", "method": "Network.getAllCookies"}, {"t": "key", "k": "a"}, {"t": "key", "k": "F12"},
+                        {"t": "tap", "x": "1", "y": 1}, {"t": "tap", "x": True, "y": 1}, {"t": "tap", "x": float("nan"), "y": 1},
+                        {"t": "text", "s": 1}, {"t": "text", "s": "\n"}, {"t": "navigate", "url": "file:///"}, {}):
+            self.assertIsNone(worker.handoff_input(message, 1366, 900), message)
+
+    def test_the_request_to_open_a_handoff_is_checked(self):
+        good = {"id": "handoff_abc123", "url": "https://www.wildberries.ru/login", "domains": self.DOMAINS,
+                "origin": "https://bro.test"}
+        self.assertIsNone(worker.handoff_body_error(good))
+        for change in ({"id": "a b"}, {"url": "https://evil.test/"}, {"url": "about:blank"}, {"domains": []},
+                       {"domains": ["localhost"]}, {"domains": ["WB.ru"]}, {"origin": "http://bro.test"},
+                       {"origin": "https://bro.test/path"}, {"ttlSeconds": 5}, {"ttlSeconds": 99999}):
+            self.assertIsNotNone(worker.handoff_body_error({**good, **change}), change)
+        self.assertIsNotNone(worker.handoff_body_error([]))
+
+
 class RunsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
