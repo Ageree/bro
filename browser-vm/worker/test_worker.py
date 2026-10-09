@@ -216,10 +216,10 @@ class FakeChrome:
     """The VM's Chrome as the worker sees it over CDP: its page tabs."""
 
     def __init__(self):
-        self.tabs, self.closed, self.shots, self.opened = [], [], [], 0
+        self.tabs, self.closed, self.shots, self.opened, self.urls = [], [], [], 0, {}
 
     async def page_targets(self):
-        return [{"id": tab, "type": "page"} for tab in self.tabs]
+        return [{"id": tab, "type": "page", "url": self.urls.get(tab, "")} for tab in self.tabs]
 
     async def new_tab(self):
         self.opened += 1
@@ -323,6 +323,63 @@ async def one_step(agent, on_step_start):
     await on_step_start(agent)
     agent.state.n_steps += 1
     return FakeHistory(True)
+
+
+class HandoffRulesTest(unittest.TestCase):
+    """What the person's side may show and send in a login handoff (`handoff_url_allowed`, `handoff_input`);
+    the real Chrome is in test_handoff.py."""
+
+    DOMAINS = ["wildberries.ru", "wb.ru"]
+
+    def test_only_https_pages_inside_the_site_may_be_shown(self):
+        allowed = ["https://www.wildberries.ru/security/login", "https://wb.ru/", "https://id.wb.ru:443/x?a=1#b",
+                   "about:blank"]
+        refused = ["http://www.wildberries.ru/", "https://wildberries.ru.evil.test/", "https://evilwildberries.ru/",
+                   "https://user:pass@www.wildberries.ru/", "https://www.wildberries.ru:8443/", "file:///etc/passwd",
+                   "chrome://settings", "devtools://devtools/bundled/inspector.html", "javascript:alert(1)",
+                   "data:text/html,hi", "https://127.0.0.1/", "https://[::1]/", "https://wildberries.ru@evil.test/", ""]
+        for url in allowed:
+            self.assertTrue(worker.handoff_url_allowed(url, self.DOMAINS), url)
+        for url in refused:
+            self.assertFalse(worker.handoff_url_allowed(url, self.DOMAINS), url)
+
+    def test_a_provider_is_let_in_by_its_exact_host_only(self):
+        hosts = ["id.vk.com", "passport.yandex.ru"]
+        for url in ("https://id.vk.com/auth", "https://passport.yandex.ru/auth?x=1"):
+            self.assertTrue(worker.handoff_url_allowed(url, self.DOMAINS, hosts), url)
+        for url in ("https://vk.com/im", "https://mail.yandex.ru/", "https://evil.id.vk.com/", "https://yandex.ru/"):
+            self.assertFalse(worker.handoff_url_allowed(url, self.DOMAINS, hosts), url)
+
+    def test_a_message_becomes_a_few_typed_calls_and_nothing_else(self):
+        tap = worker.handoff_input({"t": "tap", "x": 10, "y": 20.5}, 1366, 900)
+        self.assertEqual([call[0] for call in tap], ["Input.dispatchMouseEvent"] * 3)
+        self.assertEqual([call[1]["type"] for call in tap], ["mouseMoved", "mousePressed", "mouseReleased"])
+        self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["x"], 1366)
+        self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["y"], 0)
+        self.assertEqual(worker.handoff_input({"t": "text", "s": "a\nb\x00c\x7f"}, 1, 1),
+                         [("Input.insertText", {"text": "abc"})])
+        self.assertEqual(len(worker.handoff_input({"t": "text", "s": "x" * 5000}, 1, 1)[0][1]["text"]), 200)
+        enter = worker.handoff_input({"t": "key", "k": "Enter"}, 1, 1)
+        self.assertEqual([call[1]["type"] for call in enter], ["keyDown", "keyUp"])
+        self.assertEqual(enter[0][1]["text"], "\r")
+        scroll = worker.handoff_input({"t": "scroll", "x": 5, "y": 5, "dy": 99999}, 100, 100)
+        self.assertEqual(scroll[0][1]["deltaY"], 1200)
+        for message in ({"t": "cdp", "method": "Network.getAllCookies"}, {"t": "key", "k": "a"}, {"t": "key", "k": "F12"},
+                        {"t": "tap", "x": "1", "y": 1}, {"t": "tap", "x": True, "y": 1}, {"t": "tap", "x": float("nan"), "y": 1},
+                        {"t": "text", "s": 1}, {"t": "text", "s": "\n"}, {"t": "navigate", "url": "file:///"}, {}):
+            self.assertIsNone(worker.handoff_input(message, 1366, 900), message)
+
+    def test_the_request_to_open_a_handoff_is_checked(self):
+        good = {"id": "handoff_abc123", "url": "https://www.wildberries.ru/login", "domains": self.DOMAINS,
+                "origin": "https://bro.test"}
+        self.assertIsNone(worker.handoff_body_error(good))
+        self.assertIsNone(worker.handoff_body_error({**good, "hosts": ["id.vk.com"]}))
+        for change in ({"id": "a b"}, {"url": "https://evil.test/"}, {"url": "about:blank"}, {"domains": []},
+                       {"domains": ["localhost"]}, {"domains": ["WB.ru"]}, {"origin": "http://bro.test"},
+                       {"origin": "https://bro.test/path"}, {"ttlSeconds": 5}, {"ttlSeconds": 99999},
+                       {"hosts": ["VK.com"]}, {"hosts": "id.vk.com"}):
+            self.assertIsNotNone(worker.handoff_body_error({**good, **change}), change)
+        self.assertIsNotNone(worker.handoff_body_error([]))
 
 
 class RunsTest(unittest.IsolatedAsyncioTestCase):
@@ -1491,6 +1548,25 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.worker = self.restart()
         await self.worker.adopt_tabs()
         self.assertEqual((await self.call("GET", "/v1/sessions/s1"))[1]["tabOpen"], False)
+
+    async def test_pages_chrome_restored_that_no_session_owns_are_closed_when_the_worker_starts(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign in."})
+        await self.settled("r1")
+        self.chrome.tabs += ["R1", "R2"]  # RestoreOnStartup brought back what the last Chrome had open
+        self.worker = self.restart()
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["T1"])  # the session's own tab stays
+        self.assertEqual(self.chrome.closed, ["R1", "R2"])
+
+    async def test_chrome_keeps_one_page_when_every_restored_page_is_a_stray(self):
+        self.chrome.tabs += ["R1", "R2"]
+        self.chrome.urls["R2"] = "about:blank"
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["R2"])  # Chrome quits with its last tab: the blank one stays
+        self.chrome.tabs[:] = ["R3", "R4"]
+        self.chrome.urls.update({"R3": "https://shop.test/cart", "R4": "https://bank.test/"})
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["T1"])  # none blank: a new page replaces them
 
     async def test_the_machine_details_need_a_token_and_walk_the_profile_off_the_loop(self):
         walks = []

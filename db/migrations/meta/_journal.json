@@ -393,6 +393,13 @@
       "when": 1791460390871,
       "tag": "0055_browser_delegation",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1791550684057,
+      "tag": "0056_login_handoffs",
+      "breakpoints": true
     }
   ]
 }

@@ -15,6 +15,20 @@ const nextConfig: NextConfig = {
     },
   },
   serverExternalPackages: ["supermemory"],
+  // The sign-in window shows a page of the person's own browser: no other
+  // page may frame it, and its address is not sent on to anyone.
+  async headers() {
+    return [
+      {
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Frame-Options", value: "DENY" },
+        ],
+        source: "/handoff/:path*",
+      },
+    ];
+  },
 };
 
 // The Cloud.ru VM gets the app as an artifact and runs no package manager:

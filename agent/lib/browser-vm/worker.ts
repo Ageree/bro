@@ -286,6 +286,27 @@ const parkedSchema = z.object({ parked: z.literal(true) });
 
 const workerUpdateSchema = z.object({ updated: z.literal(true) });
 
+/**
+ * A sign-in the person does themselves in a live view of the VM's Chrome
+ * (`browser-vm/worker/worker.py`, "Login handoff"). `result` is what the page
+ * showed when they said they were through; the worker reads it, so no page
+ * text and no cookie comes this way.
+ */
+const handoffSchema = z.object({
+  expiresAt: z.number().int(),
+  id: z.string().min(1),
+  result: z
+    .object({
+      allowed: z.boolean(),
+      host: z.string(),
+      passwordField: z.boolean().nullable(),
+      url: z.string(),
+    })
+    .nullable(),
+  state: z.enum(["open", "viewing", "closing", "done", "cancelled", "expired"]),
+  viewed: z.boolean(),
+});
+
 /** A worker reply that was not a 2xx, with enough of the body to act on. */
 export class BrowserVmWorkerError extends Error {
   readonly status: number;
@@ -628,6 +649,87 @@ export async function closeBrowserVmWorkerTab(
       timeoutMs: writeTimeoutMs,
     })
   );
+}
+
+/**
+ * Open a tab for the person to sign in in. The worker is busy while the
+ * handoff lasts: no run starts on the browser, and it is not parked. 409 when
+ * a run holds it or another handoff is open; asked again with the same id,
+ * the worker answers with the one it has.
+ */
+export async function openBrowserVmWorkerHandoff(
+  vm: BrowserVmTarget,
+  input: {
+    /** Names the page may be on, with their subdomains. */
+    readonly domains: readonly string[];
+    /** Hosts it may also be on, exactly: a sign-in provider's own pages. */
+    readonly hosts: readonly string[];
+    readonly id: string;
+    /** The origin of the page that shows the viewer: the socket checks it. */
+    readonly origin: string;
+    readonly ttlSeconds: number;
+    readonly url: string;
+  }
+) {
+  return handoffSchema.parse(
+    await request(vm, "POST", "/v1/handoff", {
+      body: input,
+      timeoutMs: writeTimeoutMs,
+    })
+  );
+}
+
+/** The handoff as the worker has it, or undefined when it has none by that id. */
+export async function readBrowserVmWorkerHandoff(
+  vm: BrowserVmTarget,
+  id: string
+) {
+  return readOrMissing(async () =>
+    handoffSchema.parse(
+      await request(vm, "GET", `/v1/handoff/${encodeURIComponent(id)}`, {
+        timeoutMs: readTimeoutMs,
+      })
+    )
+  );
+}
+
+/** End a handoff: the tab closes and Chrome writes its cookies. */
+export async function cancelBrowserVmWorkerHandoff(
+  vm: BrowserVmTarget,
+  id: string
+) {
+  return readOrMissing(async () =>
+    handoffSchema.parse(
+      await request(
+        vm,
+        "POST",
+        `/v1/handoff/${encodeURIComponent(id)}/cancel`,
+        { timeoutMs: slowWriteTimeoutMs }
+      )
+    )
+  );
+}
+
+/**
+ * Where the person's browser opens the viewer's socket, and the token it
+ * says first: scoped to this one handoff, so it opens nothing else on the
+ * worker (the worker refuses it everywhere but there). The token is not in
+ * the address, which logs and proxies keep.
+ */
+export function browserVmHandoffViewer(
+  vm: BrowserVmTarget,
+  id: string,
+  ttlSeconds = 600
+) {
+  return {
+    token: signBrowserVmToken({
+      generation: vm.generation,
+      session: `h:${id}`,
+      ttlSeconds,
+      workspaceId: vm.workspaceId,
+    }),
+    url: `${origin(vm).replace(/^https:/u, "wss:")}/v1/handoff/${encodeURIComponent(id)}/ws`,
+  };
 }
 
 /**
