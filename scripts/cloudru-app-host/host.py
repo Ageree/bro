@@ -938,7 +938,7 @@ def cmd_env(args):
         refusals.append("production has no https OPS_ALERT_WEBHOOK_URL: an alert about the path to Telegram would "
                         "reach nobody (or --no-alert-webhook on purpose)")
     for name in ("EVE_SCHEDULES", "BACKUPS"):
-        if prod and values.get(name) == "off":
+        if prod and values.get(name) in ("off", "browser"):
             print(f"WARNING: {name}=off on production ({sources.get(name)}): only for the move's window; "
                   f"remove it from prod.json and run host.py env again after it")
     if args.profile == "stand":

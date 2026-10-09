@@ -93,8 +93,12 @@ cloud-init при установке ОС (`scripts/selectel/dedicated.py reinst
 3. **Сеть и база в Selectel.** `scripts/selectel/cloud.py network`,
    `BRO_CLOUD=selectel python host.py pg create | users | databases`.
 4. **VM приложения.** `BRO_CLOUD=selectel python host.py create bro-app-sel-1`,
-   `host.py env`, `host.py deploy`. Проверка — на имени `<ip>.sslip.io`, без
-   людей.
+   `host.py env`, `host.py deploy`. Проверка — на своём имени
+   (`sel.brobro.tech`; deployd не принимает `sslip.io` сайтом приложения)
+   с копией базы прода и cookie владельца. Расписания стенда — только
+   `EVE_SCHEDULES=browser`: тик поручений браузера доводит поручение до
+   выделенного сервера, а проверки почты, напоминания и звонки по копии
+   данных людей не идут.
 5. **Переключение.** Короткое окно:
    - остановить мост Telegram и eve на Cloud.ru;
    - снять финальный бэкап и восстановить его в Selectel;

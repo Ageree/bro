@@ -861,7 +861,9 @@ class Deployd:
     def switched_off(self):
         """EVE_SCHEDULES and BACKUPS that /etc/bro/env turns off: on production only for the move's window."""
         values = parse_env(self.paths.env.read_text()) if self.paths.env.exists() else {}
-        return [name for name in ("EVE_SCHEDULES", "BACKUPS") if values.get(name) == "off"]
+        off = [name for name in ("EVE_SCHEDULES", "BACKUPS") if values.get(name) == "off"]
+        # EVE_SCHEDULES=browser keeps every schedule but the browser errands' off too.
+        return off + (["EVE_SCHEDULES"] if values.get("EVE_SCHEDULES") == "browser" else [])
 
     def env_names(self):
         text = self.paths.env.read_text() if self.paths.env.exists() else ""

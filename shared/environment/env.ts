@@ -874,10 +874,12 @@ export const env = createEnv({
     // emails, or `*` for every workspace.
     SANDBOX_WORKSPACES: workspaceListSchema.optional(),
     // Whether this deployment runs eve's schedules (`agent/schedules`). "off"
-    // on the Cloud.ru rehearsal stand: its ticks would poll errands, check
-    // mail and write to people from a copy of production's data, and only
-    // one scheduler may run per database (docs/cloudru-migration.md).
-    EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
+    // on a rehearsal stand: its ticks would poll errands, check mail and
+    // write to people from a copy of production's data, and only one
+    // scheduler may run per database (docs/cloudru-migration.md). "browser"
+    // runs only the browser errands' tick, so a stand can carry an errand of
+    // its own through the pool (docs/selectel-migration.md).
+    EVE_SCHEDULES: z.enum(["on", "off", "browser"]).default("on"),
     // The pilot of the daily memory digest (docs/memory.md): workspace ids or
     // owners' emails, or `*` for every workspace, whose memory the digest
     // cleans (codes cut out, duplicates folded, history trimmed). Unset, the
