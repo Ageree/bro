@@ -880,6 +880,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `browser-vm/`, `agent/lib/browser-vm/`, `agent/lib/browser-pool/`, Cloud.ru
   или стендом — сначала прочитай его. Там же ключи и квоты Cloud.ru, выход VM
   в сеть, выкат worker, env пула и `BROWSER_STATE_KEY` (не менять никогда).
+- Проверка выхода прокси идёт внутри `browser_task`: 09.10 четыре проверки по
+  15–36 с держали ход 91 с, а следующее сообщение человека ждало за ним.
+  Ход человека перебирает выходы не дольше `turnExitBudgetMs`, остальное —
+  очередь и тик (`inTurn` в `prepareBrowserVmSession`); тик `browser-runs`
+  `inTurn` не ставит. Текст сообщений в журнал eve не пишется: ход ищите по
+  `[tools]` и `durationMs` инструментов в строке `"method":"EVE"`.
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
   прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
   Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.

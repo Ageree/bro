@@ -129,6 +129,16 @@ const slowExitMbps = 2;
 const slowExitLatencyMs = 3_000;
 /** Every errand waits on the same exit, so it is tried again in a few minutes. */
 const noExitRetryMs = 5 * 60_000;
+/**
+ * How long a person's turn waits for the search for an exit to go on from
+ * one rotation to the next. Each check takes up to 45 s through the exit and
+ * up to four may be tried: 09.10 a turn stood 91 s in `browser_task`, and the
+ * person's next message waited behind it. Past this the errand queues and the
+ * poller goes on with the search.
+ */
+const turnExitBudgetMs = 15_000;
+/** The queued errand's poller takes the search up on its next pass. */
+const turnExitResumeMs = 10_000;
 /** The VMs one reconcile looks at; the poller comes back every minute. */
 const reconcileLimit = 20;
 /**
@@ -526,9 +536,20 @@ export async function prepareBrowserVmSession(
   now = new Date(),
   {
     freshExit = false,
+    inTurn = false,
     rotate = true,
-  }: { readonly freshExit?: boolean; readonly rotate?: boolean } = {}
+  }: {
+    readonly freshExit?: boolean;
+    /**
+     * A person's turn is waiting for this: the search for an exit stops
+     * going from one rotation to the next after `turnExitBudgetMs`, and the
+     * errand queues for the poller to finish it.
+     */
+    readonly inTurn?: boolean;
+    readonly rotate?: boolean;
+  } = {}
 ) {
+  const searchUntil = inTurn ? Date.now() + turnExitBudgetMs : undefined;
   const health = await readBrowserVmWorkerHealth(vm);
   if (health.busy) {
     return health.proxy ? vm : routeThroughRussia(vm, now, rotationOf(vm), 0);
@@ -542,12 +563,24 @@ export async function prepareBrowserVmSession(
       : routeThroughRussia(vm, now, rotationOf(vm), 0);
   }
   if (freshExit) {
-    return routeThroughRussia(vm, now, rotationOf(vm) + 1, exitRotations);
+    return routeThroughRussia(
+      vm,
+      now,
+      rotationOf(vm) + 1,
+      exitRotations,
+      searchUntil
+    );
   }
   const checkedAt =
     vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
   if (health.proxy && checkedAt > now.getTime() - exitCheckMs) return vm;
-  return routeThroughRussia(vm, now, rotationOf(vm), exitRotations);
+  return routeThroughRussia(
+    vm,
+    now,
+    rotationOf(vm),
+    exitRotations,
+    searchUntil
+  );
 }
 
 /**
@@ -1479,13 +1512,16 @@ function present(ids: readonly (string | null | undefined)[]) {
  * session, and keep it when the exit is in Russia and not slow. An exit is
  * judged by its address alone: one whose speed could not be measured is not
  * slow, and a probe that failed next to a known address does not lose it.
- * Recursion rather than a loop keeps each attempt one awaited step.
+ * Recursion rather than a loop keeps each attempt one awaited step. With
+ * `searchUntil` (a person's turn is waiting) no further rotation is tried
+ * once that time has passed: the next one is left for the queued errand.
  */
 async function routeThroughRussia(
   vm: BrowserVm,
   now: Date,
   rotation: number,
-  rotationsLeft: number
+  rotationsLeft: number,
+  searchUntil?: number
 ): Promise<BrowserVm> {
   const session = browserVmProxySession(vm.workspaceId, rotation);
   const checkStarted = Date.now();
@@ -1569,7 +1605,30 @@ async function routeThroughRussia(
     throw new BrowserUseError(429, "proxy", "proxy refused", noExitRetryMs);
   }
   if (rotationsLeft > 0) {
-    return routeThroughRussia(vm, now, rotation + 1, rotationsLeft - 1);
+    if (searchUntil !== undefined && Date.now() >= searchUntil) {
+      // The poller starts from the rotation not tried yet.
+      await updateBrowserVm(
+        vm.workspaceId,
+        {
+          proxyExit: null,
+          proxySession: browserVmProxySession(vm.workspaceId, rotation + 1),
+        },
+        now
+      );
+      throw new BrowserUseError(
+        429,
+        "proxy",
+        "the search for an exit goes on in the queue",
+        turnExitResumeMs
+      );
+    }
+    return routeThroughRussia(
+      vm,
+      now,
+      rotation + 1,
+      rotationsLeft - 1,
+      searchUntil
+    );
   }
   // The next errand goes on from this rotation rather than retrying the ones
   // that just failed, and checks the exit again before anything runs.
