@@ -9,6 +9,7 @@ import {
   BrowserVmWorkerError,
   openBrowserVmWorkerHandoff,
 } from "@agent/lib/browser-vm/worker";
+import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import {
   claimLoginHandoff,
@@ -100,9 +101,24 @@ export async function openLoginHandoff(
   }
   // The same sticky exit as every errand of the person: a site that ties a
   // session to the address must see it again later.
-  const vm = await prepareBrowserVmSession(started.vm, now, {
-    rotate: false,
-  });
+  let vm;
+  try {
+    vm = await prepareBrowserVmSession(started.vm, now, {
+      // The page is waiting: the search for an exit stops after a short
+      // budget, and the page asks again.
+      inTurn: true,
+      rotate: false,
+    });
+  } catch (error) {
+    // No Russian exit for now (429): the same wait as a browser starting.
+    if (error instanceof BrowserUseError && error.status === 429) {
+      return {
+        kind: "starting",
+        retryAfterMs: Math.min(error.retryAfterMs ?? 10_000, 10_000),
+      };
+    }
+    throw error;
+  }
   const ttlSeconds = Math.min(
     1_800,
     Math.max(60, Math.floor((row.viewUntil.getTime() - now.getTime()) / 1_000))
