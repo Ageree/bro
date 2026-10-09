@@ -3987,6 +3987,7 @@ async function runBrowserTask(
         try {
           const run = await createBrowserUseRun({
             customProxy: customProxy(),
+            inTurn: true,
             maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
             model: env.BROWSER_USE_MODEL,
             profileId,
@@ -4608,6 +4609,7 @@ async function runBrowserTask(
             customProxy: customProxy(),
             // A VM profile only (cloud ignores it).
             freshExit: onVm && walled,
+            inTurn: true,
             maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
             model: env.BROWSER_USE_MODEL,
             profileId,

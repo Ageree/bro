@@ -2186,6 +2186,63 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(stored().proxySession).toMatch(/^bro[\da-f]{12}r3$/u);
   });
 
+  it("leaves the rest of the search for an exit to the queue once a turn has waited its share", async () => {
+    // 09.10: four checks of 15–36 s held a turn in `browser_task` for 91 s.
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({
+      proxyExit: {
+        at: minutesAgo(31).toISOString(),
+        city: "Moscow",
+        country: "RU",
+        ip: "95.24.1.2",
+        org: "AS8402 Beeline",
+      },
+    });
+    rows.set(workspaceId, vm);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers({ now, toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    worker.setBrowserVmWorkerProxy.mockImplementation(() => {
+      vi.advanceTimersByTime(20_000);
+      return Promise.resolve(proxySetup({ country: "DE", ip: "5.1.1.1" }));
+    });
+
+    const queued = await lifecycle
+      .prepareBrowserVmSession(vm, now, { inTurn: true })
+      .catch((cause: unknown) => cause);
+
+    expect(queued).toMatchObject({
+      name: "BrowserUseError",
+      retryAfterMs: 10_000,
+      status: 429,
+    });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    // The queued errand goes on from the rotation not tried yet.
+    expect(stored()).toMatchObject({ proxyExit: null });
+    expect(stored().proxySession).toMatch(/^bro[\da-f]{12}r1$/u);
+  });
+
+  it("still finds an exit inside the turn's share", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(proxySetup({ country: "DE", ip: "5.1.1.1" }))
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.9" }));
+
+    await lifecycle.prepareBrowserVmSession(vm, now, { inTurn: true });
+
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(2);
+    expect(stored()).toMatchObject({ proxyExit: { ip: "95.24.1.9" } });
+  });
+
   it("stops at the proxy's refusal of its login and tells the owner", async () => {
     // RU 01.10–02.10: every rotation failed within a second for a day, and
     // the reason was never logged.
