@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-09.1"
+VERSION = "2026-10-09.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -3998,7 +3998,7 @@ HANDOFF_MESSAGE_LIMIT = 4096  # bytes a viewer may send in one message
 HANDOFF_TEXT_LIMIT = 200
 HANDOFF_POPUPS = 3  # windows the page may open at once; the next is closed
 HANDOFF_QUALITY = 60
-HANDOFF_FRAME_S = 0.4  # between two pictures of a page nobody is touching
+HANDOFF_FRAME_S = 0.25  # between two pictures of a page nobody is touching
 HANDOFF_RECOVERY_TRIES = 6
 HANDOFF_MAX_WIDTH = 1366
 HANDOFF_STATES_ACTIVE = ("open", "viewing", "closing")
@@ -4049,10 +4049,12 @@ def handoff_input(message, width, height):
     is not one of the few typed ones. A tap and a scroll are page coordinates; text is inserted, never
     typed key by key (a masked field takes it whole), and cannot carry a control character."""
     kind = message.get("t")
-    if kind in ("tap", "scroll"):
+    if kind in ("tap", "scroll", "move"):
         x, y = handoff_number(message.get("x"), 0, width), handoff_number(message.get("y"), 0, height)
         if x is None or y is None:
             return None
+        if kind == "move":
+            return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})]
         if kind == "scroll":
             delta = handoff_number(message.get("dy"), -1200, 1200)
             if delta is None:

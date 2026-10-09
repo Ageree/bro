@@ -87,6 +87,6 @@ export type ViewerMessage =
       readonly x: number;
       readonly y: number;
     }
-  | { readonly t: "tap"; readonly x: number; readonly y: number }
+  | { readonly t: "move" | "tap"; readonly x: number; readonly y: number }
   | { readonly t: "auth"; readonly token: string }
   | { readonly t: "back" | "cancel" | "done" };
