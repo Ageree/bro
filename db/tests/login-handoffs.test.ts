@@ -58,7 +58,12 @@ describe("login handoffs", () => {
     await service.createLoginHandoff(link("link-1"), start);
     const later = new Date(start.getTime() + minutes(1));
     const first = await service.claimLoginHandoff(
-      { deviceHash: "phone", id: "link-1", viewMs: minutes(10), workerId: "w1" },
+      {
+        deviceHash: "phone",
+        id: "link-1",
+        viewMs: minutes(10),
+        workerId: "w1",
+      },
       later
     );
     expect(first.kind).toBe("claimed");
@@ -66,7 +71,12 @@ describe("login handoffs", () => {
     expect(
       (
         await service.claimLoginHandoff(
-          { deviceHash: "phone", id: "link-1", viewMs: minutes(10), workerId: "w2" },
+          {
+            deviceHash: "phone",
+            id: "link-1",
+            viewMs: minutes(10),
+            workerId: "w2",
+          },
           later
         )
       ).kind
@@ -74,7 +84,12 @@ describe("login handoffs", () => {
     expect(
       (
         await service.claimLoginHandoff(
-          { deviceHash: "laptop", id: "link-1", viewMs: minutes(10), workerId: "w3" },
+          {
+            deviceHash: "laptop",
+            id: "link-1",
+            viewMs: minutes(10),
+            workerId: "w3",
+          },
           later
         )
       ).kind
@@ -97,20 +112,35 @@ describe("login handoffs", () => {
     expect(
       (
         await service.claimLoginHandoff(
-          { deviceHash: "phone", id: "link-1", viewMs: minutes(10), workerId: "w1" },
+          {
+            deviceHash: "phone",
+            id: "link-1",
+            viewMs: minutes(10),
+            workerId: "w1",
+          },
           late
         )
       ).kind
     ).toBe("expired");
     await service.createLoginHandoff(link("link-2"), start);
     await service.claimLoginHandoff(
-      { deviceHash: "phone", id: "link-2", viewMs: minutes(10), workerId: "w2" },
+      {
+        deviceHash: "phone",
+        id: "link-2",
+        viewMs: minutes(10),
+        workerId: "w2",
+      },
       start
     );
     expect(
       (
         await service.claimLoginHandoff(
-          { deviceHash: "phone", id: "link-2", viewMs: minutes(10), workerId: "w2" },
+          {
+            deviceHash: "phone",
+            id: "link-2",
+            viewMs: minutes(10),
+            workerId: "w2",
+          },
           new Date(start.getTime() + minutes(11))
         )
       ).kind
@@ -120,18 +150,31 @@ describe("login handoffs", () => {
   it("withdraws an unopened link when a new one is made, and waits for an open one", async () => {
     const service = await handoffs();
     await service.createLoginHandoff(link("old"), start);
-    await service.createLoginHandoff(link("new", alice, { domain: "avito.ru" }), start);
+    await service.createLoginHandoff(
+      link("new", alice, { domain: "avito.ru" }),
+      start
+    );
     expect((await service.readLoginHandoff("old"))?.state).toBe("cancelled");
     await service.claimLoginHandoff(
       { deviceHash: "phone", id: "new", viewMs: minutes(10), workerId: "w" },
       start
     );
-    expect((await service.createLoginHandoff(link("third"), start)).kind).toBe("busy");
+    expect((await service.createLoginHandoff(link("third"), start)).kind).toBe(
+      "busy"
+    );
     // Another person's workspace is not held by it.
-    expect((await service.createLoginHandoff(link("bobs", bob), start)).kind).toBe("created");
-    expect(await service.workspaceHasClaimedLoginHandoff(alice.workspaceId, start)).toBe(true);
-    expect(await service.workspaceHasClaimedLoginHandoff(bob.workspaceId, start)).toBe(false);
-    expect(await service.listOpenLoginHandoffDomains(alice.workspaceId, start)).toEqual(["avito.ru"]);
+    expect(
+      (await service.createLoginHandoff(link("bobs", bob), start)).kind
+    ).toBe("created");
+    expect(
+      await service.workspaceHasClaimedLoginHandoff(alice.workspaceId, start)
+    ).toBe(true);
+    expect(
+      await service.workspaceHasClaimedLoginHandoff(bob.workspaceId, start)
+    ).toBe(false);
+    expect(
+      await service.listOpenLoginHandoffDomains(alice.workspaceId, start)
+    ).toEqual(["avito.ru"]);
   });
 
   it("ends a handoff once, and delivers its report once", async () => {
@@ -143,38 +186,65 @@ describe("login handoffs", () => {
     );
     const ended = await service.endLoginHandoff(
       "link-1",
-      { report: "Signed in.", resultHost: "www.ozon.ru", signedIn: true, state: "done" },
+      {
+        report: "Signed in.",
+        resultHost: "www.ozon.ru",
+        signedIn: true,
+        state: "done",
+      },
       start
     );
     expect(ended?.state).toBe("done");
     // The viewer's finish and the settling tick both say so: the second is nothing.
     expect(
-      await service.endLoginHandoff("link-1", { report: "Expired.", state: "expired" }, start)
+      await service.endLoginHandoff(
+        "link-1",
+        { report: "Expired.", state: "expired" },
+        start
+      )
     ).toBeUndefined();
-    expect((await service.readLoginHandoff("link-1"))?.report).toBe("Signed in.");
+    expect((await service.readLoginHandoff("link-1"))?.report).toBe(
+      "Signed in."
+    );
     const [owed] = await service.claimLoginHandoffReports(start);
     expect(owed?.id).toBe("link-1");
     expect(await service.claimLoginHandoffReports(start)).toEqual([]); // under its lease
     await service.releaseLoginHandoffReport("link-1");
     expect(await service.claimLoginHandoffReports(start)).toHaveLength(1);
     await service.markLoginHandoffReportDelivered("link-1", start);
-    expect(await service.claimLoginHandoffReports(new Date(start.getTime() + minutes(10)))).toEqual([]);
+    expect(
+      await service.claimLoginHandoffReports(
+        new Date(start.getTime() + minutes(10))
+      )
+    ).toEqual([]);
   });
 
   it("owes no report to a person who ended it themselves, and gives up on a report that keeps failing", async () => {
     const service = await handoffs();
     await service.createLoginHandoff(link("quiet"), start);
-    await service.endLoginHandoff("quiet", { report: null, state: "cancelled" }, start);
+    await service.endLoginHandoff(
+      "quiet",
+      { report: null, state: "cancelled" },
+      start
+    );
     expect(await service.claimLoginHandoffReports(start)).toEqual([]);
     await service.createLoginHandoff(link("loud"), start);
-    await service.endLoginHandoff("loud", { report: "Signed in.", state: "done" }, start);
+    await service.endLoginHandoff(
+      "loud",
+      { report: "Signed in.", state: "done" },
+      start
+    );
     let at = start;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       at = new Date(at.getTime() + minutes(3));
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each delivery is tried after the lease of the last ran out.
       expect(await service.claimLoginHandoffReports(at)).toHaveLength(1);
     }
-    expect(await service.claimLoginHandoffReports(new Date(at.getTime() + minutes(3)))).toEqual([]);
+    expect(
+      await service.claimLoginHandoffReports(
+        new Date(at.getTime() + minutes(3))
+      )
+    ).toEqual([]);
   });
 
   it("expires links nobody opened and lists the open viewers", async () => {
@@ -188,7 +258,9 @@ describe("login handoffs", () => {
       { deviceHash: "phone", id: "open", viewMs: minutes(10), workerId: "w" },
       start
     );
-    expect((await service.listClaimedLoginHandoffs()).map((row) => row.id)).toEqual(["open"]);
+    expect(
+      (await service.listClaimedLoginHandoffs()).map((row) => row.id)
+    ).toEqual(["open"]);
   });
 });
 

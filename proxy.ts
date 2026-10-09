@@ -28,6 +28,11 @@ export async function proxy(request: NextRequest) {
     // and a shared file's link carries its own signature: Telegram and
     // iMessage deliveries fetch it without the person's cookie.
     pathname === "/eve/v1/sandbox-tools" ||
+    // The sign-in window opened from a link in a chat: the person may not be
+    // signed in to the web app, the link's id is the secret, and each
+    // route checks the device that took it.
+    pathname.startsWith("/handoff/") ||
+    pathname.startsWith("/eve/v1/login-handoff/") ||
     pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {

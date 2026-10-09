@@ -151,10 +151,7 @@ export async function expireLoginHandoffs(now: Date) {
     .update(loginHandoffs)
     .set({ finishedAt: now, reportDeliveredAt: now, state: "expired" })
     .where(
-      and(
-        eq(loginHandoffs.state, "pending"),
-        lt(loginHandoffs.expiresAt, now)
-      )
+      and(eq(loginHandoffs.state, "pending"), lt(loginHandoffs.expiresAt, now))
     );
 }
 

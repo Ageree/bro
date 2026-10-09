@@ -182,6 +182,38 @@ function signedInPages(
   return pages;
 }
 
+/**
+ * The person signed in to `domain` themselves, in a live view of the browser
+ * (`agent/lib/login-handoff/`), and the page they ended on shows no sign-in
+ * form. Recorded like a run's report: the page is kept for the keep-alive
+ * visit only when opening it is safe (`safeAccountPage`), and an unsafe or
+ * missing one records the sign-in without a page, so no visit follows.
+ * Never fatal: the person's report matters more than the record.
+ */
+export async function recordHandoffSignIn(
+  workspaceId: string,
+  input: { readonly domain: string; readonly now: Date; readonly page: string }
+) {
+  try {
+    const url = URL.parse(input.page);
+    const host = url === null ? undefined : hostOf(url.href);
+    const own = host === undefined ? undefined : ownDomain(host);
+    const accountUrl =
+      url !== null && own === input.domain && safeAccountPage(url)
+        ? `${url.origin}${url.pathname}`
+        : undefined;
+    await recordBrowserSignIn(workspaceId, {
+      accountUrl,
+      domain: input.domain,
+      now: input.now,
+    });
+  } catch (error) {
+    console.warn("[browser-use] a handed-over sign-in could not be recorded", {
+      cause: error,
+    });
+  }
+}
+
 /** A run that stopped on one of these did not get in with what was kept. */
 const signInSteps = new Set<BrowserRunNeed>([
   "email_code",

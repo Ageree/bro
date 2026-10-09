@@ -249,6 +249,11 @@ export const env = createEnv({
     // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
     // docs/browser-speed.md). Unset, every errand runs as before.
     BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the sign-in link: workspace ids or owners' emails, or `*`,
+    // whose Bro may send a link where the person signs in to a site
+    // themselves, in a live view of their own cloud browser
+    // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset, nobody.
+    LOGIN_HANDOFF_WORKSPACES: workspaceListSchema.optional(),
     BROWSER_VM_FILES_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),
