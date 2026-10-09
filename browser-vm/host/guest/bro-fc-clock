@@ -1,0 +1,58 @@
+#!/usr/bin/python3
+"""Keeps the guest's wall clock on the host's (injected into the rootfs image next to bro-fc-init).
+
+A Firecracker guest has no RTC: a fresh one starts in 1970, and a snapshot restored hours later wakes up with
+the time it was taken at. The host's clock reaches the guest through the KVM PTP device (ptp_kvm, /dev/ptp0).
+Its dynamic POSIX clock id is ((~fd) << 3) | 3 (the kernel's FD_TO_CLOCKID); reading it gives the host's time,
+and CLOCK_REALTIME is stepped to it when it is off by more than STEP_S.
+
+  bro-fc-clock --once   step once and exit 0 (1 when there is no PTP clock): the init runs it before the
+                        sandbox starts
+  bro-fc-clock          once a second, for ever (started by the init in the background; it never exits on an
+                        error, a sandbox must not lose its clock sync to one failed read)
+"""
+
+import os
+import sys
+import time
+
+PTP_DEVICE = "/dev/ptp0"
+STEP_S = 0.5
+EVERY_S = 1.0
+
+
+def clock_id(descriptor):
+    """The POSIX clock id of an open PTP device (Linux's FD_TO_CLOCKID)."""
+    return ((~descriptor) << 3) | 3
+
+
+def step_if_off(ptp_clock):
+    """Step CLOCK_REALTIME to the PTP clock when they differ by more than STEP_S; the difference in seconds."""
+    difference = time.clock_gettime(ptp_clock) - time.clock_gettime(time.CLOCK_REALTIME)
+    if abs(difference) > STEP_S:
+        time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(ptp_clock))
+    return difference
+
+
+def main(argv):
+    once = "--once" in argv
+    descriptor = None
+    while True:
+        try:
+            if descriptor is None:
+                descriptor = os.open(PTP_DEVICE, os.O_RDONLY)
+            difference = step_if_off(clock_id(descriptor))
+            if once:
+                return 0
+            if abs(difference) > STEP_S:
+                print(f"bro-fc-clock: stepped the clock by {difference:.3f} s", file=sys.stderr, flush=True)
+        except OSError as error:
+            descriptor = None
+            if once:
+                print(f"bro-fc-clock: no PTP clock ({error})", file=sys.stderr, flush=True)
+                return 1
+        time.sleep(EVERY_S)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

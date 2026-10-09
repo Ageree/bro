@@ -1,7 +1,10 @@
 """hostd tests: cd browser-vm/host && python -m unittest (needs aiohttp and cryptography; no root).
 
-runc, runsc, mount, umount, mkfs.ext4, ip, nft, zstd and caddy are a fake runner (records argv, writes a
-fake checkpoint image, can refuse a restore or ignore SIGTERM, runs a test's hooks at SIGTERM and delete); Object Storage is an aiohttp server behind
+runc, runsc, firecracker, jailer, mount, umount, mkfs.ext4, debugfs, ip, nft, zstd and caddy are a fake runner
+(records argv, writes a fake checkpoint image, can refuse a restore or ignore SIGTERM, runs a test's hooks at
+SIGTERM and delete; with `emulate_images` an ext4 image is a file whose first bytes are JSON of the files in
+it, and mounting it fills the directory; its "jailer" starts a fake Firecracker API on the jail's unix socket);
+Object Storage is an aiohttp server behind
 "presigned" URLs; the sandbox's worker is an aiohttp server the transit addresses reach (the transit pool is
 put on 127.0.0.0/16 for the tests). The sandbox and park tests run under both runtimes where the behaviour
 is the same (`RUNTIME`); the snapshot tests are gVisor's, the stopped-Chrome park is runc's.
@@ -9,6 +12,8 @@ is the same (`RUNTIME`); the snapshot tests are gVisor's, the stopped-Chrome par
 
 import asyncio
 import base64
+import contextlib
+import io
 import hashlib
 import hmac
 import json
@@ -22,14 +27,17 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).parent))
+import firecracker  # noqa: E402
 import hostd  # noqa: E402
 import network  # noqa: E402
+import selfupdate  # noqa: E402
 import sets  # noqa: E402
 
 SIGNING = bytes.fromhex("11" * 32)
@@ -41,8 +49,9 @@ WORKER_KEY = "ab" * 32
 MARKER = b"cookie-secret-marker-0123456789"
 
 
-def token(host=HOST_ID, key=KEY, lifetime=300):
-    payload = base64.urlsafe_b64encode(json.dumps({"env": host, "exp": int(time.time()) + lifetime}).encode())
+def token(host=HOST_ID, key=KEY, lifetime=300, scope=None):
+    claims = {"env": host, "exp": int(time.time()) + lifetime, **({"scope": scope} if scope else {})}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode())
     signed = "v1." + payload.rstrip(b"=").decode()
     signature = base64.urlsafe_b64encode(hmac.new(key, signed.encode(), hashlib.sha256).digest())
     return f"{signed}.{signature.rstrip(b'=').decode()}"
@@ -55,6 +64,102 @@ def request(**overrides):
 
 RUNSC_VERSION = "runsc version release-20260914.0"
 RUNC_VERSION = "runc version 1.1.12-0ubuntu2~22.04.1"
+FIRECRACKER_VERSION = "Firecracker v1.17.0"
+HEADER_BYTES = 4 * 2**20
+
+
+def image_files(path):
+    """The files an emulated ext4 image holds: {relative path: bytes}, with the image's label."""
+    with open(path, "rb") as file:
+        text = file.read(HEADER_BYTES).split(b"\0")[0]
+    return json.loads(text) if text else {"label": None, "files": {}}
+
+
+def write_image(path, label, files):
+    """{relative path: bytes | (bytes, mode)} into the image's header (the file keeps its size)."""
+    encoded = {name: [base64.b64encode(value[0] if isinstance(value, tuple) else value).decode(),
+                      value[1] if isinstance(value, tuple) else 0o644] for name, value in files.items()}
+    data = json.dumps({"label": label, "files": encoded}).encode()
+    with open(path, "r+b") as file:
+        file.seek(0)
+        file.write(data + b"\0")
+
+
+def files_in(path):
+    return {name: (base64.b64decode(value[0]), value[1]) for name, value in image_files(path)["files"].items()}
+
+
+def tree_files(directory):
+    found = {}
+    for path in sorted(Path(directory).rglob("*")):
+        if path.is_file():
+            found[str(path.relative_to(directory))] = (path.read_bytes(), path.stat().st_mode & 0o777)
+    return found
+
+
+class FakeVm:
+    """What the jailer starts: Firecracker's API on the jail's unix socket. It checks that every file a request
+    names is in the jail (the chroot is all the real one can see), and writes snapshot files."""
+
+    MEMORY = random.Random(11).randbytes(200 * 1024)
+
+    def __init__(self, runner, sandbox_id, root, uid):
+        self.runner, self.id, self.root, self.uid = runner, sandbox_id, root, uid
+        self.state, self.alive, self.requests = "Not started", True, []
+        self.drives, self.kernel, self.site = {}, None, None
+        self.loaded = None
+
+    async def start(self):
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", self.handle)
+        self.web_runner = web.AppRunner(app)
+        await self.web_runner.setup()
+        self.site = web.UnixSite(self.web_runner, str(self.root / "firecracker.socket"))
+        await self.site.start()
+
+    async def stop(self):
+        with contextlib.suppress(Exception):
+            await self.web_runner.cleanup()
+
+    def inside(self, name):
+        return self.root / name.lstrip("/")
+
+    def need(self, name):
+        if not self.inside(name).exists():
+            raise web.HTTPBadRequest(text=json.dumps({"fault_message": f"{name} is not in the jail"}))
+
+    async def handle(self, request):
+        body = await request.json() if request.can_read_body else None
+        method, path = request.method, request.path
+        self.requests.append((method, path, body))
+        if (method, path) == ("PUT", "/boot-source"):
+            self.kernel = body["kernel_image_path"]
+        elif path.startswith("/drives/"):
+            self.drives[body["drive_id"]] = body["path_on_host"]
+        elif (method, path) == ("PUT", "/actions"):
+            self.need(self.kernel)
+            for drive in self.drives.values():
+                self.need(drive)
+            self.state = "Running"
+        elif (method, path) == ("PATCH", "/vm"):
+            self.state = {"Resumed": "Running"}.get(body["state"], body["state"])
+        elif (method, path) == ("PUT", "/snapshot/create"):
+            if self.runner.fail_snapshot:
+                raise web.HTTPBadRequest(text=json.dumps({"fault_message": "snapshot refused"}))
+            assert self.state == "Paused", "a snapshot of a VM that runs"
+            self.inside(body["snapshot_path"]).write_bytes(b"vmstate of " + self.id.encode())
+            self.inside(body["mem_file_path"]).write_bytes(self.MEMORY)
+        elif (method, path) == ("PUT", "/snapshot/load"):
+            if self.runner.fail_load:
+                raise web.HTTPBadRequest(text=json.dumps({"fault_message": "incompatible snapshot"}))
+            self.need(body["snapshot_path"])
+            self.need(body["mem_backend"]["backend_path"])
+            for drive in ("/rootfs.ext4", "/profile.img", "/config.img"):
+                self.need(drive)  # the paths the snapshot remembers
+            self.loaded = (self.inside(body["snapshot_path"]).read_bytes(),
+                           hashlib.sha256(self.inside(body["mem_backend"]["backend_path"]).read_bytes()).hexdigest())
+            self.state = "Running" if body["resume_vm"] else "Paused"
+        return web.Response(status=204)
 
 
 class FakeRunner:
@@ -75,6 +180,49 @@ class FakeRunner:
         self.host_rules, self.router_rules, self.caddyfiles = [], [], []
         self.checkpointed, self.restored = [], []
         self.image_bytes = random.Random(7).randbytes(300 * 1024)
+        # Firecracker: an ext4 image is a file with its files in its header; the jailer starts a fake API
+        self.emulate_images = False
+        self.mount_images = {}
+        self.vms = {}  # pid -> FakeVm
+        self.next_pid = 4000
+        self.fail_load = self.fail_snapshot = self.fail_spawn = False
+        self.stuck_vms = set()  # ids whose VM does not die
+        self.killed = []
+        self.update_exit = 0
+        self.update_runs = []
+
+    async def close(self):
+        for vm in self.vms.values():
+            await vm.stop()
+
+    async def spawn(self, argv, *, log_file):
+        self.calls.append((list(argv), log_file))
+        assert Path(argv[0]).name == "jailer", argv
+        options = dict(zip(argv[1:argv.index("--")][::2], argv[2:argv.index("--")][::2]))
+        root = Path(options["--chroot-base-dir"]) / "firecracker" / options["--id"] / "root"
+        with open(log_file, "ab") as sink:
+            sink.write(b"jailer output\n")
+        pid, self.next_pid = self.next_pid, self.next_pid + 1
+        vm = FakeVm(self, options["--id"], root, int(options["--uid"]))
+        self.vms[pid] = vm
+        if self.fail_spawn:
+            vm.alive = False
+            return pid
+        root.mkdir(parents=True)
+        await vm.start()
+        return pid
+
+    def alive(self, pid, marker):
+        vm = self.vms.get(pid)
+        return vm is not None and vm.alive and vm.id == marker
+
+    def kill(self, pid):
+        vm = self.vms[pid]
+        if vm.id in self.stuck_vms:
+            return
+        vm.alive = False
+        self.killed.append(pid)
+        asyncio.ensure_future(vm.stop())
 
     def argv(self, tool):
         return [argv for argv, _log in self.calls if Path(argv[0]).name == tool]
@@ -94,15 +242,42 @@ class FakeRunner:
         if tool == "mount":
             assert Path(argv[-1]).is_dir(), f"mount point {argv[-1]} missing"
             self.mounted.add(argv[-1])
+            if self.emulate_images and "loop,nodev,nosuid" in argv:
+                self.mount_images[argv[-1]] = argv[-2]
+                for name, (data, mode) in files_in(argv[-2]).items():
+                    target = Path(argv[-1]) / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                    target.chmod(mode)
             return 0, ""
         if tool == "mkfs.ext4":
             assert Path(argv[-1]).stat().st_size > 0, "mkfs on an empty image"
+            if self.emulate_images:
+                label = argv[argv.index("-L") + 1] if "-L" in argv else None
+                files = tree_files(argv[argv.index("-d") + 1]) if "-d" in argv and label == "brocfg" else {}
+                write_image(argv[-1], label, files)
             return 0, ""
         if tool == "umount":
             if argv[-1] not in self.mounted:
                 return 32, "not mounted"
             self.mounted.discard(argv[-1])
+            if argv[-1] in self.mount_images:  # the files go back into the image, the directory is empty
+                write_image(self.mount_images.pop(argv[-1]), None, tree_files(argv[-1]))
+                for child in Path(argv[-1]).iterdir():
+                    shutil.rmtree(child) if child.is_dir() else child.unlink()
             return 0, ""
+        if tool == "firecracker":
+            return 0, FIRECRACKER_VERSION + "\n"
+        if tool == "debugfs":
+            return self.debugfs(argv)
+        if tool in ("chown", "systemctl"):
+            return 0, ""
+        if tool == "cp":
+            shutil.copyfile(argv[-2], argv[-1])
+            return 0, ""
+        if tool == "bash":
+            self.update_runs.append(argv)
+            return self.update_exit, "update.sh output"
         if tool == "ip":
             if argv[1:] == ["-j", "route", "show", "default"]:
                 return 0, json.dumps([{"dst": "default", "gateway": "10.0.0.1", "dev": "eth0"}])
@@ -127,6 +302,22 @@ class FakeRunner:
             self.caddyfiles.append(Path(argv[3]).read_text())
             return 0, ""
         raise AssertionError(f"unexpected command {argv}")
+
+    def debugfs(self, argv):
+        """-w -f <script> <image>: `write <source> <target>` lines into the image's header; -R ls <dir>."""
+        image = argv[-1]
+        with open(image, "rb") as file:
+            header = json.loads(file.read(HEADER_BYTES).split(b"\0")[0] or b"{}")
+        injected = header.setdefault("injected", {})
+        if "-f" in argv:
+            for line in Path(argv[argv.index("-f") + 1]).read_text().splitlines():
+                _write, source, target = line.split()
+                injected[target] = [Path(source).read_text(), Path(source).stat().st_mode & 0o777]
+            with open(image, "r+b") as file:
+                file.write(json.dumps(header).encode() + b"\0")
+            return 0, ""
+        directory = argv[argv.index("-R") + 1].split(" ", 1)[1]
+        return 0, " ".join(Path(target).name for target in injected if str(Path(target).parent) == directory)
 
     def runtime(self, tool, args):
         if args == ["--version"]:
@@ -222,6 +413,7 @@ class FakeStorage:
 
 class HostTest(unittest.IsolatedAsyncioTestCase):
     RUNTIME = "runc"
+    RUNNER_OPTIONS = {}
 
     async def asyncSetUp(self):
         self.tmp = Path(tempfile.mkdtemp())  # not enterContext: the host's Python is 3.10
@@ -270,6 +462,7 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
             "worker_port": self.worker_port, "chunk_bytes": 64 * 1024, "parallel": 4, "start_timeout_s": 3,
             "restore_timeout_s": 3, **settings})
         runner = FakeRunner()
+        vars(runner).update(self.RUNNER_OPTIONS)
         host = hostd.Host(config, IDENTITY, runner)
         await host.start()
         self.addAsyncCleanup(host.close)
@@ -442,6 +635,22 @@ class NetworkTest(unittest.TestCase):
         vpc = ipaddress.ip_network("10.0.0.0/8")
         self.assertFalse(network.INNER.overlaps(vpc))
         self.assertFalse(network.Network().pool.overlaps(vpc))
+
+    def test_a_microvm_sandbox_namespace_is_a_bridge_with_a_tap_and_a_fixed_router_mac(self):
+        plan = network.Network()
+        classic = plan.setup("a", 0, "/r.nft")
+        guest = plan.setup("a", 0, "/r.nft", tap_owner=(40000, 40000))
+        self.assertNotIn("br0", " ".join(" ".join(argv) for argv in classic))
+        self.assertIn(["ip", "-n", "bro-s-a", "link", "add", "br0", "type", "bridge"], guest)
+        self.assertIn(["ip", "-n", "bro-s-a", "tuntap", "add", "dev", "tap0", "mode", "tap", "user", "40000",
+                       "group", "40000"], guest)
+        for port in ("eth0", "tap0"):
+            self.assertIn(["ip", "-n", "bro-s-a", "link", "set", port, "master", "br0"], guest)
+            self.assertIn(["ip", "-n", "bro-s-a", "link", "set", port, "up"], guest)
+        self.assertIn(["ip", "-n", "bro-r-a", "link", "set", "in0", "address", network.ROUTER_MAC], guest)
+        # The guest has the address and the route (kernel ip=); the namespace has neither.
+        self.assertFalse([a for a in guest if "192.168.254.2/30" in a])
+        self.assertFalse([a for a in guest if a[:6] == ["ip", "-n", "bro-s-a", "route", "add", "default"]])
 
     def test_router_forwards_only_the_worker_port_in(self):
         rules = network.Network(worker_port=8080).router_rules()
@@ -1146,6 +1355,618 @@ class StoppedParkTest(HostTest):
         self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "the set has no snapshot"))
         self.assertEqual(runner.runtime_calls("restore"), [])
         self.assertEqual(self.profile_on(host), MARKER)
+
+
+class FirecrackerTest(HostTest):
+    """The third runtime: a microVM per sandbox, parked as a local memory snapshot plus a profile set."""
+
+    RUNTIME = "firecracker"
+    RUNNER_OPTIONS = {"emulate_images": True}
+    FIRECRACKER = "/opt/bro/firecracker/firecracker"
+    JAILER = "/opt/bro/firecracker/jailer"
+
+    async def host(self, name="a", versions=("v1",), **settings):
+        kernel = self.tmp / "vmlinux"
+        kernel.write_bytes(b"guest kernel")
+        root = self.tmp / name
+        host, runner, client = await super().host(name, versions, **{
+            "firecracker": self.FIRECRACKER, "jailer": self.JAILER, "kernel": str(kernel),
+            "debugfs": "/usr/sbin/debugfs", "cp": "/usr/bin/cp", "chown": "/usr/bin/chown", "profile_mb": 8,
+            "fc_uid_base": 40000, "cgroup_root": str(root / "cgroup"), "fc_socket_timeout_s": 3,
+            "fc_kill_timeout_s": 0.3, **settings})
+        self.addAsyncCleanup(runner.close)
+        return host, runner, client
+
+    def home(self, host, sandbox_id="ws-abc"):
+        return Path(host.config.root) / "sandboxes" / sandbox_id
+
+    def snapshots(self, host, sandbox_id="ws-abc"):
+        return Path(host.config.root) / "snapshots" / sandbox_id
+
+    async def started_vm(self, name="a", **overrides):
+        host, runner, client = await self.host(name)
+        status, record = await self.call(client, "POST", "/v1/sandboxes", request(**overrides))
+        self.assertEqual(status, 201, record)
+        # The guest signs in somewhere: its writes land in the profile image the host holds.
+        write_image(self.home(host, record["id"]) / "profile.img", None, {"Default/Cookies": MARKER})
+        return host, runner, client
+
+    def cookie_in(self, host, sandbox_id="ws-abc"):
+        return files_in(self.home(host, sandbox_id) / "profile.img")["Default/Cookies"][0]
+
+    def vm_of(self, runner, sandbox_id="ws-abc", last=True):
+        vms = [vm for vm in runner.vms.values() if vm.id == sandbox_id]
+        return vms[-1] if last else vms
+
+    async def parked_vm(self, **settings):
+        host, runner, client = await self.started_vm()
+        for key, value in settings.items():
+            setattr(host.config, key, value)
+        status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 200, parked)
+        return host, runner, client, parked
+
+    # Start ------------------------------------------------------------------------------------------
+
+    async def test_a_cold_start_boots_a_microvm_the_way_the_design_says(self):
+        host, runner, client = await self.host()
+        status, record = await self.call(client, "POST", "/v1/sandboxes", request())
+        self.assertEqual((status, record["state"], record["path"], record["runtime"]), (201, "running", "fresh", "firecracker"))
+        self.assertNotIn("fcPid", record)
+        home = self.home(host)
+        root = Path(host.config.root)
+        (jailer, log), = [(argv, log) for argv, log in runner.calls if Path(argv[0]).name == "jailer"]
+        self.assertEqual(jailer, [
+            self.JAILER, "--id", "ws-abc", "--exec-file", self.FIRECRACKER, "--uid", "40000", "--gid", "40000",
+            "--chroot-base-dir", str(root / "jailer"), "--netns", "/var/run/netns/bro-s-ws-abc",
+            "--cgroup-version", "2", "--parent-cgroup", "bro-sandboxes",
+            "--cgroup", f"memory.max={(2048 + 256) * 2**20}", "--", "--api-sock", "/firecracker.socket"])
+        self.assertEqual(log, home / "runtime.log")
+        vm = self.vm_of(runner)
+        self.assertEqual([(m, p) for m, p, _ in vm.requests], [
+            ("PUT", "/boot-source"), ("PUT", "/drives/rootfs"), ("PUT", "/drives/profile"), ("PUT", "/drives/config"),
+            ("PUT", "/network-interfaces/eth0"), ("PUT", "/machine-config"), ("PUT", "/entropy"), ("PUT", "/actions")])
+        bodies = {p: b for _m, p, b in vm.requests}
+        args = bodies["/boot-source"]["boot_args"]
+        for word in ("console=ttyS0", "panic=1", "pci=off", "root=/dev/vda ro rootfstype=ext4",
+                     "init=/usr/local/sbin/bro-fc-init",
+                     "ip=192.168.254.2::192.168.254.1:255.255.255.252::eth0:off", "BRO_OVERLAY_MB=2048",
+                     f"BRO_WORKER_PORT={self.worker_port}"):
+            self.assertIn(word, args)
+        self.assertEqual(bodies["/boot-source"]["kernel_image_path"], "/vmlinux")
+        self.assertEqual(bodies["/drives/rootfs"], {"drive_id": "rootfs", "path_on_host": "/rootfs.ext4",
+                                                    "is_root_device": True, "is_read_only": True})
+        self.assertEqual((bodies["/drives/profile"]["is_read_only"], bodies["/drives/profile"]["cache_type"]),
+                         (False, "Writeback"))
+        self.assertEqual(bodies["/drives/config"]["is_read_only"], True)
+        self.assertEqual(bodies["/network-interfaces/eth0"],
+                         {"iface_id": "eth0", "host_dev_name": "tap0", "guest_mac": "06:00:c0:a8:fe:02"})
+        self.assertEqual(bodies["/machine-config"], {"vcpu_count": 2, "mem_size_mib": 2048})
+        # The jail holds hard links of the shared rootfs image and of the sandbox's own images.
+        image = root / "rootfs" / "v1.ext4"
+        self.assertEqual((vm.root / "rootfs.ext4").stat().st_ino, image.stat().st_ino)
+        self.assertEqual((vm.root / "profile.img").stat().st_ino, (home / "profile.img").stat().st_ino)
+        self.assertEqual((vm.root / "config.img").stat().st_ino, (home / "config.img").stat().st_ino)
+        self.assertEqual((vm.root / "vmlinux").read_bytes(), b"guest kernel")
+        self.assertEqual(runner.argv("chown"), [["/usr/bin/chown", "40000:40000", str(home / "profile.img"),
+                                                 str(home / "config.img"), str(vm.root / "snap")]])
+        # The config drive: worker.json private to bro, resolv.conf; the plain files were staged for mkfs only.
+        files = files_in(home / "config.img")
+        self.assertEqual(json.loads(files["worker.json"][0]), {"environment": "personal:abc", "key": WORKER_KEY})
+        self.assertEqual(files["worker.json"][1], 0o600)
+        self.assertEqual(files["resolv.conf"][0], b"nameserver 77.88.8.8\nnameserver 1.1.1.1\n")
+        self.assertFalse((home / "config").exists())
+        # The profile image is never mounted on the host while the VM runs.
+        self.assertEqual(runner.mounted, set())
+        self.assertEqual(len(runner.argv("mount")), 1)
+        self.assertEqual(runner.argv("mount")[0][-2:], [str(home / "profile.img"), str(home / "profile")])
+        self.assertFalse(any(WORKER_KEY in " ".join(argv) for argv, _ in runner.calls))
+        self.assertIn("127.0.0.2", self.worker_hits[-1])
+
+    async def test_the_sandbox_namespace_holds_a_bridge_with_the_vms_tap_and_no_address(self):
+        _host, runner, client = await self.host()
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        ip = runner.argv("ip")
+        self.assertIn(["ip", "-n", "bro-s-ws-abc", "tuntap", "add", "dev", "tap0", "mode", "tap", "user", "40000",
+                       "group", "40000"], ip)
+        self.assertIn(["ip", "-n", "bro-s-ws-abc", "link", "set", "tap0", "master", "br0"], ip)
+        self.assertIn(["ip", "-n", "bro-s-ws-abc", "link", "set", "eth0", "master", "br0"], ip)
+        self.assertIn(["ip", "-n", "bro-r-ws-abc", "link", "set", "in0", "address", "06:00:c0:a8:fe:01"], ip)
+        self.assertFalse([a for a in ip if "192.168.254.2/30" in a])
+        self.assertFalse([a for a in ip if a[-4:-1] == ["route", "add", "default"] and "bro-s-ws-abc" in a])
+        self.assertIn("dnat to 192.168.254.2", runner.router_rules[-1])  # the router and Caddy are as before
+
+    async def test_each_vm_runs_as_a_uid_of_its_own(self):
+        _host, runner, client = await self.host()
+        await self.call(client, "POST", "/v1/sandboxes", request())
+        await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def"))
+        self.assertEqual(sorted(vm.uid for vm in runner.vms.values()), [40000, 40001])
+
+    async def test_the_rootfs_image_is_built_once_with_the_guest_scripts_in_it(self):
+        host, runner, client = await self.host()
+        image = Path(host.config.root) / "rootfs" / "v1.ext4"
+        await self.call(client, "POST", "/v1/sandboxes", request())
+        await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def"))
+        built = [argv for argv in runner.argv("mkfs.ext4") if "bro-root" in argv]
+        self.assertEqual(len(built), 1)
+        self.assertIn(["-d", str(Path(host.config.root) / "rootfs" / "v1")], [built[0][i:i + 2] for i in range(len(built[0]))])
+        self.assertEqual(image.stat().st_mode & 0o777, 0o444)
+        self.assertEqual(json.loads(firecracker.image_meta(image).read_text()), {"id": firecracker.image_id("v1")})
+        injected = image_files(image)["injected"]
+        self.assertEqual({target: (text.encode(), mode) for target, (text, mode) in injected.items()},
+                         {target: (data, 0o755) for target, data in firecracker.guest_scripts().items()})
+        self.assertEqual(host.image_ids, {"v1": firecracker.image_id("v1")})
+        # The scripts changed: the image is built again (and a snapshot of the old one no longer fits).
+        with mock.patch.object(firecracker, "IMAGE_FORMAT", firecracker.IMAGE_FORMAT + 1):
+            await host.ensure_image("v1")
+            self.assertEqual(len([a for a in runner.argv("mkfs.ext4") if "bro-root" in a]), 2)
+            self.assertEqual(host.image_ids["v1"], firecracker.image_id("v1"))
+        self.assertNotEqual(host.image_ids["v1"], firecracker.image_id("v1"))
+
+    async def test_a_start_from_a_cold_set_puts_the_profile_in_the_image(self):
+        await self.parked_vm()
+        host, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body("profile"))
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertEqual(self.cookie_in(host), MARKER)
+        self.assertEqual(os.stat(self.home(host) / "profile.img").st_size, 8 * 2**20)
+
+    async def test_a_jailer_that_dies_is_a_failed_start_with_nothing_left(self):
+        host, runner, client = await self.host()
+        runner.fail_spawn = True
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
+        self.assertEqual(status, 502)
+        self.assertIn("the jailer exited", answer["error"])
+        self.assertFalse(self.home(host).exists())
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "failed")
+
+    def test_a_microvm_host_needs_a_profile_image(self):
+        with self.assertRaises(ValueError):
+            hostd.Config(runtime="firecracker", profile_mb=0)
+
+    # Park and restore --------------------------------------------------------------------------------
+
+    async def test_park_snapshots_the_vm_keeps_it_locally_and_uploads_the_profile_alone(self):
+        host, runner, client, parked = await self.parked_vm()
+        vm = self.vm_of(runner)
+        self.assertEqual([(m, p, b) for m, p, b in vm.requests[-2:]], [
+            ("PATCH", "/vm", {"state": "Paused"}),
+            ("PUT", "/snapshot/create", {"snapshot_type": "Full", "snapshot_path": "/snap/vmstate",
+                                         "mem_file_path": "/snap/mem"})])
+        self.assertFalse(vm.alive)
+        self.assertEqual((parked["state"], parked["runtime"], set(parked["parts"])), ("parked", "firecracker", {"profile"}))
+        self.assertEqual(set(parked["timings"]), {"snapshotMs", "packMs", "uploadMs", "totalMs"})
+        block = parked["format"]
+        self.assertEqual(block, {
+            "runtime": "firecracker", "local": True, "host": HOST_ID, "sandbox": "ws-abc", "generation": 3,
+            "firecracker": FIRECRACKER_VERSION, "kernel": hashlib.sha256(b"guest kernel").hexdigest(),
+            "cpu": host.cpu["features"], "rootfs": "v1", "image": firecracker.image_id("v1"), "memoryMb": 2048,
+            "vmstateSha256": hashlib.sha256(b"vmstate of ws-abc").hexdigest(),
+            "memoryBytes": len(FakeVm.MEMORY)})
+        # The manifest carries the same block, MAC-protected with the rest of it.
+        manifest = json.loads(self.storage.objects["ws/3/manifest.json"])
+        self.assertEqual((manifest["snapshot"], manifest["runtime"]), (block, "firecracker"))
+        self.assertEqual(self.storage.puts[-1], "ws/3/manifest.json")
+        for key, data in self.storage.objects.items():
+            self.assertNotIn(MARKER, data, key)
+        kept = self.snapshots(host) / "3"
+        self.assertEqual(sorted(p.name for p in kept.iterdir()),
+                         ["config.img", "mem", "meta.json", "profile.img", "vmstate"])
+        self.assertEqual(json.loads((kept / "meta.json").read_text()), block)
+        self.assertEqual(files_in(kept / "profile.img")["Default/Cookies"][0], MARKER)
+        # The set was packed from a copy of the image, mounted for the moment; the VM's own image untouched.
+        (copy,) = [argv for argv in runner.argv("cp")]
+        self.assertEqual(copy[1], "--sparse=always")
+        self.assertEqual(runner.mounted, set())
+        self.assertFalse(self.home(host).exists())
+        self.assertFalse((Path(host.config.root) / "jailer" / "firecracker" / "ws-abc").exists())
+        self.assertIn(["ip", "netns", "del", "bro-s-ws-abc"], runner.argv("ip"))
+        self.assertNotIn("/g/ws-abc/", runner.caddyfiles[-1])
+        self.assertEqual(await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()), (200, parked))
+        capacity = (await self.call(client, "GET", "/v1/capacity"))[1]
+        self.assertEqual(capacity["snapshots"]["count"], 1)
+
+    async def test_restore_loads_the_local_snapshot_with_its_own_images_and_downloads_nothing_else(self):
+        host, runner, client, parked = await self.parked_vm()
+        self.storage.gets.clear()
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"], record["generation"]), (201, "restored", 4), record)
+        self.assertNotIn("fallback", record)
+        first, second = self.vm_of(runner, last=False)
+        self.assertEqual(second.requests, [
+            ("PUT", "/snapshot/load", {"snapshot_path": "/snap/vmstate", "resume_vm": True,
+                                       "mem_backend": {"backend_path": "/snap/mem", "backend_type": "File"}})])
+        self.assertEqual(second.loaded, (b"vmstate of ws-abc", hashlib.sha256(FakeVm.MEMORY).hexdigest()))
+        self.assertEqual(self.storage.gets, ["ws/3/manifest.json"])  # the manifest alone: the profile is local
+        self.assertEqual(self.cookie_in(host), MARKER)
+        for name in ("rootfs.ext4", "profile.img", "config.img", "vmlinux"):
+            self.assertTrue((second.root / name).exists(), name)
+        # One restore per snapshot: the files are gone from the jail (the VM maps them) and from the disk.
+        self.assertFalse((second.root / "snap" / "mem").exists() or (second.root / "snap" / "vmstate").exists())
+        self.assertFalse(self.snapshots(host).exists())
+        self.assertEqual(len(runner.argv("mkfs.ext4")), 3)  # the rootfs image, the first profile, the first config
+        self.assertEqual(runner.argv("ip").count(["ip", "netns", "add", "bro-s-ws-abc"]), 2)  # fresh namespaces
+        self.assertEqual(runner.mounted, set())
+        self.assertIn("127.0.0.2", self.worker_hits[-1])
+        self.assertEqual(parked["format"]["generation"], 3)
+
+    async def test_a_restore_the_vm_refuses_starts_cold_with_the_profile_set(self):
+        host, runner, client, _parked = await self.parked_vm()
+        runner.fail_load = True
+        self.storage.gets.clear()
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertTrue(record["fallback"].startswith("the firecracker restore failed"), record["fallback"])
+        _first, failed, cold = self.vm_of(runner, last=False)
+        self.assertFalse(failed.alive)
+        self.assertEqual([p for _m, p, _b in cold.requests][0], "/boot-source")
+        self.assertTrue(any("chunk" in key for key in self.storage.gets))  # the profile came from the set
+        self.assertEqual(self.cookie_in(host), MARKER)
+        self.assertFalse(self.snapshots(host).exists())
+        self.assertEqual(runner.mounted, set())
+        self.assertFalse((cold.root / "snap" / "mem").exists())
+
+    async def test_on_another_host_there_is_no_local_snapshot_and_the_start_is_cold(self):
+        await self.parked_vm()
+        host, runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertIn("gone (evicted or lost)", record["fallback"])
+        self.assertEqual(self.cookie_in(host), MARKER)
+        self.assertEqual([p for _m, p, _b in self.vm_of(runner).requests][0], "/boot-source")
+
+    async def test_a_snapshot_that_was_changed_on_disk_is_not_loaded(self):
+        host, runner, client, _parked = await self.parked_vm()
+        (self.snapshots(host) / "3" / "vmstate").write_bytes(b"tampered")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertIn("vmstate does not match", record["fallback"])
+        self.assertTrue(all("/snapshot/load" not in p for vm in runner.vms.values() for _m, p, _b in vm.requests))
+
+    async def test_a_snapshot_fits_only_the_host_and_build_that_made_it(self):
+        host, _runner, _client, parked = await self.parked_vm()
+        record = {"id": "ws-abc", "rootfsVersion": "v1", "memoryMb": 2048}
+        block = parked["format"]
+        self.assertIsNone(host.fits(block, record))
+        reasons = {
+            "snapshot is kept on": ({**block, "host": "another-host"}, record),
+            "another sandbox": ({**block, "sandbox": "ws-other"}, record),
+            "host runs": ({**block, "firecracker": "Firecracker v0.1"}, record),
+            "guest kernel": ({**block, "kernel": "00" * 32}, record),
+            "other features": ({**block, "cpu": "0123456789abcdef"}, record),
+            "rootfs v0": ({**block, "rootfs": "v0"}, record),
+            "another build of the rootfs image": ({**block, "image": "feedfeedfeedfeed"}, record),
+            "more memory": ({**block, "memoryMb": 4096}, record),
+            "has no snapshot": (None, record),
+            "not a firecracker one": ({"runsc": "x", "cpu": "y"}, record),
+        }
+        for reason, (value, rec) in reasons.items():
+            with self.subTest(reason):
+                self.assertIn(reason, host.fits(value, rec))
+        self.assertIsNone(host.fits({**block, "memoryMb": 1024}, record))  # a smaller VM runs in the bigger limit
+
+    async def test_a_snapshot_of_another_generation_than_the_set_is_not_used(self):
+        host, _runner, client, _parked = await self.parked_vm()
+        manifest = json.loads(self.storage.objects["ws/3/manifest.json"])
+        self.assertEqual(manifest["generation"], manifest["snapshot"]["generation"])
+        record = {"id": "ws-abc"}
+        snapshot, why = host.local_snapshot(record, {**manifest, "generation": 2})
+        self.assertEqual((snapshot, why), (None, "the snapshot is of another generation than the set"))
+
+    async def test_a_failed_snapshot_resumes_the_vm_and_writes_nothing(self):
+        host, runner, client = await self.started_vm()
+        runner.fail_snapshot = True
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["error"]), (502, "firecracker snapshot failed"))
+        vm = self.vm_of(runner)
+        self.assertEqual(vm.requests[-1], ("PATCH", "/vm", {"state": "Resumed"}))
+        self.assertEqual((vm.state, vm.alive), ("Running", True))
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        self.assertEqual(self.storage.objects, {})
+        self.assertFalse(self.snapshots(host).exists())
+
+    async def test_a_failed_upload_brings_the_sandbox_back_from_its_snapshot(self):
+        host, runner, client = await self.started_vm()
+        self.storage.fail = {"ws/3/chunk-0000"}
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["restoredLocally"]), (502, True))
+        self.assertNotIn("ws/3/manifest.json", self.storage.objects)
+        first, second = self.vm_of(runner, last=False)
+        self.assertEqual((first.alive, second.alive), (False, True))
+        self.assertEqual(second.requests[0][1], "/snapshot/load")
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+        self.assertEqual(self.cookie_in(host), MARKER)
+        self.assertFalse(self.snapshots(host).exists())
+        self.assertEqual(runner.mounted, set())
+
+    async def test_a_failed_upload_and_a_failed_restore_leave_a_failed_sandbox(self):
+        _host, runner, client = await self.started_vm()
+        self.storage.fail = {"ws/3/chunk-0000"}
+        runner.fail_load = True
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["restoredLocally"]), (502, False))
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "failed")
+
+    async def test_not_enough_disk_refuses_a_park_before_anything_is_paused(self):
+        host, runner, client = await self.started_vm()
+        with mock.patch.object(hostd, "free_mb", return_value=100):
+            status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 507)
+        self.assertEqual(self.vm_of(runner).requests[-1][1], "/actions")
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+
+    async def test_the_oldest_snapshots_go_when_the_disk_budget_is_spent(self):
+        host, runner, client = await self.host()
+        host.config.snapshot_budget_gb = 0
+        for sandbox_id in ("ws-abc", "ws-def"):
+            body = request(id=sandbox_id, workspace=f"personal:{sandbox_id}", memoryMb=512)
+            self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", body))[0], 201)
+            park = self.park_body()
+            park["upload"] = {"chunkUrls": [self.url(f"{sandbox_id}/3/chunk-{i:04d}") for i in range(64)],
+                              "manifestUrl": self.url(f"{sandbox_id}/3/manifest.json")}
+            self.assertEqual((await self.call(client, "POST", f"/v1/sandboxes/{sandbox_id}/park", park))[0], 200)
+            await asyncio.sleep(0.05)
+        self.assertFalse(self.snapshots(host, "ws-abc").exists())  # evicted: its next start is cold
+        self.assertTrue((self.snapshots(host, "ws-def") / "3" / "meta.json").exists())  # the new one stays
+
+    async def test_a_newer_park_drops_the_sandboxs_older_snapshots(self):
+        host, runner, client, _parked = await self.parked_vm()
+        # Cold start from the set (the snapshot is not used), then park again as generation 5.
+        status, _record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body("profile", 4))
+        self.assertEqual(status, 201)
+        self.assertFalse(self.snapshots(host).exists())  # a cold start leaves none behind
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body(4)))[0], 200)
+        self.assertEqual(sorted(p.name for p in self.snapshots(host).iterdir()), ["4"])
+
+    # Teardown, restart, capacity ----------------------------------------------------------------------
+
+    async def test_delete_ends_the_vm_and_wipes_every_trace_of_the_sandbox(self):
+        host, runner, client = await self.started_vm()
+        vm = self.vm_of(runner)
+        status, _ = await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3")
+        self.assertEqual(status, 200)
+        self.assertFalse(vm.alive)
+        self.assertFalse(self.home(host).exists() or (Path(host.config.root) / "jailer" / "firecracker" / "ws-abc").exists())
+        self.assertIn(["ip", "netns", "del", "bro-s-ws-abc"], runner.argv("ip"))
+        self.assertNotIn("brt0", runner.host_rules[-1])
+
+    async def test_deleting_a_parked_sandbox_wipes_its_memory_snapshot_too(self):
+        host, _runner, client, _parked = await self.parked_vm()
+        self.assertTrue(self.snapshots(host).exists())
+        self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 200)
+        self.assertFalse(self.snapshots(host).exists())
+
+    async def test_a_vm_that_will_not_die_keeps_its_record_and_its_jail(self):
+        host, runner, client = await self.started_vm()
+        runner.stuck_vms.add("ws-abc")
+        status, answer = await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3")
+        self.assertEqual((status, answer["error"]), (502, "firecracker could not delete the sandbox"))
+        self.assertTrue((Path(host.config.root) / "jailer" / "firecracker" / "ws-abc").exists())
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "failed")
+        self.assertIn("/g/ws-abc/", runner.caddyfiles[-1])
+        runner.stuck_vms.clear()
+        self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 200)
+
+    async def test_a_restarted_hostd_reads_live_vms_back_and_fails_lost_ones(self):
+        host, runner, client = await self.started_vm()
+        await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def"))
+        self.vm_of(runner, "ws-def").alive = False  # the host lost this one
+        again = hostd.Host(host.config, IDENTITY, runner)
+        await again.start()
+        self.addAsyncCleanup(again.close)
+        self.assertEqual(again.sandboxes["ws-abc"]["state"], "running")
+        self.assertEqual(again.sandboxes["ws-abc"]["fcPid"], host.sandboxes["ws-abc"]["fcPid"])
+        self.assertEqual(again.sandboxes["ws-def"]["state"], "failed")
+        # ...and it can still end the live one (its pid is read from the record).
+        self.assertTrue(await again.stop_vm(hostd.Paths(host.config, "ws-abc")))
+        self.assertFalse(self.vm_of(runner).alive)
+
+    async def test_capacity_reports_the_vm_runtime_its_snapshot_format_and_memory(self):
+        host, _runner, client = await self.started_vm()
+        cgroup = Path(host.config.cgroup_root) / "bro-sandboxes" / "ws-abc"
+        cgroup.mkdir(parents=True)
+        (cgroup / "memory.current").write_text(str(1500 * 2**20))
+        status, capacity = await self.call(client, "GET", "/v1/capacity")
+        self.assertEqual(status, 200)
+        self.assertEqual((capacity["runtime"], capacity["runtimeVersion"], capacity["runsc"]),
+                         ("firecracker", FIRECRACKER_VERSION, None))
+        self.assertEqual(capacity["snapshotFormat"], {
+            "runtime": "firecracker", "firecracker": FIRECRACKER_VERSION,
+            "kernel": hashlib.sha256(b"guest kernel").hexdigest(), "cpu": host.cpu["features"], "host": HOST_ID})
+        self.assertEqual(capacity["sandboxes"][0]["usedMb"], 1500)
+        self.assertEqual(capacity["rootfsVersions"], ["v1"])  # the .ext4 image is not a version
+        health = (await self.call(client, "GET", "/v1/health", auth=False))[1]
+        self.assertEqual((health["runtime"], health["runtimeVersion"]), ("firecracker", FIRECRACKER_VERSION))
+
+    # Sets of the other runtimes -------------------------------------------------------------------------
+
+    async def test_a_runc_set_starts_cold_on_a_microvm_host(self):
+        host, runner, client = await HostTest.host(self, "r", runtime="runc")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        profile = self.home(host) / "profile" / "Default"
+        profile.mkdir()
+        (profile / "Cookies").write_bytes(MARKER)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body()))[0], 200)
+        fc, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "the set has no snapshot"))
+        self.assertEqual(self.cookie_in(fc), MARKER)
+
+    async def test_a_microvm_set_starts_cold_on_a_runc_host_with_its_profile(self):
+        await self.parked_vm()
+        host, runner, client = await HostTest.host(self, "r", runtime="runc")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertIn("runc keeps no memory snapshots", record["fallback"])
+        self.assertEqual(self.profile_on(host), MARKER)
+
+    async def test_a_gvisor_host_does_not_take_a_microvm_snapshot_for_its_own(self):
+        await self.parked_vm()
+        host, runner, client = await HostTest.host(self, "g", runtime="runsc")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body())
+        self.assertEqual((status, record["path"], record["fallback"]), (201, "cold", "the set's snapshot is a firecracker one"))
+        self.assertEqual(self.profile_on(host), MARKER)
+
+
+class UpdateTest(HostTest):
+    """POST /v1/admin/update: a bundle by URL and sha256, swapped in and run after the answer."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.served = {}
+        app = web.Application()
+        app.router.add_get("/{name}", self.serve)
+        self.bundles = TestServer(app)
+        await self.bundles.start_server()
+        self.addAsyncCleanup(self.bundles.close)
+
+    async def serve(self, request):
+        data = self.served.get(request.match_info["name"])
+        return web.Response(body=data) if data is not None else web.Response(status=404)
+
+    def bundle(self, version="2099-01-01.1", extra=(), omit=()):
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            files = {"hostd.py": f'VERSION = "{version}"\n'.encode(), "provision.sh": b"#!/bin/bash\n",
+                     "update.sh": b"#!/bin/bash\n", "requirements.txt": b"aiohttp==1\n"}
+            for name, data in files.items():
+                if name not in omit:
+                    info = tarfile.TarInfo(name)
+                    info.size, info.mode = len(data), 0o644
+                    tar.addfile(info, io.BytesIO(data))
+            for info in extra:
+                tar.addfile(info)
+        return raw.getvalue()
+
+    def offer(self, data, name="bundle.tgz"):
+        self.served[name] = data
+        return {"url": str(self.bundles.make_url(f"/{name}")), "sha256": hashlib.sha256(data).hexdigest()}
+
+    async def updater(self, **settings):
+        opt = self.tmp / "opt"
+        (opt / "host").mkdir(parents=True)
+        (opt / "host" / "hostd.py").write_text('VERSION = "old"\n')
+        host, runner, client = await self.host(**{"host_dir": str(opt / "host"), "update_delay_s": 0.01,
+                                                  "update_schemes": ("http", "https"), **settings})
+        return host, runner, client, opt
+
+    async def update(self, client, body, scope="update"):
+        response = await client.post("/v1/admin/update", json=body,
+                                     headers={"Authorization": f"Bearer {token(scope=scope)}"})
+        return response.status, await response.json()
+
+    async def test_only_a_token_with_the_update_scope_opens_it_and_opens_nothing_else(self):
+        host, runner, client, _opt = await self.updater()
+        body = self.offer(self.bundle())
+        self.assertEqual((await self.call(client, "POST", "/v1/admin/update", body, auth=False))[0], 401)
+        status, answer = await self.call(client, "POST", "/v1/admin/update", body)  # Bro's own token: no scope
+        self.assertEqual((status, answer["error"]), (401, "token scope"))
+        self.assertEqual((await self.update(client, body, scope="other"))[0], 401)
+        wrong_host = await client.post("/v1/admin/update", json=body,
+                                       headers={"Authorization": f"Bearer {token(host='host-other', scope='update')}"})
+        self.assertEqual(wrong_host.status, 401)
+        scoped = {"Authorization": f"Bearer {token(scope='update')}"}
+        for path in ("/v1/capacity", "/v1/sandboxes/ws-abc"):
+            self.assertEqual((await client.get(path, headers=scoped)).status, 401)
+        self.assertEqual(runner.update_runs, [])
+        status, answer = await self.update(client, body)
+        self.assertEqual(status, 202, answer)
+        await host.update_task
+
+    async def test_requests_are_checked_before_anything_is_downloaded(self):
+        host, runner, client, opt = await self.updater()
+        good = self.offer(self.bundle())
+        for body, why in [({"url": "ftp://x/y", "sha256": "ab" * 32}, "https"), ({"url": good["url"]}, "sha256"),
+                          ({**good, "sha256": "AB" * 32}, "sha256"), ([], "object"), ({"url": 5, "sha256": "ab" * 32}, "https")]:
+            with self.subTest(why):
+                status, answer = await self.update(client, body)
+                self.assertEqual(status, 400)
+                self.assertIn(why, answer["error"])
+        strict, _runner, client = await self.host("s")  # the default: https only
+        status, answer = await self.update(client, good)
+        self.assertEqual((status, answer["error"]), (400, "url must be an https URL"))
+
+    async def test_a_download_that_does_not_match_its_sha256_changes_nothing(self):
+        host, runner, client, opt = await self.updater()
+        body = {**self.offer(self.bundle()), "sha256": "00" * 32}
+        status, answer = await self.update(client, body)
+        self.assertEqual((status, answer["error"]), (422, "sha256 of the download does not match"))
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertFalse((opt / "host.new").exists())
+        self.assertEqual(runner.update_runs, [])
+        self.assertFalse(host.updating)
+
+    async def test_a_bundle_over_the_size_limit_is_refused(self):
+        _host, runner, client, _opt = await self.updater(update_max_bytes=100)
+        self.assertEqual((await self.update(client, self.offer(self.bundle())))[0], 413)
+
+    async def test_a_bundle_that_is_missing_is_refused(self):
+        _host, runner, client, _opt = await self.updater()
+        body = {"url": str(self.bundles.make_url("/none.tgz")), "sha256": "ab" * 32}
+        self.assertEqual((await self.update(client, body))[0], 502)
+
+    async def test_a_bundle_that_is_not_a_host_bundle_is_refused(self):
+        _host, _runner, client, opt = await self.updater()
+        link = tarfile.TarInfo("evil")
+        link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        for data, why in [(self.bundle(omit=("update.sh",)), "lacks update.sh"), (self.bundle(extra=[link]), "not a plain file"),
+                          (b"not a tarball", "does not unpack")]:
+            with self.subTest(why):
+                status, answer = await self.update(client, self.offer(data))
+                self.assertEqual(status, 422)
+                self.assertIn(why, answer["error"])
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+
+    async def test_the_new_code_is_swapped_in_update_sh_runs_and_hostd_restarts(self):
+        host, runner, client, opt = await self.updater()
+        status, answer = await self.update(client, self.offer(self.bundle()))
+        self.assertEqual((status, answer["accepted"], answer["version"], answer["willRestart"]),
+                         (202, True, "2099-01-01.1", True))
+        self.assertEqual(answer["current"], hostd.VERSION)
+        await host.update_task
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "2099-01-01.1"\n')
+        self.assertEqual((opt / "host.old" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertFalse((opt / "host.new").exists())
+        self.assertEqual((opt / "host" / "update.sh").stat().st_mode & 0o111, 0o111)
+        bash = runner.argv("bash")
+        systemctl = runner.argv("systemctl")
+        self.assertEqual(bash, [["bash", str(opt / "host" / "update.sh")]])
+        self.assertEqual(systemctl, [["systemctl", "--no-block", "restart", "bro-hostd"]])
+        order = [Path(argv[0]).name for argv, _ in runner.calls if Path(argv[0]).name in ("bash", "systemctl")]
+        self.assertEqual(order, ["bash", "systemctl"])  # restart only after update.sh succeeded
+        health = (await self.call(client, "GET", "/v1/health", auth=False))[1]
+        self.assertEqual(health["update"]["state"], "restarting")
+        # The restarted hostd marks it done.
+        again = hostd.Host(host.config, IDENTITY, runner)
+        await again.start()
+        self.addAsyncCleanup(again.close)
+        self.assertEqual(selfupdate.read_status(host.config)["state"], "done")
+        self.assertFalse(host.updating)
+
+    async def test_a_failing_update_sh_puts_the_old_code_back_and_does_not_restart(self):
+        host, runner, client, opt = await self.updater()
+        runner.update_exit = 3
+        status, _answer = await self.update(client, self.offer(self.bundle()))
+        self.assertEqual(status, 202)
+        await host.update_task
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertEqual(runner.argv("systemctl"), [])
+        state = selfupdate.read_status(host.config)
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("update.sh exited 3", state["error"])
+        self.assertFalse(host.updating)  # and the next try is possible
+        runner.update_exit = 0
+        self.assertEqual((await self.update(client, self.offer(self.bundle("2099-02-01.1"))))[0], 202)
+        await host.update_task
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "2099-02-01.1"\n')
+
+    async def test_a_second_update_while_one_is_running_is_refused(self):
+        host, runner, client, _opt = await self.updater(update_delay_s=0.3)
+        body = self.offer(self.bundle())
+        self.assertEqual((await self.update(client, body))[0], 202)
+        status, answer = await self.update(client, body)
+        self.assertEqual((status, answer["error"]), (409, "an update is already running"))
+        await host.update_task
 
 
 if __name__ == "__main__":

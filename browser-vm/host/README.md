@@ -20,9 +20,12 @@
 - **`runsc`** (gVisor, запасной путь): заморозка со страницей
   (`runsc checkpoint`) и восстановление со снимком, откат на профиль, если
   снимок не подходит. Логика снимков и `fits` остаётся рабочей и под тестами.
+- **`firecracker`** (выделенный сервер Selectel, 09.10): песочница — microVM
+  Firecracker под `jailer`; парковка — полный снимок памяти на локальном диске
+  хоста плюс профиль в Object Storage. Раздел «Firecracker» ниже.
 
-Тесты — на поддельных `runc`, `runsc`, `mount`, `ip`, `nft`, `zstd`, `caddy` и
-S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
+Тесты — на поддельных `runc`, `runsc`, `firecracker`/`jailer` (поддельный API на
+unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy` и S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
 `docs/browser-pool.md`), `runsc` на хосте пула — нет.
 
 | Файл               | Что это                                                                                                        |
@@ -30,6 +33,11 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 | `hostd.py`         | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд              |
 | `network.py`       | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль          |
 | `sets.py`          | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL              |
+| `firecracker.py`   | Firecracker: запросы к API, argv `jailer`, командная строка ядра, образ корня, локальные снимки и бюджет      |
+| `guest/`           | `bro-fc-init` (PID 1 гостя до `bro-sandbox-init`) и `bro-fc-clock` (часы гостя по PTP): кладутся в образ корня |
+| `selfupdate.py`    | `POST /v1/admin/update`: скачать бандл, сверить sha256, подменить код, `update.sh`, рестарт `hostd`           |
+| `units.sh`         | Юниты `caddy` и `bro-hostd`: их пишут `provision.sh` и `update.sh`                                            |
+| `update.sh`        | Идемпотентная часть `provision.sh` для обновления кода: venv при смене колёс, юниты, бинарники                |
 | `caddy.py`         | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
 | `seccomp.json`     | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены           |
 | `provision.sh`     | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
@@ -37,6 +45,7 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 | `vendor.json`      | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                     |
 | `requirements.txt` | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                        |
 | `test_hostd.py`    | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)               |
+| `test_firecracker.py` | Тесты `firecracker.py` и гостевых скриптов; настоящий образ корня, если есть `mkfs.ext4` и `debugfs`       |
 | `test_boot.py`     | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                |
 
 ## Песочница
@@ -305,6 +314,73 @@ worker закрыть Chrome через CDP (`POST /v1/park {"closeChrome": true
 `BrowserMetrics` профиля (по 4 МиБ на каждый SIGTERM) в набор не идёт.
 Не проверено на VM: `runsc` на хосте пула, поручения под нагрузкой соседей
 (этап 3).
+
+## Firecracker
+
+Третья среда `hostd` (`runtime: "firecracker"`, `boot.py cloud-init --runtime firecracker`): API `hostd`, Caddy,
+сеть хоста и сторона Бро те же, меняется то, чем запускается песочница. Код — `firecracker.py` (всё про VM) и
+ветки `Host.*_microvm` в `hostd.py`. Ядро гостя и пины — `browser-vm/firecracker/` (`pins.json`).
+
+**Хост** (`provision.sh`, этап `packages`): `/dev/kvm` обязан быть (иначе стадия `failed:/dev/kvm is missing (kernel …)`),
+`uname -r` пишется в журнал; `e2fsprogs`; из бандла (`vendor/firecracker/`) ставятся
+`/opt/bro/firecracker/{firecracker,jailer,vmlinux}` (пути — в `Config`: `firecracker`, `jailer`, `kernel`).
+Бандл с Firecracker: `python boot.py vendor --dir V --firecracker-url <presigned GET tgz> --kernel-url <presigned GET vmlinux>`
+(sha256 архива, двух бинарников и ядра сверяются с `browser-vm/firecracker/pins.json`; S3-ключи — в нём же), затем
+`boot.py bundle --vendor V`. Бандл воспроизводим; при `vendor/firecracker/` без пинов или с чужим файлом он не собирается.
+
+**Корень.** Каталог `/srv/bro/rootfs/<версия>/` остаётся как есть; из него один раз на версию строится
+`/srv/bro/rootfs/<версия>.ext4` (`mkfs.ext4 -d`, без журнала, `0444`) и через `debugfs -w` в него кладутся
+`/usr/local/sbin/bro-fc-init` и `bro-fc-clock` (не `/sbin/…`: в 22.04 `/sbin` — ссылка на `usr/sbin`). Образ общий и
+read-only для всех VM (диск `rootfs`, `/dev/vda`). Строят его `provision.sh` (стадия `image`, до `ready`) и `hostd`
+сам: при старте для каждой версии и при смене скриптов (имя образа — `image_id`: версия + текст скриптов + `IMAGE_FORMAT`;
+рядом `<версия>.ext4.json`). Снимок принимается только на том образе, на котором снят.
+
+**Гость.** Командная строка ядра целиком (`boot_args` заменяет умолчание Firecracker): `console=ttyS0 reboot=k panic=1
+pci=off nomodule root=/dev/vda ro init=/usr/local/sbin/bro-fc-init ip=192.168.254.2::192.168.254.1:255.255.255.252::eth0:off
+BRO_OVERLAY_MB BRO_WORKER_PORT BRO_NOW`. `bro-fc-init` монтирует proc/sys/dev, tmpfs на `overlay_mb` с overlayfs поверх
+read-only корня, конфиг-диск (`/dev/vdc`, ext4 на 4 МиБ: `worker.json` 0600 владельца `bro`, `resolv.conf`), профиль
+(`/dev/vdb`, `nodev,nosuid`) в `/var/lib/bro/profile`, `/dev/pts`, `/dev/shm` (1 ГБ), `/run`; имя `bro-sandbox`,
+`vm.dirty_expire_centisecs=100`, `vm.dirty_writeback_centisecs=100` (запись в профиль доходит до образа за секунду);
+часы — `bro-fc-clock --once` до старта (VM без RTC стартует в 1970; нет PTP — запасной `date -s @BRO_NOW`) и затем
+каждую секунду (после восстановления снимка часы стоят): `/dev/ptp0` (ptp_kvm), id часов `((~fd) << 3) | 3`, шаг
+`CLOCK_REALTIME`, если разница больше 0,5 с. Потом `pivot_root` и `exec bro-sandbox-init` с тем же окружением, что у
+`runc`. Профиль **не монтируется на хосте**, пока VM жива; перед стартом `hostd` монтирует свежий `profile.img` на
+мгновение (mkfs, распаковка набора, владелец `bro`, umount). Гостю нужны (ядро пинов это даёт): ext4, overlayfs,
+devtmpfs, virtio-mmio/blk/net/rng, `IP_PNP`, `PTP_1588_CLOCK_KVM`, `VMGENID`, user/pid/net namespaces и seccomp (Chrome).
+
+**Сеть** (`network.py`): netns песочницы `bro-s-<id>`, netns роутера, адрес внутри `192.168.254.2/30`, DNAT на :8080 и
+правила хоста те же. В netns песочницы адреса нет: `eth0` (veth) и `tap0` (владелец — uid VM) — порты моста `br0`; у
+`in0` роутера фиксированный MAC, поэтому ARP-запись, которую помнит восстановленный снимок, остаётся верной в новых netns.
+
+**Процесс.** `jailer` без `--daemonize` (exec на месте: pid, который знает `hostd`, и есть VM; stdout — консоль гостя —
+в `runtime.log`), `--netns`, `--cgroup-version 2 --parent-cgroup bro-sandboxes --cgroup memory.max=(memoryMb +
+fc_overhead_mb)`, у каждой VM свой uid/gid `fc_uid_base + слот` (30000+; взломанный Firecracker не трогает соседей).
+Chroot — `<jailer_dir>/firecracker/<id>/root` (по умолчанию `/srv/bro/jailer`, на той же ФС, что `/srv/bro`: файлы
+кладутся жёсткими ссылками — ядро, образ корня, `profile.img`, `config.img`). Настройка по API-сокету
+`firecracker.socket`: `boot-source`, диски `rootfs` (ro), `profile` (rw, `Writeback`), `config` (ro), `eth0`↔`tap0` с MAC
+`06:00:c0:a8:fe:02`, 2 vCPU (`round(cpus)`), `mem_size_mib = memoryMb`, `entropy`, `InstanceStart`. Перезапуск `hostd`
+VM не трогает: запись из `sandbox.json` держит `fcPid`, жива ли VM — по `/proc/<pid>/cmdline`.
+
+**Парковка и восстановление.** Бро по-прежнему сначала зовёт `POST /v1/park` worker (секреты из памяти; `closeChrome` не
+шлётся: страницы живут в снимке). Затем `PATCH /vm Paused`, `PUT /snapshot/create` (Full) в chroot, VM убивается,
+`vmstate`, `mem`, `profile.img`, `config.img` и `meta.json` уходят в `/srv/bro/snapshots/<id>/<поколение>/` (rename на той же
+ФС; не `/dev/shm`: файл памяти — гигабайты), а в Object Storage — профиль (из копии образа, смонтированной на хосте: журнал
+проигрывается на копии) с блоком `snapshot` в манифесте: `runtime`, `local`, `host`, `sandbox`, `generation`, версия
+Firecracker, sha256 ядра, признаки CPU, версия и `image` корня, `memoryMb`, sha256 `vmstate`, размер `mem`. Ответ парковки —
+`format` = этот блок, `parts` — только `profile`. Восстановление: манифест, `fits` (тот же хост, та же сборка и CPU, то же
+поколение — иначе `path: cold` с причиной в `fallback`), файлы снимка на диске (размер и sha256 `vmstate`), свежие netns и
+jail с теми же путями внутри, `PUT /snapshot/load` (`File`, `resume_vm`), ожидание worker; профиль из S3 не скачивается.
+Снимок используется один раз (иначе две VM с одним состоянием ГСЧ) и стирается. Сбой загрузки → холодный старт с профилем
+из набора. Бюджет `snapshot_budget_gb` (120): старые снимки удаляются, их песочница восстановится холодно. `DELETE`
+стирает и снимок. Снимок не шифруется (диск хоста — граница доверия, каталог `0700`).
+
+**Самообновление.** `POST /v1/admin/update` `{url, sha256}`: токен с claim `scope: "update"` (обычные токены Бро его не
+имеют и не проходят; токен с `update` не проходит никуда, кроме этой ручки). Токен: `BROWSER_VM_SIGNING_KEY=… python
+boot.py token --host-id <id> --scope update` (10 минут). `hostd` качает https-бандл (до 200 МБ), сверяет sha256, распаковывает
+в `/opt/bro/host.new` (только файлы и каталоги), отвечает `202`, затем подменяет `/opt/bro/host` (старый — `host.old`),
+запускает `update.sh` нового кода и `systemctl --no-block restart bro-hostd`. Сбой `update.sh` возвращает старый код и не
+перезапускает. Итог — `/srv/bro/update.json` и поле `update` в `/v1/health`. Бандл — тот же tgz, что `boot.py bundle`.
+Токен с `update` — root на хосте по построению: ключ подписи берегите.
 
 ## Тесты
 

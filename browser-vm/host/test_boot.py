@@ -1,4 +1,4 @@
-"""Host boot tests: cd browser-vm/host && python -m unittest (stdlib only).
+"""Host boot tests: cd browser-vm/host && python -m unittest (stdlib only, and hostd's imports for its tokens).
 
 The user data `boot.py` renders, the bundle it packs (with a fake vendor directory and pins made for it),
 and its boot script run in a temp directory with fake curl, dpkg and systemctl; `provision.sh` is checked for
@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import boot  # noqa: E402
 
 PROVISION = (Path(__file__).parent / "provision.sh").read_text()
+UNITS = (Path(__file__).parent / "units.sh").read_text()
 ARGS = dict(host_id="bro-host-1", key=bytes.fromhex("aa" * 32),
             bundle_url="https://s3.cloud.ru/b/host.tgz?X-Amz-Signature=x&y='z", bundle_sha256="ab" * 32,
             rootfs_version="2026-09-30.1", rootfs_url="https://s3.cloud.ru/b/rootfs.tar.zst?sig=1",
@@ -68,6 +69,14 @@ class CloudInitTest(unittest.TestCase):
         self.assertEqual(script, "".join(f"      {line}\n" if line else "\n" for line in boot.BOOT_SCRIPT.splitlines()))
         self.assertTrue(boot.BOOT_SCRIPT.startswith(
             "#!/bin/bash\nset -euo pipefail\nexec >>/var/log/bro-provision.log 2>&1\n"))
+
+    def test_firecracker_is_a_runtime_that_needs_nothing_more_in_the_user_data(self):
+        # The bundle carries Firecracker and the kernel: boot.json names the runtime and nothing else.
+        _mode, settings = written(boot.cloud_init(**{**ARGS, "runtime": "firecracker"}), "/etc/bro/boot.json")
+        settings = json.loads(settings)
+        self.assertEqual((settings["runtime"], settings["runscRelease"]), ("firecracker", ""))
+        self.assertEqual(set(settings), set(json.loads(written(boot.cloud_init(**ARGS), "/etc/bro/boot.json")[1])))
+        self.assertEqual(boot.RUNTIMES, ("runc", "runsc", "firecracker"))
 
     def test_runsc_needs_a_dated_release_and_runc_none(self):
         for release in ("release", "latest", "2026-09-14", "", None):
@@ -126,6 +135,106 @@ class BundleTest(unittest.TestCase):
         self.assertTrue({"aiohttp", "cryptography", "async-timeout"} <= set(names))  # Python 3.10 needs it
         self.assertRegex(boot.VENDOR["caddy"]["binarySha256"], r"^[0-9a-f]{64}$")
         self.assertTrue(boot.VENDOR["caddy"]["url"].startswith("https://github.com/caddyserver/caddy/releases/"))
+
+
+FIRECRACKER_PINS = {
+    "kernel": {"version": "6.1.0", "sha256": boot.sha256(b"guest kernel")},
+    "firecracker": {"version": "v1.0.0", "sha256": boot.sha256(b"tgz"),
+                    "firecrackerSha256": boot.sha256(b"fc binary"), "jailerSha256": boot.sha256(b"jailer binary")},
+    "paths": {"firecracker": "release/firecracker", "jailer": "release/jailer"},
+}
+
+
+class FirecrackerBundleTest(unittest.TestCase):
+    """The bundle of a firecracker host: the same, with vendor/firecracker/ checked against the pins."""
+
+    vendor = BundleTest.vendor
+
+    def with_firecracker(self):
+        directory, pins = self.vendor()
+        (directory / "firecracker").mkdir()
+        (directory / "firecracker" / "firecracker").write_bytes(b"fc binary")
+        (directory / "firecracker" / "jailer").write_bytes(b"jailer binary")
+        (directory / "firecracker" / "vmlinux").write_bytes(b"guest kernel")
+        return directory, {**pins, "firecracker_pins": FIRECRACKER_PINS}
+
+    def test_carries_the_pinned_binaries_and_kernel_reproducibly(self):
+        directory, pins = self.with_firecracker()
+        first = boot.bundle(directory, **pins)
+        self.assertEqual(first, boot.bundle(directory, **pins))
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress(first))) as tar:
+            members = {m.name: m.mode for m in tar.getmembers()}
+            versions = json.loads(tar.extractfile("vendor/firecracker/versions.json").read())
+        self.assertEqual({k: v for k, v in members.items() if k.startswith("vendor/firecracker")}, {
+            "vendor/firecracker/firecracker": 0o755, "vendor/firecracker/jailer": 0o755,
+            "vendor/firecracker/vmlinux": 0o644, "vendor/firecracker/versions.json": 0o644})
+        self.assertEqual(versions, {"firecracker": "v1.0.0", "kernel": "6.1.0"})
+        self.assertEqual((members["guest/bro-fc-init"], members["guest/bro-fc-clock"], members["update.sh"]),
+                         (0o755, 0o755, 0o755))
+        self.assertLessEqual({"firecracker.py", "selfupdate.py", "units.sh", "update.sh"}, set(members))
+
+    def test_a_binary_or_kernel_that_is_not_the_pinned_one_never_goes_in(self):
+        for name in ("firecracker", "jailer", "vmlinux"):
+            with self.subTest(name):
+                directory, pins = self.with_firecracker()
+                (directory / "firecracker" / name).write_bytes(b"something else")
+                with self.assertRaisesRegex(ValueError, name):
+                    boot.bundle(directory, **pins)
+        directory, pins = self.with_firecracker()
+        (directory / "firecracker" / "extra").write_bytes(b"x")
+        with self.assertRaisesRegex(ValueError, "extra"):
+            boot.bundle(directory, **pins)
+
+    def test_the_repository_pins_load(self):
+        pins = boot.firecracker_pins()
+        self.assertRegex(pins["kernel"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(set(pins["paths"]), {"firecracker", "jailer"})
+
+    def test_vendor_checks_the_downloads_against_the_pins(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            for name, data in (("release/firecracker", b"fc binary"), ("release/jailer", b"jailer binary")):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        pins = json.loads(json.dumps(FIRECRACKER_PINS))
+        pins["firecracker"]["sha256"] = boot.sha256(raw.getvalue())
+        served = {"tgz": raw.getvalue(), "kernel": b"guest kernel"}
+        original = boot.urllib.request.urlopen
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        boot.urllib.request.urlopen = lambda url, timeout=0: Response(served[url])
+        self.addCleanup(setattr, boot.urllib.request, "urlopen", original)
+        boot.vendor_firecracker(directory, "tgz", "kernel", pins)
+        self.assertEqual((directory / "firecracker" / "jailer").read_bytes(), b"jailer binary")
+        self.assertEqual((directory / "firecracker" / "firecracker").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((directory / "firecracker" / "vmlinux").read_bytes(), b"guest kernel")
+        served["kernel"] = b"another kernel"
+        with self.assertRaisesRegex(SystemExit, "guest kernel"):
+            boot.vendor_firecracker(directory, "tgz", "kernel", pins)
+
+
+class TokenTest(unittest.TestCase):
+    def test_the_update_token_hostd_checks(self):
+        sys.path.insert(0, str(Path(__file__).parent))
+        import hostd
+
+        key = boot.host_key("11" * 32, "host-1")
+        identity = {"host": "host-1", "key": key}
+        value = boot.token("11" * 32, "host-1", "update")
+        self.assertEqual(hostd.verify_token(value, identity, scope="update")["scope"], "update")
+        with self.assertRaisesRegex(hostd.Unauthorized, "token scope"):
+            hostd.verify_token(value, identity)  # an update token opens nothing else
+        with self.assertRaisesRegex(hostd.Unauthorized, "token scope"):
+            hostd.verify_token(boot.token("11" * 32, "host-1", "other"), identity, scope="update")
 
 
 class BootScriptTest(unittest.TestCase):
@@ -257,7 +366,7 @@ class ProvisionTest(unittest.TestCase):
     def test_host_setup_invariants(self):
         self.assertIn("net.ipv4.ip_forward = 1", PROVISION)
         self.assertIn("systemctl disable --now nftables", PROVISION)  # its unit flushes hostd's table
-        self.assertIn("KillMode=process", PROVISION)
+        self.assertIn("KillMode=process", UNITS)
         self.assertIn("admin unix//run/caddy/admin.sock", PROVISION)
         self.assertNotIn("127.0.0.53", PROVISION)
         self.assertIn('sha256sum -c --quiet -', PROVISION)  # the rootfs is checked before it is unpacked
@@ -273,8 +382,8 @@ class ProvisionTest(unittest.TestCase):
         self.assertIn("fs.inotify.max_user_instances = 8192", PROVISION)  # one `bro` uid for every sandbox
         # Caddy faces the internet: it binds 80 and 443 and nothing more (no nft over hostd's table).
         self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
-                      "NoNewPrivileges=true\n", PROVISION)
-        self.assertNotRegex(PROVISION, r"Capabilit\w*=.*CAP_NET_ADMIN")
+                      "NoNewPrivileges=true\n", UNITS)
+        self.assertNotRegex(PROVISION + UNITS, r"Capabilit\w*=.*CAP_NET_ADMIN")
         self.assertIn('dpkg --compare-versions "$(dpkg-query -W -f=\'${Version}\' runc)" ge 1.1.12', PROVISION)
         # The host's own public address is refused to sandboxes like every other blocked destination.
         self.assertIn('settings["egress_blocked"] = [sys.argv[3] + "/32"]', PROVISION)
@@ -303,6 +412,41 @@ class ProvisionTest(unittest.TestCase):
         # And its name is on disk before `ready` is: a ready host is never set up again.
         self.assertIn('mv "$PARTIAL" "$ROOTFS"\n  sync\nfi\n', rootfs)
 
+    def test_firecracker_host_setup(self):
+        self.assertIn('"$RUNTIME" != firecracker', PROVISION)
+        self.assertIn("firecracker) PACKAGES+=(e2fsprogs)", PROVISION)
+        # No KVM, no host: said at the stage, with the kernel, not at the first sandbox.
+        self.assertIn('[ ! -c /dev/kvm ]', PROVISION)
+        self.assertIn('failed:/dev/kvm is missing (kernel $(uname -r))', PROVISION)
+        self.assertIn('echo "kernel $(uname -r), runtime $RUNTIME"', PROVISION)
+        self.assertLess(PROVISION.index("[ ! -c /dev/kvm ]"), PROVISION.index("stage venv"))
+        # Binaries and kernel come from the bundle, to the paths hostd's Config names.
+        self.assertIn('install -m 755 "$HOST/vendor/firecracker/firecracker" "$HOST/vendor/firecracker/jailer" '
+                      '/opt/bro/firecracker/', PROVISION)
+        self.assertIn('install -m 644 "$HOST/vendor/firecracker/vmlinux" /opt/bro/firecracker/vmlinux', PROVISION)
+        config = hostd_config()
+        self.assertEqual((config.firecracker, config.jailer, config.kernel),
+                         ("/opt/bro/firecracker/firecracker", "/opt/bro/firecracker/jailer",
+                          "/opt/bro/firecracker/vmlinux"))
+        # The rootfs image is built before the host is ready.
+        self.assertLess(PROVISION.index("firecracker.py\" build-image"), PROVISION.index("stage ready"))
+        self.assertLess(PROVISION.index("stage rootfs"), PROVISION.index("firecracker.py\" build-image"))
+        self.assertNotIn("github", PROVISION)
+
+    def test_update_script_is_valid_and_repeats_only_what_a_code_update_needs(self):
+        update = (Path(__file__).parent / "update.sh").read_text()
+        subprocess.run(["bash", "-n", str(Path(__file__).parent / "update.sh")], check=True)
+        subprocess.run(["bash", "-n", str(Path(__file__).parent / "units.sh")], check=True)
+        self.assertIn('. "$HOST/units.sh"', update)
+        self.assertIn('. "$HOST/units.sh"', PROVISION)
+        # The venv only when requirements.txt changed (provision.sh stamps what it installed).
+        self.assertIn('/opt/bro/venv/.requirements.sha256', PROVISION)
+        self.assertIn('"$WANT" != "$(cat "$VENV/.requirements.sha256"', update)
+        self.assertIn("--no-index --find-links", update)
+        self.assertIn("--require-hashes", update)
+        for forbidden in ("apt-get", "curl", "mkfs", "rm -rf"):
+            self.assertNotIn(forbidden, update)
+
     def test_the_stage_is_readable_before_the_slow_steps(self):
         # hostd serves `stage` on /h/v1/health: it must be up before the rootfs download, or a failure
         # there would only show as a host that never answers.
@@ -324,6 +468,13 @@ class ProvisionTest(unittest.TestCase):
                 self.assertEqual(settings.get("egress_blocked"), blocked)
                 self.assertEqual(settings["runtime"], "runc")
         self.assertLess(PROVISION.index("systemctl enable --now bro-hostd"), PROVISION.index("stage rootfs"))
+
+
+def hostd_config():
+    sys.path.insert(0, str(Path(__file__).parent))
+    import hostd
+
+    return hostd.Config(runtime="firecracker")
 
 
 if __name__ == "__main__":

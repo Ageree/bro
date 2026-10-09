@@ -9,18 +9,28 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
       Caddy's static binary (GitHub release, sha256 pinned in vendor.json) and the hostd wheels
       (requirements.txt, sha256 pinned per wheel) for the host's Python 3.10 on x86_64
 
+  python boot.py vendor --dir vendor/ --firecracker-url URL --kernel-url URL
+      also Firecracker and its guest kernel (browser-vm/firecracker/pins.json: the tarball, the binaries in it
+      and the kernel are checked against its sha256s) into vendor/firecracker/, for a firecracker host; the
+      URLs are presigned GETs of the objects the pins name (their S3 keys)
+
   python boot.py bundle --vendor vendor/ --out host-bundle.tgz
       the host code (provision.sh, hostd and its modules) with the vendored files, as a reproducible
-      tarball; prints its sha256. Upload it next to the sandbox rootfs and presign a GET for each new host
+      tarball; prints its sha256. Upload it next to the sandbox rootfs and presign a GET for each new host.
+      With vendor/firecracker/ it carries Firecracker too (bundle for a firecracker host; also the body of a
+      self-update: hostd's POST /v1/admin/update takes this tarball by URL and sha256)
+
+  BROWSER_VM_SIGNING_KEY=… python boot.py token --host-id bro-host-1 --scope update
+      a 10-minute token for hostd's /v1/admin/update (Bro's own tokens have no scope and are refused there)
 
   BROWSER_VM_SIGNING_KEY=… python boot.py cloud-init --host-id bro-host-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
-      [--runtime runc|runsc --runsc-release 20260914] [--apt-mirror …] [--domain …]
+      [--runtime runc|runsc|firecracker --runsc-release 20260914] [--apt-mirror …] [--domain …]
       the user data for one host (base64 it for the Compute API)
 
 On the host, bro-host-boot (a cloud-init per-boot script: every boot until the host is ready) fetches the
 bundle, checks its SHA-256 and runs provision.sh, which points apt at the mirror, installs runc (or a pinned
-runsc), nftables and zstd, Caddy and the hostd venv from the bundle, their systemd units, and unpacks the
+runsc, or Firecracker from the bundle), nftables and zstd, Caddy and the hostd venv from the bundle, their systemd units, and unpacks the
 rootfs. Bro's own host creation (`browserHostCloudInit` in agent/lib/browser-pool/hosts.ts) writes the same
 user data byte for byte, and tests/agent/browser-pool/hosts.test.ts runs this script to hold it to that:
 change both together.
@@ -33,6 +43,7 @@ that does not answer is only slow. It takes sandboxes at `ready`.
 """
 
 import argparse
+import base64
 import gzip
 import hashlib
 import hmac
@@ -43,13 +54,18 @@ import re
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "hostd.py", "network.py", "sets.py", "caddy.py", "seccomp.json", "requirements.txt")
+FILES = ("provision.sh", "units.sh", "update.sh", "hostd.py", "network.py", "sets.py", "caddy.py",
+         "firecracker.py", "selfupdate.py", "guest/bro-fc-init", "guest/bro-fc-clock", "seccomp.json",
+         "requirements.txt")
+EXECUTABLE = (".sh", "bro-fc-init", "bro-fc-clock")
+FIRECRACKER_DIR = HERE.parent / "firecracker"
 VENDOR = json.loads((HERE / "vendor.json").read_text())
-RUNTIMES = ("runc", "runsc")
+RUNTIMES = ("runc", "runsc", "firecracker")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 BOOT_SCRIPT_PATH = "/var/lib/cloud/scripts/per-boot/bro-host-boot"
@@ -140,10 +156,44 @@ def vendored(vendor_dir, *, caddy_sha256=None, wheel_hashes=None):
     return files
 
 
+def firecracker_pins(path=None):
+    """browser-vm/firecracker/pins.json (the tarball, the two binaries in it and the guest kernel) with
+    firecracker.json beside it (where the binaries are in the tarball)."""
+    path = Path(path) if path else FIRECRACKER_DIR / "pins.json"
+    pins = json.loads(path.read_text())
+    layout = json.loads((path.parent / "firecracker.json").read_text())["binaries"]
+    return {**pins, "paths": {name: layout[name]["path"] for name in ("firecracker", "jailer")}}
+
+
+def vendored_firecracker(vendor_dir, pins=None):
+    """[(path in the bundle, bytes, mode)] of vendor/firecracker/ when the vendor directory has it: the two
+    binaries and the guest kernel, each checked against its pin, and the pins themselves; nothing else."""
+    folder = Path(vendor_dir) / "firecracker"
+    if not folder.exists():
+        return []
+    pins = pins or firecracker_pins()
+    expected = {"firecracker": pins["firecracker"]["firecrackerSha256"], "jailer": pins["firecracker"]["jailerSha256"],
+                "vmlinux": pins["kernel"]["sha256"]}
+    files = []
+    for name, digest in expected.items():
+        data = (folder / name).read_bytes()
+        if sha256(data) != digest:
+            raise ValueError(f"vendor/firecracker/{name} is not the pinned one")
+        files.append((f"vendor/firecracker/{name}", data, 0o644 if name == "vmlinux" else 0o755))
+    stray = {p.name for p in folder.iterdir()} - set(expected)
+    if stray:
+        raise ValueError(f"vendor/firecracker holds files the pins do not name: {sorted(stray)}")
+    files.append(("vendor/firecracker/versions.json", json.dumps(
+        {"firecracker": pins["firecracker"]["version"], "kernel": pins["kernel"]["version"]}, sort_keys=True).encode(),
+        0o644))
+    return files
+
+
 def bundle(vendor_dir, **pins):
     """The host code and its vendored files as a gzip tarball, byte for byte the same for the same files."""
-    entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith(".sh") else 0o644) for name in FILES]
-    entries += vendored(vendor_dir, **pins)
+    entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith(EXECUTABLE) else 0o644) for name in FILES]
+    entries += vendored(vendor_dir, **{k: v for k, v in pins.items() if k != "firecracker_pins"})
+    entries += vendored_firecracker(vendor_dir, pins.get("firecracker_pins"))
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for name, data, mode in entries:
@@ -178,6 +228,43 @@ def vendor(target):
         argv += ["--abi", abi]
     subprocess.run(argv, check=True)
     vendored(target)  # exactly the pinned set, nothing else
+
+
+def download(url, expected_sha256, what):
+    with urllib.request.urlopen(url, timeout=600) as response:
+        data = response.read()
+    if sha256(data) != expected_sha256:
+        raise SystemExit(f"{what} is not the pinned object (sha256 differs)")
+    return data
+
+
+def vendor_firecracker(target, firecracker_url, kernel_url, pins=None):
+    """Firecracker, the jailer and the guest kernel into <target>/firecracker/, each against its pin."""
+    pins = pins or firecracker_pins()
+    folder = Path(target) / "firecracker"
+    folder.mkdir(parents=True, exist_ok=True)
+    release = pins["firecracker"]
+    archive = download(firecracker_url, release["sha256"], "the Firecracker tarball")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        for name in ("firecracker", "jailer"):
+            data = tar.extractfile(pins["paths"][name]).read()
+            if sha256(data) != release[f"{name}Sha256"]:
+                raise SystemExit(f"the tarball holds another {name} than the pinned one")
+            (folder / name).write_bytes(data)
+            (folder / name).chmod(0o755)
+    kernel = download(kernel_url, pins["kernel"]["sha256"], "the guest kernel")
+    (folder / "vmlinux").write_bytes(kernel)
+    vendored_firecracker(target, pins)
+
+
+def token(signing_key_hex, host_id, scope, lifetime_s=600, now=None):
+    """A hostd token (hostd.py `verify_token`) with a scope claim, for the operator's calls."""
+    payload = base64.urlsafe_b64encode(json.dumps(
+        {"env": host_id, "exp": int((time.time() if now is None else now) + lifetime_s), "scope": scope},
+        separators=(",", ":")).encode()).rstrip(b"=").decode()
+    signed = f"v1.{payload}"
+    signature = hmac.new(host_key(signing_key_hex, host_id), signed.encode(), hashlib.sha256).digest()
+    return f"{signed}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
 def quoted(text):
@@ -225,6 +312,11 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("vendor")
     fetch.add_argument("--dir", required=True)
+    fetch.add_argument("--firecracker-url")
+    fetch.add_argument("--kernel-url")
+    tokens = commands.add_parser("token")
+    tokens.add_argument("--host-id", required=True)
+    tokens.add_argument("--scope", default="update")
     pack = commands.add_parser("bundle")
     pack.add_argument("--vendor", required=True)
     pack.add_argument("--out", required=True)
@@ -238,6 +330,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "vendor":
         vendor(args.dir)
+        if args.firecracker_url or args.kernel_url:
+            if not (args.firecracker_url and args.kernel_url):
+                sys.exit("--firecracker-url and --kernel-url go together")
+            vendor_firecracker(args.dir, args.firecracker_url, args.kernel_url)
         return
     if args.command == "bundle":
         data = bundle(args.vendor)
@@ -247,6 +343,9 @@ def main(argv=None):
     signing = "".join(os.environ.get("BROWSER_VM_SIGNING_KEY", "").split()).strip("‘’“”'\"")
     if not signing:
         sys.exit("BROWSER_VM_SIGNING_KEY is required")
+    if args.command == "token":
+        print(token(signing, args.host_id, args.scope))
+        return
     sys.stdout.write(cloud_init(
         host_id=args.host_id, key=host_key(signing, args.host_id), runtime=args.runtime,
         runsc_release=args.runsc_release, apt_mirror=args.apt_mirror, bundle_url=args.bundle_url,
