@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
 import { z } from "zod";
 import { Alert } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
-import { Input } from "@web/components/ui/input";
 import { Spinner } from "@web/components/ui/spinner";
 import {
   finishedSchema,
@@ -86,8 +85,8 @@ async function call<Schema extends z.ZodType>(
 }
 
 /**
- * The sign-in window: a picture of one page of Bro's browser, and the person's
- * taps and keys going back to it. The address bar is drawn here from what the
+ * The sign-in window: a live picture of one page of Bro's browser, and the
+ * person's pointer, taps and keys going back to it. The address bar is drawn here from what the
  * browser's worker reports of the page, outside the picture, so a page cannot
  * paint a bar of its own. Nothing typed is kept here.
  */
@@ -95,9 +94,12 @@ export function Viewer({ id }: { readonly id: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [bar, setBar] = useState<Bar | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [text, setText] = useState("");
-  const [hidden, setHidden] = useState(true);
+  const [framed, setFramed] = useState(false);
   const canvas = useRef<HTMLCanvasElement | null>(null);
+  // Takes the phone's keyboard and its typing; the page's own key handler
+  // takes a computer's keys.
+  const keys = useRef<HTMLInputElement | null>(null);
+  const lastMove = useRef(0);
   const socket = useRef<WebSocket | null>(null);
   const size = useRef({ h: 900, w: 1366 });
   const closing = useRef(false);
@@ -183,6 +185,7 @@ export function Viewer({ id }: { readonly id: string }) {
       if (target.width !== image.width) target.width = image.width;
       if (target.height !== image.height) target.height = image.height;
       context.drawImage(image, 0, 0);
+      setFramed(true);
     });
     image.src = `data:image/jpeg;base64,${data}`;
   }
@@ -305,7 +308,16 @@ export function Viewer({ id }: { readonly id: string }) {
 
   function onPointerMove(event: PointerEvent<HTMLButtonElement>) {
     const current = drag.current;
-    if (!current) return;
+    if (!current) {
+      // A mouse moving over the picture moves the pointer in the page too, so
+      // hover menus and buttons answer. A finger only drags.
+      const now = Date.now();
+      if (event.pointerType !== "mouse" || now - lastMove.current < 50) return;
+      lastMove.current = now;
+      const point = place(event);
+      send({ t: "move", x: point.x, y: point.y });
+      return;
+    }
     const dy = current.y - event.clientY;
     if (!current.moved && Math.hypot(event.clientX - current.x, dy) < 8) return;
     current.moved = true;
@@ -331,10 +343,14 @@ export function Viewer({ id }: { readonly id: string }) {
     if (current && !current.moved) {
       const point = place(event);
       send({ t: "tap", x: point.x, y: point.y });
+      // A tap on a field brings up a phone's keyboard.
+      keys.current?.focus();
     }
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  function onKeyDown(
+    event: KeyboardEvent<HTMLButtonElement | HTMLInputElement>
+  ) {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (namedKeySet.has(event.key)) {
       event.preventDefault();
@@ -346,10 +362,11 @@ export function Viewer({ id }: { readonly id: string }) {
     }
   }
 
-  function sendText() {
-    if (text === "") return;
-    send({ s: text, t: "text" });
-    setText("");
+  /** What a phone's keyboard typed: text goes in whole, whatever was typed. */
+  function onTyped(event: ChangeEvent<HTMLInputElement>) {
+    const typed = event.currentTarget.value;
+    event.currentTarget.value = "";
+    if (typed !== "") send({ s: typed, t: "text" });
   }
 
   async function cancel() {
@@ -375,8 +392,9 @@ export function Viewer({ id }: { readonly id: string }) {
       <div className="flex max-w-[34rem] flex-col gap-4">
         <h1 className="type-page-title">Вход на {phase.domain}</h1>
         <p className="type-body">
-          Сейчас откроется окно браузера Бро. Войдите на {phase.domain} сами:
-          логин, пароль и код вводите прямо там. Бро не сохраняет их. Если сайт
+          Сейчас откроется страница {phase.domain} в браузере Бро, как в обычном
+          окне: двигайте курсор, нажимайте на поля и печатайте прямо в ней.
+          Логин, пароль и код вводите там же. Бро не сохраняет их. Если сайт
           предлагает «Запомнить меня», отметьте это — вход продержится дольше.
           Когда войдёте, нажмите «Готово».
         </p>
@@ -431,100 +449,54 @@ export function Viewer({ id }: { readonly id: string }) {
         ) : null}
       </div>
       {notice === null ? null : <Alert variant="information">{notice}</Alert>}
-      <button
-        aria-label="Окно браузера Бро: коснитесь поля, чтобы ввести текст"
-        className="block w-full cursor-default touch-none border border-border bg-muted p-0"
-        onKeyDown={onKeyDown}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onWheel={(event) => {
-          send({
-            dy: event.deltaY,
-            t: "scroll",
-            x: size.current.w / 2,
-            y: size.current.h / 2,
-          });
-        }}
-        type="button"
-      >
-        <canvas
-          className="block w-full"
-          height={900}
-          ref={canvas}
-          width={1366}
-        />
-      </button>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          aria-label="Текст для поля на странице"
+      <div className="relative">
+        <button
+          aria-label="Окно браузера Бро: нажимайте и печатайте прямо здесь"
+          className="block w-full cursor-default touch-none border border-border bg-muted p-0"
+          onKeyDown={onKeyDown}
+          onPointerCancel={() => {
+            drag.current = null;
+          }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onWheel={(event) => {
+            send({
+              dy: event.deltaY,
+              t: "scroll",
+              x: size.current.w / 2,
+              y: size.current.h / 2,
+            });
+          }}
+          type="button"
+        >
+          <canvas
+            className="block w-full"
+            height={900}
+            ref={canvas}
+            width={1366}
+          />
+        </button>
+        {framed ? null : (
+          <p className="type-body pointer-events-none absolute inset-0 flex items-center justify-center text-muted-foreground">
+            <Spinner className="mr-2 inline" />
+            Загружаю страницу…
+          </p>
+        )}
+        <input
+          aria-label="Ввод с клавиатуры телефона"
           autoCapitalize="none"
           autoComplete="off"
           autoCorrect="off"
-          className="min-w-[12rem] flex-1"
-          name="handoff-text"
-          onChange={(event) => {
-            setText(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              sendText();
-            }
-          }}
-          placeholder="Коснитесь поля на странице, введите здесь"
+          className="pointer-events-none absolute bottom-0 left-0 size-px opacity-0"
+          name="handoff-keys"
+          onChange={onTyped}
+          onKeyDown={onKeyDown}
+          ref={keys}
           spellCheck={false}
-          type={hidden ? "password" : "text"}
-          value={text}
+          tabIndex={-1}
+          type="text"
         />
-        <Button onClick={sendText} variant="outline">
-          Вставить в поле
-        </Button>
-        <Button
-          onClick={() => {
-            setHidden((value) => !value);
-          }}
-          variant="quiet"
-        >
-          {hidden ? "Показать" : "Скрыть"}
-        </Button>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          onClick={() => {
-            send({ k: "Enter", t: "key" });
-          }}
-          variant="outline"
-        >
-          Enter
-        </Button>
-        <Button
-          onClick={() => {
-            send({ k: "Tab", t: "key" });
-          }}
-          variant="outline"
-        >
-          Tab
-        </Button>
-        <Button
-          onClick={() => {
-            send({ k: "Backspace", t: "key" });
-          }}
-          variant="outline"
-        >
-          ⌫
-        </Button>
-        <Button
-          onClick={() => {
-            send({ t: "back" });
-          }}
-          variant="outline"
-        >
-          Назад
-        </Button>
       </div>
       <div className="flex flex-wrap gap-3 pt-2">
         <Button

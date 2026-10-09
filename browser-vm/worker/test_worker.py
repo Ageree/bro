@@ -354,6 +354,8 @@ class HandoffRulesTest(unittest.TestCase):
         tap = worker.handoff_input({"t": "tap", "x": 10, "y": 20.5}, 1366, 900)
         self.assertEqual([call[0] for call in tap], ["Input.dispatchMouseEvent"] * 3)
         self.assertEqual([call[1]["type"] for call in tap], ["mouseMoved", "mousePressed", "mouseReleased"])
+        move = worker.handoff_input({"t": "move", "x": 7, "y": 9}, 1366, 900)
+        self.assertEqual(move, [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 7.0, "y": 9.0})])
         self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["x"], 1366)
         self.assertEqual(worker.handoff_input({"t": "tap", "x": 99999, "y": -5}, 1366, 900)[0][1]["y"], 0)
         self.assertEqual(worker.handoff_input({"t": "text", "s": "a\nb\x00c\x7f"}, 1, 1),
@@ -365,7 +367,7 @@ class HandoffRulesTest(unittest.TestCase):
         scroll = worker.handoff_input({"t": "scroll", "x": 5, "y": 5, "dy": 99999}, 100, 100)
         self.assertEqual(scroll[0][1]["deltaY"], 1200)
         for message in ({"t": "cdp", "method": "Network.getAllCookies"}, {"t": "key", "k": "a"}, {"t": "key", "k": "F12"},
-                        {"t": "tap", "x": "1", "y": 1}, {"t": "tap", "x": True, "y": 1}, {"t": "tap", "x": float("nan"), "y": 1},
+                        {"t": "tap", "x": "1", "y": 1}, {"t": "move", "x": None, "y": 1}, {"t": "tap", "x": True, "y": 1}, {"t": "tap", "x": float("nan"), "y": 1},
                         {"t": "text", "s": 1}, {"t": "text", "s": "\n"}, {"t": "navigate", "url": "file:///"}, {}):
             self.assertIsNone(worker.handoff_input(message, 1366, 900), message)
 
