@@ -35,6 +35,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import network
@@ -301,10 +302,13 @@ def dir_bytes(path):
     return total
 
 
-def evict_snapshots(root, budget_bytes, keep=None):
-    """Delete the oldest snapshots (by their meta.json) until the rest fits the budget; `keep` (id, generation)
-    is never evicted. Eviction only means the next restore of that sandbox is a cold start. The names removed
-    (blocking: run it in a thread)."""
+def evict_snapshots(root, budget_bytes, keep=None, *, max_age_s=None, need_free_bytes=0, free_bytes=None,
+                    protect=(), now=None):
+    """Delete snapshots (by their meta.json, oldest first) that are older than `max_age_s`, then as many of the
+    oldest as it takes to fit `budget_bytes` and to leave `need_free_bytes` free on the disk (`free_bytes()`
+    measures it, None = unknown). Never evicted: `keep` ((id, generation); a generation of None keeps all of
+    that sandbox's) and the sandboxes in `protect`. Eviction only means the next restore of that sandbox is a
+    cold start. The names removed (blocking: run it in a thread)."""
     base = Path(root) / "snapshots"
     entries = []
     for meta in base.glob("*/*/meta.json"):
@@ -313,11 +317,25 @@ def evict_snapshots(root, budget_bytes, keep=None):
             entries.append((meta.stat().st_mtime, directory, dir_bytes(directory)))
     entries.sort()
     total = sum(size for _m, _d, size in entries)
+    expired_before = None if not max_age_s else (time.time() if now is None else now) - max_age_s
     evicted = []
-    for _mtime, directory, size in entries:
-        if total <= budget_bytes:
-            break
-        if keep is not None and (directory.parent.name, directory.name) == (keep[0], str(keep[1])):
+
+    def kept(directory):
+        sandbox, generation = directory.parent.name, directory.name
+        return sandbox in protect or (keep is not None and sandbox == keep[0]
+                                      and (keep[1] is None or generation == str(keep[1])))
+
+    def short_of_room():
+        if need_free_bytes and free_bytes is not None:
+            free = free_bytes()
+            if free is not None and free < need_free_bytes:
+                return True
+        return total > budget_bytes
+
+    for mtime, directory, size in entries:
+        if kept(directory):
+            continue
+        if not (expired_before is not None and mtime < expired_before) and not short_of_room():
             continue
         shutil.rmtree(directory, ignore_errors=True)
         with contextlib.suppress(OSError):

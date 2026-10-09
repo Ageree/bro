@@ -6,8 +6,10 @@ syntax and for what must never drift (runc by default and a pinned runsc, nothin
 no flushed nftables, sandboxes that outlive hostd, every step safe to repeat).
 """
 
+import base64
 import gzip
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -18,6 +20,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -55,6 +58,40 @@ class CloudInitTest(unittest.TestCase):
         self.assertEqual(settings["aptMirror"], "http://mirror.yandex.ru/ubuntu")
         self.assertEqual(settings["rootfs"], {"version": "2026-09-30.1", "url": ARGS["rootfs_url"],
                                               "sha256": "cd" * 32})
+
+    def test_the_update_key_is_written_only_when_the_operators_signing_key_is_given(self):
+        # Bro's own writer (agent/lib/browser-pool/hosts.ts) never writes it, and tests/agent/browser-pool/
+        # hosts.test.ts holds this script to its bytes: without the operator's key nothing changes.
+        _mode, plain = written(boot.cloud_init(**ARGS), "/etc/bro/host.json")
+        self.assertEqual(plain, json.dumps({"host": "bro-host-1", "key": "aa" * 32}))
+        update = boot.update_key("33" * 32, "bro-host-1")
+        mode, identity = written(boot.cloud_init(**ARGS, host_update_key=update), "/etc/bro/host.json")
+        self.assertEqual(mode, "0600")
+        self.assertEqual(json.loads(identity), {"host": "bro-host-1", "key": "aa" * 32, "updateKey": update.hex()})
+        # HMAC-SHA256(signing key, "bro-browser-host-update:" + host id): another domain than the host key,
+        # so one never stands in for the other, and another host has another key.
+        self.assertEqual(update, hmac.new(bytes.fromhex("33" * 32), b"bro-browser-host-update:bro-host-1",
+                                          hashlib.sha256).digest())
+        self.assertNotEqual(update, boot.host_key("33" * 32, "bro-host-1"))
+        self.assertNotEqual(update, boot.update_key("33" * 32, "bro-host-2"))
+        self.assertEqual(len(update.hex()), 64)
+
+    def test_the_command_line_makes_the_update_key_from_its_own_env_and_never_from_bros(self):
+        argv = ["cloud-init", "--host-id", "bro-host-1", "--bundle-url", "https://b/x", "--bundle-sha256", "ab" * 32,
+                "--rootfs-version", "v1", "--rootfs-url", "https://b/r", "--rootfs-sha256", "cd" * 32]
+        only_bro = {"BROWSER_VM_SIGNING_KEY": "11" * 32}
+        both = {**only_bro, "BRO_HOST_UPDATE_SIGNING_KEY": " 33" + "33" * 31 + "\n"}
+        for env, expected in ((only_bro, None), (both, boot.update_key("33" * 32, "bro-host-1").hex())):
+            with self.subTest(sorted(env)), unittest.mock.patch.dict(os.environ, env, clear=True), \
+                    unittest.mock.patch("sys.stdout", io.StringIO()) as out:
+                boot.main(argv)
+            identity = json.loads(written(out.getvalue(), "/etc/bro/host.json")[1])
+            self.assertEqual(identity.get("updateKey"), expected)
+            self.assertEqual(identity["key"], boot.host_key("11" * 32, "bro-host-1").hex())
+        # The operator's key is not derived from Bro's: without its own env there is no token to make.
+        with unittest.mock.patch.dict(os.environ, only_bro, clear=True), self.assertRaises(SystemExit) as stopped:
+            boot.main(["token", "--host-id", "bro-host-1", "--scope", "update"])
+        self.assertIn("BRO_HOST_UPDATE_SIGNING_KEY is required", str(stopped.exception))
 
     def test_the_boot_script_runs_at_every_boot_and_logs_itself(self):
         # runcmd runs once per instance, marked done before it starts: a reboot mid-provision (02.10.2026)
@@ -113,6 +150,38 @@ class BundleTest(unittest.TestCase):
             "vendor/caddy", "wheels/aiohttp-3.12.15-cp310-cp310-manylinux_2_17_x86_64.whl",
             "wheels/yarl-1.25.1-cp310-cp310-manylinux_2_17_x86_64.whl"})
         self.assertEqual((members["provision.sh"], members["vendor/caddy"]), (0o755, 0o755))
+
+    def test_carries_the_rollback_guard_and_an_update_key_only_when_asked_to(self):
+        directory, pins = self.vendor()
+        self.assertIn("rollback.sh", boot.FILES)
+        plain = boot.bundle(directory, **pins)
+        key = boot.update_key("33" * 32, "bro-host-1")
+        enrolled = boot.bundle(directory, enroll_update_key=key, **pins)
+        self.assertEqual(enrolled, boot.bundle(directory, enroll_update_key=key, **pins))  # still reproducible
+
+        def entries(data):
+            with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tar:
+                return {m.name: (m.mode, tar.extractfile(m).read()) for m in tar.getmembers()}
+
+        self.assertNotIn("enroll/update-key", entries(plain))  # the shared bundle never holds a host's key
+        self.assertEqual(entries(enrolled)["enroll/update-key"], (0o600, key.hex().encode() + b"\n"))
+        self.assertEqual(entries(plain)["rollback.sh"][0], 0o755)
+        self.assertEqual({k: v for k, v in entries(enrolled).items() if k != "enroll/update-key"}, entries(plain))
+
+    def test_the_command_line_enrolls_the_key_derived_from_the_operators_signing_key(self):
+        out = Path(tempfile.mkdtemp()) / "host.tgz"
+        self.addCleanup(shutil.rmtree, out.parent, True)
+        env = {"BRO_HOST_UPDATE_SIGNING_KEY": "33" * 32}
+        with unittest.mock.patch.dict(os.environ, env, clear=True), \
+                unittest.mock.patch.object(boot, "bundle", return_value=b"tgz") as made, \
+                unittest.mock.patch("sys.stdout", io.StringIO()):
+            boot.main(["bundle", "--vendor", "v", "--out", str(out), "--enroll-update-key", "bro-host-1"])
+            boot.main(["bundle", "--vendor", "v", "--out", str(out)])
+        self.assertEqual(made.call_args_list, [
+            unittest.mock.call("v", enroll_update_key=boot.update_key("33" * 32, "bro-host-1")),
+            unittest.mock.call("v", enroll_update_key=None)])
+        with unittest.mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(SystemExit):
+            boot.main(["bundle", "--vendor", "v", "--out", str(out), "--enroll-update-key", "bro-host-1"])
 
     def test_an_unpinned_or_missing_file_never_goes_in(self):
         directory, pins = self.vendor()
@@ -228,13 +297,279 @@ class TokenTest(unittest.TestCase):
         import hostd
 
         key = boot.host_key("11" * 32, "host-1")
-        identity = {"host": "host-1", "key": key}
-        value = boot.token("11" * 32, "host-1", "update")
+        identity = {"host": "host-1", "key": key, "updateKey": boot.update_key("33" * 32, "host-1")}
+        value = boot.token("33" * 32, "host-1", "update")
         self.assertEqual(hostd.verify_token(value, identity, scope="update")["scope"], "update")
-        with self.assertRaisesRegex(hostd.Unauthorized, "token scope"):
+        with self.assertRaisesRegex(hostd.Unauthorized, "bad signature"):
             hostd.verify_token(value, identity)  # an update token opens nothing else
         with self.assertRaisesRegex(hostd.Unauthorized, "token scope"):
-            hostd.verify_token(boot.token("11" * 32, "host-1", "other"), identity, scope="update")
+            hostd.verify_token(boot.token("33" * 32, "host-1", "other"), identity, scope="update")
+        # Signed with the key Bro holds (the host's, from BROWSER_VM_SIGNING_KEY) it is no operator's token.
+        signed = value.rsplit(".", 1)[0]
+        forged = signed + "." + base64.urlsafe_b64encode(
+            hmac.new(key, signed.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+        with self.assertRaisesRegex(hostd.Unauthorized, "bad signature"):
+            hostd.verify_token(forged, identity, scope="update")
+
+    def test_the_legacy_token_is_the_one_a_hostd_without_the_key_takes_and_one_with_it_refuses(self):
+        sys.path.insert(0, str(Path(__file__).parent))
+        import hostd
+
+        # hostd 2026-10-09.1 checked a scope claim with the host's own key; the update that gives such a host
+        # its updateKey is signed that way (BROWSER_VM_SIGNING_KEY), through the command line, once.
+        host_key = boot.host_key("11" * 32, "host-1")
+        with unittest.mock.patch.dict(os.environ, {"BROWSER_VM_SIGNING_KEY": "11" * 32}, clear=True), \
+                unittest.mock.patch("sys.stdout", io.StringIO()) as out:
+            boot.main(["token", "--host-id", "host-1", "--scope", "update", "--legacy-host-key"])
+        legacy = out.getvalue().strip()
+        old_identity = {"host": "host-1", "key": host_key, "updateKey": host_key}  # what the old check amounts to
+        self.assertEqual(hostd.verify_token(legacy, old_identity, scope="update")["scope"], "update")
+        new_identity = {"host": "host-1", "key": host_key, "updateKey": boot.update_key("33" * 32, "host-1")}
+        with self.assertRaisesRegex(hostd.Unauthorized, "bad signature"):
+            hostd.verify_token(legacy, new_identity, scope="update")
+        with unittest.mock.patch.dict(os.environ, {"BRO_HOST_UPDATE_SIGNING_KEY": "33" * 32}, clear=True), \
+                self.assertRaises(SystemExit):
+            boot.main(["token", "--host-id", "host-1", "--legacy-host-key"])  # it needs Bro's signing key
+
+    def test_only_the_update_scope_exists_on_the_command_line(self):
+        with unittest.mock.patch.dict(os.environ, {"BRO_HOST_UPDATE_SIGNING_KEY": "33" * 32}, clear=True), \
+                self.assertRaises(SystemExit):
+            boot.main(["token", "--host-id", "h", "--scope", "other"])
+
+
+class HostScriptsTest(unittest.TestCase):
+    """update.sh and rollback.sh run for real, with every path they touch moved into a temp directory and
+    systemctl, systemd-run, curl and sleep stubbed (each call lands in `calls`, in order). `host` is the
+    bundle's tree as hostd swapped it in, `host.old` the previous one."""
+
+    HERE = Path(__file__).parent
+    PATHS = (("/opt/bro/host.failed", "host.failed"), ("/opt/bro/host.old", "host.old"), ("/opt/bro/host", "host"),
+             ("/opt/bro/venv", "venv"), ("/opt/bro/firecracker", "fc"), ("/etc/bro/", "etc/"),
+             ("/srv/bro/", "srv/"), ("/etc/systemd/system", "units"), ("/usr/bin/caddy", "caddy.bin"))
+    SHA = "ab" * 32
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for name in ("etc", "srv", "units", "bin", "venv/bin"):
+            (self.tmp / name).mkdir(parents=True)
+        # The venv's python: a wrapper, because a symlink to the test interpreter would lose its site-packages.
+        (self.tmp / "venv/bin/python").write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n')
+        (self.tmp / "venv/bin/pip").write_text(f'#!/bin/bash\necho "pip $*" >> {self.tmp}/calls\n')
+        for name, body in {
+            "systemctl": 'echo "systemctl $*" >> {calls}\n',
+            "systemd-run": 'echo "systemd-run $*" >> {calls}\n',
+            "sleep": "",
+            "curl": 'echo curl >> {calls}\n[ -f {tmp}/health.json ] && cat {tmp}/health.json || exit 22\n',
+        }.items():
+            (self.tmp / "bin" / name).write_text("#!/bin/bash\n" + body.format(calls=self.tmp / "calls", tmp=self.tmp))
+        for path in [*(self.tmp / "bin").iterdir(), *(self.tmp / "venv/bin").iterdir()]:
+            path.chmod(0o755)
+        (self.tmp / "etc/boot.json").write_text(json.dumps({"runtime": "runc"}))
+        (self.tmp / "etc/hostd.json").write_text(json.dumps({"identity_file": str(self.tmp / "etc/host.json")}))
+        (self.tmp / "etc/host.json").write_text(json.dumps({"host": "bro-host-1", "key": "aa" * 32}))
+        (self.tmp / "etc/host.json").chmod(0o600)
+        (self.tmp / "srv/update.json").write_text(json.dumps({"state": "applying", "sha256": self.SHA}))
+
+    def moved(self, text):
+        for path, local in self.PATHS:
+            text = text.replace(path, f"{self.tmp}/{local}")
+        self.assertNotRegex(text, r"(?<![\w.-])/(etc/bro|opt/bro|srv/bro|etc/systemd)")
+        return text
+
+    def tree(self, name, *, version="2099-01-01.1", changes=None):
+        """The host code as a bundle ships it, in <tmp>/<name>, with the script paths moved; `changes` are
+        {file: text | None (delete)} applied on top."""
+        target = self.tmp / name
+        for file in boot.FILES:
+            (target / file).parent.mkdir(parents=True, exist_ok=True)
+            data = (self.HERE / file).read_bytes()
+            if file in ("update.sh", "rollback.sh", "units.sh"):  # the ones that run here
+                data = self.moved(data.decode()).encode()
+            (target / file).write_bytes(data)
+            (target / file).chmod(0o755 if file.endswith(".sh") or file.startswith("guest") else 0o644)
+        text = (target / "hostd.py").read_text()
+        (target / "hostd.py").write_text(re.sub(r'(?m)^VERSION = ".*"$', f'VERSION = "{version}"', text))
+        (self.tmp / "venv/.requirements.sha256").write_text(
+            boot.sha256((target / "requirements.txt").read_bytes()) + "\n")  # the wheels are in place already
+        for file, content in (changes or {}).items():
+            if content is None:
+                (target / file).unlink()
+            else:
+                (target / file).parent.mkdir(parents=True, exist_ok=True)
+                (target / file).write_text(content)
+        return target
+
+    def run_script(self, script, *args):
+        env = {**os.environ, "PATH": f"{self.tmp / 'bin'}:{os.environ['PATH']}"}
+        return subprocess.run(["bash", str(self.tmp / "host" / script), *args], capture_output=True, text=True,
+                              env=env, cwd=self.tmp)
+
+    def calls(self):
+        path = self.tmp / "calls"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def units(self):
+        return sorted(path.name for path in (self.tmp / "units").iterdir())
+
+    # update.sh --------------------------------------------------------------------------------------------
+
+    def test_update_sh_takes_good_code_and_arms_the_rollback_guard_last(self):
+        self.tree("host")
+        result = self.run_script("update.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("compiles, imports and takes this host's settings", result.stdout)
+        run = [call for call in self.calls() if call.startswith("systemd-run")]
+        self.assertEqual(run, [f"systemd-run --quiet --unit=bro-hostd-rollback-{self.SHA[:12]} --on-active=15s "
+                               f"--description=Roll hostd back unless 2099-01-01.1 comes up "
+                               f"bash {self.tmp}/host/rollback.sh 2099-01-01.1 {self.SHA}"])
+        # Armed after the units were written and every file was installed: it is the last thing update.sh does,
+        # and an earlier timer of the same bundle (a retry) is cleared first.
+        self.assertEqual(self.calls()[-1], run[0])
+        self.assertIn(f"systemctl stop bro-hostd-rollback-{self.SHA[:12]}.timer "
+                      f"bro-hostd-rollback-{self.SHA[:12]}.service", self.calls())
+        self.assertIn("bro-hostd.service", self.units())
+        self.assertTrue(result.stdout.rstrip().endswith("update.sh: done"))
+
+    def test_update_sh_refuses_code_that_does_not_compile_before_it_changes_anything(self):
+        for name, changes in {
+            "a syntax error in hostd": {"hostd.py": 'VERSION = "2099-01-01.1"\ndef broken(:\n'},
+            "a syntax error in a module": {"network.py": "class Network(:\n"},
+            "a syntax error in the guest clock": {"guest/bro-fc-clock": "def (:\n"},
+        }.items():
+            with self.subTest(name):
+                shutil.rmtree(self.tmp / "host", ignore_errors=True)
+                self.tree("host", changes=changes)
+                result = self.run_script("update.sh")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.units(), [])  # no unit rewritten
+                self.assertFalse([c for c in self.calls() if c.startswith(("systemd-run", "systemctl"))])
+
+    def test_update_sh_refuses_code_that_does_not_import(self):
+        for name, changes in {
+            "a missing dependency": {"hostd.py": 'import no_such_module_anywhere\nVERSION = "2099-01-01.1"\n'},
+            "a module that fails when imported": {"sets.py": "raise RuntimeError('boom')\n"},
+            "a module the bundle forgot": {"caddy.py": None},
+        }.items():
+            with self.subTest(name):
+                shutil.rmtree(self.tmp / "host", ignore_errors=True)
+                self.tree("host", changes=changes)
+                result = self.run_script("update.sh")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.units(), [])
+                self.assertFalse([c for c in self.calls() if c.startswith("systemd-run")])
+
+    def test_update_sh_refuses_code_that_cannot_take_this_hosts_settings(self):
+        # A setting the new Config no longer knows would stop hostd at start (Config.load).
+        (self.tmp / "etc/hostd.json").write_text(json.dumps({"retired_setting": 1}))
+        self.tree("host")
+        result = self.run_script("update.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown settings", result.stderr)
+        self.assertEqual(self.units(), [])
+
+    def test_update_sh_refuses_scripts_that_do_not_parse(self):
+        for name, changes in {"a bundle script": {"provision.sh": "if then\n"},
+                              "the guest init": {"guest/bro-fc-init": "#!/bin/sh\nif then\n"}}.items():
+            with self.subTest(name):
+                shutil.rmtree(self.tmp / "host", ignore_errors=True)
+                self.tree("host", changes=changes)
+                self.assertNotEqual(self.run_script("update.sh").returncode, 0)
+                self.assertEqual(self.units(), [])
+
+    def test_update_sh_installs_the_update_key_a_bundle_carries_and_only_that(self):
+        key = boot.update_key("33" * 32, "bro-host-1").hex()
+        self.tree("host", changes={"enroll/update-key": key + "\n"})
+        result = self.run_script("update.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("update key enrolled", result.stdout)
+        identity = self.tmp / "etc/host.json"
+        self.assertEqual(json.loads(identity.read_text()), {"host": "bro-host-1", "key": "aa" * 32, "updateKey": key})
+        self.assertEqual(identity.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.tmp / "host/enroll").exists())  # the secret does not stay in the tree
+        # A bundle without one leaves the key the host has.
+        shutil.rmtree(self.tmp / "host")
+        self.tree("host")
+        self.assertEqual(self.run_script("update.sh").returncode, 0)
+        self.assertEqual(json.loads(identity.read_text())["updateKey"], key)
+
+    def test_update_sh_fails_on_an_update_key_that_is_not_one_and_keeps_the_hosts_identity(self):
+        before = (self.tmp / "etc/host.json").read_text()
+        self.tree("host", changes={"enroll/update-key": "not a key\n"})
+        result = self.run_script("update.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not 64 lower-case hex", result.stderr)
+        self.assertEqual((self.tmp / "etc/host.json").read_text(), before)
+        self.assertFalse([c for c in self.calls() if c.startswith("systemd-run")])
+
+    # rollback.sh -----------------------------------------------------------------------------------------
+
+    def after_failed_update(self, health=None, old=True):
+        """host = the new tree (2099-01-01.1), host.old = the previous one, a timer that fires now."""
+        self.tree("host", version="2099-01-01.1", changes={"marker": "new"})
+        if old:
+            self.tree("host.old", version="old", changes={"marker": "old", "vendor/caddy": "old caddy"})
+        (self.tmp / "caddy.bin").write_text("new caddy")
+        (self.tmp / "srv/update.json").write_text(json.dumps({"state": "restarting", "sha256": self.SHA}))
+        if health is not None:
+            (self.tmp / "health.json").write_text(json.dumps(health))
+
+    def test_rollback_sh_leaves_an_update_alone_when_the_new_hostd_reports_it(self):
+        self.after_failed_update({"hostd": "2099-01-01.1", "update": {"state": "done", "version": "2099-01-01.1"}})
+        (self.tmp / "srv/update.json").write_text(json.dumps({"state": "done", "sha256": self.SHA}))
+        result = self.run_script("rollback.sh", "2099-01-01.1", self.SHA)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.tmp / "host/marker").read_text(), "new")
+        self.assertEqual([c for c in self.calls() if c.startswith("systemctl")], [])
+        self.assertFalse((self.tmp / "host.failed").exists())
+
+    def test_rollback_sh_puts_the_previous_tree_back_when_hostd_never_answers(self):
+        self.after_failed_update()  # curl fails: hostd does not come up
+        result = self.run_script("rollback.sh", "2099-01-01.1", self.SHA)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.tmp / "host/marker").read_text(), "old")
+        self.assertEqual((self.tmp / "host.failed/marker").read_text(), "new")  # kept for the operator
+        self.assertFalse((self.tmp / "host.old").exists())
+        systemctl = [c for c in self.calls() if c.startswith("systemctl")]
+        self.assertEqual(systemctl, ["systemctl stop bro-hostd", "systemctl daemon-reload", "systemctl restart caddy",
+                                     "systemctl reset-failed bro-hostd", "systemctl restart bro-hostd"])
+        self.assertEqual((self.tmp / "caddy.bin").read_text(), "old caddy")  # and the old tree's Caddy
+        self.assertIn("bro-hostd.service", self.units())  # the old tree's unit
+        state = json.loads((self.tmp / "srv/update.json").read_text())
+        self.assertEqual((state["state"], state["sha256"], state["version"]), ("rolled-back", self.SHA, "2099-01-01.1"))
+        self.assertIn("did not report 2099-01-01.1", state["error"])
+        self.assertEqual(self.calls().count("curl"), 38)  # ~90 s of asking, 2 s apart
+
+    def test_rollback_sh_does_not_take_another_version_or_bundle_or_state_for_the_new_hostd(self):
+        wrong = {
+            "the old hostd still answers": ({"hostd": "old", "update": {"state": "restarting"}}, "restarting"),
+            "the new hostd, no state yet": ({"hostd": "2099-01-01.1", "update": {"state": "restarting"}}, "restarting"),
+            "done, but for another bundle": ({"hostd": "2099-01-01.1", "update": {"state": "done"}}, "done"),
+        }
+        for name, (health, state) in wrong.items():
+            with self.subTest(name):
+                shutil.rmtree(self.tmp / "host", ignore_errors=True)
+                shutil.rmtree(self.tmp / "host.old", ignore_errors=True)
+                shutil.rmtree(self.tmp / "host.failed", ignore_errors=True)
+                self.after_failed_update(health)
+                other = "cd" * 32 if name.startswith("done") else self.SHA
+                (self.tmp / "srv/update.json").write_text(json.dumps({"state": state, "sha256": other}))
+                self.assertEqual(self.run_script("rollback.sh", "2099-01-01.1", self.SHA).returncode, 0)
+                self.assertEqual((self.tmp / "host/marker").read_text(), "old")
+
+    def test_rollback_sh_without_a_previous_tree_says_so_and_changes_nothing(self):
+        self.after_failed_update(old=False)
+        result = self.run_script("rollback.sh", "2099-01-01.1", self.SHA)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.tmp / "host/marker").read_text(), "new")
+        self.assertEqual([c for c in self.calls() if c.startswith("systemctl")], [])
+        self.assertEqual(json.loads((self.tmp / "srv/update.json").read_text())["state"], "rollback-failed")
+
+    def test_the_guard_is_in_the_bundle_and_parsed_whole_before_it_swaps_its_own_directory(self):
+        script = (self.HERE / "rollback.sh").read_text()
+        subprocess.run(["bash", "-n", str(self.HERE / "rollback.sh")], check=True)
+        self.assertTrue(script.rstrip().endswith('main "$@"\nexit $?'))  # bash reads a script as it runs it
+        self.assertIn("rollback.sh", boot.FILES)
 
 
 class BootScriptTest(unittest.TestCase):

@@ -94,6 +94,36 @@ class SnapshotsTest(unittest.TestCase):
         self.assertEqual(firecracker.evict_snapshots(self.root, 0, keep=("c", 1)), ["a/1"])
         self.assertTrue(c.exists())
 
+    def test_snapshots_past_their_age_go_whatever_the_budget_and_the_kept_and_protected_stay(self):
+        day = 86400
+        old, older, young, kept, protected = (
+            self.snapshot("old", 1, 4096, 8 * day), self.snapshot("older", 1, 4096, 9 * day),
+            self.snapshot("young", 1, 4096, 2 * day), self.snapshot("kept", 1, 4096, 20 * day),
+            self.snapshot("protected", 1, 4096, 20 * day))
+        evicted = firecracker.evict_snapshots(self.root, 10**12, keep=("kept", None), max_age_s=7 * day,
+                                              protect={"protected"})
+        self.assertEqual(sorted(evicted), ["old/1", "older/1"])
+        self.assertTrue(young.exists() and kept.exists() and protected.exists())
+        self.assertFalse(old.parent.exists() or older.parent.exists())
+        self.assertEqual(firecracker.evict_snapshots(self.root, 10**12, max_age_s=None), [])  # no limit
+
+    def test_the_oldest_go_until_the_disk_has_the_room_that_was_asked_for(self):
+        a, b, c = (self.snapshot("a", 1, 8192, 300), self.snapshot("b", 1, 8192, 200), self.snapshot("c", 1, 8192, 100))
+        free = {"bytes": 1000}
+        evicted = firecracker.evict_snapshots(
+            self.root, 10**12, keep=("a", None), need_free_bytes=5000, free_bytes=lambda: free["bytes"] + 2000 * (
+                3 - len(list(self.root.glob("snapshots/*/*")))))
+        # Each snapshot gone frees 2000: b is not enough (3000), c makes it 5000; a is kept whatever happens.
+        self.assertEqual(evicted, ["b/1", "c/1"])
+        self.assertTrue(a.exists())
+        # Room that cannot be made (everything left is kept): what can go goes, nothing else is touched.
+        self.assertEqual(firecracker.evict_snapshots(self.root, 10**12, keep=("a", None), need_free_bytes=10**9,
+                                                     free_bytes=lambda: 0), [])
+        self.assertTrue(a.exists())
+        # An unknown amount of free room (the disk cannot be read) evicts nothing for it.
+        self.assertEqual(firecracker.evict_snapshots(self.root, 10**12, need_free_bytes=10**9,
+                                                     free_bytes=lambda: None), [])
+
     def test_a_directory_without_meta_is_not_a_snapshot_and_counts_for_nothing(self):
         half = firecracker.snapshot_dir(self.root, "x", 1)
         half.mkdir(parents=True)
@@ -115,10 +145,22 @@ class GuestScriptsTest(unittest.TestCase):
                  "/dev/vdc /mnt/cfg", "cp -p /mnt/cfg/worker.json /mnt/merged/etc/bro/worker.json",
                  "/dev/vdb /mnt/merged/var/lib/bro/profile", "mount -n --move /dev /mnt/merged/dev",
                  "hostname bro-sandbox", "dirty_expire_centisecs", "bro-fc-clock --once", "pivot_root . mnt",
-                 "bro-fc-clock </dev/null", "exec env -i"]
+                 "bro-fc-init: nameservers", "\n) &\n", "bro-fc-clock </dev/null", "exec env -i"]
         code = text[text.index("export PATH"):]  # not the comment above it
         positions = [code.index(step) for step in steps]
         self.assertEqual(positions, sorted(positions), "the init's steps are out of order")
+        # The network diagnostic is a background job with short timeouts: it must not hold the boot up (with
+        # a resolver that does not answer it took 12 s), and it asks for a name every host resolves the same.
+        diagnostic = code[code.index("\n(\n"):code.index("\n) &\n")]
+        self.assertIn("bro-fc-init: nameservers", diagnostic)
+        self.assertEqual(diagnostic.count("timeout=1"), 1)
+        self.assertIn("settimeout(1)", diagnostic)
+        self.assertNotIn("timeout=3", diagnostic)
+        self.assertNotIn("settimeout(3)", diagnostic)
+        self.assertIn('gethostbyname("ya.ru")', diagnostic)
+        self.assertIn("\\x02ya\\x02ru", diagnostic)
+        self.assertNotIn("geonode", text)
+        self.assertRegex(diagnostic, r"(?m)^timeout \d+ /usr/bin/python3 - <<'PY' \|\| true$")  # and it ends by itself
         # PID 1 stays PID 1: the sandbox's init is exec'd, with the environment runc and runsc give it.
         self.assertIn("BRO_WORKER_BIND=0.0.0.0", text)
         self.assertIn("/usr/local/sbin/bro-sandbox-init", text.splitlines()[-1])

@@ -11,7 +11,8 @@
 #      writes reach the image file within a second (hostd packs and keeps that file)
 #   6. the wall clock from the host (bro-fc-clock --once; a fresh VM starts in 1970 and TLS would fail), then
 #      pivot_root into the overlay
-#   7. bro-fc-clock in the background (a restored snapshot wakes up with a stale clock), and exec of
+#   7. a network diagnostic on the console, and bro-fc-clock (a restored snapshot wakes up with a stale clock),
+#      both in the background, and exec of
 #      bro-sandbox-init as PID 1 with the environment the runc and runsc sandboxes give it.
 # Kernel cmdline variables (the kernel passes `NAME=value` it does not know on to init): BRO_OVERLAY_MB,
 # BRO_WORKER_PORT, BRO_NOW (host time at boot, a fallback when there is no PTP clock).
@@ -80,17 +81,20 @@ cd /
 umount -n -l /mnt 2>/dev/null
 
 # What the guest's network looks like, on the console (runtime.log): the operator's only view of a guest
-# (the rootfs has no `ip`). Never fails the boot.
-/usr/bin/python3 - <<'PY' || true
+# (the rootfs has no `ip`). In the background, with 1 s timeouts: it must never delay the boot (a resolver
+# that does not answer cost the first boots 12 s), and it never fails it or outlives 8 s. It resolves ya.ru.
+(
+timeout 8 /usr/bin/python3 - <<'PY' || true
 import random, socket, struct
 def query(server, tcp):
     packet = struct.pack(">HHHHHH", random.randrange(65536), 0x0100, 1, 0, 0, 0) + b"\x02ya\x02ru\x00\x00\x01\x00\x01"
     if tcp:
-        with socket.create_connection((server, 53), timeout=3) as sock:
+        with socket.create_connection((server, 53), timeout=1) as sock:
+            sock.settimeout(1)
             sock.sendall(struct.pack(">H", len(packet)) + packet)
             return len(sock.recv(512))
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.settimeout(3)
+        sock.settimeout(1)
         sock.sendto(packet, (server, 53))
         return len(sock.recv(512))
 servers = [line.split()[1] for line in open("/etc/resolv.conf") if line.startswith("nameserver")]
@@ -102,10 +106,11 @@ for server in servers[:2]:
         except OSError as error:
             print("bro-fc-init: dns", server, "tcp" if tcp else "udp", "failed:", error)
 try:
-    print("bro-fc-init: resolve", socket.gethostbyname("proxy.geonode.io"))
+    print("bro-fc-init: resolve", socket.gethostbyname("ya.ru"))
 except OSError as error:
     print("bro-fc-init: resolve failed:", error)
 PY
+) &
 
 /usr/bin/python3 /usr/local/sbin/bro-fc-clock </dev/null >/dev/console 2>&1 &
 exec env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \

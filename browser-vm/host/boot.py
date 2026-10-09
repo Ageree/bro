@@ -20,13 +20,25 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
       With vendor/firecracker/ it carries Firecracker too (bundle for a firecracker host; also the body of a
       self-update: hostd's POST /v1/admin/update takes this tarball by URL and sha256)
 
-  BROWSER_VM_SIGNING_KEY=… python boot.py token --host-id bro-host-1 --scope update
-      a 10-minute token for hostd's /v1/admin/update (Bro's own tokens have no scope and are refused there)
+  BRO_HOST_UPDATE_SIGNING_KEY=… python boot.py token --host-id bro-host-1 --scope update
+      [--legacy-host-key, with BROWSER_VM_SIGNING_KEY instead: for the one update that gives a host made before
+      the update key its key; see browser-vm/host/README.md]
+      a 10-minute token for hostd's /v1/admin/update and the sandbox logs. It is signed with the host's update key
+      (HMAC-SHA256 of that signing key and "bro-browser-host-update:<host id>"), which only the operator can make:
+      Bro holds BROWSER_VM_SIGNING_KEY, from which the host's ordinary key comes, and must not reach root on a host.
+      Bro's own tokens have no scope and are refused there
 
-  BROWSER_VM_SIGNING_KEY=… python boot.py cloud-init --host-id bro-host-1 \\
+  BRO_HOST_UPDATE_SIGNING_KEY=… python boot.py bundle --vendor vendor/ --out host-bundle.tgz --enroll-update-key HOST_ID
+      a bundle for that one host that also carries its update key (enroll/update-key): the update that applies it
+      writes the key into /etc/bro/host.json (a host made before the key existed, or a rotated key); do not keep
+      the object in Object Storage afterwards
+
+  BROWSER_VM_SIGNING_KEY=… [BRO_HOST_UPDATE_SIGNING_KEY=…] python boot.py cloud-init --host-id bro-host-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
       [--runtime runc|runsc|firecracker --runsc-release 20260914] [--apt-mirror …] [--domain …]
-      the user data for one host (base64 it for the Compute API)
+      the user data for one host (base64 it for the Compute API). With BRO_HOST_UPDATE_SIGNING_KEY set host.json
+      also carries `updateKey`; Bro's own writer (`browserHostCloudInit`) never does, and a host without it
+      answers 403 on the operator's routes
 
 On the host, bro-host-boot (a cloud-init per-boot script: every boot until the host is ready) fetches the
 bundle, checks its SHA-256 and runs provision.sh, which points apt at the mirror, installs runc (or a pinned
@@ -59,7 +71,7 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "units.sh", "update.sh", "hostd.py", "network.py", "sets.py", "caddy.py",
+FILES = ("provision.sh", "units.sh", "update.sh", "rollback.sh", "hostd.py", "network.py", "sets.py", "caddy.py",
          "firecracker.py", "selfupdate.py", "guest/bro-fc-init", "guest/bro-fc-clock", "seccomp.json",
          "requirements.txt")
 EXECUTABLE = (".sh", "bro-fc-init", "bro-fc-clock")
@@ -121,6 +133,13 @@ exec bash /opt/bro/host/provision.sh
 def host_key(signing_key_hex, host_id):
     """The key hostd checks tokens with: Bro derives it the same way and keeps no per-host secret."""
     return hmac.new(bytes.fromhex(signing_key_hex), f"bro-browser-host:{host_id}".encode(), hashlib.sha256).digest()
+
+
+def update_key(update_signing_key_hex, host_id):
+    """The key hostd checks `update`-scope tokens with (`updateKey` of host.json). Derived from a signing key the
+    operator alone keeps (BRO_HOST_UPDATE_SIGNING_KEY): Bro has none of it, so Bro cannot make such a token."""
+    return hmac.new(bytes.fromhex(update_signing_key_hex), f"bro-browser-host-update:{host_id}".encode(),
+                    hashlib.sha256).digest()
 
 
 def sha256(data):
@@ -189,9 +208,13 @@ def vendored_firecracker(vendor_dir, pins=None):
     return files
 
 
-def bundle(vendor_dir, **pins):
-    """The host code and its vendored files as a gzip tarball, byte for byte the same for the same files."""
+def bundle(vendor_dir, enroll_update_key=None, **pins):
+    """The host code and its vendored files as a gzip tarball, byte for byte the same for the same files. With
+    `enroll_update_key` (a host's update key, bytes) the bundle is that host's alone: it also carries
+    enroll/update-key, which update.sh writes into host.json."""
     entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith(EXECUTABLE) else 0o644) for name in FILES]
+    if enroll_update_key is not None:
+        entries.append(("enroll/update-key", enroll_update_key.hex().encode() + b"\n", 0o600))
     entries += vendored(vendor_dir, **{k: v for k, v in pins.items() if k != "firecracker_pins"})
     entries += vendored_firecracker(vendor_dir, pins.get("firecracker_pins"))
     raw = io.BytesIO()
@@ -257,13 +280,18 @@ def vendor_firecracker(target, firecracker_url, kernel_url, pins=None):
     vendored_firecracker(target, pins)
 
 
-def token(signing_key_hex, host_id, scope, lifetime_s=600, now=None):
-    """A hostd token (hostd.py `verify_token`) with a scope claim, for the operator's calls."""
+def token(signing_key_hex, host_id, scope, lifetime_s=600, now=None, legacy=False):
+    """A hostd token (hostd.py `verify_token`) with a scope claim, for the operator's calls: signed with the
+    host's update key, derived from the operator's BRO_HOST_UPDATE_SIGNING_KEY, not from the one Bro holds.
+    `legacy` signs with the host's ordinary key instead (then `signing_key_hex` is BROWSER_VM_SIGNING_KEY): the
+    one token a hostd older than the update key accepts, for the update that enrolls the key and nothing else;
+    a hostd with the key refuses it."""
     payload = base64.urlsafe_b64encode(json.dumps(
         {"env": host_id, "exp": int((time.time() if now is None else now) + lifetime_s), "scope": scope},
         separators=(",", ":")).encode()).rstrip(b"=").decode()
     signed = f"v1.{payload}"
-    signature = hmac.new(host_key(signing_key_hex, host_id), signed.encode(), hashlib.sha256).digest()
+    key = host_key(signing_key_hex, host_id) if legacy else update_key(signing_key_hex, host_id)
+    signature = hmac.new(key, signed.encode(), hashlib.sha256).digest()
     return f"{signed}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
@@ -273,7 +301,7 @@ def quoted(text):
 
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
-               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None):
+               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None, host_update_key=None):
     if runtime not in RUNTIMES:
         raise ValueError(f"runtime must be one of {RUNTIMES}")
     if runtime == "runsc" and not RUNSC_RELEASE.fullmatch(runsc_release or ""):
@@ -282,7 +310,10 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         raise ValueError("host id must match [a-z0-9-]{1,63}")
     if apt_mirror and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?", apt_mirror):
         raise ValueError("apt mirror must be a plain http(s) URL")
-    identity = json.dumps({"host": host_id, "key": key.hex()})
+    identity = {"host": host_id, "key": key.hex()}
+    if host_update_key is not None:  # the operator's: Bro's own writer leaves it out
+        identity["updateKey"] = host_update_key.hex()
+    identity = json.dumps(identity)
     boot = json.dumps({
         "hostId": host_id, "domain": domain or "", "runtime": runtime, "runscRelease": runsc_release or "",
         "aptMirror": apt_mirror or "",
@@ -307,6 +338,18 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     ])
 
 
+def env_key(name, required=False):
+    """A signing key from the environment as hex (session secrets arrive with stray blanks and quotes)."""
+    value = "".join(os.environ.get(name, "").split()).strip("‘’“”'\"")
+    if required and not value:
+        sys.exit(f"{name} is required")
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        sys.exit(f"{name} is not hex")
+    return value
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -316,10 +359,15 @@ def main(argv=None):
     fetch.add_argument("--kernel-url")
     tokens = commands.add_parser("token")
     tokens.add_argument("--host-id", required=True)
-    tokens.add_argument("--scope", default="update")
+    tokens.add_argument("--scope", default="update", choices=["update"])
+    tokens.add_argument("--legacy-host-key", action="store_true",
+                        help="sign with the host's ordinary key (BROWSER_VM_SIGNING_KEY): only for the update that "
+                             "gives a host older than the update key its updateKey")
     pack = commands.add_parser("bundle")
     pack.add_argument("--vendor", required=True)
     pack.add_argument("--out", required=True)
+    pack.add_argument("--enroll-update-key", metavar="HOST_ID",
+                      help="carry that host's update key (from BRO_HOST_UPDATE_SIGNING_KEY) for update.sh to install")
     init = commands.add_parser("cloud-init")
     for name in ("host-id", "bundle-url", "bundle-sha256", "rootfs-version", "rootfs-url", "rootfs-sha256"):
         init.add_argument(f"--{name}", required=True)
@@ -336,17 +384,21 @@ def main(argv=None):
             vendor_firecracker(args.dir, args.firecracker_url, args.kernel_url)
         return
     if args.command == "bundle":
-        data = bundle(args.vendor)
+        enroll = None
+        if args.enroll_update_key:
+            enroll = update_key(env_key("BRO_HOST_UPDATE_SIGNING_KEY", required=True), args.enroll_update_key)
+        data = bundle(args.vendor, enroll_update_key=enroll)
         Path(args.out).write_bytes(data)
         print(sha256(data))
         return
-    signing = "".join(os.environ.get("BROWSER_VM_SIGNING_KEY", "").split()).strip("‘’“”'\"")
-    if not signing:
-        sys.exit("BROWSER_VM_SIGNING_KEY is required")
     if args.command == "token":
-        print(token(signing, args.host_id, args.scope))
+        name = "BROWSER_VM_SIGNING_KEY" if args.legacy_host_key else "BRO_HOST_UPDATE_SIGNING_KEY"
+        print(token(env_key(name, required=True), args.host_id, args.scope, legacy=args.legacy_host_key))
         return
+    signing = env_key("BROWSER_VM_SIGNING_KEY", required=True)
+    operator = env_key("BRO_HOST_UPDATE_SIGNING_KEY")
     sys.stdout.write(cloud_init(
+        host_update_key=update_key(operator, args.host_id) if operator else None,
         host_id=args.host_id, key=host_key(signing, args.host_id), runtime=args.runtime,
         runsc_release=args.runsc_release, apt_mirror=args.apt_mirror, bundle_url=args.bundle_url,
         bundle_sha256=args.bundle_sha256, rootfs_version=args.rootfs_version, rootfs_url=args.rootfs_url,

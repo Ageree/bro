@@ -37,7 +37,8 @@ unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy
 | `guest/`              | `bro-fc-init` (PID 1 гостя до `bro-sandbox-init`) и `bro-fc-clock` (часы гостя по PTP): кладутся в образ корня |
 | `selfupdate.py`       | `POST /v1/admin/update`: скачать бандл, сверить sha256, подменить код, `update.sh`, рестарт `hostd`            |
 | `units.sh`            | Юниты `caddy` и `bro-hostd`: их пишут `provision.sh` и `update.sh`                                             |
-| `update.sh`           | Идемпотентная часть `provision.sh` для обновления кода: venv при смене колёс, юниты, бинарники                 |
+| `update.sh`           | Идемпотентная часть `provision.sh` для обновления кода: проверка нового кода, venv, юниты, бинарники, сторож   |
+| `rollback.sh`         | Сторож отката: таймер systemd, который возвращает прежний код, если новый `hostd` не поднялся за ~90 с         |
 | `caddy.py`            | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
 | `seccomp.json`        | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены           |
 | `provision.sh`        | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
@@ -121,14 +122,26 @@ unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy
 в cloud-init (`/etc/bro/host.json`, 0600), payload `{env: <id хоста>, exp}` (не
 дольше 15 минут). Id песочницы — `[a-z0-9-]{1,63}`: он идёт в пути и маршруты.
 
-| Метод и путь                            | Что делает                                                                                                                            |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/health`                        | без токена: версия `hostd`, `runtime` и `runtimeVersion`, `runsc` (только под gVisor), стадия загрузки                                |
-| `GET /v1/capacity`                      | память (и сумма лимитов), `/dev/shm`, диск, песочницы (состояние, лимит и занятая память), CPU, среда, `snapshotFormat` (runc — null) |
-| `POST /v1/sandboxes`                    | `{id, workspace, generation, memoryMb?, workerKey, rootfsVersion, restore? \| profile?}` — старт, восстановление или холодный старт   |
-| `GET /v1/sandboxes/<id>`                | запись песочницы (`state`, `runtime`, `path`: `fresh`, `restored`, `cold`, `adopted`; `fallback` — почему не снимок)                  |
-| `DELETE /v1/sandboxes/<id>?generation=` | остановить, размонтировать корень, стереть каталог хоста, снимок, netns и маршрут (502, если не вышло)                                |
-| `POST /v1/sandboxes/<id>/park`          | `{generation, dataKey, upload: {chunkUrls, manifestUrl}}` → размеры, время, среда, формат снимка (507 — нет места)                    |
+Ручки оператора (лог песочницы, самообновление; в таблице ниже помечены `*`) требуют токен с `scope: "update"`, подписанный
+**другим ключом**: `updateKey` из `host.json` = `HMAC(BRO_HOST_UPDATE_SIGNING_KEY, "bro-browser-host-update:" + id хоста)`.
+Бро знает `BROWSER_VM_SIGNING_KEY`, а значит и ключ любого хоста, но не `BRO_HOST_UPDATE_SIGNING_KEY`: утечка env приложения
+не даёт root на хосте. Обычные ручки проверяют ключ хоста и отвергают токен с любым `scope`; ручки оператора проверяют только
+`updateKey` и отвечают `403 updates are not enabled on this host`, если его в `host.json` нет.
+
+| Метод и путь                            | Что делает                                                                                                                                      |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/health`                        | без токена: версия `hostd`, `runtime` и `runtimeVersion`, `runsc` (только под gVisor), стадия загрузки, `update`: лишь `state`, `version`, `at` |
+| `GET /v1/capacity`                      | память (и сумма лимитов), `/dev/shm`, диск, песочницы (состояние, лимит и занятая память), CPU, среда, `snapshotFormat` (runc — null)           |
+| `POST /v1/sandboxes`                    | `{id, workspace, generation, memoryMb?, workerKey, rootfsVersion, restore? \| profile?}` — старт, восстановление или холодный старт             |
+| `GET /v1/sandboxes/<id>`                | запись песочницы (`state`, `runtime`, `path`: `fresh`, `restored`, `cold`, `adopted`; `fallback` — почему не снимок)                            |
+| `DELETE /v1/sandboxes/<id>?generation=` | остановить, размонтировать корень, стереть каталог хоста, снимок, netns и маршрут (502, если не вышло)                                          |
+| `POST /v1/sandboxes/<id>/park`          | `{generation, dataKey, upload: {chunkUrls, manifestUrl}}` → размеры, время, среда, формат снимка (507 — нет места)                              |
+| `GET /v1/sandboxes/<id>/log` \*         | конец `runtime.log` песочницы (`?bytes=`, до 64 КиБ)                                                                                            |
+| `GET /v1/admin/update` \*               | полный итог последнего обновления (`update.json`: ошибка, sha256 бандла), версия, `updating`                                                    |
+| `POST /v1/admin/update` \*              | `{url, sha256}` — самообновление (ниже)                                                                                                         |
+
+Пока идёт обновление (`draining`), новые `POST /v1/sandboxes` и park отвечают `503` (Бро повторит на перезапущенном `hostd`);
+повтор старта уже работающей песочницы и `DELETE` проходят.
 
 Поля запросов прежние: клиент Бро не различает среды. Ответ парковки под `runc`
 — `format: null`, в `parts` только `profile`, `timings`: `stopMs`,
@@ -359,28 +372,84 @@ Chroot — `<jailer_dir>/firecracker/<id>/root` (по умолчанию `/srv/b
 кладутся жёсткими ссылками — ядро, образ корня, `profile.img`, `config.img`). Настройка по API-сокету
 `firecracker.socket`: `boot-source`, диски `rootfs` (ro), `profile` (rw, `Writeback`), `config` (ro), `eth0`↔`tap0` с MAC
 `06:00:c0:a8:fe:02`, 2 vCPU (`round(cpus)`), `mem_size_mib = memoryMb`, `entropy`, `InstanceStart`. Перезапуск `hostd`
-VM не трогает: запись из `sandbox.json` держит `fcPid`, жива ли VM — по `/proc/<pid>/cmdline`.
+VM не трогает: запись из `sandbox.json` держит `fcPid`, жива ли VM — по `/proc/<pid>/cmdline`. Сразу после запуска `jailer`
+`hostd` пишет `200` в `/proc/<pid>/oom_score_adj` (значение переживает `exec` Firecracker; как у `runc`): при нехватке памяти
+OOM-killer берёт VM раньше `hostd`, Caddy и sshd. Допуск (`admit`) и `memoryMb.committed` в `/v1/capacity` считают
+`memoryMb + fc_overhead_mb` на каждую VM — столько же, сколько лимит её cgroup.
 
 **Парковка и восстановление.** Бро по-прежнему сначала зовёт `POST /v1/park` worker (секреты из памяти; `closeChrome` не
 шлётся: страницы живут в снимке). Затем `PATCH /vm Paused`, `PUT /snapshot/create` (Full) в chroot, VM убивается,
 `vmstate`, `mem`, `profile.img`, `config.img` и `meta.json` уходят в `/srv/bro/snapshots/<id>/<поколение>/` (rename на той же
-ФС; не `/dev/shm`: файл памяти — гигабайты), а в Object Storage — профиль (из копии образа, смонтированной на хосте: журнал
-проигрывается на копии) с блоком `snapshot` в манифесте: `runtime`, `local`, `host`, `sandbox`, `generation`, версия
+ФС; не `/dev/shm`: файл памяти — гигабайты), а в Object Storage — профиль (из копии образа: `e2fsck -fy` проигрывает журнал,
+`debugfs -R "rdump / <каталог>"` читает файлы; оба — userspace, от uid самой VM, в каталоге `/srv/bro/profile-work/<id>`,
+который принадлежит этому uid; образ, записанный гостем, **ядро хоста не монтирует**, а `pack` берёт только обычные файлы и
+каталоги) с блоком `snapshot` в манифесте: `runtime`, `local`, `host`, `sandbox`, `generation`, версия
 Firecracker, sha256 ядра, признаки CPU, версия и `image` корня, `memoryMb`, sha256 `vmstate`, размер `mem`. Ответ парковки —
 `format` = этот блок, `parts` — только `profile`. Восстановление: манифест, `fits` (тот же хост, та же сборка и CPU, то же
 поколение — иначе `path: cold` с причиной в `fallback`), файлы снимка на диске (размер и sha256 `vmstate`), свежие netns и
 jail с теми же путями внутри, `PUT /snapshot/load` (`File`, `resume_vm`), ожидание worker; профиль из S3 не скачивается.
 Снимок используется один раз (иначе две VM с одним состоянием ГСЧ) и стирается. Сбой загрузки → холодный старт с профилем
-из набора. Бюджет `snapshot_budget_gb` (120): старые снимки удаляются, их песочница восстановится холодно. `DELETE`
+из набора. Старые снимки удаляются, их песочница восстановится холодно: старше `snapshot_ttl_days` (7; при старте `hostd`,
+каждый час и при парковке), сверх бюджета `snapshot_budget_gb` (120) и — раньше проверки места, которая отвечает 507 — пока на
+диске меньше, чем нужно парковке; снимок песочницы, которая сейчас стартует или паркуется, не трогают. `DELETE`
 стирает и снимок. Снимок не шифруется (диск хоста — граница доверия, каталог `0700`).
 
-**Самообновление.** `POST /v1/admin/update` `{url, sha256}`: токен с claim `scope: "update"` (обычные токены Бро его не
-имеют и не проходят; токен с `update` не проходит никуда, кроме этой ручки). Токен: `BROWSER_VM_SIGNING_KEY=… python
-boot.py token --host-id <id> --scope update` (10 минут). `hostd` качает https-бандл (до 200 МБ), сверяет sha256, распаковывает
-в `/opt/bro/host.new` (только файлы и каталоги), отвечает `202`, затем подменяет `/opt/bro/host` (старый — `host.old`),
-запускает `update.sh` нового кода и `systemctl --no-block restart bro-hostd`. Сбой `update.sh` возвращает старый код и не
-перезапускает. Итог — `/srv/bro/update.json` и поле `update` в `/v1/health`. Бандл — тот же tgz, что `boot.py bundle`.
-Токен с `update` — root на хосте по построению: ключ подписи берегите.
+**Самообновление.** `POST /v1/admin/update` `{url, sha256}`: токен с claim `scope: "update"`, подписанный `updateKey` хоста (см.
+«API»; токен Бро и токен с ключом хоста ручку не открывают, а токен с `update` не проходит никуда, кроме ручек оператора).
+`hostd` качает https-бандл (до 200 МБ), сверяет sha256, распаковывает в `/opt/bro/host.new` (только файлы и каталоги) и
+отвечает `202`. Дальше, уже после ответа:
+
+1. **Ждёт тишины.** Пока какая-нибудь песочница стартует, восстанавливается или паркуется, `hostd` не рестартует: новые старты и
+   парковки получают `503`, идущие заканчиваются (не дольше `update_quiet_timeout_s`, 10 минут; потом обновление падает с
+   понятной ошибкой в `update.json`, ничего не изменив). Рестарт посреди парковки потерял бы файлы и набор.
+2. Подменяет `/opt/bro/host` (старый — `host.old`) и запускает `update.sh` нового кода.
+3. `update.sh` **сначала проверяет код**, пока работает старый: `bash -n` всех скриптов, `sh -n` гостевого init,
+   `python -m py_compile` всех `*.py`, импорт `caddy, firecracker, hostd, network, selfupdate, sets` и
+   `Config.load('/etc/bro/hostd.json')` + `Host(...)` новым кодом — битый бандл не рестартует `hostd`, `update.sh` падает,
+   старый код возвращается. Потом колёса venv (если сменились), ключ обновлений из бандла (ниже), юниты, Caddy, Firecracker.
+4. **Сторож отката** (последний шаг `update.sh`): `systemd-run --on-active=15s --unit=bro-hostd-rollback-<sha[:12]>` запускает
+   `rollback.sh <версия> <sha256>` из бандла. Он до ~75 с спрашивает `127.0.0.1:8090/v1/health`; норма — `hostd` новой версии
+   и `update.state = done` для sha256 этого бандла (`update.json`). Иначе: останавливает `bro-hostd` (песочницы живут:
+   `KillMode=process`), ставит `host.old` обратно, возвращает юнит, Caddy и бинарники Firecracker прежнего дерева, запускает
+   `hostd`, пишет в `update.json` состояние `rolled-back` (новое дерево остаётся в `/opt/bro/host.failed`).
+5. `systemctl --no-block restart bro-hostd`.
+
+Итог — `/srv/bro/update.json`: `GET /v1/admin/update` отдаёт его целиком (ошибка, sha256, версия, `running`), а `/v1/health`
+без токена — только `state`, `version`, `at`. Состояния: `downloaded`, `waiting`, `applying`, `restarting`, `done`, `failed`,
+`rolled-back`, `rollback-failed`. Бандл — тот же tgz, что `boot.py bundle`.
+
+**Ключ обновлений (`updateKey`).** Ключ подписи оператора — `BRO_HOST_UPDATE_SIGNING_KEY` (64 hex; у Бро его нет, храните
+отдельно от `BROWSER_VM_SIGNING_KEY`). Ключ хоста — `HMAC-SHA256(ключ, "bro-browser-host-update:" + id хоста)`.
+
+```sh
+export BRO_HOST_UPDATE_SIGNING_KEY=…   # 64 hex, оператор; openssl rand -hex 32 для нового
+
+# Новый хост: cloud-init пишет updateKey в /etc/bro/host.json (Бровский browserHostCloudInit его не пишет).
+BROWSER_VM_SIGNING_KEY=… python boot.py cloud-init --host-id bro-dedicated-1 … > user-data.yaml
+
+# Токен на 10 минут для любой ручки оператора (самообновление, лог, GET /v1/admin/update):
+TOKEN=$(python boot.py token --host-id bro-dedicated-1 --scope update)
+curl -H "Authorization: Bearer $TOKEN" https://<домен>/h/v1/admin/update
+```
+
+Хост, созданный до появления ключа (его `host.json` без `updateKey`), отвечает на ручки оператора `403`. Положить ключ в такой
+хост можно только одним обновлением, которое несёт его в бандле (бандл этого хоста; не общий):
+
+```sh
+# 1. Бандл этого хоста с его ключом обновлений (vendor/ — как для обычного бандла); запишите sha256.
+python boot.py bundle --vendor vendor/ --out host-bundle-bro-dedicated-1.tgz --enroll-update-key bro-dedicated-1
+# 2. Загрузить в Object Storage, presigned GET. Старый hostd принимает scope update, подписанный ключом хоста:
+#    единственный случай `--legacy-host-key` (ключ — BROWSER_VM_SIGNING_KEY). В тихое время: старый hostd не ждёт парковок.
+TOKEN=$(BROWSER_VM_SIGNING_KEY=… python boot.py token --host-id bro-dedicated-1 --legacy-host-key)
+curl -H "Authorization: Bearer $TOKEN" -d '{"url": "<presigned GET>", "sha256": "<sha256>"}' https://<домен>/h/v1/admin/update
+# 3. Когда `GET /h/v1/health` покажет update.state = done: ключ на месте. Проверить новым токеном и удалить бандл из хранилища.
+TOKEN=$(python boot.py token --host-id bro-dedicated-1)   # BRO_HOST_UPDATE_SIGNING_KEY в env
+curl -H "Authorization: Bearer $TOKEN" https://<домен>/h/v1/admin/update
+```
+
+`update.sh` этого бандла дописывает `updateKey` в `/etc/bro/host.json` (0600, атомарно) и стирает `enroll/update-key` из дерева.
+Так же ключ ротируется. После этого шага токен, подписанный ключом хоста (то есть всё, что может подписать Бро), ручки
+оператора не открывает.
 
 ## Тесты
 

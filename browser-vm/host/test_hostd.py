@@ -43,13 +43,18 @@ import sets  # noqa: E402
 SIGNING = bytes.fromhex("11" * 32)
 HOST_ID = "host-test-1"
 KEY = hmac.new(SIGNING, f"bro-browser-host:{HOST_ID}".encode(), hashlib.sha256).digest()
-IDENTITY = {"host": HOST_ID, "key": KEY}
+# The operator's key for scope "update": from a signing key Bro does not have (boot.py `update_key`).
+UPDATE_SIGNING = bytes.fromhex("33" * 32)
+UPDATE_KEY = hmac.new(UPDATE_SIGNING, f"bro-browser-host-update:{HOST_ID}".encode(), hashlib.sha256).digest()
+IDENTITY = {"host": HOST_ID, "key": KEY, "updateKey": UPDATE_KEY}
 DATA_KEY = "22" * 32
 WORKER_KEY = "ab" * 32
 MARKER = b"cookie-secret-marker-0123456789"
 
 
-def token(host=HOST_ID, key=KEY, lifetime=300, scope=None):
+def token(host=HOST_ID, key=None, lifetime=300, scope=None):
+    """A host token: signed with the host's key, or with the update key when it carries a scope."""
+    key = key or (UPDATE_KEY if scope else KEY)
     claims = {"env": host, "exp": int(time.time()) + lifetime, **({"scope": scope} if scope else {})}
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode())
     signed = "v1." + payload.rstrip(b"=").decode()
@@ -190,6 +195,17 @@ class FakeRunner:
         self.killed = []
         self.update_exit = 0
         self.update_runs = []
+        self.users = []  # (argv, user) of every run: who a command was run as (None = hostd itself, root)
+        self.oom = []  # (pid, oom_score_adj) hostd wrote
+        self.fail_rdump = None  # a debugfs error line, for rdump to print
+        self.e2fsck_exit = 0
+
+    def set_oom_score_adj(self, pid, value):
+        self.oom.append((pid, value))
+        return True
+
+    def ran_as(self, tool):
+        return [user for argv, user in self.users if Path(argv[0]).name == tool]
 
     async def close(self):
         for vm in self.vms.values():
@@ -235,8 +251,9 @@ class FakeRunner:
         return [(argv, log) for argv, log in self.calls
                 if Path(argv[0]).name in ("runc", "runsc") and command in argv]
 
-    async def run(self, argv, *, log_file=None, timeout=120):
+    async def run(self, argv, *, log_file=None, timeout=120, user=None):
         self.calls.append((list(argv), log_file))
+        self.users.append((list(argv), user))
         if log_file is not None:
             with open(log_file, "ab") as sink:  # a file the sandbox keeps, as the real runner gives
                 sink.write(b"runsc output\n")
@@ -273,9 +290,12 @@ class FakeRunner:
         if tool == "firecracker":
             return 0, FIRECRACKER_VERSION + "\n"
         if tool == "debugfs":
-            return self.debugfs(argv)
+            return self.debugfs(argv, user)
         if tool in ("chown", "systemctl"):
             return 0, ""
+        if tool == "e2fsck":
+            assert user is not None and user[0] != 0, "e2fsck of a guest's image run as root"
+            return self.e2fsck_exit, "fsck output"
         if tool == "cp":
             shutil.copyfile(argv[-2], argv[-1])
             return 0, ""
@@ -307,7 +327,7 @@ class FakeRunner:
             return 0, ""
         raise AssertionError(f"unexpected command {argv}")
 
-    def debugfs(self, argv):
+    def debugfs(self, argv, user=None):
         """-w -f <script> <image>: `write <source> <target>` lines into the image's header; -R ls <dir>."""
         image = argv[-1]
         with open(image, "rb") as file:
@@ -320,7 +340,19 @@ class FakeRunner:
             with open(image, "r+b") as file:
                 file.write(json.dumps(header).encode() + b"\0")
             return 0, ""
-        directory = argv[argv.index("-R") + 1].split(" ", 1)[1]
+        command = argv[argv.index("-R") + 1]
+        if command.startswith("rdump "):
+            # `rdump / <dir>`: the image's files into <dir>, read-only, as an unprivileged user (see run()).
+            assert "-w" not in argv, "a guest image opened for writing by debugfs"
+            assert user is not None and user[0] != 0, "a guest image read by debugfs as root"
+            for name, (data, mode) in files_in(argv[-1]).items():
+                target = Path(command.split(" ", 2)[2]) / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                target.chmod(mode)
+            return 0, (self.fail_rdump or "debugfs 1.46.5 (30-Dec-2021)\nrdump: Operation not permitted while "
+                       "changing ownership of /x/tree//Default/Cookies\n")
+        directory = command.split(" ", 1)[1]
         return 0, " ".join(Path(target).name for target in injected if str(Path(target).parent) == directory)
 
     def runtime(self, tool, args):
@@ -530,6 +562,60 @@ class TokenTest(unittest.TestCase):
             hostd.verify_token(token(lifetime=hostd.MAX_TOKEN_LIFETIME_S + 60), IDENTITY, now)
         with self.assertRaisesRegex(hostd.Unauthorized, "host not configured"):
             hostd.verify_token(token(), None, now)
+
+    def test_the_update_scope_is_signed_with_the_update_key_which_bro_cannot_derive(self):
+        now = time.time()
+        self.assertEqual(hostd.verify_token(token(scope="update"), IDENTITY, now, scope="update")["scope"], "update")
+        # What the app can forge: it holds the host key (and BROWSER_VM_SIGNING_KEY, so any host's), not the
+        # operator's. A scope claim signed with the host key opens nothing.
+        forged = token(scope="update", key=KEY)
+        with self.assertRaisesRegex(hostd.Unauthorized, "bad signature"):
+            hostd.verify_token(forged, IDENTITY, now, scope="update")
+        # And the operator's token is not a host token: the ordinary routes check the host key (and no scope).
+        with self.assertRaisesRegex(hostd.Unauthorized, "bad signature"):
+            hostd.verify_token(token(scope="update"), IDENTITY, now)
+        with self.assertRaisesRegex(hostd.Unauthorized, "token scope"):
+            hostd.verify_token(token(scope="update", key=KEY), IDENTITY, now)
+        # A host with no update key has no operator routes at all, whatever is signed.
+        for candidate in (token(scope="update"), forged):
+            with self.assertRaisesRegex(hostd.UpdatesDisabled, "updates are not enabled on this host"):
+                hostd.verify_token(candidate, {**IDENTITY, "updateKey": None}, now, scope="update")
+
+    def test_the_identity_file_carries_the_update_key_only_when_it_is_a_valid_one(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = tmp / "host.json"
+        cases = {
+            "valid": ({"host": HOST_ID, "key": KEY.hex(), "updateKey": UPDATE_KEY.hex()}, UPDATE_KEY),
+            "absent": ({"host": HOST_ID, "key": KEY.hex()}, None),
+            "short": ({"host": HOST_ID, "key": KEY.hex(), "updateKey": "ab" * 8}, None),
+            "not hex": ({"host": HOST_ID, "key": KEY.hex(), "updateKey": "zz" * 32}, None),
+            "number": ({"host": HOST_ID, "key": KEY.hex(), "updateKey": 5}, None),
+        }
+        for name, (content, expected) in cases.items():
+            with self.subTest(name):
+                path.write_text(json.dumps(content))
+                identity = hostd.load_identity(path)
+                self.assertEqual((identity["host"], identity["key"], identity["updateKey"]), (HOST_ID, KEY, expected))
+        self.assertIsNone(hostd.load_identity(tmp / "missing.json"))
+
+
+class RunnerTest(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(os.geteuid() == 0, "needs root to become another uid")
+    async def test_a_command_can_run_as_an_unprivileged_uid_with_no_other_groups(self):
+        code, output = await hostd.Runner().run(["sh", "-c", "id -u; id -g; id -G"], user=(23456, 23457))
+        self.assertEqual((code, output.split()), (0, ["23456", "23457", "23457"]))
+        code, output = await hostd.Runner().run(["id", "-u"])
+        self.assertEqual((code, output.strip()), (0, str(os.getuid())))
+
+    async def test_oom_score_adj_is_written_to_the_process(self):
+        process = await asyncio.create_subprocess_exec("sleep", "30")
+        self.addCleanup(lambda: process.returncode is None and process.kill())
+        self.assertTrue(hostd.Runner.set_oom_score_adj(process.pid, 200))
+        self.assertEqual(Path(f"/proc/{process.pid}/oom_score_adj").read_text().strip(), "200")
+        process.kill()
+        await process.wait()
+        self.assertFalse(hostd.Runner.set_oom_score_adj(process.pid, 200))  # gone: no exception
 
 
 class EncryptionTest(unittest.TestCase):
@@ -1587,7 +1673,7 @@ class FirecrackerTest(HostTest):
                          ["config.img", "mem", "meta.json", "profile.img", "vmstate"])
         self.assertEqual(json.loads((kept / "meta.json").read_text()), block)
         self.assertEqual(files_in(kept / "profile.img")["Default/Cookies"][0], MARKER)
-        # The set was packed from a copy of the image, mounted for the moment; the VM's own image untouched.
+        # The set was packed from a copy of the image, read out in userspace; the VM's own image untouched.
         (copy,) = [argv for argv in runner.argv("cp")]
         self.assertEqual(copy[1], "--sparse=always")
         self.assertEqual(runner.mounted, set())
@@ -1754,6 +1840,160 @@ class FirecrackerTest(HostTest):
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body(4)))[0], 200)
         self.assertEqual(sorted(p.name for p in self.snapshots(host).iterdir()), ["4"])
 
+    async def test_a_full_disk_evicts_old_snapshots_before_the_park_is_refused(self):
+        host, runner, client = await self.host()
+        other = request(id="ws-def", workspace="personal:def", memoryMb=512)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", other))[0], 201)
+        park = {**self.park_body(), "upload": {"chunkUrls": [self.url(f"def/3/chunk-{i:04d}") for i in range(64)],
+                                               "manifestUrl": self.url("def/3/manifest.json")}}
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-def/park", park))[0], 200)
+        self.assertTrue((self.snapshots(host, "ws-def") / "3" / "meta.json").exists())
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        write_image(self.home(host) / "profile.img", None, {"Default/Cookies": MARKER})
+        # The disk is short while another sandbox's snapshot is on it, and has room once it is gone.
+        short = lambda path: 100 if self.snapshots(host, "ws-def").exists() else 10**6  # noqa: E731
+        with mock.patch.object(hostd, "free_mb", side_effect=short):
+            status, parked = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, parked["state"]), (200, "parked"), parked)
+        self.assertFalse(self.snapshots(host, "ws-def").exists())  # evicted for the room
+        self.assertTrue((self.snapshots(host, "ws-abc") / "3" / "meta.json").exists())
+
+    async def test_a_park_evicts_only_what_it_may_and_is_refused_when_that_is_not_enough(self):
+        host, runner, client = await self.host()
+        busy = request(id="ws-def", workspace="personal:def", memoryMb=512)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", busy))[0], 201)
+        # A snapshot of a sandbox that is being restored right now is not evictable.
+        (self.snapshots(host, "ws-def") / "3").mkdir(parents=True)
+        (self.snapshots(host, "ws-def") / "3" / "meta.json").write_text("{}")
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        with mock.patch.object(hostd, "free_mb", return_value=100):
+            status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual(status, 507, answer)
+        self.assertTrue((self.snapshots(host, "ws-def") / "3" / "meta.json").exists())
+        self.assertEqual(self.vm_of(runner).requests[-1][1], "/mmds")  # still nothing paused
+
+    # The guest's image is parsed in userspace, never mounted -------------------------------------------
+
+    async def test_the_guests_image_is_read_by_userspace_tools_as_the_vms_uid_and_never_mounted(self):
+        host, runner, client, parked = await self.parked_vm()
+        # The only host-side mount of a profile image is the empty one made for a cold start (the host wrote
+        # that one into it); the park mounted nothing, and nothing stays mounted.
+        self.assertEqual(len(runner.argv("mount")), 1)
+        self.assertEqual(runner.mounted, set())
+        work = Path(host.config.root) / "profile-work" / "ws-abc"
+        (fsck,) = runner.argv("e2fsck")
+        self.assertEqual(fsck, ["e2fsck", "-fy", str(work / "profile.img")])
+        (dump,) = [argv for argv in runner.argv("debugfs") if "rdump / " in " ".join(argv)]
+        self.assertEqual(dump, ["/usr/sbin/debugfs", "-R", f"rdump / {work / 'tree'}", str(work / "profile.img")])
+        self.assertNotIn("-w", dump)
+        self.assertEqual(runner.ran_as("e2fsck"), [(40000, 40000)])  # the VM's own uid, not root
+        self.assertEqual([who for argv, who in runner.users if argv is dump or argv == dump], [(40000, 40000)])
+        # The work area belongs to that uid before any tool reads the image, and is gone afterwards.
+        chown = [argv for argv in runner.argv("chown") if str(work) in argv]
+        self.assertEqual(chown, [["/usr/bin/chown", "40000:40000", str(work), str(work / "tree"),
+                                  str(work / "profile.img")]])
+        self.assertFalse(work.exists())
+        # What was read out is what the set carries: a cold start elsewhere gets the cookie.
+        other, _runner, client = await self.host("b")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", self.restore_body("profile"))
+        self.assertEqual((status, record["path"]), (201, "cold"))
+        self.assertEqual(self.cookie_in(other), MARKER)
+
+    async def test_an_image_that_cannot_be_repaired_fails_the_park_and_the_sandbox_comes_back(self):
+        host, runner, client = await self.started_vm()
+        runner.e2fsck_exit = 4  # errors left uncorrected
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["restoredLocally"]), (502, True))
+        self.assertIn("e2fsck exited 4", answer["error"])
+        self.assertNotIn("ws/3/manifest.json", self.storage.objects)
+        self.assertFalse((Path(host.config.root) / "profile-work" / "ws-abc").exists())
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
+
+    async def test_a_read_error_from_debugfs_fails_the_park_but_missing_owners_do_not(self):
+        host, runner, client = await self.started_vm()
+        runner.fail_rdump = "rdump: Ext2 directory corrupted while reading directory block 12\n"
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
+        self.assertEqual((status, answer["restoredLocally"]), (502, True))
+        self.assertIn("reading the profile image failed", answer["error"])
+        self.assertNotIn("ws/3/manifest.json", self.storage.objects)
+        # A plain uid cannot chown what it dumps: debugfs says so for every file and exits 0 (the default
+        # output of the fake): that is no failure (test_the_guests_image_is_read_by_userspace_tools...).
+
+    # Snapshot age -----------------------------------------------------------------------------------------
+
+    def age(self, host, sandbox_id, days):
+        meta = self.snapshots(host, sandbox_id) / "3" / "meta.json"
+        then = time.time() - days * 86400
+        os.utime(meta, (then, then))
+
+    async def parked_pair(self, host, client):
+        for sandbox_id in ("ws-abc", "ws-def"):
+            body = request(id=sandbox_id, workspace=f"personal:{sandbox_id}", memoryMb=512)
+            self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", body))[0], 201)
+            park = {**self.park_body(), "upload": {
+                "chunkUrls": [self.url(f"{sandbox_id}/3/chunk-{i:04d}") for i in range(64)],
+                "manifestUrl": self.url(f"{sandbox_id}/3/manifest.json")}}
+            self.assertEqual((await self.call(client, "POST", f"/v1/sandboxes/{sandbox_id}/park", park))[0], 200)
+
+    async def test_snapshots_past_the_ttl_go_at_start_by_the_sweep_and_at_the_next_park(self):
+        host, runner, client = await self.host()
+        self.assertEqual(host.config.snapshot_ttl_days, 7)
+        await self.parked_pair(host, client)
+        self.age(host, "ws-abc", 10)
+        self.age(host, "ws-def", 3)
+        # The sweep (hostd's start and its hourly housekeeping): the old one goes, the young one stays.
+        self.assertEqual(await host.sweep_snapshots(), ["ws-abc/3"])
+        self.assertFalse(self.snapshots(host, "ws-abc").exists())
+        self.assertTrue((self.snapshots(host, "ws-def") / "3" / "meta.json").exists())
+        # hostd's start does the same.
+        self.age(host, "ws-def", 9)
+        again = hostd.Host(host.config, IDENTITY, runner)
+        await again.start()
+        self.addAsyncCleanup(again.close)
+        self.assertFalse(self.snapshots(host, "ws-def").exists())
+        # And a park: a snapshot that aged meanwhile goes with it, the parking sandbox's own is new.
+        await self.parked_pair(host, client)
+        self.age(host, "ws-abc", 8)
+        third = request(id="ws-ghi", workspace="personal:ghi", memoryMb=512)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", third))[0], 201)
+        park = {**self.park_body(), "upload": {"chunkUrls": [self.url(f"ghi/3/chunk-{i:04d}") for i in range(64)],
+                                               "manifestUrl": self.url("ghi/3/manifest.json")}}
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-ghi/park", park))[0], 200)
+        self.assertFalse(self.snapshots(host, "ws-abc").exists())
+        self.assertTrue((self.snapshots(host, "ws-def") / "3" / "meta.json").exists())
+        self.assertTrue((self.snapshots(host, "ws-ghi") / "3" / "meta.json").exists())
+
+    async def test_the_ttl_spares_a_sandbox_that_is_being_restored_and_can_be_switched_off(self):
+        host, runner, client = await self.host()
+        await self.parked_pair(host, client)
+        self.age(host, "ws-abc", 10)
+        host.sandboxes["ws-abc"]["state"] = "restoring"  # its restore is using the snapshot right now
+        self.assertEqual(await host.sweep_snapshots(), [])
+        host.sandboxes["ws-abc"]["state"] = "parked"
+        host.config.snapshot_ttl_days = 0  # no limit
+        self.assertEqual(await host.sweep_snapshots(), [])
+        host.config.snapshot_ttl_days = 7
+        self.assertEqual(await host.sweep_snapshots(), ["ws-abc/3"])
+
+    # Memory: the OOM killer and admission ---------------------------------------------------------------
+
+    async def test_the_vm_is_marked_for_the_oom_killer_once_the_jailer_runs(self):
+        host, runner, client = await self.started_vm()
+        self.assertEqual(runner.oom, [(host.sandboxes["ws-abc"]["fcPid"], 200)])
+        self.assertEqual(hostd.VM_OOM_SCORE_ADJ, 200)
+
+    async def test_a_microvm_counts_the_firecracker_process_on_top_of_its_memory(self):
+        # 2048 MB of guest memory is 2304 MB of host (fc_overhead_mb 256): two of them do not fit 4600.
+        host, runner, client = await self.host(memory_limit_mb=4600)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def"))
+        self.assertEqual((status, answer["committedMb"], answer["limitMb"]), (507, 2304, 4600))
+        capacity = (await self.call(client, "GET", "/v1/capacity"))[1]
+        self.assertEqual(capacity["memoryMb"]["committed"], 2304)
+        # What fits stays admitted: 2304 + 1280.
+        small = request(id="ws-def", workspace="personal:def", memoryMb=1024)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", small))[0], 201)
+
     # Teardown, restart, capacity ----------------------------------------------------------------------
 
     async def test_delete_ends_the_vm_and_wipes_every_trace_of_the_sandbox(self):
@@ -1883,7 +2123,9 @@ class UpdateTest(HostTest):
         (opt / "host").mkdir(parents=True)
         (opt / "host" / "hostd.py").write_text('VERSION = "old"\n')
         host, runner, client = await self.host(**{"host_dir": str(opt / "host"), "update_delay_s": 0.01,
-                                                  "update_schemes": ("http", "https"), **settings})
+                                                  "update_schemes": ("http", "https"),
+                                                  "update_restart_grace_s": 0.01, "update_quiet_poll_s": 0.01,
+                                                  **settings})
         return host, runner, client, opt
 
     async def update(self, client, body, scope="update"):
@@ -1895,8 +2137,8 @@ class UpdateTest(HostTest):
         host, runner, client, _opt = await self.updater()
         body = self.offer(self.bundle())
         self.assertEqual((await self.call(client, "POST", "/v1/admin/update", body, auth=False))[0], 401)
-        status, answer = await self.call(client, "POST", "/v1/admin/update", body)  # Bro's own token: no scope
-        self.assertEqual((status, answer["error"]), (401, "token scope"))
+        status, answer = await self.call(client, "POST", "/v1/admin/update", body)  # Bro's own token: host key, no scope
+        self.assertEqual((status, answer["error"]), (401, "bad signature"))
         self.assertEqual((await self.update(client, body, scope="other"))[0], 401)
         wrong_host = await client.post("/v1/admin/update", json=body,
                                        headers={"Authorization": f"Bearer {token(host='host-other', scope='update')}"})
@@ -2003,6 +2245,163 @@ class UpdateTest(HostTest):
         status, answer = await self.update(client, body)
         self.assertEqual((status, answer["error"]), (409, "an update is already running"))
         await host.update_task
+
+    # The operator's key ---------------------------------------------------------------------------------
+
+    OPERATOR_ROUTES = (("POST", "/v1/admin/update"), ("GET", "/v1/admin/update"), ("GET", "/v1/sandboxes/ws-abc/log"))
+
+    async def operator_call(self, client, method, path, bearer, body=None):
+        response = await client.request(method, path, json=body or {}, headers={"Authorization": f"Bearer {bearer}"})
+        return response.status, await response.json(content_type=None)
+
+    async def test_a_scope_claim_signed_with_the_host_key_the_app_holds_opens_nothing(self):
+        host, runner, client, opt = await self.updater()
+        body = self.offer(self.bundle())
+        forged = token(scope="update", key=KEY)  # HMAC(BROWSER_VM_SIGNING_KEY, host): all Bro can sign
+        for method, path in self.OPERATOR_ROUTES:
+            status, answer = await self.operator_call(client, method, path, forged, body)
+            self.assertEqual((status, answer["error"]), (401, "bad signature"), (method, path))
+        self.assertEqual(runner.update_runs, [])
+        self.assertFalse((opt / "host.new").exists())  # nothing was even downloaded
+        self.assertFalse(host.updating)
+        # The real operator's token still works.
+        status, answer = await self.update(client, body)
+        self.assertEqual(status, 202, answer)
+        await host.update_task
+
+    async def test_a_host_without_an_update_key_has_no_operator_routes_and_bro_is_not_affected(self):
+        host, runner, client, _opt = await self.updater()
+        host.identity = {**IDENTITY, "updateKey": None}  # a host made before the key existed
+        body = self.offer(self.bundle())
+        for bearer in (token(scope="update"), token(scope="update", key=KEY), token()):
+            for method, path in self.OPERATOR_ROUTES:
+                status, answer = await self.operator_call(client, method, path, bearer, body)
+                self.assertEqual((status, answer["error"]), (403, "updates are not enabled on this host"), (method, path))
+        self.assertEqual(runner.update_runs, [])
+        self.assertEqual((await self.call(client, "GET", "/v1/capacity"))[0], 200)  # Bro's routes: as before
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+
+    # What /v1/health tells without a token -------------------------------------------------------------
+
+    async def test_health_shows_an_updates_state_but_not_its_error_or_hash_which_are_the_operators(self):
+        host, runner, client, _opt = await self.updater()
+        runner.update_exit = 3
+        body = self.offer(self.bundle())
+        self.assertEqual((await self.update(client, body))[0], 202)
+        await host.update_task
+        health = (await self.call(client, "GET", "/v1/health", auth=False))[1]
+        self.assertEqual(set(health["update"]), {"state", "version", "at"})
+        self.assertEqual((health["update"]["state"], health["update"]["version"]), ("failed", "2099-01-01.1"))
+        self.assertNotIn("update.sh exited", json.dumps(health))
+        self.assertNotIn(body["sha256"], json.dumps(health))
+        # The whole status is the operator's: GET /v1/admin/update.
+        self.assertEqual((await self.call(client, "GET", "/v1/admin/update", auth=False))[0], 401)
+        self.assertEqual((await self.call(client, "GET", "/v1/admin/update"))[0], 401)  # Bro's token
+        response = await client.get("/v1/admin/update", headers={"Authorization": f"Bearer {token(scope='update')}"})
+        status = await response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual((status["hostd"], status["updating"], status["update"]["state"]),
+                         (hostd.VERSION, False, "failed"))
+        self.assertIn("update.sh exited 3", status["update"]["error"])
+        self.assertEqual(status["update"]["sha256"], body["sha256"])
+
+    def test_public_status_of_nothing_is_nothing(self):
+        self.assertIsNone(selfupdate.public_status(None))
+        self.assertEqual(selfupdate.public_status({"state": "done", "version": "1", "at": "t", "running": "1",
+                                                   "sha256": "ab", "error": "e"}),
+                         {"state": "done", "version": "1", "at": "t"})
+
+    # The flag that says an update is running ----------------------------------------------------------
+
+    async def test_a_status_that_cannot_be_written_does_not_leave_the_update_flag_set(self):
+        host, runner, client, opt = await self.updater()
+        body = self.offer(self.bundle())
+        with mock.patch.object(selfupdate, "write_status", side_effect=OSError("disk full")):
+            status, answer = await self.update(client, body)  # after the download, before the task exists
+        self.assertEqual(status, 500)
+        self.assertIn("disk full", answer["error"])
+        self.assertFalse(host.updating)
+        self.assertIsNone(host.update_task)
+        # ...and the same when the task cannot write its first status: it ends, the flags are given back.
+        with mock.patch.object(selfupdate, "write_status", side_effect=[None, OSError("disk full")]):
+            self.assertEqual((await self.update(client, body))[0], 202)
+            await host.update_task
+        self.assertFalse(host.updating or host.draining)
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertEqual(runner.update_runs, [])
+        self.assertEqual((await self.update(client, body))[0], 202)  # the next try is possible
+        await host.update_task
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "2099-01-01.1"\n')
+
+    # No restart in the middle of a start or a park ------------------------------------------------------
+
+    async def test_an_update_waits_for_a_start_in_progress_and_refuses_new_ones_meanwhile(self):
+        host, runner, client, opt = await self.updater()
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def")))[0], 201)
+        gate, real = asyncio.Event(), host.bring_up
+
+        async def slow(*args):
+            await gate.wait()
+            return await real(*args)
+
+        host.bring_up = slow
+        starting = asyncio.ensure_future(self.call(client, "POST", "/v1/sandboxes", request()))
+        while not host.inflight:
+            await asyncio.sleep(0.01)
+        self.assertEqual((await self.update(client, self.offer(self.bundle())))[0], 202)
+        await asyncio.sleep(0.2)
+        # Nothing was swapped or restarted under the start, and the status says what it waits for.
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertEqual((runner.update_runs, runner.argv("systemctl")), ([], []))
+        self.assertEqual(selfupdate.read_status(host.config)["state"], "waiting")
+        self.assertTrue(host.draining)
+        # New work that changes the host is turned away (503: Bro tries again); what is already there is not.
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(id="ws-ghi", workspace="personal:ghi"))
+        self.assertEqual(status, 503, answer)
+        status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-def/park", self.park_body())
+        self.assertEqual(status, 503, answer)
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-def"))[1]["state"], "running")
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def"))
+        self.assertEqual(status, 200)  # a retried start of a sandbox that is up
+        self.assertEqual(runner.update_runs, [])
+        gate.set()
+        status, record = await starting
+        self.assertEqual((status, record["state"]), (201, "running"))
+        await host.update_task
+        self.assertEqual(len(runner.update_runs), 1)  # only now
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "2099-01-01.1"\n')
+        self.assertEqual(host.inflight, 0)
+
+    async def test_an_update_waits_for_a_sandbox_that_is_parking(self):
+        host, runner, client, opt = await self.updater()
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        host.sandboxes["ws-abc"]["state"] = "parking"
+        self.assertEqual((await self.update(client, self.offer(self.bundle())))[0], 202)
+        await asyncio.sleep(0.2)
+        self.assertEqual(runner.update_runs, [])
+        host.sandboxes["ws-abc"]["state"] = "running"
+        await host.update_task
+        self.assertEqual(len(runner.update_runs), 1)
+
+    async def test_an_update_that_never_gets_quiet_fails_clearly_and_changes_nothing(self):
+        host, runner, client, opt = await self.updater(update_quiet_timeout_s=0.2)
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
+        host.sandboxes["ws-abc"]["state"] = "parking"  # stuck
+        self.assertEqual((await self.update(client, self.offer(self.bundle())))[0], 202)
+        await host.update_task
+        state = selfupdate.read_status(host.config)
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("still starting or parking after 0.2 s", state["error"])
+        self.assertIn("nothing was changed", state["error"])
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "old"\n')
+        self.assertFalse((opt / "host.new").exists() or (opt / "host.old").exists())
+        self.assertEqual((runner.update_runs, runner.argv("systemctl")), ([], []))
+        self.assertFalse(host.updating or host.draining)
+        host.sandboxes["ws-abc"]["state"] = "running"
+        self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request(id="ws-def", workspace="personal:def")))[0], 201)
+        self.assertEqual((await self.update(client, self.offer(self.bundle())))[0], 202)  # and it can be tried again
+        await host.update_task
+        self.assertEqual((opt / "host" / "hostd.py").read_text(), 'VERSION = "2099-01-01.1"\n')
 
 
 if __name__ == "__main__":

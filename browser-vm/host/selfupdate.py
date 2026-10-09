@@ -2,15 +2,20 @@
 
 The caller (an operator with a token signed for scope `update`) names a host bundle (the tarball `boot.py bundle`
 makes) by an https URL and its SHA-256. hostd downloads it (at most `update_max_bytes`), checks the hash, unpacks
-it into <host_dir>.new and answers 202; after the answer it swaps the directories, runs update.sh from the new
-code (the idempotent parts of provision.sh a code update needs: venv when the wheels changed, units, binaries)
-and restarts bro-hostd. If update.sh fails the old directory comes back and nothing restarts. Running sandboxes
-survive the restart (hostd reads them back from the runtime on start). The outcome of the last update is in
-<root>/update.json, which GET /v1/health shows.
+it into <host_dir>.new and answers 202; after the answer it waits until no sandbox is starting, restoring or
+parking (new ones are refused meanwhile, `Host.apply_update`), swaps the directories, runs update.sh from the new
+code (the idempotent parts of provision.sh a code update needs: a check that the new code compiles, imports and
+loads this host's settings, the venv when the wheels changed, units, binaries; and the rollback guard, rollback.sh
+on a systemd timer) and restarts bro-hostd. If update.sh fails the old directory comes back and nothing restarts;
+if hostd does not come up on the new code the guard puts the old directory back. Running sandboxes survive the
+restart (hostd reads them back from the runtime on start). The outcome of the last update is in
+<root>/update.json: GET /v1/admin/update (the operator's) shows all of it, GET /v1/health only its state, version
+and time.
 
 The hash only holds the download together: whoever holds an `update` token runs code as root on the host. That is
-the point of the endpoint, and why the scope is a claim of its own: Bro's ordinary tokens have none and are
-refused here, and an `update` token is refused everywhere else.
+the point of the endpoint, and why the scope is a claim of its own, signed with a key of its own (`updateKey` of
+host.json, derived from a signing key only the operator has; Bro holds the host key and must not reach root): Bro's
+ordinary tokens have no scope and are refused here, and an `update` token is refused everywhere else.
 """
 
 import asyncio
@@ -18,6 +23,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import tarfile
@@ -58,6 +64,11 @@ def read_status(config):
     with contextlib.suppress(OSError, ValueError):
         return json.loads(status_path(config).read_text())
     return None
+
+
+def public_status(status):
+    """What /v1/health shows of an update without a token: no error text, no hash of the bundle."""
+    return None if status is None else {key: status[key] for key in ("state", "version", "at") if key in status}
 
 
 def write_status(config, **fields):
@@ -131,6 +142,15 @@ async def prepare(http, config, url, expected):
         archive.unlink(missing_ok=True)
 
 
+def try_status(config, **fields):
+    """write_status where a failure to write must not hide the outcome (a full disk is no reason to leave the
+    update half done and hostd thinking it still runs)."""
+    try:
+        write_status(config, **fields)
+    except OSError as error:
+        log.error("update.json could not be written: %s", error)
+
+
 def mark_started(config, version):
     """On hostd's start: an update that restarted it is done."""
     status = read_status(config)
@@ -150,7 +170,7 @@ async def apply(runner, config, version, expected):
         host.rename(old)
         new.rename(host)
     except OSError as error:
-        write_status(config, state="failed", sha256=expected, error=f"swap: {error}")
+        try_status(config, state="failed", sha256=expected, error=f"swap: {error}")
         return False
     code, output = await runner.run([config.bash, str(host / "update.sh")], timeout=900)
     if code != 0:
@@ -158,13 +178,52 @@ async def apply(runner, config, version, expected):
         shutil.rmtree(new, ignore_errors=True)
         host.rename(new)
         old.rename(host)
-        write_status(config, state="failed", sha256=expected, version=version,
-                     error=f"update.sh exited {code}: {output[-300:]}")
+        try_status(config, state="failed", sha256=expected, version=version,
+                   error=f"update.sh exited {code}: {output[-300:]}")
         return False
     write_status(config, state="restarting", sha256=expected, version=version)
     code, output = await runner.run([config.systemctl, "--no-block", "restart", "bro-hostd"])
     if code != 0:
-        write_status(config, state="failed", sha256=expected, version=version,
-                     error=f"systemctl restart exited {code}: {output[-300:]}")
+        try_status(config, state="failed", sha256=expected, version=version,
+                   error=f"systemctl restart exited {code}: {output[-300:]}")
         return False
     return True
+
+
+# --- update.sh's helper (run from the new tree with the venv's Python) ---------------------------------------
+
+
+def enroll_update_key(key_file, identity_file):
+    """update.sh of a bundle made with `boot.py bundle --enroll-update-key`: the operator's key for scope
+    `update`, carried in the bundle as enroll/update-key (64 hex), goes into host.json (0600, replaced
+    atomically) and the copy in the bundle's tree is deleted. This is how a host made before the key existed
+    (or one whose key is rotated) gets it: the update that brings it is signed with the key the host has.
+    False when the bundle carries none."""
+    key_file = Path(key_file)
+    if not key_file.is_file():
+        return False
+    key = key_file.read_text().strip()
+    if not SHA256.fullmatch(key):
+        raise ValueError("enroll/update-key is not 64 lower-case hex characters")
+    identity = Path(identity_file)
+    data = json.loads(identity.read_text())
+    data["updateKey"] = key
+    temporary = identity.with_name(identity.name + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as file:
+        file.write(json.dumps(data))
+    os.replace(temporary, identity)
+    key_file.unlink()
+    with contextlib.suppress(OSError):
+        key_file.parent.rmdir()
+    return True
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) == 4 and sys.argv[1] == "enroll":
+        print("selfupdate: update key enrolled" if enroll_update_key(sys.argv[2], sys.argv[3])
+              else "selfupdate: no update key in the bundle")
+    else:
+        sys.exit("usage: selfupdate.py enroll KEY_FILE HOST_JSON")
