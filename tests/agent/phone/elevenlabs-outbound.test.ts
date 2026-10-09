@@ -197,6 +197,8 @@ describe("outbound Bro call initiation", () => {
     const { prompt } = override.prompt;
     expect(prompt).toContain("сначала дождись, пока собеседник ответит");
     expect(prompt).toContain("по какому вопросу звонишь, исходя из задачи");
+    expect(prompt).toContain("незнакомые люди — «Здравствуйте» и «вы»");
+    expect(prompt).toContain("знакомому человеку пользователя");
     expect(prompt).toContain("не утверждай, что ты человек");
     expect(prompt).toContain(
       "голосовой ИИ-помощник, оператор связи может записывать звонок, а краткое содержание сохраняется для отчёта владельцу"
