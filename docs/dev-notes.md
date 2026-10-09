@@ -950,6 +950,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   только `X-Auth-Token` проекта (`scripts/selectel/api.py`). Ротируемый порт
   9000 Geonode отвечает 403 на логин с сессией: песочнице нужен 10000, как
   делает `sticky_proxy` в `host.py`.
+- Managed PostgreSQL Selectel: 5433 — пулер, он отвергает параметры запуска
+  («unsupported startup parameter»: `PGOPTIONS` ops-скриптов,
+  `statement_timeout`) и ломал бы `LISTEN` и сессионные advisory-замки мира.
+  Приложение и ops ходят на 5432, прямо в PostgreSQL (`pg_address` в
+  `scripts/selectel/cloud.py`).
 - Хост пула в простое выключается (`stopped`), а не удаляется, и его будит
   следующая песочница или сообщение человека (`agent/hooks/browser-prewarm.ts`):
   новый хост в AZ-1 — 5 минут, а 04.10 — 16; включение — 92 с

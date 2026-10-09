@@ -244,10 +244,12 @@ def pg_create(flavor_name):
 
 
 def pg_address(cluster):
-    """(host, port): the cluster's private master address in bro-net."""
+    """(host, port): the cluster's private master address in bro-net. 5432 is PostgreSQL itself; 5433 is
+    Selectel's connection pooler, which refuses startup parameters (PGOPTIONS of the ops scripts,
+    statement_timeout) and would break LISTEN and session advisory locks."""
     connection = cluster.get("connection") or {}
     host = connection.get("master") or next(iter(connection.values()), None)
-    return host, cluster.get("port") or 5433
+    return host, cluster.get("port") or 5432
 
 
 def pg_user(name, password):

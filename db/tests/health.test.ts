@@ -62,17 +62,15 @@ beforeEach(() => {
 });
 
 describe("the database probe of the health check", () => {
-  it("bounds connect and query by the deadline on its own client", async () => {
+  it("bounds connect, query and statement by the deadline on its own client", async () => {
     await databaseAnswers(3_000);
     expect(pg.configs).toEqual([
       expect.objectContaining({
         connectionTimeoutMillis: 3_000,
         query_timeout: 3_000,
+        statement_timeout: 3_000,
       }),
     ]);
-    // A pooler in front of the server refuses startup parameters it does not
-    // know, and the whole probe with them.
-    expect(pg.configs[0]).not.toHaveProperty("statement_timeout");
     expect(pg.query).toHaveBeenCalledTimes(1);
     expect(pg.ended).toBe(1);
   });
