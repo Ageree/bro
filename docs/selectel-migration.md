@@ -156,6 +156,27 @@ cloud-init'ом `scripts/selectel/dedicated.py reinstall`, код `hostd` дал
   host was found»). VM приложения создаётся в ru-3b
   (`SELECTEL_ZONE=ru-3b`), а база — в той же зоне.
 
+## Стенд на Selectel (09.10)
+
+`bro-app-sel-1` (`HFL1.2-8192-160`, ru-3b) с managed PostgreSQL `bro-pg`, S3
+`bro-bucket` и копией базы прода (бэкап 22:43 UTC, 61 таблица, 26 813 строк,
+сверены). Сайт — `sel.brobro.tech`, cookie владельца с прода действует и
+здесь: база и `BETTER_AUTH_SECRET` те же. Telegram у стенда нет.
+
+- **Ход с поиском** (бенчмарк `d03-recommendations`): `web_search`,
+  `route_time`, ответ с тремя вариантами — как на проде.
+- **Браузерное поручение** (`uc-sh-compare`): ход ставит поручение в
+  очередь, тик `browser-runs` запускает его на выделенном сервере
+  (Firecracker, резидентный выход РФ), через 7 минут отчёт приходит в чат.
+  Wildberries и Яндекс Маркет отдали цены и рейтинги. Ozon с выхода прокси
+  отвечал страницей антибота. В отчёте `SITE ERRORS` есть
+  `ERR_CERT_AUTHORITY_INVALID` у `*.yandex.net`: на страницы это не
+  повлияло, причина пока не выяснена.
+- **S3.** Данные Cloud.ru скопированы в `bro-bucket` с проверкой sha256
+  каждого объекта: `artifacts/`, `sandbox/`, `sets/`, `workers/`,
+  `app/vendor/`, корень и бэкап. При переключении нужна досинхронизация
+  того, что появится после копии.
+
 ## Что проверить на живой инфраструктуре
 
 - **Firecracker на хосте Ubuntu 22.04.** Ядро 5.15 не входит в список хостов,
