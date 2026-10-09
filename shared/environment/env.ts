@@ -138,6 +138,24 @@ const pastedKeySchema = z
   )
   .refine((value) => value.length > 0, "Required");
 
+// The address every presigned URL of Object Storage is built on, so a path,
+// a query or a login in it would end up in the signed string.
+const s3EndpointSchema = z
+  .string()
+  .trim()
+  .refine((value) => {
+    const url = URL.parse(value);
+    return (
+      url?.protocol === "https:" &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  }, "S3_ENDPOINT must be an absolute https URL without a path")
+  .transform((value) => new URL(value).origin);
+
 // `host:port:username:password`, the line a residential proxy provider hands
 // out. The password is last because it is the only part that may hold a
 // colon. `{session}` in the username is where the sticky-session token of one
@@ -788,6 +806,17 @@ export const env = createEnv({
     ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
     ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
+    // Object Storage of any S3-compatible provider (Selectel, say): the four
+    // go together or not at all. With them Bro signs for this endpoint with
+    // this plain access key, in BROWSER_STATE_BUCKET; without them it uses
+    // Cloud.ru's (`https://s3.cloud.ru`, `ru-central-1`, the key
+    // `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`). The endpoint is an https
+    // origin without a path, and the region is the one the provider signs
+    // for (Selectel: `ru-1`, `https://s3.ru-1.storage.selcloud.ru`).
+    S3_ACCESS_KEY_ID: pastedKeySchema.optional(),
+    S3_ENDPOINT: s3EndpointSchema.optional(),
+    S3_REGION: trimmedValue.optional(),
+    S3_SECRET_ACCESS_KEY: pastedKeySchema.optional(),
     // Where Bro's own sandbox runs, the one eve keeps people's photos, voice
     // messages and documents in (`agent/sandbox.ts`): `default` is eve's
     // choice (Vercel Sandbox on Vercel), `bro-cloudru` the code sandbox host
@@ -1042,6 +1071,26 @@ export const env = createEnv({
           message: "MODEL_PROVIDER=openrouter needs OPENROUTER_API_KEY",
           path: ["OPENROUTER_API_KEY"],
         });
+      }
+      // A half-set Object Storage config would sign for Cloud.ru, or for the
+      // wrong region, and every upload would fail with a 403 that names
+      // neither.
+      const s3 = [
+        "S3_ACCESS_KEY_ID",
+        "S3_ENDPOINT",
+        "S3_REGION",
+        "S3_SECRET_ACCESS_KEY",
+      ] as const;
+      if (s3.some((name) => value[name] !== undefined)) {
+        for (const name of s3) {
+          if (value[name] === undefined) {
+            context.addIssue({
+              code: "custom",
+              message: `${name} is required: S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are set together`,
+              path: [name],
+            });
+          }
+        }
       }
     }),
 });

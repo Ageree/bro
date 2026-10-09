@@ -1,5 +1,6 @@
 import { listsWorkspace } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
+import { objectStorageConfigured } from "@shared/object-storage/s3";
 import type { directModelProvider } from "@shared/model/provider";
 
 /**
@@ -57,17 +58,17 @@ function browserHostComputeConfigured() {
 }
 
 /**
- * Whether sandboxes can be parked into sets and restored from them: the
- * Cloud.ru key with its Object Storage tenant, the bucket, and the key the
- * sets are sealed with. Less than `browserPoolConfigured`, which new
+ * Whether sandboxes can be parked into sets and restored from them: the key
+ * for the hosts (`browserHostComputeConfigured`), Object Storage with its
+ * bucket (`objectStorageConfigured`: the `S3_*` key or Cloud.ru's), and the
+ * key the sets are sealed with. Less than `browserPoolConfigured`, which new
  * sandboxes need: the pool's hosts are looked after, and their sandboxes
  * parked, with only this and the host token key (`reconcileBrowserPool`).
  */
 export function browserStateConfigured() {
   return (
     browserHostComputeConfigured() &&
-    env.CLOUDRU_S3_TENANT_ID !== undefined &&
-    env.BROWSER_STATE_BUCKET !== undefined &&
+    objectStorageConfigured() &&
     env.BROWSER_STATE_KEY !== undefined
   );
 }

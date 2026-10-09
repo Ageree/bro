@@ -2,12 +2,7 @@ import { createHash } from "node:crypto";
 import type { SandboxSession } from "eve/sandbox";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { objectStore, presignStoredObject } from "@shared/object-storage/s3";
-import {
-  objectStorageEndpoint,
-  objectStorageRegion,
-  presignS3Url,
-  uriEncode,
-} from "@shared/object-storage/sigv4";
+import { presignS3Url, uriEncode } from "@shared/object-storage/sigv4";
 
 /**
  * The person's files on their way from Bro's sandbox to the task agent's
@@ -299,9 +294,7 @@ async function anyStoredUnder(prefix: string, signal: AbortSignal | undefined) {
 /** A presigned listing of at most one key of the bucket under `prefix`. */
 function presignedListing(prefix: string) {
   const store = objectStore();
-  const listing = new URL(
-    `${objectStorageEndpoint}/${uriEncode(store.bucket)}`
-  );
+  const listing = new URL(`${store.endpoint}/${uriEncode(store.bucket)}`);
   listing.searchParams.set("list-type", "2");
   listing.searchParams.set("max-keys", "1");
   listing.searchParams.set("prefix", prefix);
@@ -310,7 +303,7 @@ function presignedListing(prefix: string) {
     expiresSeconds: presignSeconds,
     method: "GET",
     now: new Date(),
-    region: objectStorageRegion,
+    region: store.region,
     url: listing.href,
   });
 }

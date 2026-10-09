@@ -84,8 +84,14 @@ ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 SCRIPT = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.(sh|mjs)")
 ARGUMENT = re.compile(r"[A-Za-z0-9._:/=@%?&+-]{1,2048}")
-# Releases come only from the project's Object Storage (host.py build): a presigned GET.
+# Releases come only from the project's Object Storage (host.py build): a presigned GET. Cloud.ru's, or
+# Selectel's regional S3 (s3.<pool>.storage.selcloud.ru) after the move.
 RELEASE_HOSTS = ("s3.cloud.ru",)
+RELEASE_HOST_PATTERNS = (re.compile(r"s3\.ru-[0-9]+\.storage\.selcloud\.ru"),)
+
+
+def release_host(hostname):
+    return hostname in RELEASE_HOSTS or any(p.fullmatch(hostname or "") for p in RELEASE_HOST_PATTERNS)
 UNITS = ("bro-web", "bro-eve", "caddy", "deployd", "bro-watchdog", "bro-backup", "bro-tg-egress", "bro-tg-bridge")
 RESTARTABLE = ("bro-web", "bro-eve", "caddy", "bro-tg-egress", "bro-tg-bridge")
 BRIDGE = "bro-tg-bridge"
@@ -598,8 +604,8 @@ class Deployd:
         if not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
             raise Refused("sha256 must be 64 lower-case hex characters")
         parsed = urllib.parse.urlsplit(url if isinstance(url, str) else "")
-        if parsed.scheme != "https" or parsed.hostname not in RELEASE_HOSTS:
-            raise Refused(f"the release URL must be https on {', '.join(RELEASE_HOSTS)}")
+        if parsed.scheme != "https" or not release_host(parsed.hostname):
+            raise Refused("the release URL must be https on the project's Object Storage")
         self.unpack(version, url, sha256, log)
         # Before the switch: migrations stay compatible with the release still running (db/README.md).
         self.migrate(version, log)

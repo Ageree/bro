@@ -1,12 +1,18 @@
 import { createHash, createHmac } from "node:crypto";
 
 /**
- * AWS Signature Version 4 in the query string, for Object Storage on
- * Cloud.ru. Nothing here reads the environment, so a script run by plain
- * Node (`scripts/cloudru-app-host/blob-to-s3.ts`) signs the same way Bro does.
+ * AWS Signature Version 4 in the query string, for any S3-compatible Object
+ * Storage (Cloud.ru, Selectel). Nothing here reads the environment, so a
+ * script run by plain Node (`scripts/cloudru-app-host/blob-to-s3.ts`) signs
+ * the same way Bro does; which endpoint, region and key to sign with is
+ * `objectStore()` in `@shared/object-storage/s3`.
  */
-export const objectStorageEndpoint = "https://s3.cloud.ru";
-export const objectStorageRegion = "ru-central-1";
+
+/** Cloud.ru's Object Storage, what Bro signs for when `S3_*` are not set. */
+export const cloudruObjectStorage = {
+  endpoint: "https://s3.cloud.ru",
+  region: "ru-central-1",
+} as const;
 /** SigV4 refuses a presigned URL meant to live longer than a week. */
 const maximumExpirySeconds = 7 * 24 * 60 * 60;
 

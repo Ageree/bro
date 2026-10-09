@@ -9,7 +9,8 @@ The Cloud.ru key never goes to a probe VM: this runs in the session, and the VM 
   python s3.py list PREFIX                            keys and sizes
   python s3.py delete-prefix PREFIX                   delete every object under the prefix
 
-Needs CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and CLOUDRU_S3_TENANT_ID; the access key is
+Needs CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and CLOUDRU_S3_TENANT_ID (or S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID and
+S3_SECRET_ACCESS_KEY for another provider, Selectel: that key, region and host instead); the access key is
 "<tenant>:<key id>", region ru-central-1, endpoint https://s3.cloud.ru (path style). Bucket: $PROBE_BUCKET
 (default bucket-ac164a).
 """
@@ -28,8 +29,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ENDPOINT = "s3.cloud.ru"
-REGION = "ru-central-1"
+def setting(name):
+    value = os.environ.get(name, "")
+    return "".join(value.split()).strip("‘’“”'\"")
+
+
+# Another S3 provider (Selectel) when S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are set
+# (as in Bro's env.ts); Cloud.ru's otherwise. The endpoint is an https origin; ENDPOINT is its host.
+PROVIDER = all(setting(n) for n in ("S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"))
+ENDPOINT = urllib.parse.urlsplit(setting("S3_ENDPOINT")).hostname if PROVIDER else "s3.cloud.ru"
+REGION = setting("S3_REGION") if PROVIDER else "ru-central-1"
 BUCKET = os.environ.get("PROBE_BUCKET", "bucket-ac164a")
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
@@ -40,6 +49,8 @@ def clean(value):
 
 
 def credentials():
+    if PROVIDER:
+        return setting("S3_ACCESS_KEY_ID"), setting("S3_SECRET_ACCESS_KEY")
     access = f"{clean(os.environ['CLOUDRU_S3_TENANT_ID'])}:{clean(os.environ['CLOUDRU_KEY_ID'])}"
     return access, clean(os.environ["CLOUDRU_KEY_SECRET"])
 

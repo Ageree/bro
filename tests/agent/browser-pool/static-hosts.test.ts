@@ -224,8 +224,24 @@ describe("BROWSER_HOST_CLOUD=static settings", () => {
     expect(cloudru.browserPoolConfigured()).toBe(false);
     expect(cloudru.browserStateConfigured()).toBe(false);
 
-    const hosts = await importWithSettings(
+    // Without Cloud.ru's key the sets still need some Object Storage key.
+    const noStorage = await importWithSettings(
       { ...browserPoolTestEnvironment, ...keyless, ...staticSettings },
+      async () => import("@agent/lib/browser-vm/backend")
+    );
+    expect(noStorage.browserStateConfigured()).toBe(false);
+
+    const hosts = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        ...keyless,
+        ...staticSettings,
+        CLOUDRU_S3_TENANT_ID: "",
+        S3_ACCESS_KEY_ID: "selectel-key",
+        S3_ENDPOINT: "https://s3.ru-1.storage.selcloud.ru",
+        S3_REGION: "ru-1",
+        S3_SECRET_ACCESS_KEY: "selectel-secret",
+      },
       async () => import("@agent/lib/browser-vm/backend")
     );
     expect(hosts.browserPoolConfigured()).toBe(true);

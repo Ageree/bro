@@ -10,7 +10,7 @@ import { z } from "zod";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { objectStorageConfigured } from "@shared/object-storage/s3";
-import { objectStorageEndpoint } from "@shared/object-storage/sigv4";
+import { cloudruObjectStorage } from "@shared/object-storage/sigv4";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
 import { resolveMediaType } from "@agent/lib/inbound-media/media-type";
 import { isBlockedHost } from "@agent/lib/outbound-media/attachments";
@@ -98,9 +98,14 @@ function hostKey(hostname: string) {
  * redirects to. Read per call: `env` is parsed once anyway.
  */
 function ownHosts() {
+  // Cloud.ru's Object Storage and the one the `S3_*` settings name: a link
+  // to either may still be in a report while Bro moves between them.
   const hosts = new Set<string>([
-    hostKey(new URL(objectStorageEndpoint).hostname),
+    hostKey(new URL(cloudruObjectStorage.endpoint).hostname),
   ]);
+  if (env.S3_ENDPOINT !== undefined) {
+    hosts.add(hostKey(new URL(env.S3_ENDPOINT).hostname));
+  }
   const origins = [env.BETTER_AUTH_URL, env.SANDBOX_TOOLS_URL];
   try {
     origins.push(applicationOrigin());

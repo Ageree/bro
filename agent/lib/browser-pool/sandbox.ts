@@ -932,7 +932,7 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
     );
     await alert(
       `browser-sandbox-unparked:${workspaceId}`,
-      `Песочница воркспейса ${workspaceId} удалена с хоста без парковки: нет BROWSER_STATE_KEY, BROWSER_STATE_BUCKET или CLOUDRU_S3_TENANT_ID. Входы с последней парковки потеряны.`
+      `Песочница воркспейса ${workspaceId} удалена с хоста без парковки: нет BROWSER_STATE_KEY, BROWSER_STATE_BUCKET или ключа S3. Входы с последней парковки потеряны.`
     );
     return;
   }
