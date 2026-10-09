@@ -263,6 +263,14 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         other = await self.open(id="another_one_1")
         self.assertEqual(other.status, 409)
 
+    async def test_a_handoff_that_is_over_is_not_opened_again_by_its_id(self):
+        await self.open()
+        await worker.end_handoff(worker.worker.handoff, "cancel")
+        self.assertEqual(worker.worker.handoff.state, "cancelled")
+        again = await self.open()
+        self.assertEqual((await again.json())["state"], "cancelled")
+        self.assertFalse(worker.worker.busy())  # no tab, no hold on the browser
+
     async def test_it_expires_and_cancels(self):
         await self.open(ttlSeconds=60)
         handoff = worker.worker.handoff

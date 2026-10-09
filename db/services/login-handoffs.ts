@@ -163,54 +163,6 @@ export async function listClaimedLoginHandoffs() {
     .where(eq(loginHandoffs.state, "claimed"));
 }
 
-/** The domains the workspace has a sign-in open for, link sent or opened. */
-export async function listOpenLoginHandoffDomains(
-  workspaceId: string,
-  now: Date
-) {
-  const rows = await db
-    .select({ domain: loginHandoffs.domain })
-    .from(loginHandoffs)
-    .where(
-      and(
-        eq(loginHandoffs.workspaceId, workspaceId),
-        or(
-          and(
-            eq(loginHandoffs.state, "pending"),
-            gt(loginHandoffs.expiresAt, now)
-          ),
-          and(
-            eq(loginHandoffs.state, "claimed"),
-            gt(loginHandoffs.viewUntil, now)
-          )
-        )
-      )
-    );
-  return rows.map((row) => row.domain);
-}
-
-/**
- * Whether the workspace's browser is in a person's hands: a sign-in is open
- * in a viewer. A link nobody opened holds nothing.
- */
-export async function workspaceHasClaimedLoginHandoff(
-  workspaceId: string,
-  now: Date
-) {
-  const [row] = await db
-    .select({ id: loginHandoffs.id })
-    .from(loginHandoffs)
-    .where(
-      and(
-        eq(loginHandoffs.workspaceId, workspaceId),
-        eq(loginHandoffs.state, "claimed"),
-        gt(loginHandoffs.viewUntil, now)
-      )
-    )
-    .limit(1);
-  return row !== undefined;
-}
-
 /**
  * The reports owed, each claimed for a delivery: one tick's delivery is not
  * repeated by the next while its lease lasts, and a report that failed

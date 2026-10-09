@@ -4488,9 +4488,11 @@ async def create_handoff(request):
     if error:
         raise web.HTTPBadRequest(text=json.dumps({"error": error}), content_type="application/json")
     existing = worker.handoff
+    if existing is not None and existing.id == body["id"]:
+        # Asked again after a lost answer, or by a page reloaded after the end: the one it has, never a
+        # second tab for a sign-in that is over.
+        return web.json_response(existing.summary())
     if existing is not None and existing.active():
-        if existing.id == body["id"]:
-            return web.json_response(existing.summary())
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     if worker.busy() or worker.restarting:
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")

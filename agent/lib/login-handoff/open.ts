@@ -18,7 +18,7 @@ import { applicationOrigin } from "@shared/environment/origin";
 
 /** How long a link opens, and how long the viewer lasts once it is opened. */
 export const linkLifetimeMs = 30 * 60_000;
-export const viewerLifetimeMs = 15 * 60_000;
+const viewerLifetimeMs = 15 * 60_000;
 
 /** The secret that marks a device: its hash is all the database keeps. */
 export function deviceHash(secret: string) {

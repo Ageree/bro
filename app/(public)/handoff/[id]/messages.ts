@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** What the browser's worker says to the viewer over its socket. */
-export const workerMessageSchema = z.discriminatedUnion("t", [
+const workerMessageSchema = z.discriminatedUnion("t", [
   z.object({
     d: z.string(),
     h: z.number(),

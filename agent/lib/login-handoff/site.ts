@@ -102,7 +102,7 @@ export function handoffSite(raw: string): HandoffSite {
  */
 export function namedInWords(domain: string, said: readonly string[]) {
   const pattern = new RegExp(
-    `(?:^|[^a-z\\d-])(?:[a-z\\d-]+\\.)*${domain.replaceAll(".", "\\.")}(?![a-z\\d-])`,
+    `(?:^|[^a-z\\d-])(?:[a-z\\d-]+\\.)*${domain.replaceAll(".", "\\.")}(?![a-z\\d-]|\\.[a-z\\d])`,
     "iu"
   );
   return said.some((words) => pattern.test(words));

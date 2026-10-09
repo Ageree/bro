@@ -166,15 +166,6 @@ describe("login handoffs", () => {
     expect(
       (await service.createLoginHandoff(link("bobs", bob), start)).kind
     ).toBe("created");
-    expect(
-      await service.workspaceHasClaimedLoginHandoff(alice.workspaceId, start)
-    ).toBe(true);
-    expect(
-      await service.workspaceHasClaimedLoginHandoff(bob.workspaceId, start)
-    ).toBe(false);
-    expect(
-      await service.listOpenLoginHandoffDomains(alice.workspaceId, start)
-    ).toEqual(["avito.ru"]);
   });
 
   it("ends a handoff once, and delivers its report once", async () => {
