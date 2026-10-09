@@ -1429,7 +1429,8 @@ class FirecrackerTest(HostTest):
         vm = self.vm_of(runner)
         self.assertEqual([(m, p) for m, p, _ in vm.requests], [
             ("PUT", "/boot-source"), ("PUT", "/drives/rootfs"), ("PUT", "/drives/profile"), ("PUT", "/drives/config"),
-            ("PUT", "/network-interfaces/eth0"), ("PUT", "/machine-config"), ("PUT", "/entropy"), ("PUT", "/actions")])
+            ("PUT", "/network-interfaces/eth0"), ("PUT", "/machine-config"), ("PUT", "/mmds/config"),
+            ("PUT", "/entropy"), ("PUT", "/actions"), ("PUT", "/mmds")])
         bodies = {p: b for _m, p, b in vm.requests}
         args = bodies["/boot-source"]["boot_args"]
         for word in ("console=ttyS0", "panic=1", "pci=off", "root=/dev/vda ro rootfstype=ext4",
@@ -1605,9 +1606,12 @@ class FirecrackerTest(HostTest):
         self.assertEqual((status, record["path"], record["generation"]), (201, "restored", 4), record)
         self.assertNotIn("fallback", record)
         first, second = self.vm_of(runner, last=False)
-        self.assertEqual(second.requests, [
-            ("PUT", "/snapshot/load", {"snapshot_path": "/snap/vmstate", "resume_vm": True,
-                                       "mem_backend": {"backend_path": "/snap/mem", "backend_type": "File"}})])
+        load, clock = second.requests
+        self.assertEqual(load, ("PUT", "/snapshot/load", {"snapshot_path": "/snap/vmstate", "resume_vm": True,
+                                "mem_backend": {"backend_path": "/snap/mem", "backend_type": "File"}}))
+        # The guest wakes with the snapshot's time: the host's goes into MMDS at once.
+        self.assertEqual(clock[:2], ("PUT", "/mmds"))
+        self.assertAlmostEqual(clock[2]["bro"]["now"], time.time(), delta=60)
         self.assertEqual(second.loaded, (b"vmstate of ws-abc", hashlib.sha256(FakeVm.MEMORY).hexdigest()))
         self.assertEqual(self.storage.gets, ["ws/3/manifest.json"])  # the manifest alone: the profile is local
         self.assertEqual(self.cookie_in(host), MARKER)
@@ -1724,7 +1728,7 @@ class FirecrackerTest(HostTest):
         with mock.patch.object(hostd, "free_mb", return_value=100):
             status, answer = await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body())
         self.assertEqual(status, 507)
-        self.assertEqual(self.vm_of(runner).requests[-1][1], "/actions")
+        self.assertEqual(self.vm_of(runner).requests[-1][1], "/mmds")  # nothing after the start: no pause
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "running")
 
     async def test_the_oldest_snapshots_go_when_the_disk_budget_is_spent(self):

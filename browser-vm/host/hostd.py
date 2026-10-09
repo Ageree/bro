@@ -1632,8 +1632,16 @@ class Host:
                 if request[1] != "/entropy":  # a release without the device: the guest has random.trust_cpu
                     raise
                 log.warning("sandbox %s: %s", record["id"], error)
+        await self.tell_the_time(api, record)
         if not await self.worker_ready(record, self.config.start_timeout_s):
             raise RuntimeError(f"the worker did not answer: {log_tail(paths.log)}")
+
+    async def tell_the_time(self, api, record):
+        """The host's clock into the VM's MMDS (bro-fc-clock steps the guest's to it); never fails a start."""
+        try:
+            await api.send(firecracker.clock_request(time.time()))
+        except firecracker.FirecrackerError as error:
+            log.warning("sandbox %s: no time for the guest: %s", record["id"], error)
 
     def local_snapshot(self, record, manifest):
         """(snapshot, None) when the local snapshot the set's manifest names is on this disk and whole; else
@@ -1678,7 +1686,10 @@ class Host:
                 [self.config.chown, f"{uid}:{gid}", str(inside / "vmstate"), str(inside / "mem")])
             if code != 0:
                 raise RuntimeError(f"chown for the VM failed: {output[-200:]}")
-            await firecracker.Api(paths.socket).send(firecracker.SNAPSHOT_LOAD, timeout=120)
+            api = firecracker.Api(paths.socket)
+            await api.send(firecracker.SNAPSHOT_LOAD, timeout=120)
+            # The guest wakes with the snapshot's time: the host's goes in at once.
+            await self.tell_the_time(api, record)
             if not await self.worker_ready(record, self.config.restore_timeout_s):
                 raise RuntimeError("the restored worker did not answer")
         except Exception as error:

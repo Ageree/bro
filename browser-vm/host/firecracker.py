@@ -52,6 +52,8 @@ KERNEL, ROOTFS, PROFILE, CONFIG, SOCKET, SNAP = ("vmlinux", "rootfs.ext4", "prof
 VMSTATE, MEMORY = f"{SNAP}/vmstate", f"{SNAP}/mem"
 SNAPSHOT_FILES = ("vmstate", "mem", "profile.img", "config.img")
 MEMORY_MARGIN_BYTES = 256 * 2**20
+# Firecracker's metadata service inside the guest: the host's clock goes there (`clock_request`).
+MMDS_ADDRESS = "169.254.169.254"
 
 
 class FirecrackerError(Exception):
@@ -59,6 +61,7 @@ class FirecrackerError(Exception):
 
 
 # --- Rootfs image ------------------------------------------------------------------------------------
+
 
 
 def guest_scripts():
@@ -203,9 +206,18 @@ def boot_requests(*, cmdline, memory_mb, vcpus):
         ("PUT", "/network-interfaces/eth0", {"iface_id": "eth0", "host_dev_name": network.TAP,
                                              "guest_mac": network.GUEST_MAC}),
         ("PUT", "/machine-config", {"vcpu_count": vcpus, "mem_size_mib": memory_mb}),
+        # The host's time reaches the guest through MMDS (`clock_request`): ptp_kvm needs kvm-clock, and on the
+        # first real host (09.10) the guest took the TSC and had no /dev/ptp0.
+        ("PUT", "/mmds/config", {"version": "V2", "network_interfaces": ["eth0"], "ipv4_address": MMDS_ADDRESS}),
         ("PUT", "/entropy", {}),
         ("PUT", "/actions", {"action_type": "InstanceStart"}),
     ]
+
+
+def clock_request(now):
+    """The host's wall clock into MMDS, for the guest's bro-fc-clock: after a cold start and after every
+    restore, when the guest's clock is the one the snapshot was taken at."""
+    return ("PUT", "/mmds", {"bro": {"now": round(now, 3)}})
 
 
 PAUSE = ("PATCH", "/vm", {"state": "Paused"})

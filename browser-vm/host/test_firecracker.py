@@ -48,7 +48,7 @@ class RequestsTest(unittest.TestCase):
         requests = firecracker.boot_requests(cmdline="x", memory_mb=3072, vcpus=2)
         self.assertEqual([path for _method, path, _body in requests], [
             "/boot-source", "/drives/rootfs", "/drives/profile", "/drives/config", "/network-interfaces/eth0",
-            "/machine-config", "/entropy", "/actions"])
+            "/machine-config", "/mmds/config", "/entropy", "/actions"])
         drives = [body for _m, path, body in requests if path.startswith("/drives/")]
         self.assertEqual([d["drive_id"] for d in drives], ["rootfs", "profile", "config"])  # vda, vdb, vdc
         self.assertEqual([d["is_read_only"] for d in drives], [True, False, True])
@@ -143,26 +143,47 @@ class GuestScriptsTest(unittest.TestCase):
 
     def test_the_clock_is_stepped_only_when_it_is_off_by_more_than_half_a_second(self):
         clock = load_script("bro-fc-clock")
-        for ptp, realtime, stepped in ((1000.0, 1000.4, False), (1000.0, 1000.7, True), (1000.7, 1000.0, True)):
-            with self.subTest(ptp=ptp, realtime=realtime):
+        for host, realtime, stepped in ((1000.0, 1000.4, False), (1000.0, 1000.7, True), (1000.7, 1000.0, True)):
+            with self.subTest(host=host, realtime=realtime):
                 fake = mock.Mock(CLOCK_REALTIME=0)
-                fake.clock_gettime.side_effect = lambda which: ptp if which == -29 else realtime
+                fake.clock_gettime.return_value = realtime
                 with mock.patch.object(clock, "time", fake):
-                    difference = clock.step_if_off(-29)
-                self.assertAlmostEqual(difference, ptp - realtime)
+                    difference = clock.step_to(host)
+                self.assertAlmostEqual(difference, host - realtime)
                 self.assertEqual(fake.clock_settime.called, stepped)
                 if stepped:
-                    fake.clock_settime.assert_called_once_with(0, ptp)
+                    fake.clock_settime.assert_called_once_with(0, host)
 
-    def test_without_a_ptp_clock_once_says_so_and_the_loop_keeps_trying(self):
+    def test_without_ptp_the_host_time_comes_from_mmds_and_only_a_new_value_steps(self):
         clock = load_script("bro-fc-clock")
-        with mock.patch.object(clock.os, "open", side_effect=FileNotFoundError("no ptp0")):
+        sync = clock.Clock()
+        values = iter([(5000.0, 10.0), (5000.0, 11.0), (9000.0, 12.0)])
+        with mock.patch.object(clock.os, "open", side_effect=FileNotFoundError("no ptp0")), \
+                mock.patch.object(clock, "mmds_now", side_effect=lambda: next(values)), \
+                mock.patch.object(clock, "step_to", side_effect=lambda now: now) as step, \
+                mock.patch.object(clock.time, "monotonic", return_value=10.5):
+            self.assertAlmostEqual(sync.sync(), 5000.5)  # the host's time plus the half second since the read
+            self.assertIsNone(sync.sync())  # the same value again: not the host's time any more
+            self.assertAlmostEqual(sync.sync(), 8998.5)  # a restore wrote a new one
+        self.assertEqual(step.call_count, 2)
+
+    def test_without_any_host_clock_once_says_so_and_the_loop_keeps_trying(self):
+        clock = load_script("bro-fc-clock")
+        with mock.patch.object(clock.os, "open", side_effect=FileNotFoundError("no ptp0")), \
+                mock.patch.object(clock, "mmds_now", side_effect=OSError("no mmds")):
             self.assertEqual(clock.main(["--once"]), 1)
             with mock.patch.object(clock.time, "sleep", side_effect=[None, KeyboardInterrupt]) as sleep:
                 with self.assertRaises(KeyboardInterrupt):
                     clock.main([])
         # An error is a pause, not the end of the loop.
         self.assertEqual(sleep.call_args_list, [mock.call(clock.EVERY_S), mock.call(clock.EVERY_S)])
+
+    def test_the_vm_gets_mmds_on_its_interface_before_it_starts(self):
+        requests = firecracker.boot_requests(cmdline="x", memory_mb=2048, vcpus=2)
+        paths = [path for _method, path, _body in requests]
+        self.assertLess(paths.index("/mmds/config"), paths.index("/actions"))
+        self.assertEqual(requests[paths.index("/mmds/config")][2]["network_interfaces"], ["eth0"])
+        self.assertEqual(firecracker.clock_request(12.3456), ("PUT", "/mmds", {"bro": {"now": 12.346}}))
 
 
 class RootfsImageTest(unittest.TestCase):

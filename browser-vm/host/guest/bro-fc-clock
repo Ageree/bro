@@ -2,11 +2,15 @@
 """Keeps the guest's wall clock on the host's (injected into the rootfs image next to bro-fc-init).
 
 A Firecracker guest has no RTC: a fresh one starts in 1970, and a snapshot restored hours later wakes up with
-the time it was taken at. The host's clock reaches the guest through the KVM PTP device (ptp_kvm, /dev/ptp0).
-Its dynamic POSIX clock id is ((~fd) << 3) | 3 (the kernel's FD_TO_CLOCKID); reading it gives the host's time,
-and CLOCK_REALTIME is stepped to it when it is off by more than STEP_S.
+the time it was taken at. Two sources of the host's time, the first that answers:
+  - the KVM PTP device (ptp_kvm, /dev/ptp0), when the guest runs on kvm-clock: its dynamic POSIX clock id is
+    ((~fd) << 3) | 3 (the kernel's FD_TO_CLOCKID), and it always reads the host's time;
+  - MMDS (Firecracker's metadata service, 169.254.169.254): hostd writes `bro.now` after every cold start
+    and every restore (09.10: the guest took the TSC and had no /dev/ptp0). A value not seen before is the
+    host's time at that moment; the clock is stepped to it plus the time since it was read.
+CLOCK_REALTIME is stepped when it is off by more than STEP_S.
 
-  bro-fc-clock --once   step once and exit 0 (1 when there is no PTP clock): the init runs it before the
+  bro-fc-clock --once   step once and exit 0 (1 when neither source answers): the init runs it before the
                         sandbox starts
   bro-fc-clock          once a second, for ever (started by the init in the background; it never exits on an
                         error, a sandbox must not lose its clock sync to one failed read)
@@ -15,10 +19,14 @@ and CLOCK_REALTIME is stepped to it when it is off by more than STEP_S.
 import os
 import sys
 import time
+import urllib.request
 
 PTP_DEVICE = "/dev/ptp0"
+MMDS = "http://169.254.169.254"
 STEP_S = 0.5
 EVERY_S = 1.0
+# MMDS answers inside Firecracker; no proxy is ever in the way.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def clock_id(descriptor):
@@ -26,30 +34,61 @@ def clock_id(descriptor):
     return ((~descriptor) << 3) | 3
 
 
-def step_if_off(ptp_clock):
-    """Step CLOCK_REALTIME to the PTP clock when they differ by more than STEP_S; the difference in seconds."""
-    difference = time.clock_gettime(ptp_clock) - time.clock_gettime(time.CLOCK_REALTIME)
+def step_to(now):
+    """Step CLOCK_REALTIME to `now` when they differ by more than STEP_S; the difference in seconds."""
+    difference = now - time.clock_gettime(time.CLOCK_REALTIME)
     if abs(difference) > STEP_S:
-        time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(ptp_clock))
+        time.clock_settime(time.CLOCK_REALTIME, now)
     return difference
+
+
+def mmds_now():
+    """(host time, monotonic time it was read at) from MMDS v2, or OSError."""
+    token = OPENER.open(urllib.request.Request(f"{MMDS}/latest/api/token", method="PUT", headers={
+        "X-metadata-token-ttl-seconds": "60"}), timeout=1).read().decode()
+    answer = OPENER.open(urllib.request.Request(f"{MMDS}/bro/now", headers={
+        "X-metadata-token": token, "Accept": "application/json"}), timeout=1).read()
+    read_at = time.monotonic()
+    try:
+        return float(answer), read_at
+    except ValueError:
+        raise OSError(f"MMDS bro/now is not a number: {answer[:40]!r}") from None
+
+
+class Clock:
+    def __init__(self):
+        self.descriptor = None
+        self.seen = None  # the last MMDS value stepped to: a value is the host's time only when it is new
+
+    def sync(self):
+        """The difference stepped (or measured), or None when no new time came; OSError when no source
+        answers."""
+        try:
+            if self.descriptor is None:
+                self.descriptor = os.open(PTP_DEVICE, os.O_RDONLY)
+            return step_to(time.clock_gettime(clock_id(self.descriptor)))
+        except OSError:
+            self.descriptor = None
+        value, read_at = mmds_now()
+        if value == self.seen:
+            return None
+        self.seen = value
+        return step_to(value + (time.monotonic() - read_at))
 
 
 def main(argv):
     once = "--once" in argv
-    descriptor = None
+    clock = Clock()
     while True:
         try:
-            if descriptor is None:
-                descriptor = os.open(PTP_DEVICE, os.O_RDONLY)
-            difference = step_if_off(clock_id(descriptor))
+            difference = clock.sync()
             if once:
                 return 0
-            if abs(difference) > STEP_S:
+            if difference is not None and abs(difference) > STEP_S:
                 print(f"bro-fc-clock: stepped the clock by {difference:.3f} s", file=sys.stderr, flush=True)
         except OSError as error:
-            descriptor = None
             if once:
-                print(f"bro-fc-clock: no PTP clock ({error})", file=sys.stderr, flush=True)
+                print(f"bro-fc-clock: no host clock ({error})", file=sys.stderr, flush=True)
                 return 1
         time.sleep(EVERY_S)
 
