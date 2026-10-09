@@ -191,13 +191,12 @@ describe("outbound Bro call initiation", () => {
       .parse(outboundBody);
     const { agent: override } = data.conversation_config_override;
 
-    expect(override.first_message).toBe(
-      "Здравствуйте! Это Бро. Вам удобно сейчас поговорить?"
-    );
-    expect(override.first_message).not.toContain("ИИ");
-    expect(override.first_message).not.toContain("записыв");
+    // Приветствие не заготовлено: агент ждёт «алло» и открывает по задаче.
+    expect(override.first_message).toBe("");
 
     const { prompt } = override.prompt;
+    expect(prompt).toContain("сначала дождись, пока собеседник ответит");
+    expect(prompt).toContain("по какому вопросу звонишь, исходя из задачи");
     expect(prompt).toContain("не утверждай, что ты человек");
     expect(prompt).toContain(
       "голосовой ИИ-помощник, оператор связи может записывать звонок, а краткое содержание сохраняется для отчёта владельцу"
