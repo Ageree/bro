@@ -216,10 +216,10 @@ class FakeChrome:
     """The VM's Chrome as the worker sees it over CDP: its page tabs."""
 
     def __init__(self):
-        self.tabs, self.closed, self.shots, self.opened = [], [], [], 0
+        self.tabs, self.closed, self.shots, self.opened, self.urls = [], [], [], 0, {}
 
     async def page_targets(self):
-        return [{"id": tab, "type": "page"} for tab in self.tabs]
+        return [{"id": tab, "type": "page", "url": self.urls.get(tab, "")} for tab in self.tabs]
 
     async def new_tab(self):
         self.opened += 1
@@ -1491,6 +1491,25 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.worker = self.restart()
         await self.worker.adopt_tabs()
         self.assertEqual((await self.call("GET", "/v1/sessions/s1"))[1]["tabOpen"], False)
+
+    async def test_pages_chrome_restored_that_no_session_owns_are_closed_when_the_worker_starts(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign in."})
+        await self.settled("r1")
+        self.chrome.tabs += ["R1", "R2"]  # RestoreOnStartup brought back what the last Chrome had open
+        self.worker = self.restart()
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["T1"])  # the session's own tab stays
+        self.assertEqual(self.chrome.closed, ["R1", "R2"])
+
+    async def test_chrome_keeps_one_page_when_every_restored_page_is_a_stray(self):
+        self.chrome.tabs += ["R1", "R2"]
+        self.chrome.urls["R2"] = "about:blank"
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["R2"])  # Chrome quits with its last tab: the blank one stays
+        self.chrome.tabs[:] = ["R3", "R4"]
+        self.chrome.urls.update({"R3": "https://shop.test/cart", "R4": "https://bank.test/"})
+        await self.worker.adopt_tabs()
+        self.assertEqual(self.chrome.tabs, ["T1"])  # none blank: a new page replaces them
 
     async def test_the_machine_details_need_a_token_and_walk_the_profile_off_the_loop(self):
         walks = []

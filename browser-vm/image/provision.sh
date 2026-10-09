@@ -123,6 +123,11 @@ mkdir -p /etc/opt/chrome/policies/managed
 # A fresh profile otherwise pulls ~160 MB of Chrome components (speech, on-device models, optimization
 # guide) through the residential proxy, billed per GB, on its first errand (01.10.2026): component
 # updates and model downloads are off here, the optimization guide in the unit's --disable-features.
+# RestoreOnStartup 1 ("continue where you left off") is what makes Chrome keep cookies that have no expiry
+# over a restart: without it every park (a cold Chrome start) and every VM boot signed the person out of
+# each site whose session cookie is not persistent (checked on Chromium: such a cookie is gone after
+# Browser.close and a start, and stays with this policy). It also reopens the last pages; the worker closes
+# those that no session owns (`close_restored_tabs`).
 cat > /etc/opt/chrome/policies/managed/bro.json <<'JSON'
 {
   "WebRtcIPHandling": "disable_non_proxied_udp",
@@ -132,6 +137,7 @@ cat > /etc/opt/chrome/policies/managed/bro.json <<'JSON'
   "DefaultBrowserSettingEnabled": false,
   "MetricsReportingEnabled": false,
   "ComponentUpdatesEnabled": false,
+  "RestoreOnStartup": 1,
   "GenAILocalFoundationalModelSettings": 1
 }
 JSON

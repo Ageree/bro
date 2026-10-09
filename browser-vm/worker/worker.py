@@ -77,7 +77,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-06.5"
+VERSION = "2026-10-09.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -371,6 +371,26 @@ async def new_tab():
 async def close_tab(target_id):
     with contextlib.suppress(Exception):
         await cdp_command(await browser_socket(), "Target.closeTarget", {"targetId": target_id})
+
+
+async def close_restored_tabs(owned):
+    """Chrome runs with `RestoreOnStartup: 1` (image/provision.sh): that is what keeps a sign-in whose
+    cookie has no expiry (a session cookie) over a restart, a park and a move to another host, and it also
+    reopens the pages the last Chrome had. No session owns them (tab ids are new, and a parked sandbox
+    starts this worker empty), so pages that are not in `owned` are closed, but one: Chrome quits with its
+    last tab. Cookies are the browser's, not the tab's, and stay. Never raises: a Chrome that does not answer
+    has nothing to tidy."""
+    with contextlib.suppress(Exception):
+        pages = await page_targets()
+        strays = [t["id"] for t in pages if t["id"] not in owned]
+        if strays and len(strays) == len(pages):
+            blank = next((t["id"] for t in pages if t.get("url") == "about:blank"), None)
+            if blank is None:
+                await new_tab()
+            else:
+                strays.remove(blank)
+        for target_id in strays:
+            await close_tab(target_id)
 
 
 class SiteErrors:
@@ -1122,6 +1142,7 @@ class Worker:
             if session.tab not in session.tabs:
                 session.tab = None
         self.save_tabs()
+        await close_restored_tabs(set().union(*(session.tabs for session in self.sessions.values())))
 
     def accept_generation(self, generation):
         if generation > self.generation:
@@ -3726,6 +3747,8 @@ async def browser_action(request):
         for session in worker.sessions.values():
             session.tab, session.tabs = None, set()
         worker.save_tabs()
+    if ready:
+        await close_restored_tabs(set().union(*(session.tabs for session in worker.sessions.values())))
     return web.json_response({"rc": code, "chrome": ready, "output": output})
 
 
