@@ -43,10 +43,12 @@ const endCall = {
   description: "",
   params: { system_tool_type: "end_call" },
 };
+// Библиотечный русский голос «Maxim — Conversational & Natural» (Москва).
+// Должен быть добавлен в аккаунт ElevenLabs до --apply; другой — через --voice-id.
+const russianVoiceId = "6YjFofyVXU1ASguf2hTJ";
 const basePrompt =
-  "Ты Бро, ИИ-помощник, не человек. Говори кратко и естественно по-русски. Оператор связи записывает разговор; честно сообщи об этом. Твой единственный инструмент end_call завершает этот разговор; инструментов для других действий и доступа к памяти, аккаунтам или личным сведениям пользователя нет. Не совершай покупки, бронирования, переводы и другие действия и не обещай их. Не запрашивай пароли, коды, платёжные или другие чувствительные сведения. Если цель звонка не передана, предложи собеседнику оставить короткое сообщение для пользователя. Когда сообщение принято, собеседник отказывается или хочет закончить, кратко попрощайся и сразу вызови end_call; не продолжай разговор.";
-const firstMessage =
-  "Здравствуйте! Я Бро, ИИ-помощник. Оператор связи записывает разговор. Вам удобно сейчас поговорить?";
+  "Ты Бро, голосовой помощник пользователя. Говори кратко и естественно по-русски. Говори как живой человек по телефону: короткие фразы, без канцелярита и списков, естественные короткие реплики («так», «понял», «хорошо»), не повторяй дословно слова собеседника, не делай длинных пауз. Не называй себя ИИ или роботом в приветствии и не заводи разговор о записи сам, но никогда не утверждай, что ты человек: если собеседник искренне спросит, человек ли ты или робот, либо о записи — ответь честно и коротко (ты голосовой ИИ-помощник, оператор связи может записывать звонок, а краткое содержание сохраняется для отчёта владельцу) и продолжи. Твой единственный инструмент end_call завершает этот разговор; инструментов для других действий и доступа к памяти, аккаунтам или личным сведениям пользователя нет. Не совершай покупки, бронирования, переводы и другие действия и не обещай их. Не запрашивай пароли, коды, платёжные или другие чувствительные сведения. Если цель звонка не передана, предложи собеседнику оставить короткое сообщение для пользователя. Выполнив задачу или приняв сообщение, не бросай трубку: поблагодари, спроси, нет ли у собеседника уточнений или вопросов, дай договорить и отвечай по теме. Вызывай end_call только после прощания или отказа собеседника; никогда не обрывай собеседника на полуслове. Если собеседник попрощался, отказался или просит закончить — коротко попрощайся и в этом же ответе вызови end_call. Если прощаешься первым — дождись его ответа и затем вызови end_call.";
+const firstMessage = "Здравствуйте! Это Бро. Вам удобно сейчас поговорить?";
 let applying = false;
 let env: typeof phoneEnvironment;
 
@@ -139,10 +141,12 @@ function configuration(
   initiationSecret: string,
   webhookId: string,
   globalLimits: z.output<typeof globalLimitsSchema>,
+  voiceId: string,
   maxDurationSeconds?: number
 ) {
   const config = agent.conversation_config;
   const platform = agent.platform_settings;
+  const turn = object(config.turn ?? {});
   const behavior = object(config.agent);
   const subagents = z.array(z.json()).safeParse(behavior.subagents);
   if (!subagents.success || subagents.data.length > 0)
@@ -211,6 +215,7 @@ function configuration(
         prompt: {
           ...prompt,
           prompt: basePrompt,
+          temperature: 0.3,
           tools: [],
           tool_ids: [],
           mcp_server_ids: [],
@@ -228,7 +233,25 @@ function configuration(
         ...object(config.conversation),
         max_duration_seconds: maxDurationSeconds ?? duration.data,
       },
-      tts: { ...object(config.tts), model_id: "eleven_v4_turbo" },
+      tts: {
+        ...object(config.tts),
+        voice_id: voiceId,
+        stability: 0.4,
+        similarity_boost: 0.75,
+        speed: 1.05,
+        model_id: "eleven_v4_turbo",
+      },
+      turn: {
+        ...turn,
+        turn_eagerness: "normal",
+        speculative_turn: true,
+        silence_end_call_timeout: 20,
+        soft_timeout_config: {
+          ...object(turn.soft_timeout_config ?? {}),
+          timeout_seconds: 3,
+          message: "Секунду…",
+        },
+      },
     },
     platform_settings: {
       ...platform,
@@ -315,6 +338,7 @@ async function setup() {
       "public-url": { type: "string" },
       "create-agent": { type: "string" },
       "duration-seconds": { type: "string" },
+      "voice-id": { type: "string" },
       "enable-bursting": { type: "boolean", default: false },
       output: { type: "string" },
       apply: { type: "boolean", default: false },
@@ -325,7 +349,7 @@ async function setup() {
   });
   if (values.help) {
     console.log(
-      "Phone setup defaults to read-only planning. --public-url https://your-domain --output /private/path/phone.env [--apply] [--create-agent exact-name] [--duration-seconds positive-integer] [--enable-bursting]. Provider-native limits are unlimited concurrency (-1) and the daily default 100000, not per-user call quotas. Existing provider duration is preserved unless explicitly changed; new agents default to the provider's 600 seconds. Use 60 only for a short test. Bursting defaults off; enabling it permits provider overflow charged at double rate. Load the existing private output as an env file on a repeated run. Never put secrets in arguments."
+      "Phone setup defaults to read-only planning. --public-url https://your-domain --output /private/path/phone.env [--apply] [--create-agent exact-name] [--duration-seconds positive-integer] [--voice-id provider-voice-id] [--enable-bursting]. The default voice is a Russian library voice; add the library voice to the account before --apply. Provider-native limits are unlimited concurrency (-1) and the daily default 100000, not per-user call quotas. Existing provider duration is preserved unless explicitly changed; new agents default to the provider's 600 seconds. Use 60 only for a short test. Bursting defaults off; enabling it permits provider overflow charged at double rate. Load the existing private output as an env file on a repeated run. Never put secrets in arguments."
     );
     return;
   }
@@ -349,6 +373,8 @@ async function setup() {
     .safeParse(values["duration-seconds"]);
   if (!duration.success)
     throw new SetupError("--duration-seconds must be a positive integer.");
+  const voice = id.safeParse(values["voice-id"] ?? russianVoiceId);
+  if (!voice.success) throw new SetupError("--voice-id is invalid.");
   const publicUrl = z.url().safeParse(values["public-url"]);
   if (!publicUrl.success) throw new SetupError("--public-url is required.");
   const base = new URL(publicUrl.data);
@@ -420,11 +446,19 @@ async function setup() {
       initiationSecret,
       existingHook?.webhook_id ?? "planned_hook",
       capacity.data,
+      voice.data,
       duration.data
     );
+  try {
+    await request(`/v1/voices/${voice.data}`, z.object({ voice_id: id }));
+  } catch {
+    console.warn(
+      `Voice ${voice.data} was not found in the account; add it from the voice library before --apply.`
+    );
+  }
   if (!values.apply) {
     console.log(
-      "Read-only plan validated. Applying will configure only the named Bro agent and its HMAC webhook, preserve workspace defaults, write private env output, and will not provision a number or place a call."
+      `Read-only plan validated. Applying will configure only the named Bro agent (voice ${voice.data}, faster turn-taking, prompt, first message) and its HMAC webhook, preserve workspace defaults, write private env output, and will not provision a number or place a call. Add the library voice to the account before --apply.`
     );
     return;
   }
@@ -463,6 +497,7 @@ async function setup() {
               first_message: firstMessage,
               prompt: {
                 prompt: basePrompt,
+                temperature: 0.3,
                 llm: "gpt-6-luna",
                 reasoning_effort: "none",
                 enable_reasoning_summary: false,
@@ -477,7 +512,7 @@ async function setup() {
             conversation: {
               max_duration_seconds: duration.data ?? 600,
             },
-            tts: { model_id: "eleven_v4_turbo" },
+            tts: { model_id: "eleven_v4_turbo", voice_id: voice.data },
           },
           platform_settings: {
             auth: { enable_auth: true, allowlist: [] },
@@ -520,6 +555,7 @@ async function setup() {
       initiationSecret,
       webhookId,
       capacity.data,
+      voice.data,
       duration.data
     );
     const changed =
@@ -541,6 +577,7 @@ async function setup() {
       initiationSecret,
       webhookId,
       capacity.data,
+      voice.data,
       duration.data
     );
     if (
