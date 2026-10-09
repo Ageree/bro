@@ -444,6 +444,9 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "не зови `connect_google`, а сразу читай"
     );
+    expect(selected?.content).toContain("ты сам ему позвонишь");
+    expect(selected?.content).toContain("`phone-call`");
+    expect(selected?.content).toContain("не перезванивай сам");
   });
 
   it("keeps resumed scheduled turns in worker mode", async () => {

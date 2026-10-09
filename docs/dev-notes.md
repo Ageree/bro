@@ -816,6 +816,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `toolSkillExtras` (тест в `agent/lib/skills/tests/tools.test.ts`). Группа,
   открытая лишь словами сообщения, пришедшего посреди хода, в следующем ходе
   пропадает: слот прикладывает блоки только на `turn.started`.
+- Знакомство (`first-contact`, `role/interactive.md`) предлагает позвонить
+  человеку сам (`phone-call`), если его номер `active` по `phone-status`; текст
+  правят вместе с хэшами промптов в `tests/agent/skills/flag-off.test.ts`
+  (новые значения печатает упавший тест).
 - Строка `<!-- …` в `agent/instructions/content/` — только маркер навыка
   (`skill:`, `body-only:`, `core-only`, `full-only`), иначе каталог падает
   при загрузке. Ядро держит `tests/agent/skills/core.test.ts` (≤ 10 тыс.
