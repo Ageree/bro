@@ -111,9 +111,9 @@ class GuestScriptsTest(unittest.TestCase):
         subprocess.run(["sh", "-n", str(path)], check=True)
         text = path.read_text()
         self.assertTrue(text.startswith("#!/bin/sh\n"))
-        steps = ["mount -t proc", "mount -t tmpfs -o \"size=${OVERLAY_MB}m", "mount -t overlay overlay",
+        steps = ["mount -n -t proc", "mount -n -t tmpfs -o \"size=${OVERLAY_MB}m", "mount -n -t overlay overlay",
                  "/dev/vdc /mnt/cfg", "cp -p /mnt/cfg/worker.json /mnt/merged/etc/bro/worker.json",
-                 "/dev/vdb /mnt/merged/var/lib/bro/profile", "mount --move /dev /mnt/merged/dev",
+                 "/dev/vdb /mnt/merged/var/lib/bro/profile", "mount -n --move /dev /mnt/merged/dev",
                  "hostname bro-sandbox", "dirty_expire_centisecs", "bro-fc-clock --once", "pivot_root . mnt",
                  "bro-fc-clock </dev/null", "exec env -i"]
         code = text[text.index("export PATH"):]  # not the comment above it
@@ -122,7 +122,16 @@ class GuestScriptsTest(unittest.TestCase):
         # PID 1 stays PID 1: the sandbox's init is exec'd, with the environment runc and runsc give it.
         self.assertIn("BRO_WORKER_BIND=0.0.0.0", text)
         self.assertIn("/usr/local/sbin/bro-sandbox-init", text.splitlines()[-1])
-        self.assertIn("mount -t ext4 -o ro,nodev,nosuid,noexec /dev/vdc", text)  # the config drive is read-only
+        self.assertIn("mount -n -t ext4 -o ro,nodev,nosuid,noexec /dev/vdc", text)  # the config drive is read-only
+        # Ubuntu's resolv.conf is a link into /run, which a tmpfs hides: the init replaces the link with a file.
+        self.assertLess(code.index("rm -f /mnt/merged/etc/resolv.conf"), code.index("> /mnt/merged/etc/resolv.conf"))
+        # Bash's process substitution (google-chrome's wrapper) needs /dev/fd, which udev makes elsewhere.
+        self.assertIn("ln -sfn /proc/self/fd /mnt/merged/dev/fd", code)
+        # The root is read-only: a mount that tries to write /etc/mtab fails although it mounted.
+        for line in code.splitlines():
+            for word in ("mount ", "umount "):
+                if line.lstrip().startswith(word) or f"|| {word}" in line:
+                    self.assertIn(f"{word}-n", line)
         self.assertIn("nodev,nosuid,noatime /dev/vdb", text)
         self.assertNotIn("sysctl -", code)  # procps may not be in the root: /proc/sys is written directly
 

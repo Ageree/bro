@@ -200,12 +200,16 @@ class FakeRunner:
         assert Path(argv[0]).name == "jailer", argv
         options = dict(zip(argv[1:argv.index("--")][::2], argv[2:argv.index("--")][::2]))
         root = Path(options["--chroot-base-dir"]) / "firecracker" / options["--id"] / "root"
+        # The real jailer canonicalizes --chroot-base-dir and exits when it is not there (09.10, first host).
+        base_missing = not Path(options["--chroot-base-dir"]).is_dir()
         with open(log_file, "ab") as sink:
             sink.write(b"jailer output\n")
+            if base_missing:
+                sink.write(b"Failed to canonicalize path\n")
         pid, self.next_pid = self.next_pid, self.next_pid + 1
         vm = FakeVm(self, options["--id"], root, int(options["--uid"]))
         self.vms[pid] = vm
-        if self.fail_spawn:
+        if self.fail_spawn or base_missing:
             vm.alive = False
             return pid
         root.mkdir(parents=True)
@@ -1519,6 +1523,34 @@ class FirecrackerTest(HostTest):
         self.assertIn("the jailer exited", answer["error"])
         self.assertFalse(self.home(host).exists())
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "failed")
+
+    async def test_a_failed_start_says_what_the_jailer_and_the_guest_said(self):
+        host, runner, client = await self.host()
+        runner.fail_spawn = True
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
+        self.assertEqual(status, 502)
+        self.assertIn("jailer output", answer["error"])
+
+    async def test_the_log_of_a_sandbox_is_the_operators_alone(self):
+        host, runner, client = await self.started_vm()
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc/log"))[0], 401)  # Bro's token
+        response = await client.get("/v1/sandboxes/ws-abc/log?bytes=100",
+                                    headers={"Authorization": f"Bearer {token(scope='update')}"})
+        self.assertEqual(response.status, 200)
+        self.assertIn("jailer output", await response.text())
+        missing = await client.get("/v1/sandboxes/ws-none/log",
+                                   headers={"Authorization": f"Bearer {token(scope='update')}"})
+        self.assertEqual(missing.status, 404)
+
+    def test_log_tail_puts_the_guests_own_lines_before_a_kernel_panic(self):
+        path = self.tmp / "runtime.log"
+        lines = ["2026-10-09T21:12:00.47 [ws:main] Running Firecracker", "bro-fc-init: cannot move /dev",
+                 *[f"[    0.{n:04d}] stack frame {n}" for n in range(200)]]
+        path.write_text("\n".join(lines) + "\n")
+        tail = hostd.log_tail(path)
+        self.assertIn("bro-fc-init: cannot move /dev", tail)
+        self.assertNotIn("Running Firecracker", tail)
+        self.assertIn("stack frame 199", tail)
 
     def test_a_microvm_host_needs_a_profile_image(self):
         with self.assertRaises(ValueError):

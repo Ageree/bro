@@ -514,6 +514,24 @@ def ms(started):
     return round((time.monotonic() - started) * 1000)
 
 
+def log_tail(path, limit=2500):
+    """The end of a sandbox's runtime.log for an error: what the jailer, Firecracker or the guest's serial
+    console said last (the operator has no shell on the host to read it). The guest's own lines first (a
+    kernel panic's stack trace would push them out), then the kernel's last few."""
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - 64 * 1024))
+            lines = file.read().decode(errors="replace").splitlines()
+    except OSError:
+        return ""
+    # Not the kernel's (`[    0.43] …`) and not Firecracker's own log (`2026-10-09T21:12:00 [id:main] …`).
+    own = [line for line in lines if line.strip() and not line.lstrip().startswith("[")
+           and not re.match(r"\d{4}-\d\d-\d\dT", line)]
+    text = "\n".join([*own[-25:], "…", *lines[-4:]])
+    return text[-limit:].strip()
+
+
 def status_of(code, output):
     """The `status` of `runc state` / `runsc state` JSON, or None."""
     with contextlib.suppress(ValueError, AttributeError):
@@ -1521,6 +1539,8 @@ class Host:
         config = self.config
         uid, gid = self.vm_ids(record)
         await asyncio.to_thread(self.drop_jail, paths)
+        # The jailer canonicalizes --chroot-base-dir and refuses one that is not there yet.
+        await asyncio.to_thread(Path(config.jails).mkdir, mode=0o711, parents=True, exist_ok=True)
         argv = firecracker.jailer_argv(
             jailer=config.jailer, firecracker=config.firecracker, sandbox_id=record["id"], uid=uid, gid=gid,
             base=config.jails, netns=self.network.netns(record["id"])[0], cgroup_parent=CGROUP_PARENT,
@@ -1531,7 +1551,7 @@ class Host:
         deadline = time.monotonic() + config.fc_socket_timeout_s
         while not paths.socket.exists():
             if not self.runner.alive(pid, record["id"]):
-                raise RuntimeError(f"the jailer exited (see {paths.log.name})")
+                raise RuntimeError(f"the jailer exited: {log_tail(paths.log)}")
             if time.monotonic() >= deadline:
                 raise RuntimeError("firecracker did not open its API socket")
             await asyncio.sleep(0.05)
@@ -1613,7 +1633,7 @@ class Host:
                     raise
                 log.warning("sandbox %s: %s", record["id"], error)
         if not await self.worker_ready(record, self.config.start_timeout_s):
-            raise RuntimeError("the worker did not answer")
+            raise RuntimeError(f"the worker did not answer: {log_tail(paths.log)}")
 
     def local_snapshot(self, record, manifest):
         """(snapshot, None) when the local snapshot the set's manifest names is on this disk and whole; else
@@ -2009,6 +2029,27 @@ async def park_sandbox(request):
     return web.json_response(await request.app[HOST].park(sandbox_id, await body_of(request)))
 
 
+async def sandbox_log(request):
+    """The end of a sandbox's runtime.log (the runtime, Firecracker and the guest's console), for the operator
+    alone: there is no shell on the host. The `update` scope: Bro's own tokens do not read it."""
+    authorize(request, scope="update")
+    host = request.app[HOST]
+    sandbox_id = valid_id(request.match_info["sandbox_id"])
+    try:
+        limit = min(max(int(request.query.get("bytes", "16384")), 1), 65536)
+    except ValueError:
+        raise Refused(400, "bytes must be a number") from None
+    path = Paths(host.config, sandbox_id).log
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - limit))
+            text = file.read().decode(errors="replace")
+    except FileNotFoundError:
+        raise Refused(404, "no log for that sandbox") from None
+    return web.Response(text=text, content_type="text/plain")
+
+
 async def update_host(request):
     authorize(request, scope="update")
     host = request.app[HOST]
@@ -2039,6 +2080,7 @@ def application(host):
         web.get("/v1/sandboxes/{sandbox_id}", read_sandbox),
         web.delete("/v1/sandboxes/{sandbox_id}", delete_sandbox),
         web.post("/v1/sandboxes/{sandbox_id}/park", park_sandbox),
+        web.get("/v1/sandboxes/{sandbox_id}/log", sandbox_log),
         web.post("/v1/admin/update", update_host),
     ])
     return app

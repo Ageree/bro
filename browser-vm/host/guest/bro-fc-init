@@ -18,41 +18,51 @@
 # An init that exits panics the kernel and, with panic=1, Firecracker exits: hostd sees the VM gone.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PYTHONDONTWRITEBYTECODE=1
+# -n on every mount: the root is read-only, and a mount that cannot write /etc/mtab exits 1 although it worked
+# (09.10 on the first real host: `mount --move /dev` failed that way and the init panicked the guest).
 
 fail() {
   echo "bro-fc-init: $*" >&2
   exit 1
 }
 
-mount -t proc -o nosuid,noexec,nodev proc /proc || fail "cannot mount /proc"
-mount -t sysfs -o nosuid,noexec,nodev,ro sysfs /sys || fail "cannot mount /sys"
-grep -q ' /dev ' /proc/mounts || mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail "cannot mount /dev"
+mount -n -t proc -o nosuid,noexec,nodev proc /proc || fail "cannot mount /proc"
+mount -n -t sysfs -o nosuid,noexec,nodev,ro sysfs /sys || fail "cannot mount /sys"
+grep -q ' /dev ' /proc/mounts || mount -n -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail "cannot mount /dev"
 exec </dev/null >/dev/console 2>&1
 
 OVERLAY_MB="${BRO_OVERLAY_MB:-2048}"
 WORKER_PORT="${BRO_WORKER_PORT:-8080}"
-mount -t tmpfs -o "size=${OVERLAY_MB}m,mode=0755" tmpfs /mnt || fail "cannot mount the overlay's tmpfs"
+mount -n -t tmpfs -o "size=${OVERLAY_MB}m,mode=0755" tmpfs /mnt || fail "cannot mount the overlay's tmpfs"
 mkdir /mnt/lower /mnt/upper /mnt/work /mnt/merged /mnt/cfg || fail "cannot make the overlay's directories"
-mount --bind / /mnt/lower || fail "cannot bind the root"
-mount -t overlay overlay -o lowerdir=/mnt/lower,upperdir=/mnt/upper,workdir=/mnt/work /mnt/merged \
+mount -n --bind / /mnt/lower || fail "cannot bind the root"
+mount -n -t overlay overlay -o lowerdir=/mnt/lower,upperdir=/mnt/upper,workdir=/mnt/work /mnt/merged \
   || fail "cannot mount the overlay"
 
-mount -t ext4 -o ro,nodev,nosuid,noexec /dev/vdc /mnt/cfg || fail "cannot mount the config drive"
+mount -n -t ext4 -o ro,nodev,nosuid,noexec /dev/vdc /mnt/cfg || fail "cannot mount the config drive"
 mkdir -p /mnt/merged/etc/bro || fail "cannot make /etc/bro"
 cp -p /mnt/cfg/worker.json /mnt/merged/etc/bro/worker.json || fail "no worker.json on the config drive"
+# Ubuntu's /etc/resolv.conf is a link into /run/systemd/resolve, which the tmpfs on /run hides below: a plain
+# file in its place (09.10: the guest had no DNS until this).
+rm -f /mnt/merged/etc/resolv.conf
 cat /mnt/cfg/resolv.conf > /mnt/merged/etc/resolv.conf || fail "no resolv.conf on the config drive"
-umount /mnt/cfg
+umount -n /mnt/cfg
 
-mount -t ext4 -o nodev,nosuid,noatime /dev/vdb /mnt/merged/var/lib/bro/profile || fail "cannot mount the profile drive"
+mount -n -t ext4 -o nodev,nosuid,noatime /dev/vdb /mnt/merged/var/lib/bro/profile || fail "cannot mount the profile drive"
 
-mount -t proc -o nosuid,noexec,nodev proc /mnt/merged/proc || fail "cannot mount the new /proc"
-mount -t sysfs -o nosuid,noexec,nodev,ro sysfs /mnt/merged/sys || fail "cannot mount the new /sys"
-mount --move /dev /mnt/merged/dev || fail "cannot move /dev"
+mount -n -t proc -o nosuid,noexec,nodev proc /mnt/merged/proc || fail "cannot mount the new /proc"
+mount -n -t sysfs -o nosuid,noexec,nodev,ro sysfs /mnt/merged/sys || fail "cannot mount the new /sys"
+mount -n --move /dev /mnt/merged/dev || fail "cannot move /dev"
 mkdir -p /mnt/merged/dev/pts /mnt/merged/dev/shm
-mount -t devpts -o nosuid,noexec,newinstance,ptmxmode=0666,mode=0620 devpts /mnt/merged/dev/pts \
+# What udev makes on a full system: bash's process substitution (google-chrome's wrapper) needs /dev/fd.
+ln -sfn /proc/self/fd /mnt/merged/dev/fd
+ln -sfn /proc/self/fd/0 /mnt/merged/dev/stdin
+ln -sfn /proc/self/fd/1 /mnt/merged/dev/stdout
+ln -sfn /proc/self/fd/2 /mnt/merged/dev/stderr
+mount -n -t devpts -o nosuid,noexec,newinstance,ptmxmode=0666,mode=0620 devpts /mnt/merged/dev/pts \
   || fail "cannot mount devpts"
-mount -t tmpfs -o nosuid,noexec,nodev,mode=1777,size=1g tmpfs /mnt/merged/dev/shm || fail "cannot mount /dev/shm"
-mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /mnt/merged/run || fail "cannot mount /run"
+mount -n -t tmpfs -o nosuid,noexec,nodev,mode=1777,size=1g tmpfs /mnt/merged/dev/shm || fail "cannot mount /dev/shm"
+mount -n -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /mnt/merged/run || fail "cannot mount /run"
 
 # The same hostname everywhere: Chrome's SingletonLock names the host it was taken on.
 hostname bro-sandbox
@@ -67,7 +77,35 @@ echo 100 > /proc/sys/vm/dirty_writeback_centisecs
 cd /mnt/merged || fail "cannot enter the new root"
 pivot_root . mnt || fail "pivot_root failed"
 cd /
-umount -l /mnt 2>/dev/null
+umount -n -l /mnt 2>/dev/null
+
+# What the guest's network looks like, on the console (runtime.log): the operator's only view of a guest
+# (the rootfs has no `ip`). Never fails the boot.
+/usr/bin/python3 - <<'PY' || true
+import random, socket, struct
+def query(server, tcp):
+    packet = struct.pack(">HHHHHH", random.randrange(65536), 0x0100, 1, 0, 0, 0) + b"\x02ya\x02ru\x00\x00\x01\x00\x01"
+    if tcp:
+        with socket.create_connection((server, 53), timeout=3) as sock:
+            sock.sendall(struct.pack(">H", len(packet)) + packet)
+            return len(sock.recv(512))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(3)
+        sock.sendto(packet, (server, 53))
+        return len(sock.recv(512))
+servers = [line.split()[1] for line in open("/etc/resolv.conf") if line.startswith("nameserver")]
+print("bro-fc-init: nameservers", servers)
+for server in servers[:2]:
+    for tcp in (False, True):
+        try:
+            print("bro-fc-init: dns", server, "tcp" if tcp else "udp", "answer", query(server, tcp), "bytes")
+        except OSError as error:
+            print("bro-fc-init: dns", server, "tcp" if tcp else "udp", "failed:", error)
+try:
+    print("bro-fc-init: resolve", socket.gethostbyname("proxy.geonode.io"))
+except OSError as error:
+    print("bro-fc-init: resolve failed:", error)
+PY
 
 /usr/bin/python3 /usr/local/sbin/bro-fc-clock </dev/null >/dev/console 2>&1 &
 exec env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
