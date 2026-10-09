@@ -11,6 +11,7 @@ CREATE TABLE "login_handoffs" (
 	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
 	"expires_at" timestamp (3) with time zone NOT NULL,
 	"claimed_at" timestamp (3) with time zone,
+	"worker_opened_at" timestamp (3) with time zone,
 	"view_until" timestamp (3) with time zone,
 	"finished_at" timestamp (3) with time zone,
 	"result_host" text,

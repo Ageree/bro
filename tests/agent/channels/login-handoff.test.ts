@@ -52,6 +52,7 @@ import channel from "@agent/channels/login-handoff";
 const origin = "https://bro.example.test";
 const claimed = handoffRow({
   deviceHash: "x",
+  id: "link-1-abcdefghijklmnopqrstuv",
   expiresAt: new Date(Date.now() + 600_000),
 });
 
@@ -70,10 +71,10 @@ async function call(
   if (!route || route.transport === "websocket") {
     throw new Error(`Expected ${method} ${pattern}.`);
   }
-  const url = `${origin}/eve/v1/login-handoff/link-1${path}`;
+  const url = `${origin}/eve/v1/login-handoff/link-1-abcdefghijklmnopqrstuv${path}`;
   return await route.handler(
     new Request(url, { headers, method }),
-    routeContext({ id: "link-1" })
+    routeContext({ id: "link-1-abcdefghijklmnopqrstuv" })
   );
 }
 
@@ -121,7 +122,7 @@ describe("the sign-in window's routes", () => {
     expect(cookie).toContain("Path=/eve/v1/login-handoff/link-1");
     expect(services.open).toHaveBeenCalledWith({
       deviceSecret: "new-device-secret",
-      id: "link-1",
+      id: "link-1-abcdefghijklmnopqrstuv",
     });
   });
 
@@ -134,7 +135,7 @@ describe("the sign-in window's routes", () => {
     expect(response.headers.get("set-cookie")).toBeNull();
     expect(services.open).toHaveBeenCalledWith({
       deviceSecret: "old-secret",
-      id: "link-1",
+      id: "link-1-abcdefghijklmnopqrstuv",
     });
   });
 
@@ -169,7 +170,13 @@ describe("the sign-in window's routes", () => {
     // SAFETY: the route reads only the host of the VM record.
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
     services.readVm.mockResolvedValue({ host: "203.0.113.5" } as never);
-    services.cancel.mockResolvedValue(undefined);
+    services.cancel.mockResolvedValue({
+      expiresAt: 0,
+      id: "h_worker",
+      result: null,
+      state: "cancelled",
+      viewed: true,
+    });
     const response = await call("POST", "/cancel", {
       cookie: "bro_handoff=secret",
       origin,
@@ -179,11 +186,67 @@ describe("the sign-in window's routes", () => {
       "h_worker"
     );
     expect(services.end).toHaveBeenCalledWith(
-      "link-1",
+      "link-1-abcdefghijklmnopqrstuv",
       { report: null, state: "cancelled" },
       expect.any(Date)
     );
     expect(await response.json()).toEqual({ state: "cancelled" });
+  });
+
+  it("settles instead of cancelling a sign-in the person had already finished", async () => {
+    // SAFETY: the route reads only the host of the VM record.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
+    services.readVm.mockResolvedValue({ host: "203.0.113.5" } as never);
+    services.cancel.mockResolvedValue({
+      expiresAt: 0,
+      id: "h_worker",
+      result: null,
+      state: "done",
+      viewed: true,
+    });
+    services.read
+      .mockResolvedValueOnce(claimed)
+      .mockResolvedValueOnce({ ...claimed, state: "done" });
+    const response = await call("POST", "/cancel", {
+      cookie: "bro_handoff=secret",
+      origin,
+    });
+    expect(services.settle).toHaveBeenCalledTimes(1);
+    expect(services.end).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ state: "done" });
+  });
+
+  it("leaves the handoff as it was when the worker cannot be asked to cancel", async () => {
+    // SAFETY: the route reads only the host of the VM record.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a stored row stands in.
+    services.readVm.mockResolvedValue({ host: "203.0.113.5" } as never);
+    services.cancel.mockRejectedValue(new Error("down"));
+    const response = await call("POST", "/cancel", {
+      cookie: "bro_handoff=secret",
+      origin,
+    });
+    expect(services.end).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ state: "claimed" });
+  });
+
+  it("knows no link whose id is not one it makes", async () => {
+    const odd = "/eve/v1/login-handoff/..%2F..";
+    const route = channel.routes.find(
+      (candidate) =>
+        candidate.transport !== "websocket" &&
+        candidate.method === "GET" &&
+        candidate.path === "/eve/v1/login-handoff/:id"
+    );
+    if (!route || route.transport === "websocket") throw new Error("No route.");
+    for (const id of ["..%2F..", "x", "a b".repeat(30), "a/b"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each id is its own request.
+      const response = await route.handler(
+        new Request(`${origin}${odd}`),
+        routeContext({ id })
+      );
+      expect(response.status).toBe(404);
+    }
+    expect(services.read).not.toHaveBeenCalled();
   });
 });
 

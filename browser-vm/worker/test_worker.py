@@ -343,6 +343,13 @@ class HandoffRulesTest(unittest.TestCase):
         for url in refused:
             self.assertFalse(worker.handoff_url_allowed(url, self.DOMAINS), url)
 
+    def test_a_provider_is_let_in_by_its_exact_host_only(self):
+        hosts = ["id.vk.com", "passport.yandex.ru"]
+        for url in ("https://id.vk.com/auth", "https://passport.yandex.ru/auth?x=1"):
+            self.assertTrue(worker.handoff_url_allowed(url, self.DOMAINS, hosts), url)
+        for url in ("https://vk.com/im", "https://mail.yandex.ru/", "https://evil.id.vk.com/", "https://yandex.ru/"):
+            self.assertFalse(worker.handoff_url_allowed(url, self.DOMAINS, hosts), url)
+
     def test_a_message_becomes_a_few_typed_calls_and_nothing_else(self):
         tap = worker.handoff_input({"t": "tap", "x": 10, "y": 20.5}, 1366, 900)
         self.assertEqual([call[0] for call in tap], ["Input.dispatchMouseEvent"] * 3)
@@ -366,9 +373,11 @@ class HandoffRulesTest(unittest.TestCase):
         good = {"id": "handoff_abc123", "url": "https://www.wildberries.ru/login", "domains": self.DOMAINS,
                 "origin": "https://bro.test"}
         self.assertIsNone(worker.handoff_body_error(good))
+        self.assertIsNone(worker.handoff_body_error({**good, "hosts": ["id.vk.com"]}))
         for change in ({"id": "a b"}, {"url": "https://evil.test/"}, {"url": "about:blank"}, {"domains": []},
                        {"domains": ["localhost"]}, {"domains": ["WB.ru"]}, {"origin": "http://bro.test"},
-                       {"origin": "https://bro.test/path"}, {"ttlSeconds": 5}, {"ttlSeconds": 99999}):
+                       {"origin": "https://bro.test/path"}, {"ttlSeconds": 5}, {"ttlSeconds": 99999},
+                       {"hosts": ["VK.com"]}, {"hosts": "id.vk.com"}):
             self.assertIsNotNone(worker.handoff_body_error({**good, **change}), change)
         self.assertIsNotNone(worker.handoff_body_error([]))
 

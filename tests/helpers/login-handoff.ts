@@ -31,6 +31,7 @@ export function handoffRow(
     state: "claimed",
     viewUntil: new Date(now.getTime() + 10 * 60_000),
     workerId: "h_worker",
+    workerOpenedAt: new Date(now.getTime() - 5 * 60_000),
     workspaceId: "workspace:alice",
     ...overrides,
   };

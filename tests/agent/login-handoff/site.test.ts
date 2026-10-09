@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { handoffSite, namedInWords } from "@agent/lib/login-handoff/site";
+import {
+  handoffSite,
+  namedInWords,
+  signInProviderHosts,
+} from "@agent/lib/login-handoff/site";
 
 describe("the site a sign-in link opens", () => {
   it("takes a domain or a link as the person wrote it and keeps no query", () => {
@@ -22,12 +26,19 @@ describe("the site a sign-in link opens", () => {
     });
   });
 
-  it("lets the person follow the providers' sign-ins and a site's own", () => {
+  it("lets the person follow a site's own sign-in domain, and the providers only by exact host", () => {
     const site = handoffSite("wildberries.ru");
     if (site.kind !== "ok") throw new Error("Expected a site.");
-    expect(site.allowedDomains).toEqual(
-      expect.arrayContaining(["wildberries.ru", "wb.ru", "yandex.ru", "vk.com"])
+    expect(site.allowedDomains).toEqual(["wildberries.ru", "wb.ru"]);
+    // Whole provider domains would reach mail and messages in a profile signed in there.
+    for (const host of signInProviderHosts) {
+      expect(host.split(".").length).toBeGreaterThanOrEqual(3);
+    }
+    expect(signInProviderHosts).toEqual(
+      expect.arrayContaining(["id.vk.com", "passport.yandex.ru"])
     );
+    expect(signInProviderHosts).not.toContain("vk.com");
+    expect(signInProviderHosts).not.toContain("yandex.ru");
   });
 
   it("refuses what is not a site by name", () => {

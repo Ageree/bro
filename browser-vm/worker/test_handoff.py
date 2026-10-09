@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,7 @@ LOGIN = """<!doctype html><meta charset=utf-8><body style="margin:0">
 </form>
 <a href="http://other.localhost:{port}/" style="position:absolute;left:40px;top:200px;font-size:30px">elsewhere</a>
 <button type=button onclick="window.open('/popup')" style="position:absolute;left:40px;top:300px;width:200px;height:50px">provider</button>
+<a href="/slow" style="position:absolute;left:40px;top:250px;font-size:30px">slow</a>
 <button type=button onclick="window.open('http://other.localhost:{port}/other')" style="position:absolute;left:40px;top:380px;width:200px;height:50px">stranger</button>
 </body>"""
 POPUP = """<!doctype html><meta charset=utf-8><body style="margin:0">
@@ -86,10 +88,16 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
             return web.Response(text="<h1>other</h1>", content_type="text/html")
 
         site = web.Application()
+        async def slow(request):
+            # A page that sends itself away a moment after it loads, while nobody may be looking.
+            return web.Response(
+                text="<script>setTimeout(()=>{location='http://other.localhost:%d/other'},1500)</script>slow"
+                % self.site_port, content_type="text/html")
+
         async def popup(request):
             return web.Response(text=POPUP, content_type="text/html")
 
-        site.add_routes([web.get("/popup", popup), web.get("/", login_page), web.post("/login", login), web.get("/home", home),
+        site.add_routes([web.get("/popup", popup), web.get("/slow", slow), web.get("/", login_page), web.post("/login", login), web.get("/home", home),
                          web.get("/other", other)])
         self.site = web.AppRunner(site)
         await self.site.setup()
@@ -98,7 +106,9 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         self.site_port = tcp._server.sockets[0].getsockname()[1]
         self.addAsyncCleanup(self.site.cleanup)
 
-        self.cdp_port = self.site_port + 1
+        with socket.socket() as probe:  # a port nobody else has, asked of the system
+            probe.bind(("127.0.0.1", 0))
+            self.cdp_port = probe.getsockname()[1]
         profile = root / "profile"
         self.chrome = subprocess.Popen(
             [CHROME, f"--user-data-dir={profile}", f"--remote-debugging-port={self.cdp_port}", "--headless=new",
@@ -205,6 +215,9 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         await socket.send_json({"t": "tap", "x": 60, "y": 215})
         blocked = await self.until(socket, "blocked")
         self.assertEqual(blocked["host"], "other.localhost")
+        # The error page a refused link leaves is taken away: the page before it is back.
+        back = await self.until(socket, "url", host="app.localhost", ok=True)
+        self.assertEqual(back["ok"], True)
         await asyncio.sleep(0.5)
         self.assertNotIn("other", self.seen)  # the request never went out
         await socket.send_json({"t": "cancel"})
@@ -225,6 +238,31 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("other", self.seen)
         await socket.send_json({"t": "cancel"})
         await self.until(socket, "cancel")
+
+    async def test_the_fence_holds_while_nobody_is_looking(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "url", host="app.localhost")
+        await socket.send_json({"t": "tap", "x": 60, "y": 268})  # «slow»: it sends itself off in 1.5 s
+        await self.until(socket, "url", host="app.localhost", ok=True)
+        await socket.close()  # the viewer goes before the page does
+        await asyncio.sleep(3)
+        self.assertNotIn("other", self.seen)  # the guard refused it with no viewer connected
+        socket = await self.viewer()
+        back = await self.until(socket, "url")
+        self.assertTrue(back["ok"])  # what the person comes back to is a page of the site
+        await asyncio.sleep(0.5)
+        self.assertNotIn("other", self.seen)
+        await socket.send_json({"t": "cancel"})
+        await self.until(socket, "cancel")
+
+    async def test_a_sign_in_provider_is_let_in_by_the_exact_host_only(self):
+        await self.open(hosts=["id.provider.localhost"])
+        handoff = worker.worker.handoff
+        self.assertTrue(handoff.allows("https://id.provider.localhost/auth"))
+        self.assertFalse(handoff.allows("https://mail.provider.localhost/"))
+        self.assertFalse(handoff.allows("https://provider.localhost/"))
+        self.assertTrue(handoff.allows("https://www.app.localhost/"))
 
     async def test_nothing_but_the_typed_messages_gets_through(self):
         await self.open()

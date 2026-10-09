@@ -660,7 +660,10 @@ export async function closeBrowserVmWorkerTab(
 export async function openBrowserVmWorkerHandoff(
   vm: BrowserVmTarget,
   input: {
+    /** Names the page may be on, with their subdomains. */
     readonly domains: readonly string[];
+    /** Hosts it may also be on, exactly: a sign-in provider's own pages. */
+    readonly hosts: readonly string[];
     readonly id: string;
     /** The origin of the page that shows the viewer: the socket checks it. */
     readonly origin: string;

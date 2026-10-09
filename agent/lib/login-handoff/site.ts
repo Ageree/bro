@@ -6,20 +6,22 @@ import { registrableDomain } from "@agent/lib/browser-use/secrets";
 import { isPublicSuffix } from "@shared/browser/public-suffixes";
 
 /**
- * The sites a sign-in may pass through besides the site itself: where
- * «Войти через…» sends the person. The viewer's page may be on these and on
- * the site's own domain, and nowhere else (`browser-vm/worker/worker.py`,
- * `HandoffRelay`).
+ * The pages a sign-in may pass through besides the site itself: where
+ * «Войти через…» sends the person, by exact host. Not whole domains: the
+ * browser's profile may be signed in to the provider (a previous sign-in),
+ * and a viewer on `vk.com` or `yandex.ru` would reach messages and mail.
+ * The viewer's page may be on these and on the site's own domain, and
+ * nowhere else (`browser-vm/worker/worker.py`, `HandoffGuard`).
  */
-const signInProviders = [
-  "ya.ru",
-  "yandex.com",
-  "yandex.ru",
-  "mail.ru",
-  "sber.ru",
-  "sberbank.ru",
-  "vk.com",
-  "vk.ru",
+export const signInProviderHosts = [
+  "account.mail.ru",
+  "id.sber.ru",
+  "id.vk.com",
+  "login.vk.com",
+  "oauth.mail.ru",
+  "oauth.vk.com",
+  "oauth.yandex.ru",
+  "passport.yandex.ru",
 ] as const;
 
 /**
@@ -83,11 +85,7 @@ export function handoffSite(raw: string): HandoffSite {
   }
   return {
     allowedDomains: [
-      ...new Set([
-        domain,
-        ...(ownSignInDomains.get(domain) ?? []),
-        ...signInProviders,
-      ]),
+      ...new Set([domain, ...(ownSignInDomains.get(domain) ?? [])]),
     ],
     domain,
     kind: "ok",

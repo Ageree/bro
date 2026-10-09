@@ -1,5 +1,5 @@
 {
-  "id": "5db45793-fe58-4ecd-b99d-8ca8172fde33",
+  "id": "065df440-c459-4669-8d5c-b0b4fdb49d6d",
   "prevId": "2b2b0bec-e522-4d86-a866-45e404fc3d57",
   "version": "7",
   "dialect": "postgresql",
@@ -3262,6 +3262,12 @@
         },
         "claimed_at": {
           "name": "claimed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_opened_at": {
+          "name": "worker_opened_at",
           "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": false

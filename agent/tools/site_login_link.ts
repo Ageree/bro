@@ -134,7 +134,12 @@ export default defineDynamic({
       );
       const words: LinkWords = {
         personsTurn: turn.said !== null,
-        said: [...personMessages(context.messages), ...turn.answers],
+        // The labels of options the person picked are Bro's own words, which
+        // a page may have suggested: only what they typed counts.
+        said: [
+          ...personMessages(context.messages),
+          ...turn.answers.filter((answer) => !turn.picked?.includes(answer)),
+        ],
       };
       return {
         "site-login-link": defineTool({

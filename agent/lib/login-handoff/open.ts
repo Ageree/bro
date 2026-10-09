@@ -12,8 +12,10 @@ import {
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import {
   claimLoginHandoff,
+  markLoginHandoffWorkerOpened,
   readLoginHandoff,
 } from "@db/services/login-handoffs";
+import { signInProviderHosts } from "./site";
 import { applicationOrigin } from "@shared/environment/origin";
 
 /** How long a link opens, and how long the viewer lasts once it is opened. */
@@ -108,6 +110,7 @@ export async function openLoginHandoff(
   try {
     await openBrowserVmWorkerHandoff(vm, {
       domains: row.allowedDomains,
+      hosts: signInProviderHosts,
       id: row.workerId,
       origin: applicationOrigin(),
       ttlSeconds,
@@ -128,6 +131,7 @@ export async function openLoginHandoff(
     });
     return { kind: "failed" };
   }
+  await markLoginHandoffWorkerOpened(row.id, now);
   await keepBrowserVmForErrand(workspaceId, true, now);
   return {
     domain: row.domain,

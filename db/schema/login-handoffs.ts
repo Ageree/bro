@@ -49,6 +49,9 @@ export const loginHandoffs = pgTable(
     // The link stops opening here; a claimed handoff lives to `viewUntil`.
     expiresAt: at("expires_at").notNull(),
     claimedAt: at("claimed_at"),
+    // When the worker took the handoff in. Until then a worker that does not
+    // know it is only not asked yet, not one that lost it.
+    workerOpenedAt: at("worker_opened_at"),
     viewUntil: at("view_until"),
     finishedAt: at("finished_at"),
     // What the page showed when the person was through: the host, and

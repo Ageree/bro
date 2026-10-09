@@ -164,6 +164,25 @@ describe("a handoff read off its worker", () => {
     expect(services.end.mock.calls[0]?.[1]).toMatchObject({ state: "expired" });
   });
 
+  it("does not call a handoff lost that the worker was never given", async () => {
+    // A run held the browser when the page asked, or it was still starting.
+    services.read.mockResolvedValue(undefined);
+    const unopened = row({ workerOpenedAt: null });
+    expect(await settleLoginHandoff(unopened, now)).toBe("skipped");
+    expect(services.end).not.toHaveBeenCalled();
+    const abandoned = row({
+      viewUntil: new Date(now.getTime() - minutes(4)),
+      workerOpenedAt: null,
+    });
+    expect(await settleLoginHandoff(abandoned, now)).toBe("expired");
+    // Nobody was in it: no word to the conversation.
+    expect(services.end).toHaveBeenCalledWith(
+      "link-1",
+      { report: null, state: "expired" },
+      now
+    );
+  });
+
   it("fails one the worker lost under it, and expires one past its window", async () => {
     services.read.mockResolvedValue(undefined);
     expect(await settleLoginHandoff(row(), now)).toBe("failed");

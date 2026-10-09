@@ -112,6 +112,14 @@ export async function claimLoginHandoff(
   return { kind: row.state === "pending" ? "expired" : "ended" } as const;
 }
 
+/** The worker took the handoff in: from now on it is the worker that knows it. */
+export async function markLoginHandoffWorkerOpened(id: string, now: Date) {
+  await db
+    .update(loginHandoffs)
+    .set({ workerOpenedAt: now })
+    .where(and(eq(loginHandoffs.id, id), isNull(loginHandoffs.workerOpenedAt)));
+}
+
 /**
  * The handoff is over. Only the first to say so counts, so the viewer's own
  * finish and the settling tick cannot both write a report. `report` is the

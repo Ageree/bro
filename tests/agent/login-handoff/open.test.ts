@@ -9,6 +9,7 @@ import type * as workerModule from "@agent/lib/browser-vm/worker";
 import { handoffRow } from "@tests/helpers/login-handoff";
 import type {
   claimLoginHandoff,
+  markLoginHandoffWorkerOpened,
   readLoginHandoff,
 } from "@db/services/login-handoffs";
 
@@ -20,6 +21,7 @@ const services = vi.hoisted(() => ({
   claim: vi.fn<typeof claimLoginHandoff>(),
   ensure: vi.fn<typeof ensureBrowserVm>(),
   keep: vi.fn<typeof keepBrowserVmForErrand>(),
+  mark: vi.fn<typeof markLoginHandoffWorkerOpened>(),
   open: vi.fn<typeof workerModule.openBrowserVmWorkerHandoff>(),
   prepare: vi.fn<typeof prepareBrowserVmSession>(),
   read: vi.fn<typeof readLoginHandoff>(),
@@ -42,6 +44,7 @@ vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => ({
 }));
 vi.mock("@db/services/login-handoffs", () => ({
   claimLoginHandoff: services.claim,
+  markLoginHandoffWorkerOpened: services.mark,
   readLoginHandoff: services.read,
 }));
 
@@ -57,7 +60,7 @@ import {
 const now = new Date("2026-10-09T12:00:00Z");
 
 const row = handoffRow({
-  allowedDomains: ["ozon.ru", "yandex.ru"],
+  allowedDomains: ["ozon.ru"],
   deviceHash: deviceHash("secret"),
 });
 
@@ -123,15 +126,20 @@ describe("opening a sign-in link", () => {
     );
     const [, input] = services.open.mock.calls[0] ?? [];
     expect(input).toMatchObject({
-      domains: ["ozon.ru", "yandex.ru"],
+      domains: ["ozon.ru"],
       id: "h_worker",
       url: "https://www.ozon.ru/",
     });
+    expect(input?.hosts).toContain("id.vk.com");
+    expect(input?.hosts).toContain("passport.yandex.ru");
+    expect(input?.hosts).not.toContain("vk.com");
     // The same sticky exit as every errand: the exit is not rotated for a sign-in.
     expect(services.prepare.mock.calls[0]?.[2]).toMatchObject({
       rotate: false,
     });
     expect(services.keep).toHaveBeenCalledWith("workspace:alice", true, now);
+    // Only now is the worker the one that knows the handoff.
+    expect(services.mark).toHaveBeenCalledWith("link-1", now);
   });
 
   it("asks again later while the browser starts", async () => {
@@ -146,6 +154,7 @@ describe("opening a sign-in link", () => {
       retryAfterMs: 15_000,
     });
     expect(services.open).not.toHaveBeenCalled();
+    expect(services.mark).not.toHaveBeenCalled();
   });
 
   it("tells a busy browser, an old worker and a failure apart", async () => {

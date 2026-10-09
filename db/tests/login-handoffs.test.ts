@@ -168,6 +168,27 @@ describe("login handoffs", () => {
     ).toBe("created");
   });
 
+  it("remembers when the worker took a handoff in, once", async () => {
+    const service = await handoffs();
+    await service.createLoginHandoff(link("link-1"), start);
+    await service.claimLoginHandoff(
+      { deviceHash: "phone", id: "link-1", viewMs: minutes(10), workerId: "w" },
+      start
+    );
+    expect(
+      (await service.readLoginHandoff("link-1"))?.workerOpenedAt
+    ).toBeNull();
+    const first = new Date(start.getTime() + minutes(1));
+    await service.markLoginHandoffWorkerOpened("link-1", first);
+    await service.markLoginHandoffWorkerOpened(
+      "link-1",
+      new Date(start.getTime() + minutes(5))
+    );
+    expect((await service.readLoginHandoff("link-1"))?.workerOpenedAt).toEqual(
+      first
+    );
+  });
+
   it("ends a handoff once, and delivers its report once", async () => {
     const service = await handoffs();
     await service.createLoginHandoff(link("link-1"), start);

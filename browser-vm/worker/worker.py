@@ -3999,6 +3999,7 @@ HANDOFF_TEXT_LIMIT = 200
 HANDOFF_POPUPS = 3  # windows the page may open at once; the next is closed
 HANDOFF_QUALITY = 60
 HANDOFF_FRAME_S = 0.4  # between two pictures of a page nobody is touching
+HANDOFF_RECOVERY_TRIES = 6
 HANDOFF_MAX_WIDTH = 1366
 HANDOFF_STATES_ACTIVE = ("open", "viewing", "closing")
 # The keys of a form: name → (code, Windows virtual key). No letters (they are typed as text) and no
@@ -4012,9 +4013,11 @@ HANDOFF_KEYS = {
 HANDOFF_CHECK = "({passwordField: !!document.querySelector('input[type=password]')})"
 
 
-def handoff_url_allowed(url, domains):
+def handoff_url_allowed(url, domains, hosts=()):
     """Whether a page at `url` may be shown: about:blank, or https (HANDOFF_SCHEMES) on a name inside
-    one of `domains`, on a usual port, with no login in the address and no bare IP address."""
+    one of `domains` (the name itself or any subdomain) or exactly one of `hosts` (a sign-in provider's own
+    page: its whole domain would be its mail and its profiles), on a usual port, with no login in the address
+    and no bare IP address."""
     if url == "about:blank":
         return True
     try:
@@ -4032,7 +4035,7 @@ def handoff_url_allowed(url, domains):
         return False
     except ValueError:
         pass
-    return any(host == domain or host.endswith("." + domain) for domain in domains)
+    return host in hosts or any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
 def handoff_number(value, low, high):
@@ -4084,20 +4087,26 @@ class Handoff:
     """One sign-in in progress. `open`: waiting for the viewer; `viewing`: a viewer is connected; `closing`:
     the tab is being closed and the cookies written; then `done`, `cancelled` or `expired`."""
 
-    def __init__(self, handoff_id, url, domains, origin, ttl):
+    def __init__(self, handoff_id, url, domains, origin, ttl, hosts=()):
         self.id, self.url, self.domains, self.origin = handoff_id, url, list(domains), origin
+        self.hosts = list(hosts)
         self.expires_at = time.time() + ttl
         self.tab = None
         self.state = "open"
         self.viewed = False
         self.navigated = False
         self.viewer = None
+        self.guard = None  # the fence and the tab's CDP link, from the first viewer to the end
+        self.guard_lock = asyncio.Lock()
         self.result = None
         self.flush = None
         self.expiry = None
 
     def active(self):
         return self.state in HANDOFF_STATES_ACTIVE
+
+    def allows(self, url):
+        return handoff_url_allowed(url, self.domains, self.hosts)
 
     def summary(self):
         return {"id": self.id, "state": self.state, "expiresAt": int(self.expires_at), "viewed": self.viewed,
@@ -4158,52 +4167,50 @@ class CdpLink:
                 await self.reader
 
 
-class HandoffRelay:
-    """The viewer's connection: the screen of one tab out, a few typed messages in. A window the page opens
-    (a sign-in through a provider usually is one) is followed: the viewer shows it until it closes."""
+class HandoffGuard:
+    """Chrome's side of one handoff, for as long as it lasts: a CDP link of its own to the tab, the fence on
+    every page of it, downloads refused, and what page each of them is on. A viewer comes and goes
+    (`serve`: the screen of one tab out, a few typed messages in); the fence does not, so a page that
+    redirects itself while nobody looks is stopped too. A window the page opens (a sign-in through a
+    provider usually is one) is followed: the viewer shows it until it closes."""
 
-    def __init__(self, handoff, client):
-        self.handoff, self.client = handoff, client
-        self.link = None
-        self.sessions = {}  # CDP session → {"target", "frame", "main"}
+    def __init__(self, handoff):
+        self.handoff = handoff
+        self.http = self.link = self.pump = None
+        self.sessions = {}  # CDP session → {"target", "frame", "main", "url"}
         self.current = None  # the session whose screen the viewer sees
         self.size = (HANDOFF_MAX_WIDTH, 900)  # the page's size in CSS pixels, as of the last picture
-        self.url = "about:blank"
+        self.client = None  # the viewer being served, if any
         self.outcome = None
-        self.check = None
+        self.dead = False
         self.tasks = set()  # events being handled
         self.kick = asyncio.Event()  # an input or a new page: take the next picture now
+        self.serving = asyncio.Lock()  # one viewer at a time
+        self.recoveries = []  # when a page was taken off the site last (monotonic seconds)
+
+    @property
+    def url(self):
+        known = self.sessions.get(self.current)
+        return known["url"] if known else "about:blank"
 
     async def say(self, message):
-        with contextlib.suppress(Exception):
-            await self.client.send_str(json.dumps(message))
+        if self.client is not None:
+            with contextlib.suppress(Exception):
+                await self.client.send_str(json.dumps(message))
 
-    async def run(self):
-        """Serve the viewer until it says it is done, leaves, or the tab goes; returns "done", "cancel" or
-        "left"."""
-        async with aiohttp.ClientSession() as http:
-            async with http.ws_connect(await browser_socket(), max_msg_size=64 * 1024 * 1024, timeout=10) as socket:
-                self.link = CdpLink(socket)
-                self.link.start()
-                # Events are served from the first command on: a navigation waits for its `Fetch` pause to be
-                # answered, and that answer comes from here.
-                events = asyncio.create_task(self.pump_events())
-                try:
-                    await self.setup()
-                    viewer = asyncio.create_task(self.pump_viewer())
-                    pictures = asyncio.create_task(self.frames())
-                    await asyncio.wait([events, viewer], return_when=asyncio.FIRST_COMPLETED)
-                    viewer.cancel()
-                    pictures.cancel()
-                    if self.outcome == "done":
-                        self.check = await self.page_check()
-                finally:
-                    await self.teardown()
-                    events.cancel()
-                    for task in list(self.tasks):
-                        task.cancel()
-                    await self.link.close()
-        return self.outcome or "left"
+    async def start(self):
+        self.http = aiohttp.ClientSession()
+        try:
+            socket = await self.http.ws_connect(await browser_socket(), max_msg_size=64 * 1024 * 1024, timeout=10)
+            self.link = CdpLink(socket)
+            self.link.start()
+            # Events are served from the first command on: a navigation waits for its `Fetch` pause to be
+            # answered, and that answer comes from here.
+            self.pump = asyncio.create_task(self.pump_events())
+            await self.setup()
+        except BaseException:
+            await self.stop()
+            raise
 
     async def setup(self):
         link, handoff = self.link, self.handoff
@@ -4211,21 +4218,31 @@ class HandoffRelay:
         session = attached["sessionId"]
         await link.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True})
         await link.call("Browser.setDownloadBehavior", {"behavior": "deny"})
-        await self.prepare(session, handoff.tab, main=True)
+        info = await link.call("Target.getTargetInfo", {"targetId": handoff.tab})
+        await self.prepare(session, handoff.tab, info.get("targetInfo", {}).get("url") or "about:blank", main=True)
         self.current = session
         if not handoff.navigated:
             handoff.navigated = True
             await link.call("Page.navigate", {"url": handoff.url}, session)
+        else:
+            await self.check_page()  # the tab may have gone off the site while nobody looked
         await self.show(session)
 
-    async def prepare(self, session, target, main=False):
+    async def prepare(self, session, target, url, main=False):
         """Fence a page before anything of it can load, and listen to it."""
         link = self.link
         await link.call("Page.enable", session=session)
         await link.call("Fetch.enable", {"patterns": [{"urlPattern": "*", "resourceType": "Document",
                                                        "requestStage": "Request"}]}, session)
+        # The browser is headful: a file input would open a native dialog nobody can see or close, and a page
+        # a service worker answers would not pass the fence.
+        with contextlib.suppress(Exception):
+            await link.call("Page.setInterceptFileChooserDialog", {"enabled": True}, session)
+        with contextlib.suppress(Exception):
+            await link.call("Network.setBypassServiceWorker", {"bypass": True}, session)
         tree = await link.call("Page.getFrameTree", session=session)
-        self.sessions[session] = {"target": target, "frame": tree["frameTree"]["frame"]["id"], "main": main}
+        self.sessions[session] = {"target": target, "frame": tree["frameTree"]["frame"]["id"], "main": main,
+                                  "url": url}
 
     async def show(self, session):
         """Bring a page forward: it is what the viewer sees from the next picture on."""
@@ -4234,17 +4251,35 @@ class HandoffRelay:
             await self.link.call("Page.bringToFront", session=session)
         self.kick.set()
 
+    async def serve(self, client):
+        """Serve one viewer until it says it is done, leaves, or the tab goes; returns "done", "cancel" or
+        "left"."""
+        async with self.serving:
+            self.client, self.outcome = client, None
+            viewer = asyncio.create_task(self.pump_viewer(client))
+            pictures = asyncio.create_task(self.frames())
+            try:
+                self.kick.set()
+                await self.announce()  # the address bar for the page that is already there
+                await asyncio.wait([viewer, self.pump], return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                viewer.cancel()
+                pictures.cancel()
+                self.client = None
+            return self.outcome or "left"
+
     async def frames(self):
         """A picture of the current page when it differs from the last one: a few a second, at once after an
         input. `Page.startScreencast` sends a frame only when the compositor paints one, which a still page
-        in headless Chrome never does, so the page is photographed instead."""
+        in headless Chrome never does, so the page is photographed instead. A page off the site is shown to
+        nobody."""
         last = None
         while True:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self.kick.wait(), HANDOFF_FRAME_S)
             self.kick.clear()
             session = self.current
-            if session is None:
+            if session is None or not self.handoff.allows(self.url):
                 continue
             try:
                 shot = await self.link.call("Page.captureScreenshot", {"format": "jpeg", "quality": HANDOFF_QUALITY,
@@ -4261,8 +4296,8 @@ class HandoffRelay:
                 last = seen
                 await self.say({"t": "frame", "w": self.size[0], "h": self.size[1], "d": shot["data"]})
 
-    async def pump_viewer(self):
-        async for message in self.client:
+    async def pump_viewer(self, client):
+        async for message in client:
             if message.type != aiohttp.WSMsgType.TEXT:
                 break
             try:
@@ -4279,7 +4314,7 @@ class HandoffRelay:
                 await self.go_back()
                 continue
             calls = handoff_input(body, *self.size)
-            if calls is None or self.current is None or not handoff_url_allowed(self.url, self.handoff.domains):
+            if calls is None or self.current is None or not self.handoff.allows(self.url):
                 continue
             with contextlib.suppress(Exception):
                 for method, params in calls:
@@ -4297,13 +4332,16 @@ class HandoffRelay:
     async def pump_events(self):
         """Each event in a task of its own, so a command that waits (a page paused for the debugger answers
         nothing until it is resumed) holds up no other event."""
-        while True:
-            event = await self.link.events.get()
-            if event is None:
-                return
-            task = asyncio.create_task(self.guarded(event))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+        try:
+            while True:
+                event = await self.link.events.get()
+                if event is None:
+                    return
+                task = asyncio.create_task(self.guarded(event))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
+        finally:
+            self.dead = True
 
     async def guarded(self, event):
         with contextlib.suppress(Exception):
@@ -4317,7 +4355,7 @@ class HandoffRelay:
             request_id = params["requestId"]
             top = known is not None and params.get("resourceType") == "Document" and params.get("frameId") == known["frame"]
             url = params.get("request", {}).get("url", "")
-            if top and not handoff_url_allowed(url, self.handoff.domains):
+            if top and not self.handoff.allows(url):
                 await link.call("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"}, session)
                 await self.say({"t": "blocked", "host": (urllib.parse.urlsplit(url).hostname or "")[:100]})
             else:
@@ -4325,9 +4363,9 @@ class HandoffRelay:
         elif method == "Page.frameNavigated":
             frame = params.get("frame", {})
             known = self.sessions.get(session)
-            if known is not None and frame.get("id") == known["frame"] and session == self.current:
-                self.url = frame.get("url", "")
-                if known["main"]:
+            if known is not None and frame.get("id") == known["frame"]:
+                known["url"] = frame.get("url", "")
+                if session == self.current:
                     await self.announce()
         elif method == "Page.javascriptDialogOpening":
             with contextlib.suppress(Exception):
@@ -4338,13 +4376,58 @@ class HandoffRelay:
             await self.on_detached(params.get("sessionId") or session)
 
     async def announce(self):
-        parts = urllib.parse.urlsplit(self.url)
-        allowed = handoff_url_allowed(self.url, self.handoff.domains)
+        """Tell the viewer where the page is, and take a page off the site away: back to the one before it
+        (a refused link leaves an error page in its place), or a blank one; a window of the page's is closed."""
+        url = self.url
+        allowed = self.handoff.allows(url)
+        parts = urllib.parse.urlsplit(url)
         await self.say({"t": "url", "host": (parts.hostname or "")[:100], "secure": parts.scheme == "https",
                         "ok": allowed})
-        if not allowed and self.url != "about:blank":
-            with contextlib.suppress(Exception):
-                await self.link.call("Page.navigate", {"url": "about:blank"}, self.current)
+        if allowed:
+            return
+        known = self.sessions.get(self.current)
+        if known is None:
+            return
+        await self.recover(self.current, known)
+
+    async def recover(self, session, known):
+        """Take the page of `session` off the site away. A window the page opened is closed. The main page
+        goes back to the one before (a refused link leaves an error page in its place), unless that has
+        happened twice in ten seconds (a page that sends itself away would be put back to do it again): then
+        to the page the sign-in began on. Chrome swaps the page for its error page and the session is not
+        attached for a moment, so a command that finds it so is tried again."""
+        for attempt in range(HANDOFF_RECOVERY_TRIES):
+            try:
+                if not known["main"]:
+                    await self.link.call("Target.closeTarget", {"targetId": known["target"]})
+                    return
+                now = time.monotonic()
+                self.recoveries = [t for t in self.recoveries if now - t < 10] + [now]
+                if len(self.recoveries) > 2:
+                    await self.link.call("Page.navigate", {"url": self.handoff.url}, session)
+                    return
+                history = await self.link.call("Page.getNavigationHistory", session=session)
+                for entry in reversed(history["entries"][:history["currentIndex"]]):
+                    if self.handoff.allows(entry.get("url", "")) and entry.get("url") != "about:blank":
+                        await self.link.call("Page.navigateToHistoryEntry", {"entryId": entry["id"]}, session)
+                        return
+                await self.link.call("Page.navigate", {"url": "about:blank"}, session)
+                return
+            except Exception:
+                if self.dead or attempt == HANDOFF_RECOVERY_TRIES - 1:
+                    return
+                await asyncio.sleep(0.25)
+
+    async def check_page(self):
+        """The tab's page, as Chrome has it now, against the fence (a viewer came back to a tab that was
+        left alone)."""
+        known = self.sessions.get(self.current)
+        if known is None:
+            return
+        with contextlib.suppress(Exception):
+            info = await self.link.call("Target.getTargetInfo", {"targetId": known["target"]})
+            known["url"] = info.get("targetInfo", {}).get("url") or "about:blank"
+        await self.announce()
 
     async def on_attached(self, params):
         session, info = params["sessionId"], params.get("targetInfo", {})
@@ -4357,40 +4440,45 @@ class HandoffRelay:
                 with contextlib.suppress(Exception):
                     await link.call("Runtime.runIfWaitingForDebugger", session=session)
             return
-        popups = sum(1 for known in self.sessions.values() if not known["main"])
+        popups = sum(1 for entry in self.sessions.values() if not entry["main"])
         if popups >= HANDOFF_POPUPS:
             with contextlib.suppress(Exception):
                 await link.call("Target.closeTarget", {"targetId": info["targetId"]})
             return
-        await self.prepare(session, info["targetId"])
+        await self.prepare(session, info["targetId"], info.get("url") or "about:blank")
         self.current = session
         await self.show(session)
-        self.url = info.get("url") or "about:blank"
+        await self.announce()
         await self.say({"t": "popup"})
         await link.call("Runtime.runIfWaitingForDebugger", session=session)
 
     async def on_detached(self, session):
         known = self.sessions.pop(session, None)
-        if known is None or known["main"]:
-            if known is not None:  # the tab itself went: nothing is left to show
-                self.outcome = self.outcome or "left"
-                await self.client.close()
+        if known is None:
+            return
+        if known["main"]:  # the tab itself went: nothing is left to show
+            self.outcome = self.outcome or "left"
+            if self.client is not None:
+                with contextlib.suppress(Exception):
+                    await self.client.close()
             return
         if session == self.current:
             main = next((s for s, k in self.sessions.items() if k["main"]), None)
             self.current = main
             if main is not None:
                 await self.show(main)
+                await self.announce()
                 await self.say({"t": "popup-closed"})
 
     async def page_check(self):
         """What the page shows once the person says they are done: where it is, and whether it still asks
         for a password. Read by the worker, so the person's side never sees a cookie or a page's text."""
         main = next((s for s, k in self.sessions.items() if k["main"]), None)
-        parts = urllib.parse.urlsplit(self.url)
+        url = self.sessions[main]["url"] if main is not None else "about:blank"
+        parts = urllib.parse.urlsplit(url)
         check = {"host": (parts.hostname or "")[:100],
                  "url": f"{parts.scheme}://{parts.netloc}{parts.path}"[:300] if parts.scheme in ("http", "https") else "",
-                 "allowed": handoff_url_allowed(self.url, self.handoff.domains), "passwordField": None}
+                 "allowed": self.handoff.allows(url), "passwordField": None}
         if main is not None:
             with contextlib.suppress(Exception):
                 result = await self.link.call("Runtime.evaluate", {"expression": HANDOFF_CHECK, "returnByValue": True},
@@ -4400,17 +4488,29 @@ class HandoffRelay:
                     check["passwordField"] = value["passwordField"]
         return check
 
-    async def teardown(self):
+    async def stop(self):
+        """The handoff is over: the fence comes down with the tab, windows the page opened are closed and
+        downloads are allowed again."""
         link = self.link
-        for session, known in list(self.sessions.items()):
+        if link is not None and not self.dead:
+            for session, known in list(self.sessions.items()):
+                with contextlib.suppress(Exception):
+                    await link.call("Fetch.disable", session=session, timeout=3)
+                    if not known["main"]:
+                        await link.call("Target.closeTarget", {"targetId": known["target"]}, timeout=3)
             with contextlib.suppress(Exception):
-                await link.call("Fetch.disable", session=session, timeout=3)
-                if not known["main"]:
-                    await link.call("Target.closeTarget", {"targetId": known["target"]}, timeout=3)
-        with contextlib.suppress(Exception):
-            await link.call("Target.setAutoAttach", {"autoAttach": False, "waitForDebuggerOnStart": False,
-                                                     "flatten": True}, timeout=3)
-            await link.call("Browser.setDownloadBehavior", {"behavior": "default"}, timeout=3)
+                await link.call("Target.setAutoAttach", {"autoAttach": False, "waitForDebuggerOnStart": False,
+                                                         "flatten": True}, timeout=3)
+                await link.call("Browser.setDownloadBehavior", {"behavior": "default"}, timeout=3)
+        self.dead = True
+        if self.pump is not None:
+            self.pump.cancel()
+        for task in list(self.tasks):
+            task.cancel()
+        if link is not None:
+            await link.close()
+        if self.http is not None:
+            await self.http.close()
 
 
 HANDOFF_ENDINGS = set()  # tasks ending a handoff, held so none is dropped half way
@@ -4444,6 +4544,8 @@ async def finish_handoff(handoff, outcome, check):
         if handoff.tab:
             await close_tab(handoff.tab)
         handoff.tab = None
+        if handoff.guard is not None:
+            await handoff.guard.stop()
         await close_restored_tabs(owned_tabs())
         if handoff.viewed:
             handoff.flush = await close_chrome_for_park()
@@ -4468,6 +4570,10 @@ def handoff_body_error(body):
     if not isinstance(domains, list) or not 1 <= len(domains) <= HANDOFF_MAX_DOMAINS or not all(
             isinstance(d, str) and HANDOFF_DOMAIN.fullmatch(d) for d in domains):
         return "domains must be 1 to 12 lower-case domain names"
+    hosts = body.get("hosts", [])
+    if not isinstance(hosts, list) or len(hosts) > 2 * HANDOFF_MAX_DOMAINS or not all(
+            isinstance(h, str) and HANDOFF_DOMAIN.fullmatch(h) for h in hosts):
+        return "hosts must be lower-case host names"
     if not isinstance(body.get("url"), str) or not handoff_url_allowed(body["url"], domains) or body["url"] == "about:blank":
         return "url must be an https page inside the domains"
     if not isinstance(body.get("origin"), str) or not HANDOFF_ORIGIN.fullmatch(body["origin"]):
@@ -4497,7 +4603,7 @@ async def create_handoff(request):
     if worker.busy() or worker.restarting:
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     ttl = body.get("ttlSeconds", HANDOFF_TTL_S)
-    handoff = Handoff(body["id"], body["url"], body["domains"], body["origin"], ttl)
+    handoff = Handoff(body["id"], body["url"], body["domains"], body["origin"], ttl, body.get("hosts", []))
     handoff.tab = await new_tab()
     worker.handoff = handoff
     handoff.expiry = asyncio.create_task(expire_handoff(handoff, ttl))
@@ -4557,16 +4663,26 @@ async def handoff_socket(request):
         with contextlib.suppress(Exception):
             await previous.close()
     handoff.state, handoff.viewed = "viewing", True
-    relay = HandoffRelay(handoff, client)
     ending = None
     try:
-        outcome = await relay.run()
+        async with handoff.guard_lock:
+            if handoff.guard is None or handoff.guard.dead:
+                if handoff.guard is not None:
+                    await handoff.guard.stop()
+                guard = HandoffGuard(handoff)
+                await guard.start()
+                handoff.guard = guard
+        guard = handoff.guard
+        outcome = await guard.serve(client)
         if outcome in ("done", "cancel"):
-            await relay.say({"t": outcome})
-            ending = end_handoff(handoff, outcome, relay.check)
+            check = await guard.page_check() if outcome == "done" else None
+            with contextlib.suppress(Exception):
+                await client.send_str(json.dumps({"t": outcome}))
+            ending = end_handoff(handoff, outcome, check)
     except Exception:  # an answer to the viewer with the reason, and the sign-in stays open
         log.exception("handoff %s", handoff.id)
-        await relay.say({"t": "error", "reason": "browser"})
+        with contextlib.suppress(Exception):
+            await client.send_str(json.dumps({"t": "error", "reason": "browser"}))
     finally:
         # The viewer left, or the handler was cancelled by its socket going: the sign-in waits for it to come back.
         if handoff.viewer is client:

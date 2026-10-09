@@ -93,6 +93,15 @@ export async function settleLoginHandoff(row: Row, now = new Date()) {
     await end(row, { kind: "failed" }, now);
     return "failed";
   }
+  if (seen === undefined && row.workerOpenedAt === null) {
+    // The link was opened but the worker never took the handoff in (a run held
+    // the browser, or it was still starting): nothing was lost, and the person
+    // may press «Начать» again until the window runs out. Past it, the
+    // abandoned link ends without a word.
+    if (!overdue) return "skipped";
+    await endLoginHandoff(row.id, { report: null, state: "expired" }, now);
+    return "expired";
+  }
   if (seen === undefined) {
     // The worker has no such handoff: it restarted, or was parked, under it.
     const expired = row.viewUntil !== null && now > row.viewUntil;
