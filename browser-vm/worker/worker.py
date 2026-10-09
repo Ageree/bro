@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-09.2"
+VERSION = "2026-10-09.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -4681,10 +4681,12 @@ async def handoff_socket(request):
             with contextlib.suppress(Exception):
                 await client.send_str(json.dumps({"t": outcome}))
             ending = end_handoff(handoff, outcome, check)
-    except Exception:  # an answer to the viewer with the reason, and the sign-in stays open
+    except Exception as error:  # an answer to the viewer with the reason, and the sign-in stays open
         log.exception("handoff %s", handoff.id)
         with contextlib.suppress(Exception):
-            await client.send_str(json.dumps({"t": "error", "reason": "browser"}))
+            # The kind of failure goes along, for whoever debugs a sign-in on a live host: no page text, no URL.
+            await client.send_str(json.dumps({"t": "error", "reason": "browser", "kind": type(error).__name__,
+                                              "why": str(error)[:160]}))
     finally:
         # The viewer left, or the handler was cancelled by its socket going: the sign-in waits for it to come back.
         if handoff.viewer is client:
