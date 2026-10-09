@@ -35,6 +35,7 @@ export function browserPoolConfigured() {
     browserStateConfigured() &&
     env.BROWSER_HOST_BUNDLE !== undefined &&
     (env.BROWSER_HOST_RUNTIME === "runc" ||
+      env.BROWSER_HOST_RUNTIME === "firecracker" ||
       env.BROWSER_HOST_RUNSC_RELEASE !== undefined) &&
     env.BROWSER_SANDBOX_ROOTFS !== undefined &&
     env.BROWSER_VM_SIGNING_KEY !== undefined &&

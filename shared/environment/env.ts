@@ -350,10 +350,11 @@ export const env = createEnv({
       .default("bro-host-"),
     // How a host runs its sandboxes (`runtime` of boot.py): plain containers
     // (`runc`, profile-only sets), or gVisor with memory snapshots (`runsc`),
-    // which also needs BROWSER_HOST_RUNSC_RELEASE. No default: unset, a
+    // which also needs BROWSER_HOST_RUNSC_RELEASE, or Firecracker microVMs
+    // (`firecracker`, snapshots kept on the host). No default: unset, a
     // deployment with BROWSER_HOST_RUNSC_RELEASE runs runsc as it did before
     // this setting, and one without it has no pool (`browserPoolConfigured`).
-    BROWSER_HOST_RUNTIME: z.enum(["runc", "runsc"]).optional(),
+    BROWSER_HOST_RUNTIME: z.enum(["runc", "runsc", "firecracker"]).optional(),
     // The dated gVisor release a host installs under `runsc`
     // (`runscRelease` of boot.py): a snapshot restores only under the runsc
     // that made it, so it is pinned. Not used under `runc`.
