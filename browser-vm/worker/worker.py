@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-10.1"
+VERSION = "2026-10-10.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1384,16 +1384,11 @@ class Worker:
             if not re.fullmatch(r"[0-9A-Za-z-]{3,12}", digits):
                 return ActionResult(error="A code is 3 to 12 letters or digits.")
             cdp = await browser_session.get_or_create_cdp_session()
-            found = await cdp.cdp_client.send.Runtime.evaluate(
-                params={"expression": FIND_CODE_FIELD, "returnByValue": True}, session_id=cdp.session_id)
-            where = (found.get("result") or {}).get("value")
-            if not where:
-                return ActionResult(error="No code field on this page; if it sits in a frame, type into it yourself.")
-            await cdp.cdp_client.send.Input.insertText(params={"text": digits}, session_id=cdp.session_id)
-            await asyncio.sleep(2)
+            entered, message = await enter_one_time_code(cdp, digits)
+            if not entered:
+                return ActionResult(error=message)
             # The code itself stays out of the agent's memory and the run record.
-            return ActionResult(extracted_content=f"Entered the code into {where}.",
-                                long_term_memory="Entered the one-time code.")
+            return ActionResult(extracted_content=message, long_term_memory="Entered the one-time code.")
 
         @tools.action("Fill the page's bank card form (number, expiry, CVC, cardholder) with the saved card. Always "
                       "use this for a card form instead of typing card secrets yourself: it finds the fields in the "
@@ -1882,10 +1877,15 @@ def secrets_to_sensitive_data(bindings):
     return data
 
 
-# Focus the field a one-time code goes into, looking inside open shadow roots too (WB ID keeps its code
+# Find the field a one-time code goes into, looking inside open shadow roots too (WB ID keeps its code
 # boxes in a web component): the site's own full-code box (`autocomplete=one-time-code`) first, else the
-# first of 4–8 one-character boxes, else a field named like a code. Typing the digits box by box raced the
-# boxes' own focus moves and scrambled the code (365578 arrived as 336655); one trusted insertText does not.
+# first of 4–8 one-character boxes, else a field named like a code. The inputs found stay in
+# `window.__broCode` (one entry for a full-code field, one per box for boxes) for the next scripts; the
+# answer says which kind it is. Typing the digits box by box with the keyboard raced the boxes' own focus
+# moves and scrambled the code (365578 arrived as 336655): the boxes are filled one trusted insertText each,
+# each one focused by the script first (`FOCUS_CODE_BOX`), so no focus move of the page's is relied on. The
+# whole code in the first box does not do for boxes that do not spread it: playerok.com kept one digit
+# (RU 10.10), and the run typed the rest by hand into a form that then refused the code.
 FIND_CODE_FIELD = r"""(() => {
   const all = [];
   const walk = (root) => {
@@ -1897,15 +1897,89 @@ FIND_CODE_FIELD = r"""(() => {
     && el.getClientRects().length > 0);
   const named = (el) => /otp|sms|code|pin|код/i.test([el.name, el.id, el.placeholder, el.getAttribute('aria-label')].join(' '));
   const boxes = usable.filter((el) => el.maxLength === 1);
-  const field = usable.find((el) => (el.autocomplete || '').includes('one-time-code'))
-    || (boxes.length >= 4 && boxes.length <= 8 ? boxes[0] : null)
-    || usable.find(named);
+  const full = usable.find((el) => (el.autocomplete || '').includes('one-time-code'));
+  const split = !full && boxes.length >= 4 && boxes.length <= 8;
+  const field = full || (split ? boxes[0] : null) || usable.find(named);
   if (!field) return null;
+  window.__broCode = split ? boxes : [field];
   field.focus();
   if (field.value) field.select();
-  return (field.autocomplete || '').includes('one-time-code') ? 'the one-time-code field'
-    : field.maxLength === 1 ? 'the first of the code boxes' : 'the code field';
+  return {kind: full ? 'one-time-code' : split ? 'boxes' : 'field', count: window.__broCode.length};
 })()"""
+
+# Focus box `i` of the code found, with what it holds selected so the next character replaces it.
+FOCUS_CODE_BOX = "((i) => { const el = (window.__broCode || [])[i]; if (!el) return false; el.focus(); el.select(); return true; })"
+
+# What the code boxes found hold now, joined; read by the worker only, never returned to the model. null when
+# a box left the page (a site that submits the code on its last character and moves on).
+READ_CODE_BOXES = "(() => { const els = window.__broCode || []; return els.length && els.every((el) => el.isConnected) ? els.map((el) => el.value).join('') : null; })()"
+
+# Empty the boxes (as a person would select and delete) before the code goes in again.
+CLEAR_CODE_BOXES = r"""(() => {
+  for (const el of window.__broCode || []) {
+    el.focus(); el.select();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(el, '');
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+  }
+  return true;
+})()"""
+
+def _code_chars(value):
+    return re.sub(r"[^0-9A-Za-z]", "", value or "").lower()
+
+
+async def enter_one_time_code(cdp, code):
+    """Put `code` into the page's code field or boxes and check it stuck: (True, what was done) or (False, why not).
+
+    One-character boxes get one character each, every box focused first: a site that moves focus on its own
+    (or not at all) sees the keystrokes a person's would make, and a site that spreads a pasted code over its
+    boxes is not needed. The whole code in the first box is the second try, for pages (WB ID) that spread it
+    themselves. The values are read back and compared here, so only the worker sees them; a field that left
+    the page or came back empty is a site that took the code and moved on, which counts as entered.
+    """
+    async def evaluate(expression):
+        answer = await cdp.cdp_client.send.Runtime.evaluate(
+            params={"expression": expression, "returnByValue": True}, session_id=cdp.session_id)
+        return (answer.get("result") or {}).get("value")
+
+    async def insert(text):
+        await cdp.cdp_client.send.Input.insertText(params={"text": text}, session_id=cdp.session_id)
+
+    async def holds():
+        held = await evaluate(READ_CODE_BOXES)
+        return None if held is None else _code_chars(held)
+
+    found = await evaluate(FIND_CODE_FIELD)
+    if not found:
+        return False, "No code field on this page; if it sits in a frame, type into it yourself."
+    wanted = _code_chars(code)
+    boxes = found["kind"] == "boxes"
+    where = {"one-time-code": "the one-time-code field", "boxes": "the code boxes",
+             "field": "the code field"}[found["kind"]]
+    if boxes and found["count"] == len(wanted):
+        for index, char in enumerate(wanted):
+            await evaluate(f"({FOCUS_CODE_BOX})({index})")
+            await insert(char)
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        held = await holds()
+        if not held or held == wanted:
+            return True, f"Entered the code into {where}, one character in each."
+        # Page logic moved or rewrote a box: empty them and let the page spread the whole code.
+        await evaluate(CLEAR_CODE_BOXES)
+        await evaluate(f"({FOCUS_CODE_BOX})(0)")
+    await insert(code)
+    await asyncio.sleep(2)
+    held = await holds()
+    # One field of several that spread the code shows only its own part: shorter than the code proves nothing.
+    if not held or held == wanted or (not boxes and (wanted in held or len(held) < len(wanted))):
+        return True, f"Entered the code into {where}."
+    if boxes:
+        return False, (f"The code boxes hold {len(held)} of the {len(wanted)} characters of the code, so the page "
+                       "did not take it. Do not type digits yourself; stop with NEEDS: email_code and say so.")
+    return False, "The code field does not hold the code after it was entered; the page did not take it."
+
 
 # A GeeTest v4 slider puzzle on the page: the background with the gap, the piece and the knob (by their
 # class names, which end in a per-page hash), and the captcha id its loader script was given.

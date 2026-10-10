@@ -309,7 +309,10 @@ describe("the code entry program on a page", () => {
     expect(fixture.page(3).fields[0]?.value).toBe(code);
   });
 
-  it("still fills four to eight boxes one by one when no field takes the whole code", async () => {
+  it("fills four to eight boxes with one insertion each, every box focused first", async () => {
+    // playerok.com (RU 10.10): its react-otp-input files a digit under the box
+    // that has the focus, so values set on boxes it was not focused on showed
+    // the code and sent the server another one.
     const fixture = await fake({
       documents: {
         1: [...codeBoxes(6), { tag: "button", text: "Подтвердить" }],
@@ -321,23 +324,43 @@ describe("the code entry program on a page", () => {
     const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
 
     expect(entry).toMatchObject({
-      insertedText: false,
+      insertedText: true,
       partial: false,
       submitted: true,
       typed: true,
     });
-    expect(
-      fixture
-        .page(1)
-        .fields.map((box) => box.value)
-        .join("")
-    ).toBe(code);
-    for (const box of fixture.page(1).fields) {
-      expect(box.writes).toEqual(["setter"]);
-    }
-    expect(
-      fixture.calls.some((call) => call.method === "Input.insertText")
-    ).toBe(false);
+    const boxes = fixture.page(1).fields.slice(0, 6);
+    expect(boxes.map((box) => box.value).join("")).toBe(code);
+    for (const box of boxes) expect(box.writes).toEqual(["insertText"]);
+    const inserted = fixture.calls.filter(
+      (call) => call.method === "Input.insertText"
+    );
+    expect(inserted.map((call) => call.params.text)).toEqual(code.split(""));
+  });
+
+  it("hands the code to the run when the boxes do not hold it after the insertions", async () => {
+    // Boxes whose page rewrote what they got: nothing is pressed.
+    const fixture = await fake({
+      documents: {
+        1: [
+          ...codeBoxes(6).map((box) =>
+            Object.assign(box, { unfocusable: true })
+          ),
+          { tag: "button", text: "Подтвердить" },
+        ],
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({
+      partial: true,
+      submitted: false,
+      typed: false,
+    });
+    expect(fixture.page(1).clicked).toEqual([]);
   });
 
   it("still sets the value of a field too short to take the code", async () => {

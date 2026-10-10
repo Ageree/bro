@@ -4,6 +4,7 @@ import type * as publicFetch from "@agent/lib/sandbox/public-fetch";
 import {
   authenticatedFrom,
   codeInLetter,
+  codeSentEarlier,
   confirmationLinkInLetter,
   trackedConfirmationLink,
   trackedLinkTarget,
@@ -262,6 +263,18 @@ describe("Gmail's word on who sent a letter", () => {
       )
     ).toBe(false);
     expect(authenticatedFrom([], "ozon.ru", "ozon.ru")).toBe(false);
+  });
+});
+
+describe("a site that had already sent its code", () => {
+  it("reads it from the run's outcome, in the site's words or ours", () => {
+    expect(codeSentEarlier("Details: 409 otp_already_sent")).toBe(true);
+    expect(codeSentEarlier("Details: Код уже отправлен. Подождите…")).toBe(
+      true
+    );
+    expect(codeSentEarlier("Details: the code was already sent")).toBe(true);
+    expect(codeSentEarlier("Details: форма отправлена")).toBe(false);
+    expect(codeSentEarlier(null)).toBe(false);
   });
 });
 

@@ -10292,6 +10292,84 @@ describe("browser_task registers with Bro's own mailbox", () => {
       expect(createBrowserUseRun).not.toHaveBeenCalled();
     });
 
+    describe("when the code it was handed was refused", () => {
+      // 10.10, playerok.com: the code was typed, the site refused it six
+      // times, and the report turn answered «write me anything».
+      async function refusedAfterMailCode(outcome = emailed) {
+        const { mailCodeInstruction } =
+          await import("@agent/lib/browser-use/mail-code");
+        readBrowserRunForScope.mockResolvedValue({
+          ...browserRunRow(new Date(), outcome),
+          site: "https://www.inaturalist.org",
+          task: mailCodeInstruction("inaturalist.org", "agent"),
+        });
+        const tool = await resolvedBrowserTask(
+          [],
+          `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+        );
+        return tool.execute(
+          { action: "continue", personWants: "look", codeFrom: "mail", runId },
+          toolContext("better-auth:alice", "browser-result")
+        );
+      }
+
+      it("takes a newer letter from Bro's own mailbox in a report turn, once, without waiting", async () => {
+        mailCodeFromSite.mockResolvedValue({
+          code: "113355",
+          domain: "inaturalist.org",
+          kind: "found",
+          receivedAt: new Date(),
+        });
+
+        await refusedAfterMailCode();
+
+        expect(mailCodeFromSite).toHaveBeenCalledOnce();
+        expect(mailCodeFromSite.mock.calls[0]?.[1]).toMatchObject({
+          agentMailbox: mailbox,
+          waitMs: 0,
+        });
+        expect(createBrowserUseRun).toHaveBeenCalledOnce();
+      });
+
+      it("tells the model to get a fresh code, not to ask the person to write", async () => {
+        mailCodeFromSite.mockResolvedValue({
+          domain: "inaturalist.org",
+          kind: "not_found",
+        });
+
+        const sent = refusedAfterMailCode();
+
+        await expect(sent).rejects.toThrow(
+          "has sent no newer code to your own AgentMail inbox"
+        );
+        await expect(sent).rejects.toThrow(
+          "Continue this run once without codeFrom, telling it to have the site send a new code"
+        );
+        await expect(sent).rejects.toThrow("do not tell them to write to you");
+        expect(createBrowserUseRun).not.toHaveBeenCalled();
+      });
+
+      it("does not skip the letter of a code the site said it had already sent", async () => {
+        mailCodeFromSite.mockResolvedValue({
+          domain: "inaturalist.org",
+          kind: "not_found",
+        });
+        const stoppedAt = new Date();
+
+        await expect(
+          refusedAfterMailCode(
+            `${emailed}\nDetails: сервер ответил 409 otp_already_sent`
+          )
+        ).rejects.toThrow("Nothing was sent");
+
+        const since = mailCodeFromSite.mock.calls[0]?.[1].since;
+        expect(since).toBeInstanceOf(Date);
+        expect(stoppedAt.getTime() - (since?.getTime() ?? 0)).toBeGreaterThan(
+          14 * 60_000
+        );
+      });
+    });
+
     it("looks in the person's Gmail when the site's login is theirs", async () => {
       savedLogin("alice@example.com");
 

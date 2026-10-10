@@ -66,6 +66,18 @@ export function waitsForMailCode(
   );
 }
 
+/**
+ * Whether a stopped run says the site had already sent its code: playerok.com
+ * answered `otp_already_sent` (409) to a second request while the first
+ * code, from an earlier attempt, was still valid. That letter predates the
+ * run, so the look must not skip it.
+ */
+export function codeSentEarlier(outcome: string | null) {
+  return /otp[_ ]already[_ ]sent|(?:code|код)\p{L}*[^.\n]{0,40}(?:already (?:been )?sent|уже (?:был\p{L}* )?(?:отправлен|выслан)\p{L}*)/iu.test(
+    outcome ?? ""
+  );
+}
+
 /** A host as compared: lower case, without a trailing dot. */
 function bareHost(host: string) {
   return host.toLowerCase().replace(/\.$/u, "");
