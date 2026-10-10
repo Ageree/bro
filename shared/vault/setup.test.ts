@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createVaultSetupUrl,
   parseVaultSetupSearchParams,
-  serializeLoginVaultPayload,
   vaultCreateItemSchema,
-  vaultImportItemsSchema,
   vaultSetupRequestSchema,
 } from "@shared/vault/schema";
 
@@ -12,7 +10,7 @@ describe("vault setup", () => {
   it("creates and validates a secret-free setup link", () => {
     expect(
       vaultSetupRequestSchema.safeParse({
-        kind: "login",
+        kind: "payment",
         secret: "must-not-enter-a-url",
         target: "vault",
       }).success
@@ -20,10 +18,8 @@ describe("vault setup", () => {
 
     const url = new URL(
       createVaultSetupUrl("https://assistant.example.com", {
-        identifierType: "email",
-        kind: "login",
-        label: "Personal login",
-        origin: "https://auth.uber.com",
+        kind: "payment",
+        label: "Personal card",
         target: "vault",
       })
     );
@@ -32,7 +28,7 @@ describe("vault setup", () => {
       parseVaultSetupSearchParams(Object.fromEntries(url.searchParams))
     ).toMatchObject({
       data: {
-        kind: "login",
+        kind: "payment",
         target: "vault",
       },
       success: true,
@@ -43,29 +39,15 @@ describe("vault setup", () => {
         Object.fromEntries(new URL(`${url.href}Tell me when done`).searchParams)
       )
     ).toMatchObject({
-      data: { label: "Personal loginTell me when done" },
+      data: { label: "Personal cardTell me when done" },
       success: true,
     });
   });
 
-  it("accepts only structured login items in a bulk import", () => {
-    const login = {
-      account: "",
-      kind: "login" as const,
-      label: "GitHub",
-      secret: serializeLoginVaultPayload({
-        authentication: { password: "correct horse", type: "password" },
-        identifier: { type: "email", value: "person@example.com" },
-        kind: "login",
-        origin: "https://github.com",
-        version: 2,
-      }),
-    };
-    expect(vaultImportItemsSchema.safeParse([login]).success).toBe(true);
+  it("has no setup link for a login: logins are not set up on the page", () => {
     expect(
-      vaultImportItemsSchema.safeParse([
-        { ...login, kind: "phone", secret: "+15555550100" },
-      ]).success
+      vaultSetupRequestSchema.safeParse({ kind: "login", target: "vault" })
+        .success
     ).toBe(false);
   });
 

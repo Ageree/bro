@@ -7,12 +7,10 @@ import {
 } from "@db/services/agent-mailboxes";
 
 export function agentMailboxEnabled(scope: AccessScope) {
-  return Boolean(
-    env.AGENTMAIL_API_KEY &&
-    env.AGENTMAIL_WORKSPACES?.some(
-      (entry) => entry === "*" || entry === scope.workspaceId
-    )
-  );
+  if (!env.AGENTMAIL_API_KEY) return false;
+  const list = env.AGENTMAIL_WORKSPACES ?? [];
+  if (list.length === 0 || list.includes("*")) return true;
+  return list.includes(scope.workspaceId);
 }
 
 export async function provisionAgentMailbox(scope: AccessScope) {

@@ -563,24 +563,16 @@ function SiteLoginsSection({
   return (
     <Section headingId="site-logins-heading" title="Входы в сайты">
       <p className="type-fine text-muted-foreground">
-        Сначала Bro берёт вход из сейфа или уже сохранённые куки. Если входа нет
-        — откроет страницу входа и пришлёт ссылку в чат. Открой, войди один раз
-        — пароль в чат не пиши. Повторно ссылку не пришлёт. Добавить или
-        изменить вход можно в сейфе.
+        Bro берёт уже сохранённый вход или куки. Если входа нет, он предложит
+        три способа: ты входишь сам по ссылке в окне его браузера, говоришь ему
+        логин и пароль в чате или просишь зарегистрироваться самому. Забыть вход
+        сайта можно, попросив об этом Bro в чате.
       </p>
       <p className="type-fine mt-[0.6rem]">
         {domains.length > 0
           ? `Сохранены входы: ${domains.join(", ")}`
-          : "Пока нет сохранённых входов — Bro возьмёт вход из сейфа или пришлёт ссылку, когда понадобится."}
+          : "Пока нет сохранённых входов — Bro предложит способ войти, когда понадобится."}
       </p>
-      <Actions>
-        <Link className="type-act bro-link" href="/vault?add=login">
-          Добавить вход
-        </Link>
-        <Link className="type-act bro-link" href="/vault?import=chrome">
-          Импортировать из Chrome
-        </Link>
-      </Actions>
     </Section>
   );
 }
@@ -623,8 +615,7 @@ function VaultSection({
         </Rows>
       ) : (
         <p className="type-fine mt-[0.6rem] text-muted-foreground">
-          Пока пусто — добавь карту или вход, и Bro сможет покупать и заходить
-          на сайты.
+          Пока пусто — добавь карту, и Bro сможет покупать.
         </p>
       )}
       <Actions>
@@ -633,9 +624,6 @@ function VaultSection({
           href="/vault?setup=vault&kind=payment"
         >
           Добавить карту
-        </Link>
-        <Link className="type-act bro-link" href="/vault?add=login">
-          Добавить вход
         </Link>
         <Link className="type-act bro-link" href="/vault">
           перейти в сейф

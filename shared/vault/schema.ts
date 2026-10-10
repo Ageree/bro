@@ -38,7 +38,7 @@ const optionalBoundedValue = z
   .optional()
   .transform((value) => (value?.length ? value : undefined));
 
-export const loginIdentifierTypeSchema = z.enum(["email", "phone", "username"]);
+const loginIdentifierTypeSchema = z.enum(["email", "phone", "username"]);
 
 export const loginOriginSchema = z.url().refine((value) => {
   if (!URL.canParse(value)) return false;
@@ -227,36 +227,17 @@ export const vaultCreateItemSchema = z
     }
   });
 
-export const vaultImportItemsSchema = z
-  .array(
-    vaultCreateItemSchema.refine((item) => item.kind === "login", {
-      message: "Bulk imports support login credentials only.",
-    })
-  )
-  .min(1)
-  .max(3_000);
-
-export const vaultSetupRequestSchema = z.union([
-  z
-    .object({
-      identifierType: loginIdentifierTypeSchema,
-      kind: z.literal("login"),
-      label: z.string().trim().min(1).max(120),
-      origin: loginOriginSchema,
-      target: z.literal("vault"),
-    })
-    .strict(),
-  z
-    .object({
-      kind: vaultCreateItemKindSchema.exclude(["login"]),
-      label: z.string().trim().min(1).max(120).optional(),
-      target: z.literal("vault"),
-    })
-    .strict(),
-]);
+// Logins are not set up on the page: a person signs in themselves through a
+// link, says the login in the chat, or has Bro sign up (docs/login-handoff.md).
+export const vaultSetupRequestSchema = z
+  .object({
+    kind: vaultCreateItemKindSchema.exclude(["login"]),
+    label: z.string().trim().min(1).max(120).optional(),
+    target: z.literal("vault"),
+  })
+  .strict();
 
 export type VaultCreateItem = z.infer<typeof vaultCreateItemSchema>;
-export type VaultImportItems = z.infer<typeof vaultImportItemsSchema>;
 export type VaultItem = z.infer<typeof vaultItemSchema>;
 export type VaultSetupRequest = z.infer<typeof vaultSetupRequestSchema>;
 
@@ -341,19 +322,11 @@ export function loginAccountHint(
 export function parseVaultSetupSearchParams(
   query: Record<string, string | readonly string[] | undefined>
 ) {
-  const identifierType = firstQueryValue(query.identifier_type);
-  const origin = firstQueryValue(query.origin);
-  const input = {
+  return vaultSetupRequestSchema.safeParse({
     kind: firstQueryValue(query.kind),
     label: firstQueryValue(query.label),
     target: firstQueryValue(query.setup),
-  };
-
-  return vaultSetupRequestSchema.safeParse(
-    identifierType === undefined && origin === undefined
-      ? input
-      : { ...input, identifierType, origin }
-  );
+  });
 }
 
 export function createVaultSetupUrl(
@@ -363,10 +336,6 @@ export function createVaultSetupUrl(
   const url = new URL("/vault", baseUrl);
   url.searchParams.set("setup", request.target);
   url.searchParams.set("kind", request.kind);
-  if (request.kind === "login") {
-    url.searchParams.set("identifier_type", request.identifierType);
-    url.searchParams.set("origin", request.origin);
-  }
   // The label goes last: a messaging client that runs following text into the
   // link only corrupts the editable nickname instead of a validated field.
   if (request.label) url.searchParams.set("label", request.label);

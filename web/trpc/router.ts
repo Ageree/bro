@@ -10,7 +10,6 @@ import {
   selectWorkspaceModel,
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
-import { revealBroLogin } from "@db/services/bro-logins";
 import { disconnectMail } from "@db/services/mail";
 import { mailAccessSchema, mailProviderSchema } from "@shared/mail/schema";
 import { mailEnabled, mailProviderConfigured } from "@shared/mail/providers";
@@ -40,10 +39,7 @@ import {
 import { telegramLinkUrl } from "@shared/identity/telegram-link";
 import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
-import {
-  vaultCreateItemSchema,
-  vaultImportItemsSchema,
-} from "@shared/vault/schema";
+import { vaultCreateItemSchema } from "@shared/vault/schema";
 import { createTRPCRouter, protectedProcedure } from "./init";
 
 /** An eve memory scope key, as the cabinet page received it. */
@@ -182,25 +178,9 @@ export const appRouter = createTRPCRouter({
     create: protectedProcedure
       .input(vaultCreateItemSchema)
       .mutation(({ ctx, input }) => saveVaultItem(ctx.scope, input)),
-    import: protectedProcedure
-      .input(vaultImportItemsSchema)
-      .mutation(async ({ ctx, input }) => {
-        /* oxlint-disable eslint/no-await-in-loop -- Import preserves source order and avoids concurrent writes to the same vault scope. */
-        for (const item of input) await saveVaultItem(ctx.scope, item);
-        /* oxlint-enable eslint/no-await-in-loop */
-      }),
     remove: protectedProcedure
       .input(z.object({ id: z.string().min(1) }))
       .mutation(({ ctx, input }) => deleteVaultItem(ctx.scope, input.id)),
-    // Only a login Bro registered with its own mailbox is read back
-    // (`revealBroLogin`); anything else is not found, with no word on why.
-    reveal: protectedProcedure
-      .input(z.object({ id: z.string().min(1).max(200) }))
-      .mutation(async ({ ctx, input }) => {
-        const login = await revealBroLogin(ctx.scope, input.id);
-        if (login === undefined) throw new TRPCError({ code: "NOT_FOUND" });
-        return login;
-      }),
   },
   models: {
     list: protectedProcedure.query(readModelCatalog),

@@ -5,13 +5,24 @@ import type {
   forgetSignIns,
   listKeptSignIns,
 } from "@agent/lib/browser-use/sign-ins";
-import { accessScopeForUser } from "@shared/identity/access-scope";
+import {
+  type AccessScope,
+  accessScopeForUser,
+} from "@shared/identity/access-scope";
 
 const signIns = vi.hoisted(() => ({
   forget: vi.fn<typeof forgetSignIns>(),
   list: vi.fn<typeof listKeptSignIns>(),
 }));
 const configured = vi.hoisted(() => ({ value: true }));
+const vault = vi.hoisted(() => ({
+  delete: vi.fn<(scope: AccessScope, id: string) => Promise<boolean>>(),
+  list: vi.fn<() => Promise<{ account: string; id: string; kind: string }[]>>(),
+}));
+vi.mock("@db/services/vault", () => ({
+  deleteVaultItem: vault.delete,
+  listVaultItems: vault.list,
+}));
 
 vi.mock("@agent/lib/browser-use/sign-ins", () => ({
   forgetSignIns: signIns.forget,
@@ -77,6 +88,36 @@ describe("site_sign_ins", () => {
     const { keepAlive } = z.object({ keepAlive: z.string() }).parse(result);
     expect(keepAlive).toContain("clicks nothing there");
     expect(keepAlive).toContain("keptAlive false is never opened on its own");
+  });
+
+  it("forgets the saved login of one site, and only of that site", async () => {
+    vault.list.mockResolvedValue([
+      { account: "www.ozon.ru · a•••@example.com", id: "ozon", kind: "login" },
+      { account: "ozon.ru · +7•••76", id: "ozon-phone", kind: "login" },
+      { account: "www.wildberries.ru · b•••@x.ru", id: "wb", kind: "login" },
+      { account: "Visa · •••• 4242", id: "card", kind: "payment" },
+    ]);
+    vault.delete.mockResolvedValue(true);
+
+    expect(
+      answer(await run({ action: "forget_login", site: "ozon.ru" }))
+    ).toEqual([
+      "forgotten",
+      expect.stringContaining("saved login for ozon.ru"),
+    ]);
+    expect(vault.delete.mock.calls.map(([, id]) => id).toSorted()).toEqual([
+      "ozon",
+      "ozon-phone",
+    ]);
+
+    vault.delete.mockClear();
+    expect(
+      answer(await run({ action: "forget_login", site: "avito.ru" }))
+    ).toEqual(["not_forgotten", expect.stringContaining("nothing to forget")]);
+    expect(answer(await run({ action: "forget_login" }))[0]).toBe(
+      "not_forgotten"
+    );
+    expect(vault.delete).not.toHaveBeenCalled();
   });
 
   it("forgets every sign-in, or one site for good, or says plainly it could not", async () => {

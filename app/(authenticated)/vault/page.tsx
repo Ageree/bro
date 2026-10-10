@@ -10,9 +10,7 @@ import {
 import { VaultAddresses } from "./_components/addresses";
 import { VaultCards } from "./_components/cards";
 import { VaultContacts } from "./_components/contacts";
-import { VaultLogins } from "./_components/logins";
 import { VaultOtherItems } from "./_components/other";
-import { listBroLoginIds } from "@db/services/bro-logins";
 import { readVaultItems } from "@db/services/vault";
 import { requireRequestScope } from "@web/auth/request-scope";
 
@@ -20,11 +18,7 @@ export const metadata: Metadata = { title: "Сейф" };
 
 export default async function Page() {
   const scope = await requireRequestScope();
-  // Which logins are Bro's own is decided here; their secrets stay here.
-  const [items, broLoginIds] = await Promise.all([
-    readVaultItems(scope),
-    listBroLoginIds(scope),
-  ]);
+  const items = await readVaultItems(scope);
   const itemsByKind = Object.groupBy(items, (item) => item.kind);
   const otherItems = items.filter(
     (item) =>
@@ -34,16 +28,13 @@ export default async function Page() {
     <Document>
       <DocumentTitle>Сейф</DocumentTitle>
       <p className="type-fine text-muted-foreground">
-        Пароль в чат не пиши. Bro берёт вход из сейфа сам. Добавь или измени
-        логин здесь.
+        Здесь карты, адреса и контакты, которые Bro использует в поручениях.
+        Входы на сайты сюда не добавляются: войди на сайте сам по ссылке от Bro
+        или скажи ему логин в чате.
       </p>
 
       <Section headingId="saved-heading" title="Сохранённые">
         <Rows>
-          <VaultLogins
-            broLoginIds={broLoginIds}
-            items={itemsByKind.login ?? []}
-          />
           <VaultCards items={itemsByKind.payment ?? []} />
           <VaultAddresses items={itemsByKind.address ?? []} />
           <VaultContacts items={itemsByKind.contact ?? []} />
@@ -57,9 +48,6 @@ export default async function Page() {
           добавь здесь.
         </p>
         <Actions>
-          <Link className="type-act bro-link" href="/vault?add=login">
-            Добавить вход
-          </Link>
           <Link
             className="type-act bro-link"
             href="/vault?setup=vault&kind=payment"
@@ -77,9 +65,6 @@ export default async function Page() {
             href="/vault?setup=vault&kind=contact"
           >
             Добавить контакт
-          </Link>
-          <Link className="type-act bro-link" href="/vault?import=chrome">
-            Импортировать из Chrome
           </Link>
         </Actions>
       </Section>

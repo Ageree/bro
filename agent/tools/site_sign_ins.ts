@@ -5,8 +5,10 @@ import {
   forgetSignIns,
   listKeptSignIns,
 } from "@agent/lib/browser-use/sign-ins";
+import { savedLoginIdsOf } from "@agent/lib/browser-use/secrets";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { deleteVaultItem, listVaultItems } from "@db/services/vault";
 import { env } from "@shared/environment";
 
 /** How the keep-alive visits stand on this deployment, for the person. */
@@ -19,16 +21,16 @@ function keepAliveNote() {
 
 export const siteSignIns = defineTool({
   description:
-    "The sites where Bro's cloud browser keeps the person signed in from earlier errands, and forgetting them. action list: when the person asks where Bro is signed in on their behalf or which of their accounts it opens. action forget: when they ask Bro to forget their sign-ins on sites, to sign its browser out, or to stop opening their accounts on its own («забудь мои входы на сайты», «не заходи больше в мой Озон»). With site, Bro never opens that site on its own again, even after later errands there, while its browser may stay signed in there. Without site, the browser profile is deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere. It never touches the vault's saved passwords.",
+    "The sites where Bro's cloud browser keeps the person signed in from earlier errands, and forgetting them. action list: when the person asks where Bro is signed in on their behalf or which of their accounts it opens. action forget: when they ask Bro to forget their sign-ins on sites, to sign its browser out, or to stop opening their accounts on its own («забудь мои входы на сайты», «не заходи больше в мой Озон»). With site, Bro never opens that site on its own again, even after later errands there, while its browser may stay signed in there. Without site, the browser profile is deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere. action forget_login: when they ask Bro to forget the saved login and password of one site («забудь мой вход на …», «удали мой пароль от …»): deletes the login Bro keeps for it (site required); cookies of the browser stay, and they can ask to forget those too.",
   inputSchema: z.object({
-    action: z.enum(["list", "forget"]),
+    action: z.enum(["list", "forget", "forget_login"]),
     site: z
       .string()
       .min(1)
       .max(200)
       .optional()
       .describe(
-        "For forget: the one site to forget, as a domain such as ozon.ru. Leave it out to forget every site."
+        "For forget: the one site to forget, as a domain such as ozon.ru; leave it out to forget every site. For forget_login: the site whose saved login to delete (required)."
       ),
   }),
   async execute(input, context) {
@@ -46,6 +48,26 @@ export const siteSignIns = defineTool({
             ? "Bro's browser has no sign-in on record for this person."
             : "Tell the person, in one message, the sites where Bro's browser is signed in (signed_in) and where it last found them signed out, and that they can ask to forget one site or all of them.",
         sites,
+      };
+    }
+    if (input.action === "forget_login") {
+      if (input.site === undefined) {
+        return {
+          note: "Ask which site's saved login they mean.",
+          status: "not_forgotten",
+        };
+      }
+      const ids = savedLoginIdsOf(await listVaultItems(scope), input.site);
+      if (ids.length === 0) {
+        return {
+          note: "Bro keeps no saved login for that site: there is nothing to forget. Say so plainly.",
+          status: "not_forgotten",
+        };
+      }
+      await Promise.all(ids.map((id) => deleteVaultItem(scope, id)));
+      return {
+        note: `The saved login for ${input.site} is deleted (${String(ids.length)}). Bro's browser may still be signed in there with cookies: they can ask to forget that sign-in too. Say both plainly.`,
+        status: "forgotten",
       };
     }
     const forgotten = await forgetSignIns(scope, input.site);
@@ -75,7 +97,7 @@ export const siteSignIns = defineTool({
       };
     }
     return {
-      note: "Bro's browser profile was deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere and signs in anew, asking for codes as a first sign-in does. Sites the person told Bro not to open stay so. Passwords saved in the vault stay. Say so plainly.",
+      note: "Bro's browser profile was deleted with every cookie and sign-in: the next errand, and any follow-up of an earlier one, starts signed out everywhere and signs in anew, asking for codes as a first sign-in does. Sites the person told Bro not to open stay so. Saved logins stay (they can ask to forget one site's login). Say so plainly.",
       sites: forgotten.domains,
       status: "forgotten",
     };

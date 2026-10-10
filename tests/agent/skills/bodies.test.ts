@@ -249,7 +249,7 @@ const kept = [
   // The core's condensed form of a rule a skill holds in full.
   "Момент узнай, а не угадывай; не узнать — ставь самый ранний разумный и так и скажи.",
   "нет письма — проси человека",
-  "На `Needs: password` дай ссылку `request_vault_setup`.",
+  "На `Needs: password` предложи три способа: человек входит сам (`site-login-link`), присылает логин и пароль в чат (`login`) или ты регистрируешься (`signUpWith`).",
 ];
 
 /**
