@@ -8,6 +8,11 @@ gets its whole setup as cloud-init at install time and is updated later over hos
       wipes every disk and installs Ubuntu with FILE as cloud-init user data (at most 16 KB), keeping the
       server's current partition layout. Without --yes it only prints what it would do.
   python dedicated.py wait UUID [--minutes 60]   until the install is done (`reinstall` back to 0)
+  python dedicated.py order CONFIG --user-data FILE --hostname NAME [--location SPB-4] [--plan "1 day"]
+                            [--version 2204] [--yes]
+      buys a chip or regular server CONFIG (CL25-NVMe, say) with Ubuntu and FILE as cloud-init, both disks in
+      RAID1 (/boot 1 GB, the rest /). Checks stock and the balance first; without --yes only prints the price
+  python dedicated.py cancel UUID [--yes]        stops renewing the server: it goes when its paid period ends
 
 Keys and the project: api.py.
 """
@@ -18,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from api import call
+from api import call, request, setting
 
 API = "https://api.selectel.ru/servers/v2"
 USER_DATA_LIMIT = 16 * 1024
@@ -86,6 +91,79 @@ def cmd_reinstall(args):
     print(json.dumps({"reinstall": answer.get("reinstall"), "processing": answer.get("is_processing")}))
 
 
+def chip_or_server(name):
+    """(model, config) of the configuration called NAME: CL… are `serverchip`, the rest `server`."""
+    for model in ("serverchip", "server"):
+        found = next((c for c in api("GET", f"/service/{model}") if c["name"] == name), None)
+        if found is not None:
+            # The list leaves out the plans on offer: the configuration's own card has them.
+            return model, api("GET", f"/service/{model}/{found['uuid']}")
+    sys.exit(f"no configuration {name}")
+
+
+def raid1_layout(service_uuid):
+    """Every local drive of the configuration in RAID1: /boot 1 GB, / the rest (as bro-dedicated-1 has)."""
+    drives = api("GET", f"/boot/partitions/local_drives?service_uuid={service_uuid}")
+    if len(drives) != 2:
+        sys.exit(f"expected two local drives, the configuration has {len(drives)}")
+    layout = dict(drives)
+    for suffix, drive in zip("ab", sorted(drives)):
+        layout[f"boot_{suffix}"] = {"type": "partition", "device": drive, "size": 1.0, "priority": 0}
+        layout[f"root_{suffix}"] = {"type": "partition", "device": drive, "size": -1.0, "priority": 1}
+    for name, mount in (("boot", "/boot"), ("root", "/")):
+        layout[f"md_{name}"] = {"type": "soft_raid", "members": [f"{name}_a", f"{name}_b"], "level": "raid1"}
+        layout[f"fs_{name}"] = {"type": "filesystem", "device": f"md_{name}", "fstype": "ext4", "mount": mount}
+    api("POST", f"/boot/partitions/validate?service_id={service_uuid}", {"partitions_config": layout})
+    return layout
+
+
+def cmd_order(args):
+    user_data = Path(args.user_data).read_text()
+    if len(user_data.encode()) > USER_DATA_LIMIT:
+        sys.exit(f"user data is {len(user_data.encode())} bytes, the limit is {USER_DATA_LIMIT}")
+    model, config = chip_or_server(args.config)
+    location = next((l for l in api("GET", "/location") if l["name"] == args.location), None)
+    if location is None:
+        sys.exit(f"no location {args.location}")
+    # Without a token the plans come by their English names ("1 day"); the account's language would rename them.
+    _, plans, _ = request("GET", API + "/pub/plan", {"Accept-Language": "en-US"})
+    plan = next((p for p in plans["result"] if p["name"] == args.plan), None)
+    if plan is None or plan["uuid"] not in config.get("price_plan_available", []):
+        sys.exit(f"no plan {args.plan!r} for {args.config}")
+    stock = next((c["count"] for a in config.get("available", []) if a["location"] == location["uuid"]
+                  for c in a["plan_count"] if c["plan_uuid"] == plan["uuid"]), 0)
+    if stock < 1:
+        sys.exit(f"{args.config} is out of stock in {args.location} on {args.plan!r}")
+    billing = {"location_uuid": location["uuid"], "price_plan_uuid": plan["uuid"], "pay_currency": "main",
+               "quantity": 1}
+    quote = api("POST", f"/service/{model}/{config['uuid']}/billing", billing)
+    print(json.dumps({"config": args.config, "location": args.location, "plan": args.plan,
+                      "price": quote["price"]["amount_due"], "currency": quote["currency"],
+                      "enoughBalance": quote["has_enough_balance"]}, ensure_ascii=False))
+    if not quote["has_enough_balance"]:
+        sys.exit("not enough on the balance")
+    if not args.yes:
+        print("not ordered: add --yes")
+        return
+    order = api("POST", f"/resource/{model}/billing", {
+        **billing, "service_uuid": config["uuid"], "project_uuid": setting("SELECTEL_PROJECT"),
+        "partitions_config": raid1_layout(config["uuid"]), "version": args.version, "os_template": "ubuntu",
+        "arch": "x86_64", "userhostname": args.hostname, "user_desc": args.hostname,
+        "cloud_init_user_data": user_data, "local_network_required": False})
+    print(json.dumps({"uuid": order[0]["uuid"], "state": order[0]["state"]}))
+
+
+def cmd_cancel(args):
+    resource = api("GET", f"/resource/{args.uuid}")
+    print(json.dumps({"uuid": args.uuid, "name": resource.get("user_desc"), "info": resource.get("info"),
+                      "state": resource["state"]}, ensure_ascii=False))
+    if not args.yes:
+        print("not cancelled: add --yes")
+        return
+    call("DELETE", f"{API}/resource/billing/{args.uuid}", {"immediately": False}, ok=(200, 202, 204))
+    print("renewal cancelled: the server goes when its paid period ends")
+
+
 def cmd_wait(args):
     deadline = time.time() + args.minutes * 60
     started = time.time()
@@ -118,6 +196,19 @@ def main(argv=None):
     wait.add_argument("uuid")
     wait.add_argument("--minutes", type=int, default=60)
     wait.set_defaults(run=cmd_wait)
+    order = commands.add_parser("order")
+    order.add_argument("config")
+    order.add_argument("--user-data", required=True)
+    order.add_argument("--hostname", required=True)
+    order.add_argument("--location", default="SPB-4")
+    order.add_argument("--plan", default="1 day")
+    order.add_argument("--version", default="2204")
+    order.add_argument("--yes", action="store_true")
+    order.set_defaults(run=cmd_order)
+    cancel = commands.add_parser("cancel")
+    cancel.add_argument("uuid")
+    cancel.add_argument("--yes", action="store_true")
+    cancel.set_defaults(run=cmd_cancel)
     args = parser.parse_args(argv)
     args.run(args)
 
