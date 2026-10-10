@@ -1,0 +1,568 @@
+{
+  "results": [
+    {
+      "data": {
+        "search": {
+          "result": "a1b2c3d",
+          "collections": {
+            "visibleSearchResult": {
+              "a1b2c3d": {
+                "id": "a1b2c3d",
+                "entity": "visibleSearchResult",
+                "columnsInGrid": 1,
+                "currentPageIds": ["1"],
+                "isAdult": false,
+                "itemsPerPage": 8,
+                "pageCount": 30,
+                "hasNextPage": true,
+                "page": 1,
+                "resultsViewType": "list",
+                "searchPlace": "__standalone__",
+                "sortId": "aprice",
+                "sortIds": ["dpop", "aprice", "dprice", "rating"],
+                "text": "тестовые наушники",
+                "total": 3416,
+                "viewType": "list",
+                "isEmpty": false
+              }
+            },
+            "widgets": [
+              {
+                "column": 1,
+                "row": 1,
+                "width": 1,
+                "height": 1,
+                "type": "incut",
+                "incut": {
+                  "id": "10000000000000000000",
+                  "incutId": "default_1",
+                  "urls": {
+                    "show": "/safeclick/data=FAKE"
+                  }
+                }
+              },
+              {
+                "column": 1,
+                "row": 2,
+                "width": 1,
+                "height": 1,
+                "type": "product",
+                "product": {
+                  "snippetId": "prime-AAAAAAAAAAAAAAAAAAAAA1",
+                  "type": "LIST_DETAILED",
+                  "productPayload": {
+                    "snippetStyle": "NORMAL",
+                    "title": {
+                      "value": "Тестовые наушники Nimbus N1, проводные, чёрный"
+                    },
+                    "badges": {
+                      "gallery": [
+                        {
+                          "item": {
+                            "badgeType": "SPLIT",
+                            "size": "S",
+                            "style": "NORMAL",
+                            "contentType": "TEXT",
+                            "textPayload": {
+                              "value": "0 0 6",
+                              "text": "СПЛИТ"
+                            }
+                          },
+                          "type": "BADGE"
+                        }
+                      ]
+                    },
+                    "price": {
+                      "actualPrice": {
+                        "amount": {
+                          "intPart": "502",
+                          "currency": "RUR",
+                          "currencyLabel": "₽"
+                        },
+                        "suffix": "YA_PAY",
+                        "style": "GREEN",
+                        "isApproximately": false,
+                        "type": "DISCOUNT_YA_PAY"
+                      }
+                    },
+                    "signals": {
+                      "shop": {
+                        "text": {
+                          "text": "Магазин Тест"
+                        },
+                        "businessId": "90001",
+                        "slug": "test-shop-1",
+                        "shopNameStyle": "BOLD",
+                        "shopIconType": "PRO"
+                      },
+                      "lastStock": {
+                        "text": {
+                          "text": "Осталось 3 шт"
+                        },
+                        "level": "CRITICAL"
+                      }
+                    },
+                    "gallery": {
+                      "mediaItems": [
+                        {
+                          "picture": {
+                            "baseUrl": "https://avatars.mds.yandex.net/get-mpic/0000000/test0000000000000000000000000000/",
+                            "width": 800,
+                            "height": 800
+                          },
+                          "type": "IMAGE"
+                        }
+                      ],
+                      "galleryType": "MIXED",
+                      "totalMediaItemsCount": 1
+                    },
+                    "deliveryInfo": {
+                      "options": [
+                        {
+                          "dayFrom": 2,
+                          "dayTo": 2,
+                          "deliveryType": "PICKUP",
+                          "date": {
+                            "value": "14 окт",
+                            "features": ["BOLD"]
+                          },
+                          "service": {
+                            "value": "ПВЗ",
+                            "features": ["THINGRAY"]
+                          },
+                          "style": "BLUE",
+                          "secondService": {
+                            "value": "По клику",
+                            "features": ["THINGRAY"]
+                          },
+                          "baobabModel": {
+                            "deliveryType": "PICKUP",
+                            "deliveryDays": 2,
+                            "deliveryDateFrom": "2026-10-14",
+                            "deliveryDateTo": "2026-10-14",
+                            "deliveryText": "14 окт, ПВЗ * По клику",
+                            "precise": true,
+                            "selected": false,
+                            "calculatedFor": "00000000000000000000000000000000;AAAAAAAAAAAAAAAAAAAAA1"
+                          }
+                        }
+                      ]
+                    },
+                    "cartButton": {
+                      "offerId": "AAAAAAAAAAAAAAAAAAAAA1",
+                      "feeShow": "FAKEFEESHOWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                      "msku": "900000000001",
+                      "cpaUrl": "/FAKEcpa000000000000000000000:0",
+                      "encryptedUrl": "/FAKEenc000000000000000000000:1",
+                      "minOfferCount": 1,
+                      "feedOfferId": "1000000.1",
+                      "businessId": "90001",
+                      "shopId": "70001",
+                      "cartType": "MARKET",
+                      "isMadvProduct": false,
+                      "isSponsored": true,
+                      "cpc": "FAKEcpcyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                      "cc": "FAKEcc,",
+                      "showUid": "10000000000000000001",
+                      "productId": "900000000000",
+                      "name": "Тестовые наушники Nimbus N1, проводные, чёрный",
+                      "count": 1,
+                      "isExpress": false,
+                      "vendorId": "100",
+                      "isAdult": false,
+                      "oldPrice": "24990000000",
+                      "price": {
+                        "value": "6600000000",
+                        "currency": "RUR",
+                        "valueFmt": "660"
+                      },
+                      "quantityLimits": {
+                        "minCount": "1",
+                        "maxCount": "50",
+                        "stepCount": "1"
+                      },
+                      "mskuStr": "900000000001",
+                      "osku": "900000000001"
+                    },
+                    "offerParams": {
+                      "categoryId": "100",
+                      "isAdult": false,
+                      "oskuId": "900000000001",
+                      "slug": "testovye-naushniki-nimbus-n1",
+                      "waremd5": "AAAAAAAAAAAAAAAAAAAAA1",
+                      "businessId": "90001",
+                      "isSponsored": true,
+                      "cpa": "1",
+                      "shopId": "70001",
+                      "oskuIdStr": "900000000001",
+                      "legacyOfferParams": {
+                        "skuId": "900000000001",
+                        "modelId": "900000000000",
+                        "skuIdStr": "900000000001"
+                      }
+                    },
+                    "targetLinkParams": {
+                      "targetPage": "OSKU_CARD"
+                    },
+                    "rating": {
+                      "ratingValue": 4.7,
+                      "ratingCount": 60,
+                      "snippet": {
+                        "rating": "4.7",
+                        "type": "product",
+                        "description": "(60) · 232 купили",
+                        "descriptionList": ["60", "232 купили"],
+                        "ratingStar": "4.5"
+                      }
+                    },
+                    "productRating": {
+                      "rating": "4.7",
+                      "type": "product",
+                      "description": "(60) · 232 купили",
+                      "descriptionList": ["60", "232 купили"],
+                      "ratingStar": "4.5"
+                    }
+                  }
+                }
+              },
+              {
+                "column": 1,
+                "row": 3,
+                "width": 1,
+                "height": 1,
+                "type": "product",
+                "product": {
+                  "snippetId": "prime-AAAAAAAAAAAAAAAAAAAAA2",
+                  "type": "LIST_DETAILED",
+                  "productPayload": {
+                    "snippetStyle": "NORMAL",
+                    "title": {
+                      "value": "Тестовые наушники Nimbus N2 вкладыши"
+                    },
+                    "badges": {
+                      "gallery": [
+                        {
+                          "item": {
+                            "badgeType": "SPLIT",
+                            "size": "S",
+                            "style": "NORMAL",
+                            "contentType": "TEXT",
+                            "textPayload": {
+                              "value": "0 0 6",
+                              "text": "СПЛИТ"
+                            }
+                          },
+                          "type": "BADGE"
+                        }
+                      ]
+                    },
+                    "price": {
+                      "actualPrice": {
+                        "amount": {
+                          "intPart": "111",
+                          "currency": "RUR",
+                          "currencyLabel": "₽"
+                        },
+                        "suffix": "YA_PAY",
+                        "style": "GREEN",
+                        "isApproximately": false,
+                        "type": "DISCOUNT_YA_PAY"
+                      }
+                    },
+                    "signals": {
+                      "crossborder": {
+                        "text": {
+                          "text": "Из-за рубежа"
+                        },
+                        "level": "WARNING"
+                      }
+                    },
+                    "gallery": {
+                      "mediaItems": [
+                        {
+                          "picture": {
+                            "baseUrl": "https://avatars.mds.yandex.net/get-mpic/0000000/test0000000000000000000000000000/",
+                            "width": 800,
+                            "height": 800
+                          },
+                          "type": "IMAGE"
+                        }
+                      ],
+                      "galleryType": "MIXED",
+                      "totalMediaItemsCount": 1
+                    },
+                    "deliveryInfo": {
+                      "options": [
+                        {
+                          "dayFrom": 2,
+                          "dayTo": 2,
+                          "deliveryType": "PICKUP",
+                          "date": {
+                            "value": "Послезавтра",
+                            "features": ["BOLD"]
+                          },
+                          "service": {
+                            "value": "ПВЗ",
+                            "features": ["THINGRAY"]
+                          },
+                          "style": "BLUE",
+                          "secondService": {
+                            "value": "По клику",
+                            "features": ["THINGRAY"]
+                          },
+                          "baobabModel": {
+                            "deliveryType": "PICKUP",
+                            "deliveryDays": 2,
+                            "deliveryDateFrom": "2026-10-12",
+                            "deliveryDateTo": "2026-10-12",
+                            "deliveryText": "Послезавтра, ПВЗ * По клику",
+                            "precise": true,
+                            "selected": false,
+                            "calculatedFor": "00000000000000000000000000000000;AAAAAAAAAAAAAAAAAAAAA2"
+                          }
+                        }
+                      ]
+                    },
+                    "cartButton": {
+                      "offerId": "AAAAAAAAAAAAAAAAAAAAA2",
+                      "feeShow": "FAKEFEESHOWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                      "msku": "900000000002",
+                      "cpaUrl": "/FAKEcpa000000000000000000000:0",
+                      "encryptedUrl": "/FAKEenc000000000000000000000:1",
+                      "minOfferCount": 1,
+                      "feedOfferId": "1000000.2",
+                      "businessId": "90002",
+                      "shopId": "70002",
+                      "cartType": "MARKET",
+                      "isMadvProduct": false,
+                      "isSponsored": false,
+                      "cpc": "FAKEcpcyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                      "cc": "FAKEcc,",
+                      "showUid": "10000000000000000002",
+                      "productId": "900000000001",
+                      "name": "Тестовые наушники Nimbus N2 вкладыши",
+                      "count": 1,
+                      "isExpress": false,
+                      "vendorId": "100",
+                      "isAdult": false,
+                      "oldPrice": "1700000000",
+                      "price": {
+                        "value": "1130000000",
+                        "currency": "RUR",
+                        "valueFmt": "113"
+                      },
+                      "quantityLimits": {
+                        "minCount": "1",
+                        "maxCount": "50",
+                        "stepCount": "1"
+                      },
+                      "mskuStr": "900000000002",
+                      "osku": "900000000002"
+                    },
+                    "offerParams": {
+                      "categoryId": "100",
+                      "isAdult": false,
+                      "oskuId": "900000000002",
+                      "slug": "testovye-naushniki-nimbus-n2",
+                      "waremd5": "AAAAAAAAAAAAAAAAAAAAA2",
+                      "businessId": "90002",
+                      "isSponsored": false,
+                      "cpa": "1",
+                      "shopId": "70002",
+                      "oskuIdStr": "900000000002",
+                      "legacyOfferParams": {
+                        "skuId": "900000000002",
+                        "modelId": "900000000001",
+                        "skuIdStr": "900000000002"
+                      }
+                    },
+                    "targetLinkParams": {
+                      "targetPage": "OSKU_CARD"
+                    },
+                    "rating": {
+                      "ratingValue": 4.9,
+                      "ratingCount": 27,
+                      "snippet": {
+                        "rating": "4.9",
+                        "type": "product",
+                        "description": "(27)",
+                        "descriptionList": ["27"],
+                        "ratingStar": "4.5"
+                      }
+                    },
+                    "productRating": {
+                      "rating": "4.9",
+                      "type": "product",
+                      "description": "(27)",
+                      "descriptionList": ["27"],
+                      "ratingStar": "4.5"
+                    }
+                  }
+                }
+              },
+              {
+                "column": 1,
+                "row": 4,
+                "width": 1,
+                "height": 1,
+                "type": "product",
+                "product": {
+                  "snippetId": "prime-AAAAAAAAAAAAAAAAAAAAA3",
+                  "type": "LIST_DETAILED",
+                  "productPayload": {
+                    "snippetStyle": "NORMAL",
+                    "title": {
+                      "value": "Тестовые наушники Nimbus N3 без отзывов"
+                    },
+                    "badges": {
+                      "gallery": [
+                        {
+                          "item": {
+                            "badgeType": "SPLIT",
+                            "size": "S",
+                            "style": "NORMAL",
+                            "contentType": "TEXT",
+                            "textPayload": {
+                              "value": "0 0 6",
+                              "text": "СПЛИТ"
+                            }
+                          },
+                          "type": "BADGE"
+                        }
+                      ]
+                    },
+                    "price": {
+                      "actualPrice": {
+                        "amount": {
+                          "intPart": "434",
+                          "currency": "RUR",
+                          "currencyLabel": "₽"
+                        },
+                        "suffix": "YA_PAY",
+                        "style": "GREEN",
+                        "isApproximately": false,
+                        "type": "DISCOUNT_YA_PAY"
+                      }
+                    },
+                    "signals": {
+                      "shop": {
+                        "text": {
+                          "text": "Магазин Тест 2"
+                        },
+                        "businessId": "90003",
+                        "slug": "test-shop-3",
+                        "shopNameStyle": "BOLD",
+                        "shopIconType": "PRO"
+                      }
+                    },
+                    "gallery": {
+                      "mediaItems": [
+                        {
+                          "picture": {
+                            "baseUrl": "https://avatars.mds.yandex.net/get-mpic/0000000/test0000000000000000000000000000/",
+                            "width": 800,
+                            "height": 800
+                          },
+                          "type": "IMAGE"
+                        }
+                      ],
+                      "galleryType": "MIXED",
+                      "totalMediaItemsCount": 1
+                    },
+                    "deliveryInfo": {
+                      "options": [
+                        {
+                          "dayFrom": 2,
+                          "dayTo": 2,
+                          "deliveryType": "PICKUP",
+                          "date": {
+                            "value": "18 окт",
+                            "features": ["BOLD"]
+                          },
+                          "service": {
+                            "value": "ПВЗ",
+                            "features": ["THINGRAY"]
+                          },
+                          "style": "BLUE",
+                          "secondService": {
+                            "value": "По клику",
+                            "features": ["THINGRAY"]
+                          },
+                          "baobabModel": {
+                            "deliveryType": "PICKUP",
+                            "deliveryDays": 2,
+                            "deliveryDateFrom": "2026-10-18",
+                            "deliveryDateTo": "2026-10-18",
+                            "deliveryText": "18 окт, ПВЗ * По клику",
+                            "precise": true,
+                            "selected": false,
+                            "calculatedFor": "00000000000000000000000000000000;AAAAAAAAAAAAAAAAAAAAA3"
+                          }
+                        }
+                      ]
+                    },
+                    "cartButton": {
+                      "offerId": "AAAAAAAAAAAAAAAAAAAAA3",
+                      "feeShow": "FAKEFEESHOWxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                      "msku": "900000000003",
+                      "cpaUrl": "/FAKEcpa000000000000000000000:0",
+                      "encryptedUrl": "/FAKEenc000000000000000000000:1",
+                      "minOfferCount": 1,
+                      "feedOfferId": "1000000.3",
+                      "businessId": "90003",
+                      "shopId": "70003",
+                      "cartType": "MARKET",
+                      "isMadvProduct": false,
+                      "isSponsored": false,
+                      "cpc": "FAKEcpcyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                      "cc": "FAKEcc,",
+                      "showUid": "10000000000000000003",
+                      "productId": "900000000002",
+                      "name": "Тестовые наушники Nimbus N3 без отзывов",
+                      "count": 1,
+                      "isExpress": false,
+                      "vendorId": "100",
+                      "isAdult": false,
+                      "price": {
+                        "value": "4340000000",
+                        "currency": "RUR",
+                        "valueFmt": "434"
+                      },
+                      "quantityLimits": {
+                        "minCount": "1",
+                        "maxCount": "50",
+                        "stepCount": "1"
+                      },
+                      "mskuStr": "900000000003",
+                      "osku": "900000000003"
+                    },
+                    "offerParams": {
+                      "categoryId": "100",
+                      "isAdult": false,
+                      "oskuId": "900000000003",
+                      "slug": "testovye-naushniki-nimbus-n3",
+                      "waremd5": "AAAAAAAAAAAAAAAAAAAAA3",
+                      "businessId": "90003",
+                      "isSponsored": false,
+                      "cpa": "1",
+                      "shopId": "70003",
+                      "oskuIdStr": "900000000003",
+                      "legacyOfferParams": {
+                        "skuId": "900000000003",
+                        "modelId": "900000000002",
+                        "skuIdStr": "900000000003"
+                      }
+                    },
+                    "targetLinkParams": {
+                      "targetPage": "OSKU_CARD"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
