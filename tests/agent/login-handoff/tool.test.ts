@@ -88,11 +88,12 @@ async function tool(messages: ModelMessage[], authenticator = "authjs") {
 async function make(
   site: string,
   messages: ModelMessage[],
-  authenticator = "authjs"
+  authenticator = "authjs",
+  signInPage?: string
 ) {
   const found = await tool(messages, authenticator);
   if (!found) throw new Error("Expected site-login-link.");
-  return found.execute({ site }, callContext(authenticator));
+  return found.execute({ signInPage, site }, callContext(authenticator));
 }
 
 const asked: ModelMessage[] = [
@@ -145,6 +146,19 @@ describe("the sign-in link tool", () => {
     expect("reply" in made ? made.reply : "").toContain(
       "do not ask for the password"
     );
+  });
+
+  it("opens the window on the sign-in form of the named site, and on no other site", async () => {
+    await make("ozon.ru", asked, "authjs", "https://www.ozon.ru/login?x=1");
+    expect(services.create.mock.calls[0]?.[0]).toMatchObject({
+      domain: "ozon.ru",
+      siteUrl: "https://www.ozon.ru/login",
+    });
+    services.create.mockClear();
+    expect(
+      await make("ozon.ru", asked, "authjs", "https://evil.example/login")
+    ).toMatchObject({ sent: false });
+    expect(services.create).not.toHaveBeenCalled();
   });
 
   it("takes no site the person did not name", async () => {
