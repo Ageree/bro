@@ -100,6 +100,12 @@ const unsetEnvironment = [
   "ROUTERAI_STT_FALLBACK_MODEL",
   "ROUTERAI_STT_LANGUAGE",
   "ROUTERAI_STT_MODEL",
+  // Selectel's S3 of the operator's session: with all four set, storage takes
+  // that path and a test missing a stub would reach production's bucket.
+  "S3_ACCESS_KEY_ID",
+  "S3_ENDPOINT",
+  "S3_REGION",
+  "S3_SECRET_ACCESS_KEY",
   "SANDBOX_HOST_ID",
   "SANDBOX_HOST_ORIGIN",
   "SANDBOX_SIGNING_KEY",
