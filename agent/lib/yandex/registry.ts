@@ -4,6 +4,7 @@ import { foodOperations } from "./food/operations";
 import type { YandexOperation } from "./operations";
 import { goEstimateOperation } from "./go/estimate";
 import { goRidesOperation } from "./go/rides";
+import { marketOperations } from "./market";
 import { mapsOrgOperation } from "./maps/org";
 import { mapsSearchOperation } from "./maps/search";
 import { statusOperation } from "./status";
@@ -24,6 +25,7 @@ export const yandexOperations: readonly [
   mapsOrgOperation,
   afishaSearchOperation,
   afishaTicketsOperation,
+  ...marketOperations,
   ...foodOperations,
 ];
 
