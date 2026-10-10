@@ -248,7 +248,7 @@ function configuration(
       },
       turn: {
         ...turn,
-        turn_eagerness: "normal",
+        turn_eagerness: "eager",
         speculative_turn: true,
         silence_end_call_timeout: 30,
         soft_timeout_config: {
