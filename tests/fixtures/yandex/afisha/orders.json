@@ -1,0 +1,44 @@
+{
+  "status": 200,
+  "data": {
+    "orders": {
+      "paging": {
+        "total": 1
+      },
+      "items": [
+        {
+          "id": "000000000000000000000009",
+          "orderNumber": "0000000",
+          "dateTime": "2026-10-20T19:00:00+03:00",
+          "passed": false,
+          "ticketsCount": 2,
+          "hall": "Основной зал",
+          "total": {
+            "value": 300000
+          },
+          "event": {
+            "title": "Тестовый спектакль"
+          },
+          "place": {
+            "title": "Тестовый театр",
+            "address": "Москва, Тестовая улица, 1"
+          },
+          "tickets": [
+            {
+              "row": "5",
+              "place": "7",
+              "level": "Партер",
+              "category": "A"
+            },
+            {
+              "row": "5",
+              "place": "8",
+              "level": "Партер",
+              "category": "A"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

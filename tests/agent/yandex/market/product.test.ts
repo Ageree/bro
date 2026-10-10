@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { marketProductOperation } from "@agent/lib/yandex/market/product";
-import { fixturePage, okData, runOnPage, signedInState } from "./page";
+import { fixturePage, okData, runOnPage, signedInState } from "./run-page";
 
 const url =
   "/card/testovyy-kabel-nimbus/900000000010?do-waremd5=AAAAAAAAAAAAAAAAAAAAA9";

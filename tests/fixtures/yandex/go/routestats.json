@@ -1,0 +1,91 @@
+{
+  "distance": "4,5 км",
+  "time": "11 мин",
+  "time_seconds": 660,
+  "is_fixed_price": true,
+  "jams": false,
+  "offer": "00000000000000000000000000000000",
+  "currency_rules": {
+    "code": "RUB",
+    "sign": "₽",
+    "text": "руб.",
+    "template": "$VALUE$ $SIGN$$CURRENCY$"
+  },
+  "service_levels": [
+    {
+      "class": "intercity_shuttle",
+      "name": "Шаттл",
+      "price": "410 $SIGN$$CURRENCY$",
+      "description": "410 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "410.00",
+      "is_fixed_price": true,
+      "is_hidden": true,
+      "service_level": 50,
+      "offer": "00000000000000000000000000000000",
+      "estimated_waiting": {
+        "seconds": 0,
+        "message": "0 мин"
+      }
+    },
+    {
+      "class": "econom",
+      "name": "Эконом",
+      "price": "780 $SIGN$$CURRENCY$",
+      "description": "780 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "780.00",
+      "is_fixed_price": true,
+      "is_hidden": false,
+      "service_level": 50,
+      "offer": "00000000000000000000000000000000",
+      "estimated_waiting": {
+        "seconds": 420,
+        "message": "7 мин"
+      }
+    },
+    {
+      "class": "business",
+      "name": "Комфорт",
+      "price": "900 $SIGN$$CURRENCY$",
+      "description": "900 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "900.00",
+      "is_fixed_price": true,
+      "is_hidden": false,
+      "service_level": 50,
+      "offer": "00000000000000000000000000000000",
+      "estimated_waiting": {
+        "seconds": 540,
+        "message": "9 мин"
+      }
+    },
+    {
+      "class": "comfortplus",
+      "name": "Комфорт+",
+      "price": "1000 $SIGN$$CURRENCY$",
+      "description": "1000 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "1000.00",
+      "is_fixed_price": true,
+      "is_hidden": false,
+      "service_level": 50,
+      "offer": "00000000000000000000000000000000",
+      "estimated_waiting": {
+        "seconds": 660,
+        "message": "11 мин"
+      }
+    },
+    {
+      "class": "minivan",
+      "name": "Минивэн",
+      "price": "1100 $SIGN$$CURRENCY$",
+      "description": "1100 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "1100.00",
+      "is_fixed_price": false,
+      "is_hidden": false,
+      "service_level": 50,
+      "offer": "00000000000000000000000000000000",
+      "estimated_waiting": {
+        "seconds": 1560,
+        "message": "26 мин"
+      }
+    }
+  ]
+}
