@@ -65,8 +65,8 @@ vault, and rotating it requires re-encrypting existing vault values.
 ### AgentMail: the agent's own email
 
 Set `AGENTMAIL_API_KEY` on the server and `AGENTMAIL_WORKSPACES` to a
-comma-separated list of workspace IDs for a pilot, or `*` for every agent.
-Without both, AgentMail is disabled. Every workspace agent receives one
+comma-separated list of workspace IDs to narrow it. Unset, empty or `*` means
+every agent once the key is set; `off` switches AgentMail off for all. Every workspace agent receives one
 persistent inbox when its workspace is created or next accessed; existing
 agents are provisioned the same way. Chats and temporary task subagents share
 the workspace identity and do not allocate extra inboxes.

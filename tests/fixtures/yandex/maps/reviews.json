@@ -1,0 +1,46 @@
+{
+  "data": {
+    "reviews": [
+      {
+        "reviewId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "businessId": "1000000000001",
+        "author": {
+          "name": "Тест Тестов",
+          "professionLevel": "Знаток города 2 уровня",
+          "publicId": "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+        },
+        "text": "Хорошее место. Пицца вкусная, обслуживание быстрое.",
+        "rating": 5,
+        "updatedTime": "2026-10-01T12:00:00.000Z",
+        "reactions": {
+          "likes": 0,
+          "dislikes": 0
+        },
+        "photos": [],
+        "pinned": false
+      },
+      {
+        "businessComment": {
+          "text": "Спасибо за отзыв.",
+          "updatedTime": "2026-10-02T09:00:00.000Z"
+        },
+        "reviewId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "businessId": "1000000000001",
+        "author": {
+          "name": "Иван И."
+        },
+        "text": "Долго ждали заказ! Но в целом нормально.",
+        "rating": 3,
+        "updatedTime": "2026-09-20T18:30:00.000Z",
+        "photos": [],
+        "pinned": false
+      }
+    ],
+    "params": {
+      "count": 2,
+      "limit": 3,
+      "offset": 0,
+      "loadedReviewsCount": 2
+    }
+  }
+}

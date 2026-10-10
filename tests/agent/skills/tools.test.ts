@@ -178,7 +178,7 @@ const carried = {
     ["queued", '`status: "queued"`'],
     ["unavailable: the note's reason", '`status: "unavailable"`'],
     ["a new runId", "возвращает **новый** `runId`"],
-    ["no password", "Никогда не проси у человека пароль."],
+    ["three ways to sign in", "предложи три способа"],
     ["the code from mail", '`codeFrom: "mail"`'],
     ["the phone's secret", "работает только на домене `site` этого поручения"],
     ["CAPTCHAs", "Человек капчу не решает никогда"],

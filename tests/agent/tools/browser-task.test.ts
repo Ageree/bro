@@ -1123,7 +1123,7 @@ describe("browser_task continuation", () => {
       "The user's saved sign-in for this site is in the vault and bound to this run"
     );
     expect(continuationNote(result)).toContain(
-      "do not call request_vault_setup for this site unless the run's outcome reports Needs: password"
+      "do not offer a sign-in for this site unless the run's outcome reports Needs: password"
     );
   });
 
@@ -6408,7 +6408,7 @@ describe("browser_task errand text", () => {
       "The user's saved Госуслуги login is bound to this run"
     );
     expect(continuationNote(result)).toContain(
-      "do not call request_vault_setup for this site unless the run's outcome reports Needs: password"
+      "do not offer a sign-in for this site unless the run's outcome reports Needs: password"
     );
   });
 });

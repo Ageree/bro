@@ -1,0 +1,27 @@
+{
+  "results": [
+    {
+      "id": "00000000000000000000000000000001",
+      "lang": "ru",
+      "log": "{\"method\":\"suggest\"}",
+      "method": "suggest",
+      "position": [37.6212, 55.7535],
+      "subtitle": {
+        "text": "Москва",
+        "hl": []
+      },
+      "text": "Москва, Красная площадь ",
+      "title": {
+        "text": "Красная площадь",
+        "hl": [[0, 15]]
+      },
+      "uri": "ymapsbm1://geo?data=TEST",
+      "type": "address",
+      "distance": 1,
+      "tags": []
+    }
+  ],
+  "suggest_reqid": "0000000000000000-0000000000-suggest-maps-yp-1",
+  "part": "Красная площадь",
+  "suggest_provider": "maps"
+}

@@ -1,0 +1,49 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/api/web/market.front.purchaseCore.PurchaseCore/prepareCartModelChangeAmount",
+    "body": {
+      "path": "/my/cart",
+      "params": {
+        "items": [
+          {
+            "offerId": "AAAAAAAAAAAAAAAAAAAAA9",
+            "cartItemId": "1000000000002",
+            "count": 0
+          }
+        ]
+      }
+    }
+  },
+  "response_200": {
+    "result": {
+      "result": {
+        "actions": [],
+        "offerIds": ["AAAAAAAAAAAAAAAAAAAAA8"],
+        "sinsFooter": {
+          "businessId": "-1"
+        }
+      },
+      "collections": {
+        "cartModel": {
+          "carts": {
+            "market": {
+              "count": 1
+            }
+          },
+          "items": {
+            "AAAAAAAAAAAAAAAAAAAAA8": {
+              "offerId": "AAAAAAAAAAAAAAAAAAAAA8",
+              "cartItemId": "1000000000001",
+              "count": 1,
+              "maxCount": 69,
+              "step": 1,
+              "msku": "900000000008",
+              "cartId": "market"
+            }
+          }
+        }
+      }
+    }
+  }
+}

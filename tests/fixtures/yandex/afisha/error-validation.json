@@ -1,0 +1,7 @@
+{
+  "errors": [
+    {
+      "message": "Validation error (WrongType@[search]) : argument 'filterByDeviceType' with value 'StringValue{value='web'}' is not a valid enum"
+    }
+  ]
+}

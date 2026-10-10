@@ -1,0 +1,149 @@
+{
+  "data": {
+    "requestQuery": "empty",
+    "displayType": "single",
+    "totalResultCount": 1,
+    "items": [
+      {
+        "type": "business",
+        "id": "1000000000001",
+        "title": "Тестовая Пиццерия",
+        "shortTitle": "Тестовая Пиццерия",
+        "seoname": "testovaya_pitstseriya",
+        "address": "Тестовая улица, 1",
+        "fullAddress": "Москва, Тестовая улица, 1",
+        "coordinates": [37.6301, 55.7502],
+        "uri": "ymapsbm1://org?oid=1000000000001",
+        "status": "open",
+        "ratingData": {
+          "ratingValue": 4.6,
+          "ratingCount": 1200,
+          "reviewCount": 600
+        },
+        "categories": [
+          {
+            "id": "100",
+            "name": "Пиццерия",
+            "class": "restaurants",
+            "seoname": "cafe",
+            "pluralName": "Пиццерияы"
+          }
+        ],
+        "workingTimeText": "ежедневно, 10:00–22:00",
+        "workingTime": [
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ]
+        ],
+        "currentWorkingStatus": {
+          "isOpenNow": true,
+          "text": "Открыто до 22:00",
+          "shortText": "До 22:00",
+          "tag": []
+        },
+        "phones": [
+          {
+            "number": "+7 (495) 000-00-01",
+            "type": "phone",
+            "value": "+74950000001"
+          }
+        ],
+        "urls": ["https://pizza.example.test/?utm_source=geoadv_maps"],
+        "tzOffset": 10800,
+        "booking": {
+          "originalId": "eats__00000000-0000-4000-8000-000000000001",
+          "partner": {
+            "name": "Яндекс Еда"
+          },
+          "slotsWidgetAvailable": true,
+          "bookingType": "restaurant",
+          "advertButton": {
+            "ignore": false,
+            "text": "Бронь"
+          }
+        }
+      }
+    ]
+  }
+}

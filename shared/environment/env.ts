@@ -224,7 +224,9 @@ export const env = createEnv({
         "AGENTMAIL_PROXY_URL must be an HTTP or HTTPS proxy URL"
       )
       .optional(),
-    // Empty/unset disables provisioning; * enables it for every workspace.
+    // Unset or empty (or `*`), every workspace gets a mailbox once
+    // AGENTMAIL_API_KEY is set; `off` switches AgentMail off for all (the way
+    // back); a list of workspace ids narrows it to those.
     AGENTMAIL_WORKSPACES: workspaceListSchema.optional(),
     // Required
     DATABASE_URL: databaseUrlSchema,
@@ -267,10 +269,12 @@ export const env = createEnv({
     // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
     // docs/browser-speed.md). Unset, every errand runs as before.
     BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
-    // The pilot of the sign-in link: workspace ids or owners' emails, or `*`,
-    // whose Bro may send a link where the person signs in to a site
-    // themselves, in a live view of their own cloud browser
-    // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset, nobody.
+    // Who may get the sign-in link, where the person signs in to a site
+    // themselves in a live view of their own cloud browser
+    // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,
+    // every workspace; `off` switches it off for all (the way back); a list of
+    // workspace ids or owners' emails narrows it to those. The link also
+    // needs the workspace's browser to be a pool sandbox (BROWSER_BACKEND).
     LOGIN_HANDOFF_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the Yandex tool (`yandex`, `agent/lib/yandex/`): workspace
     // ids, or `*`, whose Bro calls Yandex services (Market, Food…) from a tab
