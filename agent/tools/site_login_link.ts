@@ -30,6 +30,14 @@ const inputSchema = z.object({
     .describe(
       "The site the person signs in to, as they named it: its domain (ozon.ru) or a link they sent."
     ),
+  signInPage: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .describe(
+      "The address of the site's own sign-in form (https://www.ozon.ru/login), on the same site. Find it first (open the site's «Войти» link with web_fetch or a search) so the person lands on the form, not on the home page. Leave out only when you could not find it."
+    ),
 });
 
 const notThePerson =
@@ -72,6 +80,21 @@ async function createLink(
         };
   }
   if (!namedInWords(site.domain, said)) throw new Error(notTheirSite);
+  // The window opens on the sign-in form when the model found it, but only on
+  // the site the person named (or its own sign-in domain): a page may not
+  // steer the window elsewhere.
+  let openAt = site.url;
+  if (input.signInPage !== undefined && input.signInPage !== "") {
+    const page = handoffSite(input.signInPage);
+    if (page.kind !== "ok" || !site.allowedDomains.includes(page.domain)) {
+      return {
+        reply:
+          "That sign-in page is not on the site the person named. Find the form on the site itself and call again with its address, or leave signInPage out. Nothing was sent.",
+        sent: false,
+      };
+    }
+    openAt = page.url;
+  }
   const owner = scheduleOwner(context);
   if (!(await usesBrowserVm({ ...owner.scope }))) {
     return {
@@ -93,7 +116,7 @@ async function createLink(
       id,
       replyAnchorMessageId: scheduleReplyAnchor(context) ?? null,
       rootSessionId: context.session.id,
-      siteUrl: site.url,
+      siteUrl: openAt,
       workspaceId: owner.scope.workspaceId,
     },
     now
@@ -144,7 +167,7 @@ export default defineDynamic({
       return {
         "site-login-link": defineTool({
           description:
-            "Make a link where the person signs in to a site themselves, in a window of Bro's own browser, once; Bro then stays signed in there for later errands. Use it when an errand needs the person's account on a site and they are not signed in there (the browser asked for a password or code), or when they ask to sign in to a site in Bro's browser. The site must be one they named. Never for Госуслуги. After it, send the link and wait: do not ask for the password or a code in the chat.",
+            "Make a link where the person signs in to a site themselves, in a window of Bro's own browser, once; Bro then stays signed in there for later errands. Use it when an errand needs the person's account on a site and they are not signed in there (the browser asked for a password or code), or when they ask to sign in to a site in Bro's browser. The site must be one they named. Before calling it, find the site's sign-in form address (web_fetch the site, follow its «Войти» link) and pass it as signInPage, so the window opens on the form and not on the home page. Never for Госуслуги. After it, send the link and wait: do not ask for the password or a code in the chat.",
           inputSchema,
           async execute(input, toolContext) {
             return createLink(input, toolContext, words);
