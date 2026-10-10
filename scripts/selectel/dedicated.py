@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from api import call, request, setting
+from user_data import SAFE
 
 API = "https://api.selectel.ru/servers/v2"
 USER_DATA_LIMIT = 16 * 1024
@@ -57,10 +58,19 @@ def cmd_status(args):
                       "power": (power or {}).get("driver_status", {}).get("power_state")}, ensure_ascii=False))
 
 
-def cmd_reinstall(args):
-    user_data = Path(args.user_data).read_text()
+def read_user_data(path):
+    """The user data as user_data.py writes it: the API HTML-escapes anything else, and a server installed
+    with it boots a broken script (its disks wiped all the same)."""
+    user_data = Path(path).read_text()
     if len(user_data.encode()) > USER_DATA_LIMIT:
         sys.exit(f"user data is {len(user_data.encode())} bytes, the limit is {USER_DATA_LIMIT}")
+    if not user_data.startswith("#cloud-config\n") or not SAFE.match(user_data):
+        sys.exit(f"{path} is not user_data.py's output: python user_data.py IN.yaml > OUT.yaml")
+    return user_data
+
+
+def cmd_reinstall(args):
+    user_data = read_user_data(args.user_data)
     resource = api("GET", f"/resource/{args.uuid}")
     current = os_config(args.uuid)
     templates = api("GET", f"/boot/template/os/new?service_uuid={resource['service_uuid']}"
@@ -118,9 +128,7 @@ def raid1_layout(service_uuid):
 
 
 def cmd_order(args):
-    user_data = Path(args.user_data).read_text()
-    if len(user_data.encode()) > USER_DATA_LIMIT:
-        sys.exit(f"user data is {len(user_data.encode())} bytes, the limit is {USER_DATA_LIMIT}")
+    user_data = read_user_data(args.user_data)
     model, config = chip_or_server(args.config)
     location = next((l for l in api("GET", "/location") if l["name"] == args.location), None)
     if location is None:

@@ -819,6 +819,7 @@ function restingAfterHostTrouble(vm: BrowserVm): SandboxState {
 async function followStart(vm: BrowserVm, now: Date) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -882,6 +883,7 @@ async function followStart(vm: BrowserVm, now: Date) {
 async function tendRunning(vm: BrowserVm, now: Date) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -1046,6 +1048,7 @@ async function parkIfIdle(
 async function followPark(vm: BrowserVm, now: Date, reason?: string) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -1305,6 +1308,23 @@ async function closeStretch(vm: BrowserVm, now: Date) {
  * host that failed or went may be another VM's by now, and nothing goes
  * there.
  */
+/**
+ * The sandbox's host is a listed static server whose `hostd` has gone
+ * silent (`failed`): the server and its sandboxes may well be fine, and once
+ * `hostd` answers again its sweep would delete a sandbox no record places
+ * there, with the sign-ins made since its last park. The record waits for it;
+ * taking the server off `BROWSER_HOST_STATIC` lets the sandbox go.
+ */
+async function silentStaticServer(vm: BrowserVm) {
+  if (vm.hostId === null || !staticBrowserPool()) return false;
+  const host = await readBrowserHost(vm.hostId);
+  return (
+    host?.state === "failed" &&
+    host.address === vm.host &&
+    isStaticBrowserHost(host)
+  );
+}
+
 async function holdingHost(vm: BrowserVm) {
   if (vm.hostId === null || vm.host === null) return undefined;
   const host = await readBrowserHost(vm.hostId);

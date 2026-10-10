@@ -1624,6 +1624,31 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     });
   });
 
+  it("keeps a sandbox on a listed server while its hostd is silent", async () => {
+    // The server may be fine: once hostd answers again, a record taken off it
+    // would let the sweep delete the sandbox with its new sign-ins.
+    const pool = await loadPool({
+      BROWSER_HOST_CLOUD: "static",
+      BROWSER_HOST_STATIC: `bro-host-1@${firstAddress}`,
+    });
+    await seedRunning(pool, 1);
+    await pool.hosts.updateBrowserHost(
+      "bro-host-1",
+      { floatingIpId: null, state: "failed", vmId: null },
+      minutes(-1)
+    );
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+    hostClient.readBrowserHostCapacity.mockRejectedValue(new Error("timeout"));
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: "bro-host-1",
+      sandboxState: "running",
+    });
+    expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
+  });
+
   it("never parks a sandbox while a run is open on it", async () => {
     const pool = await loadPool();
     await seedRunning(pool, 30);

@@ -190,7 +190,10 @@
   браузеры и песочницы кода (`sbx-dedicated-3`, `code.<ip>.sslip.io`) — на
   одном выделенном сервере `bro-dedicated-3` (CL25-NVMe, месячный тариф), с
   общим Caddy и своим потолком памяти у каждого (`sandbox/README.md`).
-  Новый `sandboxd` туда — только переустановкой сервера. Аккаунт Cloud.ru
+  Новый `sandboxd` туда — только переустановкой сервера. Бро считает место
+  на хосте как `MemTotal − reserve`, а не потолок `memory_limit_mb` `hostd`:
+  на общем сервере сверх 19 ГБ `hostd` ответит 507 — пока пул у одного пилота,
+  это не мешает; при росте — отдавать потолок в `/v1/capacity`. Аккаунт Cloud.ru
   10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
   ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
   `BRO_APP_HOST_DIR=~/.bro-app-host-selectel` (`~/.bro-selectel/op.env`), у

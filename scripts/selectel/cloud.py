@@ -192,6 +192,10 @@ def delete_server(server_id):
         if status == 404:
             break
         time.sleep(5)
+    else:
+        # Its address goes only with it: released under a live server, it would cut that server off.
+        sys.exit(f"server {server_id} is still there 5 minutes after the delete; its floating IP is kept: "
+                 "run the delete again")
     if fip_id:
         network("DELETE", f"/floatingips/{fip_id}", ok=(204, 404))
 
@@ -249,7 +253,9 @@ def pg_address(cluster):
     statement_timeout) and would break LISTEN and session advisory locks."""
     connection = cluster.get("connection") or {}
     host = connection.get("master") or next(iter(connection.values()), None)
-    return host, cluster.get("port") or 5432
+    if not host:
+        sys.exit("the cluster has no address yet")
+    return host, 5432
 
 
 def pg_user(name, password):

@@ -176,6 +176,9 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     if shared_caddy and not domain:
         # The server's own <ip>.sslip.io is the browser host's: this one needs a name of its own.
         raise ValueError("a host sharing Caddy needs --domain")
+    if shared_caddy and not memory_limit_mb:
+        # 0 is all of the host's memory, which the browser sandboxes take too.
+        raise ValueError("a host sharing its server needs --memory-limit-mb")
     # sandboxd's own config (unknown keys are an error there): who it is, its key, which rootfs it runs, and
     # on a server shared with the browser host what its sandboxes may take together.
     identity = {"host": host_id, "key": key.hex(), "rootfs_version": rootfs_version}

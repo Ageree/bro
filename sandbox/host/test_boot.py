@@ -87,6 +87,8 @@ class CloudInitTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             boot.cloud_init(**ARGS, shared_caddy=True)
         with self.assertRaises(ValueError):
+            boot.cloud_init(**{**ARGS, "domain": "code.203-0-113-7.sslip.io"}, shared_caddy=True)
+        with self.assertRaises(ValueError):
             boot.cloud_init(**ARGS, memory_limit_mb=-1)
 
     def test_console_password_is_a_hash_and_ssh_stays_off(self):

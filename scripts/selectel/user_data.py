@@ -77,6 +77,10 @@ def main():
     files, runcmd = [], []
     for path in args.input:
         config = yaml.safe_load(open(path))
+        # Nothing is dropped unseen: a console password (chpasswd) or another module would just vanish.
+        unknown = set(config) - {"write_files", "runcmd"}
+        if unknown:
+            raise SystemExit(f"{path}: only write_files and runcmd go through, not {sorted(unknown)}")
         files += b64_files(config)
         for argv in config.get("runcmd", []):
             if not isinstance(argv, list):
