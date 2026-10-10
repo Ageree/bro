@@ -1,0 +1,285 @@
+{
+  "data": {
+    "requestId": "0000000000000000-0000000000-addrs-upper-yp-1",
+    "requestQuery": "пиццерия",
+    "displayType": "multiple",
+    "totalResultCount": 47,
+    "requestResults": 10,
+    "items": [
+      {
+        "type": "business",
+        "id": "1000000000001",
+        "title": "Тестовая Пиццерия",
+        "shortTitle": "Тестовая Пиццерия",
+        "seoname": "testovaya_pitstseriya",
+        "address": "Тестовая улица, 1",
+        "fullAddress": "Москва, Тестовая улица, 1",
+        "coordinates": [37.6301, 55.7502],
+        "uri": "ymapsbm1://org?oid=1000000000001",
+        "status": "open",
+        "ratingData": {
+          "ratingValue": 4.6,
+          "ratingCount": 1200,
+          "reviewCount": 600
+        },
+        "categories": [
+          {
+            "id": "100",
+            "name": "Пиццерия",
+            "class": "restaurants",
+            "seoname": "cafe",
+            "pluralName": "Пиццерияы"
+          }
+        ],
+        "workingTimeText": "ежедневно, 10:00–22:00",
+        "workingTime": [
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ]
+        ],
+        "currentWorkingStatus": {
+          "isOpenNow": true,
+          "text": "Открыто до 22:00",
+          "shortText": "До 22:00",
+          "tag": []
+        },
+        "phones": [
+          {
+            "number": "+7 (495) 000-00-01",
+            "type": "phone",
+            "value": "+74950000001"
+          }
+        ],
+        "urls": ["https://pizza.example.test/?utm_source=geoadv_maps"],
+        "tzOffset": 10800,
+        "booking": {
+          "originalId": "eats__00000000-0000-4000-8000-000000000001",
+          "partner": {
+            "name": "Яндекс Еда"
+          },
+          "slotsWidgetAvailable": true,
+          "bookingType": "restaurant",
+          "advertButton": {
+            "ignore": false,
+            "text": "Бронь"
+          }
+        }
+      },
+      {
+        "type": "business",
+        "id": "1000000000002",
+        "title": "Вымышленная Траттория",
+        "shortTitle": "Вымышленная Траттория",
+        "seoname": "vymyshlennaya_trattoriya",
+        "address": "Придуманный переулок, 5с2",
+        "fullAddress": "Москва, Придуманный переулок, 5с2",
+        "coordinates": [37.6102, 55.7611],
+        "uri": "ymapsbm1://org?oid=1000000000002",
+        "status": "closed",
+        "ratingData": {
+          "ratingValue": 4.8,
+          "ratingCount": 340,
+          "reviewCount": 170
+        },
+        "categories": [
+          {
+            "id": "100",
+            "name": "Ресторан",
+            "class": "restaurants",
+            "seoname": "cafe",
+            "pluralName": "Рестораны"
+          }
+        ],
+        "workingTimeText": "пн-пт 12:00–23:00",
+        "workingTime": [
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ]
+        ],
+        "currentWorkingStatus": {
+          "isOpenNow": false,
+          "text": "Закрыто",
+          "shortText": "До 22:00",
+          "tag": []
+        },
+        "phones": [
+          {
+            "number": "+7 (495) 000-00-02",
+            "type": "phone",
+            "value": "+74950000002"
+          }
+        ],
+        "urls": ["https://trattoria.example.test/?utm_source=geoadv_maps"],
+        "tzOffset": 10800
+      },
+      {
+        "type": "collection",
+        "title": "Подборка пиццерий"
+      }
+    ],
+    "pageCount": 5,
+    "resultsCount": 10
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "status": 200,
+  "data": {
+    "search": {
+      "groups": [
+        {
+          "code": "concert",
+          "title": "Концерты",
+          "documentsTotal": 2,
+          "documents": [
+            {
+              "object": {
+                "__typename": "SearchObjectEvent",
+                "id": "000000000000000000000001",
+                "url": "/moscow/concert/testovyj-dzhaz",
+                "title": "Тестовый джаз",
+                "placeTitle": "Тестовый зал",
+                "minPrice": {
+                  "value": 150000
+                },
+                "datePreview": {
+                  "text": "15 окт"
+                },
+                "type": {
+                  "name": "Концерт"
+                },
+                "tickets": [
+                  {
+                    "saleStatus": "available"
+                  }
+                ]
+              }
+            },
+            {
+              "object": {
+                "__typename": "SearchObjectEvent",
+                "id": "000000000000000000000002",
+                "url": "/moscow/concert/vymyshlennyj-festival",
+                "title": "Вымышленный фестиваль",
+                "placeTitle": "в 3 местах",
+                "minPrice": null,
+                "datePreview": {
+                  "text": "Октябрь — декабрь"
+                },
+                "type": {
+                  "name": "Концерт"
+                },
+                "tickets": []
+              }
+            },
+            {
+              "object": {
+                "__typename": "SearchObjectPlace"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
