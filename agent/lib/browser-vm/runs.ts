@@ -601,9 +601,19 @@ export async function stopBrowserVmSession(sessionId: string) {
  */
 export async function createBrowserVmBrowser(input: {
   readonly profileId: string;
+  /**
+   * A person's turn needs the tab (an API call of the Yandex tool): a
+   * sandbox that is off is brought up, waiting as long as a turn waits for
+   * an errand's browser (`ensureForRun`) and no longer, rather than ending
+   * the visit with 429.
+   */
+  readonly wake?: boolean;
 }) {
   const workspaceId = browserVmWorkspace(input.profileId);
-  const running = await readyVm(workspaceId);
+  const running =
+    input.wake === true
+      ? await wokenVm(workspaceId)
+      : await readyVm(workspaceId);
   if (running === undefined) {
     throw new BrowserUseError(
       429,
@@ -967,6 +977,14 @@ function mayBeRunning(vm: BrowserVm) {
 async function readyVm(workspaceId: string) {
   const vm = await readBrowserVm(workspaceId);
   return vm === undefined ? undefined : up(vm);
+}
+
+/** The workspace's VM once a person's turn has waited for it to come up. */
+async function wokenVm(workspaceId: string) {
+  const started = await ensureForRun(workspaceId, true);
+  if (started.kind === "starting") return undefined;
+  await keepAwake(started.vm, new Date());
+  return up(started.vm);
 }
 
 export async function uploadBrowserVmSessionFile(

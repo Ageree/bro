@@ -287,12 +287,17 @@ interface FrameContext {
 /** Every parameter this module sends, and nothing else. */
 interface CdpCommand {
   readonly autoAttach?: boolean;
+  readonly arguments?: readonly {
+    readonly value: z.infer<typeof resultSchema>;
+  }[];
   readonly awaitPromise?: boolean;
   readonly contextId?: number;
   readonly expression?: string;
   readonly flatten?: boolean;
   readonly format?: "jpeg" | "png";
   readonly frameId?: string;
+  readonly functionDeclaration?: string;
+  readonly objectId?: string;
   readonly quality?: number;
   readonly returnByValue?: boolean;
   readonly errorReason?: string;
@@ -469,6 +474,7 @@ const visitLoadWaitMs = 20_000;
  *  the load event, so the page is read only once it had a moment to. */
 const visitSettleMs = 3_000;
 const visitPollMs = 500;
+const callPollMs = 150;
 
 const pageStateSchema = z.object({
   password: z.boolean(),
@@ -554,6 +560,103 @@ export async function visitPageOverCdp(
     await sleep(visitSettleMs);
     const settled = await readPage();
     return { leftPage, passwordField: settled.password, url: settled.url };
+  } finally {
+    connection.close();
+  }
+}
+
+const loadedPageSchema = z.object({
+  readyState: z.string(),
+  url: z.string(),
+});
+
+const globalObjectSchema = z.object({
+  result: z.object({ objectId: z.string().min(1) }),
+});
+
+const functionCallSchema = z.object({
+  exceptionDetails: z.object({}).loose().optional(),
+  result: z.object({ value: resultSchema.optional() }).optional(),
+});
+
+/** The load a call from a page waits for; a script's data comes after it. */
+const callLoadWaitMs = 20_000;
+
+/**
+ * Open `url` and call `fn`, a function the code fixes, in the page with
+ * `argument` as its one parameter: the argument goes over the protocol as
+ * data (`Runtime.callFunctionOn`), never spliced into the function's source,
+ * so what a person or a page said cannot become code. The function runs in
+ * the page itself, so its requests carry the page's own cookies and tokens,
+ * and nothing of them comes back: the value is whatever it returns.
+ *
+ * `runOn` sees where the page ended up before anything runs: a redirect to
+ * a sign-in or to another site leaves the function uncalled. Pictures and
+ * fonts are not downloaded.
+ */
+export async function callInPageOverCdp(
+  cdpUrl: string,
+  page: {
+    readonly argument: z.infer<typeof resultSchema>;
+    readonly fn: string;
+    /** The load state to wait for before the call. */
+    readonly loaded: "complete" | "interactive";
+    readonly runOn: (url: string) => boolean;
+    readonly url: string;
+  }
+) {
+  const connection = await connect(cdpUrl);
+  try {
+    await connection.call("Network.enable", {}).catch(() => undefined);
+    await connection
+      .call("Network.setBlockedURLs", { urls: visitBlockedUrls })
+      .catch(() => undefined);
+    await connection.call("Page.enable", {});
+    await connection.call("Page.navigate", { url: page.url });
+    const deadline = Date.now() + callLoadWaitMs;
+    const readPage = async (): Promise<string> => {
+      const reply = evaluationSchema.safeParse(
+        await connection
+          .call("Runtime.evaluate", {
+            expression:
+              "({ readyState: document.readyState, url: location.href })",
+            returnByValue: true,
+          })
+          .catch(() => undefined)
+      );
+      const state = loadedPageSchema.safeParse(reply.data?.result?.value);
+      const reached =
+        state.success &&
+        (state.data.readyState === "complete" ||
+          (page.loaded === "interactive" &&
+            state.data.readyState === "interactive"));
+      if (state.success && reached && state.data.url !== "about:blank") {
+        return state.data.url;
+      }
+      if (Date.now() >= deadline) {
+        if (state.success) return state.data.url;
+        throw new Error("The page never answered.");
+      }
+      await sleep(callPollMs);
+      return readPage();
+    };
+    const url = await readPage();
+    if (!page.runOn(url)) return { ran: false as const, url };
+    const global = globalObjectSchema.parse(
+      await connection.call("Runtime.evaluate", { expression: "globalThis" })
+    );
+    const reply = functionCallSchema.parse(
+      await connection.call("Runtime.callFunctionOn", {
+        arguments: [{ value: page.argument }],
+        awaitPromise: true,
+        functionDeclaration: page.fn,
+        objectId: global.result.objectId,
+        returnByValue: true,
+      })
+    );
+    // The details of an exception are the page's text: they are not kept.
+    if (reply.exceptionDetails) throw new Error("The page's call failed.");
+    return { ran: true as const, url, value: reply.result?.value };
   } finally {
     connection.close();
   }

@@ -961,6 +961,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   окно снимает страницу `captureScreenshot`. Тест на настоящем Chrome —
   `BRO_HANDOFF_CHROME=<chrome> python -m unittest test_handoff` в
   `browser-vm/worker`.
+- API сервисов Яндекса (`yandex`, флаг `YANDEX_API_WORKSPACES`: id или `*`, без
+  писем): запрос делает сама страница во вкладке браузера пула, cookies не
+  читаем и не возвращаем. Транспорт — `agent/lib/yandex/transport.ts`: вкладка
+  `createBrowserVmBrowser({ wake: true })` (будит песочницу как ход человека,
+  до 30 с), `callInPageOverCdp` (`browser-use/cdp.ts`) открывает origin
+  операции и зовёт её **фиксированную** функцию через `Runtime.callFunctionOn`,
+  аргументы — данными, не строкой кода. Операция — `defineYandexOperation`
+  (`operations.ts`), сервис подключается одной строкой в `registry.ts`. Страница
+  может ходить только на свой origin (CSP id.yandex.ru закрывает чужие
+  `fetch`): каждый сервис — своими операциями на своей странице. Инструмент —
+  только в ходе, открытом сообщением человека (`agent/tools/yandex.ts`);
+  `access: "cart"` требует отметки модели `personAskedToChangeCart`.
 - Проверка выхода прокси идёт внутри `browser_task`: 09.10 четыре проверки по
   15–36 с держали ход 91 с, а следующее сообщение человека ждало за ним.
   Ход человека перебирает выходы не дольше `turnExitBudgetMs`, остальное —
