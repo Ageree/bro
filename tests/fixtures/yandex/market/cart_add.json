@@ -1,0 +1,69 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/api/web/market.front.purchaseCore.PurchaseCore/prepareCartModelAddItems",
+    "body": {
+      "path": "/my/cart",
+      "params": {
+        "items": [
+          {
+            "offerId": "AAAAAAAAAAAAAAAAAAAAA9",
+            "feeShow": "FAKEFEESHOW"
+          }
+        ],
+        "settings": {
+          "buttonType": "FLAT",
+          "isSins": false,
+          "isSeparatedDomainSins": false
+        }
+      }
+    }
+  },
+  "response_200": {
+    "result": {
+      "result": {
+        "actions": [],
+        "offerIds": ["AAAAAAAAAAAAAAAAAAAAA8", "AAAAAAAAAAAAAAAAAAAAA9"],
+        "sinsFooter": {
+          "businessId": "-1"
+        }
+      },
+      "collections": {
+        "cartModel": {
+          "carts": {
+            "market": {
+              "count": 2
+            }
+          },
+          "items": {
+            "AAAAAAAAAAAAAAAAAAAAA8": {
+              "offerId": "AAAAAAAAAAAAAAAAAAAAA8",
+              "cartItemId": "1000000000001",
+              "count": 1,
+              "maxCount": 69,
+              "step": 1,
+              "msku": "900000000008",
+              "cartId": "market"
+            },
+            "AAAAAAAAAAAAAAAAAAAAA9": {
+              "offerId": "AAAAAAAAAAAAAAAAAAAAA9",
+              "cartItemId": "1000000000002",
+              "count": 1,
+              "maxCount": 500,
+              "step": 1,
+              "msku": "900000000010",
+              "cartId": "market"
+            }
+          }
+        }
+      }
+    }
+  },
+  "response_500_without_feeShow": {
+    "error": {
+      "name": "ResolveCartModelAddItemsResponseError",
+      "message": "CartButtonAction node error",
+      "cause": null
+    }
+  }
+}
