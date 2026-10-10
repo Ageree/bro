@@ -6,7 +6,6 @@ import {
   readVaultSecret,
   saveVaultItem,
 } from "@db/services/vault";
-import { applicationOrigin } from "@shared/environment/origin";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   parseLoginVaultPayload,
@@ -163,16 +162,6 @@ function signUpLoginLabel(host: string) {
   return `Аккаунт Бро на ${host}`;
 }
 
-/** Where the person finds the login in the cabinet, as its pages name it. */
-function vaultLoginsPlace() {
-  const place = "раздел «Сейф» → «Входы»";
-  try {
-    return `${place} (${new URL("/vault", applicationOrigin()).toString()})`;
-  } catch {
-    return place;
-  }
-}
-
 /**
  * Settles the login saved for a sign-up run as `signUpSettlement` decided,
  * and the line the report turn gets about it. It never fails the report: a
@@ -193,9 +182,9 @@ export async function settleSignUpLogin(
     return `The sign-up form on ${host} was never sent, so the login prepared for it was taken out of the user's vault; a new sign-up there starts afresh. Never write a password.`;
   }
   if (settlement === "created") {
-    return `The run registered a new account on ${host} with your own AgentMail address ${login.mailbox.email}, and its login is already in the user's vault, so they add nothing by hand. Say in one short sentence that the account is saved in the vault, ${vaultLoginsPlace()}, as «${label}», where they can see its login and password with «Показать данные для входа», and that you sign in there yourself. Never write the password: the vault shows it to them.`;
+    return `The run registered a new account on ${host} with your own AgentMail address ${login.mailbox.email}, and its login is already saved on your side as «${label}», so they add nothing by hand. Say in one short sentence that you registered the account and keep its login yourself and sign in there on your own. There is no page of logins for the person: never point them to the vault or any cabinet section for it, never write the password, and if they want you to drop the account's login they can say «забудь мой вход на ${host}». Do not ask them for anything or to write to you: the site's letters come to your own mailbox.`;
   }
-  return `The run did not confirm that the account on ${host} was created. The login prepared for it stays in the user's vault, ${vaultLoginsPlace()}, as «${label}», in case the site did take the form: say so in one short line along with what stopped the registration. Never write the password.`;
+  return `The run did not confirm that the account on ${host} was created. The login prepared for it stays saved on your side as «${label}», in case the site did take the form: say so in one short line along with what stopped the registration, without pointing the person to the vault or any page of logins, and without asking them to write to you or to look for a code: the site's letters come to your own mailbox. Never write the password; they can say «забудь мой вход на ${host}» to drop it.`;
 }
 
 /** The origin a login for the site is saved under, or none for a bad site. */
