@@ -45,6 +45,14 @@ class CloudInitTest(unittest.TestCase):
         self.assertEqual(boot.host_key("11" * 32, "host-test-1").hex(),
                          "fc0873b32715053d3ff2f84210fe16de8ecebea4b2ea502271c9d927192c9620")
 
+    def test_memory_limit_only_when_shared(self):
+        # A server shared with the code sandbox host: hostd gets its share; alone, boot.json is as Bro writes it.
+        _mode, settings = written(boot.cloud_init(**ARGS, memory_limit_mb=18432), "/etc/bro/boot.json")
+        self.assertEqual(json.loads(settings)["memoryLimitMb"], 18432)
+        self.assertNotIn("memoryLimitMb", json.loads(written(boot.cloud_init(**ARGS), "/etc/bro/boot.json")[1]))
+        with self.assertRaises(ValueError):
+            boot.cloud_init(**ARGS, memory_limit_mb=-1)
+
     def test_identity_and_boot_settings_are_private_files(self):
         user_data = boot.cloud_init(**ARGS)
         self.assertTrue(user_data.startswith("#cloud-config\n"))
@@ -794,14 +802,19 @@ class ProvisionTest(unittest.TestCase):
         script = PROVISION[PROVISION.index("python3 -c 'import json, sys\nsettings"):]
         script = script[:script.index('"$DOMAIN" "$RUNTIME" "$IP"')]
         code = script[len("python3 -c '"):script.rindex("'")]
-        for ip, blocked in (("203.0.113.7", ["203.0.113.7/32"]), ("", None)):
-            with self.subTest(ip=ip):
+        sys.path.insert(0, str(Path(__file__).parent))
+        import hostd
+
+        for ip, blocked, limit, expected in (("203.0.113.7", ["203.0.113.7/32"], "", 0), ("", None, "0", 0),
+                                             ("", None, "18432", 18432)):
+            with self.subTest(ip=ip, limit=limit):
                 target = tmp / "hostd.json"
                 subprocess.run([sys.executable, "-c", code.replace("/etc/bro/hostd.json", str(target)),
-                                "203-0-113-7.sslip.io", "runc", ip], check=True)
+                                "203-0-113-7.sslip.io", "runc", ip, limit], check=True)
                 settings = json.loads(target.read_text())
                 self.assertEqual(settings.get("egress_blocked"), blocked)
                 self.assertEqual(settings["runtime"], "runc")
+                self.assertEqual(hostd.Config.load(target).memory_limit_mb, expected)
         self.assertLess(PROVISION.index("systemctl enable --now bro-hostd"), PROVISION.index("stage rootfs"))
 
 

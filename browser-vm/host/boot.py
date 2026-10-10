@@ -36,6 +36,7 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
   BROWSER_VM_SIGNING_KEY=… [BRO_HOST_UPDATE_SIGNING_KEY=…] python boot.py cloud-init --host-id bro-host-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
       [--runtime runc|runsc|firecracker --runsc-release 20260914] [--apt-mirror …] [--domain …]
+      [--memory-limit-mb N]
       the user data for one host (base64 it for the Compute API). With BRO_HOST_UPDATE_SIGNING_KEY set host.json
       also carries `updateKey`; Bro's own writer (`browserHostCloudInit`) never does, and a host without it
       answers 403 on the operator's routes
@@ -301,7 +302,8 @@ def quoted(text):
 
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
-               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None, host_update_key=None):
+               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None, host_update_key=None,
+               memory_limit_mb=0):
     if runtime not in RUNTIMES:
         raise ValueError(f"runtime must be one of {RUNTIMES}")
     if runtime == "runsc" and not RUNSC_RELEASE.fullmatch(runsc_release or ""):
@@ -310,6 +312,8 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         raise ValueError("host id must match [a-z0-9-]{1,63}")
     if apt_mirror and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?", apt_mirror):
         raise ValueError("apt mirror must be a plain http(s) URL")
+    if not isinstance(memory_limit_mb, int) or memory_limit_mb < 0:
+        raise ValueError("memory limit must be a whole number of MB, 0 for all of the host's memory")
     identity = {"host": host_id, "key": key.hex()}
     if host_update_key is not None:  # the operator's: Bro's own writer leaves it out
         identity["updateKey"] = host_update_key.hex()
@@ -319,6 +323,8 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         "aptMirror": apt_mirror or "",
         "bundle": {"url": bundle_url, "sha256": bundle_sha256},
         "rootfs": {"version": rootfs_version, "url": rootfs_url, "sha256": rootfs_sha256},
+        # Only when set: Bro's own writer (browserHostCloudInit) has to match this byte for byte.
+        **({"memoryLimitMb": memory_limit_mb} if memory_limit_mb else {}),
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     return "\n".join([
@@ -375,6 +381,8 @@ def main(argv=None):
     init.add_argument("--runsc-release")
     init.add_argument("--apt-mirror", default=APT_MIRROR)
     init.add_argument("--domain")
+    init.add_argument("--memory-limit-mb", type=int, default=0,
+                      help="what browser sandboxes may take together, on a server shared with the code host")
     args = parser.parse_args(argv)
     if args.command == "vendor":
         vendor(args.dir)
@@ -402,7 +410,7 @@ def main(argv=None):
         host_id=args.host_id, key=host_key(signing, args.host_id), runtime=args.runtime,
         runsc_release=args.runsc_release, apt_mirror=args.apt_mirror, bundle_url=args.bundle_url,
         bundle_sha256=args.bundle_sha256, rootfs_version=args.rootfs_version, rootfs_url=args.rootfs_url,
-        rootfs_sha256=args.rootfs_sha256, domain=args.domain))
+        rootfs_sha256=args.rootfs_sha256, domain=args.domain, memory_limit_mb=args.memory_limit_mb))
 
 
 if __name__ == "__main__":

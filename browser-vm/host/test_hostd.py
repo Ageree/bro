@@ -831,6 +831,8 @@ class SandboxTest(HostTest):
         caddyfile = runner.caddyfiles[-1]
         self.assertIn("admin unix//run/caddy/admin.sock", caddyfile)
         self.assertIn("203-0-113-7.sslip.io {", caddyfile)
+        # The code sandbox host's site on a shared server outlives each rewrite (caddy.py).
+        self.assertIn("}\nimport sites/*\n203-0-113-7.sslip.io {", caddyfile)
         self.assertIn(f"handle_path /g/ws-abc/* {{\n\t\treverse_proxy 127.0.0.2:{self.worker_port} {{\n"
                       f"\t\t\theader_up X-Forwarded-Prefix /g/ws-abc\n", caddyfile)
         self.assertIn(f"handle_path /g/ws-def/* {{\n\t\treverse_proxy 127.0.0.6:{self.worker_port} {{\n"

@@ -17,6 +17,9 @@
       ~/.bro-code-host/NAME.password (the user data holds only its hash). --hosts-entry NAME=TARGET pins NAME
       in the host's /etc/hosts at TARGET, an IPv4 address or a VM of the project (its private address): Bro's
       domain at Bro's VM, since one VM of the project cannot reach another's public address
+  python host.py user-data NAME --domain code.<ip with dashes>.sslip.io --memory-limit-mb N
+      the cloud-init of a host on a dedicated server next to the browser host (sharing its Caddy), for
+      scripts/selectel/user_data.py with the browser host's; the server itself is dedicated.py's
   python host.py status NAME [--stage]      state, address, health; --stage reads the provision stage over
                                             the serial console
   python host.py reboot NAME                set-power reboot (a first boot stuck in initramfs)
@@ -229,10 +232,9 @@ def health(domain, timeout=15):
         return None, str(error)[:200]
 
 
-def cmd_create(args):
-    name = host_name(args.name)
-    if selectel.server_by_name(name) if SELECTEL else cloudru.vm_by_name(name):
-        sys.exit(f"{name} exists already")
+def host_user_data(name, *, console_password_hash=None, hosts=(), domain=None, shared_caddy=False,
+                   memory_limit_mb=0):
+    """The host's cloud-init with fresh 12-hour links to the delivered artifacts."""
     key_file = STATE / f"{name}.json"
     if not key_file.exists():
         sys.exit(f"no host key: python host.py key {name}")
@@ -240,7 +242,7 @@ def cmd_create(args):
     if key != host_key(name):
         sys.exit(f"{key_file} is not derived from the current signing key: python host.py key {name}")
     record = json.loads(DELIVERED.read_text())
-    user_data = boot.cloud_init(
+    return boot.cloud_init(
         host_id=name, key=bytes.fromhex(key),
         bundle_url=s3.presign("GET", record["bundle"]["key"], LINK_SECONDS),
         bundle_sha256=record["bundle"]["sha256"],
@@ -250,8 +252,23 @@ def cmd_create(args):
         runsc_release=record["runsc"]["release"],
         runsc_url=s3.presign("GET", record["runsc"]["key"], LINK_SECONDS),
         runsc_sha256=record["runsc"]["sha256"],
-        console_password_hash=None if args.no_console else console_password(name),
-        hosts=hosts_entries(args.hosts_entry))
+        console_password_hash=console_password_hash, hosts=hosts, domain=domain, shared_caddy=shared_caddy,
+        memory_limit_mb=memory_limit_mb)
+
+
+def cmd_user_data(args):
+    """A host on a dedicated server next to the browser host: only its user data, the server is the
+    operator's (scripts/selectel/dedicated.py)."""
+    sys.stdout.write(host_user_data(host_name(args.name), domain=args.domain, shared_caddy=True,
+                                    memory_limit_mb=args.memory_limit_mb))
+
+
+def cmd_create(args):
+    name = host_name(args.name)
+    if selectel.server_by_name(name) if SELECTEL else cloudru.vm_by_name(name):
+        sys.exit(f"{name} exists already")
+    user_data = host_user_data(name, console_password_hash=None if args.no_console else console_password(name),
+                               hosts=hosts_entries(args.hosts_entry))
     started = time.time()
     if SELECTEL:
         flavor = args.flavor or "HFL1.2-8192-160"
@@ -474,6 +491,11 @@ def main():
     create.add_argument("--wait-minutes", type=int, default=20)
     create.add_argument("--hosts-entry", action="append", default=[], metavar="NAME=TARGET")
     create.set_defaults(fn=cmd_create)
+    user_data = sub.add_parser("user-data")
+    user_data.add_argument("name")
+    user_data.add_argument("--domain", required=True)
+    user_data.add_argument("--memory-limit-mb", type=int, required=True)
+    user_data.set_defaults(fn=cmd_user_data)
     status = sub.add_parser("status")
     status.add_argument("name")
     status.add_argument("--stage", action="store_true")

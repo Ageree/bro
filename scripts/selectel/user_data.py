@@ -5,7 +5,11 @@ The servers API stores user data HTML-escaped (it answers `&quot;`, `&#x27;`, `&
 carries none of those characters: every file of `write_files` goes base64 (`encoding: b64`), permissions
 as plain octal numbers, and `runcmd` as argument lists of bare words.
 
-  python user_data.py IN.yaml [--debug-token HEX] > OUT.yaml
+  python user_data.py IN.yaml [IN2.yaml …] [--debug-token HEX] > OUT.yaml
+
+Several inputs make one server: the browser host and the code sandbox host on one dedicated server
+(browser-vm/host/boot.py and sandbox/host/boot.py with --shared-caddy). Their files go together, their
+runcmd in order (bare words only); a path written twice is refused.
 
 --debug-token adds a read-only status page on :8099/<token>/ (stage, provision and cloud-init log tails,
 failed units) until the host is ready, for a session that has no SSH to the server.
@@ -67,18 +71,27 @@ def render(files, runcmd):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("input")
+    parser.add_argument("input", nargs="+")
     parser.add_argument("--debug-token")
     args = parser.parse_args()
-    config = yaml.safe_load(open(args.input))
-    files = b64_files(config)
-    runcmd = []
+    files, runcmd = [], []
+    for path in args.input:
+        config = yaml.safe_load(open(path))
+        files += b64_files(config)
+        for argv in config.get("runcmd", []):
+            if not isinstance(argv, list):
+                raise SystemExit(f"{path}: runcmd entries must be argument lists")
+            runcmd.append([str(word) for word in argv])
+    paths = [item["path"] for item in files]
+    if len(set(paths)) != len(paths):
+        raise SystemExit("two inputs write the same file")
     if args.debug_token:
         if not re.fullmatch(r"[0-9a-f]{16,64}", args.debug_token):
             raise SystemExit("the debug token is 16-64 lowercase hex characters")
         files.append({"path": "/usr/local/sbin/bro-debug-beacon", "permissions": 0o700,
                       "content": base64.b64encode(BEACON.format(token=args.debug_token).encode()).decode()})
-        runcmd.append(["systemd-run", "--unit=bro-debug-beacon", "/usr/local/sbin/bro-debug-beacon"])
+        # First: runcmd goes in order, and a host's boot script may run for many minutes.
+        runcmd.insert(0, ["systemd-run", "--unit=bro-debug-beacon", "/usr/local/sbin/bro-debug-beacon"])
     sys.stdout.write(render(files, runcmd))
 
 

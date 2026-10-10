@@ -71,8 +71,23 @@ class CloudInitTest(unittest.TestCase):
         self.assertEqual(settings["runsc"], {"release": boot.VENDOR["runsc"]["release"], "url": ARGS["runsc_url"],
                                              "sha256": "ef" * 32})
         self.assertEqual((settings["domain"], settings["aptMirror"]), ("", "http://mirror.yandex.ru/ubuntu"))
-        self.assertIn("/usr/local/sbin/bro-code-host-boot > /var/log/bro-provision.log", user_data)
+        self.assertIn("  - [/usr/local/sbin/bro-code-host-boot]\n", user_data)
+        self.assertIn("exec >>/var/log/bro-provision.log 2>&1", user_data)
         self.assertNotIn("chpasswd", user_data)
+        self.assertNotIn("sharedCaddy", settings)
+
+    def test_a_host_sharing_the_browser_hosts_caddy_and_memory(self):
+        user_data = boot.cloud_init(**{**ARGS, "domain": "code.203-0-113-7.sslip.io"}, shared_caddy=True,
+                                    memory_limit_mb=10240)
+        config = json.loads(written(user_data, "/etc/bro/sandboxd.json")[1])
+        self.assertEqual(config["memory_limit_mb"], 10240)
+        settings = json.loads(written(user_data, "/etc/bro/code-host-boot.json")[1])
+        self.assertEqual((settings["sharedCaddy"], settings["domain"]), (True, "code.203-0-113-7.sslip.io"))
+        # Its own name: the server's <ip>.sslip.io is the browser host's.
+        with self.assertRaises(ValueError):
+            boot.cloud_init(**ARGS, shared_caddy=True)
+        with self.assertRaises(ValueError):
+            boot.cloud_init(**ARGS, memory_limit_mb=-1)
 
     def test_console_password_is_a_hash_and_ssh_stays_off(self):
         digest = "$6$0123456789abcdef$" + "A" * 86
@@ -155,11 +170,12 @@ class BootScriptTest(unittest.TestCase):
         settings = work / "boot.json"
         settings.write_text(json.dumps({"bundle": {"url": url, "sha256": hashlib.sha256(raw.getvalue()).hexdigest()}}))
         script = boot.BOOT_SCRIPT.replace("/etc/bro/code-host-boot.json", str(settings)) \
-            .replace("/root/", f"{work}/").replace("/opt/bro/code-host", str(work / "host"))
+            .replace("/root/", f"{work}/").replace("/opt/bro/code-host", str(work / "host")) \
+            .replace("/var/log/bro-provision.log", str(work / "log"))
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"provisioned from", result.stdout)
+        self.assertEqual(result.returncode, 0, (work / "log").read_text())
+        self.assertIn("provisioned from", (work / "log").read_text())  # the script's whole output goes there
         self.assertFalse((work / "bro-code-host.tgz").exists())
 
         settings.write_text(json.dumps({"bundle": {"url": url, "sha256": "00" * 32}}))
@@ -328,6 +344,15 @@ class ProvisionTest(unittest.TestCase):
         self.assertNotIn("github.com", PROVISION)
         self.assertNotIn("gvisor.dev", PROVISION)  # out of reach from Cloud.ru: runsc comes from Object Storage
         self.assertNotIn("pip install", PROVISION)
+
+    def test_a_shared_caddy_gets_a_site_file_and_no_caddy_of_its_own(self):
+        shared = PROVISION[PROVISION.index('if [ "$(field "$BOOT" sharedCaddy)" = True ]'):PROVISION.index("\nelse\n")]
+        self.assertIn("/etc/caddy/sites/code-host.caddy", shared)
+        self.assertIn("flush_interval -1", shared)
+        self.assertIn("caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile "
+                      "--address unix//run/caddy/admin.sock", shared)
+        self.assertNotIn("install -m 755", shared)
+        self.assertNotIn("systemctl restart caddy", shared)
 
 
 if __name__ == "__main__":

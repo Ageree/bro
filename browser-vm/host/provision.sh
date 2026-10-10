@@ -158,12 +158,17 @@ python3 -c 'import json, sys
 settings = {"domain": sys.argv[1], "runtime": sys.argv[2]}
 if sys.argv[3]:
     settings["egress_blocked"] = [sys.argv[3] + "/32"]
-json.dump(settings, open("/etc/bro/hostd.json", "w"))' "$DOMAIN" "$RUNTIME" "$IP"
+# A server shared with the code sandbox host: browser sandboxes take only their share of its memory.
+if sys.argv[4] not in ("", "0"):
+    settings["memory_limit_mb"] = int(sys.argv[4])
+json.dump(settings, open("/etc/bro/hostd.json", "w"))' "$DOMAIN" "$RUNTIME" "$IP" "$(field memoryLimitMb)"
 # The unit Caddy's own packages ship, for the static binary. The admin API only on a unix socket that root
 # (hostd) reaches: on localhost:2019 any local process could load a config that publishes a worker's CDP.
 # hostd rewrites the Caddyfile and reloads over this socket.
 write_caddy_unit || true
-printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n%s {\n\thandle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' \
+# Other services of the same server add their sites as files in sites/ (caddy.py).
+mkdir -p /etc/caddy/sites
+printf '{\n\tadmin unix//run/caddy/admin.sock\n}\nimport sites/*\n%s {\n\thandle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' \
   "$DOMAIN" > /etc/caddy/Caddyfile
 systemctl daemon-reload
 systemctl enable caddy >/dev/null
