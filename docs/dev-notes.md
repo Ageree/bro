@@ -67,10 +67,11 @@
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
-- Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров в
-  песочницах на общих хостах Cloud.ru (`runc`, gVisor — запасной) —
-  `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
-  хосты пула, worker) — `docs/browser-infra-notes.md`.
+- Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров —
+  `docs/browser-pool.md` (прод с 10.10 — постоянный сервер Selectel,
+  Firecracker; хосты Cloud.ru — история); заметки по браузерной
+  инфраструктуре (VM, хосты пула, worker) — `docs/browser-infra-notes.md`.
+  Переезд на Selectel и где что живёт — `docs/selectel-migration.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
   `docs/instinct.md`; переезд с Vercel на Cloud.ru (сделан 02.10) —
   `docs/cloudru-migration.md`, промпт сессии, которая доводила его до конца, —
@@ -231,9 +232,8 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   Рабочий путь: объекты по 8192 байта, сборка на VM со сверкой SHA-256;
   подписанный POST deployd — через loopback из serial-консоли, статус — GET.
 
-- Прод с 02.10 — VM Cloud.ru; Vercel `bro-next` — путь отката до 09.10, когда
-  Routine другой сессии запустит уборку Vercel (`docs/cloudru-migration.md`):
-  до неё Vercel-пути не удаляйте и уборку не дублируйте. Убирая «ветку
+- Прод с 02.10 был на VM Cloud.ru, с 10.10 — Selectel; Vercel `bro-next` как
+  путь отката закончился 09.10 (уборка — `docs/cloudru-migration.md`). Убирая «ветку
   OpenRouter», не трогайте `createOpenRouter` в `agent/lib/model/direct.ts`:
   через него с другим `baseURL` ходит RouterAI — единственный провайдер прода.
 - Слияние прод не обновляет: релиз — `host.py deploy <VM>`, и он собирает
@@ -312,8 +312,8 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   браузера (`completion.ts`) и расписания (`agent/lib/schedules/report.ts`). `defaultTools: false` выключает и готовую
   песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
   работает (`node_modules/eve/docs/sandbox.mdx`).
-- Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
-  на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
+- Владелец 01.10: Бро живёт на своих серверах (с 10.10 — Selectel), новое не
+  завязывайте на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
   `scripts/cloudru-app-host/README.md`: сборка для VM включается только
   `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
   (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
@@ -493,8 +493,9 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   может оборвать перезагрузка, кладите в `/var/lib/cloud/scripts/per-boot/`
   и делайте повторяемой (`browser-vm/host/boot.py`,
   `docs/browser-infra-notes.md`).
-- Хост песочниц для кода — VM Cloud.ru (`scripts/cloudru-code-host/`,
-  только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
+- Хост песочниц для кода — `scripts/cloudru-code-host/` (имена `sbx-*`): VM
+  или, в проде с 10.10, выделенный сервер рядом с браузерами (`host.py
+user-data`, `sandbox/README.md`); runsc едет на хост объектом S3 (`boot.py vendor`), не
   из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в
   cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
   `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
@@ -939,8 +940,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `inTurn` не ставит. Текст сообщений в журнал eve не пишется: ход ищите по
   `[tools]` и `durationMs` инструментов в строке `"method":"EVE"`.
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
-  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
-  Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
+  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). С
+  10.10 хост пула — постоянный сервер Selectel (`BROWSER_HOST_CLOUD=static`,
+  `firecracker`, `CLOUDRU_PRIVATE_ROUTING=off`); зоны Cloud.ru — история.
 - В browser-use 0.13.10 обычный file input не имеет `frame_id`: CDP ставит
   его на владеющий HTML-узел. Для проверки origin поля worker ищет ближайшего
   владельца в том же `target_id` и сверяет `Page.getFrameTree.securityOrigin`;
