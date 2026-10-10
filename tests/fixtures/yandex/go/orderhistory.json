@@ -1,0 +1,66 @@
+{
+  "orders": [
+    {
+      "service": "taxi",
+      "data": {
+        "country_id": "rus",
+        "created_at": "2026-10-09T12:00:00+0300",
+        "driver": {
+          "call_mode": "no_call",
+          "name": "Тест Водитель"
+        },
+        "is_active": false,
+        "order_id": "00000000000000000000000000000000",
+        "payment": {
+          "cost": 450,
+          "currency_code": "RUB",
+          "final_cost": "450 $SIGN$$CURRENCY$"
+        },
+        "route": {
+          "destination": "Придуманный переулок, 5",
+          "source": "Тестовая улица, 1"
+        },
+        "status": "finished",
+        "tariff_class": "Эконом",
+        "tariff_internal_name": "econom",
+        "taxi_status": "complete",
+        "vehicle": {
+          "car_number": "А000АА000",
+          "color": "белый",
+          "model": "Тестовая Машина"
+        }
+      }
+    },
+    {
+      "service": "taxi",
+      "data": {
+        "country_id": "rus",
+        "created_at": "2026-10-08T12:00:00+0300",
+        "driver": {
+          "call_mode": "no_call",
+          "name": "Тест Водитель"
+        },
+        "is_active": false,
+        "order_id": "00000000000000000000000000000000",
+        "payment": {
+          "cost": 0,
+          "currency_code": "RUB",
+          "final_cost": "0 $SIGN$$CURRENCY$"
+        },
+        "route": {
+          "destination": "Тестовая улица, 1",
+          "source": "Придуманный переулок, 5"
+        },
+        "status": "cancelled",
+        "tariff_class": "Комфорт",
+        "tariff_internal_name": "econom",
+        "taxi_status": "driving",
+        "vehicle": {
+          "car_number": "А000АА000",
+          "color": "белый",
+          "model": "Тестовая Машина"
+        }
+      }
+    }
+  ]
+}
