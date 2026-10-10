@@ -185,16 +185,20 @@
 ## Прод на VM
 
 - С 10.10 прод — Selectel (`docs/selectel-migration.md`, «Переключение»):
-  VM `bro-app-sel-1`, база `bro-pg`, S3 `bro-bucket`, браузеры — выделенный
-  сервер `bro-dedicated-2` (CL25-NVMe, посуточно; CL21 `bro-dedicated-1`
-  снят 10.10), песочницы кода — `sbx-code-3`. Аккаунт Cloud.ru
+  VM `bro-app-sel-2` (`SL1.2-4096-32`), база `bro-pg`, S3 `bro-bucket`;
+  браузеры и песочницы кода (`sbx-dedicated-3`, `code.<ip>.sslip.io`) — на
+  одном выделенном сервере `bro-dedicated-3` (CL25-NVMe, месячный тариф), с
+  общим Caddy и своим потолком памяти у каждого (`sandbox/README.md`).
+  Новый `sandboxd` туда — только переустановкой сервера. Аккаунт Cloud.ru
   10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
   ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
   `BRO_APP_HOST_DIR=~/.bro-app-host-selectel` (`~/.bro-selectel/op.env`), у
   `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Env прода —
-  `host.py env bro-app-sel-1 --profile prod --allow-missing
+  `host.py env bro-app-sel-2 --profile prod --allow-missing
 --no-alert-webhook`; инфраструктура Selectel (`S3_*`, пул `static`,
   хост песочниц) — в `prod.json` этого каталога.
+- Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
+  меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
 - Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
   Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
   Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,

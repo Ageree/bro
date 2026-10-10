@@ -182,6 +182,18 @@ order CL25-NVMe --user-data … --hostname bro-dedicated-2 --yes`, посуто�
    `BROWSER_HOST_BUNDLE`. Песочницы снятого из списка CL21 пул сам паркует и
    поднимает на CL25 (`retiredStaticHost` в `agent/lib/browser-pool/sandbox.ts`),
    продление CL21 снято (`dedicated.py cancel`).
+6. Месячный CL25 `bro-dedicated-3` (8 910 ₽ вместо 504 ₽ в сутки) несёт и
+   браузеры, и песочницы кода: cloud-init из `boot.py cloud-init
+--memory-limit-mb 19456` браузерного хоста и `host.py user-data
+sbx-dedicated-3 --domain code.<ip>.sslip.io --memory-limit-mb 9216`, склеенный
+   `user_data.py`, затем `dedicated.py reinstall`; оба хоста отвечают через
+   ~10 минут после установки ОС. VM `sbx-code-3` удалена (−5 тыс. ₽ в месяц),
+   суточный `bro-dedicated-2` уходит в конце оплаченных суток.
+7. VM приложения уменьшена до `SL1.2-4096-32` (`bro-app-sel-2`): локальный
+   диск при смене флейвора не уменьшается, поэтому новая VM и переключение —
+   `tg-bridge.sh hold` и `host.py stop … bro-eve bro-web` на старой, env и
+   `deploy --version <текущий>` на новой, A-записи и `sites`,
+   `switch-to-bridge`. Простой — 2,5 минуты, ход на новой VM — как на старой.
 
 Записи пользователей между 22:43 UTC 09.10 и остановкой Cloud.ru потеряны.
 Отката на Cloud.ru нет, пока аккаунт там приостановлен.
