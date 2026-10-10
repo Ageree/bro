@@ -48,6 +48,11 @@ describe("environment", () => {
     expect(switchedOff.env.WORKFLOW_WORLD).toBe("postgres");
 
     vi.resetModules();
+    vi.stubEnv("EVE_SCHEDULES", "browser");
+    const browserOnly = await import("@shared/environment");
+    expect(browserOnly.env.EVE_SCHEDULES).toBe("browser");
+
+    vi.resetModules();
     vi.stubEnv("EVE_SCHEDULES", "no");
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"

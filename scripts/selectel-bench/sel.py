@@ -5,7 +5,7 @@ The cloud session reaches a VM only over HTTP on port 80 (SSH is closed), so
 a VM gets its whole job as cloud-init user data and serves its results
 read-only from /var/www/bench (`userdata.tpl.sh`).
 
-Env: SELECTEL_TOKEN (static API key from the panel), SELECTEL_PROJECT (the
+Env: SELECTEL_TOKEN or SELECTEL_API_KEY (static API key from the panel), SELECTEL_PROJECT (the
 project id), SELECTEL_REGION (default ru-7). A project token is cached for
 six hours next to SELECTEL_STATE (default ~/.selectel-bench).
 
@@ -51,7 +51,7 @@ def project_token():
     if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 6 * 3600:
         status, answer = _req(
             "POST", "https://api.selectel.ru/vpc/resell/v2/tokens",
-            {"X-Token": os.environ["SELECTEL_TOKEN"].strip()},
+            {"X-Token": (os.environ.get("SELECTEL_TOKEN") or os.environ["SELECTEL_API_KEY"]).strip()},
             {"token": {"project_id": PROJECT}},
         )
         if status != 200:

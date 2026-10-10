@@ -24,6 +24,16 @@ Rust, внутри — shell, Python и файлы; маршрутизатор �
 | `image/`    | Сборка корня песочницы (Ubuntu 22.04, Python, офисные библиотеки, шрифты, `tools`)                       |
 | `host/`     | Установка хоста: `provision.sh`, cloud-init, Caddy, `runsc`                                              |
 
+С 10.10 хост песочниц в проде — не отдельная VM, а выделенный сервер Selectel
+рядом с браузерным хостом (`browser-vm/host`): `host.py user-data NAME --domain
+code.<ip>.sslip.io --memory-limit-mb N` (`scripts/cloudru-code-host`) и
+`boot.py cloud-init` браузерного хоста с `--memory-limit-mb` склеивает
+`scripts/selectel/user_data.py`. Caddy там один — браузерного хоста; хост
+песочниц кладёт свой сайт в `/etc/caddy/sites/`, который `hostd` подключает при
+каждой перезаписи Caddyfile. Свой предел памяти у каждого (`memory_limit_mb` в
+`sandboxd.json` и `hostd.json`). Консоли у сервера нет: новый `sandboxd` —
+только переустановкой (`dedicated.py reinstall`), `update-sandboxd` — для VM.
+
 ## Изоляция
 
 - Каждая песочница — контейнер `runsc` (gVisor, `--platform=systrap`): код

@@ -32,8 +32,7 @@ import { parseArgs } from "node:util";
 import { Client } from "pg";
 import { z } from "zod";
 import {
-  objectStorageEndpoint,
-  objectStorageRegion,
+  cloudruObjectStorage,
   presignS3Url,
   uriEncode,
 } from "../../shared/object-storage/sigv4.ts";
@@ -305,8 +304,8 @@ function presign(method: "HEAD" | "PUT", key: string) {
     expiresSeconds: 600,
     method,
     now: new Date(),
-    region: objectStorageRegion,
-    url: `${objectStorageEndpoint}/${uriEncode(bucket)}/${key
+    region: cloudruObjectStorage.region,
+    url: `${cloudruObjectStorage.endpoint}/${uriEncode(bucket)}/${key
       .split("/")
       .map((segment) => uriEncode(segment))
       .join("/")}`,

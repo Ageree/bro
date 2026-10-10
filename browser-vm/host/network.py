@@ -20,6 +20,12 @@ What a sandbox may not reach is refused at once (a TCP reset, an ICMP "prohibite
 a silent address hung browser-use for minutes after `done` on the stage 1 stand. Only a forged source
 address and IPv6 are dropped: there is nobody to answer.
 
+Firecracker sandboxes (hostd runtime `firecracker`) keep this scheme: the router namespace, the transit
+address, DNAT to 192.168.254.2:8080 and the host table are the same. Only the sandbox namespace differs: the
+address is the guest's (kernel cmdline `ip=`), so `eth0` carries none; it is a port of a bridge `br0` with the
+VM's `tap0`, and the router's `in0` has a fixed MAC, so the ARP entry a restored snapshot remembers stays true
+across the fresh namespaces of every start.
+
 Stage 1 showed that a gVisor restore tolerates a changed inside address, and runc makes no snapshots, so the
 router namespace per sandbox is no longer needed. It stays because it works and is tested; dropping it
 (a unique inside address from the host's pool, the worker reached directly) belongs here alone.
@@ -31,6 +37,9 @@ import json
 INNER = ipaddress.ip_network("192.168.254.0/30")
 INNER_ROUTER = str(INNER.network_address + 1)
 INNER_SANDBOX = str(INNER.network_address + 2)
+GUEST_MAC = "06:00:c0:a8:fe:02"
+ROUTER_MAC = "06:00:c0:a8:fe:01"
+BRIDGE, TAP = "br0", "tap0"
 BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
            "192.168.0.0/16", "224.0.0.0/3")
 
@@ -74,8 +83,10 @@ class Network:
     def worker_address(self, slot):
         return self.transit(slot)[1], self.worker_port
 
-    def setup(self, sandbox_id, slot, router_rules_path):
-        """Commands that build both namespaces and their links (the router ruleset is at the path)."""
+    def setup(self, sandbox_id, slot, router_rules_path, *, tap_owner=None):
+        """Commands that build both namespaces and their links (the router ruleset is at the path). With
+        `tap_owner` ((uid, gid) of the Firecracker process) the sandbox side is a bridge with `eth0` and a tap
+        the VM attaches to, and carries no address or route: the guest has them."""
         sandbox, router = self.netns(sandbox_id)
         gateway, address = self.transit(slot)
         up, up_peer = self.uplink_veth(slot), f"brq{slot}"
@@ -97,17 +108,36 @@ class Network:
             [ip, "link", "set", inner_peer, "netns", router],
             [ip, "-n", sandbox, "link", "set", inner, "name", "eth0"],
             [ip, "-n", router, "link", "set", inner_peer, "name", "in0"],
+            *([[ip, "-n", router, "link", "set", "in0", "address", ROUTER_MAC]] if tap_owner else []),
             [ip, "-n", router, "addr", "add", f"{INNER_ROUTER}/{INNER.prefixlen}", "dev", "in0"],
             [ip, "-n", router, "link", "set", "in0", "up"],
-            [ip, "-n", sandbox, "addr", "add", f"{INNER_SANDBOX}/{INNER.prefixlen}", "dev", "eth0"],
-            [ip, "-n", sandbox, "link", "set", "eth0", "up"],
-            [ip, "-n", sandbox, "link", "set", "lo", "up"],
-            [ip, "-n", sandbox, "route", "add", "default", "via", INNER_ROUTER],
+            *self.sandbox_side(sandbox, tap_owner),
             [ip, "-n", router, "route", "add", "default", "via", gateway],
             [ip, "netns", "exec", router, "sysctl", "-qw", "net.ipv4.ip_forward=1"],
             [ip, "netns", "exec", router, "sysctl", "-qw", "net.ipv6.conf.all.disable_ipv6=1"],
             [ip, "netns", "exec", sandbox, "sysctl", "-qw", "net.ipv6.conf.all.disable_ipv6=1"],
             [ip, "netns", "exec", router, self.nft, "-f", str(router_rules_path)],
+        ]
+
+    def sandbox_side(self, sandbox, tap_owner):
+        ip = self.ip
+        if tap_owner is None:
+            return [
+                [ip, "-n", sandbox, "addr", "add", f"{INNER_SANDBOX}/{INNER.prefixlen}", "dev", "eth0"],
+                [ip, "-n", sandbox, "link", "set", "eth0", "up"],
+                [ip, "-n", sandbox, "link", "set", "lo", "up"],
+                [ip, "-n", sandbox, "route", "add", "default", "via", INNER_ROUTER],
+            ]
+        uid, gid = tap_owner
+        return [
+            [ip, "-n", sandbox, "link", "add", BRIDGE, "type", "bridge"],
+            [ip, "-n", sandbox, "tuntap", "add", "dev", TAP, "mode", "tap", "user", str(uid), "group", str(gid)],
+            [ip, "-n", sandbox, "link", "set", "eth0", "master", BRIDGE],
+            [ip, "-n", sandbox, "link", "set", TAP, "master", BRIDGE],
+            [ip, "-n", sandbox, "link", "set", "eth0", "up"],
+            [ip, "-n", sandbox, "link", "set", TAP, "up"],
+            [ip, "-n", sandbox, "link", "set", BRIDGE, "up"],
+            [ip, "-n", sandbox, "link", "set", "lo", "up"],
         ]
 
     def teardown(self, sandbox_id, slot):

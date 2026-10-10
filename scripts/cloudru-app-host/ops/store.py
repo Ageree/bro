@@ -1,8 +1,9 @@
 """Object Storage and manifests for the db-*.sh ops scripts (scripts/cloudru-app-host/README.md, «База»).
 
 Python stdlib only, on the VM as bro. The signing is the stand's s3.py (scripts/cloudru-sandbox-probe), which
-`host.py build` copies next to this file; the key is the app's own CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and
-CLOUDRU_S3_TENANT_ID from /etc/bro/env, the bucket BACKUP_BUCKET (bucket-ac164a by default). Only keys under
+`host.py build` copies next to this file; the key is the app's own from /etc/bro/env: S3_ENDPOINT, S3_REGION,
+S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (Selectel), else CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and
+CLOUDRU_S3_TENANT_ID; the bucket BACKUP_BUCKET (bucket-ac164a by default). Only keys under
 backups/ are read, written or deleted.
 
   store.py put KEY FILE | get KEY FILE      one object

@@ -320,6 +320,39 @@ describe("browser host client", () => {
     expect(body.upload.chunkUrls).toHaveLength(133);
   });
 
+  it("parks a firecracker sandbox with PUT URLs for its profile alone", async () => {
+    // Its memory snapshot stays on the host: the set carries the profile.
+    const client = await loadHost({ BROWSER_HOST_RUNTIME: "firecracker" });
+    const calls = stubHost(
+      Response.json({
+        chunks: 4,
+        format: {
+          firecracker: "Firecracker v1.17.0",
+          host: "bro-host-1",
+          local: true,
+          runtime: "firecracker",
+        },
+        generation: 6,
+        id: sandboxId,
+        parts: {
+          profile: { bytes: 50_000_000, chunks: 4, plainBytes: 90_000_000 },
+        },
+        runtime: "firecracker",
+        state: "parked",
+        timings: { snapshotMs: 900, totalMs: 1900 },
+      })
+    );
+
+    const parked = await client.parkBrowserSandbox(onHost("firecracker"), {
+      generation: 6,
+      workspaceId,
+    });
+    expect(parked).toMatchObject({ chunks: 4, key: `sets/${sandboxId}/6/` });
+    expect(parked.format).toMatchObject({ local: true });
+    const body = parkBodySchema.parse(JSON.parse(calls[0]?.body ?? ""));
+    expect(body.upload.chunkUrls).toHaveLength(133);
+  });
+
   it("parks a runsc sandbox with PUT URLs enough for its memory too", async () => {
     // A runsc host left from before the deployment turned to runc.
     const client = await loadHost({ BROWSER_HOST_RUNTIME: "runc" });

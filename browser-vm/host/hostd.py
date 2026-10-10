@@ -15,6 +15,12 @@ Xvfb, the worker; its PID 1 is /usr/local/sbin/bro-sandbox-init) in a network na
   runsc  gVisor with `--overlay2=root:memory --platform=systrap`: a park freezes the sandbox (`runsc
          checkpoint` into /dev/shm/bro-<id>), and a restore brings it back with its open pages, falling
          back to a cold start with the profile when the snapshot does not fit.
+  firecracker  a microVM (firecracker.py): the rootfs as one shared read-only ext4 image with a guest-side
+         overlay, the profile and a config drive as ext4 images attached as drives, the jailer, a tap in a bridge
+         in the sandbox's namespace (network.py). A park pauses the VM and writes a full memory snapshot to
+         <root>/snapshots/<id>/<generation>/ on the host's disk (local only: the set in Object Storage carries
+         the profile, so a cold start works anywhere); a restore loads it, falling back to a cold start with
+         the profile when no snapshot fits.
 
 Everything of one sandbox on the host lives under `<root>/sandboxes/<id>/`:
 
@@ -38,10 +44,13 @@ secrets (worker POST /v1/park).
 
 Auth: `Authorization: Bearer v1.<payload>.<sig>`, the worker's token format with the host's key
 (HMAC-SHA256(BROWSER_VM_SIGNING_KEY, "bro-browser-host:" + host id), delivered once in /etc/bro/host.json)
-and the payload {"env": <host id>, "exp": <unix seconds>}, at most 15 minutes ahead.
+and the payload {"env": <host id>, "exp": <unix seconds>}, at most 15 minutes ahead. The operator's routes
+(`scope: "update"`) are signed with another key, `updateKey` of host.json (HMAC-SHA256 of an operator-only
+signing key, `boot.py cloud-init`): Bro holds the host key and must not be able to run code as root here. A
+host without an `updateKey` answers 403 on them.
 
-Routes (all but /v1/health need a token):
-  GET    /v1/health                     version, runtime and its version, boot stage
+Routes (all but /v1/health need a token; those marked * one with scope "update", see selfupdate.py):
+  GET    /v1/health                     version, runtime and its version, boot stage, update state
   GET    /v1/capacity                   memory, /dev/shm, sandboxes, CPU model and features, rootfs versions
   POST   /v1/sandboxes                  {id, workspace, generation, memoryMb?, workerKey, rootfsVersion,
                                          restore?: {manifestUrl, chunkUrls, dataKey} | profile?: {same}}
@@ -49,6 +58,9 @@ Routes (all but /v1/health need a token):
   GET    /v1/sandboxes/<id>             the record
   DELETE /v1/sandboxes/<id>?generation= stop, wipe its host dir and /dev/shm
   POST   /v1/sandboxes/<id>/park        {generation, dataKey, upload: {chunkUrls, manifestUrl}}
+  GET    /v1/sandboxes/<id>/log *       the end of the sandbox's runtime.log
+  GET    /v1/admin/update *             the full status of the last update
+  POST   /v1/admin/update *             {url, sha256}: new host code from a bundle, then a hostd restart
 """
 
 import asyncio
@@ -62,6 +74,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import tarfile
 import time
 from pathlib import Path, PurePosixPath
@@ -70,12 +83,14 @@ import aiohttp
 from aiohttp import web
 
 import caddy
+import firecracker
 import network
+import selfupdate
 import sets
 
-VERSION = "2026-10-01.1"
+VERSION = "2026-10-09.2"
 MAX_TOKEN_LIFETIME_S = 900
-RUNTIMES = ("runc", "runsc")
+RUNTIMES = ("runc", "runsc", "firecracker")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
 ROOTFS_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 HEX_KEY = re.compile(r"[0-9a-f]{64}")
@@ -95,6 +110,12 @@ RUNC_CAPABILITIES = ["CAP_AUDIT_WRITE", "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FO
 MASKED_PATHS = ["/proc/acpi", "/proc/asound", "/proc/kcore", "/proc/keys", "/proc/latency_stats",
                 "/proc/timer_list", "/proc/timer_stats", "/proc/sched_debug", "/proc/scsi", "/sys/firmware"]
 READONLY_PATHS = ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"]
+CGROUP_PARENT = "bro-sandboxes"
+# <root>/profile-work/<id>/: where a microVM's profile image copy is read out at a park (hostd.py write_microvm_set).
+PROFILE_WORK = "profile-work"
+# The OOM killer's bias against a sandbox (runc's bundle and a microVM's Firecracker process): below Chrome's
+# own renderer scores, above hostd's, Caddy's and sshd's.
+VM_OOM_SCORE_ADJ = 200
 log = logging.getLogger("bro-hostd")
 
 
@@ -153,6 +174,44 @@ class Config:
     # disk. 0 = a plain directory (no cap).
     profile_mb: int = 2048
     mkfs: str = "mkfs.ext4"
+    debugfs: str = "debugfs"
+    e2fsck: str = "e2fsck"
+    cp: str = "cp"
+    chown: str = "chown"
+    # firecracker: the binaries and the guest kernel provision.sh installs from the bundle.
+    firecracker: str = "/opt/bro/firecracker/firecracker"
+    jailer: str = "/opt/bro/firecracker/jailer"
+    kernel: str = "/opt/bro/firecracker/vmlinux"
+    # The jail's base (default <root>/jailer): on the filesystem of <root>, because the rootfs image, the
+    # sandbox images and the snapshots are hard-linked or renamed into the jail.
+    jailer_dir: str = ""
+    # Every VM runs as a uid of its own, fc_uid_base + its transit slot: a Firecracker process that is taken
+    # over can neither signal nor read the files of the others.
+    fc_uid_base: int = 30000
+    cgroup_root: str = "/sys/fs/cgroup"
+    # What the Firecracker process itself takes on top of the guest's memory (its limit, with memoryMb).
+    fc_overhead_mb: int = 256
+    # Local memory snapshots: the disk they may take (oldest are evicted: that sandbox restores cold), and how
+    # long one is kept at all (days; 0 = no limit): a snapshot of a person who never came back is a gigabyte
+    # or two of dead disk.
+    snapshot_budget_gb: int = 120
+    snapshot_ttl_days: int = 7
+    snapshot_sweep_every_s: float = 3600
+    fc_socket_timeout_s: float = 10
+    fc_kill_timeout_s: float = 5
+    # Self-update (selfupdate.py).
+    host_dir: str = "/opt/bro/host"
+    update_max_bytes: int = 200 * 1024 * 1024
+    update_schemes: tuple = ("https",)
+    update_delay_s: float = 1.0
+    # Before the swap and the restart, an update waits for sandboxes that are starting, restoring or parking
+    # (new ones are refused meanwhile), at most this long; then it fails and nothing restarts.
+    update_quiet_timeout_s: float = 600
+    update_quiet_poll_s: float = 0.5
+    # How long hostd goes on refusing starts and parks after it has asked systemd to restart it.
+    update_restart_grace_s: float = 300
+    bash: str = "bash"
+    systemctl: str = "systemctl"
     # What sandbox memory limits may add up to; 0 = MemTotal less `reserve_mb`.
     memory_limit_mb: int = 0
     reserve_mb: int = 1024
@@ -170,6 +229,8 @@ class Config:
     def __post_init__(self):
         if self.runtime not in RUNTIMES:
             raise ValueError(f"runtime must be one of {RUNTIMES}")
+        if self.runtime == "firecracker" and not self.profile_mb:
+            raise ValueError("firecracker attaches the profile as an image: profile_mb may not be 0")
         # A stand config copied with a wrong port must not open hostd, ssh or Caddy to every sandbox.
         forbidden = {22, 80, 443, 2019, self.listen_port}
         if forbidden & {int(port) for port in self.stand_host_ports}:
@@ -185,7 +246,7 @@ class Config:
         unknown = set(values) - known
         if unknown:
             raise ValueError(f"unknown settings in {path}: {sorted(unknown)}")
-        for name in ("dns", "egress_blocked", "stand_host_ports"):
+        for name in ("dns", "egress_blocked", "stand_host_ports", "update_schemes"):
             if name in values:
                 values[name] = tuple(values[name])
         return cls(**values)
@@ -202,14 +263,27 @@ class Config:
     def staging(self):
         return Path(self.root) / "staging"
 
+    @property
+    def jails(self):
+        return Path(self.jailer_dir or Path(self.root) / "jailer")
+
+    @property
+    def snapshots(self):
+        return Path(self.root) / "snapshots"
+
 
 def load_identity(path):
-    """The host id and key from cloud-init; None on a host that has not got them yet."""
+    """The host id and keys from cloud-init; None on a host that has not got them yet. `updateKey` (the
+    operator's, for scope "update") is optional: a host without a valid one has no operator routes."""
     try:
         data = json.loads(Path(path).read_text())
-        return {"host": str(data["host"]), "key": bytes.fromhex(data["key"])}
+        identity = {"host": str(data["host"]), "key": bytes.fromhex(data["key"]), "updateKey": None}
     except (OSError, ValueError, KeyError):
         return None
+    update_key = data.get("updateKey")
+    if isinstance(update_key, str) and HEX_KEY.fullmatch(update_key):
+        identity["updateKey"] = bytes.fromhex(update_key)
+    return identity
 
 
 # --- Tokens ------------------------------------------------------------------------------------------
@@ -219,15 +293,25 @@ class Unauthorized(Exception):
     pass
 
 
+class UpdatesDisabled(Unauthorized):
+    """A scoped token on a host that has no `updateKey`: the operator's routes are off (403, not 401)."""
+
+
 def unb64url(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def verify_token(token, identity, now=None):
+def verify_token(token, identity, now=None, scope=None):
     """The payload of a valid host token, or Unauthorized. The worker's format (`verify_token` in
-    browser-vm/worker/worker.py) without a generation: fencing is per sandbox, in the request bodies."""
+    browser-vm/worker/worker.py) without a generation: fencing is per sandbox, in the request bodies. A token
+    has the `scope` its caller asks for or none: Bro's ordinary tokens carry none, the operator's update token
+    carries "update", and neither works where the other is meant. The two are signed with different keys: the
+    host's (which Bro derives) never opens a scoped route, whatever its token claims."""
     if identity is None:
         raise Unauthorized("host not configured")
+    key = identity["key"] if scope is None else identity.get("updateKey")
+    if key is None:
+        raise UpdatesDisabled("updates are not enabled on this host")
     now = time.time() if now is None else now
     try:
         version, payload_part, signature_part = token.split(".")
@@ -235,7 +319,7 @@ def verify_token(token, identity, now=None):
         raise Unauthorized("malformed token") from None
     if version != "v1":
         raise Unauthorized("unknown token version")
-    expected = hmac.new(identity["key"], f"{version}.{payload_part}".encode(), hashlib.sha256).digest()
+    expected = hmac.new(key, f"{version}.{payload_part}".encode(), hashlib.sha256).digest()
     try:
         signature = unb64url(signature_part)
         payload = json.loads(unb64url(payload_part))
@@ -245,6 +329,8 @@ def verify_token(token, identity, now=None):
         raise Unauthorized("bad signature")
     if not isinstance(payload, dict) or payload.get("env") != identity["host"]:
         raise Unauthorized("token for another host")
+    if payload.get("scope") != scope:
+        raise Unauthorized("token scope")
     expires = payload.get("exp")
     if not isinstance(expires, (int, float)) or expires <= now or expires > now + MAX_TOKEN_LIFETIME_S:
         raise Unauthorized("expired token")
@@ -257,17 +343,23 @@ def verify_token(token, identity, now=None):
 class Runner:
     """Every command hostd runs goes through here (tests put a fake in its place)."""
 
-    async def run(self, argv, *, log_file=None, timeout=120):
+    def __init__(self):
+        self.children = {}
+
+    async def run(self, argv, *, log_file=None, timeout=120, user=None):
         """(return code, output). With `log_file` stdout and stderr are appended to that file and the
-        output is empty: runc and runsc create and restore leave the sandbox holding them."""
+        output is empty: runc and runsc create and restore leave the sandbox holding them. With `user`
+        ((uid, gid)) the command runs as that unprivileged pair, with no other groups: what reads files a
+        sandbox wrote must not do it as root."""
+        who = {} if user is None else {"user": user[0], "group": user[1], "extra_groups": []}
         if log_file is not None:
             with open(log_file, "ab") as sink:
                 process = await asyncio.create_subprocess_exec(
-                    *argv, stdin=asyncio.subprocess.DEVNULL, stdout=sink, stderr=sink)
+                    *argv, stdin=asyncio.subprocess.DEVNULL, stdout=sink, stderr=sink, **who)
         else:
             process = await asyncio.create_subprocess_exec(
                 *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT)
+                stderr=asyncio.subprocess.STDOUT, **who)
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout)
         except asyncio.TimeoutError:
@@ -276,6 +368,46 @@ class Runner:
             await process.wait()
             return 124, f"{argv[0]} timed out after {timeout} s"
         return process.returncode, (output or b"").decode(errors="replace")
+
+
+    async def spawn(self, argv, *, log_file):
+        """Start a long-lived process (a VM) in a session of its own, stdout and stderr appended to a file;
+        its pid. It outlives hostd, and is reaped here as long as hostd lives."""
+        with open(log_file, "ab") as sink:
+            process = await asyncio.create_subprocess_exec(
+                *argv, stdin=asyncio.subprocess.DEVNULL, stdout=sink, stderr=sink, start_new_session=True)
+        self.children[process.pid] = asyncio.ensure_future(self.reap(process))
+        return process.pid
+
+    async def reap(self, process):
+        await process.wait()
+        self.children.pop(process.pid, None)
+
+    @staticmethod
+    def alive(pid, marker):
+        """Whether `pid` is a live process whose command line names `marker` and firecracker (or its jailer):
+        a pid hostd remembered may be somebody else's by now."""
+        try:
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return False
+        return bool(command) and b"firecracker" in command and marker.encode() in command
+
+    @staticmethod
+    def kill(pid):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    @staticmethod
+    def set_oom_score_adj(pid, value):
+        """Under memory pressure the kernel picks the VM before hostd, Caddy or sshd (what runc's bundle
+        does for a container); whether it was written (the process may be gone)."""
+        try:
+            Path(f"/proc/{pid}/oom_score_adj").write_text(str(value))
+        except OSError as error:
+            log.warning("oom_score_adj of %s: %s", pid, error)
+            return False
+        return True
 
 
 class Refused(Exception):
@@ -430,6 +562,24 @@ def ms(started):
     return round((time.monotonic() - started) * 1000)
 
 
+def log_tail(path, limit=2500):
+    """The end of a sandbox's runtime.log for an error: what the jailer, Firecracker or the guest's serial
+    console said last (the operator has no shell on the host to read it). The guest's own lines first (a
+    kernel panic's stack trace would push them out), then the kernel's last few."""
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - 64 * 1024))
+            lines = file.read().decode(errors="replace").splitlines()
+    except OSError:
+        return ""
+    # Not the kernel's (`[    0.43] …`) and not Firecracker's own log (`2026-10-09T21:12:00 [id:main] …`).
+    own = [line for line in lines if line.strip() and not line.lstrip().startswith("[")
+           and not re.match(r"\d{4}-\d\d-\d\dT", line)]
+    text = "\n".join([*own[-25:], "…", *lines[-4:]])
+    return text[-limit:].strip()
+
+
 def status_of(code, output):
     """The `status` of `runc state` / `runsc state` JSON, or None."""
     with contextlib.suppress(ValueError, AttributeError):
@@ -443,6 +593,7 @@ def status_of(code, output):
 
 class Paths:
     def __init__(self, config, sandbox_id):
+        self.id = sandbox_id
         self.dir = config.sandboxes / sandbox_id
         self.profile = self.dir / "profile"
         self.profile_image = self.dir / "profile.img"  # with `profile_mb`: the ext4 image mounted at profile/
@@ -457,6 +608,12 @@ class Paths:
         self.image = Path(config.shm) / f"bro-{sandbox_id}"  # runsc's checkpoint image, the only part in RAM
         self.staging = config.staging / sandbox_id  # tars and their zstd, on disk
         self.container = f"bro-{sandbox_id}"
+        # firecracker: the config drive's image, and the jail with the API socket in it
+        self.config_image = self.dir / "config.img"
+        self.jail = config.jails / "firecracker" / sandbox_id
+        self.jail_root = self.jail / "root"
+        self.socket = self.jail_root / firecracker.SOCKET
+        self.cgroup = Path(config.cgroup_root) / CGROUP_PARENT / sandbox_id
 
 
 def valid_id(value):
@@ -504,6 +661,16 @@ class Host:
         self.runtime_version = None
         self.uplink = config.uplink or None
         self.http = None
+        self.images = asyncio.Lock()  # firecracker: one rootfs image is built at a time
+        self.image_ids = {}  # firecracker: rootfs version -> the id of its image
+        self.kernel_sha256 = None
+        self.prebuild = None
+        self.updating = False
+        self.update_task = None
+        # An update is about to restart hostd: new starts and parks are refused (503), those running finish.
+        self.draining = False
+        self.inflight = 0  # starts, parks and deletes in progress: what an update waits for
+        self.last_sweep = None
         self.seccomp = None
         if config.runtime == "runc" and config.seccomp_profile:
             self.seccomp = json.loads(Path(config.seccomp_profile).read_text())
@@ -513,6 +680,10 @@ class Host:
     @property
     def gvisor(self):
         return self.config.runtime == "runsc"
+
+    @property
+    def microvm(self):
+        return self.config.runtime == "firecracker"
 
     @property
     def runsc_version(self):
@@ -528,7 +699,8 @@ class Host:
 
     async def start(self):
         self.http = aiohttp.ClientSession()
-        tool = self.config.runsc if self.gvisor else self.config.runc
+        tool = {"runsc": self.config.runsc, "firecracker": self.config.firecracker}.get(
+            self.config.runtime, self.config.runc)
         code, output = await self.runner.run([tool, "--version"])
         self.runtime_version = output.splitlines()[0].strip() if code == 0 and output else None
         if self.uplink is None:
@@ -538,8 +710,7 @@ class Host:
         for path in sorted(self.config.sandboxes.glob("*/sandbox.json")):
             with contextlib.suppress(OSError, ValueError, KeyError):
                 record = json.loads(path.read_text())
-                code, output = await self.runner.run(self.oci("state", Paths(self.config, record["id"]).container))
-                alive = status_of(code, output) == "running"
+                alive = await self.is_alive(record)
                 if not alive and record.get("state") != "failed":
                     # The host restarted under it: its memory is gone; the profile stays for a DELETE.
                     record.update(state="failed", error="the sandbox was not running when hostd started")
@@ -551,10 +722,30 @@ class Host:
                                   error=None if ready else f"hostd restarted while the sandbox was {record['state']}")
                 path.write_text(json.dumps(record))
                 self.sandboxes[record["id"]] = record
+        if self.microvm:
+            self.kernel_sha256 = await asyncio.to_thread(self.read_kernel_sha256)
+            await asyncio.to_thread(self.prepare_cgroups)
+            # Copies of profile images a park was reading when hostd went down.
+            await asyncio.to_thread(remove, Path(self.config.root) / PROFILE_WORK)
+            await self.sweep_snapshots()
+            self.prebuild = asyncio.ensure_future(self.prebuild_images())
+        selfupdate.mark_started(self.config, VERSION)
         await self.apply(strict=False)
         self.housekeeping = asyncio.ensure_future(self.keep_house())
 
+    async def is_alive(self, record):
+        """Whether the sandbox's container (or VM) is running."""
+        if self.microvm:
+            pid = record.get("fcPid")
+            return pid is not None and self.runner.alive(pid, record["id"])
+        code, output = await self.runner.run(self.oci("state", Paths(self.config, record["id"]).container))
+        return status_of(code, output) == "running"
+
     async def close(self):
+        if self.prebuild is not None:
+            self.prebuild.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.prebuild
         if self.housekeeping is not None:
             self.housekeeping.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -564,6 +755,24 @@ class Host:
 
     def lock(self, sandbox_id):
         return self.locks.setdefault(sandbox_id, asyncio.Lock())
+
+    @contextlib.contextmanager
+    def counted(self, *, new=True):
+        """A start, park or delete in progress: a pending update waits for it. While an update is about to
+        restart hostd (`draining`) a new start or park is refused instead (503: Bro tries again, on the
+        restarted hostd); a delete is never refused."""
+        if new and self.draining:
+            raise Refused(503, "the host is being updated: try again in a minute")
+        self.inflight += 1
+        try:
+            yield
+        finally:
+            self.inflight -= 1
+
+    def busy(self):
+        """Whether any sandbox is half way through a start, restore or park."""
+        return self.inflight > 0 or any(r["state"] in ("starting", "restoring", "parking")
+                                        for r in self.sandboxes.values())
 
     def live(self):
         return {r["id"]: r for r in self.sandboxes.values() if r.get("slot") is not None and r["state"] != "parked"}
@@ -612,12 +821,12 @@ class Host:
 
     @staticmethod
     def public(record):
-        return {k: v for k, v in record.items() if k != "slot"} | {"route": f"/g/{record['id']}/"}
+        return {k: v for k, v in record.items() if k not in ("slot", "fcPid")} | {"route": f"/g/{record['id']}/"}
 
     @staticmethod
     def wipe(paths):
         """Blocking (large trees): run it in a thread, and only once `unmount` said nothing is mounted."""
-        for path in (paths.dir, paths.image, paths.staging):
+        for path in (paths.dir, paths.image, paths.staging, paths.jail):
             remove(path)
 
     async def unmount(self, paths):
@@ -645,6 +854,8 @@ class Host:
     async def stop(self, paths):
         """Whether the container is gone: `delete --force`, and when that fails, `state` must not know it
         any more. A sandbox that outlived its record would hold memory nobody counts."""
+        if self.microvm:
+            return await self.stop_vm(paths)
         code, output = await self.runner.run(self.oci("delete", "--force", paths.container), timeout=60)
         if code == 0:
             return True
@@ -673,7 +884,8 @@ class Host:
         there would find none; leftovers of a hostd that died halfway would make `ip netns add` fail."""
         for argv in self.network.teardown(record["id"], record["slot"]):
             await self.runner.run(argv)
-        for argv in self.network.setup(record["id"], record["slot"], paths.router_rules):
+        owner = self.vm_ids(record) if self.microvm else None
+        for argv in self.network.setup(record["id"], record["slot"], paths.router_rules, tap_owner=owner):
             code, output = await self.runner.run(argv)
             if code != 0:
                 raise RuntimeError(f"network setup failed at {' '.join(argv[:4])}: {output[-200:]}")
@@ -718,6 +930,11 @@ class Host:
         if code != 0:
             raise RuntimeError(f"overlay mount failed: {output[-200:]}")
 
+    def footprint_mb(self, memory):
+        """What a sandbox of `memory` MB takes of the host: a microVM's Firecracker process takes
+        `fc_overhead_mb` on top of the guest's memory (the same margin its cgroup limit adds)."""
+        return memory + (self.config.fc_overhead_mb if self.microvm else 0)
+
     def admit(self, sandbox_id, memory):
         """Sandbox memory limits never add up to more than the host has: past that the kernel's OOM killer
         picks some other person's browser."""
@@ -727,9 +944,9 @@ class Host:
             if info is None:
                 return
             limit = info["total"] - self.config.reserve_mb
-        committed = sum(r["memoryMb"] for r in self.sandboxes.values()
+        committed = sum(self.footprint_mb(r["memoryMb"]) for r in self.sandboxes.values()
                         if r["id"] != sandbox_id and r["state"] not in ("parked", "failed"))
-        if committed + memory > limit:
+        if committed + self.footprint_mb(memory) > limit:
             raise Refused(507, "the host has no room for this sandbox", committedMb=committed, limitMb=limit)
 
     async def keep_house(self):
@@ -747,6 +964,11 @@ class Host:
             if time.monotonic() - last_trim >= 60:
                 last_trim = time.monotonic()
                 await asyncio.to_thread(self.trim_logs)
+            if self.microvm and time.monotonic() - (self.last_sweep or 0) >= self.config.snapshot_sweep_every_s:
+                try:
+                    await self.sweep_snapshots()
+                except Exception:
+                    log.exception("sweeping the old snapshots failed")
 
     def trim_logs(self):
         """runtime.log gets the sandbox's stdio for as long as it lives: past `log_max_bytes` only the newer
@@ -808,29 +1030,36 @@ class Host:
             if not rootfs.is_dir():
                 raise Refused(409, "rootfs version is not on this host", rootfsVersion=version)
             self.admit(sandbox_id, memory)
-            if existing is not None:
-                await self.teardown(existing)
-            record = {"id": sandbox_id, "workspace": workspace, "generation": generation, "memoryMb": memory,
-                      "rootfsVersion": version, "runtime": self.config.runtime,
-                      "state": "restoring" if source else "starting", "slot": None, "path": None,
-                      "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-            self.sandboxes[sandbox_id] = record
+            with self.counted():
+                return await self.start_new(existing, sandbox_id, workspace, generation, memory, version, source,
+                                            worker_key, rootfs)
+
+    async def start_new(self, existing, sandbox_id, workspace, generation, memory, version, source, worker_key,
+                        rootfs):
+        """The part of `create` that changes the host (under the sandbox's lock, counted for updates)."""
+        if existing is not None:
+            await self.teardown(existing)
+        record = {"id": sandbox_id, "workspace": workspace, "generation": generation, "memoryMb": memory,
+                  "rootfsVersion": version, "runtime": self.config.runtime,
+                  "state": "restoring" if source else "starting", "slot": None, "path": None,
+                  "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        self.sandboxes[sandbox_id] = record
+        try:
+            await self.bring_up(record, worker_key, source, rootfs)
+        except Exception as error:
+            log.warning("sandbox %s did not start: %s", sandbox_id, error)
             try:
-                await self.bring_up(record, worker_key, source, rootfs)
-            except Exception as error:
-                log.warning("sandbox %s did not start: %s", sandbox_id, error)
-                try:
-                    await self.teardown(record)
-                    record["slot"] = None
-                except Refused:
-                    pass  # still there: its slot and host dir stay taken until a DELETE gets it
-                record.update(state="failed", error=str(error)[:300])
-                self.save(record)
-                await self.apply(strict=False)
-                if isinstance(error, Refused):
-                    raise
-                raise Refused(502, f"sandbox did not start: {str(error)[:300]}") from None
-            return 201, self.public(record)
+                await self.teardown(record)
+                record["slot"] = None
+            except Refused:
+                pass  # still there: its slot and host dir stay taken until a DELETE gets it
+            record.update(state="failed", error=str(error)[:300])
+            self.save(record)
+            await self.apply(strict=False)
+            if isinstance(error, Refused):
+                raise
+            raise Refused(502, f"sandbox did not start: {str(error)[:300]}") from None
+        return 201, self.public(record)
 
     def bundle(self, record, paths, rootfs):
         sandbox_netns, _router = self.network.netns(record["id"])
@@ -889,7 +1118,7 @@ class Host:
             # scores (300 and up): runc sets this with privileges, which makes it the floor nobody in the
             # sandbox may go under, and with 500 Chrome could not rank its renderers above its browser process
             # (EACCES on every renderer, stage 2 host).
-            spec["process"]["oomScoreAdj"] = 200
+            spec["process"]["oomScoreAdj"] = VM_OOM_SCORE_ADJ
             # seccomp.json (Config.seccomp_profile): runc applies none of its own, and Docker's default
             # refuses the user namespace Chrome's sandbox makes (unshare, clone with CLONE_NEWUSER).
             if self.seccomp is not None:
@@ -915,12 +1144,42 @@ class Host:
         return {"runsc": self.runsc_version, "cpu": self.cpu["features"], "rootfs": record["rootfsVersion"],
                 "memoryMb": record["memoryMb"]}
 
+    def fits_microvm(self, snapshot, record):
+        """firecracker: a snapshot is local, so it fits only on the host and VM build that made it. (The
+        generation chain and the files are checked by `local_snapshot`.)"""
+        if not isinstance(snapshot, dict):
+            return "the set has no snapshot"
+        if snapshot.get("runtime") != "firecracker":
+            return "the set's snapshot is not a firecracker one"
+        host = self.identity["host"] if self.identity else None
+        if snapshot.get("host") != host:
+            return f"the snapshot is kept on {snapshot.get('host')}, this is {host}"
+        if snapshot.get("sandbox") != record["id"]:
+            return "the snapshot is of another sandbox"
+        if snapshot.get("firecracker") != self.runtime_version:
+            return f"snapshot of {snapshot.get('firecracker')}, host runs {self.runtime_version}"
+        if snapshot.get("kernel") != self.kernel_sha256:
+            return "snapshot of another guest kernel"
+        if snapshot.get("cpu") != self.cpu["features"]:
+            return "snapshot from a CPU with other features"
+        if snapshot.get("rootfs") != record["rootfsVersion"]:
+            return f"snapshot on rootfs {snapshot.get('rootfs')}, this start is on {record['rootfsVersion']}"
+        if snapshot.get("image") != self.image_ids.get(record["rootfsVersion"]):
+            return "snapshot on another build of the rootfs image"
+        if not isinstance(snapshot.get("memoryMb"), int) or snapshot["memoryMb"] > record["memoryMb"]:
+            return "snapshot of a sandbox with more memory than this start gives"
+        return None
+
     def fits(self, snapshot, record):
         """Whether a snapshot of that format can be restored here for this start; otherwise the reason."""
+        if self.microvm:
+            return self.fits_microvm(snapshot, record)
         if not self.gvisor:
             return "runc keeps no memory snapshots: the profile alone"
         if not isinstance(snapshot, dict):
             return "the set has no snapshot"
+        if snapshot.get("runtime") == "firecracker":
+            return "the set's snapshot is a firecracker one"
         if snapshot.get("runsc") != self.runsc_version:
             return f"snapshot of {snapshot.get('runsc')}, host runs {self.runsc_version}"
         if snapshot.get("cpu") != self.cpu["features"]:
@@ -940,6 +1199,8 @@ class Host:
             await asyncio.to_thread(remove, paths.image)
 
     async def bring_up_in(self, paths, record, worker_key, source, rootfs):
+        if self.microvm:
+            return await self.bring_up_microvm(paths, record, worker_key, source, rootfs)
         config = self.config
         owner = bro_owner(rootfs)
         if owner is None:
@@ -957,14 +1218,7 @@ class Host:
         timings, started = {}, time.monotonic()
         snapshot, fallback = False, None
         if source is not None:
-            manifest, encryption = await sets.fetch_manifest(self.http, source["key"], source["manifestUrl"])
-            if manifest.get("workspace") != record["workspace"]:
-                raise Refused(409, "the set belongs to another workspace")
-            set_generation = manifest.get("generation")
-            # Strictly older: this sandbox parks into <prefix>/<its generation>/ and never over the set it
-            # came from, which stays whole until the new manifest is in.
-            if not isinstance(set_generation, int) or set_generation >= record["generation"]:
-                raise Refused(409, "the set is not older than this generation", setGeneration=set_generation)
+            manifest, encryption = await self.read_set(record, source)
             await self.fetch_part(source, manifest, encryption, "profile", paths, paths.profile)
             if source["snapshot"]:
                 fallback = self.fits(manifest.get("snapshot"), record)
@@ -1018,6 +1272,18 @@ class Host:
             record["fallback"] = fallback
         self.save(record)
 
+    async def read_set(self, record, source):
+        """The set's manifest, once it is checked to be this workspace's and older than this start."""
+        manifest, encryption = await sets.fetch_manifest(self.http, source["key"], source["manifestUrl"])
+        if manifest.get("workspace") != record["workspace"]:
+            raise Refused(409, "the set belongs to another workspace")
+        set_generation = manifest.get("generation")
+        # Strictly older: this sandbox parks into <prefix>/<its generation>/ and never over the set it
+        # came from, which stays whole until the new manifest is in.
+        if not isinstance(set_generation, int) or set_generation >= record["generation"]:
+            raise Refused(409, "the set is not older than this generation", setGeneration=set_generation)
+        return manifest, encryption
+
     async def boot(self, record, paths):
         """Create and start the container from its bundle, and wait for its worker."""
         for command in ("create", "start"):
@@ -1059,11 +1325,14 @@ class Host:
                 return record["parked"]  # a retried park that already succeeded
             if record["state"] != "running":
                 raise Refused(409, f"sandbox is {record['state']}")
-            async with self.parking:
-                if self.gvisor:
-                    result = await self.park_frozen(record, generation, target)
-                else:
-                    result = await self.park_stopped(record, generation, target)
+            with self.counted():
+                async with self.parking:
+                    if self.microvm:
+                        result = await self.park_microvm(record, generation, target)
+                    elif self.gvisor:
+                        result = await self.park_frozen(record, generation, target)
+                    else:
+                        result = await self.park_stopped(record, generation, target)
         await self.apply(strict=False)
         return result
 
@@ -1246,6 +1515,571 @@ class Host:
         self.save(record)
         return ready
 
+    # Firecracker ------------------------------------------------------------------------------------
+
+    @property
+    def vcpus(self):
+        return max(1, round(self.config.cpus))
+
+    def vm_ids(self, record):
+        """(uid, gid) the VM's Firecracker process runs as: one pair per transit slot."""
+        ident = self.config.fc_uid_base + record["slot"]
+        return ident, ident
+
+    def read_kernel_sha256(self):
+        try:
+            return firecracker.sha256_file(self.config.kernel)
+        except OSError:
+            return None
+
+    def prepare_cgroups(self):
+        """The parent cgroup of the VMs, with the memory controller on for the cgroup the jailer makes in it
+        (best effort: hostd may be started where it already is, or by a user who cannot)."""
+        root = Path(self.config.cgroup_root)
+        parent = root / CGROUP_PARENT
+        with contextlib.suppress(OSError):
+            parent.mkdir(exist_ok=True)
+        for directory in (root, parent):
+            with contextlib.suppress(OSError):
+                (directory / "cgroup.subtree_control").write_text("+memory")
+
+    @staticmethod
+    def cgroup_used_mb(paths):
+        with contextlib.suppress(OSError, ValueError):
+            return round(int((paths.cgroup / "memory.current").read_text()) / 2**20)
+        return None
+
+    async def ensure_image(self, version):
+        """The rootfs version as one read-only ext4 image (built once, and again when the guest scripts in it
+        changed); its path. Running VMs keep the file they have open."""
+        config = self.config
+        rootfs = config.rootfs / version
+        image = config.rootfs / f"{version}.ext4"
+        async with self.images:
+            wanted = await asyncio.to_thread(firecracker.image_id, version)
+            if await asyncio.to_thread(firecracker.image_is_current, image, version):
+                self.image_ids[version] = wanted
+                return image
+            stage = config.staging / f"image-{version}"
+            partial = image.with_name(f".{image.name}.partial")
+            try:
+                await asyncio.to_thread(remove, stage)
+                script = await asyncio.to_thread(firecracker.stage_image_inputs, stage)
+                size = firecracker.image_size_mb(await asyncio.to_thread(firecracker.tree_footprint_mb, rootfs))
+                with open(partial, "wb") as file:
+                    file.truncate(size * 2**20)
+                for argv in firecracker.image_commands(mkfs=config.mkfs, debugfs=config.debugfs, rootfs=rootfs,
+                                                       image=partial, script=script):
+                    code, output = await self.runner.run(argv, timeout=1800)
+                    if code != 0:
+                        raise RuntimeError(f"building the rootfs image failed at {argv[0]}: {output[-200:]}")
+                code, listing = await self.runner.run(firecracker.image_check_command(config.debugfs, partial))
+                if code != 0 or not firecracker.image_has_scripts(listing):
+                    raise RuntimeError("the init scripts are not in the rootfs image")
+                firecracker.finish_image(partial, image, version)
+            finally:
+                await asyncio.to_thread(remove, stage)
+                await asyncio.to_thread(remove, partial)
+            self.image_ids[version] = wanted
+            return image
+
+    async def prebuild_images(self):
+        """At start: every rootfs version the host has gets its image, so the first start is not the one that
+        waits for it."""
+        if not self.config.rootfs.exists():
+            return
+        for path in sorted(self.config.rootfs.glob("*")):
+            if path.is_dir() and ROOTFS_VERSION.fullmatch(path.name):
+                try:
+                    await self.ensure_image(path.name)
+                except Exception as error:  # a start will say it again
+                    log.error("rootfs image of %s: %s", path.name, error)
+
+    def drop_jail(self, paths):
+        """The VM's chroot and cgroup, once nothing runs in them (blocking)."""
+        remove(paths.jail)
+        with contextlib.suppress(OSError):
+            paths.cgroup.rmdir()
+
+    async def kill_vm(self, paths):
+        """SIGKILL the VM and wait for it to be gone; whether it is."""
+        record = self.sandboxes.get(paths.id)
+        pid = record.get("fcPid") if record else None
+        if pid is None or not self.runner.alive(pid, paths.id):
+            return True
+        self.runner.kill(pid)
+        deadline = time.monotonic() + self.config.fc_kill_timeout_s
+        while self.runner.alive(pid, paths.id):
+            if time.monotonic() >= deadline:
+                log.error("firecracker %s of %s did not die", pid, paths.id)
+                return False
+            await asyncio.sleep(0.05)
+        return True
+
+    async def stop_vm(self, paths):
+        if not await self.kill_vm(paths):
+            return False
+        record = self.sandboxes.get(paths.id)
+        if record is not None:
+            record.pop("fcPid", None)
+        await asyncio.to_thread(self.drop_jail, paths)
+        return True
+
+    async def spawn_vm(self, record, paths):
+        """The jailer, and its API socket. The jail starts empty: a jailer given an old one would reuse it."""
+        config = self.config
+        uid, gid = self.vm_ids(record)
+        await asyncio.to_thread(self.drop_jail, paths)
+        # The jailer canonicalizes --chroot-base-dir and refuses one that is not there yet.
+        await asyncio.to_thread(Path(config.jails).mkdir, mode=0o711, parents=True, exist_ok=True)
+        argv = firecracker.jailer_argv(
+            jailer=config.jailer, firecracker=config.firecracker, sandbox_id=record["id"], uid=uid, gid=gid,
+            base=config.jails, netns=self.network.netns(record["id"])[0], cgroup_parent=CGROUP_PARENT,
+            memory_bytes=(record["memoryMb"] + config.fc_overhead_mb) * 2**20)
+        pid = await self.runner.spawn(argv, log_file=paths.log)
+        # The jailer execs Firecracker in place and the value survives that: under memory pressure a VM goes
+        # before hostd, Caddy or sshd (runc's bundle sets the same 200).
+        self.runner.set_oom_score_adj(pid, VM_OOM_SCORE_ADJ)
+        record["fcPid"] = pid
+        self.save(record)
+        deadline = time.monotonic() + config.fc_socket_timeout_s
+        while not paths.socket.exists():
+            if not self.runner.alive(pid, record["id"]):
+                raise RuntimeError(f"the jailer exited: {log_tail(paths.log)}")
+            if time.monotonic() >= deadline:
+                raise RuntimeError("firecracker did not open its API socket")
+            await asyncio.sleep(0.05)
+
+    async def place_files(self, record, paths, image):
+        """Into the jail, under the names a snapshot remembers: hard links of the kernel, the rootfs image and
+        the sandbox's two images, and the directory the snapshot goes to or comes from."""
+        uid, gid = self.vm_ids(record)
+        root = paths.jail_root
+
+        def link():
+            firecracker.link_or_copy(self.config.kernel, root / firecracker.KERNEL)
+            os.link(image, root / firecracker.ROOTFS)
+            os.chmod(paths.profile_image, 0o600)
+            os.chmod(paths.config_image, 0o400)
+            os.link(paths.profile_image, root / firecracker.PROFILE)
+            os.link(paths.config_image, root / firecracker.CONFIG)
+            (root / firecracker.SNAP).mkdir(mode=0o700, exist_ok=True)
+
+        await asyncio.to_thread(link)
+        code, output = await self.runner.run(
+            [self.config.chown, f"{uid}:{gid}", str(paths.profile_image), str(paths.config_image),
+             str(root / firecracker.SNAP)])
+        if code != 0:
+            raise RuntimeError(f"chown for the VM failed: {output[-200:]}")
+
+    async def write_config_image(self, record, paths, worker_key, owner):
+        """The config drive: worker.json (0600, owned by bro) and resolv.conf on a tiny ext4 image. The
+        plain files are staged only for the moment mkfs reads them."""
+        stage = paths.dir / "config"
+        stage.mkdir(mode=0o700)
+        worker = stage / "worker.json"
+        worker.touch(mode=0o600)
+        worker.write_text(json.dumps({"environment": record["workspace"], "key": worker_key}))
+        try:
+            os.chown(worker, *owner)
+        except PermissionError:
+            raise RuntimeError("hostd cannot hand the profile to the bro user") from None
+        (stage / "resolv.conf").write_text("".join(f"nameserver {address}\n" for address in self.config.dns))
+        with open(paths.config_image, "wb") as image:
+            image.truncate(4 * 2**20)
+        code, output = await self.runner.run(
+            [self.config.mkfs, "-q", "-F", "-m", "0", "-O", "^has_journal", "-L", "brocfg", "-d", str(stage),
+             str(paths.config_image)], timeout=120)
+        await asyncio.to_thread(remove, stage)
+        if code != 0:
+            raise RuntimeError(f"mkfs for the config drive failed: {output[-200:]}")
+
+    async def prepare_images(self, record, paths, worker_key, source, manifest, encryption, owner):
+        """A cold start's drives: the profile image (made, mounted here for the moment, filled from the set,
+        handed to bro, unmounted: a VM that has it never shares it with the host) and the config drive."""
+        await self.mount_profile(paths)
+        try:
+            if source is not None:
+                await self.fetch_part(source, manifest, encryption, "profile", paths, paths.profile)
+                await asyncio.to_thread(remove, paths.staging)
+            await asyncio.to_thread(chown_tree, paths.profile, owner)
+        except PermissionError:
+            raise RuntimeError("hostd cannot hand the profile to the bro user") from None
+        if not await self.unmount(paths):
+            raise RuntimeError("the profile image did not unmount")
+        await self.write_config_image(record, paths, worker_key, owner)
+
+    async def start_vm(self, record, paths, image):
+        """Boot a VM from the drives in the sandbox's directory and wait for its worker."""
+        await self.fresh_network(record, paths)
+        await self.apply()
+        self.save(record)
+        await self.spawn_vm(record, paths)
+        await self.place_files(record, paths, image)
+        cmdline = firecracker.kernel_cmdline(overlay_mb=self.config.overlay_mb, worker_port=self.config.worker_port,
+                                             now=time.time())
+        api = firecracker.Api(paths.socket)
+        for request in firecracker.boot_requests(cmdline=cmdline, memory_mb=record["memoryMb"], vcpus=self.vcpus):
+            try:
+                await api.send(request)
+            except firecracker.FirecrackerError as error:
+                if request[1] != "/entropy":  # a release without the device: the guest has random.trust_cpu
+                    raise
+                log.warning("sandbox %s: %s", record["id"], error)
+        await self.tell_the_time(api, record)
+        if not await self.worker_ready(record, self.config.start_timeout_s):
+            raise RuntimeError(f"the worker did not answer: {log_tail(paths.log)}")
+
+    async def tell_the_time(self, api, record):
+        """The host's clock into the VM's MMDS (bro-fc-clock steps the guest's to it); never fails a start."""
+        try:
+            await api.send(firecracker.clock_request(time.time()))
+        except firecracker.FirecrackerError as error:
+            log.warning("sandbox %s: no time for the guest: %s", record["id"], error)
+
+    def local_snapshot(self, record, manifest):
+        """(snapshot, None) when the local snapshot the set's manifest names is on this disk and whole; else
+        (None, why). Blocking."""
+        block = manifest["snapshot"]
+        if block.get("generation") != manifest.get("generation"):
+            return None, "the snapshot is of another generation than the set"
+        directory = firecracker.snapshot_dir(self.config.root, record["id"], block["generation"])
+        try:
+            if json.loads((directory / "meta.json").read_text()) != block:
+                return None, "the local snapshot is not the one the set names"
+            for name in firecracker.SNAPSHOT_FILES:
+                if not (directory / name).is_file():
+                    return None, f"the local snapshot lacks {name}"
+            if (directory / "mem").stat().st_size != block["memoryBytes"]:
+                return None, "the local snapshot's memory file has another size"
+            if firecracker.sha256_file(directory / "vmstate") != block["vmstateSha256"]:
+                return None, "the local snapshot's vmstate does not match"
+        except (OSError, ValueError, KeyError):
+            return None, "the local snapshot is gone (evicted or lost)"
+        return {"dir": directory}, None
+
+    async def restore_local(self, record, paths, image, snapshot):
+        """Load a local snapshot into a fresh jail and namespaces, with the profile and config images it was
+        taken with, and wait for the worker. None when it is back; otherwise why not (nothing of it is left
+        running; the images and the snapshot are gone, so the next try is a cold start). A snapshot is
+        restored once: its RNG state would otherwise be shared by two VMs."""
+        directory = snapshot["dir"]
+        try:
+            await asyncio.to_thread(os.replace, directory / "profile.img", paths.profile_image)
+            await asyncio.to_thread(os.replace, directory / "config.img", paths.config_image)
+            await self.fresh_network(record, paths)
+            await self.apply()
+            self.save(record)
+            await self.spawn_vm(record, paths)
+            await self.place_files(record, paths, image)
+            inside = paths.jail_root / firecracker.SNAP
+            await asyncio.to_thread(os.replace, directory / "vmstate", inside / "vmstate")
+            await asyncio.to_thread(os.replace, directory / "mem", inside / "mem")
+            uid, gid = self.vm_ids(record)
+            code, output = await self.runner.run(
+                [self.config.chown, f"{uid}:{gid}", str(inside / "vmstate"), str(inside / "mem")])
+            if code != 0:
+                raise RuntimeError(f"chown for the VM failed: {output[-200:]}")
+            api = firecracker.Api(paths.socket)
+            await api.send(firecracker.SNAPSHOT_LOAD, timeout=120)
+            # The guest wakes with the snapshot's time: the host's goes in at once.
+            await self.tell_the_time(api, record)
+            if not await self.worker_ready(record, self.config.restore_timeout_s):
+                raise RuntimeError("the restored worker did not answer")
+        except Exception as error:
+            reason = f"the firecracker restore failed: {str(error)[:200]}"
+            log.warning("sandbox %s: %s, starting cold", record["id"], reason)
+            if not await self.stop_vm(paths):
+                raise RuntimeError("firecracker could not delete the failed restore") from None
+            for path in (paths.profile_image, paths.config_image, directory.parent):
+                await asyncio.to_thread(remove, path)
+            return reason
+        # The VM maps the memory file; an unlinked file stays until it lets go.
+        for name in ("vmstate", "mem"):
+            await asyncio.to_thread(remove, paths.jail_root / firecracker.SNAP / name)
+        await asyncio.to_thread(remove, directory.parent)
+        return None
+
+    async def bring_up_microvm(self, paths, record, worker_key, source, rootfs):
+        config = self.config
+        owner = bro_owner(rootfs)
+        if owner is None:
+            raise RuntimeError(f"rootfs {record['rootfsVersion']} has no bro user")
+        if not await self.unmount(paths):  # leftovers of a hostd that died halfway
+            raise RuntimeError("an old profile of this sandbox is still mounted")
+        await asyncio.to_thread(self.wipe, paths)
+        paths.dir.mkdir(parents=True, mode=0o700)
+        paths.staging.mkdir(parents=True, mode=0o700)
+        paths.profile.mkdir(mode=0o700)
+        image = await self.ensure_image(record["rootfsVersion"])
+        timings, started = {}, time.monotonic()
+        manifest = encryption = snapshot = fallback = None
+        if source is not None:
+            manifest, encryption = await self.read_set(record, source)
+            if source["snapshot"]:
+                fallback = self.fits(manifest.get("snapshot"), record)
+                if fallback is None:
+                    snapshot, fallback = await asyncio.to_thread(self.local_snapshot, record, manifest)
+            timings["manifestMs"] = ms(started)
+        async with self.shared:
+            record["slot"] = self.network.allocate({r["slot"] for r in self.sandboxes.values()
+                                                    if r is not record and r.get("slot") is not None})
+        paths.router_rules.write_text(self.network.router_rules())
+        booted = time.monotonic()
+        if snapshot is not None:
+            fallback = await self.restore_local(record, paths, image, snapshot)
+            if fallback is None:
+                record["path"] = "restored"
+        if record["path"] is None:
+            # No snapshot to go back to (and none will be: this sandbox's chain moves on from this set).
+            await asyncio.to_thread(remove, firecracker.snapshot_dir(config.root, record["id"]))
+            await self.prepare_images(record, paths, worker_key, source, manifest, encryption, owner)
+            await self.start_vm(record, paths, image)
+            record["path"] = "cold" if source is not None else "fresh"
+        timings["startMs"] = ms(booted)
+        record.update(state="running", timings=timings, error=None)
+        if fallback is not None and record["path"] == "cold":
+            record["fallback"] = fallback
+        self.save(record)
+
+    async def abort_snapshot(self, record, paths, api):
+        """A pause or a snapshot that failed: the VM goes on if it can."""
+        resumed = False
+        with contextlib.suppress(firecracker.FirecrackerError):
+            await api.send(firecracker.RESUME)
+            resumed = True
+        for name in ("vmstate", "mem"):
+            await asyncio.to_thread(remove, paths.jail_root / firecracker.SNAP / name)
+        record.update(state="running" if resumed else "failed",
+                      error=None if resumed else "the snapshot failed and the sandbox did not resume")
+        self.save(record)
+
+    def keep_snapshot(self, record, paths, generation):
+        """Move the snapshot out of the jail, with the sandbox's two images, to <root>/snapshots/<id>/<gen>/,
+        and write its meta.json last: a directory without one is not a snapshot. The block for the manifest.
+        Blocking."""
+        directory = firecracker.snapshot_dir(self.config.root, record["id"], generation)
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True, mode=0o700)
+        inside = paths.jail_root / firecracker.SNAP
+        os.replace(inside / "vmstate", directory / "vmstate")
+        os.replace(inside / "mem", directory / "mem")
+        os.replace(paths.profile_image, directory / "profile.img")
+        os.replace(paths.config_image, directory / "config.img")
+        block = firecracker.snapshot_block(
+            host=self.identity["host"] if self.identity else None, sandbox_id=record["id"], generation=generation,
+            firecracker_version=self.runtime_version, kernel_sha256=self.kernel_sha256, cpu=self.cpu["features"],
+            rootfs=record["rootfsVersion"], image=self.image_ids.get(record["rootfsVersion"]),
+            memory_mb=record["memoryMb"], vmstate_sha256=firecracker.sha256_file(directory / "vmstate"),
+            memory_bytes=(directory / "mem").stat().st_size)
+        temporary = directory / "meta.json.tmp"
+        temporary.write_text(json.dumps(block))
+        temporary.replace(directory / "meta.json")
+        for other in directory.parent.iterdir():  # earlier generations can never be restored again
+            if other != directory:
+                shutil.rmtree(other, ignore_errors=True)
+        return block
+
+    async def write_microvm_set(self, record, paths, generation, target, block):
+        """The set of a park: the profile alone, from a copy of the profile image (the image itself stays as
+        the VM left it, for the snapshot). The guest wrote that image, so the host's kernel never mounts it (a
+        crafted ext4 is a kernel exploit away from root): on the copy `e2fsck -fy` replays the journal and
+        `debugfs rdump` reads the files out, both userspace, run as the VM's own unprivileged uid in a
+        directory only that uid and root can enter. hostd (root) then only packs the tree, and `pack` takes
+        regular files and directories alone. (The other direction, a set written INTO an image by
+        `prepare_images`, parses nothing of the guest's.)"""
+        config = self.config
+        directory = firecracker.snapshot_dir(config.root, record["id"], generation)
+        who = self.vm_ids(record)
+        work = Path(config.root) / PROFILE_WORK / record["id"]
+        copy, tree = work / "profile.img", work / "tree"
+        try:
+            await asyncio.to_thread(self.make_work_dir, work, tree)
+            code, output = await self.runner.run(
+                [config.cp, "--sparse=always", str(directory / "profile.img"), str(copy)], timeout=600)
+            if code != 0:
+                raise RuntimeError(f"copying the profile image failed: {output[-200:]}")
+            code, output = await self.runner.run(
+                [config.chown, f"{who[0]}:{who[1]}", str(work), str(tree), str(copy)])
+            if code != 0:
+                raise RuntimeError(f"chown for the profile copy failed: {output[-200:]}")
+            # 0 = clean, 1 and 2 = repaired (the journal replayed): what a snapshot of a running guest needs.
+            code, output = await self.runner.run([config.e2fsck, "-fy", str(copy)], timeout=600, user=who)
+            if code not in (0, 1, 2):
+                raise RuntimeError(f"the profile image is damaged: e2fsck exited {code}: {output[-200:]}")
+            code, output = await self.runner.run(
+                [config.debugfs, "-R", f"rdump / {tree}", str(copy)], timeout=600, user=who)
+            # debugfs exits 0 on most errors, and as a plain uid it cannot give files their guest owners (a
+            # "changing ownership" line for every file: noise); anything else it says is a read that failed.
+            failed = [line for line in output.splitlines() if " while " in line and "changing ownership" not in line]
+            if code != 0 or failed:
+                raise RuntimeError(f"reading the profile image failed: {(failed[0] if failed else output)[-200:]}")
+            return await self.write_set(record, paths, generation, target, [("profile", tree)], block)
+        finally:
+            await asyncio.to_thread(remove, work)
+
+    @staticmethod
+    def make_work_dir(work, tree):
+        """<root>/profile-work/<id>/{tree}: the parent is enterable by any uid, the directories are private
+        (their owner changes to the VM's uid once the copy is in). Blocking."""
+        work.parent.mkdir(mode=0o711, parents=True, exist_ok=True)
+        os.chmod(work.parent, 0o711)
+        remove(work)
+        work.mkdir(mode=0o700)
+        tree.mkdir(mode=0o700)
+
+    async def park_microvm(self, record, generation, target):
+        """firecracker: pause the VM, write a full snapshot, end the VM, keep the snapshot on this disk, and
+        upload the profile alone. The worker has dropped its secrets before (Bro asks it first)."""
+        config = self.config
+        paths = Paths(config, record["id"])
+        used = await asyncio.to_thread(lambda: paths.profile_image.stat().st_blocks * 512 // 2**20)
+        needed = record["memoryMb"] + 2 * used + 256  # the snapshot, and the profile's copy, tar and zstd
+        # Old snapshots go first (this sandbox's own stays: its next restore is still local), by their age and
+        # the budget, and then for as long as the disk is short of `needed`: a full disk is what they are for.
+        evicted = await asyncio.to_thread(
+            firecracker.evict_snapshots, config.root, config.snapshot_budget_gb * 2**30, (record["id"], None),
+            max_age_s=self.snapshot_max_age_s(), need_free_bytes=needed * 2**20,
+            free_bytes=self.disk_free_bytes, protect=self.unparked_ids())
+        if evicted:
+            log.info("snapshots evicted before a park: %s", ", ".join(evicted))
+        disk_free = free_mb(config.root)
+        if disk_free is not None and disk_free < needed:
+            raise Refused(507, "no room on disk for the snapshot and the set", freeMb=disk_free, neededMb=needed)
+        record.update(generation=generation, state="parking")
+        self.save(record)
+        started = time.monotonic()
+        api = firecracker.Api(paths.socket)
+        try:
+            await api.send(firecracker.PAUSE)
+            await api.send(firecracker.SNAPSHOT_CREATE, timeout=300)
+        except firecracker.FirecrackerError as error:
+            await self.abort_snapshot(record, paths, api)
+            raise Refused(502, "firecracker snapshot failed", output=str(error)[-300:]) from None
+        timings = {"snapshotMs": ms(started)}
+        if not await self.kill_vm(paths):
+            record.update(state="failed", error="the snapshot is written but the VM could not be stopped")
+            self.save(record)
+            raise Refused(502, "firecracker could not stop the sandbox")
+        try:
+            block = await asyncio.to_thread(self.keep_snapshot, record, paths, generation)
+        except OSError as error:
+            record.update(state="failed", error=f"the snapshot could not be kept: {error}"[:300])
+            self.save(record)
+            raise Refused(502, "the snapshot could not be kept on disk") from None
+        try:
+            manifest, stage_timings = await self.write_microvm_set(record, paths, generation, target, block)
+        except Exception as error:
+            log.warning("sandbox %s: park upload failed: %s", record["id"], error)
+            await asyncio.to_thread(remove, paths.staging)
+            restored = await self.resume_local(record, paths, generation)
+            raise Refused(502, f"the set was not written: {str(error)[:300]}", restoredLocally=restored) from None
+        timings.update(stage_timings, totalMs=ms(started))
+        result = await self.finish_park(record, generation, manifest, block, timings)
+        evicted = await asyncio.to_thread(
+            firecracker.evict_snapshots, config.root, config.snapshot_budget_gb * 2**30, (record["id"], generation),
+            max_age_s=self.snapshot_max_age_s(), protect=self.unparked_ids())
+        if evicted:
+            log.info("snapshots evicted for the disk budget: %s", ", ".join(evicted))
+        return result
+
+    def snapshot_max_age_s(self):
+        days = self.config.snapshot_ttl_days
+        return days * 86400 if days else None
+
+    def disk_free_bytes(self):
+        mb = free_mb(self.config.root)
+        return None if mb is None else mb * 2**20
+
+    def unparked_ids(self):
+        """Sandboxes whose snapshot is about to be (or is being) used, or whose files a park is moving: the
+        eviction leaves them alone."""
+        return frozenset(i for i, r in self.sandboxes.items() if r["state"] != "parked")
+
+    async def sweep_snapshots(self):
+        """At start and every `snapshot_sweep_every_s`: snapshots past `snapshot_ttl_days` (or over the disk
+        budget) go; the names removed."""
+        self.last_sweep = time.monotonic()
+        evicted = await asyncio.to_thread(
+            firecracker.evict_snapshots, self.config.root, self.config.snapshot_budget_gb * 2**30, None,
+            max_age_s=self.snapshot_max_age_s(), protect=self.unparked_ids())
+        if evicted:
+            log.info("old snapshots evicted: %s", ", ".join(evicted))
+        return evicted
+
+    async def resume_local(self, record, paths, generation):
+        """After a park that could not upload: the sandbox from its local snapshot, here."""
+        ready = False
+        try:
+            snapshot = {"dir": firecracker.snapshot_dir(self.config.root, record["id"], generation)}
+            image = await self.ensure_image(record["rootfsVersion"])
+            ready = await self.restore_local(record, paths, image, snapshot) is None
+        except Exception as error:
+            log.warning("sandbox %s did not come back: %s", record["id"], error)
+        record.update(state="running" if ready else "failed",
+                      error=None if ready else "the park failed and the sandbox did not come back")
+        self.save(record)
+        return ready
+
+    # Update -----------------------------------------------------------------------------------------
+
+    async def update(self, body):
+        """POST /v1/admin/update: the bundle is fetched and checked before the answer, swapped in and run
+        after it (selfupdate.py)."""
+        try:
+            url, digest = selfupdate.valid_request(body, self.config.update_schemes)
+            if self.updating:
+                raise selfupdate.UpdateRefused(409, "an update is already running")
+            self.updating = True
+            try:
+                version = await selfupdate.prepare(self.http, self.config, url, digest)
+                selfupdate.write_status(self.config, state="downloaded", sha256=digest, version=version)
+                self.update_task = asyncio.ensure_future(self.apply_update(version, digest))
+            except BaseException:  # whatever fails before the task owns the flag gives it back
+                self.updating = False
+                raise
+        except selfupdate.UpdateRefused as refusal:
+            raise Refused(refusal.status, refusal.error) from None
+        return 202, {"accepted": True, "current": VERSION, "version": version, "willRestart": True}
+
+    async def apply_update(self, version, digest):
+        """After the answer: wait until no sandbox is half way through a start or a park (new ones are
+        refused meanwhile), then swap, run update.sh and restart. A restart mid-park would lose the park's
+        files and the set. Past `update_quiet_timeout_s` the update fails and nothing changes."""
+        restarting = False
+        self.draining = True
+        try:
+            if await self.wait_until_quiet(version, digest):
+                restarting = await selfupdate.apply(self.runner, self.config, version, digest)
+            if restarting:
+                # SIGTERM comes well before this; if it never does, hostd is not left refusing every start.
+                await asyncio.sleep(self.config.update_restart_grace_s)
+                log.error("hostd was told to restart %s s ago and still runs", self.config.update_restart_grace_s)
+                restarting = False
+        except Exception:
+            log.exception("applying the update failed")
+        finally:
+            if not restarting:  # a restart is on its way: the new hostd starts clean
+                self.draining = False
+                self.updating = False
+
+    async def wait_until_quiet(self, version, digest):
+        deadline = time.monotonic() + self.config.update_quiet_timeout_s
+        if self.busy():
+            selfupdate.write_status(self.config, state="waiting", sha256=digest, version=version)
+        while self.busy():
+            if time.monotonic() >= deadline:
+                log.error("update %s: sandboxes were still starting or parking after %s s",
+                          version, self.config.update_quiet_timeout_s)
+                await asyncio.to_thread(shutil.rmtree, self.config.host_dir + ".new", True)
+                selfupdate.write_status(
+                    self.config, state="failed", sha256=digest, version=version,
+                    error=f"sandboxes were still starting or parking after {self.config.update_quiet_timeout_s:g} s: "
+                          "nothing was changed, try again")
+                return False
+            await asyncio.sleep(self.config.update_quiet_poll_s)
+        return True
+
     # Delete -----------------------------------------------------------------------------------------
 
     async def delete(self, sandbox_id, generation):
@@ -1256,28 +2090,41 @@ class Host:
                 paths = Paths(self.config, sandbox_id)
                 if await self.unmount(paths):
                     await asyncio.to_thread(self.wipe, paths)
+                await asyncio.to_thread(remove, firecracker.snapshot_dir(self.config.root, sandbox_id))
                 raise Refused(404, "no such sandbox")
             if generation < record["generation"]:
                 raise Refused(409, "stale generation", generation=record["generation"])
-            try:
-                await self.teardown(record)
-            except Refused as refusal:
-                record.update(state="failed", error=refusal.body["error"])
-                self.save(record)
-                raise
-            del self.sandboxes[sandbox_id]
+            with self.counted(new=False):
+                try:
+                    await self.teardown(record)
+                except Refused as refusal:
+                    record.update(state="failed", error=refusal.body["error"])
+                    self.save(record)
+                    raise
+                # A deleted sandbox keeps nothing: a microVM's memory snapshot is its pages and cookies.
+                await asyncio.to_thread(remove, firecracker.snapshot_dir(self.config.root, sandbox_id))
+                del self.sandboxes[sandbox_id]
         await self.apply(strict=False)
         return {"id": sandbox_id, "deleted": True}
 
     # Capacity ---------------------------------------------------------------------------------------
 
     async def used_mb(self, record):
-        """The sandbox's cgroup memory: `runc events --stats` and `runsc events --stats` print the same JSON."""
+        """The sandbox's cgroup memory: `runc events --stats` and `runsc events --stats` print the same JSON;
+        a microVM's is its cgroup's memory.current."""
+        if self.microvm:
+            return await asyncio.to_thread(self.cgroup_used_mb, Paths(self.config, record["id"]))
         code, output = await self.runner.run(self.oci("events", "--stats", Paths(self.config, record["id"]).container))
         with contextlib.suppress(ValueError, KeyError, TypeError, AttributeError):
             if code == 0:
                 return round(json.loads(output)["data"]["memory"]["usage"]["usage"] / 2**20)
         return None
+
+    def capacity_format(self):
+        if self.microvm:
+            return {"runtime": "firecracker", "firecracker": self.runtime_version, "kernel": self.kernel_sha256,
+                    "cpu": self.cpu["features"], "host": self.identity["host"] if self.identity else None}
+        return {"runsc": self.runsc_version, "cpu": self.cpu["features"]} if self.gvisor else None
 
     async def capacity(self):
         live = [r for r in self.sandboxes.values() if r["state"] not in ("parked",)]
@@ -1296,13 +2143,18 @@ class Host:
                           if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name)) if self.config.rootfs.exists() else []
         memory = meminfo()
         if memory is not None:
-            memory["committed"] = sum(r["memoryMb"] for r in live if r["state"] != "failed")
-        return {
+            memory["committed"] = sum(self.footprint_mb(r["memoryMb"]) for r in live if r["state"] != "failed")
+        extra = {}
+        if self.microvm:
+            count, size = await asyncio.to_thread(firecracker.snapshot_usage, self.config.root)
+            extra["snapshots"] = {"count": count, "bytes": size, "budgetGb": self.config.snapshot_budget_gb}
+        return {**extra,
             "host": self.identity["host"] if self.identity else None, "memoryMb": memory, "shm": shm, "disk": disk,
             "cpu": self.cpu, "runtime": self.config.runtime, "runtimeVersion": self.runtime_version,
             "runsc": self.runsc_version, "rootfsVersions": versions,
-            # Where a runsc set may be restored with its memory; runc makes none.
-            "snapshotFormat": {"runsc": self.runsc_version, "cpu": self.cpu["features"]} if self.gvisor else None,
+            # Where a runsc set may be restored with its memory; runc makes none; a firecracker snapshot is
+            # local, to this host and this VM build.
+            "snapshotFormat": self.capacity_format(),
             "sandboxes": [{"id": r["id"], "state": r["state"], "generation": r["generation"],
                            "memoryMb": r["memoryMb"], "usedMb": usage.get(r["id"])} for r in live],
         }
@@ -1313,11 +2165,13 @@ class Host:
 HOST = web.AppKey("host", Host)
 
 
-def authorize(request):
+def authorize(request, scope=None):
     header = request.headers.get("Authorization", "")
     token = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
     try:
-        verify_token(token, request.app[HOST].identity)
+        verify_token(token, request.app[HOST].identity, scope=scope)
+    except UpdatesDisabled as error:
+        raise web.HTTPForbidden(text=json.dumps({"error": str(error)}), content_type="application/json")
     except Unauthorized as error:
         raise web.HTTPUnauthorized(text=json.dumps({"error": str(error)}), content_type="application/json")
 
@@ -1336,6 +2190,8 @@ async def health(request):
         "hostd": VERSION, "runtime": host.config.runtime, "runtimeVersion": host.runtime_version,
         "runsc": host.runsc_version, "configured": host.identity is not None,
         "stage": stage.read_text().strip() if stage.exists() else None,
+        # No token needed here: the state and version of the last update, not its error text or the bundle's hash.
+        "update": selfupdate.public_status(selfupdate.read_status(host.config)),
     })
 
 
@@ -1374,6 +2230,42 @@ async def park_sandbox(request):
     return web.json_response(await request.app[HOST].park(sandbox_id, await body_of(request)))
 
 
+async def sandbox_log(request):
+    """The end of a sandbox's runtime.log (the runtime, Firecracker and the guest's console), for the operator
+    alone: there is no shell on the host. The `update` scope: Bro's own tokens do not read it."""
+    authorize(request, scope="update")
+    host = request.app[HOST]
+    sandbox_id = valid_id(request.match_info["sandbox_id"])
+    try:
+        limit = min(max(int(request.query.get("bytes", "16384")), 1), 65536)
+    except ValueError:
+        raise Refused(400, "bytes must be a number") from None
+    path = Paths(host.config, sandbox_id).log
+    try:
+        with open(path, "rb") as file:
+            size = file.seek(0, os.SEEK_END)
+            file.seek(max(0, size - limit))
+            text = file.read().decode(errors="replace")
+    except FileNotFoundError:
+        raise Refused(404, "no log for that sandbox") from None
+    return web.Response(text=text, content_type="text/plain")
+
+
+async def update_host(request):
+    authorize(request, scope="update")
+    host = request.app[HOST]
+    status, body = await host.update(await body_of(request))
+    return web.json_response(body, status=status)
+
+
+async def update_status(request):
+    """The whole status of the last update (error text, bundle hash, the version running): the operator's."""
+    authorize(request, scope="update")
+    host = request.app[HOST]
+    return web.json_response({"hostd": VERSION, "updating": host.updating, "draining": host.draining,
+                              "update": selfupdate.read_status(host.config)})
+
+
 @web.middleware
 async def errors(request, handler):
     try:
@@ -1397,6 +2289,9 @@ def application(host):
         web.get("/v1/sandboxes/{sandbox_id}", read_sandbox),
         web.delete("/v1/sandboxes/{sandbox_id}", delete_sandbox),
         web.post("/v1/sandboxes/{sandbox_id}/park", park_sandbox),
+        web.get("/v1/sandboxes/{sandbox_id}/log", sandbox_log),
+        web.post("/v1/admin/update", update_host),
+        web.get("/v1/admin/update", update_status),
     ])
     return app
 

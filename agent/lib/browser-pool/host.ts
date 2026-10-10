@@ -451,7 +451,8 @@ export async function deleteBrowserHostSandbox(
 
 /**
  * Chunk URLs a park takes: a set holds the sandbox's profile and, under
- * runsc, its memory image, compressed, so their plain size (with a margin
+ * runsc, its memory image (not under firecracker, whose snapshot stays on
+ * the host), compressed, so their plain size (with a margin
  * for data zstd cannot shrink) bounds it. `hostd` says how many it used.
  * The runtime is the one the host reports, not BROWSER_HOST_RUNTIME: hosts
  * made before that setting changed run on as they were made. A host that
@@ -462,6 +463,8 @@ export async function deleteBrowserHostSandbox(
 function parkChunks(runtime: string | null | undefined) {
   let imageMb = env.BROWSER_SANDBOX_MEMORY_MB;
   switch (runtime ?? "runsc") {
+    // A microVM's memory snapshot stays on its host: the set is the profile.
+    case "firecracker":
     case "runc": {
       imageMb = 0;
       break;

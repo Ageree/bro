@@ -3,7 +3,8 @@
 # boot.py) from the unpacked bundle in /opt/bro/host. From Cloud.ru, GitHub and PyPI accept connections and
 # send nothing and archive.ubuntu.com does not answer (30.09.2026): apt goes to the mirror boot.json names
 # (mirror.yandex.ru), Caddy's binary and hostd's wheels come in the bundle (hash-pinned, see boot.py), and the
-# sandbox rootfs from its presigned Object Storage URL. The runtime is runc (default) or a pinned runsc.
+# sandbox rootfs from its presigned Object Storage URL. The runtime is runc (default), a pinned runsc, or
+# firecracker (microVMs: the binaries and the guest kernel come in the bundle, vendor/firecracker/).
 # Nothing here is per person. The host key is in /etc/bro/host.json (cloud-init, 0600); hostd reads it.
 # Stages go to /srv/bro/stage. Caddy and hostd come up right after the packages, so from then on Bro reads
 # the stage (and a `failed:<stage>:line N`) on https://<domain>/h/v1/health; the slow rootfs download comes
@@ -32,10 +33,11 @@ stage start
 
 RUNTIME=$(field runtime)
 RUNTIME="${RUNTIME:-runc}"
-if [ "$RUNTIME" != runc ] && [ "$RUNTIME" != runsc ]; then
-  stage "failed:runtime is neither runc nor runsc"
+if [ "$RUNTIME" != runc ] && [ "$RUNTIME" != runsc ] && [ "$RUNTIME" != firecracker ]; then
+  stage "failed:runtime is neither runc, runsc nor firecracker"
   exit 1
 fi
+. "$HOST/units.sh"
 RUNSC_RELEASE=$(field runscRelease)
 # A dated release, never the moving `release` suite: snapshots only restore under the runsc that made them.
 if [ "$RUNTIME" = runsc ] && ! [[ "$RUNSC_RELEASE" =~ ^[0-9]{8}(\.[0-9]+)?$ ]]; then
@@ -53,6 +55,7 @@ if [ ! -x "$HOST/vendor/caddy" ] || ! ls "$HOST"/wheels/*.whl >/dev/null 2>&1; t
 fi
 
 stage packages
+echo "kernel $(uname -r), runtime $RUNTIME"
 APT_MIRROR=$(field aptMirror)
 if [ -n "$APT_MIRROR" ]; then
   # Every Ubuntu archive of the stock image (archive, security, the country mirrors) to the one that answers.
@@ -61,7 +64,12 @@ if [ -n "$APT_MIRROR" ]; then
 fi
 retry apt-get update -q
 PACKAGES=(curl ca-certificates nftables zstd iproute2 python3-venv)
-if [ "$RUNTIME" = runc ]; then PACKAGES+=(runc); else PACKAGES+=(gnupg); fi
+case "$RUNTIME" in
+  runc) PACKAGES+=(runc) ;;
+  runsc) PACKAGES+=(gnupg) ;;
+  # mkfs.ext4 -d needs e2fsprogs 1.43 (22.04 has 1.46); debugfs injects the guest init into the rootfs image.
+  firecracker) PACKAGES+=(e2fsprogs) ;;
+esac
 retry apt-get install -yq "${PACKAGES[@]}"
 if [ "$RUNTIME" = runsc ]; then
   retry curl -fsSL -o /tmp/gvisor.key https://gvisor.dev/archive.key
@@ -78,6 +86,27 @@ if [ "$RUNTIME" = runsc ]; then
     exit 1
   fi
   apt-mark hold runsc >/dev/null
+elif [ "$RUNTIME" = firecracker ]; then
+  # Firecracker needs KVM (a bare-metal host or nested virtualization), and says so here rather than at the
+  # first sandbox. Ubuntu 22.04's 5.15 kernel is not on Firecracker's tested host list: the first start on a
+  # new host is the test.
+  [ -c /dev/kvm ] || modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null || true
+  if [ ! -c /dev/kvm ]; then
+    stage "failed:/dev/kvm is missing (kernel $(uname -r)): firecracker needs hardware virtualization"
+    exit 1
+  fi
+  for FILE in firecracker jailer vmlinux; do
+    if [ ! -f "$HOST/vendor/firecracker/$FILE" ]; then
+      stage "failed:the bundle has no vendor/firecracker/$FILE (boot.py vendor --firecracker-url …)"
+      exit 1
+    fi
+  done
+  install -d -m 755 /opt/bro/firecracker
+  install -m 755 "$HOST/vendor/firecracker/firecracker" "$HOST/vendor/firecracker/jailer" /opt/bro/firecracker/
+  install -m 644 "$HOST/vendor/firecracker/vmlinux" /opt/bro/firecracker/vmlinux
+  /opt/bro/firecracker/firecracker --version | sed -n 1p
+  /opt/bro/firecracker/jailer --version | sed -n 1p
+  echo "firecracker on kernel $(uname -r), $(stat -c %s /opt/bro/firecracker/vmlinux) byte guest kernel"
 else
   runc --version | sed -n 1p
   # hostd never runs anything inside a sandbox (`runc exec` is where runc's escapes start), but create and
@@ -94,6 +123,8 @@ stage venv
 python3 -m venv /opt/bro/venv
 # Offline and hash-checked: only the wheels the bundle carries, each the one requirements.txt pins.
 /opt/bro/venv/bin/pip install -q --no-index --find-links "$HOST/wheels" --require-hashes -r "$HOST/requirements.txt"
+# update.sh (hostd's self-update) installs the wheels again only when this changes.
+sha256sum "$HOST/requirements.txt" | cut -d' ' -f1 > /opt/bro/venv/.requirements.sha256
 
 stage caddy
 install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
@@ -127,61 +158,24 @@ python3 -c 'import json, sys
 settings = {"domain": sys.argv[1], "runtime": sys.argv[2]}
 if sys.argv[3]:
     settings["egress_blocked"] = [sys.argv[3] + "/32"]
-json.dump(settings, open("/etc/bro/hostd.json", "w"))' "$DOMAIN" "$RUNTIME" "$IP"
+# A server shared with the code sandbox host: browser sandboxes take only their share of its memory.
+if sys.argv[4] not in ("", "0"):
+    settings["memory_limit_mb"] = int(sys.argv[4])
+json.dump(settings, open("/etc/bro/hostd.json", "w"))' "$DOMAIN" "$RUNTIME" "$IP" "$(field memoryLimitMb)"
 # The unit Caddy's own packages ship, for the static binary. The admin API only on a unix socket that root
 # (hostd) reaches: on localhost:2019 any local process could load a config that publishes a worker's CDP.
 # hostd rewrites the Caddyfile and reloads over this socket.
-cat > /etc/systemd/system/caddy.service <<'UNIT'
-[Unit]
-Description=Caddy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=notify
-User=caddy
-Group=caddy
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-PrivateTmp=true
-ProtectSystem=full
-# Ports 80 and 443 only. Not CAP_NET_ADMIN (upstream's unit gives it for QUIC buffers): with it, code run as
-# caddy could delete hostd's nftables table, the one barrier between sandboxes and the VPC.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-RuntimeDirectory=caddy
-RuntimeDirectoryMode=0750
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n%s {\n\thandle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' \
+write_caddy_unit || true
+# Other services of the same server add their sites as files in sites/ (caddy.py).
+mkdir -p /etc/caddy/sites
+printf '{\n\tadmin unix//run/caddy/admin.sock\n}\nimport sites/*\n%s {\n\thandle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090\n\t}\n\thandle {\n\t\trespond 404\n\t}\n}\n' \
   "$DOMAIN" > /etc/caddy/Caddyfile
 systemctl daemon-reload
 systemctl enable caddy >/dev/null
 systemctl restart caddy
 
 stage hostd
-cat > /etc/systemd/system/bro-hostd.service <<'UNIT'
-[Unit]
-Description=Bro browser host daemon
-After=network-online.target caddy.service
-Wants=network-online.target
-
-[Service]
-ExecStart=/opt/bro/venv/bin/python /opt/bro/host/hostd.py
-Environment=PYTHONUNBUFFERED=1
-Restart=always
-RestartSec=2
-# Sandboxes outlive a hostd restart (their own cgroups too): only hostd itself is stopped. No PrivateMounts
-# or ProtectSystem either: the overlays hostd mounts for runc sandboxes must be the host's own.
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+write_hostd_unit || true
 systemctl daemon-reload
 systemctl enable --now bro-hostd
 
@@ -212,6 +206,13 @@ if [ ! -d "$ROOTFS" ]; then
   # a ready host whose root's rename was lost would never set it up again either.
   sync
   mv "$PARTIAL" "$ROOTFS"
+  sync
+fi
+if [ "$RUNTIME" = firecracker ]; then
+  # The rootfs as the one read-only ext4 image every VM boots from (a no-op when it is current; hostd builds
+  # it again by itself when the guest scripts in it change).
+  stage image
+  /opt/bro/venv/bin/python "$HOST/firecracker.py" build-image --rootfs "$ROOTFS" --out "$ROOT/rootfs/$ROOTFS_VERSION.ext4"
   sync
 fi
 stage ready

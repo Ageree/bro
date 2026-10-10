@@ -1,13 +1,13 @@
 import { env } from "@shared/environment";
 import {
-  objectStorageEndpoint,
-  objectStorageRegion,
+  cloudruObjectStorage,
   presignS3Url,
   uriEncode,
 } from "@shared/object-storage/sigv4";
 
 /**
- * Bro's bucket in Object Storage on Cloud.ru (S3, `ru-central-1`),
+ * Bro's bucket in S3-compatible Object Storage (Cloud.ru, `ru-central-1`, or
+ * the provider the `S3_*` settings name, Selectel's `ru-1`),
  * BROWSER_STATE_BUCKET: parked browser sandboxes, host bundles, files the
  * task agent shares and the person's images and attachments. The key stays
  * in Bro. Every request goes through a presigned URL (AWS Signature
@@ -33,7 +33,7 @@ export function presignStoredObject(input: {
     throw new Error("An object key must not have a . or .. segment.");
   }
   const url = new URL(
-    `${objectStorageEndpoint}/${uriEncode(store.bucket)}/${segments
+    `${store.endpoint}/${uriEncode(store.bucket)}/${segments
       .map((segment) => uriEncode(segment))
       .join("/")}`
   );
@@ -48,40 +48,65 @@ export function presignStoredObject(input: {
     expiresSeconds: input.expiresSeconds,
     method: input.method,
     now: input.now ?? new Date(),
-    region: objectStorageRegion,
+    region: store.region,
     url: url.href,
   });
 }
 
-/** Whether the bucket and the key to sign for it are configured. */
+/**
+ * Whether the bucket and a key to sign for it are configured: the `S3_*`
+ * pair, or Cloud.ru's tenant, key id and secret.
+ */
 export function objectStorageConfigured() {
   return (
-    env.CLOUDRU_S3_TENANT_ID !== undefined &&
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
-    env.BROWSER_STATE_BUCKET !== undefined
+    env.BROWSER_STATE_BUCKET !== undefined &&
+    (providerKey() !== undefined || cloudruKey() !== undefined)
   );
 }
 
-/** The bucket and the key that signs for it. */
+/**
+ * The bucket, the address and region it is signed for and the key that signs.
+ * The `S3_*` settings win when their key is set (a plain access key id, for
+ * the endpoint and region next to it); otherwise it is Cloud.ru's, whose S3
+ * key is the tenant and the access key id together.
+ */
 export function objectStore() {
+  const bucket = env.BROWSER_STATE_BUCKET;
+  const provider = providerKey();
+  if (provider !== undefined && bucket !== undefined) {
+    const endpoint = env.S3_ENDPOINT;
+    const region = env.S3_REGION;
+    if (endpoint === undefined || region === undefined) {
+      throw new Error(
+        "S3_ENDPOINT and S3_REGION are not configured next to S3_ACCESS_KEY_ID."
+      );
+    }
+    return { bucket, credentials: provider, endpoint, region };
+  }
+  const cloudru = cloudruKey();
+  if (cloudru === undefined || bucket === undefined) {
+    throw new Error(
+      "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (or CLOUDRU_S3_TENANT_ID, CLOUDRU_KEY_ID and CLOUDRU_KEY_SECRET) and BROWSER_STATE_BUCKET are not configured."
+    );
+  }
+  return { bucket, credentials: cloudru, ...cloudruObjectStorage };
+}
+
+function providerKey() {
+  const accessKeyId = env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = env.S3_SECRET_ACCESS_KEY;
+  if (accessKeyId === undefined || secretAccessKey === undefined) {
+    return undefined;
+  }
+  return { accessKeyId, secretAccessKey };
+}
+
+function cloudruKey() {
   const tenant = env.CLOUDRU_S3_TENANT_ID;
   const keyId = env.CLOUDRU_KEY_ID;
   const secret = env.CLOUDRU_KEY_SECRET;
-  const bucket = env.BROWSER_STATE_BUCKET;
-  if (
-    tenant === undefined ||
-    keyId === undefined ||
-    secret === undefined ||
-    bucket === undefined
-  ) {
-    throw new Error(
-      "CLOUDRU_S3_TENANT_ID, CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and BROWSER_STATE_BUCKET are not configured."
-    );
+  if (tenant === undefined || keyId === undefined || secret === undefined) {
+    return undefined;
   }
-  // Cloud.ru's S3 key is the tenant and the access key id together.
-  return {
-    bucket,
-    credentials: { accessKeyId: `${tenant}:${keyId}`, secretAccessKey: secret },
-  };
+  return { accessKeyId: `${tenant}:${keyId}`, secretAccessKey: secret };
 }

@@ -20,24 +20,34 @@
 - **`runsc`** (gVisor, запасной путь): заморозка со страницей
   (`runsc checkpoint`) и восстановление со снимком, откат на профиль, если
   снимок не подходит. Логика снимков и `fits` остаётся рабочей и под тестами.
+- **`firecracker`** (выделенный сервер Selectel, 09.10): песочница — microVM
+  Firecracker под `jailer`; парковка — полный снимок памяти на локальном диске
+  хоста плюс профиль в Object Storage. Раздел «Firecracker» ниже.
 
-Тесты — на поддельных `runc`, `runsc`, `mount`, `ip`, `nft`, `zstd`, `caddy` и
-S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
+Тесты — на поддельных `runc`, `runsc`, `firecracker`/`jailer` (поддельный API на
+unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy` и S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
 `docs/browser-pool.md`), `runsc` на хосте пула — нет.
 
-| Файл               | Что это                                                                                                        |
-| ------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `hostd.py`         | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд              |
-| `network.py`       | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль          |
-| `sets.py`          | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL              |
-| `caddy.py`         | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
-| `seccomp.json`     | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены           |
-| `provision.sh`     | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
-| `boot.py`          | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                       |
-| `vendor.json`      | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                     |
-| `requirements.txt` | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                        |
-| `test_hostd.py`    | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)               |
-| `test_boot.py`     | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                |
+| Файл                  | Что это                                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hostd.py`            | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд                                                           |
+| `network.py`          | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль                                                       |
+| `sets.py`             | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL                                                           |
+| `firecracker.py`      | Firecracker: запросы к API, argv `jailer`, командная строка ядра, образ корня, локальные снимки и бюджет                                                    |
+| `guest/`              | `bro-fc-init` (PID 1 гостя до `bro-sandbox-init`) и `bro-fc-clock` (часы гостя по PTP): кладутся в образ корня                                              |
+| `selfupdate.py`       | `POST /v1/admin/update`: скачать бандл, сверить sha256, подменить код, `update.sh`, рестарт `hostd`                                                         |
+| `units.sh`            | Юниты `caddy` и `bro-hostd`: их пишут `provision.sh` и `update.sh`                                                                                          |
+| `update.sh`           | Идемпотентная часть `provision.sh` для обновления кода: проверка нового кода, venv, юниты, бинарники, сторож                                                |
+| `rollback.sh`         | Сторож отката: таймер systemd, который возвращает прежний код, если новый `hostd` не поднялся за ~90 с                                                      |
+| `caddy.py`            | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет; сайты соседей по серверу — `import sites/*` |
+| `seccomp.json`        | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены                                                        |
+| `provision.sh`        | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла                                                           |
+| `boot.py`             | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                                                                    |
+| `vendor.json`         | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                                                                  |
+| `requirements.txt`    | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                                                                     |
+| `test_hostd.py`       | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)                                                            |
+| `test_firecracker.py` | Тесты `firecracker.py` и гостевых скриптов; настоящий образ корня, если есть `mkfs.ext4` и `debugfs`                                                        |
+| `test_boot.py`        | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                                                             |
 
 ## Песочница
 
@@ -88,7 +98,8 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
   остаётся до `DELETE`; живая, застрявшая в `starting`/`restoring`/`parking`, —
   `running`, если worker отвечает, иначе `failed`.
 - Сумма лимитов памяти песочниц не больше `MemTotal − reserve_mb` (или
-  `memory_limit_mb`): иначе `POST /v1/sandboxes` — 507. CPU — `cpu.max` на
+  `memory_limit_mb`, `boot.py cloud-init --memory-limit-mb` на сервере, общем
+  с хостом песочниц кода): иначе `POST /v1/sandboxes` — 507. CPU — `cpu.max` на
   `cpus` (2) vCPU; квоты ввода-вывода нет; свободное место диска видно в
   `capacity`.
   `runtime.log` раз в минуту урезается до новой половины, если перерос
@@ -112,14 +123,26 @@ S3; `runc` проверен и на настоящих VM (этап 2, 30.09, н
 в cloud-init (`/etc/bro/host.json`, 0600), payload `{env: <id хоста>, exp}` (не
 дольше 15 минут). Id песочницы — `[a-z0-9-]{1,63}`: он идёт в пути и маршруты.
 
-| Метод и путь                            | Что делает                                                                                                                            |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/health`                        | без токена: версия `hostd`, `runtime` и `runtimeVersion`, `runsc` (только под gVisor), стадия загрузки                                |
-| `GET /v1/capacity`                      | память (и сумма лимитов), `/dev/shm`, диск, песочницы (состояние, лимит и занятая память), CPU, среда, `snapshotFormat` (runc — null) |
-| `POST /v1/sandboxes`                    | `{id, workspace, generation, memoryMb?, workerKey, rootfsVersion, restore? \| profile?}` — старт, восстановление или холодный старт   |
-| `GET /v1/sandboxes/<id>`                | запись песочницы (`state`, `runtime`, `path`: `fresh`, `restored`, `cold`, `adopted`; `fallback` — почему не снимок)                  |
-| `DELETE /v1/sandboxes/<id>?generation=` | остановить, размонтировать корень, стереть каталог хоста, снимок, netns и маршрут (502, если не вышло)                                |
-| `POST /v1/sandboxes/<id>/park`          | `{generation, dataKey, upload: {chunkUrls, manifestUrl}}` → размеры, время, среда, формат снимка (507 — нет места)                    |
+Ручки оператора (лог песочницы, самообновление; в таблице ниже помечены `*`) требуют токен с `scope: "update"`, подписанный
+**другим ключом**: `updateKey` из `host.json` = `HMAC(BRO_HOST_UPDATE_SIGNING_KEY, "bro-browser-host-update:" + id хоста)`.
+Бро знает `BROWSER_VM_SIGNING_KEY`, а значит и ключ любого хоста, но не `BRO_HOST_UPDATE_SIGNING_KEY`: утечка env приложения
+не даёт root на хосте. Обычные ручки проверяют ключ хоста и отвергают токен с любым `scope`; ручки оператора проверяют только
+`updateKey` и отвечают `403 updates are not enabled on this host`, если его в `host.json` нет.
+
+| Метод и путь                            | Что делает                                                                                                                                      |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/health`                        | без токена: версия `hostd`, `runtime` и `runtimeVersion`, `runsc` (только под gVisor), стадия загрузки, `update`: лишь `state`, `version`, `at` |
+| `GET /v1/capacity`                      | память (и сумма лимитов), `/dev/shm`, диск, песочницы (состояние, лимит и занятая память), CPU, среда, `snapshotFormat` (runc — null)           |
+| `POST /v1/sandboxes`                    | `{id, workspace, generation, memoryMb?, workerKey, rootfsVersion, restore? \| profile?}` — старт, восстановление или холодный старт             |
+| `GET /v1/sandboxes/<id>`                | запись песочницы (`state`, `runtime`, `path`: `fresh`, `restored`, `cold`, `adopted`; `fallback` — почему не снимок)                            |
+| `DELETE /v1/sandboxes/<id>?generation=` | остановить, размонтировать корень, стереть каталог хоста, снимок, netns и маршрут (502, если не вышло)                                          |
+| `POST /v1/sandboxes/<id>/park`          | `{generation, dataKey, upload: {chunkUrls, manifestUrl}}` → размеры, время, среда, формат снимка (507 — нет места)                              |
+| `GET /v1/sandboxes/<id>/log` \*         | конец `runtime.log` песочницы (`?bytes=`, до 64 КиБ)                                                                                            |
+| `GET /v1/admin/update` \*               | полный итог последнего обновления (`update.json`: ошибка, sha256 бандла), версия, `updating`                                                    |
+| `POST /v1/admin/update` \*              | `{url, sha256}` — самообновление (ниже)                                                                                                         |
+
+Пока идёт обновление (`draining`), новые `POST /v1/sandboxes` и park отвечают `503` (Бро повторит на перезапущенном `hostd`);
+повтор старта уже работающей песочницы и `DELETE` проходят.
 
 Поля запросов прежние: клиент Бро не различает среды. Ответ парковки под `runc`
 — `format: null`, в `parts` только `profile`, `timings`: `stopMs`,
@@ -305,6 +328,129 @@ worker закрыть Chrome через CDP (`POST /v1/park {"closeChrome": true
 `BrowserMetrics` профиля (по 4 МиБ на каждый SIGTERM) в набор не идёт.
 Не проверено на VM: `runsc` на хосте пула, поручения под нагрузкой соседей
 (этап 3).
+
+## Firecracker
+
+Третья среда `hostd` (`runtime: "firecracker"`, `boot.py cloud-init --runtime firecracker`): API `hostd`, Caddy,
+сеть хоста и сторона Бро те же, меняется то, чем запускается песочница. Код — `firecracker.py` (всё про VM) и
+ветки `Host.*_microvm` в `hostd.py`. Ядро гостя и пины — `browser-vm/firecracker/` (`pins.json`).
+
+**Хост** (`provision.sh`, этап `packages`): `/dev/kvm` обязан быть (иначе стадия `failed:/dev/kvm is missing (kernel …)`),
+`uname -r` пишется в журнал; `e2fsprogs`; из бандла (`vendor/firecracker/`) ставятся
+`/opt/bro/firecracker/{firecracker,jailer,vmlinux}` (пути — в `Config`: `firecracker`, `jailer`, `kernel`).
+Бандл с Firecracker: `python boot.py vendor --dir V --firecracker-url <presigned GET tgz> --kernel-url <presigned GET vmlinux>`
+(sha256 архива, двух бинарников и ядра сверяются с `browser-vm/firecracker/pins.json`; S3-ключи — в нём же), затем
+`boot.py bundle --vendor V`. Бандл воспроизводим; при `vendor/firecracker/` без пинов или с чужим файлом он не собирается.
+
+**Корень.** Каталог `/srv/bro/rootfs/<версия>/` остаётся как есть; из него один раз на версию строится
+`/srv/bro/rootfs/<версия>.ext4` (`mkfs.ext4 -d`, без журнала, `0444`) и через `debugfs -w` в него кладутся
+`/usr/local/sbin/bro-fc-init` и `bro-fc-clock` (не `/sbin/…`: в 22.04 `/sbin` — ссылка на `usr/sbin`). Образ общий и
+read-only для всех VM (диск `rootfs`, `/dev/vda`). Строят его `provision.sh` (стадия `image`, до `ready`) и `hostd`
+сам: при старте для каждой версии и при смене скриптов (имя образа — `image_id`: версия + текст скриптов + `IMAGE_FORMAT`;
+рядом `<версия>.ext4.json`). Снимок принимается только на том образе, на котором снят.
+
+**Гость.** Командная строка ядра целиком (`boot_args` заменяет умолчание Firecracker): `console=ttyS0 reboot=k panic=1
+pci=off nomodule root=/dev/vda ro init=/usr/local/sbin/bro-fc-init ip=192.168.254.2::192.168.254.1:255.255.255.252::eth0:off
+BRO_OVERLAY_MB BRO_WORKER_PORT BRO_NOW`. `bro-fc-init` монтирует proc/sys/dev, tmpfs на `overlay_mb` с overlayfs поверх
+read-only корня, конфиг-диск (`/dev/vdc`, ext4 на 4 МиБ: `worker.json` 0600 владельца `bro`, `resolv.conf`), профиль
+(`/dev/vdb`, `nodev,nosuid`) в `/var/lib/bro/profile`, `/dev/pts`, `/dev/shm` (1 ГБ), `/run`; имя `bro-sandbox`,
+`vm.dirty_expire_centisecs=100`, `vm.dirty_writeback_centisecs=100` (запись в профиль доходит до образа за секунду);
+часы — `bro-fc-clock --once` до старта (VM без RTC стартует в 1970; нет PTP — запасной `date -s @BRO_NOW`) и затем
+каждую секунду (после восстановления снимка часы стоят): `/dev/ptp0` (ptp_kvm), id часов `((~fd) << 3) | 3`, шаг
+`CLOCK_REALTIME`, если разница больше 0,5 с. Потом `pivot_root` и `exec bro-sandbox-init` с тем же окружением, что у
+`runc`. Профиль **не монтируется на хосте**, пока VM жива; перед стартом `hostd` монтирует свежий `profile.img` на
+мгновение (mkfs, распаковка набора, владелец `bro`, umount). Гостю нужны (ядро пинов это даёт): ext4, overlayfs,
+devtmpfs, virtio-mmio/blk/net/rng, `IP_PNP`, `PTP_1588_CLOCK_KVM`, `VMGENID`, user/pid/net namespaces и seccomp (Chrome).
+
+**Сеть** (`network.py`): netns песочницы `bro-s-<id>`, netns роутера, адрес внутри `192.168.254.2/30`, DNAT на :8080 и
+правила хоста те же. В netns песочницы адреса нет: `eth0` (veth) и `tap0` (владелец — uid VM) — порты моста `br0`; у
+`in0` роутера фиксированный MAC, поэтому ARP-запись, которую помнит восстановленный снимок, остаётся верной в новых netns.
+
+**Процесс.** `jailer` без `--daemonize` (exec на месте: pid, который знает `hostd`, и есть VM; stdout — консоль гостя —
+в `runtime.log`), `--netns`, `--cgroup-version 2 --parent-cgroup bro-sandboxes --cgroup memory.max=(memoryMb +
+fc_overhead_mb)`, у каждой VM свой uid/gid `fc_uid_base + слот` (30000+; взломанный Firecracker не трогает соседей).
+Chroot — `<jailer_dir>/firecracker/<id>/root` (по умолчанию `/srv/bro/jailer`, на той же ФС, что `/srv/bro`: файлы
+кладутся жёсткими ссылками — ядро, образ корня, `profile.img`, `config.img`). Настройка по API-сокету
+`firecracker.socket`: `boot-source`, диски `rootfs` (ro), `profile` (rw, `Writeback`), `config` (ro), `eth0`↔`tap0` с MAC
+`06:00:c0:a8:fe:02`, 2 vCPU (`round(cpus)`), `mem_size_mib = memoryMb`, `entropy`, `InstanceStart`. Перезапуск `hostd`
+VM не трогает: запись из `sandbox.json` держит `fcPid`, жива ли VM — по `/proc/<pid>/cmdline`. Сразу после запуска `jailer`
+`hostd` пишет `200` в `/proc/<pid>/oom_score_adj` (значение переживает `exec` Firecracker; как у `runc`): при нехватке памяти
+OOM-killer берёт VM раньше `hostd`, Caddy и sshd. Допуск (`admit`) и `memoryMb.committed` в `/v1/capacity` считают
+`memoryMb + fc_overhead_mb` на каждую VM — столько же, сколько лимит её cgroup.
+
+**Парковка и восстановление.** Бро по-прежнему сначала зовёт `POST /v1/park` worker (секреты из памяти; `closeChrome` не
+шлётся: страницы живут в снимке). Затем `PATCH /vm Paused`, `PUT /snapshot/create` (Full) в chroot, VM убивается,
+`vmstate`, `mem`, `profile.img`, `config.img` и `meta.json` уходят в `/srv/bro/snapshots/<id>/<поколение>/` (rename на той же
+ФС; не `/dev/shm`: файл памяти — гигабайты), а в Object Storage — профиль (из копии образа: `e2fsck -fy` проигрывает журнал,
+`debugfs -R "rdump / <каталог>"` читает файлы; оба — userspace, от uid самой VM, в каталоге `/srv/bro/profile-work/<id>`,
+который принадлежит этому uid; образ, записанный гостем, **ядро хоста не монтирует**, а `pack` берёт только обычные файлы и
+каталоги) с блоком `snapshot` в манифесте: `runtime`, `local`, `host`, `sandbox`, `generation`, версия
+Firecracker, sha256 ядра, признаки CPU, версия и `image` корня, `memoryMb`, sha256 `vmstate`, размер `mem`. Ответ парковки —
+`format` = этот блок, `parts` — только `profile`. Восстановление: манифест, `fits` (тот же хост, та же сборка и CPU, то же
+поколение — иначе `path: cold` с причиной в `fallback`), файлы снимка на диске (размер и sha256 `vmstate`), свежие netns и
+jail с теми же путями внутри, `PUT /snapshot/load` (`File`, `resume_vm`), ожидание worker; профиль из S3 не скачивается.
+Снимок используется один раз (иначе две VM с одним состоянием ГСЧ) и стирается. Сбой загрузки → холодный старт с профилем
+из набора. Старые снимки удаляются, их песочница восстановится холодно: старше `snapshot_ttl_days` (7; при старте `hostd`,
+каждый час и при парковке), сверх бюджета `snapshot_budget_gb` (120) и — раньше проверки места, которая отвечает 507 — пока на
+диске меньше, чем нужно парковке; снимок песочницы, которая сейчас стартует или паркуется, не трогают. `DELETE`
+стирает и снимок. Снимок не шифруется (диск хоста — граница доверия, каталог `0700`).
+
+**Самообновление.** `POST /v1/admin/update` `{url, sha256}`: токен с claim `scope: "update"`, подписанный `updateKey` хоста (см.
+«API»; токен Бро и токен с ключом хоста ручку не открывают, а токен с `update` не проходит никуда, кроме ручек оператора).
+`hostd` качает https-бандл (до 200 МБ), сверяет sha256, распаковывает в `/opt/bro/host.new` (только файлы и каталоги) и
+отвечает `202`. Дальше, уже после ответа:
+
+1. **Ждёт тишины.** Пока какая-нибудь песочница стартует, восстанавливается или паркуется, `hostd` не рестартует: новые старты и
+   парковки получают `503`, идущие заканчиваются (не дольше `update_quiet_timeout_s`, 10 минут; потом обновление падает с
+   понятной ошибкой в `update.json`, ничего не изменив). Рестарт посреди парковки потерял бы файлы и набор.
+2. Подменяет `/opt/bro/host` (старый — `host.old`) и запускает `update.sh` нового кода.
+3. `update.sh` **сначала проверяет код**, пока работает старый: `bash -n` всех скриптов, `sh -n` гостевого init,
+   `python -m py_compile` всех `*.py`, импорт `caddy, firecracker, hostd, network, selfupdate, sets` и
+   `Config.load('/etc/bro/hostd.json')` + `Host(...)` новым кодом — битый бандл не рестартует `hostd`, `update.sh` падает,
+   старый код возвращается. Потом колёса venv (если сменились), ключ обновлений из бандла (ниже), юниты, Caddy, Firecracker.
+4. **Сторож отката** (последний шаг `update.sh`): `systemd-run --on-active=15s --unit=bro-hostd-rollback-<sha[:12]>` запускает
+   `rollback.sh <версия> <sha256>` из бандла. Он до ~75 с спрашивает `127.0.0.1:8090/v1/health`; норма — `hostd` новой версии
+   и `update.state = done` для sha256 этого бандла (`update.json`). Иначе: останавливает `bro-hostd` (песочницы живут:
+   `KillMode=process`), ставит `host.old` обратно, возвращает юнит, Caddy и бинарники Firecracker прежнего дерева, запускает
+   `hostd`, пишет в `update.json` состояние `rolled-back` (новое дерево остаётся в `/opt/bro/host.failed`).
+5. `systemctl --no-block restart bro-hostd`.
+
+Итог — `/srv/bro/update.json`: `GET /v1/admin/update` отдаёт его целиком (ошибка, sha256, версия, `running`), а `/v1/health`
+без токена — только `state`, `version`, `at`. Состояния: `downloaded`, `waiting`, `applying`, `restarting`, `done`, `failed`,
+`rolled-back`, `rollback-failed`. Бандл — тот же tgz, что `boot.py bundle`.
+
+**Ключ обновлений (`updateKey`).** Ключ подписи оператора — `BRO_HOST_UPDATE_SIGNING_KEY` (64 hex; у Бро его нет, храните
+отдельно от `BROWSER_VM_SIGNING_KEY`). Ключ хоста — `HMAC-SHA256(ключ, "bro-browser-host-update:" + id хоста)`.
+
+```sh
+export BRO_HOST_UPDATE_SIGNING_KEY=…   # 64 hex, оператор; openssl rand -hex 32 для нового
+
+# Новый хост: cloud-init пишет updateKey в /etc/bro/host.json (Бровский browserHostCloudInit его не пишет).
+BROWSER_VM_SIGNING_KEY=… python boot.py cloud-init --host-id bro-dedicated-1 … > user-data.yaml
+
+# Токен на 10 минут для любой ручки оператора (самообновление, лог, GET /v1/admin/update):
+TOKEN=$(python boot.py token --host-id bro-dedicated-1 --scope update)
+curl -H "Authorization: Bearer $TOKEN" https://<домен>/h/v1/admin/update
+```
+
+Хост, созданный до появления ключа (его `host.json` без `updateKey`), отвечает на ручки оператора `403`. Положить ключ в такой
+хост можно только одним обновлением, которое несёт его в бандле (бандл этого хоста; не общий):
+
+```sh
+# 1. Бандл этого хоста с его ключом обновлений (vendor/ — как для обычного бандла); запишите sha256.
+python boot.py bundle --vendor vendor/ --out host-bundle-bro-dedicated-1.tgz --enroll-update-key bro-dedicated-1
+# 2. Загрузить в Object Storage, presigned GET. Старый hostd принимает scope update, подписанный ключом хоста:
+#    единственный случай `--legacy-host-key` (ключ — BROWSER_VM_SIGNING_KEY). В тихое время: старый hostd не ждёт парковок.
+TOKEN=$(BROWSER_VM_SIGNING_KEY=… python boot.py token --host-id bro-dedicated-1 --legacy-host-key)
+curl -H "Authorization: Bearer $TOKEN" -d '{"url": "<presigned GET>", "sha256": "<sha256>"}' https://<домен>/h/v1/admin/update
+# 3. Когда `GET /h/v1/health` покажет update.state = done: ключ на месте. Проверить новым токеном и удалить бандл из хранилища.
+TOKEN=$(python boot.py token --host-id bro-dedicated-1)   # BRO_HOST_UPDATE_SIGNING_KEY в env
+curl -H "Authorization: Bearer $TOKEN" https://<домен>/h/v1/admin/update
+```
+
+`update.sh` этого бандла дописывает `updateKey` в `/etc/bro/host.json` (0600, атомарно) и стирает `enroll/update-key` из дерева.
+Так же ключ ротируется. После этого шага токен, подписанный ключом хоста (то есть всё, что может подписать Бро), ручки
+оператора не открывает.
 
 ## Тесты
 

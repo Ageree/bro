@@ -78,10 +78,11 @@
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
-- Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров в
-  песочницах на общих хостах Cloud.ru (`runc`, gVisor — запасной) —
-  `docs/browser-pool.md`; заметки по браузерной инфраструктуре (Cloud.ru, VM,
-  хосты пула, worker) — `docs/browser-infra-notes.md`.
+- Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров —
+  `docs/browser-pool.md` (прод с 10.10 — постоянный сервер Selectel,
+  Firecracker; хосты Cloud.ru — история); заметки по браузерной
+  инфраструктуре (VM, хосты пула, worker) — `docs/browser-infra-notes.md`.
+  Переезд на Selectel и где что живёт — `docs/selectel-migration.md`.
 - Сравнение с Instinct и что из него взято в бэклог (пункты 24–33 роадмапа) —
   `docs/instinct.md`; переезд с Vercel на Cloud.ru (сделан 02.10) —
   `docs/cloudru-migration.md`, промпт сессии, которая доводила его до конца, —
@@ -195,6 +196,33 @@
 
 ## Прод на VM
 
+- С 10.10 прод — Selectel (`docs/selectel-migration.md`, «Переключение»):
+  VM `bro-app-sel-2` (`SL1.2-4096-32`), база `bro-pg`, S3 `bro-bucket`;
+  браузеры и песочницы кода (`sbx-dedicated-3`, `code.<ip>.sslip.io`) — на
+  одном выделенном сервере `bro-dedicated-3` (CL25-NVMe, месячный тариф), с
+  общим Caddy и своим потолком памяти у каждого (`sandbox/README.md`).
+  Новый `sandboxd` туда — только переустановкой сервера. Бро считает место
+  на хосте как `MemTotal − reserve`, а не потолок `memory_limit_mb` `hostd`:
+  на общем сервере сверх 19 ГБ `hostd` ответит 507 — пока пул у одного пилота,
+  это не мешает; при росте — отдавать потолок в `/v1/capacity`. Аккаунт Cloud.ru
+  10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
+  ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
+  `BRO_APP_HOST_DIR=/root/.bro-app-host-selectel` (полный путь), у
+  `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Ключи — в env
+  облачной сессии: `SELECTEL_API_KEY` (или `SELECTEL_TOKEN`),
+  `SELECTEL_ACCOUNT`, `SELECTEL_PROJECT`, `S3_*` бакета `bro-bucket`
+  (`PROBE_BUCKET`); ключи оператора (выкат, env прода, `updateKey` хостов) —
+  `host.py state restore`, им нужен прежний `CLOUDRU_KEY_SECRET`: им
+  зашифровано состояние, хоть Cloud.ru и закрыт. Env прода —
+  `host.py env bro-app-sel-2 --profile prod --allow-missing
+--no-alert-webhook`; инфраструктура Selectel (`S3_*`, пул `static`,
+  хост песочниц) — в `prod.json` этого каталога.
+- Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
+  меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
+- Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
+  Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
+  Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,
+  значения в копейках).
 - Личная почта: Mail.ru завышает `RFC822.SIZE` относительно полного
   `BODY.PEEK[]`; сравнение этих длин отвергает настоящее письмо. Читайте
   полное тело с лимитом literal у ImapFlow, а не частичный блок по этой оценке.
@@ -223,9 +251,8 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   Рабочий путь: объекты по 8192 байта, сборка на VM со сверкой SHA-256;
   подписанный POST deployd — через loopback из serial-консоли, статус — GET.
 
-- Прод с 02.10 — VM Cloud.ru; Vercel `bro-next` — путь отката до 09.10, когда
-  Routine другой сессии запустит уборку Vercel (`docs/cloudru-migration.md`):
-  до неё Vercel-пути не удаляйте и уборку не дублируйте. Убирая «ветку
+- Прод с 02.10 был на VM Cloud.ru, с 10.10 — Selectel; Vercel `bro-next` как
+  путь отката закончился 09.10 (уборка — `docs/cloudru-migration.md`). Убирая «ветку
   OpenRouter», не трогайте `createOpenRouter` в `agent/lib/model/direct.ts`:
   через него с другим `baseURL` ходит RouterAI — единственный провайдер прода.
 - Слияние прод не обновляет: релиз — `host.py deploy <VM>`, и он собирает
@@ -304,8 +331,8 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   браузера (`completion.ts`) и расписания (`agent/lib/schedules/report.ts`). `defaultTools: false` выключает и готовую
   песочницу eve (`bash`, `read_file`, `write_file`), хотя `ctx.getSandbox()`
   работает (`node_modules/eve/docs/sandbox.mdx`).
-- Владелец 01.10: Бро переезжает с Vercel на Cloud.ru — новое не завязывайте
-  на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
+- Владелец 01.10: Бро живёт на своих серверах (с 10.10 — Selectel), новое не
+  завязывайте на Vercel (Sandbox, Blob, Workflow, Gateway). Свой сервер —
   `scripts/cloudru-app-host/README.md`: сборка для VM включается только
   `WORKFLOW_WORLD=postgres` (`pnpm build:eve`) и `NEXT_OUTPUT=standalone`
   (`next build`), без них сборка Vercel прежняя — не делайте эти режимы
@@ -485,8 +512,9 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   может оборвать перезагрузка, кладите в `/var/lib/cloud/scripts/per-boot/`
   и делайте повторяемой (`browser-vm/host/boot.py`,
   `docs/browser-infra-notes.md`).
-- Хост песочниц для кода — VM Cloud.ru (`scripts/cloudru-code-host/`,
-  только VM `sbx-*`); runsc едет на хост объектом S3 (`boot.py vendor`), не
+- Хост песочниц для кода — `scripts/cloudru-code-host/` (имена `sbx-*`): VM
+  или, в проде с 10.10, выделенный сервер рядом с браузерами (`host.py
+user-data`, `sandbox/README.md`); runsc едет на хост объектом S3 (`boot.py vendor`), не
   из apt Google. gVisor не держит свой лимит памяти: память гостя лежит в
   cgroup, но не в RSS процессов, и OOM убивал весь `gvisor_sentry`. Поэтому
   `sandboxd` даёт cgroup запас и ставит заглушкам `oom_score_adj=1000`
@@ -931,13 +959,42 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `inTurn` не ставит. Текст сообщений в журнал eve не пишется: ход ищите по
   `[tools]` и `durationMs` инструментов в строке `"method":"EVE"`.
 - Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
-  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). Зона
-  Cloud.ru — `ru.AZ-1` (`CLOUDRU_ZONE`): `ru.AZ-3` выключена 30.09.
+  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). С
+  10.10 хост пула — постоянный сервер Selectel (`BROWSER_HOST_CLOUD=static`,
+  `firecracker`, `CLOUDRU_PRIVATE_ROUTING=off`); зоны Cloud.ru — история.
 - В browser-use 0.13.10 обычный file input не имеет `frame_id`: CDP ставит
   его на владеющий HTML-узел. Для проверки origin поля worker ищет ближайшего
   владельца в том же `target_id` и сверяет `Page.getFrameTree.securityOrigin`;
   URL верхней страницы не доказывает принадлежность поля сайту.
 
+- Выделенный сервер Selectel (09.10): `BROWSER_HOST_RUNTIME=firecracker` — третья
+  среда `hostd`, песочница — microVM под `jailer`, снимок памяти лежит на диске
+  хоста (в набор S3 идёт только профиль, как у `runc`). Устройство и пути —
+  `browser-vm/host/README.md`, раздел «Firecracker». На сервер не заходим по SSH:
+  новый код хоста — `POST /v1/admin/update`. Токен оператора подписан `updateKey` из
+  `host.json` (`BRO_HOST_UPDATE_SIGNING_KEY`, его нет у Бро: утечка env приложения
+  не даёт root на хосте), `boot.py token --host-id <id>`; хост без `updateKey` отвечает 403. Хосту, созданному до ключа, его кладёт один бандл с
+  `boot.py bundle --enroll-update-key` (`browser-vm/host/README.md`, «Ключ обновлений»).
+  `update.sh` проверяет новый код (компиляция, импорт, `Config.load`) до рестарта, а
+  сторож `rollback.sh` возвращает `host.old`, если новый `hostd` не отвечает ~90 с: другого
+  пути вернуть хост без SSH нет. Образ корня `<версия>.ext4` `hostd` пересобирает сам при смене гостевых
+  скриптов. Образ корня и снимки привязаны друг к другу (`image_id`): правка
+  `guest/bro-fc-init` делает старые снимки непригодными (холодный старт).
+  Лог гостя (консоль, jailer) оператор читает тем же токеном:
+  `GET /h/v1/sandboxes/<id>/log`. В госте нет `ip` и udev: `/dev/fd` и обычный
+  `resolv.conf` (в Ubuntu это ссылка в `/run`) делает init, `mount` — только
+  с `-n`. Гость берёт TSC, `/dev/ptp0` нет: время приходит через MMDS.
+- Selectel, выделенный сервер: API хранит `cloud_init_user_data` с
+  HTML-экранированием, и `"`, `'`, `>` в скрипте ломали загрузку хоста. Файлы
+  кладите в base64 (`scripts/selectel/user_data.py`). API серверов принимает
+  только `X-Auth-Token` проекта (`scripts/selectel/api.py`). Ротируемый порт
+  9000 Geonode отвечает 403 на логин с сессией: песочнице нужен 10000, как
+  делает `sticky_proxy` в `host.py`.
+- Managed PostgreSQL Selectel: 5433 — пулер, он отвергает параметры запуска
+  («unsupported startup parameter»: `PGOPTIONS` ops-скриптов,
+  `statement_timeout`) и ломал бы `LISTEN` и сессионные advisory-замки мира.
+  Приложение и ops ходят на 5432, прямо в PostgreSQL (`pg_address` в
+  `scripts/selectel/cloud.py`).
 - Хост пула в простое выключается (`stopped`), а не удаляется, и его будит
   следующая песочница или сообщение человека (`agent/hooks/browser-prewarm.ts`):
   новый хост в AZ-1 — 5 минут, а 04.10 — 16; включение — 92 с
@@ -956,6 +1013,19 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   её тоже держит — пробная VM не влезет, пока владелец не поднимет квоту.
   3 ГБ песочницы на 4-гигабайтном флейворе не помещаются (`hostd` держит
   1 ГБ), а 2,5 ГБ на `lowcost10-2-4` упирались в память на WB и Маркете.
+- Пул на своих серверах (`BROWSER_HOST_CLOUD=static`, 09.10, раздел 6
+  `docs/browser-pool.md`): в `agent/lib/browser-pool/hosts.ts` режим целиком
+  обходит Compute API (вызовы Cloud.ru идут через `browser-pool/cloud.ts`),
+  а `hostVmStillThere` в `sandbox.ts` для такого хоста не спрашивает VM.
+  Ход человека на таком пуле не ставит поручение в очередь, пока песочница
+  поднимается: `ensureForRun` в `agent/lib/browser-vm/runs.ts` ждёт её до
+  30 с (восстановление ~1 с), а размещение само записывает и опрашивает
+  хосты (`staticHostsUp`). Очередь остаётся для занятого аккаунта и полного
+  сервера. Тик пула здесь идёт и без ключей Cloud.ru.
+  Скрипту `scripts/browser-pool/static-host-cloud-init.ts` нужен
+  `--experimental-transform-types`: граф приложения использует parameter
+  properties. Скрытые вызовы Compute API остаются у `private-route.ts`
+  (`CLOUDRU_PRIVATE_ROUTING`): на сервере вне Cloud.ru держите `off`.
 - Зона `ru.AZ-3` 04.10 снова включена и втрое быстрее AZ-1: новый хост —
   127 с до `ready`, включение — 48 с (AZ-1 — 288–352 и 92–145 с). Пул в неё
   не переведён: доступ VM Бро из AZ-1 к хосту в AZ-3 по приватному адресу

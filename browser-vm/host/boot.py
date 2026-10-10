@@ -9,18 +9,41 @@ and Object Storage: everything else it needs travels in the bundle, fetched here
       Caddy's static binary (GitHub release, sha256 pinned in vendor.json) and the hostd wheels
       (requirements.txt, sha256 pinned per wheel) for the host's Python 3.10 on x86_64
 
+  python boot.py vendor --dir vendor/ --firecracker-url URL --kernel-url URL
+      also Firecracker and its guest kernel (browser-vm/firecracker/pins.json: the tarball, the binaries in it
+      and the kernel are checked against its sha256s) into vendor/firecracker/, for a firecracker host; the
+      URLs are presigned GETs of the objects the pins name (their S3 keys)
+
   python boot.py bundle --vendor vendor/ --out host-bundle.tgz
       the host code (provision.sh, hostd and its modules) with the vendored files, as a reproducible
-      tarball; prints its sha256. Upload it next to the sandbox rootfs and presign a GET for each new host
+      tarball; prints its sha256. Upload it next to the sandbox rootfs and presign a GET for each new host.
+      With vendor/firecracker/ it carries Firecracker too (bundle for a firecracker host; also the body of a
+      self-update: hostd's POST /v1/admin/update takes this tarball by URL and sha256)
 
-  BROWSER_VM_SIGNING_KEY=… python boot.py cloud-init --host-id bro-host-1 \\
+  BRO_HOST_UPDATE_SIGNING_KEY=… python boot.py token --host-id bro-host-1 --scope update
+      [--legacy-host-key, with BROWSER_VM_SIGNING_KEY instead: for the one update that gives a host made before
+      the update key its key; see browser-vm/host/README.md]
+      a 10-minute token for hostd's /v1/admin/update and the sandbox logs. It is signed with the host's update key
+      (HMAC-SHA256 of that signing key and "bro-browser-host-update:<host id>"), which only the operator can make:
+      Bro holds BROWSER_VM_SIGNING_KEY, from which the host's ordinary key comes, and must not reach root on a host.
+      Bro's own tokens have no scope and are refused there
+
+  BRO_HOST_UPDATE_SIGNING_KEY=… python boot.py bundle --vendor vendor/ --out host-bundle.tgz --enroll-update-key HOST_ID
+      a bundle for that one host that also carries its update key (enroll/update-key): the update that applies it
+      writes the key into /etc/bro/host.json (a host made before the key existed, or a rotated key); do not keep
+      the object in Object Storage afterwards
+
+  BROWSER_VM_SIGNING_KEY=… [BRO_HOST_UPDATE_SIGNING_KEY=…] python boot.py cloud-init --host-id bro-host-1 \\
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
-      [--runtime runc|runsc --runsc-release 20260914] [--apt-mirror …] [--domain …]
-      the user data for one host (base64 it for the Compute API)
+      [--runtime runc|runsc|firecracker --runsc-release 20260914] [--apt-mirror …] [--domain …]
+      [--memory-limit-mb N]
+      the user data for one host (base64 it for the Compute API). With BRO_HOST_UPDATE_SIGNING_KEY set host.json
+      also carries `updateKey`; Bro's own writer (`browserHostCloudInit`) never does, and a host without it
+      answers 403 on the operator's routes
 
 On the host, bro-host-boot (a cloud-init per-boot script: every boot until the host is ready) fetches the
 bundle, checks its SHA-256 and runs provision.sh, which points apt at the mirror, installs runc (or a pinned
-runsc), nftables and zstd, Caddy and the hostd venv from the bundle, their systemd units, and unpacks the
+runsc, or Firecracker from the bundle), nftables and zstd, Caddy and the hostd venv from the bundle, their systemd units, and unpacks the
 rootfs. Bro's own host creation (`browserHostCloudInit` in agent/lib/browser-pool/hosts.ts) writes the same
 user data byte for byte, and tests/agent/browser-pool/hosts.test.ts runs this script to hold it to that:
 change both together.
@@ -33,6 +56,7 @@ that does not answer is only slow. It takes sandboxes at `ready`.
 """
 
 import argparse
+import base64
 import gzip
 import hashlib
 import hmac
@@ -43,13 +67,18 @@ import re
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-FILES = ("provision.sh", "hostd.py", "network.py", "sets.py", "caddy.py", "seccomp.json", "requirements.txt")
+FILES = ("provision.sh", "units.sh", "update.sh", "rollback.sh", "hostd.py", "network.py", "sets.py", "caddy.py",
+         "firecracker.py", "selfupdate.py", "guest/bro-fc-init", "guest/bro-fc-clock", "seccomp.json",
+         "requirements.txt")
+EXECUTABLE = (".sh", "bro-fc-init", "bro-fc-clock")
+FIRECRACKER_DIR = HERE.parent / "firecracker"
 VENDOR = json.loads((HERE / "vendor.json").read_text())
-RUNTIMES = ("runc", "runsc")
+RUNTIMES = ("runc", "runsc", "firecracker")
 RUNSC_RELEASE = re.compile(r"\d{8}(\.\d+)?")
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 BOOT_SCRIPT_PATH = "/var/lib/cloud/scripts/per-boot/bro-host-boot"
@@ -107,6 +136,13 @@ def host_key(signing_key_hex, host_id):
     return hmac.new(bytes.fromhex(signing_key_hex), f"bro-browser-host:{host_id}".encode(), hashlib.sha256).digest()
 
 
+def update_key(update_signing_key_hex, host_id):
+    """The key hostd checks `update`-scope tokens with (`updateKey` of host.json). Derived from a signing key the
+    operator alone keeps (BRO_HOST_UPDATE_SIGNING_KEY): Bro has none of it, so Bro cannot make such a token."""
+    return hmac.new(bytes.fromhex(update_signing_key_hex), f"bro-browser-host-update:{host_id}".encode(),
+                    hashlib.sha256).digest()
+
+
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -140,10 +176,48 @@ def vendored(vendor_dir, *, caddy_sha256=None, wheel_hashes=None):
     return files
 
 
-def bundle(vendor_dir, **pins):
-    """The host code and its vendored files as a gzip tarball, byte for byte the same for the same files."""
-    entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith(".sh") else 0o644) for name in FILES]
-    entries += vendored(vendor_dir, **pins)
+def firecracker_pins(path=None):
+    """browser-vm/firecracker/pins.json (the tarball, the two binaries in it and the guest kernel) with
+    firecracker.json beside it (where the binaries are in the tarball)."""
+    path = Path(path) if path else FIRECRACKER_DIR / "pins.json"
+    pins = json.loads(path.read_text())
+    layout = json.loads((path.parent / "firecracker.json").read_text())["binaries"]
+    return {**pins, "paths": {name: layout[name]["path"] for name in ("firecracker", "jailer")}}
+
+
+def vendored_firecracker(vendor_dir, pins=None):
+    """[(path in the bundle, bytes, mode)] of vendor/firecracker/ when the vendor directory has it: the two
+    binaries and the guest kernel, each checked against its pin, and the pins themselves; nothing else."""
+    folder = Path(vendor_dir) / "firecracker"
+    if not folder.exists():
+        return []
+    pins = pins or firecracker_pins()
+    expected = {"firecracker": pins["firecracker"]["firecrackerSha256"], "jailer": pins["firecracker"]["jailerSha256"],
+                "vmlinux": pins["kernel"]["sha256"]}
+    files = []
+    for name, digest in expected.items():
+        data = (folder / name).read_bytes()
+        if sha256(data) != digest:
+            raise ValueError(f"vendor/firecracker/{name} is not the pinned one")
+        files.append((f"vendor/firecracker/{name}", data, 0o644 if name == "vmlinux" else 0o755))
+    stray = {p.name for p in folder.iterdir()} - set(expected)
+    if stray:
+        raise ValueError(f"vendor/firecracker holds files the pins do not name: {sorted(stray)}")
+    files.append(("vendor/firecracker/versions.json", json.dumps(
+        {"firecracker": pins["firecracker"]["version"], "kernel": pins["kernel"]["version"]}, sort_keys=True).encode(),
+        0o644))
+    return files
+
+
+def bundle(vendor_dir, enroll_update_key=None, **pins):
+    """The host code and its vendored files as a gzip tarball, byte for byte the same for the same files. With
+    `enroll_update_key` (a host's update key, bytes) the bundle is that host's alone: it also carries
+    enroll/update-key, which update.sh writes into host.json."""
+    entries = [(name, (HERE / name).read_bytes(), 0o755 if name.endswith(EXECUTABLE) else 0o644) for name in FILES]
+    if enroll_update_key is not None:
+        entries.append(("enroll/update-key", enroll_update_key.hex().encode() + b"\n", 0o600))
+    entries += vendored(vendor_dir, **{k: v for k, v in pins.items() if k != "firecracker_pins"})
+    entries += vendored_firecracker(vendor_dir, pins.get("firecracker_pins"))
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for name, data, mode in entries:
@@ -180,13 +254,56 @@ def vendor(target):
     vendored(target)  # exactly the pinned set, nothing else
 
 
+def download(url, expected_sha256, what):
+    with urllib.request.urlopen(url, timeout=600) as response:
+        data = response.read()
+    if sha256(data) != expected_sha256:
+        raise SystemExit(f"{what} is not the pinned object (sha256 differs)")
+    return data
+
+
+def vendor_firecracker(target, firecracker_url, kernel_url, pins=None):
+    """Firecracker, the jailer and the guest kernel into <target>/firecracker/, each against its pin."""
+    pins = pins or firecracker_pins()
+    folder = Path(target) / "firecracker"
+    folder.mkdir(parents=True, exist_ok=True)
+    release = pins["firecracker"]
+    archive = download(firecracker_url, release["sha256"], "the Firecracker tarball")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        for name in ("firecracker", "jailer"):
+            data = tar.extractfile(pins["paths"][name]).read()
+            if sha256(data) != release[f"{name}Sha256"]:
+                raise SystemExit(f"the tarball holds another {name} than the pinned one")
+            (folder / name).write_bytes(data)
+            (folder / name).chmod(0o755)
+    kernel = download(kernel_url, pins["kernel"]["sha256"], "the guest kernel")
+    (folder / "vmlinux").write_bytes(kernel)
+    vendored_firecracker(target, pins)
+
+
+def token(signing_key_hex, host_id, scope, lifetime_s=600, now=None, legacy=False):
+    """A hostd token (hostd.py `verify_token`) with a scope claim, for the operator's calls: signed with the
+    host's update key, derived from the operator's BRO_HOST_UPDATE_SIGNING_KEY, not from the one Bro holds.
+    `legacy` signs with the host's ordinary key instead (then `signing_key_hex` is BROWSER_VM_SIGNING_KEY): the
+    one token a hostd older than the update key accepts, for the update that enrolls the key and nothing else;
+    a hostd with the key refuses it."""
+    payload = base64.urlsafe_b64encode(json.dumps(
+        {"env": host_id, "exp": int((time.time() if now is None else now) + lifetime_s), "scope": scope},
+        separators=(",", ":")).encode()).rstrip(b"=").decode()
+    signed = f"v1.{payload}"
+    key = host_key(signing_key_hex, host_id) if legacy else update_key(signing_key_hex, host_id)
+    signature = hmac.new(key, signed.encode(), hashlib.sha256).digest()
+    return f"{signed}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
 def quoted(text):
     """A single-quoted YAML scalar: the JSON stays as written, a quote inside is written twice."""
     return "'" + text.replace("'", "''") + "'"
 
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
-               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None):
+               runtime="runc", runsc_release=None, apt_mirror=APT_MIRROR, domain=None, host_update_key=None,
+               memory_limit_mb=0):
     if runtime not in RUNTIMES:
         raise ValueError(f"runtime must be one of {RUNTIMES}")
     if runtime == "runsc" and not RUNSC_RELEASE.fullmatch(runsc_release or ""):
@@ -195,12 +312,19 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
         raise ValueError("host id must match [a-z0-9-]{1,63}")
     if apt_mirror and not re.fullmatch(r"https?://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?", apt_mirror):
         raise ValueError("apt mirror must be a plain http(s) URL")
-    identity = json.dumps({"host": host_id, "key": key.hex()})
+    if not isinstance(memory_limit_mb, int) or memory_limit_mb < 0:
+        raise ValueError("memory limit must be a whole number of MB, 0 for all of the host's memory")
+    identity = {"host": host_id, "key": key.hex()}
+    if host_update_key is not None:  # the operator's: Bro's own writer leaves it out
+        identity["updateKey"] = host_update_key.hex()
+    identity = json.dumps(identity)
     boot = json.dumps({
         "hostId": host_id, "domain": domain or "", "runtime": runtime, "runscRelease": runsc_release or "",
         "aptMirror": apt_mirror or "",
         "bundle": {"url": bundle_url, "sha256": bundle_sha256},
         "rootfs": {"version": rootfs_version, "url": rootfs_url, "sha256": rootfs_sha256},
+        # Only when set: Bro's own writer (browserHostCloudInit) has to match this byte for byte.
+        **({"memoryLimitMb": memory_limit_mb} if memory_limit_mb else {}),
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     return "\n".join([
@@ -220,14 +344,36 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
     ])
 
 
+def env_key(name, required=False):
+    """A signing key from the environment as hex (session secrets arrive with stray blanks and quotes)."""
+    value = "".join(os.environ.get(name, "").split()).strip("‘’“”'\"")
+    if required and not value:
+        sys.exit(f"{name} is required")
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        sys.exit(f"{name} is not hex")
+    return value
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("vendor")
     fetch.add_argument("--dir", required=True)
+    fetch.add_argument("--firecracker-url")
+    fetch.add_argument("--kernel-url")
+    tokens = commands.add_parser("token")
+    tokens.add_argument("--host-id", required=True)
+    tokens.add_argument("--scope", default="update", choices=["update"])
+    tokens.add_argument("--legacy-host-key", action="store_true",
+                        help="sign with the host's ordinary key (BROWSER_VM_SIGNING_KEY): only for the update that "
+                             "gives a host older than the update key its updateKey")
     pack = commands.add_parser("bundle")
     pack.add_argument("--vendor", required=True)
     pack.add_argument("--out", required=True)
+    pack.add_argument("--enroll-update-key", metavar="HOST_ID",
+                      help="carry that host's update key (from BRO_HOST_UPDATE_SIGNING_KEY) for update.sh to install")
     init = commands.add_parser("cloud-init")
     for name in ("host-id", "bundle-url", "bundle-sha256", "rootfs-version", "rootfs-url", "rootfs-sha256"):
         init.add_argument(f"--{name}", required=True)
@@ -235,23 +381,36 @@ def main(argv=None):
     init.add_argument("--runsc-release")
     init.add_argument("--apt-mirror", default=APT_MIRROR)
     init.add_argument("--domain")
+    init.add_argument("--memory-limit-mb", type=int, default=0,
+                      help="what browser sandboxes may take together, on a server shared with the code host")
     args = parser.parse_args(argv)
     if args.command == "vendor":
         vendor(args.dir)
+        if args.firecracker_url or args.kernel_url:
+            if not (args.firecracker_url and args.kernel_url):
+                sys.exit("--firecracker-url and --kernel-url go together")
+            vendor_firecracker(args.dir, args.firecracker_url, args.kernel_url)
         return
     if args.command == "bundle":
-        data = bundle(args.vendor)
+        enroll = None
+        if args.enroll_update_key:
+            enroll = update_key(env_key("BRO_HOST_UPDATE_SIGNING_KEY", required=True), args.enroll_update_key)
+        data = bundle(args.vendor, enroll_update_key=enroll)
         Path(args.out).write_bytes(data)
         print(sha256(data))
         return
-    signing = "".join(os.environ.get("BROWSER_VM_SIGNING_KEY", "").split()).strip("‘’“”'\"")
-    if not signing:
-        sys.exit("BROWSER_VM_SIGNING_KEY is required")
+    if args.command == "token":
+        name = "BROWSER_VM_SIGNING_KEY" if args.legacy_host_key else "BRO_HOST_UPDATE_SIGNING_KEY"
+        print(token(env_key(name, required=True), args.host_id, args.scope, legacy=args.legacy_host_key))
+        return
+    signing = env_key("BROWSER_VM_SIGNING_KEY", required=True)
+    operator = env_key("BRO_HOST_UPDATE_SIGNING_KEY")
     sys.stdout.write(cloud_init(
+        host_update_key=update_key(operator, args.host_id) if operator else None,
         host_id=args.host_id, key=host_key(signing, args.host_id), runtime=args.runtime,
         runsc_release=args.runsc_release, apt_mirror=args.apt_mirror, bundle_url=args.bundle_url,
         bundle_sha256=args.bundle_sha256, rootfs_version=args.rootfs_version, rootfs_url=args.rootfs_url,
-        rootfs_sha256=args.rootfs_sha256, domain=args.domain))
+        rootfs_sha256=args.rootfs_sha256, domain=args.domain, memory_limit_mb=args.memory_limit_mb))
 
 
 if __name__ == "__main__":

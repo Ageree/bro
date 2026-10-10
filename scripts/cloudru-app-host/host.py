@@ -82,6 +82,13 @@ import cloudru  # noqa: E402
 import deployd  # noqa: E402
 import s3  # noqa: E402
 
+# BRO_CLOUD=selectel: the VM and the database live in Selectel's cloud (scripts/selectel/cloud.py) instead of
+# Cloud.ru; releases, env, sites, logs and ops go through deployd the same way on either.
+SELECTEL = os.environ.get("BRO_CLOUD", "cloudru") == "selectel"
+if SELECTEL:
+    sys.path.insert(0, str(REPO / "scripts" / "selectel"))
+    import cloud as selectel  # noqa: E402
+
 NAME = re.compile(r"bro-app-[a-z0-9-]{1,55}")
 VENDOR = STATE / "vendor"
 BUILDS = STATE / "build"
@@ -225,6 +232,8 @@ def full_vm(vm_id):
 
 
 def public_ip(vm):
+    if SELECTEL:
+        return selectel.floating_ip_of(vm["id"])
     for interface in vm.get("interfaces") or []:
         floating = interface.get("floating_ip") or {}
         if floating.get("ip_address"):
@@ -233,6 +242,11 @@ def public_ip(vm):
 
 
 def found_vm(name):
+    if SELECTEL:
+        vm = selectel.server_by_name(host_name(name))
+        if vm is None:
+            sys.exit(f"no VM {name}")
+        return vm
     vm = cloudru.vm_by_name(host_name(name))
     if vm is None:
         sys.exit(f"no VM {name}")
@@ -349,7 +363,7 @@ def deliver_bundle():
 
 def cmd_create(args):
     name = host_name(args.name)
-    if cloudru.vm_by_name(name):
+    if (selectel.server_by_name(name) if SELECTEL else cloudru.vm_by_name(name)):
         sys.exit(f"{name} exists already")
     objects = {}
     for file_name, pin in boot.vendor_objects():
@@ -361,13 +375,29 @@ def cmd_create(args):
         host_id=name, key=host_key(name), bundle_url=s3.presign("GET", bundle_key, LINK_SECONDS),
         bundle_sha256=bundle_sha, objects=objects,
         console_password_hash=None if args.no_console else console_password(name))
+    started = time.time()
+    if SELECTEL:
+        flavor = args.flavor or "HFL1.2-8192-160"
+        server_id = selectel.create_server(name, flavor, user_data, args.disk)
+        print(f"create {name} ({flavor}) in {selectel.ZONE}", flush=True)
+        selectel.wait_active(server_id, args.wait_minutes)
+        ip, _ = selectel.attach_floating_ip(server_id)
+        print(f"+{time.time() - started:.0f}s ACTIVE {ip}", flush=True)
+    else:
+        ip = create_cloudru_vm(name, args, user_data, started)
+    domain = ip.replace(".", "-") + ".sslip.io"
+    (STATE / f"{name}.json").write_text(json.dumps({"name": name, "ip": ip, "domain": domain}) + "\n")
+    wait_health(name, domain, args, started)
+
+
+def create_cloudru_vm(name, args, user_data, started):
+    args.flavor = args.flavor or "gen-2-8"
     interface = {"type": "regular", "subnet_name": cloudru.SUBNET, "new_external_ip": True,
                  "security_group_names": [cloudru.SECURITY_GROUP]}
     vm = {"project_id": cloudru.project_id(), "name": name, "availability_zone_name": cloudru.ZONE,
           "flavor_name": args.flavor, "image_name": "ubuntu-22.04",
           "disks": [{"name": name + "-disk", "size": args.disk, "disk_type_name": "SSD"}],
           "interfaces": [interface], "cloud_init": base64.b64encode(user_data.encode()).decode()}
-    started = time.time()
     code, body = cloudru.api("POST", "/v1.1/vms", [vm])
     if code != 201:
         sys.exit(f"create {code}: {json.dumps(body, ensure_ascii=False)[:600]}")
@@ -387,8 +417,11 @@ def cmd_create(args):
         if time.time() > deadline:
             sys.exit(f"{name} is {state} after {args.wait_minutes} minutes: python host.py status {name}")
         time.sleep(10)
-    domain = ip.replace(".", "-") + ".sslip.io"
-    (STATE / f"{name}.json").write_text(json.dumps({"name": name, "ip": ip, "domain": domain}) + "\n")
+    return ip
+
+
+def wait_health(name, domain, args, started):
+    ip = domain.removesuffix(".sslip.io").replace("-", ".")
     print(f"running at {ip}; waiting for https://{domain}/ops/v1/health (the network comes ~3 min late)",
           flush=True)
     deadline = time.time() + args.wait_minutes * 60
@@ -406,14 +439,20 @@ def cmd_create(args):
 def cmd_status(args):
     vm = found_vm(args.name)
     ip, _ = public_ip(vm)
-    print(json.dumps({"name": vm["name"], "id": vm["id"], "state": vm["state"],
-                      "flavor": (vm.get("flavor") or {}).get("name"), "ip": ip}))
+    if SELECTEL:
+        print(json.dumps({"name": vm["name"], "id": vm["id"], "state": vm["status"],
+                          "flavor": (vm.get("flavor") or {}).get("original_name"), "ip": ip}))
+    else:
+        print(json.dumps({"name": vm["name"], "id": vm["id"], "state": vm["state"],
+                          "flavor": (vm.get("flavor") or {}).get("name"), "ip": ip}))
     if ip:
         code, body = health(ops_domain(args.name))
         print(f"deployd health: {code} {json.dumps(body) if code == 200 else body}")
         if code == 200:
             print(json.dumps(checked(call(args.name, "GET", "status"), (200,)), indent=1, ensure_ascii=False))
-    if args.stage:
+    if args.stage and SELECTEL:
+        print(selectel.console_log(vm["id"], 80))
+    elif args.stage:
         try:
             import console  # websocket-client, only here
         except ImportError:
@@ -519,6 +558,10 @@ def cmd_update_host(args):
 
 def cmd_reboot(args):
     vm = found_vm(args.name)
+    if SELECTEL:
+        selectel.reboot(vm["id"])
+        print("reboot HARD")
+        return
     code, body = cloudru.api("POST", f"/v1/vms/{vm['id']}/set-power", {"state": "reboot"})
     if code >= 300:
         sys.exit(f"reboot {code}: {body}")
@@ -527,6 +570,11 @@ def cmd_reboot(args):
 
 def cmd_delete(args):
     vm = found_vm(args.name)
+    if SELECTEL:
+        selectel.delete_server(vm["id"])
+        (STATE / f"{args.name}.json").unlink(missing_ok=True)
+        print(f"{args.name} deleted with its floating IP")
+        return
     _, floating_id = public_ip(vm)
     attachments = {"external_ips": [floating_id] if floating_id else []}
     code, body = cloudru.api("DELETE", f"/v1/vms/{vm['id']}", {"delete_attachments": attachments})
@@ -890,7 +938,7 @@ def cmd_env(args):
         refusals.append("production has no https OPS_ALERT_WEBHOOK_URL: an alert about the path to Telegram would "
                         "reach nobody (or --no-alert-webhook on purpose)")
     for name in ("EVE_SCHEDULES", "BACKUPS"):
-        if prod and values.get(name) == "off":
+        if prod and values.get(name) in ("off", "browser"):
             print(f"WARNING: {name}=off on production ({sources.get(name)}): only for the move's window; "
                   f"remove it from prod.json and run host.py env again after it")
     if args.profile == "stand":
@@ -1113,6 +1161,8 @@ def pg_remember_cluster(cluster):
 
 
 def cmd_pg_create(args):
+    if SELECTEL:
+        return selectel_pg_create(args)
     cluster = pg_cluster(required=False)
     if cluster is None:
         specs = pg_api("GET", f"/v1/specifications?version_name={PG_VERSION}")["specifications"]
@@ -1147,6 +1197,43 @@ def cmd_pg_create(args):
     pg_remember_cluster(cluster)
 
 
+def selectel_pg_create(args):
+    """Selectel's managed PostgreSQL in bro-net's subnet: one node, the provider's daily backups."""
+    selectel.pg_create(args.flavor)
+    deadline = time.time() + args.wait_minutes * 60
+    while True:
+        cluster = selectel.pg_cluster()
+        if cluster["status"] == "ACTIVE":
+            break
+        if cluster["status"] in ("ERROR", "DELETED"):
+            sys.exit(f"{PG_CLUSTER} is {cluster['status']}")
+        if time.time() > deadline:
+            sys.exit(f"{PG_CLUSTER} is {cluster['status']} after {args.wait_minutes} minutes: python host.py pg status")
+        print(f"{PG_CLUSTER}: {cluster['status']}", flush=True)
+        time.sleep(20)
+    host, port = selectel.pg_address(cluster)
+    remember(PG_CLUSTER_ID=cluster["id"], PG_HOST=host, PG_PORT=str(port))
+    print(f"{PG_CLUSTER}: ACTIVE at {host}:{port}; PG_CLUSTER_ID, PG_HOST, PG_PORT in "
+          f"{SECRETS / 'new-secrets.json'}")
+
+
+def selectel_pg_users(args):
+    _, stored = new_secrets()
+    password = stored.get(PG_PASSWORD)
+    if not password or args.reset_password:
+        password = new_password()
+        remember(**{PG_PASSWORD: password})  # before the request: a lost answer must not lose the password
+    selectel.pg_user(PG_USER, clean(password))
+    print(f"{PG_USER} has the password {PG_PASSWORD} of {SECRETS / 'new-secrets.json'}")
+
+
+def selectel_pg_databases():
+    owner = selectel.pg_user(PG_USER, None)
+    for name in [*PG_DATABASES["prod"], *PG_DATABASES["stand"], PG_CHECK_DATABASE]:
+        found = selectel.pg_database(name, owner["id"], PG_LOCALE)
+        print(f"{name}: {found.get('status')} {found.get('lc_collate')}/{found.get('lc_ctype')}")
+
+
 def new_password():
     while True:  # every class, the way the provider's console asks for it
         password = secrets.token_urlsafe(30)
@@ -1155,11 +1242,19 @@ def new_password():
 
 
 def cmd_pg_users(args):
+    _, stored = new_secrets()
+    if SELECTEL:
+        selectel_pg_users(args)
+    else:
+        cloudru_pg_users(args, stored)
+    backup_key(args, stored)
+
+
+def cloudru_pg_users(args, stored):
     cluster = pg_cluster()
     pg_remember_cluster(cluster)
     path = f"/v1/clusters/{cluster['id']}/users"
     users = {u["name"] for u in pg_api("GET", path)["users"]}
-    _, stored = new_secrets()
     if PG_USER not in users:
         password = stored.get(PG_PASSWORD) or new_password()
         remember(**{PG_PASSWORD: password})  # before the request: a lost answer must not lose the password
@@ -1177,6 +1272,9 @@ def cmd_pg_users(args):
         sys.exit(f"{PG_USER} exists, but {PG_PASSWORD} is not in new-secrets.json: --reset-password sets a new one")
     else:
         print(f"{PG_USER} is there, its password in new-secrets.json")
+
+
+def backup_key(args, stored):
     if not stored.get("BACKUP_ENCRYPTION_KEY"):
         # A new key never quietly replaces a lost one: the backups already made would stay unreadable with it.
         made = [key for key, _ in s3.listing("backups/") if key.endswith(".dump.enc")]
@@ -1191,6 +1289,8 @@ def cmd_pg_users(args):
 
 
 def cmd_pg_databases(_args):
+    if SELECTEL:
+        return selectel_pg_databases()
     cluster = pg_cluster()
     path = f"/v1/clusters/{cluster['id']}/databases"
     if PG_USER not in {u["name"] for u in pg_api("GET", f"/v1/clusters/{cluster['id']}/users")["users"]}:
@@ -1210,6 +1310,9 @@ def cmd_pg_databases(_args):
 
 
 def cmd_pg_status(_args):
+    if SELECTEL:
+        print(json.dumps(selectel.pg_status(), ensure_ascii=False))
+        return
     cluster = pg_cluster()
     host, port = pg_address(cluster)
     print(json.dumps({k: cluster.get(k) for k in ("id", "status", "health", "version", "specification_id", "storage",
@@ -1276,7 +1379,7 @@ def parser():
     sub.add_parser("vendor").set_defaults(fn=cmd_vendor)
     create = sub.add_parser("create")
     create.add_argument("name")
-    create.add_argument("--flavor", default="gen-2-8")
+    create.add_argument("--flavor", help="gen-2-8 on Cloud.ru, HFL1.2-8192-160 on Selectel by default")
     create.add_argument("--disk", type=int, default=40)
     create.add_argument("--no-console", action="store_true")
     create.add_argument("--wait-minutes", type=int, default=25)
@@ -1347,6 +1450,7 @@ def parser():
     pg_sub = pg.add_subparsers(dest="pg_cmd", required=True)
     create = pg_sub.add_parser("create")
     create.add_argument("--spec", default=PG_SPEC, help="a display_name of GET /v1/specifications")
+    create.add_argument("--flavor", default="2-4096-32", help="Selectel: a DBaaS flavor name")
     create.add_argument("--disk", type=int, default=20)
     create.add_argument("--wait-minutes", type=int, default=30)
     create.set_defaults(fn=cmd_pg_create)
