@@ -226,6 +226,13 @@
   `host.py env bro-app-sel-2 --profile prod --allow-missing
 --no-alert-webhook`; инфраструктура Selectel (`S3_*`, пул `static`,
   хост песочниц) — в `prod.json` этого каталога.
+- Выкат из свежей облачной сессии без `SELECTEL_PROJECT`/`SELECTEL_ACCOUNT`:
+  `state restore`, `env`, `deploy`, `logs`, `ops` им не нужны (VM берётся из
+  кэша `bro-app-sel-2.json`), нужен только S3: `S3_ENDPOINT=https://s3.ru-1.storage.selcloud.ru`,
+  `S3_REGION=ru-1`, `PROBE_BUCKET=bro-bucket` (без них — 403 на `operator/state.bin`);
+  `status` Selectel API ходит и без проекта падает. Сборке нужны Node 24 и `zstd`
+  (`apt-get update` перед `install`). Тон звонка — ops-скрипт `phone-setup.sh` с флагами
+  `--public-url https://brobro.tech --apply --output /tmp/x.env`.
 - Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
   меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
 - Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
