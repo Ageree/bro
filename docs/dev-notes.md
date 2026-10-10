@@ -654,6 +654,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 
 ## Ход и доставка
 
+- Ссылку входа модель копирует с ошибками (10.10: хвост длинного id потерян).
+  `send_message` подменяет любой `…/handoff/<id>` в тексте на последнюю ссылку,
+  которую выдал `site-login-link` (`agent/lib/login-handoff/exact-link.ts`).
+  Не полагайтесь на то, что модель перепишет ссылку верно.
 - В eve нет `toolChoice`: `send_message` форсирует резолвер модели на
   `step.started` (`agent/agent.ts`, `agent/lib/model/direct.ts`), пока
   сообщение человека без ответа (`agent/lib/delivery/pending.ts`). Не
