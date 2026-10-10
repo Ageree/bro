@@ -8,6 +8,7 @@ import {
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
+import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
 import { isSharedFileLink } from "../lib/sandbox/files";
 import { reportTurnHoldsFiles } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
@@ -165,7 +166,7 @@ function defineSendMessage(
     execute(message, context) {
       const emit = () => {
         if (pastAnswer) return { skipped: "past" as const };
-        const outgoing = withoutBookkeeping(message);
+        const outgoing = withoutBookkeeping(withExactLoginHandoffLink(message));
         if (!outgoing) return { skipped: "sentinel" as const };
         const refused = sendRefusal(outgoing, turn, earlyReply);
         if (refused) return refused;

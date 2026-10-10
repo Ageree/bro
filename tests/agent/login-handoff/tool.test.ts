@@ -20,6 +20,12 @@ vi.mock("@agent/lib/browser-vm/backend", () => ({
 vi.mock("@db/services/login-handoffs", () => ({
   createLoginHandoff: services.create,
 }));
+// The link made is kept in eve's session state, which only a turn has
+// (`exact-link.test.ts` covers that state).
+const recordIssued = vi.hoisted(() => vi.fn<(link: string) => void>());
+vi.mock("@agent/lib/login-handoff/exact-link", () => ({
+  recordLoginHandoffLink: recordIssued,
+}));
 
 import loginLinkTools from "@agent/tools/site_login_link";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -143,6 +149,7 @@ describe("the sign-in link tool", () => {
     });
     expect(row?.id).toBe(link.split("/").at(-1));
     expect(row?.allowedDomains).toContain("ozon.ru");
+    expect(recordIssued).toHaveBeenLastCalledWith(link);
     expect("reply" in made ? made.reply : "").toContain(
       "do not ask for the password"
     );

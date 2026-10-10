@@ -5,6 +5,7 @@ import {
   personWordsThisTurn,
 } from "@agent/lib/browser-use/said";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
+import { recordLoginHandoffLink } from "@agent/lib/login-handoff/exact-link";
 import {
   linkLifetimeMs,
   loginHandoffLink,
@@ -128,8 +129,12 @@ async function createLink(
       sent: false,
     };
   }
+  const link = loginHandoffLink(id);
+  // `send_message` puts this exact address into the text it sends
+  // (`exact-link.ts`), so the model's copy of it does not matter.
+  recordLoginHandoffLink(link);
   return {
-    link: loginHandoffLink(id),
+    link,
     reply: `The link is made. Send it to the person as it is, on a line of its own, with: it opens a window of Bro's own browser on ${site.domain}, where they sign in themselves (type the login, password and any code right there, and tick «Запомнить меня» if the site offers it), then press «Готово»; Bro does not keep the password, and Bro stays signed in there for later errands. The link works for 30 minutes from one device, so they must not forward it. Do not open the link, do not ask for the password or a code in the chat, and say nothing more until they answer or the result comes.`,
     sent: true,
   };
