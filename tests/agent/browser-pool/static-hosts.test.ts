@@ -479,6 +479,32 @@ describe("static browser hosts", { timeout: 60_000 }, () => {
     expectNoComputeCall();
   });
 
+  it("places a sandbox on a listed host the moment its hostd answers, before any round of the reconcile", async () => {
+    // The servers are always on: a person's errand must not wait a tick for
+    // a host to be recorded or found ready.
+    const { hosts, records } = await loadPool();
+    hostClient.readBrowserHostCapacity.mockResolvedValue(capacity(0));
+    expect(await records.listBrowserHosts()).toEqual([]);
+
+    const placed = await hosts.placeBrowserSandbox(now);
+    expect(placed).toMatchObject({ host: { id: "static-1" }, kind: "ready" });
+    expect(await records.listBrowserHosts()).toMatchObject([
+      { id: "static-1", state: "ready" },
+      { id: "static-2", state: "ready" },
+    ]);
+
+    // With a host in service, one that failed is left to the reconcile: its
+    // silent hostd would hold every errand for its timeout.
+    await records.updateBrowserHost("static-2", { state: "failed" });
+    hostClient.readBrowserHostHealth.mockClear();
+    hostClient.readBrowserHostCapacity.mockClear();
+    await hosts.placeBrowserSandbox(minutes(1));
+    expect(hostClient.readBrowserHostCapacity.mock.calls).toEqual([
+      [expect.objectContaining({ id: "static-1" })],
+    ]);
+    expectNoComputeCall();
+  });
+
   it("asks soon again when no host is up, without waiting for one to be made", async () => {
     const { hosts } = await loadPool();
     hostClient.readBrowserHostHealth.mockRejectedValue(new Error("down"));

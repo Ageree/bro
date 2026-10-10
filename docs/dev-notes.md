@@ -977,6 +977,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `docs/browser-pool.md`): в `agent/lib/browser-pool/hosts.ts` режим целиком
   обходит Compute API (вызовы Cloud.ru идут через `browser-pool/cloud.ts`),
   а `hostVmStillThere` в `sandbox.ts` для такого хоста не спрашивает VM.
+  Ход человека на таком пуле не ставит поручение в очередь, пока песочница
+  поднимается: `ensureForRun` в `agent/lib/browser-vm/runs.ts` ждёт её до
+  30 с (восстановление ~1 с), а размещение само записывает и опрашивает
+  хосты (`staticHostsUp`). Очередь остаётся для занятого аккаунта и полного
+  сервера. Тик пула здесь идёт и без ключей Cloud.ru.
   Скрипту `scripts/browser-pool/static-host-cloud-init.ts` нужен
   `--experimental-transform-types`: граф приложения использует parameter
   properties. Скрытые вызовы Compute API остаются у `private-route.ts`

@@ -28,6 +28,7 @@ import {
   touchBrowserVm,
 } from "./lifecycle";
 import { fastBrowserPilot } from "./pilot";
+import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
   BrowserVmWorkerError,
   browserVmCdpUrl,
@@ -188,13 +189,16 @@ const settledStatuses = new Set<BrowserVmRunRecord["status"]>([
  * and powers them, and the signing key opens their workers. It asks less
  * than `browserVmConfigured`, which new errands need: with the image, the
  * proxy or the model key taken away no errand starts on a VM, but the VMs
- * already made still bill until they are stopped when idle.
+ * already made still bill until they are stopped when idle. On the
+ * operator's own servers (`BROWSER_HOST_CLOUD=static`) nothing is asked of
+ * Cloud.ru, and the poller still records the hosts and parks idle sandboxes.
  */
 export function browserVmReconcileConfigured() {
   return (
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
-    env.BROWSER_VM_SIGNING_KEY !== undefined
+    env.BROWSER_VM_SIGNING_KEY !== undefined &&
+    (staticBrowserPool() ||
+      (env.CLOUDRU_KEY_ID !== undefined &&
+        env.CLOUDRU_KEY_SECRET !== undefined))
   );
 }
 
@@ -215,9 +219,47 @@ const addressWallLine =
   "If the site blocks this network address (for example «Доступ ограничен: проблема с IP») or shows any captcha — a slider, «I'm not a robot», hCaptcha, Turnstile, Yandex SmartCaptcha, characters in a picture or pictures to click — call the solve_captcha action first, before you tick, drag, type or click anything in the check yourself, and never ask for an audio challenge: that gets this address flagged. Once solve_captcha says the check is solved, leave the check alone and do what it says, usually submit the form. A picture to click in on the site's own page (not «I'm not a robot» or hCaptcha: their pictures are answered without them) that it did not solve goes to it once more with the check's instruction text. Call solve_captcha at most three times in this run. If the wall or the check is still there after that, or solve_captcha cannot solve it, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
 
 /**
+ * How long a person's turn waits for their sandbox on the operator's own
+ * servers before the errand queues after all, and how often it looks. A
+ * restore from a snapshot takes about a second there, a cold start two or
+ * three (docs/selectel-migration.md); the queue's first try would come 15 s
+ * to a minute later.
+ */
+const inTurnStartBudgetMs = 30_000;
+const inTurnStartPollMs = 1000;
+
+/**
+ * The workspace's browser for a run. On the operator's always-on servers a
+ * person's turn waits here until it is up, so the errand starts in the turn
+ * instead of in the queue; on Cloud.ru a host took minutes to wake or make,
+ * and the first answer stands (the errand queues).
+ */
+async function ensureForRun(workspaceId: string, inTurn: boolean) {
+  const began = Date.now();
+  for (;;) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The start is looked at again until the sandbox is up.
+    const started = await ensureBrowserVm(workspaceId, new Date());
+    if (started.kind !== "starting" || !inTurn || !staticBrowserPool()) {
+      return started;
+    }
+    const left = inTurnStartBudgetMs - (Date.now() - began);
+    if (left <= 0) return started;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above: one look a second.
+    await new Promise((resolve) => {
+      setTimeout(
+        resolve,
+        Math.min(started.retryAfterMs, inTurnStartPollMs, left)
+      );
+    });
+  }
+}
+
+/**
  * Start a run on the workspace's VM, powering the VM on or creating it
  * first: until it is up the start answers 429 with the wait, and the errand
- * waits in the queue as it does for a busy Browser Use project.
+ * waits in the queue as it does for a busy Browser Use project. On the
+ * operator's own servers a person's turn waits for the start instead
+ * (`ensureForRun`).
  *
  * Only what the VM uses is read of the Browser Use run input
  * (`BrowserUseCreateRunInput`): the VM brings its own proxy and model, and
@@ -265,8 +307,8 @@ export async function createBrowserVmRun(input: {
       "The session is not on this workspace's browser VM."
     );
   }
+  const started = await ensureForRun(workspaceId, input.inTurn === true);
   const now = new Date();
-  const started = await ensureBrowserVm(workspaceId, now);
   if (started.kind === "starting") {
     throw new BrowserUseError(
       429,

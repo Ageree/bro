@@ -341,13 +341,17 @@ function onCurrentBoot(host: BrowserHost) {
   );
 }
 
-/** Whether the hosts are the operator's servers, not Cloud.ru VMs. */
-function staticMode() {
+/**
+ * Whether the hosts are the operator's always-on servers, not Cloud.ru VMs:
+ * a sandbox there starts in seconds, so a person's turn waits for it
+ * instead of queuing the errand (`createBrowserVmRun`).
+ */
+export function staticBrowserPool() {
   return env.BROWSER_HOST_CLOUD === "static";
 }
 
 function staticEntry(id: string) {
-  return staticMode()
+  return staticBrowserPool()
     ? env.BROWSER_HOST_STATIC?.find((entry) => entry.id === id)
     : undefined;
 }
@@ -369,7 +373,7 @@ export function isStaticBrowserHost(
 
 /** Whether a sandbox may be placed on the host at all. */
 function placeable(host: BrowserHost) {
-  return !staticMode() || isStaticBrowserHost(host);
+  return !staticBrowserPool() || isStaticBrowserHost(host);
 }
 
 /**
@@ -391,6 +395,7 @@ export async function placeBrowserSandbox(
   now = new Date(),
   { inServiceOnly = false }: { readonly inServiceOnly?: boolean } = {}
 ) {
+  if (staticBrowserPool()) await staticHostsUp(now);
   // In the `static` mode a record outside the list takes no sandbox.
   const hosts = (await listBrowserHosts()).filter(placeable);
   // The ready hosts, fullest first; then the draining ones, which an empty
@@ -452,7 +457,7 @@ export async function placeBrowserSandbox(
     return starting(hostBootingRetryMs);
   }
   // Static hosts are always on: none is woken or made for the errand.
-  if (staticMode()) return starting(await staticNoRoom(hosts, read));
+  if (staticBrowserPool()) return starting(await staticNoRoom(hosts, read));
   // A sleeping host is up in a minute and a half, a new one in five.
   const sleeping = hosts.find((host) => host.state === "stopped");
   if (sleeping !== undefined)
@@ -477,7 +482,7 @@ function onItsWayUp(host: BrowserHost) {
  */
 export async function prewarmBrowserPool(now = new Date()) {
   // Static hosts are always on: there is nothing to warm up.
-  if (staticMode()) return;
+  if (staticBrowserPool()) return;
   try {
     const hosts = await listBrowserHosts();
     if (hosts.some((host) => host.state === "ready" || onItsWayUp(host))) {
@@ -509,7 +514,7 @@ export async function prewarmBrowserPool(now = new Date()) {
  */
 export async function browserPoolWait(now = new Date()) {
   // Static hosts are always on, so a start waits for room, never for a host.
-  if (staticMode()) return { minutes: 1, phase: "ready" as const };
+  if (staticBrowserPool()) return { minutes: 1, phase: "ready" as const };
   const hosts = await listBrowserHosts();
   if (
     hosts.some(
@@ -626,7 +631,7 @@ async function backInService(host: BrowserHost, now: Date) {
  * Never throws; a host another step holds is left for the next round.
  */
 export async function reconcileBrowserHosts(now = new Date()) {
-  if (staticMode()) {
+  if (staticBrowserPool()) {
     await reconcileStaticHosts(now);
     return;
   }
@@ -749,7 +754,7 @@ async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
   const host = await claimBrowserHostLease(id, now, leaseMs);
   if (host === undefined) return;
   try {
-    if (staticMode()) {
+    if (staticBrowserPool()) {
       await tendStaticMode(host, now);
       return;
     }
@@ -792,6 +797,25 @@ async function reconcileBrowserHost(id: string, now: Date, keepWarm = false) {
  * Cloud.ru.
  */
 async function reconcileStaticHosts(now: Date) {
+  await recordStaticHosts(now);
+  const hosts = await listBrowserHosts();
+  await Promise.all(
+    hosts.map(async (host) => {
+      try {
+        await reconcileBrowserHost(host.id, now);
+      } catch (error) {
+        console.warn("[browser-pool] the host could not be reconciled", {
+          cause: error,
+          hostId: host.id,
+          state: host.state,
+        });
+      }
+    })
+  );
+}
+
+/** Record every listed host that has no record yet, as `booting`. */
+async function recordStaticHosts(now: Date) {
   try {
     const bootConfig = browserHostBootConfig();
     await Promise.all(
@@ -807,9 +831,25 @@ async function reconcileStaticHosts(now: Date) {
       cause: error,
     });
   }
-  const hosts = await listBrowserHosts();
+}
+
+/**
+ * The listed hosts as a placement needs them now, not a tick later: the
+ * servers are always on, so one just recorded or failed is asked at once
+ * rather than after the reconcile's next round. Only while no listed host
+ * is in service: a host that is down would otherwise hold every person's
+ * errand for its `hostd`'s timeout.
+ */
+async function staticHostsUp(now: Date) {
+  await recordStaticHosts(now);
+  const listed = (await listBrowserHosts()).filter(isStaticBrowserHost);
+  if (
+    listed.some((host) => host.state === "ready" || host.state === "draining")
+  ) {
+    return;
+  }
   await Promise.all(
-    hosts.map(async (host) => {
+    listed.map(async (host) => {
       try {
         await reconcileBrowserHost(host.id, now);
       } catch (error) {

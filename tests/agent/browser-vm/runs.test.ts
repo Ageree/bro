@@ -267,6 +267,34 @@ async function loadRuns() {
   );
 }
 
+/** What a start that is refused rejects with. */
+function refusal(cause: unknown) {
+  return cause;
+}
+
+/**
+ * A clock the test moves: the timers and the date are fake, and each step
+ * also lets the real event loop turn, so the module imports and database
+ * mocks a start awaits come through between the fake timers.
+ */
+function fakeClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
+async function elapse(ms: number) {
+  for (let passed = 0; passed < ms; passed += 500) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The clock moves in steps, the real event loop turning between them.
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    await vi.advanceTimersByTimeAsync(500);
+  }
+}
+
 describe("starting a run on a workspace's browser VM", () => {
   it("asks the errand to wait, with the VM's own wait, while the VM starts", async () => {
     const client = await loadClient();
@@ -284,6 +312,130 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(refused).toMatchObject({ retryAfterMs: 180_000, status: 429 });
     expect(records.recordBrowserVmRun).not.toHaveBeenCalled();
     expect(worker.startBrowserVmWorkerRun).not.toHaveBeenCalled();
+  });
+
+  it("waits in a person's turn for a sandbox on the operator's own servers, and starts the run there", async () => {
+    // A restore there takes about a second: the turn waits rather than
+    // queue the errand for the minute tick.
+    const client = await importWithSettings(
+      {
+        ...browserVmTestEnvironment,
+        BROWSER_HOST_CLOUD: "static",
+        BROWSER_HOST_STATIC: "static-1@203.0.113.10",
+      },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    const vm = vmRow();
+    lifecycle.ensureBrowserVm
+      .mockResolvedValueOnce({ kind: "starting", retryAfterMs: 15_000 })
+      .mockResolvedValueOnce({ kind: "starting", retryAfterMs: 15_000 })
+      .mockResolvedValue({ kind: "ready", vm });
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    fakeClock();
+
+    const started = client.createBrowserUseRun({
+      inTurn: true,
+      profileId,
+      task: composedTask,
+    });
+    await elapse(2000);
+
+    expect(await started).toMatchObject({ status: "queued" });
+    expect(lifecycle.ensureBrowserVm).toHaveBeenCalledTimes(3);
+    expect(worker.startBrowserVmWorkerRun).toHaveBeenCalledOnce();
+  });
+
+  it(
+    "queues the errand of a sandbox not up within the turn's wait",
+    { timeout: 30_000 },
+    async () => {
+      lifecycle.ensureBrowserVm.mockResolvedValue({
+        kind: "starting",
+        retryAfterMs: 15_000,
+      });
+      const client = await importWithSettings(
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_HOST_CLOUD: "static",
+          BROWSER_HOST_STATIC: "static-1@203.0.113.10",
+        },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      fakeClock();
+
+      const late = client
+        .createBrowserUseRun({ inTurn: true, profileId, task: composedTask })
+        .catch((cause: unknown) => cause);
+      await elapse(31_000);
+
+      expect(await late).toMatchObject({ retryAfterMs: 15_000, status: 429 });
+      // About once a second for the turn's 30 s.
+      expect(lifecycle.ensureBrowserVm.mock.calls.length).toBeGreaterThan(20);
+      expect(worker.startBrowserVmWorkerRun).not.toHaveBeenCalled();
+    }
+  );
+
+  it("takes the first answer for the queue's own start, and for a start on Cloud.ru", async () => {
+    lifecycle.ensureBrowserVm.mockResolvedValue({
+      kind: "starting",
+      retryAfterMs: 15_000,
+    });
+    const statics = await importWithSettings(
+      {
+        ...browserVmTestEnvironment,
+        BROWSER_HOST_CLOUD: "static",
+        BROWSER_HOST_STATIC: "static-1@203.0.113.10",
+      },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    expect(
+      await statics
+        .createBrowserUseRun({ profileId, task: composedTask })
+        .catch(refusal)
+    ).toMatchObject({ status: 429 });
+    expect(lifecycle.ensureBrowserVm).toHaveBeenCalledOnce();
+
+    lifecycle.ensureBrowserVm.mockClear();
+    const cloudru = await importWithSettings(
+      {
+        ...browserVmTestEnvironment,
+        BROWSER_HOST_CLOUD: "",
+        BROWSER_HOST_STATIC: "",
+      },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    expect(
+      await cloudru
+        .createBrowserUseRun({ inTurn: true, profileId, task: composedTask })
+        .catch(refusal)
+    ).toMatchObject({ status: 429 });
+    expect(lifecycle.ensureBrowserVm).toHaveBeenCalledOnce();
+    expect(worker.startBrowserVmWorkerRun).not.toHaveBeenCalled();
+  });
+
+  it("looks after the sandboxes on the operator's own servers without Cloud.ru's key", async () => {
+    const keyless = { CLOUDRU_KEY_ID: "", CLOUDRU_KEY_SECRET: "" };
+    const cloudru = await importWithSettings(
+      { ...browserVmTestEnvironment, ...keyless },
+      async () => import("@agent/lib/browser-vm/runs")
+    );
+    expect(cloudru.browserVmReconcileConfigured()).toBe(false);
+    const statics = await importWithSettings(
+      {
+        ...browserVmTestEnvironment,
+        ...keyless,
+        BROWSER_HOST_CLOUD: "static",
+        BROWSER_HOST_STATIC: "static-1@203.0.113.10",
+      },
+      async () => import("@agent/lib/browser-vm/runs")
+    );
+    expect(statics.browserVmReconcileConfigured()).toBe(true);
   });
 
   it("records the run before it starts it, on the VM's own model with the person's secrets", async () => {
