@@ -4,7 +4,6 @@ import {
   browserStateConfigured,
   usesBrowserPool,
 } from "@agent/lib/browser-vm/backend";
-import { readCloudRuVm } from "@agent/lib/browser-vm/cloudru";
 import { browserVmIdleStopDue } from "@agent/lib/browser-vm/idle";
 import {
   browserPoolWorkerRolloutEnabled,
@@ -38,6 +37,7 @@ import {
   releaseBrowserVmLease,
   updateBrowserVm,
 } from "@db/services/browser-vms";
+import { readCloudRuVm } from "./cloud";
 import {
   BrowserHostError,
   browserStateSetKey,
@@ -50,9 +50,11 @@ import {
   startBrowserSandbox,
 } from "./host";
 import {
+  isStaticBrowserHost,
   placeBrowserSandbox,
   prewarmBrowserPool,
   reconcileBrowserHosts,
+  staticBrowserPool,
 } from "./hosts";
 import { browserSandboxId } from "./keys";
 import { deleteBrowserStateObjects, listBrowserStateObjects } from "./s3";
@@ -387,6 +389,23 @@ export async function reconcileBrowserPool(now = new Date()) {
       )
     );
     const hosts = await listBrowserHosts();
+    // The sandboxes on a retired host move now, idle or not
+    // (`retiredStaticHost`): the round of the idle ones would reach them only
+    // once their window is over, and a waiting errand would hold them there.
+    const retired = await Promise.all(
+      hosts
+        .filter(retiredStaticHost)
+        .map(async (host) => listBrowserSandboxesOnHost(host.id))
+    );
+    await Promise.all(
+      retired
+        .flat()
+        .filter(
+          (row) =>
+            !stranded.some((done) => done.workspaceId === row.workspaceId)
+        )
+        .map(async (row) => reconcileQuietly(row.workspaceId, "running", now))
+    );
     await Promise.all(
       hosts
         .filter((host) => host.state === "ready" || host.state === "draining")
@@ -800,6 +819,7 @@ function restingAfterHostTrouble(vm: BrowserVm): SandboxState {
 async function followStart(vm: BrowserVm, now: Date) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -863,6 +883,7 @@ async function followStart(vm: BrowserVm, now: Date) {
 async function tendRunning(vm: BrowserVm, now: Date) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -894,7 +915,20 @@ async function tendRunning(vm: BrowserVm, now: Date) {
     await resetBrowserVmWorkerProfile(current);
     current = await forgetSets(current, now, {});
   }
-  await parkIfIdle(current, host, now);
+  // A host the operator took off BROWSER_HOST_STATIC takes no errand
+  // (`hostVmStillThere`), so its sandbox moves at once rather than when idle:
+  // the errand waiting for it would otherwise keep it from parking for good.
+  await parkIfIdle(current, host, now, retiredStaticHost(host));
+}
+
+/**
+ * A host of the `static` mode that is not one of BROWSER_HOST_STATIC's: a
+ * server the operator retired, or a Cloud.ru host left over from the
+ * `cloudru` mode. Its sandboxes go back to their sets to start on a listed
+ * host.
+ */
+function retiredStaticHost(host: BrowserHost) {
+  return staticBrowserPool() && !isStaticBrowserHost(host);
 }
 
 /**
@@ -912,16 +946,23 @@ async function tendRunning(vm: BrowserVm, now: Date) {
  * idle sandbox cannot be parked: it is deleted from its host and goes back
  * to its last set, so the host empties and is deleted.
  */
-async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
+async function parkIfIdle(
+  vm: BrowserVm,
+  host: BrowserHost,
+  now: Date,
+  retiring = false
+) {
   const { workspaceId } = vm;
-  if (!browserVmIdleStopDue(vm, now)) return;
+  if (!retiring && !browserVmIdleStopDue(vm, now)) return;
   if (vm.parkRetryAt !== null && vm.parkRetryAt > now) return;
   if (await hasOpenRunSince(workspaceId, now.getTime() - openRunWindowMs)) {
     return;
   }
   const holding = await listWorkspacesHoldingBrowsers([workspaceId], now);
   if (holding.length > 0) return;
-  if (await workspaceHasPendingBrowserErrand(workspaceId, now)) return;
+  if (!retiring && (await workspaceHasPendingBrowserErrand(workspaceId, now))) {
+    return;
+  }
   if (!browserStateConfigured()) {
     await abandonOnHost(
       vm,
@@ -931,7 +972,7 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
     );
     await alert(
       `browser-sandbox-unparked:${workspaceId}`,
-      `Песочница воркспейса ${workspaceId} удалена с хоста без парковки: нет BROWSER_STATE_KEY, BROWSER_STATE_BUCKET или CLOUDRU_S3_TENANT_ID. Входы с последней парковки потеряны.`
+      `Песочница воркспейса ${workspaceId} удалена с хоста без парковки: нет BROWSER_STATE_KEY, BROWSER_STATE_BUCKET или ключа S3. Входы с последней парковки потеряны.`
     );
     return;
   }
@@ -940,7 +981,7 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
     { sandboxState: "parking", state: "stopping" },
     now
   );
-  if (!browserVmIdleStopDue(parking, now)) {
+  if (!retiring && !browserVmIdleStopDue(parking, now)) {
     await writeHeld(vm, { sandboxState: "running", state: "ready" }, now);
     return;
   }
@@ -1007,6 +1048,7 @@ async function parkIfIdle(vm: BrowserVm, host: BrowserHost, now: Date) {
 async function followPark(vm: BrowserVm, now: Date, reason?: string) {
   const host = await holdingHost(vm);
   if (host === undefined) {
+    if (await silentStaticServer(vm)) return;
     await backToSet(vm, now, "The sandbox's host failed or went.");
     return;
   }
@@ -1266,6 +1308,23 @@ async function closeStretch(vm: BrowserVm, now: Date) {
  * host that failed or went may be another VM's by now, and nothing goes
  * there.
  */
+/**
+ * The sandbox's host is a listed static server whose `hostd` has gone
+ * silent (`failed`): the server and its sandboxes may well be fine, and once
+ * `hostd` answers again its sweep would delete a sandbox no record places
+ * there, with the sign-ins made since its last park. The record waits for it;
+ * taking the server off `BROWSER_HOST_STATIC` lets the sandbox go.
+ */
+async function silentStaticServer(vm: BrowserVm) {
+  if (vm.hostId === null || !staticBrowserPool()) return false;
+  const host = await readBrowserHost(vm.hostId);
+  return (
+    host?.state === "failed" &&
+    host.address === vm.host &&
+    isStaticBrowserHost(host)
+  );
+}
+
 async function holdingHost(vm: BrowserVm) {
   if (vm.hostId === null || vm.host === null) return undefined;
   const host = await readBrowserHost(vm.hostId);
@@ -1281,6 +1340,9 @@ async function holdingHost(vm: BrowserVm) {
  * reconcile fails it within the minute.
  */
 async function hostVmStillThere(host: BrowserHost) {
+  // A static host is no Cloud.ru VM: nothing to ask Cloud.ru, and its
+  // `hostd` and the worker's health answer for it.
+  if (isStaticBrowserHost(host)) return true;
   if (host.vmId === null) return false;
   try {
     const cloud = await readCloudRuVm(host.vmId);

@@ -330,6 +330,22 @@ describe("browser host cloud-init", () => {
         "20260914",
       ])
     ).toBe(gvisor);
+
+    const microvm = await importWithSettings(
+      {
+        ...browserPoolTestEnvironment,
+        BROWSER_HOST_RUNTIME: "firecracker",
+      },
+      async () => import("@agent/lib/browser-pool/hosts")
+    );
+    const firecracker = microvm.browserHostCloudInit("probe-host-3", now);
+    expect(bootJson(firecracker)).toMatchObject({
+      runscRelease: "",
+      runtime: "firecracker",
+    });
+    expect(
+      bootPyCloudInit(bootJson(firecracker), ["--runtime", "firecracker"])
+    ).toBe(firecracker);
   });
 
   it("waits minutes for the network before it fetches the bundle", async () => {

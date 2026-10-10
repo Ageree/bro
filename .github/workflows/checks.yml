@@ -59,6 +59,14 @@ jobs:
         working-directory: browser-vm/host
         run: python -m unittest
 
+      - name: Firecracker pins (guest kernel, release)
+        working-directory: browser-vm/firecracker
+        run: python -m unittest
+
+      - name: Object Storage signing of the operator scripts
+        working-directory: scripts/cloudru-sandbox-probe
+        run: python -m unittest test_s3
+
       - name: Sandbox image and init
         working-directory: browser-vm/image
         run: python -m unittest

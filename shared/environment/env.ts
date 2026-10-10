@@ -138,6 +138,24 @@ const pastedKeySchema = z
   )
   .refine((value) => value.length > 0, "Required");
 
+// The address every presigned URL of Object Storage is built on, so a path,
+// a query or a login in it would end up in the signed string.
+const s3EndpointSchema = z
+  .string()
+  .trim()
+  .refine((value) => {
+    const url = URL.parse(value);
+    return (
+      url?.protocol === "https:" &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  }, "S3_ENDPOINT must be an absolute https URL without a path")
+  .transform((value) => new URL(value).origin);
+
 // `host:port:username:password`, the line a residential proxy provider hands
 // out. The password is last because it is the only part that may hold a
 // colon. `{session}` in the username is where the sticky-session token of one
@@ -350,10 +368,11 @@ export const env = createEnv({
       .default("bro-host-"),
     // How a host runs its sandboxes (`runtime` of boot.py): plain containers
     // (`runc`, profile-only sets), or gVisor with memory snapshots (`runsc`),
-    // which also needs BROWSER_HOST_RUNSC_RELEASE. No default: unset, a
+    // which also needs BROWSER_HOST_RUNSC_RELEASE, or Firecracker microVMs
+    // (`firecracker`, snapshots kept on the host). No default: unset, a
     // deployment with BROWSER_HOST_RUNSC_RELEASE runs runsc as it did before
     // this setting, and one without it has no pool (`browserPoolConfigured`).
-    BROWSER_HOST_RUNTIME: z.enum(["runc", "runsc"]).optional(),
+    BROWSER_HOST_RUNTIME: z.enum(["runc", "runsc", "firecracker"]).optional(),
     // The dated gVisor release a host installs under `runsc`
     // (`runscRelease` of boot.py): a snapshot restores only under the runsc
     // that made it, so it is pinned. Not used under `runc`.
@@ -364,6 +383,58 @@ export const env = createEnv({
         (value) => /^\d{8}(?:\.\d+)?$/u.test(value),
         "BROWSER_HOST_RUNSC_RELEASE must be a dated gVisor release such as 20260914"
       )
+      .optional(),
+    // Where the pool's hosts come from. `cloudru` (the default): Bro creates,
+    // powers off and deletes Cloud.ru VMs. `static`: the hosts are servers an
+    // operator provisioned once (cloud-init from
+    // scripts/browser-pool/static-host-cloud-init.ts) and listed in
+    // BROWSER_HOST_STATIC; Bro never creates, powers, reboots or deletes
+    // anything for them, and they are always on.
+    BROWSER_HOST_CLOUD: z.enum(["cloudru", "static"]).default("cloudru"),
+    // `<host id>@<public IPv4>`, comma-separated: the hosts of the `static`
+    // pool. A host id matches [a-z0-9-]{1,63} (it is also the host's identity
+    // in its token key).
+    BROWSER_HOST_STATIC: z
+      .string()
+      .transform((value, context) => {
+        const hosts: { id: string; address: string }[] = [];
+        for (const entry of value.split(",")) {
+          const text = entry.trim();
+          if (text.length === 0) continue;
+          const [id, address, ...rest] = text.split("@");
+          if (
+            id === undefined ||
+            address === undefined ||
+            rest.length > 0 ||
+            !/^[a-z\d-]{1,63}$/u.test(id) ||
+            !z.ipv4().safeParse(address).success
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: `BROWSER_HOST_STATIC entry "${text}" must be <host id>@<public IPv4>, the id matching [a-z0-9-]{1,63}`,
+            });
+            return z.NEVER;
+          }
+          if (
+            hosts.some((host) => host.id === id || host.address === address)
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: `BROWSER_HOST_STATIC lists "${text}" twice`,
+            });
+            return z.NEVER;
+          }
+          hosts.push({ address, id });
+        }
+        if (hosts.length === 0) {
+          context.addIssue({
+            code: "custom",
+            message: "BROWSER_HOST_STATIC must list at least one host",
+          });
+          return z.NEVER;
+        }
+        return hosts;
+      })
       .optional(),
     // Workspace ids, or the emails of their owners, whose browser runs in a
     // sandbox of the pool whatever BROWSER_BACKEND says. They count as VM
@@ -735,6 +806,17 @@ export const env = createEnv({
     ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
     ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
+    // Object Storage of any S3-compatible provider (Selectel, say): the four
+    // go together or not at all. With them Bro signs for this endpoint with
+    // this plain access key, in BROWSER_STATE_BUCKET; without them it uses
+    // Cloud.ru's (`https://s3.cloud.ru`, `ru-central-1`, the key
+    // `<CLOUDRU_S3_TENANT_ID>:<CLOUDRU_KEY_ID>`). The endpoint is an https
+    // origin without a path, and the region is the one the provider signs
+    // for (Selectel: `ru-1`, `https://s3.ru-1.storage.selcloud.ru`).
+    S3_ACCESS_KEY_ID: pastedKeySchema.optional(),
+    S3_ENDPOINT: s3EndpointSchema.optional(),
+    S3_REGION: trimmedValue.optional(),
+    S3_SECRET_ACCESS_KEY: pastedKeySchema.optional(),
     // Where Bro's own sandbox runs, the one eve keeps people's photos, voice
     // messages and documents in (`agent/sandbox.ts`): `default` is eve's
     // choice (Vercel Sandbox on Vercel), `bro-cloudru` the code sandbox host
@@ -792,10 +874,12 @@ export const env = createEnv({
     // emails, or `*` for every workspace.
     SANDBOX_WORKSPACES: workspaceListSchema.optional(),
     // Whether this deployment runs eve's schedules (`agent/schedules`). "off"
-    // on the Cloud.ru rehearsal stand: its ticks would poll errands, check
-    // mail and write to people from a copy of production's data, and only
-    // one scheduler may run per database (docs/cloudru-migration.md).
-    EVE_SCHEDULES: z.enum(["on", "off"]).default("on"),
+    // on a rehearsal stand: its ticks would poll errands, check mail and
+    // write to people from a copy of production's data, and only one
+    // scheduler may run per database (docs/cloudru-migration.md). "browser"
+    // runs only the browser errands' tick, so a stand can carry an errand of
+    // its own through the pool (docs/selectel-migration.md).
+    EVE_SCHEDULES: z.enum(["on", "off", "browser"]).default("on"),
     // The pilot of the daily memory digest (docs/memory.md): workspace ids or
     // owners' emails, or `*` for every workspace, whose memory the digest
     // cleans (codes cut out, duplicates folded, history trimmed). Unset, the
@@ -971,6 +1055,16 @@ export const env = createEnv({
         });
       }
       if (
+        value.BROWSER_HOST_CLOUD === "static" &&
+        value.BROWSER_HOST_STATIC === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "BROWSER_HOST_CLOUD=static needs BROWSER_HOST_STATIC",
+          path: ["BROWSER_HOST_STATIC"],
+        });
+      }
+      if (
         value.MODEL_PROVIDER === "openrouter" &&
         value.OPENROUTER_API_KEY === undefined
       ) {
@@ -979,6 +1073,26 @@ export const env = createEnv({
           message: "MODEL_PROVIDER=openrouter needs OPENROUTER_API_KEY",
           path: ["OPENROUTER_API_KEY"],
         });
+      }
+      // A half-set Object Storage config would sign for Cloud.ru, or for the
+      // wrong region, and every upload would fail with a 403 that names
+      // neither.
+      const s3 = [
+        "S3_ACCESS_KEY_ID",
+        "S3_ENDPOINT",
+        "S3_REGION",
+        "S3_SECRET_ACCESS_KEY",
+      ] as const;
+      if (s3.some((name) => value[name] !== undefined)) {
+        for (const name of s3) {
+          if (value[name] === undefined) {
+            context.addIssue({
+              code: "custom",
+              message: `${name} is required: S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are set together`,
+              path: [name],
+            });
+          }
+        }
       }
     }),
 });

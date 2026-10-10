@@ -101,34 +101,50 @@ runsc --version | head -1 | grep -q "release-${RUNSC_RELEASE}" || fail "runsc is
 apt-mark hold runsc >/dev/null
 
 stage caddy
-install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
-getent group caddy >/dev/null || groupadd --system caddy
-id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
-  --shell /usr/sbin/nologin caddy
-mkdir -p /etc/caddy
-DOMAIN=$(field "$BOOT" domain)
-if [ -z "$DOMAIN" ]; then
-  # The host's own name: <public IP with dashes>.sslip.io. The public address is Cloud.ru's floating IP,
-  # not on any interface; Yandex first, since from Cloud.ru foreign services may accept and never answer.
-  IP=""
-  for i in 1 2 3 4 5 6 7 8 9; do
-    case $((i % 3)) in
-      1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
-      2) URL=https://api.ipify.org ;;
-      *) URL=https://ipv4.icanhazip.com ;;
-    esac
-    IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
-    [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
-    IP=""
-    sleep 2
+if [ "$(field "$BOOT" sharedCaddy)" = True ]; then
+  # A dedicated server next to the browser host (browser-vm/host): its Caddy, which hostd rewrites and
+  # reloads, imports sites/*. This host adds its name there and reloads that Caddy; it installs none.
+  DOMAIN=$(field "$BOOT" domain)
+  [ -n "$DOMAIN" ] || fail "a shared Caddy needs the domain"
+  for i in $(seq 1 180); do
+    [ -S /run/caddy/admin.sock ] && [ -d /etc/caddy/sites ] && break
+    [ "$i" = 180 ] && fail "the browser host's Caddy is not up"
+    sleep 10
   done
-  [ -n "$IP" ] || fail "no public address"
-  DOMAIN="${IP//./-}.sslip.io"
-fi
-echo "$DOMAIN" > "$STATE/domain"
-# The unit of Caddy's own packages for the static binary; the admin API only on a unix socket (on
-# localhost:2019 any local process could load a config). Ports 80 and 443 only, no CAP_NET_ADMIN.
-cat > /etc/systemd/system/caddy.service <<'UNIT'
+  echo "$DOMAIN" > "$STATE/domain"
+  printf '%s {\n\treverse_proxy 127.0.0.1:8091 {\n\t\tflush_interval -1\n\t}\n}\n' "$DOMAIN" \
+    > /etc/caddy/sites/code-host.caddy
+  chmod 644 /etc/caddy/sites/code-host.caddy
+  retry caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/caddy/admin.sock
+else
+  install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
+  getent group caddy >/dev/null || groupadd --system caddy
+  id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
+    --shell /usr/sbin/nologin caddy
+  mkdir -p /etc/caddy
+  DOMAIN=$(field "$BOOT" domain)
+  if [ -z "$DOMAIN" ]; then
+    # The host's own name: <public IP with dashes>.sslip.io. The public address is Cloud.ru's floating IP,
+    # not on any interface; Yandex first, since from Cloud.ru foreign services may accept and never answer.
+    IP=""
+    for i in 1 2 3 4 5 6 7 8 9; do
+      case $((i % 3)) in
+        1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
+        2) URL=https://api.ipify.org ;;
+        *) URL=https://ipv4.icanhazip.com ;;
+      esac
+      IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
+      [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
+      IP=""
+      sleep 2
+    done
+    [ -n "$IP" ] || fail "no public address"
+    DOMAIN="${IP//./-}.sslip.io"
+  fi
+  echo "$DOMAIN" > "$STATE/domain"
+  # The unit of Caddy's own packages for the static binary; the admin API only on a unix socket (on
+  # localhost:2019 any local process could load a config). Ports 80 and 443 only, no CAP_NET_ADMIN.
+  cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]
 Description=Caddy
 After=network-online.target
@@ -152,12 +168,13 @@ RuntimeDirectoryMode=0750
 [Install]
 WantedBy=multi-user.target
 UNIT
-# flush_interval -1: an exec answer is a stream of NDJSON lines, each must reach Bro as it is written.
-printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n%s {\n\treverse_proxy 127.0.0.1:8091 {\n\t\tflush_interval -1\n\t}\n}\n' \
-  "$DOMAIN" > /etc/caddy/Caddyfile
-systemctl daemon-reload
-systemctl enable caddy >/dev/null
-systemctl restart caddy
+  # flush_interval -1: an exec answer is a stream of NDJSON lines, each must reach Bro as it is written.
+  printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n%s {\n\treverse_proxy 127.0.0.1:8091 {\n\t\tflush_interval -1\n\t}\n}\n' \
+    "$DOMAIN" > /etc/caddy/Caddyfile
+  systemctl daemon-reload
+  systemctl enable caddy >/dev/null
+  systemctl restart caddy
+fi
 
 stage rootfs
 ROOTFS="$ROOT/rootfs/$ROOTFS_VERSION"

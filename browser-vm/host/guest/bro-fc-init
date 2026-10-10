@@ -1,0 +1,118 @@
+#!/bin/sh
+# PID 1 of a Firecracker sandbox until it hands over to bro-sandbox-init (browser-vm/host/firecracker.py, hostd).
+# hostd injects it into the shared rootfs image as /usr/local/sbin/bro-fc-init (kernel cmdline `init=`); the
+# image is mounted read-only from /dev/vda. What it does, in this order:
+#   1. proc, sysfs, devtmpfs; stdio to the serial console (Firecracker's stdout: the sandbox's runtime.log)
+#   2. an overlayfs over the read-only root: upper and work on a tmpfs of BRO_OVERLAY_MB (the sandbox's writes;
+#      its pages are guest memory, like the runc overlay's)
+#   3. the config drive (/dev/vdc, tiny ext4, read-only): worker.json (0600, owner bro) and resolv.conf
+#   4. the profile drive (/dev/vdb, the sandbox's own ext4 image) at /var/lib/bro/profile
+#   5. proc, sys, dev (moved), devpts, /dev/shm, /run in the new root; hostname; sysctls that make profile
+#      writes reach the image file within a second (hostd packs and keeps that file)
+#   6. the wall clock from the host (bro-fc-clock --once; a fresh VM starts in 1970 and TLS would fail), then
+#      pivot_root into the overlay
+#   7. a network diagnostic on the console, and bro-fc-clock (a restored snapshot wakes up with a stale clock),
+#      both in the background, and exec of
+#      bro-sandbox-init as PID 1 with the environment the runc and runsc sandboxes give it.
+# Kernel cmdline variables (the kernel passes `NAME=value` it does not know on to init): BRO_OVERLAY_MB,
+# BRO_WORKER_PORT, BRO_NOW (host time at boot, a fallback when there is no PTP clock).
+# An init that exits panics the kernel and, with panic=1, Firecracker exits: hostd sees the VM gone.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PYTHONDONTWRITEBYTECODE=1
+# -n on every mount: the root is read-only, and a mount that cannot write /etc/mtab exits 1 although it worked
+# (09.10 on the first real host: `mount --move /dev` failed that way and the init panicked the guest).
+
+fail() {
+  echo "bro-fc-init: $*" >&2
+  exit 1
+}
+
+mount -n -t proc -o nosuid,noexec,nodev proc /proc || fail "cannot mount /proc"
+mount -n -t sysfs -o nosuid,noexec,nodev,ro sysfs /sys || fail "cannot mount /sys"
+grep -q ' /dev ' /proc/mounts || mount -n -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail "cannot mount /dev"
+exec </dev/null >/dev/console 2>&1
+
+OVERLAY_MB="${BRO_OVERLAY_MB:-2048}"
+WORKER_PORT="${BRO_WORKER_PORT:-8080}"
+mount -n -t tmpfs -o "size=${OVERLAY_MB}m,mode=0755" tmpfs /mnt || fail "cannot mount the overlay's tmpfs"
+mkdir /mnt/lower /mnt/upper /mnt/work /mnt/merged /mnt/cfg || fail "cannot make the overlay's directories"
+mount -n --bind / /mnt/lower || fail "cannot bind the root"
+mount -n -t overlay overlay -o lowerdir=/mnt/lower,upperdir=/mnt/upper,workdir=/mnt/work /mnt/merged \
+  || fail "cannot mount the overlay"
+
+mount -n -t ext4 -o ro,nodev,nosuid,noexec /dev/vdc /mnt/cfg || fail "cannot mount the config drive"
+mkdir -p /mnt/merged/etc/bro || fail "cannot make /etc/bro"
+cp -p /mnt/cfg/worker.json /mnt/merged/etc/bro/worker.json || fail "no worker.json on the config drive"
+# Ubuntu's /etc/resolv.conf is a link into /run/systemd/resolve, which the tmpfs on /run hides below: a plain
+# file in its place (09.10: the guest had no DNS until this).
+rm -f /mnt/merged/etc/resolv.conf
+cat /mnt/cfg/resolv.conf > /mnt/merged/etc/resolv.conf || fail "no resolv.conf on the config drive"
+umount -n /mnt/cfg
+
+mount -n -t ext4 -o nodev,nosuid,noatime /dev/vdb /mnt/merged/var/lib/bro/profile || fail "cannot mount the profile drive"
+
+mount -n -t proc -o nosuid,noexec,nodev proc /mnt/merged/proc || fail "cannot mount the new /proc"
+mount -n -t sysfs -o nosuid,noexec,nodev,ro sysfs /mnt/merged/sys || fail "cannot mount the new /sys"
+mount -n --move /dev /mnt/merged/dev || fail "cannot move /dev"
+mkdir -p /mnt/merged/dev/pts /mnt/merged/dev/shm
+# What udev makes on a full system: bash's process substitution (google-chrome's wrapper) needs /dev/fd.
+ln -sfn /proc/self/fd /mnt/merged/dev/fd
+ln -sfn /proc/self/fd/0 /mnt/merged/dev/stdin
+ln -sfn /proc/self/fd/1 /mnt/merged/dev/stdout
+ln -sfn /proc/self/fd/2 /mnt/merged/dev/stderr
+mount -n -t devpts -o nosuid,noexec,newinstance,ptmxmode=0666,mode=0620 devpts /mnt/merged/dev/pts \
+  || fail "cannot mount devpts"
+mount -n -t tmpfs -o nosuid,noexec,nodev,mode=1777,size=1g tmpfs /mnt/merged/dev/shm || fail "cannot mount /dev/shm"
+mount -n -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /mnt/merged/run || fail "cannot mount /run"
+
+# The same hostname everywhere: Chrome's SingletonLock names the host it was taken on.
+hostname bro-sandbox
+# The profile image is a file on the host: what the guest has written must reach it quickly.
+echo 100 > /proc/sys/vm/dirty_expire_centisecs
+echo 100 > /proc/sys/vm/dirty_writeback_centisecs
+
+/usr/bin/python3 /usr/local/sbin/bro-fc-clock --once || {
+  [ -n "${BRO_NOW:-}" ] && date -u -s "@${BRO_NOW}" >/dev/null
+}
+
+cd /mnt/merged || fail "cannot enter the new root"
+pivot_root . mnt || fail "pivot_root failed"
+cd /
+umount -n -l /mnt 2>/dev/null
+
+# What the guest's network looks like, on the console (runtime.log): the operator's only view of a guest
+# (the rootfs has no `ip`). In the background, with 1 s timeouts: it must never delay the boot (a resolver
+# that does not answer cost the first boots 12 s), and it never fails it or outlives 8 s. It resolves ya.ru.
+(
+timeout 8 /usr/bin/python3 - <<'PY' || true
+import random, socket, struct
+def query(server, tcp):
+    packet = struct.pack(">HHHHHH", random.randrange(65536), 0x0100, 1, 0, 0, 0) + b"\x02ya\x02ru\x00\x00\x01\x00\x01"
+    if tcp:
+        with socket.create_connection((server, 53), timeout=1) as sock:
+            sock.settimeout(1)
+            sock.sendall(struct.pack(">H", len(packet)) + packet)
+            return len(sock.recv(512))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(1)
+        sock.sendto(packet, (server, 53))
+        return len(sock.recv(512))
+servers = [line.split()[1] for line in open("/etc/resolv.conf") if line.startswith("nameserver")]
+print("bro-fc-init: nameservers", servers)
+for server in servers[:2]:
+    for tcp in (False, True):
+        try:
+            print("bro-fc-init: dns", server, "tcp" if tcp else "udp", "answer", query(server, tcp), "bytes")
+        except OSError as error:
+            print("bro-fc-init: dns", server, "tcp" if tcp else "udp", "failed:", error)
+try:
+    print("bro-fc-init: resolve", socket.gethostbyname("ya.ru"))
+except OSError as error:
+    print("bro-fc-init: resolve failed:", error)
+PY
+) &
+
+/usr/bin/python3 /usr/local/sbin/bro-fc-clock </dev/null >/dev/console 2>&1 &
+exec env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+  BRO_WORKER_BIND=0.0.0.0 "BRO_WORKER_PORT=${WORKER_PORT}" \
+  /usr/local/sbin/bro-sandbox-init </dev/null >/dev/console 2>&1

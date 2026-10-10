@@ -1,5 +1,6 @@
 import { listsWorkspace } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
+import { objectStorageConfigured } from "@shared/object-storage/s3";
 import type { directModelProvider } from "@shared/model/provider";
 
 /**
@@ -35,6 +36,7 @@ export function browserPoolConfigured() {
     browserStateConfigured() &&
     env.BROWSER_HOST_BUNDLE !== undefined &&
     (env.BROWSER_HOST_RUNTIME === "runc" ||
+      env.BROWSER_HOST_RUNTIME === "firecracker" ||
       env.BROWSER_HOST_RUNSC_RELEASE !== undefined) &&
     env.BROWSER_SANDBOX_ROOTFS !== undefined &&
     env.BROWSER_VM_SIGNING_KEY !== undefined &&
@@ -44,18 +46,29 @@ export function browserPoolConfigured() {
 }
 
 /**
- * Whether sandboxes can be parked into sets and restored from them: the
- * Cloud.ru key with its Object Storage tenant, the bucket, and the key the
- * sets are sealed with. Less than `browserPoolConfigured`, which new
+ * Whether Bro can reach what the pool's hosts run on: the Cloud.ru key that
+ * creates and powers their VMs. Static hosts (BROWSER_HOST_CLOUD=static) are
+ * servers an operator provisioned; Bro asks Cloud.ru nothing for them.
+ */
+function browserHostComputeConfigured() {
+  return (
+    env.BROWSER_HOST_CLOUD === "static" ||
+    (env.CLOUDRU_KEY_ID !== undefined && env.CLOUDRU_KEY_SECRET !== undefined)
+  );
+}
+
+/**
+ * Whether sandboxes can be parked into sets and restored from them: the key
+ * for the hosts (`browserHostComputeConfigured`), Object Storage with its
+ * bucket (`objectStorageConfigured`: the `S3_*` key or Cloud.ru's), and the
+ * key the sets are sealed with. Less than `browserPoolConfigured`, which new
  * sandboxes need: the pool's hosts are looked after, and their sandboxes
  * parked, with only this and the host token key (`reconcileBrowserPool`).
  */
 export function browserStateConfigured() {
   return (
-    env.CLOUDRU_KEY_ID !== undefined &&
-    env.CLOUDRU_KEY_SECRET !== undefined &&
-    env.CLOUDRU_S3_TENANT_ID !== undefined &&
-    env.BROWSER_STATE_BUCKET !== undefined &&
+    browserHostComputeConfigured() &&
+    objectStorageConfigured() &&
     env.BROWSER_STATE_KEY !== undefined
   );
 }

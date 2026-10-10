@@ -280,3 +280,63 @@ describe("artifact objects", () => {
     expect(unconfigured.artifactStorageConfigured()).toBe(false);
   });
 });
+
+describe("another S3 provider", () => {
+  const selectel = {
+    S3_ACCESS_KEY_ID: "selectel-key",
+    S3_ENDPOINT: "https://s3.ru-1.storage.selcloud.ru",
+    S3_REGION: "ru-1",
+    S3_SECRET_ACCESS_KEY: "selectel-secret",
+  };
+
+  afterEach(() => {
+    for (const name of Object.keys(selectel)) vi.stubEnv(name, "");
+  });
+
+  it("signs for the S3_* endpoint, region and plain key, not Cloud.ru's", async () => {
+    for (const [name, value] of Object.entries(selectel))
+      vi.stubEnv(name, value);
+    const calls = stubStorage(new Response(null, { status: 200 }));
+    const artifacts = await import("@shared/object-storage/artifacts");
+
+    await artifacts.putArtifactObject({
+      bytes: new Uint8Array([1]),
+      mediaType: "image/png",
+      pathname: "generated-images/a",
+    });
+
+    expect(calls[0]?.url.origin).toBe("https://s3.ru-1.storage.selcloud.ru");
+    expect(calls[0]?.url.pathname).toBe(
+      "/bro-state-test/artifacts/generated-images/a"
+    );
+    expect(calls[0]?.url.searchParams.get("X-Amz-Credential")).toMatch(
+      /^selectel-key\/\d{8}\/ru-1\/s3\/aws4_request$/u
+    );
+  });
+
+  it("counts as configured with the S3_* key alone, without Cloud.ru's", async () => {
+    for (const name of [
+      "CLOUDRU_KEY_ID",
+      "CLOUDRU_KEY_SECRET",
+      "CLOUDRU_S3_TENANT_ID",
+    ])
+      vi.stubEnv(name, "");
+    for (const [name, value] of Object.entries(selectel))
+      vi.stubEnv(name, value);
+    const { objectStorageConfigured, objectStore } =
+      await import("@shared/object-storage/s3");
+
+    expect(objectStorageConfigured()).toBe(true);
+    expect(objectStore()).toMatchObject({
+      endpoint: "https://s3.ru-1.storage.selcloud.ru",
+      region: "ru-1",
+    });
+  });
+
+  it("refuses a half-set S3_* config at start", async () => {
+    vi.stubEnv("S3_ACCESS_KEY_ID", "selectel-key");
+    await expect(import("@shared/environment")).rejects.toThrow(
+      /S3_ENDPOINT|Invalid environment variables/u
+    );
+  });
+});

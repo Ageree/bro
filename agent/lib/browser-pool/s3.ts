@@ -1,10 +1,5 @@
 import { objectStore, presignStoredObject } from "@shared/object-storage/s3";
-import {
-  objectStorageEndpoint,
-  objectStorageRegion,
-  presignS3Url,
-  uriEncode,
-} from "@shared/object-storage/sigv4";
+import { presignS3Url, uriEncode } from "@shared/object-storage/sigv4";
 
 /**
  * Bro's own reads, listings and deletions in the bucket of
@@ -35,9 +30,7 @@ export async function listBrowserStateObjects(prefix: string) {
   const keys: string[] = [];
   let continuation: string | undefined;
   do {
-    const listing = new URL(
-      `${objectStorageEndpoint}/${uriEncode(store.bucket)}`
-    );
+    const listing = new URL(`${store.endpoint}/${uriEncode(store.bucket)}`);
     listing.searchParams.set("list-type", "2");
     listing.searchParams.set("prefix", prefix);
     if (continuation !== undefined) {
@@ -51,7 +44,7 @@ export async function listBrowserStateObjects(prefix: string) {
         expiresSeconds: 300,
         method: "GET",
         now: new Date(),
-        region: objectStorageRegion,
+        region: store.region,
         url: listing.toString(),
       })
     );

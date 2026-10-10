@@ -1,0 +1,14 @@
+{
+  "kernel": {
+    "version": "6.1.189",
+    "key": "firecracker/kernel/vmlinux-6.1.189-3b28f0d664399f90",
+    "sha256": "3b28f0d664399f90ebdb3783e112e513694acb520e7d4b83107fc1240d02ad44"
+  },
+  "firecracker": {
+    "version": "v1.17.0",
+    "key": "firecracker/release/firecracker-v1.17.0-x86_64.tgz",
+    "sha256": "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558",
+    "firecrackerSha256": "99ad0f5cd0514a88aad0e9ae8cfdb3cc3b4ab9d190e1194602406c786b5de7a5",
+    "jailerSha256": "65ef226e96f0ceda55ba643f445801ef2cc0ea667ef67cad8ac4f406c9c8434f"
+  }
+}

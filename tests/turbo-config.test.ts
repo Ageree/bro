@@ -36,6 +36,7 @@ const applicationEnvironment = [
   "PHONE_*",
   "PRICE_RUB",
   "ROUTERAI_*",
+  "S3_*",
   "SECRET_ENCRYPTION_KEY",
   "SUPERMEMORY_*",
   "TELEGRAM_*",

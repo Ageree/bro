@@ -209,8 +209,14 @@ class ReleaseTest(unittest.TestCase):
         body = self.body("v1")
         with self.assertRaisesRegex(deployd.Refused, "sha256"):
             self.deployd.do_release({**body, "sha256": "0" * 64}, self.log.append)
-        with self.assertRaisesRegex(deployd.Refused, "s3.cloud.ru"):
-            self.deployd.do_release({**body, "url": "https://example.com/v1.tar.zst"}, self.log.append)
+        for url in ("https://example.com/v1.tar.zst", "https://s3.ru-1.storage.selcloud.ru.example.com/v1",
+                    "http://s3.ru-1.storage.selcloud.ru/b/v1.tar.zst"):
+            with self.assertRaisesRegex(deployd.Refused, "Object Storage"):
+                self.deployd.do_release({**body, "url": url}, self.log.append)
+        # Selectel's regional S3 is the project's Object Storage after the move, Cloud.ru's before it.
+        self.assertTrue(deployd.release_host("s3.ru-1.storage.selcloud.ru"))
+        self.assertTrue(deployd.release_host("s3.cloud.ru"))
+        self.assertFalse(deployd.release_host("s3.ru-1.storage.selcloud.ru.evil.com"))
         with self.assertRaisesRegex(deployd.Refused, "version"):
             self.deployd.do_release({**body, "version": "../x"}, self.log.append)
         self.assertFalse(self.paths.current.exists())

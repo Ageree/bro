@@ -17,12 +17,16 @@ Storage, and everything else travels there from here.
       --bundle-url … --bundle-sha256 … --rootfs-version … --rootfs-url … --rootfs-sha256 … \\
       --runsc-url … --runsc-sha256 … [--runsc-release 20260928] [--apt-mirror …] [--domain …] \\
       [--console-password-hash '$6$…'] [--hosts-entry brobro.tech=10.0.1.7 …]
+      [--shared-caddy --memory-limit-mb N]
       the user data for one host (base64 it for the Compute API). Without --domain the host serves
       <its public IP with dashes>.sslip.io. The runsc package comes from Object Storage too (the vendored one):
       gVisor's own apt repository is untested from Cloud.ru. The console password hash, when given, lets
       root log in on the serial console (there is no SSH). Each --hosts-entry pins a name in the host's
       /etc/hosts: Bro's own domain at its VM's private address, since from one VM of the project another's
-      public address cannot be reached (02.10.2026) and sandboxd calls Bro's tool router by that name
+      public address cannot be reached (02.10.2026) and sandboxd calls Bro's tool router by that name.
+      --shared-caddy puts the host on a dedicated server next to the browser host (browser-vm/host): the
+      browser host's Caddy serves --domain as a file in /etc/caddy/sites/, and --memory-limit-mb caps what
+      code sandboxes take together, as the browser host's own --memory-limit-mb caps its share
 
 On the host, /usr/local/sbin/bro-code-host-boot fetches the bundle, checks its SHA-256 and runs
 provision.sh. The host key in /etc/bro/sandboxd.json is HMAC-SHA256(SANDBOX_SIGNING_KEY,
@@ -58,6 +62,7 @@ APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 # ru.AZ-1 a new VM boots while its public address is still being attached (no DNS or egress for 3+ minutes).
 BOOT_SCRIPT = r"""#!/bin/bash
 set -euo pipefail
+exec >>/var/log/bro-provision.log 2>&1
 field() { python3 -c 'import json, sys
 value = json.load(open("/etc/bro/code-host-boot.json"))
 for key in sys.argv[1].split("."):
@@ -142,7 +147,7 @@ def quoted(text):
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootfs_url, rootfs_sha256,
                runsc_url, runsc_sha256, runsc_release=None, apt_mirror=APT_MIRROR, domain=None,
-               console_password_hash=None, hosts=()):
+               console_password_hash=None, hosts=(), shared_caddy=False, memory_limit_mb=0):
     runsc_release = runsc_release or VENDOR["runsc"]["release"]
     if not HOST_ID.fullmatch(host_id):
         raise ValueError("host id must match [a-z0-9-]{1,63}")
@@ -166,14 +171,28 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
                                                   console_password_hash):
         raise ValueError("the console password must be a SHA-512 crypt hash ($6$…)")
     check_hosts(hosts)
-    # sandboxd's own config (unknown keys are an error there): who it is, its key, which rootfs it runs.
-    identity = json.dumps({"host": host_id, "key": key.hex(), "rootfs_version": rootfs_version})
+    if not isinstance(memory_limit_mb, int) or memory_limit_mb < 0:
+        raise ValueError("memory limit must be a whole number of MB, 0 for all of the host's memory")
+    if shared_caddy and not domain:
+        # The server's own <ip>.sslip.io is the browser host's: this one needs a name of its own.
+        raise ValueError("a host sharing Caddy needs --domain")
+    if shared_caddy and not memory_limit_mb:
+        # 0 is all of the host's memory, which the browser sandboxes take too.
+        raise ValueError("a host sharing its server needs --memory-limit-mb")
+    # sandboxd's own config (unknown keys are an error there): who it is, its key, which rootfs it runs, and
+    # on a server shared with the browser host what its sandboxes may take together.
+    identity = {"host": host_id, "key": key.hex(), "rootfs_version": rootfs_version}
+    if memory_limit_mb:
+        identity["memory_limit_mb"] = memory_limit_mb
+    identity = json.dumps(identity)
     boot = json.dumps({
         "hostId": host_id, "domain": domain or "", "aptMirror": apt_mirror or "",
         "bundle": {"url": bundle_url, "sha256": bundle_sha256},
         "rootfs": {"version": rootfs_version, "url": rootfs_url, "sha256": rootfs_sha256},
         "runsc": {"release": runsc_release, "url": runsc_url, "sha256": runsc_sha256},
         "hosts": [{"name": name, "address": address} for name, address in hosts],
+        # The browser host's Caddy (browser-vm/host) serves this host's name too: a site file, not a Caddy.
+        **({"sharedCaddy": True} if shared_caddy else {}),
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     lines = [
@@ -196,7 +215,8 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, rootfs_version, rootf
                   f"    - {{name: root, password: {quoted(console_password_hash)}, type: hash}}"]
     lines += [
         "runcmd:",
-        "  - [bash, -c, \"/usr/local/sbin/bro-code-host-boot > /var/log/bro-provision.log 2>&1\"]",
+        # Bare words: Selectel's dedicated-server API HTML-escapes quotes and `>` (scripts/selectel/user_data.py).
+        "  - [/usr/local/sbin/bro-code-host-boot]",
         "",
     ]
     return "\n".join(lines)
@@ -245,6 +265,8 @@ def main(argv=None):
         init.add_argument(f"--{name}")
     init.add_argument("--apt-mirror", default=APT_MIRROR)
     init.add_argument("--hosts-entry", action="append", default=[], metavar="NAME=IPV4")
+    init.add_argument("--shared-caddy", action="store_true")
+    init.add_argument("--memory-limit-mb", type=int, default=0)
     args = parser.parse_args(argv)
     if args.command == "vendor":
         vendor(args.dir)
@@ -260,7 +282,8 @@ def main(argv=None):
         rootfs_url=args.rootfs_url, rootfs_sha256=args.rootfs_sha256, runsc_release=args.runsc_release,
         runsc_url=args.runsc_url, runsc_sha256=args.runsc_sha256, apt_mirror=args.apt_mirror,
         domain=args.domain, console_password_hash=args.console_password_hash,
-        hosts=[hosts_entry(entry) for entry in args.hosts_entry]))
+        hosts=[hosts_entry(entry) for entry in args.hosts_entry], shared_caddy=args.shared_caddy,
+        memory_limit_mb=args.memory_limit_mb))
 
 
 if __name__ == "__main__":

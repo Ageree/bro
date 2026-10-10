@@ -1,0 +1,76 @@
+# Overrides on top of Firecracker's own guest config for 6.1
+# (resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config at the pinned tag, see build.sh).
+# build.sh merges this file with scripts/kconfig/merge_config.sh, runs `make olddefconfig`,
+# and then fails unless every option listed in REQUIRED_BUILTIN (build.sh) ended up =y.
+# The base config is already monolithic and already carries most of the list below; the lines are
+# kept explicit so that a change of the base config in a later Firecracker release cannot silently
+# drop one of them.
+
+# --- no modules: the guest has no module tree, everything is built in ---
+# CONFIG_MODULES is not set
+CONFIG_LOCALVERSION="-bro"
+
+# --- boot: Firecracker x86_64 describes devices in ACPI tables (MPTable is deprecated), ACPI needs PCI code
+# (CONFIG_PCI is only for ACPI init, the guest runs with pci=off) ---
+CONFIG_ACPI=y
+CONFIG_PCI=y
+# CONFIG_X86_MPPARSE is not set
+CONFIG_KVM_GUEST=y
+CONFIG_PARAVIRT=y
+
+# --- devices: virtio over MMIO, serial console ---
+CONFIG_VIRTIO_MMIO=y
+# CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES is not set
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_VSOCKETS=y
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+
+# --- entropy and clocks after snapshot restore ---
+# VMGenID: the device Firecracker always exposes; on resume the kernel reseeds its CSPRNG (needs ACPI).
+CONFIG_VMGENID=y
+# /dev/ptp0 from the host clock through KVM hypercall: lets the guest re-sync wall time after restore.
+CONFIG_PTP_1588_CLOCK=y
+CONFIG_PTP_1588_CLOCK_KVM=y
+
+# --- filesystems: ext4 read-only root, overlay with a tmpfs upper layer, tmpfs for /dev/shm and /tmp ---
+CONFIG_EXT4_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_SHMEM=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_UNIX98_PTYS=y
+
+# --- network: static address from the kernel command line (ip=...) ---
+CONFIG_NET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_IP_PNP=y
+
+# --- Chrome sandbox: user, pid, net, ipc and uts namespaces, seccomp-bpf ---
+CONFIG_NAMESPACES=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+CONFIG_IPC_NS=y
+CONFIG_UTS_NS=y
+CONFIG_CGROUPS=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+
+# --- Chrome, Xvfb and the worker: shared memory, SysV IPC, memfd, POSIX queues, inotify, file handles ---
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_MEMFD_CREATE=y
+CONFIG_INOTIFY_USER=y
+CONFIG_FHANDLE=y
+CONFIG_EPOLL=y
+CONFIG_FUTEX=y
+CONFIG_AIO=y

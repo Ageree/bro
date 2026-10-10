@@ -9,6 +9,7 @@ const switchState = vi.hoisted(() => ({
 }));
 
 vi.mock("@agent/lib/schedules/enabled", () => ({
+  browserRunsEnabled: () => switchState.enabled,
   schedulesEnabled: () => switchState.enabled,
 }));
 vi.mock("@db/services/conversation-log", () => ({

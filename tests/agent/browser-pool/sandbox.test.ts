@@ -1601,6 +1601,54 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
   });
 
+  it("moves a sandbox off a server taken off BROWSER_HOST_STATIC at once, inside its idle window", async () => {
+    // The errand waiting for it would keep an idle sandbox from parking, and
+    // the retired server serves no errand: the two would wait on each other.
+    const pool = await loadPool({
+      BROWSER_HOST_CLOUD: "static",
+      BROWSER_HOST_STATIC: "static-2@203.0.113.11",
+    });
+    await seedRunning(pool, 1);
+    hostClient.parkBrowserSandbox.mockResolvedValue(parked(3));
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(hostClient.parkBrowserSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bro-host-1" }),
+      expect.objectContaining({ generation: 3, workspaceId: alice.workspaceId })
+    );
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotGeneration: 3,
+    });
+  });
+
+  it("keeps a sandbox on a listed server while its hostd is silent", async () => {
+    // The server may be fine: once hostd answers again, a record taken off it
+    // would let the sweep delete the sandbox with its new sign-ins.
+    const pool = await loadPool({
+      BROWSER_HOST_CLOUD: "static",
+      BROWSER_HOST_STATIC: `bro-host-1@${firstAddress}`,
+    });
+    await seedRunning(pool, 1);
+    await pool.hosts.updateBrowserHost(
+      "bro-host-1",
+      { floatingIpId: null, state: "failed", vmId: null },
+      minutes(-1)
+    );
+    hostClient.readBrowserHostHealth.mockRejectedValue(new Error("timeout"));
+    hostClient.readBrowserHostCapacity.mockRejectedValue(new Error("timeout"));
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: "bro-host-1",
+      sandboxState: "running",
+    });
+    expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
+  });
+
   it("never parks a sandbox while a run is open on it", async () => {
     const pool = await loadPool();
     await seedRunning(pool, 30);

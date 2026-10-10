@@ -17,6 +17,9 @@
       ~/.bro-code-host/NAME.password (the user data holds only its hash). --hosts-entry NAME=TARGET pins NAME
       in the host's /etc/hosts at TARGET, an IPv4 address or a VM of the project (its private address): Bro's
       domain at Bro's VM, since one VM of the project cannot reach another's public address
+  python host.py user-data NAME --domain code.<ip with dashes>.sslip.io --memory-limit-mb N
+      the cloud-init of a host on a dedicated server next to the browser host (sharing its Caddy), for
+      scripts/selectel/user_data.py with the browser host's; the server itself is dedicated.py's
   python host.py status NAME [--stage]      state, address, health; --stage reads the provision stage over
                                             the serial console
   python host.py reboot NAME                set-power reboot (a first boot stuck in initramfs)
@@ -28,6 +31,10 @@
                                             the same pins on a live host, over the serial console: in
                                             /etc/hosts and cloud-init's template, as at first boot (repeatable)
   python host.py delete NAME                the VM and its public IP
+
+With BRO_CLOUD=selectel, create, status and delete act on a server in Selectel's cloud (bro-net, next to
+Bro's VM; HFL1.2-8192-160 unless --flavor) with artifacts from the S3_* store; --hosts-entry pins Bro's
+domain at Bro's private address there too.
 
 Host names must match sbx-[a-z0-9-]+: this script never acts on any other VM of the project. Needs
 CLOUDRU_KEY_ID, CLOUDRU_KEY_SECRET and CLOUDRU_S3_TENANT_ID; reuses the stand's Compute API, console and S3
@@ -60,6 +67,13 @@ sys.path.insert(0, str(REPO / "sandbox" / "host"))
 import boot  # noqa: E402
 import cloudru  # noqa: E402
 import s3  # noqa: E402
+
+# BRO_CLOUD=selectel: the host is a server in Selectel's cloud (scripts/selectel/cloud.py, in bro-net with
+# Bro's VM) and its artifacts come from the S3_* store, as for the app host (scripts/cloudru-app-host).
+SELECTEL = os.environ.get("BRO_CLOUD", "cloudru") == "selectel"
+if SELECTEL:
+    sys.path.insert(0, str(REPO / "scripts" / "selectel"))
+    import cloud as selectel  # noqa: E402
 
 NAME = re.compile(r"sbx-[a-z0-9-]{1,59}")
 VENDOR = STATE / "vendor"
@@ -218,10 +232,9 @@ def health(domain, timeout=15):
         return None, str(error)[:200]
 
 
-def cmd_create(args):
-    name = host_name(args.name)
-    if cloudru.vm_by_name(name):
-        sys.exit(f"{name} exists already")
+def host_user_data(name, *, console_password_hash=None, hosts=(), domain=None, shared_caddy=False,
+                   memory_limit_mb=0):
+    """The host's cloud-init with fresh 12-hour links to the delivered artifacts."""
     key_file = STATE / f"{name}.json"
     if not key_file.exists():
         sys.exit(f"no host key: python host.py key {name}")
@@ -229,7 +242,7 @@ def cmd_create(args):
     if key != host_key(name):
         sys.exit(f"{key_file} is not derived from the current signing key: python host.py key {name}")
     record = json.loads(DELIVERED.read_text())
-    user_data = boot.cloud_init(
+    return boot.cloud_init(
         host_id=name, key=bytes.fromhex(key),
         bundle_url=s3.presign("GET", record["bundle"]["key"], LINK_SECONDS),
         bundle_sha256=record["bundle"]["sha256"],
@@ -239,15 +252,56 @@ def cmd_create(args):
         runsc_release=record["runsc"]["release"],
         runsc_url=s3.presign("GET", record["runsc"]["key"], LINK_SECONDS),
         runsc_sha256=record["runsc"]["sha256"],
-        console_password_hash=None if args.no_console else console_password(name),
-        hosts=hosts_entries(args.hosts_entry))
+        console_password_hash=console_password_hash, hosts=hosts, domain=domain, shared_caddy=shared_caddy,
+        memory_limit_mb=memory_limit_mb)
+
+
+def cmd_user_data(args):
+    """A host on a dedicated server next to the browser host: only its user data, the server is the
+    operator's (scripts/selectel/dedicated.py)."""
+    sys.stdout.write(host_user_data(host_name(args.name), domain=args.domain, shared_caddy=True,
+                                    memory_limit_mb=args.memory_limit_mb))
+
+
+def cmd_create(args):
+    name = host_name(args.name)
+    if selectel.server_by_name(name) if SELECTEL else cloudru.vm_by_name(name):
+        sys.exit(f"{name} exists already")
+    user_data = host_user_data(name, console_password_hash=None if args.no_console else console_password(name),
+                               hosts=hosts_entries(args.hosts_entry))
+    started = time.time()
+    if SELECTEL:
+        flavor = args.flavor or "HFL1.2-8192-160"
+        server_id = selectel.create_server(name, flavor, user_data, args.disk, purpose="bro-code-host")
+        print(f"create {name} ({flavor}) in {selectel.ZONE}", flush=True)
+        selectel.wait_active(server_id, args.wait_minutes)
+        ip, _ = selectel.attach_floating_ip(server_id)
+        print(f"+{time.time() - started:.0f}s ACTIVE {ip}", flush=True)
+    else:
+        ip = create_cloudru_vm(name, args, user_data, started)
+    domain = ip.replace(".", "-") + ".sslip.io"
+    print(f"running at {ip}; waiting for https://{domain}/v1/health", flush=True)
+    deadline = time.time() + args.wait_minutes * 60
+    while time.time() < deadline:
+        code, body = health(domain)
+        if code == 200:
+            print(f"+{time.time() - started:.0f}s healthy: {json.dumps(body)}")
+            return
+        print(f"+{time.time() - started:.0f}s health: {code or body}", flush=True)
+        time.sleep(15)
+    sys.exit(f"no health after {args.wait_minutes} minutes: python host.py status {name} --stage "
+             f"(a first boot stuck in initramfs: python host.py reboot {name})")
+
+
+def create_cloudru_vm(name, args, user_data, started):
+    """The VM in CLOUDRU_ZONE with a public IP: its address once it runs."""
+    args.flavor = args.flavor or "gen-2-8"
     interface = {"type": "regular", "subnet_name": cloudru.SUBNET, "new_external_ip": True,
                  "security_group_names": [cloudru.SECURITY_GROUP]}
     vm = {"project_id": cloudru.project_id(), "name": name, "availability_zone_name": cloudru.ZONE,
           "flavor_name": args.flavor, "image_name": "ubuntu-22.04",
           "disks": [{"name": name + "-disk", "size": args.disk, "disk_type_name": "SSD"}],
           "interfaces": [interface], "cloud_init": base64.b64encode(user_data.encode()).decode()}
-    started = time.time()
     code, body = cloudru.api("POST", "/v1.1/vms", [vm])
     if code != 201:
         sys.exit(f"create {code}: {json.dumps(body, ensure_ascii=False)[:600]}")
@@ -268,18 +322,7 @@ def cmd_create(args):
             sys.exit(f"{name} is {state} {ip or 'without a public IP'} after {args.wait_minutes} minutes: "
                      f"python host.py status {name}, or python host.py delete {name}")
         time.sleep(10)
-    domain = ip.replace(".", "-") + ".sslip.io"
-    print(f"running at {ip}; waiting for https://{domain}/v1/health", flush=True)
-    deadline = time.time() + args.wait_minutes * 60
-    while time.time() < deadline:
-        code, body = health(domain)
-        if code == 200:
-            print(f"+{time.time() - started:.0f}s healthy: {json.dumps(body)}")
-            return
-        print(f"+{time.time() - started:.0f}s health: {code or body}", flush=True)
-        time.sleep(15)
-    sys.exit(f"no health after {args.wait_minutes} minutes: python host.py status {name} --stage "
-             f"(a first boot stuck in initramfs: python host.py reboot {name})")
+    return ip
 
 
 def hosts_entries(entries):
@@ -291,8 +334,7 @@ def hosts_entries(entries):
         if not boot.HOST_NAME.fullmatch(name):
             sys.exit(f"--hosts-entry {entry!r}: {name!r} is not a plain host name")
         if not boot.IPV4.fullmatch(address):
-            vm = cloudru.vm_by_name(address)
-            private = [i.get("ip_address") for i in ((vm or {}).get("interfaces") or []) if i.get("ip_address")]
+            private = private_addresses(address)
             if not private:
                 sys.exit(f"--hosts-entry {entry!r}: no VM {address!r} with a private address in the project")
             address = private[0]
@@ -328,7 +370,29 @@ def found_vm(name):
     return full_vm(vm["id"])
 
 
+def private_addresses(name):
+    """The private addresses of the project's VM NAME (in Selectel: its addresses in bro-net)."""
+    if SELECTEL:
+        server = selectel.server_by_name(name)
+        return [a["addr"] for net in ((server or {}).get("addresses") or {}).values() for a in net
+                if a.get("OS-EXT-IPS:type") == "fixed"]
+    vm = cloudru.vm_by_name(name)
+    return [i.get("ip_address") for i in ((vm or {}).get("interfaces") or []) if i.get("ip_address")]
+
+
 def cmd_status(args):
+    if SELECTEL:
+        server = selectel.server_by_name(host_name(args.name))
+        if server is None:
+            sys.exit(f"no VM {args.name}")
+        ip, _ = selectel.floating_ip_of(server["id"])
+        domain = ip and ip.replace(".", "-") + ".sslip.io"
+        print(json.dumps({"name": server["name"], "id": server["id"], "state": server["status"], "ip": ip,
+                          "domain": domain}))
+        if domain:
+            code, body = health(domain)
+            print(f"health: {code} {json.dumps(body) if code == 200 else body}")
+        return
     vm = found_vm(args.name)
     ip, _ = public_ip(vm)
     domain = ip and ip.replace(".", "-") + ".sslip.io"
@@ -384,6 +448,13 @@ def cmd_set_hosts(args):
 
 
 def cmd_delete(args):
+    if SELECTEL:
+        server = selectel.server_by_name(host_name(args.name))
+        if server is None:
+            sys.exit(f"no VM {args.name}")
+        selectel.delete_server(server["id"])
+        print(f"{args.name} deleted")
+        return
     vm = found_vm(args.name)
     _, floating_id = public_ip(vm)
     attachments = {"external_ips": [floating_id] if floating_id else []}
@@ -414,12 +485,17 @@ def main():
     deliver.set_defaults(fn=cmd_deliver)
     create = sub.add_parser("create")
     create.add_argument("name")
-    create.add_argument("--flavor", default="gen-2-8")
+    create.add_argument("--flavor", help="gen-2-8 on Cloud.ru, HFL1.2-8192-160 in Selectel")
     create.add_argument("--disk", type=int, default=30)
     create.add_argument("--no-console", action="store_true")
     create.add_argument("--wait-minutes", type=int, default=20)
     create.add_argument("--hosts-entry", action="append", default=[], metavar="NAME=TARGET")
     create.set_defaults(fn=cmd_create)
+    user_data = sub.add_parser("user-data")
+    user_data.add_argument("name")
+    user_data.add_argument("--domain", required=True)
+    user_data.add_argument("--memory-limit-mb", type=int, required=True)
+    user_data.set_defaults(fn=cmd_user_data)
     status = sub.add_parser("status")
     status.add_argument("name")
     status.add_argument("--stage", action="store_true")
