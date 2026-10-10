@@ -1601,6 +1601,29 @@ describe("parking an idle sandbox", { timeout: 60_000 }, () => {
     expect(hostClient.parkBrowserSandbox).not.toHaveBeenCalled();
   });
 
+  it("moves a sandbox off a server taken off BROWSER_HOST_STATIC at once, inside its idle window", async () => {
+    // The errand waiting for it would keep an idle sandbox from parking, and
+    // the retired server serves no errand: the two would wait on each other.
+    const pool = await loadPool({
+      BROWSER_HOST_CLOUD: "static",
+      BROWSER_HOST_STATIC: "static-2@203.0.113.11",
+    });
+    await seedRunning(pool, 1);
+    hostClient.parkBrowserSandbox.mockResolvedValue(parked(3));
+
+    await pool.lifecycle.reconcileBrowserVms(now);
+
+    expect(hostClient.parkBrowserSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bro-host-1" }),
+      expect.objectContaining({ generation: 3, workspaceId: alice.workspaceId })
+    );
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotGeneration: 3,
+    });
+  });
+
   it("never parks a sandbox while a run is open on it", async () => {
     const pool = await loadPool();
     await seedRunning(pool, 30);
