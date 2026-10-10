@@ -206,6 +206,8 @@ describe("outbound Bro call initiation", () => {
     expect(prompt).toContain("спроси, не нужно ли что-то ещё");
     expect(prompt).toContain("Никогда не обрывай собеседника на полуслове");
     expect(prompt).toContain("никогда не вызывай end_call в том же ходе");
+    expect(prompt).toContain("ГЛАВНОЕ ПРАВИЛО");
+    expect(prompt.indexOf("ГЛАВНОЕ ПРАВИЛО")).toBeLessThan(200);
     expect(prompt).toContain("дождись его ответа и затем вызови end_call");
     expect(prompt).toContain("Платежи, покупки, переводы");
     expect(prompt).toContain("не запрашивай пароли, коды");
