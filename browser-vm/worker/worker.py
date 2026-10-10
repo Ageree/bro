@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-09.2"
+VERSION = "2026-10-10.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1173,6 +1173,14 @@ class Worker:
         return (self.current is not None and self.current.status not in TERMINAL) or \
             (self.handoff is not None and self.handoff.active())
 
+    def busy_error(self):
+        """The 409 for a browser that is taken. A person signing in holds it with no run, so there may be
+        no run to name."""
+        body = {"error": "busy"}
+        if self.current is not None and self.current.status not in TERMINAL:
+            body["runId"] = self.current.id
+        return web.HTTPConflict(text=json.dumps(body), content_type="application/json")
+
     def persist_ended(self):
         """Write again the ends of runs the disk refused (a full or failing disk): after an exit the worker
         would read them as interrupted, and a completed run as failed. True once every end is on disk."""
@@ -1479,8 +1487,7 @@ class Worker:
 
     async def direct_browser(self, session):
         if self.busy():
-            raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
-                                   content_type="application/json")
+            raise self.busy_error()
         if session.direct is None:
             session.direct = await self.browser_session(session, session.options or {})
         return session.direct
@@ -1823,8 +1830,7 @@ class Worker:
         tuning = agent_tuning(body.get("tuning"))
         async with self.lock:
             if self.busy():
-                raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
-                                       content_type="application/json")
+                raise self.busy_error()
             if self.restarting:
                 raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
             session_id = safe_id(body.get("sessionId") or f"s-{uuid.uuid4()}")
@@ -4049,10 +4055,20 @@ def handoff_input(message, width, height):
     is not one of the few typed ones. A tap and a scroll are page coordinates; text is inserted, never
     typed key by key (a masked field takes it whole), and cannot carry a control character."""
     kind = message.get("t")
-    if kind in ("tap", "scroll", "move"):
+    if kind in ("tap", "scroll", "move", "down", "drag", "up"):
         x, y = handoff_number(message.get("x"), 0, width), handoff_number(message.get("y"), 0, height)
         if x is None or y is None:
             return None
+        if kind == "down":
+            return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}),
+                    ("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left",
+                                                  "buttons": 1, "clickCount": 1})]
+        if kind == "drag":
+            return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "left",
+                                                  "buttons": 1})]
+        if kind == "up":
+            return [("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left",
+                                                  "buttons": 0, "clickCount": 1})]
         if kind == "move":
             return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})]
         if kind == "scroll":
@@ -4187,6 +4203,7 @@ class HandoffGuard:
         self.dead = False
         self.tasks = set()  # events being handled
         self.kick = asyncio.Event()  # an input or a new page: take the next picture now
+        self.held = None  # where the viewer holds the mouse button down, if it does
         self.serving = asyncio.Lock()  # one viewer at a time
         self.recoveries = []  # when a page was taken off the site last (monotonic seconds)
 
@@ -4267,6 +4284,7 @@ class HandoffGuard:
             finally:
                 viewer.cancel()
                 pictures.cancel()
+                await self.release()
                 self.client = None
             return self.outcome or "left"
 
@@ -4318,10 +4336,29 @@ class HandoffGuard:
             calls = handoff_input(body, *self.size)
             if calls is None or self.current is None or not self.handoff.allows(self.url):
                 continue
+            # A held button is the viewer's one pressed key: a drag or release without a press is dropped,
+            # a second press lets go of the first.
+            if kind == "down" and self.held is not None:
+                await self.release()
+            elif kind in ("drag", "up") and self.held is None:
+                continue
+            point = (calls[-1][1]["x"], calls[-1][1]["y"]) if kind in ("down", "drag") else None
             with contextlib.suppress(Exception):
                 for method, params in calls:
                     await self.link.call(method, params, self.current, timeout=5)
+            self.held = point if kind in ("down", "drag") else None
             self.kick.set()
+
+    async def release(self):
+        """Let go of a button the viewer still holds (it left, finished or pressed again), so the page's
+        drag ends instead of waiting for a release that never comes."""
+        held, self.held = self.held, None
+        if held is None or self.current is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.link.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": held[0], "y": held[1],
+                                                              "button": "left", "buttons": 0, "clickCount": 1},
+                                 self.current, timeout=5)
 
     async def go_back(self):
         with contextlib.suppress(Exception):

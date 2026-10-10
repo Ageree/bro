@@ -364,6 +364,18 @@ class HandoffRulesTest(unittest.TestCase):
         enter = worker.handoff_input({"t": "key", "k": "Enter"}, 1, 1)
         self.assertEqual([call[1]["type"] for call in enter], ["keyDown", "keyUp"])
         self.assertEqual(enter[0][1]["text"], "\r")
+        down = worker.handoff_input({"t": "down", "x": 5, "y": 6}, 100, 100)
+        self.assertEqual([call[1]["type"] for call in down], ["mouseMoved", "mousePressed"])
+        self.assertEqual(down[1][1]["buttons"], 1)
+        drag = worker.handoff_input({"t": "drag", "x": 500, "y": 7}, 100, 100)
+        self.assertEqual(drag, [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 100.0, "y": 7.0,
+                                                              "button": "left", "buttons": 1})])
+        up = worker.handoff_input({"t": "up", "x": 5, "y": 6}, 100, 100)
+        self.assertEqual([call[1]["type"] for call in up], ["mouseReleased"])
+        self.assertEqual(up[0][1]["buttons"], 0)
+        for kind in ("down", "drag", "up"):
+            for bad in ({"x": "1", "y": 1}, {"x": True, "y": 1}, {"x": float("nan"), "y": 1}, {"x": None, "y": 1}, {}):
+                self.assertIsNone(worker.handoff_input({"t": kind, **bad}, 100, 100), (kind, bad))
         scroll = worker.handoff_input({"t": "scroll", "x": 5, "y": 5, "dy": 99999}, 100, 100)
         self.assertEqual(scroll[0][1]["deltaY"], 1200)
         for message in ({"t": "cdp", "method": "Network.getAllCookies"}, {"t": "key", "k": "a"}, {"t": "key", "k": "F12"},
@@ -1420,6 +1432,15 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         await self.settled("r2")
         self.assertEqual(FakeAgent.built[-1].options["sensitive_data"], {"https://*.shop.test": {
             "site_password": "hunter2"}})
+
+    async def test_a_sign_in_window_holds_the_browser_with_a_409_and_not_a_crash(self):
+        # A person signing in holds the browser with no run: the answer is "busy" with no run to name.
+        self.worker.handoff = worker.Handoff("handoff_abc123", "https://a.test/", ["a.test"], "https://bro.test", 600)
+        self.assertTrue(self.worker.busy())
+        self.assertEqual(await self.call("POST", "/v1/runs", {"id": "r9", "sessionId": "s9", "llm": LLM, "task": "Go."}),
+                         (409, {"error": "busy"}))
+        self.worker.handoff.state = "cancelled"
+        self.assertFalse(self.worker.busy())
 
     async def test_a_message_after_the_run_is_terminal_is_409_when_the_worker_is_busy(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
