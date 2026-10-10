@@ -58,6 +58,10 @@ const endedText = {
 } as const;
 
 const base = "/eve/v1/login-handoff";
+// Pixels a gesture must travel before it is more than a tap, and how often a
+// drag is passed on: a captcha slider wants a smooth path, not the end points.
+const dragThreshold = 8;
+const dragEveryMs = 16;
 const namedKeySet: ReadonlySet<string> = new Set(namedKeys);
 
 function wait(ms: number) {
@@ -104,7 +108,13 @@ export function Viewer({ id }: { readonly id: string }) {
   const size = useRef({ h: 900, w: 1366 });
   const closing = useRef(false);
   const retries = useRef(0);
-  const drag = useRef<{ moved: boolean; x: number; y: number } | null>(null);
+  const drag = useRef<
+    | { kind: "dragging"; last: { x: number; y: number } }
+    | { kind: "pending"; mouse: boolean; x: number; y: number }
+    | { kind: "scrolling"; x: number; y: number }
+    | null
+  >(null);
+  const lastDrag = useRef(0);
   const tapped = useRef(false);
   const lastScroll = useRef(0);
 
@@ -304,9 +314,15 @@ export function Viewer({ id }: { readonly id: string }) {
 
   function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { moved: false, x: event.clientX, y: event.clientY };
+    drag.current = {
+      kind: "pending",
+      mouse: event.pointerType === "mouse",
+      x: event.clientX,
+      y: event.clientY,
+    };
   }
 
+  /** The button goes down where the gesture began, then follows the pointer. */
   function onPointerMove(event: PointerEvent<HTMLButtonElement>) {
     const current = drag.current;
     if (!current) {
@@ -319,32 +335,74 @@ export function Viewer({ id }: { readonly id: string }) {
       send({ t: "move", x: point.x, y: point.y });
       return;
     }
-    const dy = current.y - event.clientY;
-    if (!current.moved && Math.hypot(event.clientX - current.x, dy) < 8) return;
-    current.moved = true;
+    let state = current;
+    if (current.kind === "pending") {
+      const dx = event.clientX - current.x;
+      const dy = current.y - event.clientY;
+      if (Math.hypot(dx, dy) < dragThreshold) return;
+      // A mouse always drags (the wheel scrolls). A finger moving sideways
+      // drags, like a captcha slider; moving up or down scrolls the page.
+      if (current.mouse || Math.abs(dx) >= Math.abs(dy)) {
+        const rect = canvas.current?.getBoundingClientRect();
+        if (!rect || rect.width === 0 || rect.height === 0) return;
+        const origin = {
+          x: ((current.x - rect.left) * size.current.w) / rect.width,
+          y: ((current.y - rect.top) * size.current.h) / rect.height,
+        };
+        send({ t: "down", x: origin.x, y: origin.y });
+        state = { kind: "dragging", last: origin };
+      } else {
+        state = { kind: "scrolling", x: current.x, y: current.y };
+      }
+      drag.current = state;
+    }
     const now = Date.now();
-    if (now - lastScroll.current < 60) return;
+    if (state.kind === "dragging") {
+      if (now - lastDrag.current < dragEveryMs) return;
+      lastDrag.current = now;
+      const point = place(event);
+      state.last = point;
+      send({ t: "drag", x: point.x, y: point.y });
+      return;
+    }
+    if (state.kind !== "scrolling" || now - lastScroll.current < 60) return;
     lastScroll.current = now;
     const rect = canvas.current?.getBoundingClientRect();
     if (!rect || rect.height === 0) return;
     const point = place(event);
     send({
-      dy: (dy * size.current.h) / rect.height,
+      dy: ((state.y - event.clientY) * size.current.h) / rect.height,
       t: "scroll",
       x: point.x,
       y: point.y,
     });
-    current.x = event.clientX;
-    current.y = event.clientY;
+    state.x = event.clientX;
+    state.y = event.clientY;
   }
 
   function onPointerUp(event: PointerEvent<HTMLButtonElement>) {
     const current = drag.current;
     drag.current = null;
-    if (current && !current.moved) {
+    if (current?.kind === "pending") {
       const point = place(event);
       send({ t: "tap", x: point.x, y: point.y });
       tapped.current = true;
+    } else if (current?.kind === "dragging") {
+      // The last point the page was told of may lag the finger by a throttled
+      // move: the release is where the finger lifted.
+      const point = place(event);
+      send({ t: "drag", x: point.x, y: point.y });
+      send({ t: "up", x: point.x, y: point.y });
+    }
+  }
+
+  /** A gesture the system took away: a held button is let go where it was. */
+  function onPointerCancel() {
+    const current = drag.current;
+    drag.current = null;
+    tapped.current = false;
+    if (current?.kind === "dragging") {
+      send({ t: "up", x: current.last.x, y: current.last.y });
     }
   }
 
@@ -463,10 +521,7 @@ export function Viewer({ id }: { readonly id: string }) {
           className="block w-full cursor-default touch-none border border-border bg-muted p-0"
           onClick={onClick}
           onKeyDown={onKeyDown}
-          onPointerCancel={() => {
-            drag.current = null;
-            tapped.current = false;
-          }}
+          onPointerCancel={onPointerCancel}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

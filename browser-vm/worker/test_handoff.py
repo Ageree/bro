@@ -52,6 +52,20 @@ LOGIN = """<!doctype html><meta charset=utf-8><body style="margin:0">
 <input id=p name=p type=password style="position:absolute;left:40px;top:100px;width:300px;height:40px">
 <button type=submit style="position:absolute;left:400px;top:100px">Войти</button>
 </form>
+<div id=track style="position:absolute;left:40px;top:460px;width:400px;height:40px;background:#ddd"></div>
+<div id=knob style="position:absolute;left:40px;top:460px;width:40px;height:40px;background:#36c;touch-action:none"></div>
+<script>
+// A slider like a captcha's: counts only when the knob is pressed, led by a held button and let go.
+const knob = document.getElementById('knob'); let from = null;
+knob.addEventListener('pointerdown', e => { from = e.clientX; });
+addEventListener('pointermove', e => {
+  if (from !== null && e.buttons === 1) knob.style.left = Math.min(Math.max(40 + e.clientX - from, 40), 400) + 'px';
+});
+addEventListener('pointerup', () => {
+  if (from === null) return; from = null;
+  fetch('/slid?left=' + parseInt(knob.style.left || '40', 10), {method: 'POST'});
+});
+</script>
 <a href="http://other.localhost:{port}/" style="position:absolute;left:40px;top:200px;font-size:30px">elsewhere</a>
 <button type=button onclick="window.open('/popup')" style="position:absolute;left:40px;top:300px;width:200px;height:50px">provider</button>
 <a href="/slow" style="position:absolute;left:40px;top:250px;font-size:30px">slow</a>
@@ -97,7 +111,11 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         async def popup(request):
             return web.Response(text=POPUP, content_type="text/html")
 
-        site.add_routes([web.get("/popup", popup), web.get("/slow", slow), web.get("/", login_page), web.post("/login", login), web.get("/home", home),
+        async def slid(request):
+            self.seen["slid"] = int(request.query["left"])
+            return web.Response(text="ok")
+
+        site.add_routes([web.post("/slid", slid), web.get("/popup", popup), web.get("/slow", slow), web.get("/", login_page), web.post("/login", login), web.get("/home", home),
                          web.get("/other", other)])
         self.site = web.AppRunner(site)
         await self.site.setup()
@@ -208,6 +226,39 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
                 pages = [t for t in await response.json() if t["type"] == "page"]
         self.assertEqual(len(pages), 1)  # the sign-in tab is closed, one page is left for Chrome to live on
 
+    async def test_a_slider_follows_a_held_button_and_nothing_else(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "frame")
+        await socket.send_json({"t": "move", "x": 60, "y": 480})  # hovering does not slide
+        await socket.send_json({"t": "drag", "x": 200, "y": 480})  # a drag with no press is dropped
+        await socket.send_json({"t": "up", "x": 200, "y": 480})
+        await asyncio.sleep(0.5)
+        self.assertNotIn("slid", self.seen)
+        await socket.send_json({"t": "down", "x": 60, "y": 480})
+        for x in range(60, 261, 20):
+            await socket.send_json({"t": "drag", "x": x, "y": 480})
+        await socket.send_json({"t": "up", "x": 260, "y": 480})
+        for _ in range(100):
+            if "slid" in self.seen:
+                break
+            await asyncio.sleep(0.1)
+        self.assertEqual(self.seen["slid"], 240)
+
+    async def test_a_button_still_held_when_the_viewer_leaves_is_let_go(self):
+        await self.open()
+        socket = await self.viewer()
+        await self.until(socket, "frame")
+        await socket.send_json({"t": "down", "x": 60, "y": 480})
+        await socket.send_json({"t": "drag", "x": 160, "y": 480})
+        await asyncio.sleep(0.5)
+        await socket.close()
+        for _ in range(100):  # the release arrives from the worker: the page ends the drag
+            if "slid" in self.seen:
+                break
+            await asyncio.sleep(0.1)
+        self.assertIn("slid", self.seen)
+
     async def test_a_link_that_leaves_the_site_is_refused_before_it_loads(self):
         await self.open()
         socket = await self.viewer()
@@ -300,6 +351,90 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.open()).status, 200)  # a lost answer, asked again
         other = await self.open(id="another_one_1")
         self.assertEqual(other.status, 409)
+
+    async def start_run(self):
+        return await self.client.post("/v1/runs", json={"id": f"run_{time.monotonic_ns()}", "sessionId": "s1",
+                                                        "task": "Go.", "llm": {"baseUrl": "http://127.0.0.1:9", "apiKey": "k",
+                                                                               "model": "m"}},
+                                      headers={"Authorization": f"Bearer {sign()}"})
+
+    async def test_a_run_is_told_busy_while_the_window_is_open_and_taken_after_every_kind_of_end(self):
+        for ending in ("done", "cancel", "expired", "left"):
+            with self.subTest(ending=ending):
+                handoff_id = f"handoff_{ending}_1"
+                self.assertEqual((await self.open(id=handoff_id)).status, 200)
+                handoff = worker.worker.handoff
+                response = await self.start_run()
+                self.assertEqual((response.status, await response.json()), (409, {"error": "busy"}))
+                if ending == "left":  # the person closed the tab: the socket goes, the window stays until it expires
+                    socket = await self.client.ws_connect(f"/v1/handoff/{handoff_id}/ws", headers={"Origin": ORIGIN})
+                    await socket.send_json({"t": "auth", "token": sign(f"h:{handoff_id}")})
+                    await self.until(socket, "frame")
+                    await socket.close()
+                    await asyncio.sleep(0.3)
+                    self.assertTrue(worker.worker.busy())
+                    response = await self.start_run()
+                    self.assertEqual(response.status, 409)
+                    await worker.end_handoff(handoff, "expired")
+                else:
+                    await worker.end_handoff(handoff, ending)
+                self.assertFalse(worker.worker.busy())
+                response = await self.start_run()
+                self.assertNotEqual(response.status, 409, await response.text())
+                self.assertNotEqual(response.status, 500, await response.text())
+                for _ in range(100):  # the run fails fast (no proxy here) and lets go of the browser
+                    if not worker.worker.busy():
+                        break
+                    await asyncio.sleep(0.1)
+
+    async def test_an_abandoned_window_is_cancelled_by_itself(self):
+        with mock.patch.object(worker, "HANDOFF_WATCH_S", 0.1), mock.patch.object(worker, "HANDOFF_ABSENT_S", 0.5):
+            self.assertEqual((await self.open()).status, 200)
+            handoff = worker.worker.handoff
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            await socket.close()  # the person closed the tab without «Готово» or «Отмена»
+            for _ in range(100):
+                if handoff.state == "cancelled":
+                    break
+                await asyncio.sleep(0.1)
+        self.assertEqual(handoff.state, "cancelled")
+        self.assertFalse(worker.worker.busy())
+        self.assertEqual(self.flushed, [True])  # they had looked: what the site gave is written
+
+    async def test_a_window_with_a_person_at_it_is_not_taken_by_a_run(self):
+        with mock.patch.object(worker, "HANDOFF_SILENT_S", 30):
+            await self.open()
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            response = await self.start_run()
+            self.assertEqual((response.status, await response.json()), (409, {"error": "busy"}))
+            self.assertEqual(worker.worker.handoff.state, "viewing")
+
+    async def test_a_run_closes_a_window_nobody_uses_and_starts(self):
+        with mock.patch.object(worker, "HANDOFF_ABSENT_S", 0.3), mock.patch.object(worker, "HANDOFF_SILENT_S", 0.3):
+            await self.open()
+            handoff = worker.worker.handoff
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            await socket.close()
+            await asyncio.sleep(0.6)
+            self.assertEqual(handoff.state, "open")  # no watcher tick yet at the default pace
+            response = await self.start_run()
+            self.assertNotIn(response.status, (409, 500), await response.text())
+            self.assertEqual(handoff.state, "cancelled")
+            self.assertEqual(self.flushed, [True])
+
+    async def test_a_silent_viewer_does_not_hold_the_browser_from_a_run_for_ever(self):
+        with mock.patch.object(worker, "HANDOFF_SILENT_S", 0.3):
+            await self.open()
+            handoff = worker.worker.handoff
+            socket = await self.viewer()  # connected, sending nothing
+            await self.until(socket, "frame")
+            await asyncio.sleep(0.6)
+            response = await self.start_run()
+            self.assertNotIn(response.status, (409, 500), await response.text())
+            self.assertEqual(handoff.state, "cancelled")
 
     async def test_a_handoff_that_is_over_is_not_opened_again_by_its_id(self):
         await self.open()

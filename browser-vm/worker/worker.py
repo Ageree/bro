@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-09.2"
+VERSION = "2026-10-10.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1173,6 +1173,14 @@ class Worker:
         return (self.current is not None and self.current.status not in TERMINAL) or \
             (self.handoff is not None and self.handoff.active())
 
+    def busy_error(self):
+        """The 409 for a browser that is taken. A person signing in holds it with no run, so there may be
+        no run to name."""
+        body = {"error": "busy"}
+        if self.current is not None and self.current.status not in TERMINAL:
+            body["runId"] = self.current.id
+        return web.HTTPConflict(text=json.dumps(body), content_type="application/json")
+
     def persist_ended(self):
         """Write again the ends of runs the disk refused (a full or failing disk): after an exit the worker
         would read them as interrupted, and a completed run as failed. True once every end is on disk."""
@@ -1479,8 +1487,9 @@ class Worker:
 
     async def direct_browser(self, session):
         if self.busy():
-            raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
-                                   content_type="application/json")
+            await reclaim_abandoned_handoff()
+        if self.busy():
+            raise self.busy_error()
         if session.direct is None:
             session.direct = await self.browser_session(session, session.options or {})
         return session.direct
@@ -1822,9 +1831,9 @@ class Worker:
             raise web.HTTPBadRequest(text="llm {baseUrl, apiKey, model} is required")
         tuning = agent_tuning(body.get("tuning"))
         async with self.lock:
+            await reclaim_abandoned_handoff()
             if self.busy():
-                raise web.HTTPConflict(text=json.dumps({"error": "busy", "runId": self.current.id}),
-                                       content_type="application/json")
+                raise self.busy_error()
             if self.restarting:
                 raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
             session_id = safe_id(body.get("sessionId") or f"s-{uuid.uuid4()}")
@@ -4001,6 +4010,10 @@ HANDOFF_QUALITY = 60
 HANDOFF_FRAME_S = 0.25  # between two pictures of a page nobody is touching
 HANDOFF_RECOVERY_TRIES = 6
 HANDOFF_MAX_WIDTH = 1366
+# A window nobody uses lets go of the browser: after the viewer's socket has been gone this long (it
+# was seen), or for the first look, or while it is connected but silent (no tap, key or message).
+HANDOFF_ABSENT_S, HANDOFF_UNSEEN_S, HANDOFF_SILENT_S = 90, 300, 300
+HANDOFF_WATCH_S = 10
 HANDOFF_STATES_ACTIVE = ("open", "viewing", "closing")
 # The keys of a form: name → (code, Windows virtual key). No letters (they are typed as text) and no
 # chords, so a viewer cannot reach a browser shortcut.
@@ -4049,10 +4062,20 @@ def handoff_input(message, width, height):
     is not one of the few typed ones. A tap and a scroll are page coordinates; text is inserted, never
     typed key by key (a masked field takes it whole), and cannot carry a control character."""
     kind = message.get("t")
-    if kind in ("tap", "scroll", "move"):
+    if kind in ("tap", "scroll", "move", "down", "drag", "up"):
         x, y = handoff_number(message.get("x"), 0, width), handoff_number(message.get("y"), 0, height)
         if x is None or y is None:
             return None
+        if kind == "down":
+            return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}),
+                    ("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left",
+                                                  "buttons": 1, "clickCount": 1})]
+        if kind == "drag":
+            return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "left",
+                                                  "buttons": 1})]
+        if kind == "up":
+            return [("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left",
+                                                  "buttons": 0, "clickCount": 1})]
         if kind == "move":
             return [("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})]
         if kind == "scroll":
@@ -4098,6 +4121,7 @@ class Handoff:
         self.viewed = False
         self.navigated = False
         self.viewer = None
+        self.touched = time.monotonic()  # the last sign of the person: the link made, a socket in or out, a message
         self.guard = None  # the fence and the tab's CDP link, from the first viewer to the end
         self.guard_lock = asyncio.Lock()
         self.result = None
@@ -4109,6 +4133,20 @@ class Handoff:
 
     def allows(self, url):
         return handoff_url_allowed(url, self.domains, self.hosts)
+
+    def touch(self):
+        self.touched = time.monotonic()
+
+    def abandoned(self):
+        """Nobody is using the window: no viewer for a while, or a viewer who sends nothing. A window with a
+        person at it is never abandoned."""
+        if not self.active() or self.state == "closing":
+            return False
+        if self.viewer is not None:
+            limit = HANDOFF_SILENT_S
+        else:
+            limit = HANDOFF_ABSENT_S if self.viewed else HANDOFF_UNSEEN_S
+        return time.monotonic() - self.touched > limit
 
     def summary(self):
         return {"id": self.id, "state": self.state, "expiresAt": int(self.expires_at), "viewed": self.viewed,
@@ -4187,6 +4225,7 @@ class HandoffGuard:
         self.dead = False
         self.tasks = set()  # events being handled
         self.kick = asyncio.Event()  # an input or a new page: take the next picture now
+        self.held = None  # where the viewer holds the mouse button down, if it does
         self.serving = asyncio.Lock()  # one viewer at a time
         self.recoveries = []  # when a page was taken off the site last (monotonic seconds)
 
@@ -4267,6 +4306,7 @@ class HandoffGuard:
             finally:
                 viewer.cancel()
                 pictures.cancel()
+                await self.release()
                 self.client = None
             return self.outcome or "left"
 
@@ -4302,6 +4342,7 @@ class HandoffGuard:
         async for message in client:
             if message.type != aiohttp.WSMsgType.TEXT:
                 break
+            self.handoff.touch()
             try:
                 body = json.loads(message.data)
             except ValueError:
@@ -4318,10 +4359,29 @@ class HandoffGuard:
             calls = handoff_input(body, *self.size)
             if calls is None or self.current is None or not self.handoff.allows(self.url):
                 continue
+            # A held button is the viewer's one pressed key: a drag or release without a press is dropped,
+            # a second press lets go of the first.
+            if kind == "down" and self.held is not None:
+                await self.release()
+            elif kind in ("drag", "up") and self.held is None:
+                continue
+            point = (calls[-1][1]["x"], calls[-1][1]["y"]) if kind in ("down", "drag") else None
             with contextlib.suppress(Exception):
                 for method, params in calls:
                     await self.link.call(method, params, self.current, timeout=5)
+            self.held = point if kind in ("down", "drag") else None
             self.kick.set()
+
+    async def release(self):
+        """Let go of a button the viewer still holds (it left, finished or pressed again), so the page's
+        drag ends instead of waiting for a release that never comes."""
+        held, self.held = self.held, None
+        if held is None or self.current is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.link.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": held[0], "y": held[1],
+                                                              "button": "left", "buttons": 0, "clickCount": 1},
+                                 self.current, timeout=5)
 
     async def go_back(self):
         with contextlib.suppress(Exception):
@@ -4558,8 +4618,26 @@ async def finish_handoff(handoff, outcome, check):
 
 
 async def expire_handoff(handoff, ttl):
-    await asyncio.sleep(ttl)
+    """Wait out the window's time, and end it as cancelled sooner if nobody is using it."""
+    deadline = time.monotonic() + ttl
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(HANDOFF_WATCH_S, max(deadline - time.monotonic(), 0)))
+        if handoff.abandoned():
+            end_handoff(handoff, "cancel")
+            return
     end_handoff(handoff, "expired")
+
+
+async def reclaim_abandoned_handoff():
+    """A new run or page action finds the sign-in window abandoned: close it (the cookies of a sign-in that
+    happened are written) so the browser is free. A window with a person at it is left alone (the caller
+    gets its 409)."""
+    handoff = worker.handoff
+    if handoff is None or not handoff.abandoned():
+        return
+    ending = end_handoff(handoff, "cancel")
+    if ending is not None:
+        await asyncio.shield(ending)
 
 
 def handoff_body_error(body):
@@ -4665,6 +4743,7 @@ async def handoff_socket(request):
         with contextlib.suppress(Exception):
             await previous.close()
     handoff.state, handoff.viewed = "viewing", True
+    handoff.touch()
     ending = None
     try:
         async with handoff.guard_lock:
@@ -4689,6 +4768,7 @@ async def handoff_socket(request):
         # The viewer left, or the handler was cancelled by its socket going: the sign-in waits for it to come back.
         if handoff.viewer is client:
             handoff.viewer = None
+            handoff.touch()
             if handoff.state == "viewing":
                 handoff.state = "open"
     if ending is not None:
