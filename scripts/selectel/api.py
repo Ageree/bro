@@ -1,7 +1,7 @@
 """Selectel API access shared by the operator scripts here (stdlib only).
 
-SELECTEL_TOKEN (the account's static API key) and SELECTEL_PROJECT (project id) come from the environment
-or from ~/.bro-selectel/api.env (KEY=value lines, 0600). The cloud, DBaaS and dedicated servers APIs take a
+SELECTEL_TOKEN (the account's static API key; SELECTEL_API_KEY is taken too) and SELECTEL_PROJECT (project id)
+come from the environment or from ~/.bro-selectel/api.env (KEY=value lines, 0600). The cloud, DBaaS and dedicated servers APIs take a
 Keystone project token in X-Auth-Token, which the static key buys from api.selectel.ru/vpc/resell/v2/tokens;
 it is cached for 6 hours in ~/.bro-selectel/ptoken.json (0600).
 """
@@ -54,12 +54,17 @@ def request(method, url, headers, body=None, timeout=60):
             time.sleep(2 ** attempt)
 
 
+def api_key():
+    """The account's static API key, under either name a session's environment may give it."""
+    return setting("SELECTEL_TOKEN", "") or setting("SELECTEL_API_KEY")
+
+
 def project_token():
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     cache = STATE / "ptoken.json"
     if not cache.exists() or time.time() - cache.stat().st_mtime > 6 * 3600:
         status, body, _ = request("POST", "https://api.selectel.ru/vpc/resell/v2/tokens",
-                                  {"X-Token": setting("SELECTEL_TOKEN")},
+                                  {"X-Token": api_key()},
                                   {"token": {"project_id": setting("SELECTEL_PROJECT")}})
         if status != 200:
             sys.exit(f"project token: {status} {body}")
