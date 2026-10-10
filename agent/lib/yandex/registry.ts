@@ -1,4 +1,10 @@
+import { afishaSearchOperation } from "./afisha/search";
+import { afishaTicketsOperation } from "./afisha/tickets";
 import type { YandexOperation } from "./operations";
+import { goEstimateOperation } from "./go/estimate";
+import { goRidesOperation } from "./go/rides";
+import { mapsOrgOperation } from "./maps/org";
+import { mapsSearchOperation } from "./maps/search";
 import { statusOperation } from "./status";
 
 /**
@@ -9,7 +15,15 @@ import { statusOperation } from "./status";
 export const yandexOperations: readonly [
   YandexOperation,
   ...(readonly YandexOperation[]),
-] = [statusOperation];
+] = [
+  statusOperation,
+  goEstimateOperation,
+  goRidesOperation,
+  mapsSearchOperation,
+  mapsOrgOperation,
+  afishaSearchOperation,
+  afishaTicketsOperation,
+];
 
 export function findYandexOperation(id: string) {
   return yandexOperations.find((operation) => operation.id === id);
