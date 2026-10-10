@@ -247,7 +247,7 @@ override полей prompt/first message/max duration, безопасный си
 `speculative_turn: true` (меньше пауз между репликами), оставляет
 `turn_eagerness: normal` (`eager` перебивал бы собеседника, диктующего время
 или номер), `prompt.temperature` 0.3, русский филлер «Секунду…» через 3 с
-молчания агента и `silence_end_call_timeout` 20 с (иначе тихая линия после
+молчания агента и `silence_end_call_timeout` 30 с (иначе тихая линия после
 прощания висит до лимита разговора).
 
 У пилота уже куплены номер и SIP и импортирован номер ElevenLabs. Второй

@@ -126,7 +126,7 @@ describe("phone inbound greeting and prompt", () => {
     );
     expect(prompt).toContain("спроси, не хочет ли он что-нибудь добавить");
     expect(prompt).toContain("Никогда не обрывай собеседника на полуслове");
-    expect(prompt).toContain("в этом же ответе вызови end_call");
+    expect(prompt).toContain("никогда не вызывай end_call в том же ходе");
     expect(prompt).toContain("дождись его ответа и затем вызови end_call");
     expect(prompt).not.toContain("сразу вызови end_call");
   });
