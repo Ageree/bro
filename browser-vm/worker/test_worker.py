@@ -43,6 +43,32 @@ SESSION_TOKEN = ("v1.eyJlbnYiOiJ3c190ZXN0XzEyMyIsImdlbiI6MywiZXhwIjoxNzkwMDAwMzA
 NOW = 1790000300 - 60
 
 
+class UnfinishedRunTest(unittest.TestCase):
+    def test_the_outcome_says_how_far_the_run_got(self):
+        class History:
+            def number_of_steps(self):
+                return 7
+
+            def action_names(self):
+                return ["navigate", "click", "input", "enter_code"]
+
+        class State:
+            stopped = True
+            consecutive_failures = 2
+
+        class Agent:
+            state = State()
+
+        reason = worker.unfinished_reason(History(), Agent())
+        self.assertIn("after 7 steps", reason)
+        self.assertIn("stopped=True, failures=2", reason)
+        self.assertIn("last actions: click, input, enter_code", reason)
+
+    def test_an_agent_it_cannot_read_still_gets_the_plain_sentence(self):
+        self.assertEqual(worker.unfinished_reason(object(), object()),
+                         "The agent stopped without finishing.")
+
+
 class TokenTest(unittest.TestCase):
     def test_vm_key_derivation_matches_bro(self):
         self.assertEqual(KEY.hex(), "b62a60b9925024534507acf039e236b698c33866d8e18c727661251748984301")

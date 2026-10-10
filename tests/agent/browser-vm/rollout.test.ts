@@ -385,6 +385,48 @@ describe("rolling a published worker out to a workspace's VM", () => {
     ).toBe(true);
   });
 
+  it("asks again when a woken sandbox still has the snapshot's clock and refuses the token", async () => {
+    // 10.10: «401 expired token» right after a wake dropped the update, and
+    // the errand ran on the old worker.
+    const rollout = await loadRollout();
+    const { BrowserVmWorkerError } =
+      await import("@agent/lib/browser-vm/worker");
+    const expired = () =>
+      new BrowserVmWorkerError(
+        401,
+        "/v1/admin/worker",
+        '{"error": "expired token"}'
+      );
+    worker.updateBrowserVmWorkerCode
+      .mockRejectedValueOnce(expired())
+      .mockRejectedValueOnce(expired());
+
+    await expect(
+      rollout.rollOutBrowserVmWorker(vmRow(), health(), now)
+    ).resolves.toBe(true);
+
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledTimes(3);
+    expect(alertOwner).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a token that stays refused, without remembering the version", async () => {
+    const rollout = await loadRollout();
+    const { BrowserVmWorkerError } =
+      await import("@agent/lib/browser-vm/worker");
+    worker.updateBrowserVmWorkerCode.mockRejectedValue(
+      new BrowserVmWorkerError(401, "/v1/admin/worker", "expired token")
+    );
+
+    await expect(
+      rollout.rollOutBrowserVmWorker(vmRow(), health(), now)
+    ).resolves.toBe(false);
+
+    expect(worker.updateBrowserVmWorkerCode).toHaveBeenCalledTimes(4);
+    expect(
+      records.updateBrowserVm.mock.calls.map(([, patch]) => patch)
+    ).toEqual([{ workerRolloutAt: now }]);
+  });
+
   it("does not remember a refused key, a throttle or no answer, and waits a while before the next try", async () => {
     const rollout = await loadRollout();
     const { BrowserVmWorkerError } =

@@ -2705,10 +2705,14 @@ function agentMailTakenNote(domain: string, what: "code" | "link") {
 
 /** What the model does when the site's letter is not in Bro's own mailbox. */
 function agentMailMissingNote(why: string, refused = false) {
+  const again =
+    "Continue this run once without codeFrom, telling it to have the site send a new code (once, and to wait out the site's pause if it says a code was already sent) and to stop with NEEDS: email_code when the page waits for it; its report then takes the new letter.";
+  const never =
+    "The site writes to your own AgentMail address, not to the user: do not ask them for a code or to check their mail, do not tell them to write to you or to say when they are around, and do not promise to tell them a code.";
   if (refused) {
-    return `Nothing was sent: ${why}. The site writes to your own AgentMail address, not to the user, so do not ask them for a code or to check their mail, and do not tell them to write to you. Continue this run once without codeFrom, telling it to have the site send a new code (once, and to wait out the site's pause if it says a code was already sent), and to stop with NEEDS: email_code when the page waits for it; its report then takes the new letter. Tell the user in one short line that the code was refused and you are getting a fresh one. If a run already did that and the code was refused again, say plainly that the site refuses the codes and what the page said, and stop.`;
+    return `Nothing was sent: ${why}. ${never} ${again} Tell the user in one short line that the code was refused and you are getting a fresh one. If a run already did that and the code was refused again, say plainly that the site refuses the codes and what the page said, and stop.`;
   }
-  return `Nothing was sent: ${why}. The site writes to your own AgentMail address, not to the user, so do not ask them for a code or to check their mail: tell them in one short line that the registration waits for the site's letter, and continue with codeFrom "mail" again when they next write.`;
+  return `Nothing was sent: ${why}. ${never} ${again} Tell the user in one short line that the registration waits for the site's letter and you are asking the site for a new one. If a run already asked for a new code and none came, say plainly what the page said, and stop.`;
 }
 
 /**
@@ -2727,10 +2731,10 @@ const signUpOffRefusal =
 /** What Bro hears about the account a start registers with its mailbox. */
 function signUpNote(kind: "again" | "new" | "saved") {
   if (kind === "again") {
-    return 'The vault already holds your own login for this site from an earlier sign-up, whose account may not exist yet: the run registers with that same login, or signs in where the site already knows the address. You never see the password, so never write or ask for one, and do not ask the user which email to use. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.';
+    return 'You already keep your own login for this site from an earlier sign-up, whose account may not exist yet: the run registers with that same login, or signs in where the site already knows the address. You never see the password, so never write or ask for one, and do not ask the user which email to use. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.';
   }
   return kind === "new"
-    ? 'The run registers the account with your own AgentMail address and a password the tool made and saved in the vault as this site\'s login: you never see it, so never write or ask for one. Do not ask the user which email to use or remind them of yours. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.'
+    ? 'The run registers the account with your own AgentMail address and a password the tool made and keeps as this site\'s login on your side (the person has no page for it): you never see it, so never write or ask for one. Do not ask the user which email to use or remind them of yours. When the site emails a code or a link to confirm the address, the run stops with NEEDS: email_code: continue it with codeFrom "mail" right away, without asking the user.'
     : "A login for this site is already saved in the vault, so the run signs in with it rather than registering a new account.";
 }
 
