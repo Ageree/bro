@@ -105,6 +105,7 @@ export function Viewer({ id }: { readonly id: string }) {
   const closing = useRef(false);
   const retries = useRef(0);
   const drag = useRef<{ moved: boolean; x: number; y: number } | null>(null);
+  const tapped = useRef(false);
   const lastScroll = useRef(0);
 
   useEffect(() => {
@@ -343,9 +344,16 @@ export function Viewer({ id }: { readonly id: string }) {
     if (current && !current.moved) {
       const point = place(event);
       send({ t: "tap", x: point.x, y: point.y });
-      // A tap on a field brings up a phone's keyboard.
-      keys.current?.focus();
+      tapped.current = true;
     }
+  }
+
+  // iOS opens the keyboard only for a focus made inside `click`; one made in
+  // `pointerup` is not taken as a tap and the keyboard stays shut.
+  function onClick() {
+    if (!tapped.current) return;
+    tapped.current = false;
+    keys.current?.focus();
   }
 
   function onKeyDown(
@@ -453,9 +461,11 @@ export function Viewer({ id }: { readonly id: string }) {
         <button
           aria-label="Окно браузера Бро: нажимайте и печатайте прямо здесь"
           className="block w-full cursor-default touch-none border border-border bg-muted p-0"
+          onClick={onClick}
           onKeyDown={onKeyDown}
           onPointerCancel={() => {
             drag.current = null;
+            tapped.current = false;
           }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
