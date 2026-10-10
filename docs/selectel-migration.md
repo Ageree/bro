@@ -156,6 +156,29 @@ cloud-init'ом `scripts/selectel/dedicated.py reinstall`, код `hostd` дал
   host was found»). VM приложения создаётся в ru-3b
   (`SELECTEL_ZONE=ru-3b`), а база — в той же зоне.
 
+## Переключение (10.10)
+
+Утром 10.10 Cloud.ru приостановил аккаунт за неуплату: все VM выключены, S3
+отвечает `TenantSuspended`, прод лежал. Переключили без окна, по шагам
+порядка выше:
+
+1. `host.py env bro-app-sel-1 --profile prod` с `EVE_SCHEDULES=off` и
+   `BACKUPS=off` в `prod.json`, затем восстановление бэкапа 09.10 22:43 UTC
+   (последний, скопированный в `bro-bucket`; свежее с Cloud.ru не достать) в
+   базу прода; потом env без этих двух.
+2. A-записи `brobro.tech` и `www` в DNS Vercel — на `178.72.138.19`
+   (`PATCH /v1/domains/records/<id>`), `host.py sites … --set
+brobro.tech,www.brobro.tech`.
+3. `tg-bridge.sh switch-to-bridge` на новой VM, ручной `db-backup.sh`.
+4. Хост песочниц `sbx-code-2` выключен вместе с Cloud.ru: новый
+   `sbx-code-3` (`BRO_CLOUD=selectel python
+scripts/cloudru-code-host/host.py create sbx-code-3 --hosts-entry
+brobro.tech=bro-app-sel-1`, ~2,5 минуты до health), в `prod.json` —
+   `SANDBOX_HOST_ID` и `SANDBOX_HOST_ORIGIN`.
+
+Записи пользователей между 22:43 UTC 09.10 и остановкой Cloud.ru потеряны.
+Отката на Cloud.ru нет, пока аккаунт там приостановлен.
+
 ## Стенд на Selectel (09.10)
 
 `bro-app-sel-1` (`HFL1.2-8192-160`, ru-3b) с managed PostgreSQL `bro-pg`, S3
