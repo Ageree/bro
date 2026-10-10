@@ -165,7 +165,7 @@ bookable: boolean (есть онлайн-бронь), coordinates: [lon, lat], u
 **JS:**
 
 ```js
-const args = { id: "1003282307", date: "2026-10-12", guests: 2 };
+const args = { id: "1000000000001", date: "2026-10-12", guests: 2 };
 const card = await call("/maps/api/search", [
   ["lang", "ru_RU"],
   ["mode", "uri"],
