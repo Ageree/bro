@@ -272,6 +272,15 @@ export const env = createEnv({
     // themselves, in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset, nobody.
     LOGIN_HANDOFF_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the Yandex tool (`yandex`, `agent/lib/yandex/`): workspace
+    // ids, or `*`, whose Bro calls Yandex services (Market, Food…) from a tab
+    // of its own pool browser, signed in as the person. Unset, nobody.
+    YANDEX_API_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_API_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     BROWSER_VM_FILES_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),

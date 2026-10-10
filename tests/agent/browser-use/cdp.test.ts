@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+  callInPageOverCdp,
   captureViewportOverCdp,
   typeOneTimeCodeOverCdp,
   visitPageOverCdp,
@@ -613,5 +614,72 @@ describe("visiting a signed-in page over CDP", () => {
       ["Fetch.continueRequest", "request-4", undefined],
       ["Fetch.failRequest", "request-5", "BlockedByClient"],
     ]);
+  }, 15_000);
+});
+
+describe("calling a function in a page over CDP", () => {
+  const argument = { query: "'); alert(1); ('" };
+
+  it("hands the function its argument as data and returns what it answered", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { answer: { status: "ok" }, url: "https://id.yandex.ru/" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    const called = await callInPageOverCdp(fixture.url, {
+      argument,
+      fn: "async function (args) { return args; }",
+      loaded: "interactive",
+      runOn: () => true,
+      url: "https://id.yandex.ru/",
+    });
+
+    expect(called).toEqual({
+      ran: true,
+      url: "https://id.yandex.ru/",
+      value: { status: "ok" },
+    });
+    const call = fixture.calls.find(
+      (item) => item.method === "Runtime.callFunctionOn"
+    );
+    expect(call?.params).toMatchObject({
+      arguments: [{ value: argument }],
+      awaitPromise: true,
+      functionDeclaration: "async function (args) { return args; }",
+      objectId: "global-1",
+      returnByValue: true,
+    });
+    // The argument is never part of any source that is evaluated.
+    expect(
+      fixture.calls
+        .filter((item) => item.method === "Runtime.evaluate")
+        .every((item) => !item.params.expression?.includes("alert"))
+    ).toBe(true);
+    const blocked = fixture.calls.find(
+      (item) => item.method === "Network.setBlockedURLs"
+    );
+    expect(blocked?.params.urls).toEqual(expect.arrayContaining(["*.jpg"]));
+  }, 15_000);
+
+  it("runs nothing in a page it was not meant to land on", async () => {
+    const fixture = await fake({
+      injections: {},
+      page: { answer: { status: "ok" }, url: "https://evil.example/" },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    const called = await callInPageOverCdp(fixture.url, {
+      argument: {},
+      fn: "async function () { return 1; }",
+      loaded: "complete",
+      runOn: (url) => url.startsWith("https://id.yandex.ru/"),
+      url: "https://id.yandex.ru/",
+    });
+
+    expect(called).toEqual({ ran: false, url: "https://evil.example/" });
+    expect(
+      fixture.calls.some((item) => item.method === "Runtime.callFunctionOn")
+    ).toBe(false);
   }, 15_000);
 });

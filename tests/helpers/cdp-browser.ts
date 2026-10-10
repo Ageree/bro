@@ -31,13 +31,18 @@ const commandSchema = z.object({
   method: z.string(),
   params: z
     .object({
+      arguments: z.array(z.object({ value: z.json() })).optional(),
+      awaitPromise: z.boolean().optional(),
       contextId: z.number().int().optional(),
       errorReason: z.string().optional(),
       expression: z.string().optional(),
       flatten: z.boolean().optional(),
       format: z.string().optional(),
       frameId: z.string().optional(),
+      functionDeclaration: z.string().optional(),
+      objectId: z.string().optional(),
       requestId: z.string().optional(),
+      returnByValue: z.boolean().optional(),
       text: z.string().optional(),
       url: z.string().optional(),
       urls: z.array(z.string()).optional(),
@@ -98,6 +103,8 @@ export interface CdpBrowserFixture {
   readonly injections: Readonly<Record<number, Injection>>;
   /** Where a page opened with `Page.navigate` ends up, and what it shows. */
   readonly page?: {
+    /** What a function called in the page (`Runtime.callFunctionOn`) returns. */
+    readonly answer?: z.infer<ReturnType<typeof z.json>>;
     readonly password?: boolean;
     /**
      * Documents the page asks for after `Page.navigate` — a redirect, an
@@ -307,6 +314,12 @@ export async function startFakeCdpBrowser(
           },
         },
       };
+    }
+    if (method === "Runtime.evaluate" && params.expression === "globalThis") {
+      return { result: { objectId: "global-1" } };
+    }
+    if (method === "Runtime.callFunctionOn") {
+      return { result: { value: fixture.page?.answer ?? null } };
     }
     if (method === "Input.insertText") {
       // Typed text goes to the field focused last on the session it was sent
