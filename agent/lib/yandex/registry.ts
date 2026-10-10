@@ -1,5 +1,6 @@
 import { afishaSearchOperation } from "./afisha/search";
 import { afishaTicketsOperation } from "./afisha/tickets";
+import { foodOperations } from "./food/operations";
 import type { YandexOperation } from "./operations";
 import { goEstimateOperation } from "./go/estimate";
 import { goRidesOperation } from "./go/rides";
@@ -25,6 +26,7 @@ export const yandexOperations: readonly [
   afishaSearchOperation,
   afishaTicketsOperation,
   ...marketOperations,
+  ...foodOperations,
 ];
 
 export function findYandexOperation(id: string) {
