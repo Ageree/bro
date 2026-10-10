@@ -28,26 +28,26 @@
 unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy` и S3; `runc` проверен и на настоящих VM (этап 2, 30.09, ниже и раздел 2
 `docs/browser-pool.md`), `runsc` на хосте пула — нет.
 
-| Файл                  | Что это                                                                                                        |
-| --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `hostd.py`            | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд              |
-| `network.py`          | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль          |
-| `sets.py`             | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL              |
-| `firecracker.py`      | Firecracker: запросы к API, argv `jailer`, командная строка ядра, образ корня, локальные снимки и бюджет       |
-| `guest/`              | `bro-fc-init` (PID 1 гостя до `bro-sandbox-init`) и `bro-fc-clock` (часы гостя по PTP): кладутся в образ корня |
-| `selfupdate.py`       | `POST /v1/admin/update`: скачать бандл, сверить sha256, подменить код, `update.sh`, рестарт `hostd`            |
-| `units.sh`            | Юниты `caddy` и `bro-hostd`: их пишут `provision.sh` и `update.sh`                                             |
-| `update.sh`           | Идемпотентная часть `provision.sh` для обновления кода: проверка нового кода, venv, юниты, бинарники, сторож   |
-| `rollback.sh`         | Сторож отката: таймер systemd, который возвращает прежний код, если новый `hostd` не поднялся за ~90 с         |
-| `caddy.py`            | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет |
-| `seccomp.json`        | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены           |
-| `provision.sh`        | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла              |
-| `boot.py`             | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                       |
-| `vendor.json`         | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                     |
-| `requirements.txt`    | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                        |
-| `test_hostd.py`       | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)               |
-| `test_firecracker.py` | Тесты `firecracker.py` и гостевых скриптов; настоящий образ корня, если есть `mkfs.ext4` и `debugfs`           |
-| `test_boot.py`        | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                |
+| Файл                  | Что это                                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hostd.py`            | HTTP API на `127.0.0.1:8090` за Caddy (`/h/…`), жизненный цикл песочниц, один `Runner` для команд                                                           |
+| `network.py`          | Сеть песочниц: netns, veth, транзитные адреса, правила nftables хоста и роутера — единственный модуль                                                       |
+| `sets.py`             | Наборы: zstd-части, AES-256-GCM по чанкам, манифест с HMAC, параллельные PUT/GET по presigned URL                                                           |
+| `firecracker.py`      | Firecracker: запросы к API, argv `jailer`, командная строка ядра, образ корня, локальные снимки и бюджет                                                    |
+| `guest/`              | `bro-fc-init` (PID 1 гостя до `bro-sandbox-init`) и `bro-fc-clock` (часы гостя по PTP): кладутся в образ корня                                              |
+| `selfupdate.py`       | `POST /v1/admin/update`: скачать бандл, сверить sha256, подменить код, `update.sh`, рестарт `hostd`                                                         |
+| `units.sh`            | Юниты `caddy` и `bro-hostd`: их пишут `provision.sh` и `update.sh`                                                                                          |
+| `update.sh`           | Идемпотентная часть `provision.sh` для обновления кода: проверка нового кода, venv, юниты, бинарники, сторож                                                |
+| `rollback.sh`         | Сторож отката: таймер systemd, который возвращает прежний код, если новый `hostd` не поднялся за ~90 с                                                      |
+| `caddy.py`            | Caddyfile хоста: `/g/<id>/*` → worker (префикс — в `X-Forwarded-Prefix`), `/h/*` → `hostd`, admin — unix-сокет; сайты соседей по серверу — `import sites/*` |
+| `seccomp.json`        | seccomp песочницы `runc`: всё, кроме путей побега из контейнера; user namespace для Chrome разрешены                                                        |
+| `provision.sh`        | Установка хоста на стоковой Ubuntu 22.04: apt с зеркала, runc (или runsc), Caddy и venv из бандла                                                           |
+| `boot.py`             | Сбор вендора (Caddy, колёса), бандл кода хоста и cloud-init одного хоста                                                                                    |
+| `vendor.json`         | Закреплённый Caddy: URL релиза, sha256 архива и бинарника; платформа колёс                                                                                  |
+| `requirements.txt`    | Колёса `hostd` под Python 3.10 x86_64 с sha256 каждого (сверены с PyPI)                                                                                     |
+| `test_hostd.py`       | Тесты `hostd`, сети, шифрования под обеими средами (нужны aiohttp и cryptography, root не нужен)                                                            |
+| `test_firecracker.py` | Тесты `firecracker.py` и гостевых скриптов; настоящий образ корня, если есть `mkfs.ext4` и `debugfs`                                                        |
+| `test_boot.py`        | Тесты cloud-init, бандла и пинов, скрипта загрузки и инвариантов `provision.sh` (только stdlib)                                                             |
 
 ## Песочница
 
@@ -98,7 +98,8 @@ unix-сокете), `mount`, `mkfs.ext4`, `debugfs`, `ip`, `nft`, `zstd`, `caddy
   остаётся до `DELETE`; живая, застрявшая в `starting`/`restoring`/`parking`, —
   `running`, если worker отвечает, иначе `failed`.
 - Сумма лимитов памяти песочниц не больше `MemTotal − reserve_mb` (или
-  `memory_limit_mb`): иначе `POST /v1/sandboxes` — 507. CPU — `cpu.max` на
+  `memory_limit_mb`, `boot.py cloud-init --memory-limit-mb` на сервере, общем
+  с хостом песочниц кода): иначе `POST /v1/sandboxes` — 507. CPU — `cpu.max` на
   `cpus` (2) vCPU; квоты ввода-вывода нет; свободное место диска видно в
   `capacity`.
   `runtime.log` раз в минуту урезается до новой половины, если перерос
