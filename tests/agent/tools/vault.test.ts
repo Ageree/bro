@@ -1,13 +1,7 @@
 import type { ToolContext } from "eve/tools";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { vaultSetupRequestSchema } from "@shared/vault/schema";
 import { accessScopeForUser } from "@shared/identity/access-scope";
-
-const readVaultItems = vi.hoisted(() =>
-  vi.fn<() => Promise<{ account: string; id: string; kind: string }[]>>(() =>
-    Promise.resolve([])
-  )
-);
-vi.mock("@db/services/vault", () => ({ readVaultItems }));
 
 import { requestVaultSetup } from "@agent/tools/vault";
 
@@ -50,72 +44,22 @@ function toolContext() {
   } satisfies ToolContext;
 }
 
-const gosuslugi = {
-  identifierType: "phone" as const,
-  kind: "login" as const,
-  label: "Госуслуги",
-  origin: "https://www.gosuslugi.ru",
-  target: "vault" as const,
-};
-
 describe("request_vault_setup", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    readVaultItems.mockResolvedValue([]);
-  });
-
-  it("links to the vault form when the site has no saved login", async () => {
-    const result = await requestVaultSetup.execute(gosuslugi, toolContext());
+  it("links to the vault form for a card, an address or a contact", async () => {
+    const result = await requestVaultSetup.execute(
+      { kind: "payment", target: "vault" },
+      toolContext()
+    );
 
     const text = JSON.stringify(result);
     expect(text).toContain("Секрет в чат не присылай");
-    expect(text).toContain("/vault?setup=vault&kind=login");
-    expect(result).not.toHaveProperty("alreadySaved");
+    expect(text).toContain("/vault?setup=vault&kind=payment");
   });
 
-  it("says so when the vault already signs in to that site", async () => {
-    // RU 24.09, d06: the run had the Госуслуги login bound, and the person
-    // still heard it was missing, twice.
-    readVaultItems.mockResolvedValue([
-      {
-        account: "www.gosuslugi.ru · +7•••76",
-        id: "login-1",
-        kind: "login",
-      },
-    ]);
-
-    const result = await requestVaultSetup.execute(gosuslugi, toolContext());
-
-    expect(result).toHaveProperty("alreadySaved", true);
-    expect(JSON.stringify(result)).toContain(
-      "do not tell the user their login is missing"
-    );
-    expect(result).not.toHaveProperty("message");
-  });
-
-  it("counts the Госуслуги login for a site that signs in through it", async () => {
-    // RU 24.09, d07: «нет пароля mos.ru» with the Госуслуги login saved.
-    readVaultItems.mockResolvedValue([
-      {
-        account: "www.gosuslugi.ru · +7•••76",
-        id: "login-1",
-        kind: "login",
-      },
-    ]);
-    const mos = { ...gosuslugi, label: "mos.ru", origin: "https://www.mos.ru" };
-
-    const result = await requestVaultSetup.execute(mos, toolContext());
-
-    expect(result).toHaveProperty("alreadySaved", true);
-    expect(JSON.stringify(result)).toContain(
-      "The vault holds the user's Госуслуги login, and this site signs people in through Госуслуги"
-    );
-
-    // A shop is not a public service: its own login is what it needs.
-    const shop = await requestVaultSetup.execute(
-      { ...gosuslugi, label: "Ozon", origin: "https://www.ozon.ru" },
-      toolContext()
-    );
-    expect(shop).not.toHaveProperty("alreadySaved");
+  it("makes no link for a login: logins have no page", () => {
+    expect(
+      vaultSetupRequestSchema.safeParse({ kind: "login", target: "vault" })
+        .success
+    ).toBe(false);
   });
 });

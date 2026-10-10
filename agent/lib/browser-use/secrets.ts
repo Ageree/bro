@@ -291,6 +291,31 @@ export function selectBrowserVaultItems(
   };
 }
 
+/**
+ * The ids of the saved logins of `site`: those stored for its host or for any
+ * host of its registrable domain. What «забудь мой вход на …» deletes; empty
+ * when `site` names no host.
+ */
+export function savedLoginIdsOf(
+  entries: readonly BrowserVaultEntry[],
+  site: string
+) {
+  const host = secretHost(site);
+  const domain = host ? registrableDomain(host) : undefined;
+  if (host === undefined) return [];
+  return entries
+    .filter((entry) => {
+      if (entry.kind !== "login") return false;
+      const stored = storedLoginHost(entry);
+      return (
+        stored !== undefined &&
+        (stored === host ||
+          (domain !== undefined && registrableDomain(stored) === domain))
+      );
+    })
+    .map((entry) => entry.id);
+}
+
 /** The hostname a login's account hint was prefixed with when it was saved. */
 function storedLoginHost(entry: BrowserVaultEntry) {
   const [stored] = entry.account.split(" · ");

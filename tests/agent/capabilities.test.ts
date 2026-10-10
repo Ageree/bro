@@ -53,7 +53,6 @@ describe("authored mode capability matrix", () => {
       "profile__semantic_find",
       "profile__update",
       "react_to_message",
-      "request_vault_import",
       "request_vault_setup",
       "schedules-create",
       "schedules-list",

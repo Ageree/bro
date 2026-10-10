@@ -1,18 +1,19 @@
 import { defineSchedule } from "eve/schedules";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { deliverLoginHandoffReports } from "@agent/lib/login-handoff/deliver";
+import { loginHandoffOn } from "@agent/lib/login-handoff/pilot";
 import { settleLoginHandoffs } from "@agent/lib/login-handoff/settle";
 import { env } from "@shared/environment";
 
 // Each minute: a link nobody opened expires, a sign-in whose viewer went away
 // is read off its browser and ended, and the report of each end goes to the
-// conversation the link was asked for in (docs/login-handoff.md). Without the
-// pilot no row exists, and the tick finds nothing.
+// conversation the link was asked for in (docs/login-handoff.md). Switched
+// off (LOGIN_HANDOFF_WORKSPACES=off), the tick does nothing.
 export default defineSchedule({
   cron: "* * * * *",
   run({ attachSession, to, waitUntil }) {
     if (!schedulesEnabled()) return;
-    if ((env.LOGIN_HANDOFF_WORKSPACES ?? []).length === 0) return;
+    if (!loginHandoffOn()) return;
     if (env.DATABASE_DRIVER === "neon-http") return;
     waitUntil(tick({ attachSession, to }));
   },

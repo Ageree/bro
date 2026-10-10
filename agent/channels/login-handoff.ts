@@ -10,9 +10,9 @@ import {
   saveProfileSoon,
   settleLoginHandoff,
 } from "@agent/lib/login-handoff/settle";
+import { loginHandoffOn } from "@agent/lib/login-handoff/pilot";
 import { readBrowserVm } from "@db/services/browser-vms";
 import { endLoginHandoff, readLoginHandoff } from "@db/services/login-handoffs";
-import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 
 /**
@@ -69,7 +69,7 @@ function linkIdOf(id: string | undefined) {
 }
 
 function enabled() {
-  return (env.LOGIN_HANDOFF_WORKSPACES ?? []).length > 0;
+  return loginHandoffOn();
 }
 
 export default defineChannel({

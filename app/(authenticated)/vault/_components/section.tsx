@@ -20,7 +20,7 @@ import { api } from "@web/trpc/client";
 
 const VAULT_DIALOG_PAGE_SIZE = 50;
 
-type VaultSectionView = "add" | "import" | "list";
+type VaultSectionView = "add" | "list";
 
 /** What a section reads from the query on every render: its own sheet, if named. */
 interface VaultSectionRequest<Setup> {
@@ -187,17 +187,12 @@ export function VaultSectionBackButton({
   );
 }
 
-/** What a section adds under one of its rows, such as Bro's own login. */
-type VaultRowExtra = (item: VaultItem) => ReactNode;
-
 export function VaultItemBrowser({
   items,
-  renderRowExtra,
   searchId,
   title,
 }: {
   readonly items: readonly VaultItem[];
-  readonly renderRowExtra?: VaultRowExtra;
   readonly searchId: string;
   readonly title: string;
 }) {
@@ -255,7 +250,7 @@ export function VaultItemBrowser({
         }}
       >
         {visibleItems.length > 0 ? (
-          <VaultItemList items={visibleItems} renderRowExtra={renderRowExtra} />
+          <VaultItemList items={visibleItems} />
         ) : query.trim() ? (
           <p className="type-fine py-10 text-center text-muted-foreground">
             Ничего не нашлось по «{query.trim()}»
@@ -272,31 +267,19 @@ export function VaultItemBrowser({
 
 export function VaultItemList({
   items,
-  renderRowExtra,
 }: {
   readonly items: readonly VaultItem[];
-  readonly renderRowExtra?: VaultRowExtra;
 }) {
   return (
     <ul className="list-none">
       {items.map((item) => (
-        <VaultItemRow
-          extra={renderRowExtra?.(item)}
-          item={item}
-          key={item.id}
-        />
+        <VaultItemRow item={item} key={item.id} />
       ))}
     </ul>
   );
 }
 
-function VaultItemRow({
-  extra,
-  item,
-}: {
-  readonly extra?: ReactNode;
-  readonly item: VaultItem;
-}) {
+function VaultItemRow({ item }: { readonly item: VaultItem }) {
   const router = useRouter();
   const remove = api.vault.remove.useMutation({
     onSuccess: () => {
@@ -313,7 +296,6 @@ function VaultItemRow({
             {item.account}
           </p>
         ) : null}
-        {extra}
       </div>
       <Button
         aria-label={`Удалить ${item.label}`}
