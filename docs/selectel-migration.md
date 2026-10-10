@@ -176,6 +176,13 @@ scripts/cloudru-code-host/host.py create sbx-code-3 --hosts-entry
 brobro.tech=bro-app-sel-1`, ~2,5 минуты до health), в `prod.json` —
    `SANDBOX_HOST_ID` и `SANDBOX_HOST_ORIGIN`.
 
+5. Браузеры — на CL25-NVMe `bro-dedicated-2` (`scripts/selectel/dedicated.py
+order CL25-NVMe --user-data … --hostname bro-dedicated-2 --yes`, посуточно,
+   ~20 минут до `hostd` ready), в `prod.json` — `BROWSER_HOST_STATIC` и
+   `BROWSER_HOST_BUNDLE`. Песочницы снятого из списка CL21 пул сам паркует и
+   поднимает на CL25 (`retiredStaticHost` в `agent/lib/browser-pool/sandbox.ts`),
+   продление CL21 снято (`dedicated.py cancel`).
+
 Записи пользователей между 22:43 UTC 09.10 и остановкой Cloud.ru потеряны.
 Отката на Cloud.ru нет, пока аккаунт там приостановлен.
 

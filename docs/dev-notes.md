@@ -186,7 +186,8 @@
 
 - С 10.10 прод — Selectel (`docs/selectel-migration.md`, «Переключение»):
   VM `bro-app-sel-1`, база `bro-pg`, S3 `bro-bucket`, браузеры — выделенный
-  сервер `bro-dedicated-1`, песочницы кода — `sbx-code-3`. Аккаунт Cloud.ru
+  сервер `bro-dedicated-2` (CL25-NVMe, посуточно; CL21 `bro-dedicated-1`
+  снят 10.10), песочницы кода — `sbx-code-3`. Аккаунт Cloud.ru
   10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
   ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
   `BRO_APP_HOST_DIR=~/.bro-app-host-selectel` (`~/.bro-selectel/op.env`), у
