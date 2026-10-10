@@ -1,0 +1,92 @@
+{
+  "pagination_settings": {
+    "cursor": "{\"grocery_cursor\":\"00000000000000000000000000000002-grocery\",\"version\":\"1.0\"}",
+    "has_more": true
+  },
+  "orders": [
+    {
+      "order_nr": "00000000000000000000000000000001-grocery",
+      "widgets": {
+        "general": {
+          "deeplink": "eda.yandex://order_history?orderNumber=00000000000000000000000000000001-grocery",
+          "name": "Яндекс.Лавка",
+          "date": "09 октября 22:03",
+          "currency": {
+            "code": "RUB",
+            "sign": "₽",
+            "template": "$VALUE$ $SIGN$$CURRENCY$",
+            "text": "руб."
+          },
+          "cost_value": "791",
+          "status": {
+            "color": [
+              {
+                "theme": "light",
+                "value": "#5AC31A"
+              }
+            ],
+            "text": "Доставлен"
+          }
+        },
+        "goods": {
+          "items": [
+            {
+              "title": "Молоко «Тестовое» 2,5%",
+              "image_url_pattern": "https://avatars.mds.yandex.net/get-grocery-goods/0/00000000-0000-0000-0000-000000000000/{w}x{h}"
+            },
+            {
+              "title": "Хлеб тестовый",
+              "image_url_pattern": "https://avatars.mds.yandex.net/get-grocery-goods/0/00000000-0000-0000-0000-000000000000/{w}x{h}"
+            }
+          ],
+          "total_items_number": 3
+        }
+      },
+      "swipe_left_actions": {
+        "remove": {
+          "swipe_text": "Удалить"
+        }
+      }
+    },
+    {
+      "order_nr": "00000000000000000000000000000002-grocery",
+      "widgets": {
+        "general": {
+          "deeplink": "eda.yandex://order_history?orderNumber=00000000000000000000000000000002-grocery",
+          "name": "Яндекс.Лавка",
+          "date": "08 октября 12:10",
+          "currency": {
+            "code": "RUB",
+            "sign": "₽",
+            "template": "$VALUE$ $SIGN$$CURRENCY$",
+            "text": "руб."
+          },
+          "cost_value": "418",
+          "status": {
+            "color": [
+              {
+                "theme": "light",
+                "value": "#5AC31A"
+              }
+            ],
+            "text": "Отменён"
+          }
+        },
+        "goods": {
+          "items": [
+            {
+              "title": "Вода тестовая негазированная",
+              "image_url_pattern": "https://avatars.mds.yandex.net/get-grocery-goods/0/00000000-0000-0000-0000-000000000000/{w}x{h}"
+            }
+          ],
+          "total_items_number": 1
+        }
+      },
+      "swipe_left_actions": {
+        "remove": {
+          "swipe_text": "Удалить"
+        }
+      }
+    }
+  ]
+}

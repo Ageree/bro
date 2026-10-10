@@ -1,0 +1,135 @@
+{
+  "menu": {
+    "payload": {
+      "categories": [
+        {
+          "id": 1,
+          "name": "Что нового",
+          "available": true,
+          "items": [],
+          "items_count": 0
+        },
+        {
+          "id": 10,
+          "name": "Пицца",
+          "available": true,
+          "items_count": 2,
+          "items": [
+            {
+              "id": 1000000001,
+              "name": "Пицца Маргарита",
+              "description": "",
+              "available": true,
+              "inStock": null,
+              "price": 610,
+              "decimalPrice": "610",
+              "optionsGroups": [
+                {
+                  "id": 1,
+                  "name": "Размер"
+                }
+              ],
+              "weight": "260 г",
+              "adult": false,
+              "shippingType": "delivery",
+              "publicId": "00000000-0000-0000-0000-001000000001"
+            },
+            {
+              "id": 1000000002,
+              "name": "Пицца Пепперони",
+              "description": "",
+              "available": true,
+              "inStock": null,
+              "price": 710,
+              "decimalPrice": "710",
+              "optionsGroups": [
+                {
+                  "id": 1,
+                  "name": "Размер"
+                }
+              ],
+              "weight": "430 г",
+              "adult": false,
+              "shippingType": "delivery",
+              "publicId": "00000000-0000-0000-0000-001000000002",
+              "promoPrice": 639,
+              "decimalPromoPrice": "639.9"
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "name": "Напитки",
+          "available": true,
+          "items_count": 1,
+          "items": [
+            {
+              "id": 1000000003,
+              "name": "Морс тестовый",
+              "description": "",
+              "available": true,
+              "inStock": null,
+              "price": 150,
+              "decimalPrice": "150",
+              "optionsGroups": [],
+              "weight": "300 мл",
+              "adult": false,
+              "shippingType": "delivery",
+              "publicId": "00000000-0000-0000-0000-001000000003"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "catalog": {
+    "payload": {
+      "foundPlace": {
+        "new_for_user": false,
+        "place": {
+          "id": 1,
+          "name": "Тестовая пиццерия",
+          "slug": "test_pizza_place",
+          "rating": 4.5,
+          "ratingCount": "1636",
+          "minimalOrderPrice": 0,
+          "minimalDeliveryCost": 0,
+          "priceCategory": {
+            "id": 2,
+            "name": "₽₽"
+          }
+        },
+        "locationParams": {
+          "deliveryTime": {
+            "min": 40,
+            "max": 50
+          },
+          "available": true,
+          "distance": 1.2,
+          "availableTo": "2026-10-11T00:00:00+03:00",
+          "shippingInfo": [
+            {
+              "name": "Курьером на автомобиле",
+              "thresholds": [
+                {
+                  "name": "на заказ 0-999 ₽",
+                  "value": "329 ₽"
+                },
+                {
+                  "name": "На заказ от 1000 ₽",
+                  "value": "99 ₽"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "currency": {
+        "code": "RUB",
+        "sign": "₽",
+        "template": "$VALUE$ $SIGN$$CURRENCY$",
+        "text": "руб."
+      }
+    }
+  }
+}
