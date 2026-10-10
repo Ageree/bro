@@ -1,0 +1,87 @@
+{
+  "data": {
+    "orders": [
+      {
+        "deliveryInfo": {
+          "shortOrderId": "261009-000-0001",
+          "orderId": "00000000000000000000000000000001-grocery",
+          "cartId": "00000000-0000-0000-0000-000000000001",
+          "status": "closed",
+          "isCanceled": false,
+          "isFailed": false,
+          "createdAt": "2026-10-09T19:03:53.879917+00:00",
+          "address": "Тестовая улица, 1",
+          "resolution": "succeeded"
+        },
+        "calculation": {
+          "finalCost": "791",
+          "finalCostTemplate": "791 $SIGN$$CURRENCY$",
+          "deliveryCost": "74",
+          "currencyCode": "RUB"
+        },
+        "positions": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "title": "Брецел тестовый",
+            "price": 395,
+            "totalPrice": 395,
+            "fullPrice": 395,
+            "count": 1,
+            "currency": "RUB",
+            "quantityType": "unit",
+            "type": "other"
+          },
+          {
+            "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "title": "Мороженое тестовое",
+            "price": 167,
+            "totalPrice": 167,
+            "fullPrice": 167,
+            "count": 1,
+            "currency": "RUB",
+            "quantityType": "unit",
+            "type": "other"
+          }
+        ],
+        "isMarket": false,
+        "orderType": "grocery"
+      },
+      {
+        "deliveryInfo": {
+          "shortOrderId": "261008-000-0002",
+          "orderId": "00000000000000000000000000000002-grocery",
+          "cartId": "00000000-0000-0000-0000-000000000002",
+          "status": "closed",
+          "isCanceled": true,
+          "isFailed": false,
+          "createdAt": "2026-10-08T09:10:00.000000+00:00",
+          "address": "Тестовая улица, 1",
+          "resolution": "succeeded"
+        },
+        "calculation": {
+          "finalCost": "418",
+          "finalCostTemplate": "418 $SIGN$$CURRENCY$",
+          "deliveryCost": "74",
+          "currencyCode": "RUB"
+        },
+        "positions": [
+          {
+            "id": "cccccccccccccccccccccccccccccccccccccccccccc",
+            "title": "Вода тестовая",
+            "price": 150,
+            "totalPrice": 150,
+            "fullPrice": 150,
+            "count": 1,
+            "currency": "RUB",
+            "quantityType": "unit",
+            "type": "other"
+          }
+        ],
+        "isMarket": false,
+        "orderType": "grocery"
+      }
+    ],
+    "isEnd": false,
+    "orderTypes": ["deliveryOrders"]
+  }
+}

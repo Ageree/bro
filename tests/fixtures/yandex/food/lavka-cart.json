@@ -1,0 +1,15 @@
+{
+  "cartId": "00000000-0000-0000-0000-000000000000",
+  "offerId": "00000000-0000-0000-0000-000000000000",
+  "availableForCheckout": false,
+  "checkoutUnavailableReason": "cart_empty",
+  "totalPriceValue": "134",
+  "totalItemsPrice": "0",
+  "totalItemsCount": 0,
+  "orderConditions": {
+    "deliveryCost": "134",
+    "minimumOrderPrice": "0"
+  },
+  "items": [],
+  "currencySign": "₽"
+}

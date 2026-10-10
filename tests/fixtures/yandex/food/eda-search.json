@@ -1,0 +1,125 @@
+{
+  "header": {
+    "text": "Найдено 2 результата"
+  },
+  "blocks": [
+    {
+      "title": "",
+      "type": "filters",
+      "payload": {
+        "filters_meta_widget": {
+          "data": []
+        }
+      }
+    },
+    {
+      "title": "",
+      "type": "places",
+      "payload": [
+        {
+          "slug": "test_pizza_place",
+          "title": "Тестовая пиццерия",
+          "brand": {
+            "slug": "test_pizza_brand"
+          },
+          "business": "restaurant",
+          "available": true,
+          "tags": [
+            {
+              "title": "Пицца"
+            },
+            {
+              "title": "Закуски"
+            }
+          ],
+          "price_category": {
+            "title": "₽₽"
+          },
+          "items": [
+            {
+              "id": "1000000001",
+              "title": "Пицца Маргарита",
+              "price": "610 ₽",
+              "decimal_price": "610",
+              "decimal_old_price": "680",
+              "weight": "260 г",
+              "search_type": "menu",
+              "public_id": "00000000-0000-0000-0000-000000000001",
+              "adult": false,
+              "has_required_option_groups": false
+            }
+          ],
+          "available_to": "2026-10-11T00:00:00+03:00",
+          "delivery": {
+            "text": "40 – 50 мин"
+          },
+          "lower_meta": [
+            {
+              "payload": {
+                "icon": {
+                  "type": "colored_icon",
+                  "url": "asset://rating_star"
+                },
+                "text": {
+                  "value": "4.5 (1600+)"
+                },
+                "type": "info"
+              }
+            },
+            {
+              "payload": {
+                "text": {
+                  "value": "·"
+                },
+                "type": "separator"
+              }
+            },
+            {
+              "payload": {
+                "text": {
+                  "value": "40 – 50 мин"
+                },
+                "type": "info"
+              }
+            }
+          ],
+          "link": "/restaurant/test_pizza_place"
+        },
+        {
+          "slug": "test_market",
+          "title": "Тестовый магазин",
+          "business": "shop",
+          "available": true,
+          "tags": [
+            {
+              "title": "Продукты"
+            }
+          ],
+          "price_category": {
+            "title": "₽₽₽"
+          },
+          "items": [],
+          "delivery": {
+            "text": "25 – 35 мин"
+          },
+          "lower_meta": [
+            {
+              "payload": {
+                "text": {
+                  "value": "4.8 (3400+)"
+                },
+                "type": "info"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "currency": {
+    "code": "RUB",
+    "sign": "₽",
+    "template": "$VALUE$ $SIGN$$CURRENCY$",
+    "text": "руб."
+  }
+}
