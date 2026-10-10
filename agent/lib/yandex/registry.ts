@@ -1,4 +1,5 @@
 import type { YandexOperation } from "./operations";
+import { marketOperations } from "./market";
 import { statusOperation } from "./status";
 
 /**
@@ -9,7 +10,7 @@ import { statusOperation } from "./status";
 export const yandexOperations: readonly [
   YandexOperation,
   ...(readonly YandexOperation[]),
-] = [statusOperation];
+] = [statusOperation, ...marketOperations];
 
 export function findYandexOperation(id: string) {
   return yandexOperations.find((operation) => operation.id === id);
