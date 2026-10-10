@@ -387,6 +387,55 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
                         break
                     await asyncio.sleep(0.1)
 
+    async def test_an_abandoned_window_is_cancelled_by_itself(self):
+        with mock.patch.object(worker, "HANDOFF_WATCH_S", 0.1), mock.patch.object(worker, "HANDOFF_ABSENT_S", 0.5):
+            self.assertEqual((await self.open()).status, 200)
+            handoff = worker.worker.handoff
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            await socket.close()  # the person closed the tab without «Готово» or «Отмена»
+            for _ in range(100):
+                if handoff.state == "cancelled":
+                    break
+                await asyncio.sleep(0.1)
+        self.assertEqual(handoff.state, "cancelled")
+        self.assertFalse(worker.worker.busy())
+        self.assertEqual(self.flushed, [True])  # they had looked: what the site gave is written
+
+    async def test_a_window_with_a_person_at_it_is_not_taken_by_a_run(self):
+        with mock.patch.object(worker, "HANDOFF_SILENT_S", 30):
+            await self.open()
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            response = await self.start_run()
+            self.assertEqual((response.status, await response.json()), (409, {"error": "busy"}))
+            self.assertEqual(worker.worker.handoff.state, "viewing")
+
+    async def test_a_run_closes_a_window_nobody_uses_and_starts(self):
+        with mock.patch.object(worker, "HANDOFF_ABSENT_S", 0.3), mock.patch.object(worker, "HANDOFF_SILENT_S", 0.3):
+            await self.open()
+            handoff = worker.worker.handoff
+            socket = await self.viewer()
+            await self.until(socket, "frame")
+            await socket.close()
+            await asyncio.sleep(0.6)
+            self.assertEqual(handoff.state, "open")  # no watcher tick yet at the default pace
+            response = await self.start_run()
+            self.assertNotIn(response.status, (409, 500), await response.text())
+            self.assertEqual(handoff.state, "cancelled")
+            self.assertEqual(self.flushed, [True])
+
+    async def test_a_silent_viewer_does_not_hold_the_browser_from_a_run_for_ever(self):
+        with mock.patch.object(worker, "HANDOFF_SILENT_S", 0.3):
+            await self.open()
+            handoff = worker.worker.handoff
+            socket = await self.viewer()  # connected, sending nothing
+            await self.until(socket, "frame")
+            await asyncio.sleep(0.6)
+            response = await self.start_run()
+            self.assertNotIn(response.status, (409, 500), await response.text())
+            self.assertEqual(handoff.state, "cancelled")
+
     async def test_a_handoff_that_is_over_is_not_opened_again_by_its_id(self):
         await self.open()
         await worker.end_handoff(worker.worker.handoff, "cancel")

@@ -1487,6 +1487,8 @@ class Worker:
 
     async def direct_browser(self, session):
         if self.busy():
+            await reclaim_abandoned_handoff()
+        if self.busy():
             raise self.busy_error()
         if session.direct is None:
             session.direct = await self.browser_session(session, session.options or {})
@@ -1829,6 +1831,7 @@ class Worker:
             raise web.HTTPBadRequest(text="llm {baseUrl, apiKey, model} is required")
         tuning = agent_tuning(body.get("tuning"))
         async with self.lock:
+            await reclaim_abandoned_handoff()
             if self.busy():
                 raise self.busy_error()
             if self.restarting:
@@ -4007,6 +4010,10 @@ HANDOFF_QUALITY = 60
 HANDOFF_FRAME_S = 0.25  # between two pictures of a page nobody is touching
 HANDOFF_RECOVERY_TRIES = 6
 HANDOFF_MAX_WIDTH = 1366
+# A window nobody uses lets go of the browser: after the viewer's socket has been gone this long (it
+# was seen), or for the first look, or while it is connected but silent (no tap, key or message).
+HANDOFF_ABSENT_S, HANDOFF_UNSEEN_S, HANDOFF_SILENT_S = 90, 300, 300
+HANDOFF_WATCH_S = 10
 HANDOFF_STATES_ACTIVE = ("open", "viewing", "closing")
 # The keys of a form: name → (code, Windows virtual key). No letters (they are typed as text) and no
 # chords, so a viewer cannot reach a browser shortcut.
@@ -4114,6 +4121,7 @@ class Handoff:
         self.viewed = False
         self.navigated = False
         self.viewer = None
+        self.touched = time.monotonic()  # the last sign of the person: the link made, a socket in or out, a message
         self.guard = None  # the fence and the tab's CDP link, from the first viewer to the end
         self.guard_lock = asyncio.Lock()
         self.result = None
@@ -4125,6 +4133,20 @@ class Handoff:
 
     def allows(self, url):
         return handoff_url_allowed(url, self.domains, self.hosts)
+
+    def touch(self):
+        self.touched = time.monotonic()
+
+    def abandoned(self):
+        """Nobody is using the window: no viewer for a while, or a viewer who sends nothing. A window with a
+        person at it is never abandoned."""
+        if not self.active() or self.state == "closing":
+            return False
+        if self.viewer is not None:
+            limit = HANDOFF_SILENT_S
+        else:
+            limit = HANDOFF_ABSENT_S if self.viewed else HANDOFF_UNSEEN_S
+        return time.monotonic() - self.touched > limit
 
     def summary(self):
         return {"id": self.id, "state": self.state, "expiresAt": int(self.expires_at), "viewed": self.viewed,
@@ -4320,6 +4342,7 @@ class HandoffGuard:
         async for message in client:
             if message.type != aiohttp.WSMsgType.TEXT:
                 break
+            self.handoff.touch()
             try:
                 body = json.loads(message.data)
             except ValueError:
@@ -4595,8 +4618,26 @@ async def finish_handoff(handoff, outcome, check):
 
 
 async def expire_handoff(handoff, ttl):
-    await asyncio.sleep(ttl)
+    """Wait out the window's time, and end it as cancelled sooner if nobody is using it."""
+    deadline = time.monotonic() + ttl
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(HANDOFF_WATCH_S, max(deadline - time.monotonic(), 0)))
+        if handoff.abandoned():
+            end_handoff(handoff, "cancel")
+            return
     end_handoff(handoff, "expired")
+
+
+async def reclaim_abandoned_handoff():
+    """A new run or page action finds the sign-in window abandoned: close it (the cookies of a sign-in that
+    happened are written) so the browser is free. A window with a person at it is left alone (the caller
+    gets its 409)."""
+    handoff = worker.handoff
+    if handoff is None or not handoff.abandoned():
+        return
+    ending = end_handoff(handoff, "cancel")
+    if ending is not None:
+        await asyncio.shield(ending)
 
 
 def handoff_body_error(body):
@@ -4702,6 +4743,7 @@ async def handoff_socket(request):
         with contextlib.suppress(Exception):
             await previous.close()
     handoff.state, handoff.viewed = "viewing", True
+    handoff.touch()
     ending = None
     try:
         async with handoff.guard_lock:
@@ -4726,6 +4768,7 @@ async def handoff_socket(request):
         # The viewer left, or the handler was cancelled by its socket going: the sign-in waits for it to come back.
         if handoff.viewer is client:
             handoff.viewer = None
+            handoff.touch()
             if handoff.state == "viewing":
                 handoff.state = "open"
     if ending is not None:
