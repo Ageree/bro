@@ -1664,6 +1664,53 @@ async function proxyAccepted(now: Date) {
   }
 }
 
+/**
+ * Spare sticky exits for a sign-in window, the next rotations after the one
+ * the workspace is on: the window takes them in turn on a site's wall.
+ */
+export function browserVmSpareExits(vm: BrowserVm, count = 3) {
+  const first = rotationOf(vm) + 1;
+  return Array.from({ length: count }, (_, index) => {
+    const rotation = first + index;
+    return {
+      proxy: browserVmProxy(browserVmProxySession(vm.workspaceId, rotation)),
+      rotation,
+    };
+  });
+}
+
+/**
+ * The window moved to another exit and the person signed in on it: it is the
+ * workspace's exit from now on, since a site ties the session to the address.
+ */
+export async function adoptBrowserVmExit(
+  vm: BrowserVm,
+  exit: {
+    readonly city?: string | null;
+    readonly country?: string | null;
+    readonly ip: string;
+    readonly org?: string | null;
+    readonly rotation: number;
+  },
+  now = new Date()
+) {
+  if (exit.rotation === rotationOf(vm)) return;
+  await updateBrowserVm(
+    vm.workspaceId,
+    {
+      proxyExit: {
+        at: now.toISOString(),
+        city: exit.city ?? null,
+        country: exit.country ?? null,
+        ip: exit.ip,
+        org: exit.org ?? null,
+      },
+      proxySession: browserVmProxySession(vm.workspaceId, exit.rotation),
+    },
+    now
+  );
+}
+
 /** The rotation the workspace's stored sticky session is on. */
 function rotationOf(vm: BrowserVm) {
   const rotation = /^bro[\da-f]{12}r(?<rotation>\d+)$/u.exec(

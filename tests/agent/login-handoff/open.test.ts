@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import type { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import type {
+  browserVmSpareExits,
   ensureBrowserVm,
   prepareBrowserVmSession,
 } from "@agent/lib/browser-vm/lifecycle";
@@ -20,6 +21,7 @@ vi.hoisted(() => {
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof claimLoginHandoff>(),
   ensure: vi.fn<typeof ensureBrowserVm>(),
+  spare: vi.fn<typeof browserVmSpareExits>(),
   keep: vi.fn<typeof keepBrowserVmForErrand>(),
   mark: vi.fn<typeof markLoginHandoffWorkerOpened>(),
   open: vi.fn<typeof workerModule.openBrowserVmWorkerHandoff>(),
@@ -35,6 +37,7 @@ vi.mock("@agent/lib/browser-vm/idle", () => ({
   keepBrowserVmForErrand: services.keep,
 }));
 vi.mock("@agent/lib/browser-vm/lifecycle", () => ({
+  browserVmSpareExits: services.spare,
   ensureBrowserVm: services.ensure,
   prepareBrowserVmSession: services.prepare,
 }));
@@ -80,6 +83,12 @@ beforeEach(() => {
   services.usesVm.mockResolvedValue(true);
   services.ensure.mockResolvedValue({ kind: "ready", vm });
   services.prepare.mockResolvedValue(vm);
+  services.spare.mockReturnValue([
+    {
+      proxy: { host: "p", password: "x", port: 1, username: "u-r1" },
+      rotation: 1,
+    },
+  ]);
   services.open.mockResolvedValue({
     expiresAt: 0,
     id: "h_worker",
@@ -94,6 +103,16 @@ function refused(status: number) {
 }
 
 describe("opening a sign-in link", () => {
+  it("gives the window spare exits to move to when the site walls the first", async () => {
+    await openLoginHandoff({ deviceSecret: "secret", id: "link-1" }, now);
+    expect(services.open.mock.calls[0]?.[1].exits).toEqual([
+      {
+        proxy: { host: "p", password: "x", port: 1, username: "u-r1" },
+        rotation: 1,
+      },
+    ]);
+  });
+
   it("keeps only a hash of the device's secret, and links nobody can guess", () => {
     expect(deviceHash("secret")).toMatch(/^[\da-f]{64}$/u);
     expect(deviceHash("secret")).not.toContain("secret");

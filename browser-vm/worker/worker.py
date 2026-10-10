@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-10.1"
+VERSION = "2026-10-10.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -241,6 +241,14 @@ class Forwarder:
     def drop(self):
         """Forget the login and close every tunnel carrying it, so their handlers end and let it go."""
         self.upstream = None
+        for writer in list(self.open):
+            with contextlib.suppress(Exception):
+                writer.close()
+
+    def reroute(self, proxy):
+        """Another exit for what Chrome opens next: the tunnels in flight carry the old exit, and a site's
+        keep-alive connection would otherwise stay on it, so they are closed (Chrome opens new ones)."""
+        self.configure(proxy)
         for writer in list(self.open):
             with contextlib.suppress(Exception):
                 writer.close()
@@ -3427,13 +3435,9 @@ async def health(request):
     })
 
 
-async def configure_session(request):
-    authorize(request)
-    body = await request.json()
-    proxy = body.get("proxy")
-    if not isinstance(proxy, dict) or not proxy.get("host") or not proxy.get("port"):
-        raise web.HTTPBadRequest(text="proxy {host, port, username?, password?} is required")
-    worker.forwarder.configure(proxy)
+async def check_exit(speed=True):
+    """The exit the forwarder is on now: its address (ipinfo.io) and, with `speed`, a megabyte through it;
+    `error` instead of an address when it does not answer."""
     proxy_url = f"http://127.0.0.1:{FORWARD_PORT}"
     async with aiohttp.ClientSession() as http:
         try:
@@ -3445,6 +3449,8 @@ async def configure_session(request):
         except Exception as error:  # `error` means no address
             exit_address = {"error": f"{type(error).__name__}: {error}"[:300]}
         else:
+            if not speed:
+                return exit_address
             # Residential exits differ tenfold in speed (the same Wildberries page took 3 s through one and
             # 70 s through another): measure a megabyte so Bro can move a slow exit before the errand. A
             # megabyte that did not come through leaves the address standing, with its speed unknown.
@@ -3456,6 +3462,17 @@ async def configure_session(request):
                 exit_address["mbps"] = round(size * 8 / 1e6 / max(time.monotonic() - started, 0.001), 2)
             except Exception as error:
                 exit_address["speedError"] = f"{type(error).__name__}: {error}"[:300]
+    return exit_address
+
+
+async def configure_session(request):
+    authorize(request)
+    body = await request.json()
+    proxy = body.get("proxy")
+    if not isinstance(proxy, dict) or not proxy.get("host") or not proxy.get("port"):
+        raise web.HTTPBadRequest(text="proxy {host, port, username?, password?} is required")
+    worker.forwarder.configure(proxy)
+    exit_address = await check_exit()
     if not await chrome_ready():
         await systemctl("start")
         await wait_chrome(30)
@@ -4014,6 +4031,8 @@ HANDOFF_MAX_WIDTH = 1366
 # was seen), or for the first look, or while it is connected but silent (no tap, key or message).
 HANDOFF_ABSENT_S, HANDOFF_UNSEEN_S, HANDOFF_SILENT_S = 90, 300, 300
 HANDOFF_WATCH_S = 10
+HANDOFF_MAX_EXITS = 3  # spare exits a handoff may carry; each is tried once, on an anti-bot wall
+HANDOFF_WALL_S = 1.5  # between two looks at the page for a wall
 HANDOFF_STATES_ACTIVE = ("open", "viewing", "closing")
 # The keys of a form: name → (code, Windows virtual key). No letters (they are typed as text) and no
 # chords, so a viewer cannot reach a browser shortcut.
@@ -4023,6 +4042,12 @@ HANDOFF_KEYS = {
     "ArrowRight": ("ArrowRight", 39), "ArrowDown": ("ArrowDown", 40), "Home": ("Home", 36),
     "End": ("End", 35),
 }
+# The sites' own "your network is blocked" pages, which no person can pass: only another exit helps. A
+# slider or a picture puzzle is not one: the person solves it in the window.
+HANDOFF_WALL = r"""(() => {
+  const text = ((document.title || '') + ' ' + (document.body ? document.body.innerText.slice(0, 4000) : ''));
+  return /fab_chlg|Похоже, нет соединения|Выключите VPN|проблема с IP|Доступ ограничен/i.test(text);
+})()"""
 HANDOFF_CHECK = "({passwordField: !!document.querySelector('input[type=password]')})"
 
 
@@ -4112,8 +4137,10 @@ class Handoff:
     """One sign-in in progress. `open`: waiting for the viewer; `viewing`: a viewer is connected; `closing`:
     the tab is being closed and the cookies written; then `done`, `cancelled` or `expired`."""
 
-    def __init__(self, handoff_id, url, domains, origin, ttl, hosts=()):
+    def __init__(self, handoff_id, url, domains, origin, ttl, hosts=(), exits=()):
         self.id, self.url, self.domains, self.origin = handoff_id, url, list(domains), origin
+        self.exits = list(exits)  # spare exits, [{"rotation", "proxy"}], taken in order on a wall
+        self.exit = None  # the exit the handoff moved to: {"rotation", "ip", "city", "country", "org"}
         self.hosts = list(hosts)
         self.expires_at = time.time() + ttl
         self.tab = None
@@ -4150,7 +4177,7 @@ class Handoff:
 
     def summary(self):
         return {"id": self.id, "state": self.state, "expiresAt": int(self.expires_at), "viewed": self.viewed,
-                "result": self.result}
+                "result": self.result, "exit": self.exit}
 
 
 class CdpLink:
@@ -4299,6 +4326,7 @@ class HandoffGuard:
             self.client, self.outcome = client, None
             viewer = asyncio.create_task(self.pump_viewer(client))
             pictures = asyncio.create_task(self.frames())
+            watcher = asyncio.create_task(self.watch_wall())
             try:
                 self.kick.set()
                 await self.announce()  # the address bar for the page that is already there
@@ -4306,9 +4334,53 @@ class HandoffGuard:
             finally:
                 viewer.cancel()
                 pictures.cancel()
+                watcher.cancel()
                 await self.release()
                 self.client = None
             return self.outcome or "left"
+
+    async def on_wall(self):
+        """Whether the main page shows a site's "network blocked" wall."""
+        main = next((s for s, k in self.sessions.items() if k["main"]), None)
+        if main is None or not self.handoff.allows(self.sessions[main]["url"]):
+            return False
+        with contextlib.suppress(Exception):
+            result = await self.link.call("Runtime.evaluate", {"expression": HANDOFF_WALL, "returnByValue": True},
+                                          main, timeout=5)
+            return result.get("result", {}).get("value") is True
+        return False
+
+    async def watch_wall(self):
+        """While a viewer is here: a wall on the page moves the browser to the next spare exit and loads the
+        sign-in page again. The wall is the site's verdict on the address, so the person could only stare at
+        it; each spare exit is tried once, and when none is left the wall stays for the person to see."""
+        handoff = self.handoff
+        while handoff.exits:
+            await asyncio.sleep(HANDOFF_WALL_S)
+            if self.held is not None or not await self.on_wall():
+                continue
+            await self.say({"t": "exit", "state": "changing"})
+            moved = await self.change_exit()
+            await self.say({"t": "exit", "state": "changed" if moved else "failed"})
+        await asyncio.Event().wait()
+
+    async def change_exit(self):
+        """Take spare exits in turn until one answers from Russia; load the sign-in page through it."""
+        handoff = self.handoff
+        while handoff.exits:
+            spare = handoff.exits.pop(0)
+            worker.forwarder.reroute(spare["proxy"])
+            seen = await check_exit(speed=False)
+            if seen.get("country") != "RU" or not seen.get("ip"):
+                continue
+            handoff.exit = {"rotation": spare["rotation"], **{k: seen.get(k) for k in ("ip", "city", "country", "org")}}
+            main = next((s for s, k in self.sessions.items() if k["main"]), None)
+            if main is not None:
+                with contextlib.suppress(Exception):
+                    await self.link.call("Page.navigate", {"url": handoff.url}, main)
+            self.kick.set()
+            return True
+        return False
 
     async def frames(self):
         """A picture of the current page when it differs from the last one: a few a second, at once after an
@@ -4658,6 +4730,12 @@ def handoff_body_error(body):
         return "url must be an https page inside the domains"
     if not isinstance(body.get("origin"), str) or not HANDOFF_ORIGIN.fullmatch(body["origin"]):
         return "origin must be the https origin of the page that shows the viewer"
+    exits = body.get("exits", [])
+    if not isinstance(exits, list) or len(exits) > HANDOFF_MAX_EXITS or not all(
+            isinstance(e, dict) and isinstance(e.get("rotation"), int) and not isinstance(e["rotation"], bool)
+            and isinstance(e.get("proxy"), dict) and e["proxy"].get("host") and e["proxy"].get("port")
+            for e in exits):
+        return "exits must be up to 3 {rotation, proxy}"
     ttl = body.get("ttlSeconds", HANDOFF_TTL_S)
     if isinstance(ttl, bool) or not isinstance(ttl, int) or not HANDOFF_MIN_TTL_S <= ttl <= HANDOFF_MAX_TTL_S:
         return "ttlSeconds must be 60 to 1800"
@@ -4683,7 +4761,8 @@ async def create_handoff(request):
     if worker.busy() or worker.restarting:
         raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
     ttl = body.get("ttlSeconds", HANDOFF_TTL_S)
-    handoff = Handoff(body["id"], body["url"], body["domains"], body["origin"], ttl, body.get("hosts", []))
+    handoff = Handoff(body["id"], body["url"], body["domains"], body["origin"], ttl, body.get("hosts", []),
+                      body.get("exits", []))
     handoff.tab = await new_tab()
     worker.handoff = handoff
     handoff.expiry = asyncio.create_task(expire_handoff(handoff, ttl))

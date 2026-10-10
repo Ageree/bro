@@ -231,6 +231,16 @@ export function Viewer({ id }: { readonly id: string }) {
           );
           break;
         }
+        case "exit": {
+          setNotice(
+            message.state === "changing"
+              ? "Сайт не пустил с этой сети. Меняю сеть…"
+              : message.state === "changed"
+                ? null
+                : "Сайт не пускает и с другой сети. Попробуйте позже или другой способ входа."
+          );
+          break;
+        }
         case "popup": {
           setNotice(
             "Открылось окно входа (например, через Яндекс или VK). Оно показано здесь."

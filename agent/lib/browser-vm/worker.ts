@@ -2,6 +2,7 @@ import { z } from "zod";
 import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
 import { resolvePrivateRoute, withPrivateRoute } from "./private-route";
+import type { browserVmProxy } from "./proxy";
 import { signBrowserVmToken } from "./token";
 
 /**
@@ -293,6 +294,16 @@ const workerUpdateSchema = z.object({ updated: z.literal(true) });
  * text and no cookie comes this way.
  */
 const handoffSchema = z.object({
+  // The exit the window moved to on a site's wall; an older worker has none.
+  exit: z
+    .object({
+      city: z.string().nullable().optional(),
+      country: z.string().nullable().optional(),
+      ip: z.string(),
+      org: z.string().nullable().optional(),
+      rotation: z.number().int().nonnegative(),
+    })
+    .nullish(),
   expiresAt: z.number().int(),
   id: z.string().min(1),
   result: z
@@ -662,6 +673,15 @@ export async function openBrowserVmWorkerHandoff(
   input: {
     /** Names the page may be on, with their subdomains. */
     readonly domains: readonly string[];
+    /**
+     * Spare exits (sticky sessions) the window takes in turn when the site
+     * shows a "your network is blocked" wall; the logins stay in the
+     * worker's memory.
+     */
+    readonly exits?: readonly {
+      readonly proxy: ReturnType<typeof browserVmProxy>;
+      readonly rotation: number;
+    }[];
     /** Hosts it may also be on, exactly: a sign-in provider's own pages. */
     readonly hosts: readonly string[];
     readonly id: string;
