@@ -200,8 +200,13 @@
   это не мешает; при росте — отдавать потолок в `/v1/capacity`. Аккаунт Cloud.ru
   10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
   ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
-  `BRO_APP_HOST_DIR=~/.bro-app-host-selectel` (`~/.bro-selectel/op.env`), у
-  `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Env прода —
+  `BRO_APP_HOST_DIR=/root/.bro-app-host-selectel` (полный путь), у
+  `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Ключи — в env
+  облачной сессии: `SELECTEL_API_KEY` (или `SELECTEL_TOKEN`),
+  `SELECTEL_ACCOUNT`, `SELECTEL_PROJECT`, `S3_*` бакета `bro-bucket`
+  (`PROBE_BUCKET`); ключи оператора (выкат, env прода, `updateKey` хостов) —
+  `host.py state restore`, им нужен прежний `CLOUDRU_KEY_SECRET`: им
+  зашифровано состояние, хоть Cloud.ru и закрыт. Env прода —
   `host.py env bro-app-sel-2 --profile prod --allow-missing
 --no-alert-webhook`; инфраструктура Selectel (`S3_*`, пул `static`,
   хост песочниц) — в `prod.json` этого каталога.
