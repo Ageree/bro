@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { marketSearchOperation } from "@agent/lib/yandex/market/search";
-import { fixtureText, okData, runOnPage } from "../page";
+import { fixtureText, okData, runOnPage } from "./page";
 
 const resolver = () => ({ body: fixtureText("search.json") });
 

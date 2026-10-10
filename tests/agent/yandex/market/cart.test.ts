@@ -5,7 +5,7 @@ import {
   marketCartOperation,
   marketCartRemoveOperation,
 } from "@agent/lib/yandex/market/cart";
-import { fixture, fixturePage, okData, runOnPage } from "../page";
+import { fixture, fixturePage, okData, runOnPage } from "./page";
 
 const cartPage = () => ({ body: fixturePage("cart.json") });
 const cartAdd = fixture("cart_add.json");

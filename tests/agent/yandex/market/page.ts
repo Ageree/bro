@@ -79,7 +79,7 @@ export async function runOnPage(
 /** A fixture of the set, as the file has it. */
 export function fixtureText(name: string) {
   return readFileSync(
-    new URL(`../../fixtures/yandex/market/${name}`, import.meta.url),
+    new URL(`../../../fixtures/yandex/market/${name}`, import.meta.url),
     "utf8"
   );
 }

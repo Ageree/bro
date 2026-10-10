@@ -3,7 +3,7 @@ import {
   marketOrderOperation,
   marketOrdersOperation,
 } from "@agent/lib/yandex/market/orders";
-import { fixturePage, okData, runOnPage, signedInState } from "../page";
+import { fixturePage, okData, runOnPage, signedInState } from "./page";
 
 describe("market.orders", () => {
   it("lists the orders with status, delivery method and items, without addresses", async () => {
