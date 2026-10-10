@@ -16,6 +16,7 @@ vi.stubEnv("TELEGRAM_BOT_USERNAME", "phone_test_bot");
 vi.mock("@db/services/phone", () => ({
   changePhoneState: vi.fn<() => void>(),
   claimCallStart: async () => ({ id: "local-call" }),
+  hasEarlierConnectedCall: async () => false,
   listPhoneCalls: vi.fn<() => void>(),
   phonePilot: () => true,
   planOutboundCall: async () => ({

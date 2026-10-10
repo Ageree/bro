@@ -16,6 +16,7 @@ import { requirePhoneAgentReady, startCall } from "@shared/phone/elevenlabs";
 import {
   changePhoneState,
   claimCallStart,
+  hasEarlierConnectedCall,
   listPhoneCalls,
   planOutboundCall,
   phonePilot,
@@ -231,6 +232,11 @@ const call = defineTool({
         note: "Number mapping is unavailable; no redial.",
       };
     }
+    const repeatCall = await hasEarlierConnectedCall(
+      scope,
+      target,
+      started.id
+    ).catch(() => false);
     try {
       const accepted = await startCall({
         phoneNumberId: number.outboundPhoneNumberId,
@@ -240,6 +246,7 @@ const call = defineTool({
         target,
         localCallId: started.id,
         task: input.task,
+        repeatCall,
       });
       await recordCallAccepted(
         started.id,

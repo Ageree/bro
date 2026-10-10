@@ -1,0 +1,68 @@
+{
+  "subcategories": [],
+  "widgets": [
+    {
+      "id": "supermarket_products_suggest",
+      "title": "Ещё 20 товаров",
+      "type": "supermarket_products_suggest",
+      "productIds": []
+    }
+  ],
+  "offerId": "00000000-0000-0000-0000-000000000000",
+  "layoutItems": [
+    {
+      "type": "good",
+      "id": "dddddddddddddddddddddddddddddddddddddddddddd",
+      "height": 4,
+      "width": 2,
+      "items": [],
+      "isHero": false
+    },
+    {
+      "type": "good",
+      "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "height": 4,
+      "width": 2,
+      "items": [],
+      "isHero": false
+    },
+    {
+      "type": "supermarket_products_suggest",
+      "id": "supermarket_products_suggest",
+      "height": 0,
+      "width": 0,
+      "items": []
+    }
+  ],
+  "cacheProducts": [
+    {
+      "type": "good",
+      "id": "dddddddddddddddddddddddddddddddddddddddddddd",
+      "isMarkdown": false,
+      "deepLink": "test-product",
+      "title": "Молоко тест.",
+      "longTitle": "Молоко «Тестовое» 2,5% пастеризованное",
+      "stickers": [],
+      "amount": "930 мл",
+      "currentPrice": 91,
+      "currentPriceSigned": "91 ₽",
+      "available": true,
+      "comingSoon": false
+    },
+    {
+      "type": "good",
+      "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "isMarkdown": false,
+      "deepLink": "test-product",
+      "title": "Молоко тест. 1л",
+      "longTitle": "Молоко «Тестовое» ультрапастеризованное",
+      "stickers": [],
+      "amount": "1 л",
+      "currentPrice": 139,
+      "currentPriceSigned": "139 ₽",
+      "available": true,
+      "comingSoon": false,
+      "fullPrice": 159
+    }
+  ]
+}
