@@ -56,6 +56,10 @@ const attachedTargetSchema = z.object({
 const injectionSchema = z.object({
   /** The field is focused and waits for the protocol's text insertion. */
   insert: z.boolean().optional(),
+  /** Boxes the protocol must fill one by one, each focused first. */
+  boxes: z.number().int().optional(),
+  /** After the boxes were filled: whether they hold the code. */
+  matches: z.boolean().optional(),
   ok: z.boolean(),
   partial: z.boolean().optional(),
   score: z.number().optional(),
@@ -209,13 +213,27 @@ const injectionProgram = `function (raw, mode) {
   };
   // This runs in an isolated world, so the page never sees what is kept here.
   const kept = "__browserUseCodeField";
+  const keptBoxes = "__browserUseCodeBoxes";
+  if (typeof mode === "string" && mode.startsWith("box:")) {
+    const box = (globalThis[keptBoxes] || [])[Number(mode.slice(4))];
+    if (!(box instanceof HTMLElement) || !box.isConnected) return miss;
+    box.focus();
+    if (box.select) box.select();
+    return { ok: true, typed: false, submitted: false, partial: false };
+  }
   if (mode === "submit") {
     const field = globalThis[kept];
+    const boxes = globalThis[keptBoxes];
     delete globalThis[kept];
+    delete globalThis[keptBoxes];
     // A form that went away with the code, as one that submits itself does,
     // leaves nothing to confirm.
     const present = field instanceof HTMLElement && field.isConnected;
-    return { ok: present, typed: present, submitted: present && press(), partial: false };
+    // Boxes that hold something else than the code did not take it: the page
+    // moved the focus or rewrote them, and the run types the code itself.
+    const matches = !present || !boxes ? undefined : boxes.map((el) => el.value).join("") === value;
+    if (matches === false) return { ok: true, typed: false, submitted: false, partial: true, matches: false };
+    return { ok: present, typed: present, submitted: present && press(), partial: false, ...(matches === undefined ? {} : { matches }) };
   }
   const inputs = deepAll("input, textarea").filter((el) => {
     if (!visible(el)) return false;
@@ -252,6 +270,14 @@ const injectionProgram = `function (raw, mode) {
   const partial = Boolean(!useBoxes && target instanceof HTMLInputElement && target.maxLength === 1 && value.length > 1);
   if (!mode) return { ok: true, score: useBoxes ? ${String(boxesScore)} : score(target), partial: partial, typed: false, submitted: false };
   if (useBoxes) {
+    // One trusted insertion per box, each focused first (see insertBoxes):
+    // a code input that follows the focus, as react-otp-input does, files a
+    // digit set on a box it is not focused on under the focused one.
+    if (boxes.length === value.length) {
+      globalThis[keptBoxes] = boxes;
+      globalThis[kept] = boxes[boxes.length - 1];
+      return { ok: true, insert: true, boxes: boxes.length, typed: false, submitted: false, partial: false };
+    }
     const chars = value.slice(0, boxes.length).split("");
     boxes.forEach((el, index) => setValue(el, chars[index] ?? ""));
     return { ok: true, typed: true, submitted: press(), partial: false };
@@ -406,7 +432,7 @@ export async function typeOneTimeCodeOverCdp(
     if (applied?.insert === true) {
       return {
         ...where,
-        ...(await insertCode(connection, best.context, value)),
+        ...(await insertCode(connection, best.context, value, applied.boxes)),
       };
     }
     return {
@@ -672,14 +698,20 @@ export async function callInPageOverCdp(
 async function insertCode(
   connection: CdpConnection,
   context: FrameContext,
-  value: string
+  value: string,
+  /** Set for one-character boxes: each gets its own character, focused first. */
+  boxes?: number
 ) {
   try {
-    await connection.call(
-      "Input.insertText",
-      { text: value },
-      context.sessionId
-    );
+    if (boxes === undefined) {
+      await connection.call(
+        "Input.insertText",
+        { text: value },
+        context.sessionId
+      );
+    } else {
+      await insertBoxes(connection, context, value);
+    }
   } catch {
     // The field is focused and still empty: the cloud agent types the code.
     return {
@@ -690,6 +722,15 @@ async function insertCode(
     };
   }
   const confirmed = await evaluate(connection, context, value, "submit");
+  if (confirmed?.matches === false) {
+    // The boxes hold something else than the code: the cloud agent types it.
+    return {
+      insertedText: true,
+      partial: true,
+      submitted: false,
+      typed: false,
+    };
+  }
   return {
     insertedText: true,
     partial: false,
@@ -698,12 +739,45 @@ async function insertCode(
   };
 }
 
+/**
+ * The code into one-character boxes, one trusted insertion each, the box
+ * focused by the page's own script first. Setting every box's value in a
+ * row left the focus on the first: a code input that files what it gets
+ * under its focused box (react-otp-input, which playerok.com uses) showed
+ * the digits and sent the server another code (RU 10.10, six
+ * `otp_code_mismatch`).
+ */
+async function insertBoxes(
+  connection: CdpConnection,
+  context: FrameContext,
+  value: string
+) {
+  for (const [index, char] of value.split("").entries()) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each box is focused only after the one before took its character.
+    const focused = await evaluate(
+      connection,
+      context,
+      value,
+      `box:${String(index)}`
+    );
+    if (focused?.ok !== true) throw new Error("A code box is gone");
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Same: one character at a time.
+    await connection.call(
+      "Input.insertText",
+      { text: char },
+      context.sessionId
+    );
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Lets the page move its own focus on.
+    await sleep(40);
+  }
+}
+
 async function evaluate(
   connection: CdpConnection,
   context: FrameContext,
   value: string,
   /** Score, apply, or confirm after an insertion: see `injectionProgram`. */
-  mode: boolean | "submit"
+  mode: boolean | "submit" | `box:${string}`
 ) {
   const reply = await connection
     .call(

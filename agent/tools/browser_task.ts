@@ -135,6 +135,7 @@ import {
   siteUrl,
 } from "@agent/lib/browser-use/host";
 import {
+  codeSentEarlier,
   handedMailCode,
   mailCodeBinding,
   mailCodeFromSite,
@@ -2703,7 +2704,10 @@ function agentMailTakenNote(domain: string, what: "code" | "link") {
 }
 
 /** What the model does when the site's letter is not in Bro's own mailbox. */
-function agentMailMissingNote(why: string) {
+function agentMailMissingNote(why: string, refused = false) {
+  if (refused) {
+    return `Nothing was sent: ${why}. The site writes to your own AgentMail address, not to the user, so do not ask them for a code or to check their mail, and do not tell them to write to you. Continue this run once without codeFrom, telling it to have the site send a new code (once, and to wait out the site's pause if it says a code was already sent), and to stop with NEEDS: email_code when the page waits for it; its report then takes the new letter. Tell the user in one short line that the code was refused and you are getting a fresh one. If a run already did that and the code was refused again, say plainly that the site refuses the codes and what the page said, and stop.`;
+  }
   return `Nothing was sent: ${why}. The site writes to your own AgentMail address, not to the user, so do not ask them for a code or to check their mail: tell them in one short line that the registration waits for the site's letter, and continue with codeFrom "mail" again when they next write.`;
 }
 
@@ -2801,23 +2805,28 @@ async function codeFromMail(
   const agentMailbox = await siteAgentMailbox(scope, row.site);
   // One look in the mail per stop: a run that was itself handed a code from
   // the mail and stopped for another goes to the person, unless they ask
-  // for another look themselves.
-  if (!byPerson && handedMailCode(row.task)) {
+  // for another look themselves. Bro's own mailbox is no one's to ask, so a
+  // report turn looks there once more, for a letter newer than the one the
+  // run was handed (the run began after it): the site may have let a new
+  // code go out meanwhile.
+  const handed = !byPerson && handedMailCode(row.task);
+  if (handed && agentMailbox === undefined) {
     throw new Error(
-      agentMailbox === undefined
-        ? mailCodeMissingNote(
-            "a code from the user's mail already went to this errand and the site asked for another, so it is not taken again without them"
-          )
-        : agentMailMissingNote(
-            "a code or a link from your own mailbox already went to this errand and the site asked again, so it is not taken again in a report turn"
-          )
+      mailCodeMissingNote(
+        "a code from the user's mail already went to this errand and the site asked for another, so it is not taken again without them"
+      )
     );
   }
   const found = await mailCodeFromSite(scope, {
     agentMailbox,
     signal: context.abortSignal,
-    since: row.createdAt,
+    // A site that says its code was sent earlier keeps that one valid: the
+    // letter may predate the run that asked for it.
+    since: codeSentEarlier(row.outcome)
+      ? new Date(Math.min(row.createdAt.getTime(), Date.now() - 15 * 60_000))
+      : row.createdAt,
     site: row.site,
+    waitMs: handed ? 0 : undefined,
   });
   console.info("[browser-use] code from mail", {
     // Never the code or the link itself.
@@ -2842,8 +2851,11 @@ async function codeFromMail(
     throw new Error(
       agentMailMissingNote(
         found.kind === "not_found"
-          ? `no letter with a code or a confirmation link from ${sender} reached your own AgentMail inbox since the run asked for it — Bro looked for a minute`
-          : "your own AgentMail inbox could not be read just now"
+          ? handed
+            ? `${sender} has sent no newer code to your own AgentMail inbox since the one the run typed, which the site refused`
+            : `no letter with a code or a confirmation link from ${sender} reached your own AgentMail inbox since the run asked for it — Bro looked for a minute`
+          : "your own AgentMail inbox could not be read just now",
+        handed && found.kind === "not_found"
       )
     );
   }
