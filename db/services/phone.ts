@@ -713,6 +713,30 @@ export async function planOutboundCall(
   });
 }
 
+// Бро уже дозванивался на этот номер (разговор состоялся): знакомым людям не нужно представляться заново.
+export async function hasEarlierConnectedCall(
+  scope: AccessScope,
+  target: string,
+  exceptId: string
+) {
+  const [row] = await db
+    .select({ id: phoneCalls.id })
+    .from(phoneCalls)
+    .where(
+      and(
+        eq(phoneCalls.workspaceId, scope.workspaceId),
+        eq(phoneCalls.ownerUserId, scope.userId),
+        eq(phoneCalls.direction, "outbound"),
+        eq(phoneCalls.target, target),
+        ne(phoneCalls.id, exceptId),
+        eq(phoneCalls.state, "done"),
+        gt(phoneCalls.durationSeconds, 5)
+      )
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 export async function acceptInboundCall(input: {
   calledNumber: string;
   agentId: string;

@@ -158,7 +158,7 @@ beforeEach(() => {
 
 const task = "Уточни, открыт ли сегодня магазин и до которого часа.";
 
-async function placeCall() {
+async function placeCall(repeatCall?: boolean) {
   return startCall({
     phoneNumberId: "phone-outbound-1",
     publicNumber: "+74950000001",
@@ -167,7 +167,21 @@ async function placeCall() {
     target: "+74951234567",
     localCallId: "local-call-1",
     task,
+    repeatCall,
   });
+}
+
+function sentPrompt() {
+  return z
+    .object({
+      conversation_initiation_client_data: z.object({
+        conversation_config_override: z.object({
+          agent: z.object({ prompt: z.object({ prompt: z.string() }) }),
+        }),
+      }),
+    })
+    .parse(outboundBody).conversation_initiation_client_data
+    .conversation_config_override.agent.prompt.prompt;
 }
 
 describe("outbound Bro call initiation", () => {
@@ -215,5 +229,16 @@ describe("outbound Bro call initiation", () => {
     expect(prompt).not.toContain("сразу вызови end_call");
     expect(prompt).toContain("Уложись в 300 секунд");
     expect(prompt).toContain(JSON.stringify(task));
+  });
+
+  it("tells Bro not to introduce itself again to a familiar person only on a repeat call", async () => {
+    await placeCall(false);
+    expect(sentPrompt()).not.toContain("больше не представляйся");
+
+    await placeCall(true);
+    expect(sentPrompt()).toContain("больше не представляйся");
+    expect(sentPrompt()).toContain(
+      "Организациям и незнакомым людям представляйся"
+    );
   });
 });
