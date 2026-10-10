@@ -2482,6 +2482,38 @@ describe("routing the VM's browser through a Russian exit", () => {
     );
   });
 
+  it("offers the next rotations as spare exits, and keeps the one a sign-in window moved to", async () => {
+    const lifecycle = await loadLifecycle();
+    const { browserVmProxySession } =
+      await import("@agent/lib/browser-vm/proxy");
+    const vm = vmRow({ proxySession: browserVmProxySession(workspaceId, 2) });
+    rows.set(workspaceId, vm);
+
+    expect(lifecycle.browserVmSpareExits(vm).map((e) => e.rotation)).toEqual([
+      3, 4, 5,
+    ]);
+    expect(lifecycle.browserVmSpareExits(vm)[0]?.proxy.username).toMatch(
+      /r3$/u
+    );
+
+    await lifecycle.adoptBrowserVmExit(
+      vm,
+      { country: "RU", ip: "95.24.9.9", rotation: 4 },
+      now
+    );
+    expect(stored().proxySession).toMatch(/^bro[\da-f]{12}r4$/u);
+    expect(stored().proxyExit).toMatchObject({ ip: "95.24.9.9" });
+
+    // The exit it started on is already the workspace's: nothing to write.
+    const before = stored();
+    await lifecycle.adoptBrowserVmExit(
+      stored(),
+      { country: "RU", ip: "1.1.1.1", rotation: 4 },
+      now
+    );
+    expect(stored()).toEqual(before);
+  });
+
   it("moves a fresh Russian exit to the next rotation on a freshExit retry", async () => {
     const lifecycle = await loadLifecycle();
     const vm = vmRow();

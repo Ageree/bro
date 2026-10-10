@@ -15,6 +15,10 @@ const workerMessageSchema = z.discriminatedUnion("t", [
     t: z.literal("url"),
   }),
   z.object({ host: z.string(), t: z.literal("blocked") }),
+  z.object({
+    state: z.enum(["changing", "changed", "failed"]),
+    t: z.literal("exit"),
+  }),
   z.object({ t: z.literal("popup") }),
   z.object({ t: z.literal("popup-closed") }),
   z.object({ t: z.literal("done") }),

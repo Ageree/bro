@@ -456,5 +456,52 @@ class Handoff(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["state"], "cancelled")
 
 
+class Wall(unittest.IsolatedAsyncioTestCase):
+    """A site's "network blocked" wall moves the window to a spare exit; no Chrome needed."""
+
+    def guard(self, exits):
+        handoff = worker.Handoff("wall_handoff_1", "https://www.ozon.ru/", ["ozon.ru"], ORIGIN, 600, exits=exits)
+        guard = worker.HandoffGuard(handoff)
+        guard.sessions = {"s1": {"target": "t1", "frame": "f1", "main": True, "url": handoff.url}}
+        guard.link = mock.Mock()
+        guard.link.call = mock.AsyncMock()
+        return handoff, guard
+
+    def test_exits_are_validated(self):
+        body = {"id": "wall_handoff_1", "domains": ["ozon.ru"], "url": "https://www.ozon.ru/", "origin": ORIGIN}
+        spare = {"rotation": 1, "proxy": {"host": "p", "port": 1}}
+        self.assertIsNone(worker.handoff_body_error({**body, "exits": [spare]}))
+        self.assertIsNotNone(worker.handoff_body_error({**body, "exits": [spare] * 4}))
+        self.assertIsNotNone(worker.handoff_body_error({**body, "exits": [{"rotation": 1}]}))
+
+    async def test_a_wall_moves_to_the_first_spare_exit_that_is_russian(self):
+        spares = [{"rotation": n, "proxy": {"host": f"p{n}", "port": 1}} for n in (1, 2, 3)]
+        handoff, guard = self.guard(spares)
+        answers = iter([{"country": "DE", "ip": "1.1.1.1"}, {"country": "RU", "ip": "2.2.2.2", "city": "Kazan"}])
+        with mock.patch.object(worker, "check_exit", side_effect=lambda speed=True: next(answers)), \
+                mock.patch.object(worker, "worker", mock.Mock()) as bro:
+            self.assertTrue(await guard.change_exit())
+        self.assertEqual([call.args[0]["host"] for call in bro.forwarder.reroute.call_args_list], ["p1", "p2"])
+        self.assertEqual(handoff.exit["rotation"], 2)
+        self.assertEqual(handoff.summary()["exit"]["ip"], "2.2.2.2")
+        self.assertEqual(len(handoff.exits), 1)  # the third is kept for the next wall
+        guard.link.call.assert_awaited_with("Page.navigate", {"url": handoff.url}, "s1")
+
+    async def test_no_russian_spare_leaves_the_wall_and_the_exit_unrecorded(self):
+        handoff, guard = self.guard([{"rotation": 1, "proxy": {"host": "p1", "port": 1}}])
+        with mock.patch.object(worker, "check_exit", return_value={"error": "timeout"}), \
+                mock.patch.object(worker, "worker", mock.Mock()):
+            self.assertFalse(await guard.change_exit())
+        self.assertIsNone(handoff.exit)
+
+    async def test_the_forwarder_closes_tunnels_on_the_old_exit(self):
+        forwarder = worker.Forwarder()
+        tunnel = mock.Mock()
+        forwarder.open.add(tunnel)
+        forwarder.reroute({"host": "h", "port": 2, "username": "u", "password": "p"})
+        tunnel.close.assert_called_once()
+        self.assertEqual(forwarder.upstream[:2], ("h", 2))
+
+
 if __name__ == "__main__":
     unittest.main()

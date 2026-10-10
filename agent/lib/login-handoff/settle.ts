@@ -1,3 +1,4 @@
+import { adoptBrowserVmExit } from "@agent/lib/browser-vm/lifecycle";
 import { recordHandoffSignIn } from "@agent/lib/browser-use/sign-ins";
 import {
   cancelBrowserVmWorkerHandoff,
@@ -92,6 +93,17 @@ export async function settleLoginHandoff(row: Row, now = new Date()) {
     if (!overdue) return "skipped";
     await end(row, { kind: "failed" }, now);
     return "failed";
+  }
+  if (seen?.exit && vm !== undefined) {
+    // The window moved to another exit on a wall: it is the person's now.
+    try {
+      await adoptBrowserVmExit(vm, seen.exit, now);
+    } catch (error) {
+      console.warn("[login-handoff] the new exit could not be kept", {
+        cause: error,
+        workspaceId: row.workspaceId,
+      });
+    }
   }
   if (seen === undefined && row.workerOpenedAt === null) {
     // The link was opened but the worker never took the handoff in (a run held

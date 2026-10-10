@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handoffRow } from "@tests/helpers/login-handoff";
+import type { adoptBrowserVmExit } from "@agent/lib/browser-vm/lifecycle";
 import type { recordHandoffSignIn } from "@agent/lib/browser-use/sign-ins";
 import type {
   cancelBrowserVmWorkerHandoff,
@@ -18,6 +19,7 @@ import type {
 } from "@db/services/login-handoffs";
 
 const services = vi.hoisted(() => ({
+  adopt: vi.fn<typeof adoptBrowserVmExit>(),
   cancel: vi.fn<typeof cancelBrowserVmWorkerHandoff>(),
   clear: vi.fn<typeof clearBrowserVmStopNotBefore>(),
   end: vi.fn<typeof endLoginHandoff>(),
@@ -31,6 +33,9 @@ const services = vi.hoisted(() => ({
 
 vi.mock("@agent/lib/browser-use/sign-ins", () => ({
   recordHandoffSignIn: services.record,
+}));
+vi.mock("@agent/lib/browser-vm/lifecycle", () => ({
+  adoptBrowserVmExit: services.adopt,
 }));
 vi.mock("@agent/lib/browser-vm/worker", () => ({
   cancelBrowserVmWorkerHandoff: services.cancel,
@@ -98,6 +103,13 @@ beforeEach(() => {
 });
 
 describe("a handoff read off its worker", () => {
+  it("keeps the exit the window moved to, while the person is still signing in", async () => {
+    const exit = { country: "RU", ip: "198.51.100.7", rotation: 2 };
+    services.read.mockResolvedValue({ ...handed("viewing"), exit });
+    expect(await settleLoginHandoff(row(), now)).toBe("skipped");
+    expect(services.adopt).toHaveBeenCalledWith(vm, exit, now);
+  });
+
   it("ends done, records the sign-in and saves the profile when the page shows no form", async () => {
     services.read.mockResolvedValue(handed("done", { passwordField: false }));
     expect(await settleLoginHandoff(row(), now)).toBe("done");

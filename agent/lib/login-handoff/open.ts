@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import {
+  browserVmSpareExits,
   ensureBrowserVm,
   prepareBrowserVmSession,
 } from "@agent/lib/browser-vm/lifecycle";
@@ -126,6 +127,9 @@ export async function openLoginHandoff(
   try {
     await openBrowserVmWorkerHandoff(vm, {
       domains: row.allowedDomains,
+      // A site that walls the exit (Ozon: «Похоже, нет соединения») cannot
+      // be signed in to from it: the window moves to the next exit itself.
+      exits: browserVmSpareExits(vm),
       hosts: signInProviderHosts,
       id: row.workerId,
       origin: applicationOrigin(),
