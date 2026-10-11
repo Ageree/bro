@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
-import { goSession } from "./session";
+import { goApiPage, goSession } from "./session";
 
 const place = z.union([
   z.string().min(1).max(200),
@@ -48,7 +48,7 @@ export const goEstimateOperation = defineYandexOperation({
     to: place,
   }),
   id: "go.estimate",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: estimateResult,
   run: `async function (args) {
   ${goSession}

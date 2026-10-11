@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { type JsonValue, defineYandexOperation } from "../operations";
 import { runYandexOperation } from "../transport";
-import { goSession } from "./session";
+import { goApiPage, goSession } from "./session";
 
 const pointSchema = z.tuple([
   z.number().min(-180).max(180),
@@ -174,7 +174,7 @@ const prepareOperation = defineYandexOperation({
   access: "read",
   args: z.strictObject({ route: goPurchaseRouteSchema }),
   id: "go.purchase_prepare",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: prepareResultSchema,
   run: `async function (args) {${pageSource}
     try {
@@ -197,7 +197,7 @@ const draftOperation = defineYandexOperation({
   access: "purchase",
   args: z.strictObject({ amountMinor: minorSchema, snapshot: snapshotSchema }),
   id: "go.purchase_draft",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: draftResultSchema,
   run: `async function (args) {${pageSource}
     let sent = false;
@@ -234,7 +234,7 @@ const commitOperation = defineYandexOperation({
     snapshot: snapshotSchema,
   }),
   id: "go.purchase_commit",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: commitResultSchema,
   run: `async function (args) {${pageSource}
     try {

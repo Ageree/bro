@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 import { runYandexOperation } from "../transport";
-import { goSession } from "./session";
+import { goApiPage, goSession } from "./session";
 
 const ride = z.object({
   currency: z.string().nullable(),
@@ -26,7 +26,7 @@ export const goRidesOperation = defineYandexOperation({
     limit: z.number().int().min(1).max(10).default(10),
   }),
   id: "go.rides",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: z.union([
     z.object({ rides: z.array(ride).max(10) }),
     z.object({ error: z.string() }),
@@ -101,7 +101,7 @@ const purchaseStatusOperation = defineYandexOperation({
     providerUserId: z.string().regex(/^[a-f0-9]{32}$/u),
   }),
   id: "go.purchase_status",
-  origin: "https://taxi.yandex.ru/",
+  origin: goApiPage,
   result: purchaseStatusSchema,
   run: `async function (args) {${goSession}
     const data = { orderId: args.orderId, rideStatus: null, finalFareMinor: null, financialStatus: "unknown", cashLiabilityKnown: false };

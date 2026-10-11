@@ -160,6 +160,7 @@ beforeEach(() => {
       localStorage: {
         getItem: (key: string) => storage.get(key) ?? null,
         setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
       },
       setTimeout: (callback: () => void) => {
         queueMicrotask(callback);
@@ -196,6 +197,90 @@ afterEach(() => {
 });
 
 describe("Go fixed provider functions", () => {
+  it("refreshes a server-rejected CSRF token for a read without asking for login", async () => {
+    storage.set(
+      "csrf_token",
+      JSON.stringify({
+        token: "synthetic-stale",
+        validUntil: Date.now() + 60_000,
+      })
+    );
+    serve.mockImplementationOnce(() => ({
+      status: 401,
+      body: { code: "INVALID_CSRF_TOKEN" },
+    }));
+    await ready();
+    expect(requests.slice(0, 3).map((x) => x.path)).toEqual([
+      "/4.0/persuggest/v1/finalsuggest",
+      "/csrf_token",
+      "/4.0/persuggest/v1/finalsuggest",
+    ]);
+    expect(headers[0]?.get("x-csrf-token")).toBe("synthetic-stale");
+    expect(headers[2]?.get("x-csrf-token")).toBe("synthetic-csrf");
+    expect(
+      headers
+        .slice(2)
+        .every((header) => header.get("x-csrf-token") === "synthetic-csrf")
+    ).toBe(true);
+  });
+
+  it("stops after one CSRF refresh when the read is still rejected", async () => {
+    serve.mockImplementation((path): ReturnType<typeof serve> =>
+      path === "/csrf_token"
+        ? { body: { sk: "synthetic-refreshed" } }
+        : { status: 401, body: { code: "INVALID_CSRF_TOKEN" } }
+    );
+    expect(await prepareGoPurchase(workspaceId, { route })).toEqual({
+      kind: "blocked",
+      reason: "csrf_invalid",
+    });
+    expect(requests.map((x) => x.path)).toEqual([
+      "/csrf_token",
+      "/4.0/persuggest/v1/finalsuggest",
+      "/csrf_token",
+      "/4.0/persuggest/v1/finalsuggest",
+    ]);
+  });
+
+  it("does not replay a read under another account after a CSRF refresh", async () => {
+    serve.mockImplementationOnce(() => ({ body: { sk: "synthetic" } }));
+    serve.mockImplementationOnce(() => {
+      persistedUserId = "abcdef0123456789abcdef0123456789";
+      return { status: 401, body: { code: "INVALID_CSRF_TOKEN" } };
+    });
+    expect(await prepareGoPurchase(workspaceId, { route })).toEqual({
+      kind: "blocked",
+      reason: "account_changed",
+    });
+    expect(
+      requests.filter((x) => x.path === "/4.0/persuggest/v1/finalsuggest")
+    ).toHaveLength(1);
+  });
+
+  it.each([draftPath, commitPath])(
+    "never refreshes or repeats a financial request rejected for CSRF: %s",
+    async (path) => {
+      const prepared = await ready();
+      const original = serve.getMockImplementation();
+      if (!original) throw new Error("Missing synthetic response handler");
+      serve.mockImplementation((requested, body) =>
+        requested === path
+          ? { status: 401, body: { code: "INVALID_CSRF_TOKEN" } }
+          : original(requested, body)
+      );
+      const result =
+        path === draftPath
+          ? await draft(prepared)
+          : await commitGoPurchase(workspaceId, {
+              orderId: "synthetic-order",
+              snapshot: prepared.snapshot,
+            });
+      expect(result).toEqual({ kind: "unknown" });
+      expect(requests.filter((x) => x.path === path)).toHaveLength(1);
+      expect(requests.at(-1)?.path).toBe(path);
+    }
+  );
+
   it.each(["network", "503"])(
     "recovers one transient %s during a read, never sending a booking",
     async (failure) => {
