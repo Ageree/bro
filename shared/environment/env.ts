@@ -984,6 +984,10 @@ export const env = createEnv({
     // Unset, a first message that only announces work goes back to be
     // rewritten, as before.
     EARLY_REPLY_WORKSPACES: workspaceListSchema.optional(),
+    // Within that pilot, the heads-up goes in a step of its own, before the
+    // slow tool's step, instead of in the same step as the tool call. Same
+    // list format. Unset, the heads-up shares the step as before.
+    EARLY_REPLY_SPLIT_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of a quicker reply: workspace ids or owners' emails, or `*`
     // for every workspace, whose steps in a person's turn run without hidden
     // reasoning, every step of the turn in one mode so DeepInfra's prompt

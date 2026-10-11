@@ -43,11 +43,12 @@ import {
   turnDeclinedErrand,
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
-import { fastReplyPilot } from "@agent/lib/delivery/fast";
+import { earlyReplySplitPilot, fastReplyPilot } from "@agent/lib/delivery/fast";
 import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import {
   approvedResendOwed,
   earlyReplyNote,
+  earlyReplySplitNote,
   turnMustEnd,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
@@ -256,6 +257,7 @@ export default defineAgent({
           compacted,
           earlyReply,
           fastReply,
+          earlyReplySplit,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -286,6 +288,8 @@ export default defineAgent({
           kind === "person" ? earlyReplyPilot(scope, step) : false,
           // Every step of the turn runs without hidden reasoning.
           kind === "person" ? fastReplyPilot(scope, step) : false,
+          // The heads-up of the early-reply pilot in a step of its own.
+          kind === "person" ? earlyReplySplitPilot(scope, step) : false,
         ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
@@ -306,7 +310,9 @@ export default defineAgent({
           // every step until the answer is out; the heads-up itself is no
           // delivery (`turnSends`). A turn that must end writes nothing.
           earlyReply && sends.delivered.length === 0 && !pastAnswer
-            ? earlyReplyNote
+            ? earlyReplySplit
+              ? earlyReplySplitNote
+              : earlyReplyNote
             : undefined,
           staleReport ? staleReportNote : undefined,
           cardsHeld && !silent

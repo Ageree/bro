@@ -23,6 +23,7 @@ const services = vi.hoisted(() => ({
   directModelActive: vi.fn<() => boolean>(),
   earlyReplyPilot: vi.fn<() => Promise<boolean>>(),
   fastReplyPilot: vi.fn<() => Promise<boolean>>(),
+  earlyReplySplitPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
 }));
@@ -59,6 +60,7 @@ vi.mock("@agent/lib/delivery/pilot", () => ({
   earlyReplyPilot: services.earlyReplyPilot,
 }));
 vi.mock("@agent/lib/delivery/fast", () => ({
+  earlyReplySplitPilot: services.earlyReplySplitPilot,
   fastReplyPilot: services.fastReplyPilot,
 }));
 vi.mock("@agent/lib/compaction/call", () => ({
@@ -91,6 +93,7 @@ import { declinedErrandNote } from "@agent/lib/delivery/declined-cards";
 import { replyDirective } from "@agent/lib/delivery/language";
 import {
   earlyReplyNote,
+  earlyReplySplitNote,
   headsUpDeliveredNotice,
   rewriteSendNotice,
   skippedSendNotice,
@@ -114,6 +117,7 @@ beforeEach(() => {
   services.compactionHeld.mockReturnValue(false);
   services.earlyReplyPilot.mockResolvedValue(false);
   services.fastReplyPilot.mockResolvedValue(false);
+  services.earlyReplySplitPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
 });
 
@@ -1240,6 +1244,21 @@ describe("the early-reply pilot", () => {
         withheldTools: ["task"],
       }
     );
+  });
+
+  it("asks for the heads-up in a step of its own in the split pilot, at every step", async () => {
+    services.earlyReplyPilot.mockResolvedValue(true);
+    services.earlyReplySplitPilot.mockResolvedValue(true);
+
+    // The same text before and after the heads-up: DeepSeek's template puts
+    // system notes ahead of the history, so a changed note breaks the cache.
+    await agent.model.events["step.started"]?.({}, interactiveContext(request));
+    expect(lastReplyNote()).toBe(`${note("ru")}\n\n${earlyReplySplitNote}`);
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(announced)
+    );
+    expect(lastReplyNote()).toBe(`${note("ru")}\n\n${earlyReplySplitNote}`);
   });
 
   it("keeps the step forced after the heads-up, with the same notes", async () => {
