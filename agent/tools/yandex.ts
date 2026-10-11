@@ -8,7 +8,7 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import { operationArguments } from "@agent/lib/yandex/operations";
-import { yandexPilot } from "@agent/lib/yandex/pilot";
+import { yandexPilot, yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 import {
   findYandexOperation,
   yandexOperations,
@@ -69,7 +69,7 @@ async function callYandex(
     return { ok: false as const, reply: notThePerson };
   }
   const operation = findYandexOperation(z.string().parse(input.operation));
-  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  const caller = context.session.auth.current;
   if (operation === undefined || caller?.principalType !== "user") {
     return { ok: false as const, reply: refusals.failed };
   }
@@ -104,7 +104,9 @@ export default defineDynamic({
         return null;
       }
       if (auth?.principalType !== "user") return null;
-      if (!yandexPilot(scopeFromPrincipal(auth))) return null;
+      const scope = scopeFromPrincipal(auth);
+      const rootSessionId = context.session.id;
+      if (!yandexPilot(scope)) return null;
       const turn = personWordsThisTurn(
         context.messages,
         stepIdentity(
@@ -115,9 +117,27 @@ export default defineDynamic({
       const words: TurnWords = { personsTurn: turn.said !== null };
       return {
         yandex: defineTool({
-          description,
+          availableInSubagents: false,
+          description: yandexPurchasePilot(scope)
+            ? `${description}\nFor Lavka and Go order submission, use yandex_purchase instead of browser checkout. For the current Lavka cart, prepare one final quote and deliver its exact confirmationQuestion once; confirm only after the person's own yes. For a direct taxi-booking request with an unambiguous known or resolved route, use Go book without an additional confirmation, keeping the currently selected supported payment method. A price-only inquiry is not a booking request. The browser checkout fallback above does not apply to these supported services. Yandex Eda checkout is not supported by yandex_purchase yet. Never use browser_task to repeat an unknown/submitting purchase or replace an active ride.`
+            : description,
           inputSchema,
           async execute(input, toolContext) {
+            const current = toolContext.session.auth.current;
+            if (
+              current?.principalType !== "user" ||
+              toolContext.session.id !== rootSessionId ||
+              toolContext.session.parent != null
+            ) {
+              return { ok: false as const, reply: notThePerson };
+            }
+            const currentScope = scopeFromPrincipal(current);
+            if (
+              currentScope.userId !== scope.userId ||
+              currentScope.workspaceId !== scope.workspaceId
+            ) {
+              return { ok: false as const, reply: notThePerson };
+            }
             return callYandex(input, toolContext, words);
           },
         }),

@@ -81,6 +81,23 @@ describe("a Yandex call", () => {
     expect(services.stop).toHaveBeenCalledWith("tab-1");
   });
 
+  it("uses distinct browser profiles for distinct workspaces", async () => {
+    services.call.mockResolvedValue(
+      loaded("https://id.yandex.ru/", {
+        data: { requestWorks: true, signedIn: true },
+        status: "ok",
+      })
+    );
+    await runYandexOperation("workspace:alice", statusOperation, {});
+    await runYandexOperation("workspace:bob", statusOperation, {});
+    expect(services.create).toHaveBeenCalledTimes(2);
+    const alice = services.create.mock.calls[0]?.[0].profileId;
+    const bob = services.create.mock.calls[1]?.[0].profileId;
+    expect(alice).toBeTruthy();
+    expect(bob).toBeTruthy();
+    expect(alice).not.toBe(bob);
+  });
+
   it("reports the sign-in, a captcha and a stray redirect without running in them", async () => {
     services.call.mockResolvedValue({
       ran: false,
@@ -131,6 +148,56 @@ describe("a Yandex call", () => {
     expect(page?.runOn("https://market.yandex.ru/cart")).toBe(false);
     expect(page?.runOn("https://lavka.yandex.ru:444/cart")).toBe(false);
     expect(page?.runOn("https://lavka.yandex.ru/showcaptcha")).toBe(false);
+  });
+
+  it("never changes a cart on a different Yandex service origin", async () => {
+    const operation = defineYandexOperation({
+      about: "Test cart change",
+      access: "cart",
+      args: z.object({}),
+      id: "test.cart",
+      origin: "https://lavka.yandex.ru/",
+      result: z.object({}),
+      run: "async function () { return { status: 'ok', data: {} }; }",
+      service: "yandex-lavka",
+    });
+    services.call.mockResolvedValue({
+      ran: false,
+      url: "https://market.yandex.ru/",
+    });
+    await runYandexOperation(workspaceId, operation, {});
+    const page = services.call.mock.calls[0]?.[1];
+    expect(page?.runOn("https://lavka.yandex.ru/cart")).toBe(true);
+    expect(page?.runOn("https://market.yandex.ru/cart")).toBe(false);
+    expect(page?.runOn("https://lavka.yandex.ru:444/cart")).toBe(false);
+  });
+
+  it("does not log private browser details when opening or closing fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      services.create.mockRejectedValueOnce(
+        new Error("private-opening-detail")
+      );
+      await runYandexOperation(workspaceId, statusOperation, {});
+      expect(warn).toHaveBeenLastCalledWith(
+        "[yandex] the tab could not be opened",
+        { name: "Error", operation: "status" }
+      );
+      services.call.mockResolvedValue(
+        loaded("https://id.yandex.ru/", {
+          data: { requestWorks: true, signedIn: true },
+          status: "ok",
+        })
+      );
+      services.stop.mockRejectedValueOnce(new Error("private-closing-detail"));
+      await runYandexOperation(workspaceId, statusOperation, {});
+      expect(warn).toHaveBeenLastCalledWith(
+        "[yandex] the tab could not be closed",
+        { name: "Error", operation: "status" }
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("takes the walls a function reports, and an answer that does not fit as a failure", async () => {

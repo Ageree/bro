@@ -33,6 +33,7 @@ const goSession = async () => {
   };
   const csrf = await fetch(origin + "/csrf_token", {
     method: "POST",
+    redirect: "error",
     headers: base,
     credentials: "include",
     body: "{}",
@@ -43,6 +44,7 @@ const goSession = async () => {
   const post = async (path, body) => {
     const r = await fetch(origin + path, {
       method: "POST",
+      redirect: "error",
       headers,
       credentials: "include",
       body: JSON.stringify(body),

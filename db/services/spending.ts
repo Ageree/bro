@@ -85,7 +85,7 @@ async function refuseUnresolvedPurchase(tx: Database, scope: AccessScope) {
     .where(
       and(
         eq(yandexPurchases.workspaceId, scope.workspaceId),
-        inArray(yandexPurchases.state, ["submitting", "unknown"])
+        inArray(yandexPurchases.state, ["submitting", "unknown", "active"])
       )
     )
     .limit(1);

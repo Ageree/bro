@@ -1,0 +1,21 @@
+{
+  "is_fixed_price": true,
+  "offer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "currency_rules": { "code": "RUB" },
+  "service_levels": [
+    {
+      "class": "econom",
+      "name": "Эконом",
+      "offer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "is_fixed_price": true,
+      "is_hidden": false,
+      "price": "1350 $SIGN$$CURRENCY$",
+      "max_price_as_decimal": "1359.00",
+      "prices": {
+        "args": { "final_price": "1359" },
+        "raw": { "final_price": "1359" }
+      },
+      "tariff_requirements": {}
+    }
+  ]
+}
