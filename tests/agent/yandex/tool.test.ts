@@ -9,7 +9,10 @@ const services = vi.hoisted(() => ({
   run: vi.fn<typeof runYandexOperation>(),
 }));
 
-vi.mock("@agent/lib/yandex/pilot", () => ({ yandexPilot: services.pilot }));
+vi.mock("@agent/lib/yandex/pilot", () => ({
+  yandexPilot: services.pilot,
+  yandexPurchasePilot: services.pilot,
+}));
 vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
 }));
@@ -120,6 +123,46 @@ describe("the Yandex tool", () => {
     expect(services.run.mock.calls[0]?.[1].id).toBe("status");
     expect(services.run.mock.calls[0]?.[2]).toEqual({});
   });
+
+  it.each(["user", "workspace", "session", "missing-current"])(
+    "refuses a previously resolved tool after the %s boundary changes",
+    async (boundary) => {
+      const found = await tool(asked);
+      if (!found) throw new Error("Expected yandex.");
+      const context = callContext();
+      const current = caller("authjs");
+      const result = await found.execute(
+        { operation: "status" },
+        {
+          ...context,
+          session: {
+            ...context.session,
+            id: boundary === "session" ? "another-session" : context.session.id,
+            auth: {
+              initiator: current,
+              current:
+                boundary === "missing-current"
+                  ? null
+                  : {
+                      ...current,
+                      principalId:
+                        boundary === "user" ? "bob" : current.principalId,
+                      attributes: {
+                        ...current.attributes,
+                        workspaceId:
+                          boundary === "workspace"
+                            ? "workspace:bob"
+                            : workspaceId,
+                      },
+                    },
+            },
+          },
+        }
+      );
+      expect(result).toMatchObject({ ok: false });
+      expect(services.run).not.toHaveBeenCalled();
+    }
+  );
 
   it("refuses in a turn a report opened, whatever the person said before", async () => {
     const report: ModelMessage[] = [

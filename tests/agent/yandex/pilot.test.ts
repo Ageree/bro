@@ -31,4 +31,9 @@ describe("the separate Yandex purchase pilot", () => {
     expect(await enabled("workspace:alice", "*")).toBe(true);
     expect(await enabled("*", "workspace:alice", "workspace:bob")).toBe(false);
   });
+
+  it("includes newly created workspaces without copying another user's allowlist", async () => {
+    expect(await enabled("*", "*", "workspace:new-person")).toBe(true);
+    expect(await enabled("*", "", "workspace:new-person")).toBe(false);
+  });
 });

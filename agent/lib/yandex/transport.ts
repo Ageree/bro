@@ -77,7 +77,7 @@ export async function runYandexOperation(
     opened = await within(opening, openBudgetMs);
   } catch (error) {
     console.warn("[yandex] the tab could not be opened", {
-      cause: error,
+      name: error instanceof Error ? error.name : "unknown",
       operation: operation.id,
     });
     return { kind: "unavailable" };
@@ -99,7 +99,7 @@ export async function runYandexOperation(
         loaded: operation.loaded,
         runOn: (url) =>
           landing(url) === "run" &&
-          (operation.access !== "purchase" ||
+          (operation.access === "read" ||
             URL.parse(url)?.origin === new URL(operation.origin).origin),
         url: operation.origin,
       }),
@@ -138,7 +138,10 @@ export async function runYandexOperation(
     try {
       await stopBrowserVmBrowser(tab.id);
     } catch (error) {
-      console.warn("[yandex] the tab could not be closed", { cause: error });
+      console.warn("[yandex] the tab could not be closed", {
+        name: error instanceof Error ? error.name : "unknown",
+        operation: operation.id,
+      });
     }
   }
 }
