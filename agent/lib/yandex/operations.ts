@@ -52,7 +52,7 @@ export function defineYandexOperation<
   Result extends z.ZodType<JsonValue>,
 >(spec: {
   readonly about: string;
-  readonly access: "cart" | "read";
+  readonly access: "cart" | "purchase" | "read";
   readonly args: Arguments;
   readonly id: Id;
   readonly loaded?: "complete" | "interactive";

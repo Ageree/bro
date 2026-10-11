@@ -4,6 +4,11 @@ import { browserVmWorkspace, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import {
+  moveSpendReservation,
+  readBrowserPaymentDispatch,
+} from "@db/services/spending";
 import {
   closeQueuedBrowserRun,
   countQueuedBrowserRuns,
@@ -323,17 +328,24 @@ async function abandonStartedRun(runId: string) {
  * that session is gone or busy, it opens a fresh browser on the same profile
  * instead, where the sign-ins live.
  */
-async function createRunInSession(input: BrowserUseCreateRunInput) {
+async function createRunInSession(
+  input: BrowserUseCreateRunInput,
+  stickyPayment = false,
+  beforeCreate?: () => void
+) {
   try {
+    beforeCreate?.();
     return await createBrowserUseRun(input);
   } catch (error) {
     if (
+      stickyPayment ||
       input.sessionId === undefined ||
       !(error instanceof BrowserUseError) ||
       ![400, 404, 409].includes(error.status)
     ) {
       throw error;
     }
+    beforeCreate?.();
     return createBrowserUseRun({ ...input, sessionId: undefined });
   }
 }
@@ -359,7 +371,12 @@ async function giveUpQueuedErrand(row: BrowserRunRow, outcome: string) {
  * only searches, and runs in flash mode, is decided again from the row: a
  * queued follow-up never does.
  */
-async function createQueuedRun(row: BrowserRunRow, reference: string) {
+async function createQueuedRun(
+  row: BrowserRunRow,
+  reference: string,
+  stickyPayment = false,
+  beforeCreate?: () => void
+) {
   const task = row.pendingTask ?? row.task;
   const secrets = await resolveBrowserSecretBindings(
     { userId: row.createdByUserId, workspaceId: row.workspaceId },
@@ -370,17 +387,21 @@ async function createQueuedRun(row: BrowserRunRow, reference: string) {
       site: row.site ?? undefined,
     }
   );
-  return createRunInSession({
-    customProxy: customProxy(),
-    maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-    model: env.BROWSER_USE_MODEL,
-    profileId: row.profileId ?? undefined,
-    proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-    search: await storedErrandSearches(row, task, secrets.bindings),
-    secretBindings: secrets.bindings,
-    sessionId: row.sessionId ?? undefined,
-    task: `${task}\n\n${reference}`,
-  });
+  return createRunInSession(
+    {
+      customProxy: customProxy(),
+      maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+      model: env.BROWSER_USE_MODEL,
+      profileId: row.profileId ?? undefined,
+      proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+      search: await storedErrandSearches(row, task, secrets.bindings),
+      secretBindings: secrets.bindings,
+      sessionId: row.sessionId ?? undefined,
+      task: `${task}\n\n${reference}`,
+    },
+    stickyPayment,
+    beforeCreate
+  );
 }
 
 /**
@@ -413,11 +434,40 @@ export async function startQueuedBrowserRun(
   if (current?.status !== "queued" || current.retriedAsRunId) {
     return { status: "stopped" };
   }
+  const scope = {
+    userId: current.createdByUserId,
+    workspaceId: current.workspaceId,
+  };
+  const ownedDispatch = current.paymentAllowed
+    ? await readBrowserPaymentDispatch(scope, {
+        kind: "queue",
+        runId: current.id,
+      })
+    : undefined;
+  const stickyPayment =
+    ownedDispatch?.entry.browserRunId.startsWith("pending:dispatch:") ===
+      true || yandexPurchasePilot(scope);
+  let dispatchId = ownedDispatch?.entry.browserRunId;
+  if (
+    ownedDispatch &&
+    stickyPayment &&
+    !dispatchId?.startsWith("pending:dispatch:")
+  ) {
+    const upgraded = `pending:dispatch:queue:${encodeURIComponent(current.id)}:${String(ownedDispatch.sequence)}`;
+    await moveSpendReservation(ownedDispatch.entry.browserRunId, upgraded, {
+      scope,
+      amountRub: 0,
+    });
+    dispatchId = upgraded;
+  }
+  let claimedHere = false;
+  const dispatch = { sent: false };
   // A deployment may run its errands on VMs alone: one queued for Browser
   // Use before its key was taken away has no browser to start in, nor a run
   // there to adopt. It is closed before anything asks Browser Use, rather
   // than failing every minute ahead of the errands that can start.
   if (!onOwnBrowser(current.profileId) && !browserUseCloudConfigured()) {
+    if (dispatchId && stickyPayment) return { status: "waiting" };
     const outcome =
       "The errand never started: the cloud browser service is not available right now. Nothing was done on the site. Tell the user so plainly and offer what you can do without a browser, or to try again later.";
     return {
@@ -427,14 +477,15 @@ export async function startQueuedBrowserRun(
     };
   }
   const expired = now.getTime() - current.createdAt.getTime() > queueWindowMs;
-  const reference = queueReference(current);
+  const revision = ownedDispatch?.sequence ?? current.queueRevision;
+  const reference = queueReference({ id: current.id, queueRevision: revision });
   const waitedFor = current.waitsForAccount ?? undefined;
   let run: { readonly id: string; readonly sessionId: string } | undefined;
   try {
     // An errand marked as waiting was not started since the mark was set:
     // it is cleared before a start, so there is no run of it to adopt.
     run =
-      waitedFor === undefined
+      waitedFor === undefined || dispatchId !== undefined
         ? await findRecentBrowserUseRunByTaskLine(
             reference,
             undefined,
@@ -442,6 +493,10 @@ export async function startQueuedBrowserRun(
             current.profileId ?? undefined
           )
         : undefined;
+    if (!run && dispatchId && stickyPayment) {
+      await parkQueuedBrowserRun(current.id, queueRetryAt(now));
+      return { status: "waiting" };
+    }
     if (!run && !expired) {
       // A new errand waits while another errand of its workspace holds a
       // browser on the same account; a queued follow-up carries its errand's
@@ -466,6 +521,20 @@ export async function startQueuedBrowserRun(
           { waitsForAccount: null }
         );
       }
+      if (current.paymentAllowed) {
+        const nextDispatch = `${stickyPayment ? "pending:dispatch" : "pending"}:queue:${encodeURIComponent(current.id)}:${String(revision)}`;
+        const held = await moveSpendReservation(
+          dispatchId ?? current.id,
+          nextDispatch,
+          {
+            scope,
+            amountRub: current.submission?.paymentCapRub ?? 0,
+            requireReservation: stickyPayment,
+          }
+        );
+        dispatchId = held ? nextDispatch : undefined;
+        claimedHere = held;
+      }
       // Who asked for the errand decides how long its VM stays up after
       // it, written before the start wakes or touches the VM.
       if (onOwnBrowser(current.profileId)) {
@@ -474,9 +543,34 @@ export async function startQueuedBrowserRun(
           current.startedByPerson !== false
         );
       }
-      run = await createQueuedRun(current, reference);
+      run = await createQueuedRun(
+        current,
+        reference,
+        current.paymentAllowed && stickyPayment,
+        () => {
+          dispatch.sent = true;
+        }
+      );
     }
   } catch (error) {
+    if (
+      dispatchId &&
+      claimedHere &&
+      (!dispatch.sent ||
+        browserUseBusy(error) ||
+        browserUseOutOfCredits(error) ||
+        !stickyPayment)
+    ) {
+      await moveSpendReservation(dispatchId, current.id);
+      dispatchId = undefined;
+    }
+    if (
+      (dispatchId && stickyPayment) ||
+      (current.paymentAllowed && !dispatch.sent)
+    ) {
+      await parkQueuedBrowserRun(current.id, queueRetryAt(now));
+      return { status: "waiting" };
+    }
     if (browserUseBusy(error)) {
       const ownBrowser = onOwnBrowser(current.profileId);
       // The workspace's own browser asked for its wait when it answered,
@@ -544,13 +638,30 @@ export async function startQueuedBrowserRun(
         submission: current.submission,
         task: current.task,
       },
-      { queueRevision: current.queueRevision }
+      {
+        queueRevision: revision,
+        spendDispatchId: dispatchId,
+      }
     );
   } catch (error) {
+    const latest = await readBrowserRun(current.id).catch(() => null);
+    if (latest === null) return { status: "waiting" };
+    if (latest?.retriedAsRunId === run.id) return { status: "started" };
+    if (dispatchId && stickyPayment) {
+      await parkQueuedBrowserRun(current.id, queueRetryAt(now));
+      return { status: "waiting" };
+    }
     await abandonStartedRun(run.id);
     throw error;
   }
   if (!handedOff) {
+    const latest = await readBrowserRun(current.id).catch(() => null);
+    if (latest === null) return { status: "waiting" };
+    if (latest?.retriedAsRunId === run.id) return { status: "started" };
+    if (dispatchId && stickyPayment) {
+      await parkQueuedBrowserRun(current.id, queueRetryAt(now));
+      return { status: "waiting" };
+    }
     await abandonStartedRun(run.id);
     // Still queued means the person changed it while the run was starting:
     // it is due again at once, and starts with the change.

@@ -1,0 +1,35 @@
+{
+  "methods": [
+    {
+      "type": "card",
+      "name": "Synthetic card",
+      "id": "synthetic-card",
+      "currency": "RUB",
+      "system": "VISA",
+      "availability": {
+        "available": true,
+        "availableForDebt": true,
+        "availableForTips": true
+      },
+      "verifyStrategy": "card_antifraud",
+      "source": "diehard",
+      "isYandexCard": false
+    }
+  ],
+  "defaultMethod": {
+    "type": "card",
+    "name": "Synthetic card",
+    "id": "synthetic-card",
+    "currency": "RUB",
+    "system": "VISA",
+    "availability": {
+      "available": true,
+      "availableForDebt": true,
+      "availableForTips": true
+    },
+    "verifyStrategy": "card_antifraud",
+    "source": "diehard",
+    "isYandexCard": false
+  },
+  "flow": "default"
+}
