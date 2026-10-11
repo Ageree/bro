@@ -1,3 +1,5 @@
+export const goApiPage = "https://taxi.yandex.ru/robots.txt";
+
 /**
  * The page's own session for Yandex Go's API, as JavaScript source for the
  * operations' `run` functions: the user id the page keeps in IndexedDB, and
@@ -6,7 +8,7 @@
  * named in words, never the page's text).
  */
 export const goSession = `
-const goSession = async () => {
+const goSession = async (forceRefresh = false) => {
   const db = await new Promise((res, rej) => {
     const q = indexedDB.open("turboapp-taxi");
     q.onsuccess = () => res(q.result);
@@ -53,8 +55,9 @@ const goSession = async () => {
   };
   let token;
   try {
+    if (forceRefresh) localStorage.removeItem("csrf_token");
     const cached = JSON.parse(localStorage.getItem("csrf_token") || "null");
-    if (typeof cached?.token === "string" && cached.token &&
+    if (!forceRefresh && typeof cached?.token === "string" && cached.token &&
         Number.isFinite(cached.validUntil) && cached.validUntil > Date.now()) token = cached.token;
   } catch {}
   if (!token) {
@@ -80,7 +83,9 @@ const goSession = async () => {
     }
   }
   const headers = { ...base, "x-csrf-token": token };
-  const post = async (path, body) => {
+  let renewedPost;
+  const post = async (path, body, canRefresh = true) => {
+    if (renewedPost) return renewedPost(path, body, canRefresh);
     const r = await request(path, {
       method: "POST",
       redirect: "error",
@@ -88,8 +93,20 @@ const goSession = async () => {
       credentials: "include",
       body: JSON.stringify(body),
     }, reads.has(path));
-    if (r.status === 401) return { wall: "signed_out" };
-    if (r.status !== 200) return { error: "http_" + r.status };
+    if (r.status !== 200) {
+      const error = await r.json().catch(() => null);
+      if ([400, 401, 403].includes(r.status) &&
+          (error?.code === "INVALID_CSRF_TOKEN" || error?.error === "INVALID_CSRF_TOKEN")) {
+        if (!canRefresh || !reads.has(path) || r.headers?.get("x-yataxi-retry-action")?.toLowerCase() === "stop" ||
+            r.headers?.has("retry-after") || r.headers?.has("x-yataxi-retry-interval-ms")) return { error: "csrf_invalid" };
+        const refreshed = await goSession(true);
+        if (refreshed.wall || refreshed.error) return refreshed;
+        if (refreshed.userId !== userId) return { error: "account_changed" };
+        renewedPost = refreshed.post;
+        return renewedPost(path, body, false);
+      }
+      return r.status === 401 ? { wall: "signed_out" } : { error: "http_" + r.status };
+    }
     return r.json();
   };
   return { post, userId };
