@@ -5,6 +5,12 @@ import {
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
 
+interface Scope {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}
+type Turn = Parameters<typeof pilotVerdictOfTurn>[1];
+
 /**
  * Whether the steps of a workspace's turns run without hidden reasoning.
  * FAST_REPLY_WORKSPACES names the pilot by workspace id or owner's email, as
@@ -18,22 +24,39 @@ import { directModelActive } from "@shared/model/provider";
  * the pilot. A failed lookup of the email keeps the workspace out for that
  * call. Asked with the step's `turn`, the verdict holds for the whole turn.
  */
-export async function fastReplyPilot(
-  scope: {
-    readonly userId?: string;
-    readonly workspaceId: string;
-  },
-  turn?: Parameters<typeof pilotVerdictOfTurn>[1]
+async function listed(
+  pilot: string,
+  list: readonly string[] | undefined,
+  scope: Scope,
+  turn: Turn
 ) {
-  const list = env.FAST_REPLY_WORKSPACES ?? [];
-  if (!directModelActive() || list.length === 0) return false;
+  if (!directModelActive() || list === undefined || list.length === 0) {
+    return false;
+  }
   if (list.includes("*")) return true;
-  return pilotVerdictOfTurn("fast-reply", turn, async () => {
+  return pilotVerdictOfTurn(pilot, turn, async () => {
     try {
       return await listsWorkspaceRemembered(list, scope);
     } catch (error) {
-      console.warn("[fast-reply] pilot lookup failed", { cause: error });
+      console.warn(`[${pilot}] pilot lookup failed`, { cause: error });
       return undefined;
     }
   });
+}
+
+export function fastReplyPilot(scope: Scope, turn?: Turn) {
+  return listed("fast-reply", env.FAST_REPLY_WORKSPACES, scope, turn);
+}
+
+/**
+ * Whether the early-reply pilot's heads-up goes in a step of its own
+ * (EARLY_REPLY_SPLIT_WORKSPACES, same format).
+ */
+export function earlyReplySplitPilot(scope: Scope, turn?: Turn) {
+  return listed(
+    "early-reply-split",
+    env.EARLY_REPLY_SPLIT_WORKSPACES,
+    scope,
+    turn
+  );
 }

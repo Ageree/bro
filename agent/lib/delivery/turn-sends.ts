@@ -239,6 +239,15 @@ export function headsUpDelivered(output: ToolResultPart["output"]) {
  */
 export const earlyReplyNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, send one short heads-up as the first call of the step that calls that tool: send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, смотрю на сайте»), then the tool call in the same step. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
 
+/**
+ * The heads-up in a step of its own (EARLY_REPLY_SPLIT_WORKSPACES). RouterAI's
+ * answer is read whole before eve gets it (`routerai/fetch.ts`), and eve runs
+ * a step's tools only once the step is written: a heads-up sent with a long
+ * `browser_task` call reached the person 13.9 s in, after the whole task text
+ * had been generated. Alone, it is a few tokens.
+ */
+export const earlyReplySplitNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, first send one short heads-up: a step whose only call is send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, смотрю на сайте»). Call no other tool in that step; the slow tool comes in the next step, once the heads-up is out. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
+
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
   if (message.kind === "link") {
@@ -483,6 +492,19 @@ export function sendRefusal(
     !asksOrShowsNew(message, delivered)
   ) {
     return { skipped: "reported" };
+  }
+  // The pilot's heads-up and the errand's message already say it is under
+  // way: a third line that only announces work again is the same status,
+  // whatever small fact (a weekday, a date) it adds (prod, 11.10).
+  if (
+    turn.headsUps.length > 0 &&
+    turn.errandTold &&
+    message.attachments.length === 0 &&
+    message.questions.length === 0 &&
+    message.requests.length === 0 &&
+    announcesWork(message)
+  ) {
+    return { skipped: "started" };
   }
   const yields =
     turn.rewrites >= rewritesBeforeYield || outgoing.kind !== "message";
