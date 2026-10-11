@@ -107,6 +107,32 @@ describe("a Yandex call", () => {
     expect(services.stop).toHaveBeenCalledTimes(3);
   });
 
+  it("never submits a purchase on a different Yandex service origin", async () => {
+    const operation = defineYandexOperation({
+      about: "Test purchase",
+      access: "purchase",
+      args: z.object({}),
+      id: "test.purchase",
+      origin: "https://lavka.yandex.ru/",
+      result: z.object({}),
+      run: "async function () { return { status: 'ok', data: {} }; }",
+      service: "yandex-lavka",
+    });
+    services.call.mockResolvedValue({
+      ran: false,
+      url: "https://market.yandex.ru/",
+    });
+    expect(await runYandexOperation(workspaceId, operation, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    const page = services.call.mock.calls[0]?.[1];
+    expect(page?.runOn("https://lavka.yandex.ru/cart")).toBe(true);
+    expect(page?.runOn("https://market.yandex.ru/cart")).toBe(false);
+    expect(page?.runOn("https://lavka.yandex.ru:444/cart")).toBe(false);
+    expect(page?.runOn("https://lavka.yandex.ru/showcaptcha")).toBe(false);
+  });
+
   it("takes the walls a function reports, and an answer that does not fit as a failure", async () => {
     services.call.mockResolvedValue(
       loaded("https://id.yandex.ru/", { status: "signed_out" })

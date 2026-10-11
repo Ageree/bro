@@ -135,6 +135,13 @@ export const sendRefusalSchema = z.union([
   z.object({ rewrite: z.enum(rewriteReasons) }),
 ]);
 
+const failedSendSchema = z.union([
+  sendRefusalSchema,
+  z.object({ status: z.enum(["failed", "error"]) }),
+  z.object({ delivered: z.literal(false) }),
+  z.object({ ok: z.literal(false) }),
+]);
+
 const skippedPrefix = "Not delivered:";
 const rewritePrefix = "Not delivered, rewrite it:";
 
@@ -592,6 +599,12 @@ export function approvedResendOwed(messages: readonly ModelMessage[]) {
  */
 export function sendReachedPerson(output: ToolResultPart["output"]) {
   if (output.type.startsWith("error") || output.type === "execution-denied") {
+    return false;
+  }
+  if (
+    output.type === "json" &&
+    failedSendSchema.safeParse(output.value).success
+  ) {
     return false;
   }
   return refusalOf(output) === undefined;

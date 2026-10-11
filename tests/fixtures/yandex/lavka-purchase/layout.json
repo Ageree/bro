@@ -1,0 +1,12 @@
+{
+  "checkoutLayout": {
+    "layoutItems": [
+      { "name": "flat", "isRequired": false, "isDisabled": false },
+      { "name": "doorcode", "isRequired": false, "isDisabled": false },
+      { "name": "entrance", "isRequired": false, "isDisabled": false },
+      { "name": "floor", "isRequired": false, "isDisabled": false },
+      { "name": "comment", "isRequired": false, "isDisabled": false },
+      { "name": "left_at_door", "isRequired": false, "isDisabled": false }
+    ]
+  }
+}

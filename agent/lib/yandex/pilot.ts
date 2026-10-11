@@ -9,3 +9,11 @@ export function yandexPilot(scope: { readonly workspaceId: string }) {
   const list = env.YANDEX_API_WORKSPACES ?? [];
   return list.includes("*") || list.includes(scope.workspaceId);
 }
+
+export function yandexPurchasePilot(scope: { readonly workspaceId: string }) {
+  const list = env.YANDEX_PURCHASE_WORKSPACES ?? [];
+  return (
+    yandexPilot(scope) &&
+    (list.includes("*") || list.includes(scope.workspaceId))
+  );
+}

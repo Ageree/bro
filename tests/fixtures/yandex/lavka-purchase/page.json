@@ -1,0 +1,42 @@
+{
+  "__PAGE_PROPS__": {
+    "csrfToken": "synthetic-page-token",
+    "pageEnv": { "cityId": 1 }
+  },
+  "__REACT_QUERY_STATE__": {
+    "queries": [
+      {
+        "queryKey": ["CommonStartup", 37.6208, 55.7539],
+        "state": { "data": { "currency": "RUB", "countryIso3": "RUS" } }
+      },
+      {
+        "queryKey": ["FavoriteAddresses"],
+        "state": {
+          "data": [
+            {
+              "addressId": "synthetic-address",
+              "addressVersion": 1,
+              "address": {
+                "location": [37.6208, 55.7539],
+                "placeId": "synthetic-place",
+                "country": "Россия",
+                "city": "Москва",
+                "street": "Тестовая улица",
+                "house": "1",
+                "shortAddress": "Тестовая улица, 1",
+                "floor": "1",
+                "flat": "1",
+                "entrance": "1",
+                "doorcode": "",
+                "comment": "",
+                "leftAtDoor": false,
+                "meetOutside": false,
+                "noDoorCall": false
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

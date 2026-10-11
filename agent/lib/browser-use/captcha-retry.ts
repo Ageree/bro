@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
 import { env } from "@shared/environment";
+import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import {
+  moveSpendReservation,
+  readBrowserPaymentDispatch,
+} from "@db/services/spending";
 import {
   handOffBrowserRunRetry,
   parkBrowserRunForRetry,
@@ -9,6 +14,7 @@ import {
 import {
   BrowserUseError,
   browserUseBusy,
+  browserUseOutOfCredits,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -152,10 +158,34 @@ async function abandonRetryRun(runId: string) {
  * claim looks for that very line.
  */
 export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
-  if (row.captchaAttempt >= maximumCaptchaAttempts) {
+  const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
+  const ownedDispatch = row.paymentAllowed
+    ? await readBrowserPaymentDispatch(scope, {
+        kind: "captcha",
+        runId: row.id,
+      })
+    : undefined;
+  const stickyPayment =
+    ownedDispatch?.entry.browserRunId.startsWith("pending:dispatch:") ===
+      true || yandexPurchasePilot(scope);
+  let dispatchId = ownedDispatch?.entry.browserRunId;
+  if (
+    ownedDispatch &&
+    stickyPayment &&
+    !dispatchId?.startsWith("pending:dispatch:")
+  ) {
+    const upgraded = `pending:dispatch:captcha:${encodeURIComponent(row.id)}:${String(ownedDispatch.sequence)}`;
+    await moveSpendReservation(ownedDispatch.entry.browserRunId, upgraded, {
+      scope,
+      amountRub: 0,
+    });
+    dispatchId = upgraded;
+  }
+  let claimedHere = false;
+  if (row.captchaAttempt >= maximumCaptchaAttempts && !ownedDispatch) {
     return { status: "exhausted" as const };
   }
-  const attempt = row.captchaAttempt + 1;
+  const attempt = ownedDispatch?.sequence ?? row.captchaAttempt + 1;
   const onVm = onOwnBrowser(row.profileId);
   try {
     const reference = retryReference(row.id, attempt);
@@ -178,10 +208,27 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
       if (adopted) {
         run = adopted;
       } else {
-        const scope = {
-          userId: row.createdByUserId,
-          workspaceId: row.workspaceId,
-        };
+        if (dispatchId && stickyPayment) {
+          await parkBrowserRunForRetry(row.id, {
+            captchaAttempt: row.captchaAttempt,
+            retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+          });
+          return { status: "parked" as const };
+        }
+        if (row.paymentAllowed) {
+          const nextDispatch = `${stickyPayment ? "pending:dispatch" : "pending"}:captcha:${encodeURIComponent(row.id)}:${String(attempt)}`;
+          const held = await moveSpendReservation(
+            dispatchId ?? row.id,
+            nextDispatch,
+            {
+              scope,
+              amountRub: row.submission?.paymentCapRub ?? 0,
+              requireReservation: stickyPayment,
+            }
+          );
+          dispatchId = held ? nextDispatch : undefined;
+          claimedHere = held === true;
+        }
         const previous = await readBrowserUseRun(row.id);
         const secrets = await resolveBrowserSecretBindings(scope, {
           allowPayment: row.paymentAllowed,
@@ -224,6 +271,27 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         });
       }
     } catch (error) {
+      if (
+        dispatchId &&
+        claimedHere &&
+        (!starting ||
+          browserUseBusy(error) ||
+          browserUseOutOfCredits(error) ||
+          !stickyPayment)
+      ) {
+        await moveSpendReservation(dispatchId, row.id);
+        dispatchId = undefined;
+      }
+      if (
+        stickyPayment &&
+        (dispatchId !== undefined || (row.paymentAllowed && !starting))
+      ) {
+        await parkBrowserRunForRetry(row.id, {
+          captchaAttempt: row.captchaAttempt,
+          retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+        });
+        return { status: "parked" as const };
+      }
       // The workspace's own VM starting, or busy with another errand of
       // its workspace, ran no attempt at all: the attempt keeps its number
       // and waits as long as the VM asked, while the wall is recent — 15 s
@@ -261,34 +329,64 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
     }
     let handedOff = false;
     try {
-      handedOff = await handOffBrowserRunRetry(row.id, {
-        captchaAttempt: attempt,
-        conversationChannel: row.conversationChannel,
-        conversationId: row.conversationId,
-        delegatedByPerson: row.delegatedByPerson,
-        id: run.id,
-        paymentAllowed: row.paymentAllowed,
-        profileId: row.profileId,
-        replyAnchorMessageId: row.replyAnchorMessageId,
-        rootSessionId: row.rootSessionId,
-        sessionId: run.sessionId,
-        site: row.site,
-        startedByPerson: row.startedByPerson,
-        status: "running",
-        // The retry is the same errand, so it carries the person's approval
-        // to submit, and nothing more: its task is the previous attempt's.
-        submission: row.submission,
-        task: row.task,
-        // Whatever the parked row still holds unread carries to the row that
-        // takes the errand over: a message queued in during an earlier
-        // attempt must reach whichever attempt finally reports the errand.
-        unreadMessages: row.unreadMessages,
-      });
+      handedOff = await handOffBrowserRunRetry(
+        row.id,
+        {
+          captchaAttempt: attempt,
+          conversationChannel: row.conversationChannel,
+          conversationId: row.conversationId,
+          delegatedByPerson: row.delegatedByPerson,
+          id: run.id,
+          paymentAllowed: row.paymentAllowed,
+          profileId: row.profileId,
+          replyAnchorMessageId: row.replyAnchorMessageId,
+          rootSessionId: row.rootSessionId,
+          sessionId: run.sessionId,
+          site: row.site,
+          startedByPerson: row.startedByPerson,
+          status: "running",
+          // The retry is the same errand, so it carries the person's approval
+          // to submit, and nothing more: its task is the previous attempt's.
+          submission: row.submission,
+          task: row.task,
+          // Whatever the parked row still holds unread carries to the row that
+          // takes the errand over: a message queued in during an earlier
+          // attempt must reach whichever attempt finally reports the errand.
+          unreadMessages: row.unreadMessages,
+        },
+        ...(dispatchId === undefined
+          ? ([] as const)
+          : ([{ spendDispatchId: dispatchId }] as const))
+      );
     } catch (error) {
+      const latest = await readBrowserRun(row.id).catch(() => null);
+      if (latest === null) return { status: "parked" as const };
+      if (latest?.retriedAsRunId === run.id) {
+        return { runId: run.id, status: "started" as const };
+      }
+      if (dispatchId && stickyPayment) {
+        await parkBrowserRunForRetry(row.id, {
+          captchaAttempt: row.captchaAttempt,
+          retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+        });
+        return { status: "parked" as const };
+      }
       await abandonRetryRun(run.id);
       throw error;
     }
     if (!handedOff) {
+      const latest = await readBrowserRun(row.id).catch(() => null);
+      if (latest === null) return { status: "parked" as const };
+      if (latest?.retriedAsRunId === run.id) {
+        return { runId: run.id, status: "started" as const };
+      }
+      if (dispatchId && stickyPayment) {
+        await parkBrowserRunForRetry(row.id, {
+          captchaAttempt: row.captchaAttempt,
+          retryAt: new Date(now.getTime() + uncertainStartRetryMs),
+        });
+        return { status: "parked" as const };
+      }
       await abandonRetryRun(run.id);
       return { status: "stopped" as const };
     }

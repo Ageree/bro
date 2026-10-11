@@ -26,6 +26,7 @@ import {
   orders,
   settings,
   spendEntries,
+  yandexPurchases,
   type spendEntrySources,
 } from "@db";
 import { ensureScope } from "./scope";
@@ -63,7 +64,10 @@ function spendLimitRow(scope: AccessScope) {
  * every statement is its own request — so there is no lock to take, and money
  * is not decided on it at all.
  */
-async function lockWorkspaceSpending(tx: Database, scope: AccessScope) {
+export async function lockWorkspaceSpending(
+  tx: Database,
+  scope: Pick<AccessScope, "workspaceId">
+) {
   if (env.DATABASE_DRIVER === "neon-http") {
     throw new Error(
       "The standing spend limit needs a transactional database driver."
@@ -72,6 +76,40 @@ async function lockWorkspaceSpending(tx: Database, scope: AccessScope) {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend:${scope.workspaceId}`}, 0))`
   );
+}
+
+async function refuseUnresolvedPurchase(tx: Database, scope: AccessScope) {
+  const [purchase] = await tx
+    .select({ id: yandexPurchases.id })
+    .from(yandexPurchases)
+    .where(
+      and(
+        eq(yandexPurchases.workspaceId, scope.workspaceId),
+        inArray(yandexPurchases.state, ["submitting", "unknown"])
+      )
+    )
+    .limit(1);
+  if (purchase) {
+    throw new Error(
+      "Nothing was started: a Yandex purchase may already have been placed. Check the existing order; do not retry or buy a replacement through the browser."
+    );
+  }
+  const [dispatch] = await tx
+    .select({ id: spendEntries.id })
+    .from(spendEntries)
+    .where(
+      and(
+        eq(spendEntries.workspaceId, scope.workspaceId),
+        eq(spendEntries.status, "reserved"),
+        sql`${spendEntries.browserRunId} LIKE 'pending:dispatch:%'`
+      )
+    )
+    .limit(1);
+  if (dispatch) {
+    throw new Error(
+      "A browser payment may already have been submitted. Its outcome is unknown. Do not retry or buy a replacement until the existing purchase has been checked."
+    );
+  }
 }
 
 async function readPolicy(database: Database, scope: AccessScope) {
@@ -201,6 +239,7 @@ export async function reserveAutoPayment(
   await ensureScope(scope);
   return db.transaction(async (tx) => {
     await lockWorkspaceSpending(tx, scope);
+    await refuseUnresolvedPurchase(tx, scope);
     const policy = await readPolicy(tx, scope);
     const entries = await countedEntries(tx, scope, input.periodKey, {
       exceptRunIds:
@@ -271,6 +310,7 @@ export async function reserveConsentPayment(
   const amountRub = wholeRubles(input.amountRub);
   return db.transaction(async (tx) => {
     await lockWorkspaceSpending(tx, scope);
+    await refuseUnresolvedPurchase(tx, scope);
     if (input.standing) {
       const entries = await countedEntries(tx, scope, input.periodKey, {
         exceptRunIds: [
@@ -314,6 +354,35 @@ export async function readSpendEntryForRun(browserRunId: string) {
   return rows[0];
 }
 
+export async function readBrowserPaymentDispatch(
+  scope: AccessScope,
+  input: { readonly kind: "queue" | "captcha"; readonly runId: string }
+) {
+  const entries = await db
+    .select()
+    .from(spendEntries)
+    .where(
+      and(
+        eq(spendEntries.workspaceId, scope.workspaceId),
+        eq(spendEntries.status, "reserved")
+      )
+    );
+  const suffix = `${input.kind}:${encodeURIComponent(input.runId)}:`;
+  const entry = entries.find(
+    (candidate) =>
+      candidate.browserRunId.startsWith(`pending:dispatch:${suffix}`) ||
+      candidate.browserRunId.startsWith(`pending:${suffix}`)
+  );
+  if (!entry) return undefined;
+  const sequence = Number(
+    entry.browserRunId.slice(entry.browserRunId.lastIndexOf(":") + 1)
+  );
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new Error("The browser payment dispatch identity is invalid.");
+  }
+  return { entry, sequence };
+}
+
 /**
  * Hand a reservation to the run that carries the errand on — a background
  * retry after an anti-bot wall, a follow-up in the same browser, or the run
@@ -321,9 +390,77 @@ export async function readSpendEntryForRun(browserRunId: string) {
  * still make stays counted. A run keeps one row, so a released one already
  * there, which counts for nothing, makes way.
  */
-export async function moveSpendReservation(fromRunId: string, toRunId: string) {
-  if (fromRunId === toRunId) return;
-  await db.transaction(async (tx) => {
+export async function moveSpendReservation(
+  fromRunId: string,
+  toRunId: string,
+  payment?: {
+    readonly scope: AccessScope;
+    readonly amountRub: number;
+    readonly requireReservation?: boolean;
+  }
+) {
+  if (fromRunId === toRunId && !payment) return false;
+  return db.transaction(async (tx) => {
+    if (payment) {
+      const amountRub = wholeRubles(payment.amountRub);
+      await lockWorkspaceSpending(tx, payment.scope);
+      await refuseUnresolvedPurchase(tx, payment.scope);
+      const [original] = await tx
+        .select()
+        .from(spendEntries)
+        .where(
+          and(
+            eq(spendEntries.workspaceId, payment.scope.workspaceId),
+            eq(spendEntries.browserRunId, fromRunId)
+          )
+        )
+        .limit(1);
+      if (
+        original?.status !== "reserved" &&
+        payment.requireReservation === false
+      ) {
+        return false;
+      }
+      if (
+        original?.status !== "reserved" ||
+        amountRub > original.amountRub + original.feeRub
+      ) {
+        throw new Error(
+          "Nothing was started: this payment no longer has its original reserved ceiling. Old consent cannot authorize another charge. Stage the order and obtain fresh exact payment consent."
+        );
+      }
+      const [preserved] = await tx
+        .update(spendEntries)
+        .set({
+          browserRunId: toRunId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(spendEntries.id, original.id),
+            eq(spendEntries.browserRunId, fromRunId),
+            eq(spendEntries.status, "reserved")
+          )
+        )
+        .returning();
+      if (!preserved) {
+        throw new Error("The original payment reservation changed.");
+      }
+      return true;
+    }
+    const [existing] = await tx
+      .select({ workspaceId: spendEntries.workspaceId })
+      .from(spendEntries)
+      .where(
+        and(
+          eq(spendEntries.browserRunId, fromRunId),
+          eq(spendEntries.status, "reserved")
+        )
+      )
+      .limit(1);
+    if (!existing) return false;
+    await lockWorkspaceSpending(tx, existing);
     await tx
       .delete(spendEntries)
       .where(
@@ -332,7 +469,7 @@ export async function moveSpendReservation(fromRunId: string, toRunId: string) {
           eq(spendEntries.status, "released")
         )
       );
-    await tx
+    const moved = await tx
       .update(spendEntries)
       .set({ browserRunId: toRunId, updatedAt: new Date() })
       .where(
@@ -340,7 +477,9 @@ export async function moveSpendReservation(fromRunId: string, toRunId: string) {
           eq(spendEntries.browserRunId, fromRunId),
           eq(spendEntries.status, "reserved")
         )
-      );
+      )
+      .returning({ id: spendEntries.id });
+    return moved.length > 0;
   });
 }
 
@@ -424,6 +563,7 @@ export async function releaseAbandonedSpendReservations(createdBefore: Date) {
       and(
         eq(spendEntries.status, "reserved"),
         sql`${spendEntries.browserRunId} LIKE 'pending:%'`,
+        sql`${spendEntries.browserRunId} NOT LIKE 'pending:dispatch:%'`,
         lt(spendEntries.createdAt, createdBefore)
       )
     );
