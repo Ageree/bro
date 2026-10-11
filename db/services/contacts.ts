@@ -63,6 +63,8 @@ function sameWord(left: string, right: string) {
 
 type Contact = typeof phoneContacts.$inferSelect;
 
+const labels = (row: Contact) => [row.name, ...row.aliases];
+
 function labelMatches(query: string, label: string) {
   const words = foldName(label).split(" ");
   return foldName(query)
@@ -83,7 +85,6 @@ export async function findContacts(
     .limit(contactsLimit);
   const folded = foldName(query);
   if (folded === "") return [];
-  const labels = (row: Contact) => [row.name, ...row.aliases];
   const exact = rows.filter((row) =>
     labels(row).some((label) => foldName(label) === folded)
   );
@@ -102,13 +103,13 @@ export async function listContacts(scope: Pick<AccessScope, "workspaceId">) {
     .limit(contactsLimit);
 }
 
-export type ContactInput = {
+export interface ContactInput {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly phones: readonly string[];
   readonly note?: string | undefined;
   readonly familiar?: boolean | undefined;
-};
+}
 
 /**
  * Saves a contact under its name: a second save of the same name replaces

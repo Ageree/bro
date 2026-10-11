@@ -21,11 +21,11 @@ function callerScope(context: Pick<ToolContext, "session">) {
 }
 
 /** A write needs the person's own message to have opened this very turn. */
-function writeScope(context: ToolContext, input: object) {
+function writeScope(context: ToolContext, serializedInput: string) {
   const scope = callerScope(context);
   if (!contactsPilot(scope))
     throw new Error("The address book is disabled for this workspace.");
-  if (!phoneActionTurn(context, JSON.stringify(input)))
+  if (!phoneActionTurn(context, serializedInput))
     throw new Error(
       "Contacts are changed only on the person's own message, never from a callback, report, background task or schedule."
     );
@@ -77,7 +77,7 @@ const save = defineTool({
     })
     .strict(),
   async execute(input, context) {
-    const scope = writeScope(context, input);
+    const scope = writeScope(context, JSON.stringify(input));
     const phones = input.phones.map(normalizeDomesticPhone);
     const valid = phones.filter((phone) => phone !== undefined);
     if (valid.length !== phones.length)
@@ -106,7 +106,7 @@ const remove = defineTool({
     "Delete a person from Bro's address book on the person's own request («забудь номер Саши»). Name or alias as they said it. With several matches nothing is deleted: ask which one.",
   inputSchema: z.object({ name: z.string().trim().min(1).max(100) }).strict(),
   async execute(input, context) {
-    const scope = writeScope(context, input);
+    const scope = writeScope(context, JSON.stringify(input));
     const result = await deleteContact(scope, input.name);
     if (result.kind === "deleted") return { deleted: true, name: result.name };
     if (result.kind === "ambiguous")

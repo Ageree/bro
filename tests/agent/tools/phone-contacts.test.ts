@@ -8,7 +8,10 @@ import {
 import { toolContext } from "@tests/helpers/tool-context";
 
 const book = vi.hoisted(() => ({
-  saveContact: vi.fn<() => Promise<unknown>>(),
+  saveContact:
+    vi.fn<
+      () => Promise<{ kind: string; row: { name: string; phones: string[] } }>
+    >(),
 }));
 
 vi.stubEnv("TELEGRAM_BOT_USERNAME", "phone_test_bot");
