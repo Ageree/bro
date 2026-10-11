@@ -55,7 +55,24 @@ function routerAiCall(
   };
 }
 
-function chunk(value: object) {
+/** One event of an OpenAI-compatible stream, as the tests send it. */
+interface StreamChunk {
+  readonly choices?: readonly {
+    readonly delta: { readonly content?: string };
+    readonly finish_reason?: string;
+    readonly index: number;
+  }[];
+  readonly error?: { readonly code: number; readonly message: string };
+  readonly id?: string;
+  readonly usage?: {
+    readonly completion_tokens: number;
+    readonly cost: number;
+    readonly prompt_tokens: number;
+    readonly prompt_tokens_details: { readonly cached_tokens: number };
+  };
+}
+
+function chunk(value: StreamChunk) {
   return `data: ${JSON.stringify(value)}\n\n`;
 }
 

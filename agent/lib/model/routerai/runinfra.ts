@@ -88,7 +88,7 @@ function reasoningEffort(reasoning: ChatCall["reasoning"]) {
 }
 
 /** The body RunInfra gets: OpenAI's fields, its model id, usage asked for. */
-export function runInfraBody(call: ChatCall, model: string) {
+function runInfraBody(call: ChatCall, model: string) {
   return JSON.stringify({
     frequency_penalty: call.frequency_penalty,
     max_tokens: call.max_tokens,
@@ -147,7 +147,7 @@ function failed(json: string) {
  * RunInfra's answer in the form Bro reads, or `undefined` when it failed:
  * the cost in roubles, nothing else touched.
  */
-export function readRunInfraAnswer(text: string, eventStream: boolean) {
+function readRunInfraAnswer(text: string, eventStream: boolean) {
   if (!eventStream) return failed(text) ? undefined : inRoubles(text);
   const lines = text.split("\n");
   const out: string[] = [];
