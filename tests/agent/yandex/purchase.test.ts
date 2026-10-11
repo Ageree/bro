@@ -307,6 +307,22 @@ describe("Yandex purchase consent", () => {
     );
   });
 
+  it("takes the yes to the question Bro delivered with its own quotes, not to another total", async () => {
+    const stored = 'Яндекс Лавка: "Вода" × 1. Итого 249,50 ₽. Оплачиваю?';
+    services.read.mockResolvedValue(row({ confirmationQuestion: stored }));
+    expect(
+      await confirm(
+        answered("да", "Яндекс Лавка: «Вода» × 1.  Итого 249,50 ₽. Оплачиваю?")
+      )
+    ).toMatchObject({ kind: "placed" });
+    expect(
+      await confirm(
+        answered("да", "Яндекс Лавка: «Вода» × 1. Итого 149,50 ₽. Оплачиваю?")
+      )
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.submit).toHaveBeenCalledTimes(1);
+  });
+
   it("renews an expired unchanged Lavka quote under the same explicit yes and one claim", async () => {
     const expired = row({ expiresAt: new Date(0) });
     const fresh = { ...snapshot, offerId: "renewed-offer" };

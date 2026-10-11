@@ -110,14 +110,24 @@ function confirmationQuestion(
   const whole = Math.floor(quote.amountMinor / 100).toLocaleString("ru-RU");
   const fraction = String(quote.amountMinor % 100).padStart(2, "0");
   const items = quote.items
-    .map((item) => `${JSON.stringify(item.title)} × ${item.quantity}`)
+    .map((item) => `«${item.title}» × ${item.quantity}`)
     .join("; ");
   const confirmationId = createHash("sha256")
     .update(`${fingerprint}:${expiresAt.toISOString()}`)
     .digest("hex")
     .slice(0, 12);
-  return `Яндекс Лавка: ${items}. Доставка: ${JSON.stringify(quote.delivery)}. Оплата: ${JSON.stringify(quote.payment)}. Итого ${whole},${fraction} ₽, включая доставку и сборы. Заказ ${confirmationId}. Оплачиваю?`;
+  return `Яндекс Лавка: ${items}. Доставка: ${quote.delivery}. Оплата: ${quote.payment}. Итого ${whole},${fraction} ₽, включая доставку и сборы. Заказ ${confirmationId}. Оплачиваю?`;
 }
+
+/**
+ * The question as the person read it: Bro's message style may swap the
+ * quotes or the spaces, and that does not change what was asked.
+ */
+const plainQuestion = (text: string) =>
+  text
+    .replaceAll(/["«»“”„]/gu, "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
 
 function purchaseResult(
   purchase: NonNullable<Awaited<ReturnType<typeof readYandexPurchase>>>
@@ -304,7 +314,9 @@ export default defineDynamic({
             }
             if (
               paymentAnswer(words.said) !== "yes" ||
-              words.paymentAsked !== purchase.confirmationQuestion
+              words.paymentAsked === null ||
+              plainQuestion(words.paymentAsked) !==
+                plainQuestion(purchase.confirmationQuestion)
             ) {
               return {
                 kind: "confirmation_required" as const,
