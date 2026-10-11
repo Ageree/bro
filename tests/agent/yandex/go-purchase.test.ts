@@ -189,6 +189,7 @@ describe("Go fixed provider functions", () => {
       "/csrf_token",
       "/4.0/persuggest/v1/finalsuggest",
       "/4.0/persuggest/v1/finalsuggest",
+      "/3.0/paymentmethods",
       quotePath,
     ]);
     expect(
@@ -514,5 +515,24 @@ describe("Go fixed provider functions", () => {
       financialStatus: "unknown",
       finalFareMinor: null,
     });
+  });
+
+  it("reports expired authentication before an absent local payment selection", async () => {
+    selected = null;
+    const normal = serve.getMockImplementation();
+    serve.mockImplementation((path, body): ReturnType<typeof serve> =>
+      path === "/3.0/paymentmethods"
+        ? { status: 401, body: {} }
+        : (normal?.(path, body) ?? { body: {} })
+    );
+    expect(await prepareGoPurchase(workspaceId, { route })).toEqual({
+      kind: "blocked",
+      reason: "signed_out",
+    });
+    expect(
+      requests.some(
+        (request) => request.path === draftPath || request.path === commitPath
+      )
+    ).toBe(false);
   });
 });

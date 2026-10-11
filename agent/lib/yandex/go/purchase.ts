@@ -96,12 +96,12 @@ const pageSource = String.raw`
     });
     const state = typeof stored === "string" ? JSON.parse(stored) : stored;
     const selected = state?.selectedPaymentMethod;
+    const response = await session.post("/3.0/paymentmethods", { location: route[0].geopoint, id: session.userId });
+    if (response.wall || response.error) block(response.wall || response.error);
     if (!selected || selected.zoneAvailable !== true || selected.isYandexCard ||
         selected.userCostCenter || selected.costCenter || !["cash", "card"].includes(selected.type)) block("payment_unsupported");
     const id = text(selected.id, "payment_unsupported");
     if (selected.type === "cash") return { payment: "CASH", paymentLabel: "НАЛИЧНЫМИ (CASH)", paymentMethod: { type: "cash", id } };
-    const response = await session.post("/3.0/paymentmethods", { location: route[0].geopoint, id: session.userId });
-    if (response.wall || response.error) block(response.wall || response.error);
     const cards = response.card?.available_cards;
     if (response.card?.payment_available !== true || !Array.isArray(cards) ||
         !Array.isArray(response.card?.unverified_cards) || response.card.unverified_cards.some((card) => card.id === id)) block("payment_unsupported");
