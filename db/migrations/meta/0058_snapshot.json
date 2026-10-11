@@ -1,5 +1,5 @@
 {
-  "id": "82bf8d4d-accd-42bb-ad21-0e4e1fc61584",
+  "id": "0c052b3c-4991-45ee-84a9-60bf44b7256a",
   "prevId": "0323735d-2dfe-4405-8aea-33fe6893e73d",
   "version": "7",
   "dialect": "postgresql",
@@ -2585,6 +2585,130 @@
           "value": "\"chats\".\"cost_usd\" IS NULL OR \"chats\".\"cost_usd\" >= 0"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.phone_contacts": {
+      "name": "phone_contacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "aliases": {
+          "name": "aliases",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "phones": {
+          "name": "phones",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "familiar": {
+          "name": "familiar",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "search_key": {
+          "name": "search_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "phone_contacts_workspace_name_unique": {
+          "name": "phone_contacts_workspace_name_unique",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "search_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "phone_contacts_workspace_idx": {
+          "name": "phone_contacts_workspace_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "phone_contacts_workspace_id_workspaces_id_fk": {
+          "name": "phone_contacts_workspace_id_workspaces_id_fk",
+          "tableFrom": "phone_contacts",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.conversation_log": {
@@ -7359,12 +7483,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "phase": {
-          "name": "phase",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp (3) with time zone",
@@ -7407,10 +7525,16 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "service",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"yandex_purchases\".\"state\" IN ('submitting', 'unknown', 'active')",
+          "where": "\"yandex_purchases\".\"state\" IN ('submitting', 'unknown')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -7439,7 +7563,7 @@
       "checkConstraints": {
         "yandex_purchases_service_check": {
           "name": "yandex_purchases_service_check",
-          "value": "\"yandex_purchases\".\"service\" IN ('lavka', 'go')"
+          "value": "\"yandex_purchases\".\"service\" = 'lavka'"
         },
         "yandex_purchases_currency_check": {
           "name": "yandex_purchases_currency_check",
@@ -7451,11 +7575,7 @@
         },
         "yandex_purchases_state_check": {
           "name": "yandex_purchases_state_check",
-          "value": "\"yandex_purchases\".\"state\" IN ('quoted', 'submitting', 'placed', 'rejected', 'unknown', 'active')"
-        },
-        "yandex_purchases_phase_check": {
-          "name": "yandex_purchases_phase_check",
-          "value": "(\"yandex_purchases\".\"phase\" IS NULL OR (\"yandex_purchases\".\"service\" = 'go' AND \"yandex_purchases\".\"phase\" IN ('draft_claimed', 'drafted', 'commit_claimed', 'accepted'))) AND (\"yandex_purchases\".\"phase\" NOT IN ('drafted', 'commit_claimed', 'accepted') OR \"yandex_purchases\".\"merchant_order_id\" IS NOT NULL) AND (\"yandex_purchases\".\"state\" <> 'active' OR (\"yandex_purchases\".\"service\" = 'go' AND \"yandex_purchases\".\"phase\" IS NOT NULL AND \"yandex_purchases\".\"phase\" = 'accepted' AND \"yandex_purchases\".\"merchant_order_id\" IS NOT NULL))"
+          "value": "\"yandex_purchases\".\"state\" IN ('quoted', 'submitting', 'placed', 'rejected', 'unknown')"
         },
         "yandex_purchases_attempt_check": {
           "name": "yandex_purchases_attempt_check",

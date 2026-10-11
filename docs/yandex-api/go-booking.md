@@ -50,7 +50,7 @@ HTTP-клиент оборачивает JSON в `{data, response}`, поэто�
 
 ## Durable защита
 
-Миграция `0058_go_booking` меняет активный unique index на весь workspace и
+Миграция `0059_go_booking` меняет активный unique index на весь workspace и
 добавляет фазы Go. Под общей `lockWorkspaceSpending` сначала захватывается
 `draft_claimed`, затем отдельно сохраняются номер заказа и `drafted`, затем
 одноразово захватывается `commit_claimed`. Только исходный scope/session/call
