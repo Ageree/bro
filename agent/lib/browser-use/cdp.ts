@@ -326,6 +326,7 @@ interface CdpCommand {
   readonly objectId?: string;
   readonly quality?: number;
   readonly returnByValue?: boolean;
+  readonly source?: string;
   readonly errorReason?: string;
   readonly patterns?: readonly {
     readonly requestStage: string;
@@ -396,7 +397,7 @@ export async function typeOneTimeCodeOverCdp(
 ): Promise<OneTimeCodeEntry> {
   const value = code.trim();
   if (!value) return nothingTyped;
-  const connection = await connect(cdpUrl);
+  const connection = await openCdpConnection(cdpUrl);
   try {
     const found = await collectContexts(connection);
     const contexts =
@@ -461,7 +462,7 @@ const screenshotQuality = 85;
  * agent for anything.
  */
 export async function captureViewportOverCdp(cdpUrl: string) {
-  const connection = await connect(cdpUrl);
+  const connection = await openCdpConnection(cdpUrl);
   try {
     const shot = screenshotSchema.safeParse(
       await connection.call("Page.captureScreenshot", {
@@ -525,7 +526,7 @@ export async function visitPageOverCdp(
   url: string,
   domain: string
 ) {
-  const connection = await connect(cdpUrl);
+  const connection = await openCdpConnection(cdpUrl);
   try {
     const tree = frameTreeSchema.safeParse(
       await connection.call("Page.getFrameTree", {}).catch(() => undefined)
@@ -631,7 +632,7 @@ export async function callInPageOverCdp(
     readonly url: string;
   }
 ) {
-  const connection = await connect(cdpUrl);
+  const connection = await openCdpConnection(cdpUrl);
   try {
     await connection.call("Network.enable", {}).catch(() => undefined);
     await connection
@@ -960,7 +961,10 @@ async function pageSocketUrl(cdpUrl: string) {
   return socketUrl;
 }
 
-async function connect(cdpUrl: string): Promise<CdpConnection> {
+/** A debugger connection to the page behind `cdpUrl` (an operator's probe uses it too). */
+export async function openCdpConnection(
+  cdpUrl: string
+): Promise<CdpConnection> {
   const socket = openPrivateRouteWebSocket(await pageSocketUrl(cdpUrl));
   const pending = new Map<
     number,
