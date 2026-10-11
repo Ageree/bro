@@ -79,8 +79,9 @@ const pageSource = String.raw`
     if (minor <= 0n || minor > BigInt(Number.MAX_SAFE_INTEGER)) block("money_invalid");
     return Number(minor);
   };
-  const session = await goSession();
-  const requireSession = () => {
+  let session;
+  const requireSession = async () => {
+    session = await goSession();
     if (session.wall || session.error) block(session.wall || session.error);
   };
   const currentPayment = async (route) => {
@@ -177,7 +178,7 @@ const prepareOperation = defineYandexOperation({
   result: prepareResultSchema,
   run: `async function (args) {${pageSource}
     try {
-      requireSession();
+      await requireSession();
       const route = [await resolvePoint(args.route[0], "a"), await resolvePoint(args.route[1], "b")];
       if (JSON.stringify(route[0].geopoint) === JSON.stringify(route[1].geopoint)) block("route_ambiguous");
       const current = await quote(route);
@@ -201,7 +202,7 @@ const draftOperation = defineYandexOperation({
   run: `async function (args) {${pageSource}
     let sent = false;
     try {
-      requireSession();
+      await requireSession();
       const approved = args.snapshot;
       if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
       if (approved.amountMinor !== args.amountMinor || approved.providerUserId !== session.userId) block("snapshot_changed");
@@ -237,7 +238,8 @@ const commitOperation = defineYandexOperation({
   result: commitResultSchema,
   run: `async function (args) {${pageSource}
     try {
-      if (session.wall || session.error || session.userId !== args.snapshot.providerUserId ||
+      await requireSession();
+      if (session.userId !== args.snapshot.providerUserId ||
           Date.parse(args.snapshot.expiresAt) <= Date.now()) return ok({ kind: "unknown" });
       const payment = await currentPayment(args.snapshot.route);
       if (JSON.stringify(payment.paymentMethod) !== JSON.stringify(args.snapshot.paymentMethod) ||

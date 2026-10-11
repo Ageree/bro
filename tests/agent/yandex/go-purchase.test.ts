@@ -1,4 +1,5 @@
 import { createContext, runInContext } from "node:vm";
+import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -35,15 +36,23 @@ const quotePath = "/3.0/routestats";
 const statusPath = "/3.0/taxiontheway";
 const requests: { path: string; body: JsonValue }[] = [];
 const redirectModes: RequestInit["redirect"][] = [];
+const headers: Headers[] = [];
+const storage = new Map<string, string>();
 let quote = structuredClone(quoteFixture);
 let selected: JsonValue;
 let methods: JsonValue;
 let persistedUserId: string;
 
-const serve =
-  vi.fn<
-    (path: string, body: JsonValue) => { body: JsonValue; status?: number }
-  >();
+const serve = vi.fn<
+  (
+    path: string,
+    body: JsonValue
+  ) => {
+    body: JsonValue;
+    status?: number;
+    headers?: HeadersInit;
+  }
+>();
 
 function syntheticIndexedDb() {
   return {
@@ -101,6 +110,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   requests.length = 0;
   redirectModes.length = 0;
+  headers.length = 0;
+  storage.clear();
   quote = structuredClone(quoteFixture);
   persistedUserId = userId;
   selected = { id: "cash", type: "cash", zoneAvailable: true };
@@ -145,6 +156,14 @@ beforeEach(() => {
   transport.run.mockImplementation(async (_workspace, operation, args) => {
     const context = createContext({
       Date,
+      crypto: webcrypto,
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+      },
+      setTimeout: (callback: () => void) => {
+        queueMicrotask(callback);
+      },
       indexedDB: syntheticIndexedDb(),
       navigator: { userAgent: "Synthetic test" },
       fetch: async (url: string, input: RequestInit) => {
@@ -152,8 +171,13 @@ beforeEach(() => {
         const body = z.json().parse(JSON.parse(z.string().parse(input.body)));
         requests.push({ path, body });
         redirectModes.push(input.redirect);
+        headers.push(new Headers(input.headers));
         const result = serve(path, body);
-        return { status: result.status ?? 200, json: async () => result.body };
+        return {
+          status: result.status ?? 200,
+          headers: new Headers(result.headers),
+          json: async () => result.body,
+        };
       },
     });
     const run = z
@@ -172,6 +196,112 @@ afterEach(() => {
 });
 
 describe("Go fixed provider functions", () => {
+  it.each(["network", "503"])(
+    "recovers one transient %s during a read, never sending a booking",
+    async (failure) => {
+      storage.set(
+        "csrf_token",
+        JSON.stringify({ token: "synthetic", validUntil: Date.now() + 60_000 })
+      );
+      serve.mockImplementationOnce(() => {
+        if (failure === "network") throw new TypeError("Failed to fetch");
+        return { status: 503, body: {} };
+      });
+      await ready();
+      expect(
+        requests.filter(
+          ({ path }) => path === "/4.0/persuggest/v1/finalsuggest"
+        )
+      ).toHaveLength(3);
+      expect(
+        requests.some(({ path }) => path === draftPath || path === commitPath)
+      ).toBe(false);
+    }
+  );
+
+  it("uses the native unexpired CSRF cache instead of another authentication request", async () => {
+    storage.set(
+      "csrf_token",
+      JSON.stringify({
+        token: "synthetic-cached-csrf",
+        validUntil: Date.now() + 60_000,
+      })
+    );
+    await ready();
+    expect(requests.some(({ path }) => path === "/csrf_token")).toBe(false);
+    expect(headers[0]?.get("x-csrf-token")).toBe("synthetic-cached-csrf");
+    expect(headers[0]?.has("x-yataxi-tz-offset")).toBe(false);
+    expect(headers[0]?.get("x-retpath-y")).toBe(
+      "https://taxi.yandex.ru/captcha-success"
+    );
+    expect(headers[0]?.has("x-request-id")).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    "{invalid",
+    JSON.stringify({ token: "synthetic-expired", validUntil: 1 }),
+    JSON.stringify({ token: 123, validUntil: 99_999_999_999_999 }),
+  ])(
+    "refreshes an unusable CSRF cache %s with the native safety margin",
+    async (cached) => {
+      if (cached !== undefined) storage.set("csrf_token", cached);
+      serve.mockImplementationOnce(() => ({
+        body: { sk: "synthetic-fresh", "max-age-seconds": 120 },
+      }));
+      const before = Date.now();
+      await ready();
+      const saved = z
+        .object({ token: z.string(), validUntil: z.number() })
+        .parse(JSON.parse(storage.get("csrf_token") ?? "null"));
+      expect(saved.token).toBe("synthetic-fresh");
+      expect(saved.validUntil).toBeGreaterThanOrEqual(before + 60_000);
+      expect(saved.validUntil).toBeLessThanOrEqual(Date.now() + 60_000);
+      expect(headers[0]?.has("x-yataxi-userid")).toBe(false);
+      expect(headers[0]?.has("x-csrf-token")).toBe(false);
+      expect(headers[1]?.get("x-csrf-token")).toBe("synthetic-fresh");
+      await ready();
+      expect(
+        requests.filter(({ path }) => path === "/csrf_token")
+      ).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    { status: 429, headers: {} },
+    { status: 500, headers: { "x-yataxi-retry-action": "stop" } },
+    { status: 503, headers: { "retry-after": "60" } },
+    { status: 503, headers: { "x-yataxi-retry-interval-ms": "1000" } },
+  ])(
+    "does not retry reads after provider rate or retry instructions: $status $headers",
+    async (response) => {
+      storage.set(
+        "csrf_token",
+        JSON.stringify({ token: "synthetic", validUntil: Date.now() + 60_000 })
+      );
+      serve.mockImplementationOnce(() => ({ ...response, body: {} }));
+      expect(await prepareGoPurchase(workspaceId, { route })).toEqual({
+        kind: "blocked",
+        reason: `http_${String(response.status)}`,
+      });
+      expect(requests).toHaveLength(1);
+    }
+  );
+
+  it("rejects a failed session read before draft rather than claiming an unknown booking", async () => {
+    const prepared = await ready();
+    serve.mockImplementation(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(await draft(prepared)).toEqual({
+      kind: "rejected",
+      reason: "read_failed",
+    });
+    expect(
+      requests.some(({ path }) => path === draftPath || path === commitPath)
+    ).toBe(false);
+  });
+
   it("only reads during preparation and uses exact fare, not rounded display", async () => {
     const prepared = await ready();
     expect(prepared.publicQuote).toMatchObject({

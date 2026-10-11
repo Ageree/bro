@@ -23,32 +23,71 @@ const goSession = async () => {
   const userId = raw && raw.userId;
   if (!/^[0-9a-f]{32}$/.test(userId || "")) return { error: "no_user_id" };
   const origin = "https://ya-authproxy.taxi.yandex.ru";
-  const base = {
+  const reads = new Set([
+    "/3.0/paymentmethods", "/3.0/routestats", "/3.0/taxiontheway",
+    "/4.0/persuggest/v1/finalsuggest", "/4.0/persuggest/v1/suggest", "/4.0/orderhistory/v2/list",
+  ]);
+  const request = async (path, options, read) => {
+    let response;
+    try { response = await fetch(origin + path, options); }
+    catch (error) { if (!read) throw error; }
+    if (read && (!response || [500, 502, 503, 504].includes(response.status) &&
+        response.headers?.get("x-yataxi-retry-action")?.toLowerCase() !== "stop" &&
+        !response.headers?.has("retry-after") && !response.headers?.has("x-yataxi-retry-interval-ms"))) {
+      await new Promise((done) => setTimeout(done, 700));
+      return fetch(origin + path, options);
+    }
+    return response;
+  };
+  const common = {
     "content-type": "application/json",
     "x-requested-with": "XMLHttpRequest",
+    "x-retpath-y": "https://taxi.yandex.ru/captcha-success",
+  };
+  const base = {
+    ...common,
     "x-yataxi-userid": userId,
     "x-taxi": navigator.userAgent + " turboapp_taxi",
     "accept-language": "ru",
-    "x-yataxi-tz-offset": "10800",
+    "x-request-id": crypto.randomUUID(),
   };
-  const csrf = await fetch(origin + "/csrf_token", {
-    method: "POST",
-    redirect: "error",
-    headers: base,
-    credentials: "include",
-    body: "{}",
-  });
-  if (csrf.status === 401) return { wall: "signed_out" };
-  if (csrf.status !== 200) return { error: "csrf_" + csrf.status };
-  const headers = { ...base, "x-csrf-token": (await csrf.json()).sk };
+  let token;
+  try {
+    const cached = JSON.parse(localStorage.getItem("csrf_token") || "null");
+    if (typeof cached?.token === "string" && cached.token &&
+        Number.isFinite(cached.validUntil) && cached.validUntil > Date.now()) token = cached.token;
+  } catch {}
+  if (!token) {
+    const started = Date.now();
+    const csrf = await request("/csrf_token", {
+      method: "POST",
+      redirect: "error",
+      headers: common,
+      credentials: "include",
+      cache: "reload",
+      body: "{}",
+    }, true);
+    if (csrf.status === 401) return { wall: "signed_out" };
+    if (csrf.status !== 200) return { error: "csrf_" + csrf.status };
+    const data = await csrf.json();
+    if (typeof data?.sk !== "string" || !data.sk) return { error: "csrf_invalid" };
+    token = data.sk;
+    const ttl = data["max-age-seconds"];
+    if (Number.isFinite(ttl) && ttl > 60) {
+      try {
+        localStorage.setItem("csrf_token", JSON.stringify({ token, validUntil: started + (ttl - 60) * 1000 }));
+      } catch {}
+    }
+  }
+  const headers = { ...base, "x-csrf-token": token };
   const post = async (path, body) => {
-    const r = await fetch(origin + path, {
+    const r = await request(path, {
       method: "POST",
       redirect: "error",
       headers,
       credentials: "include",
       body: JSON.stringify(body),
-    });
+    }, reads.has(path));
     if (r.status === 401) return { wall: "signed_out" };
     if (r.status !== 200) return { error: "http_" + r.status };
     return r.json();
