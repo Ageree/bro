@@ -641,6 +641,7 @@ def assemble(stage, version, commit):
     shutil.copy2(BUILDS / "agent-mail.mjs", stage / "ops/agent-mail.mjs")
     shutil.copy2(BUILDS / "phone-setup.mjs", stage / "ops/phone-setup.mjs")
     shutil.copy2(BUILDS / "phone-adopt.mjs", stage / "ops/phone-adopt.mjs")
+    shutil.copy2(BUILDS / "phone-ready.mjs", stage / "ops/phone-ready.mjs")
     node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout.strip()
     world_version = json.loads((world / "package.json").read_text())["version"]
     (stage / "release.json").write_text(json.dumps({
@@ -693,7 +694,7 @@ def cmd_build(args):
          "--external:pg-native", "--log-level=warning",
          "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
         env)
-    for name in ("setup", "adopt"):
+    for name in ("setup", "adopt", "ready"):
         run(["pnpm", "exec", "esbuild", f"scripts/phone/{name}.ts", "--bundle", "--platform=node",
              "--target=node24", "--format=esm", f"--outfile={BUILDS / f'phone-{name}.mjs'}",
              "--external:pg-native", "--log-level=warning",

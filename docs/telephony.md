@@ -253,6 +253,8 @@ override полей prompt/first message/max duration, агента без ин�
 приветствием сразу при соединении (`outboundGreeting`: «Здравствуйте!» или, при
 `familiar` в `phone-call`, «Алло, привет!»). После релиза 11.10 нужен
 `phone-setup.sh --apply`; готовность принимает и агента с прежним `end_call`.
+Проверить готовность агента (`PHONE_AGENT_ID` из env прода) без записи:
+`host.py ops <VM> phone-ready.sh` (`scripts/phone/ready.ts`).
 
 У пилота уже куплены номер и SIP и импортирован номер ElevenLabs. Второй
 покупать нельзя. Для явной привязки существующих, проверенных ресурсов
