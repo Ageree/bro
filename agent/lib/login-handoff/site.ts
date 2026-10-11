@@ -103,5 +103,47 @@ export function namedInWords(domain: string, said: readonly string[]) {
     `(?:^|[^a-z\\d-])(?:[a-z\\d-]+\\.)*${domain.replaceAll(".", "\\.")}(?![a-z\\d-]|\\.[a-z\\d])`,
     "iu"
   );
-  return said.some((words) => pattern.test(words));
+  return (
+    said.some((words) => pattern.test(words)) || namedByBrand(domain, said)
+  );
+}
+
+/**
+ * Brand names people say instead of an address («яндекс go», «озон»), by the
+ * registrable domain they sign in on. The person named the service, so Bro may
+ * find its address; the table keeps that to sites it knows, never a domain a
+ * page suggested.
+ */
+const brandNames = new Map<string, readonly string[]>([
+  ["avito.ru", ["авито"]],
+  ["dns-shop.ru", ["днс"]],
+  ["lamoda.ru", ["ламода"]],
+  ["mail.ru", ["майл", "почта mail"]],
+  ["megamarket.ru", ["мегамаркет", "сбермегамаркет"]],
+  ["ozon.ru", ["озон"]],
+  ["wb.ru", ["вайлдберриз", "вб"]],
+  ["wildberries.ru", ["вайлдберриз", "вб"]],
+  ["vk.com", ["вк", "вконтакте"]],
+  ["yandex.ru", ["яндекс", "yandex"]],
+  ["yandex.com", ["яндекс", "yandex"]],
+]);
+
+function namedByBrand(domain: string, said: readonly string[]) {
+  const label = domain.split(".")[0] ?? "";
+  const names = [label, ...(brandNames.get(domain) ?? [])].filter(
+    (name) => name.length >= 2
+  );
+  return said.some((words) => {
+    // A word with a dot inside is an address, not a brand name: `ozon.evil.test`
+    // must not pass for «ozon».
+    const tokens = new Set(
+      words
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}.-]+/u)
+        .map((token) => token.replace(/^[.-]+|[.-]+$/gu, ""))
+    );
+    return names.some((name) =>
+      name.includes(" ") ? words.toLowerCase().includes(name) : tokens.has(name)
+    );
+  });
 }

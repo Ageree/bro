@@ -79,7 +79,12 @@ describe("the site a sign-in link opens", () => {
       true
     );
     expect(namedInWords("ozon.ru", ["https://www.ozon.ru/my"])).toBe(true);
-    expect(namedInWords("ozon.ru", ["зайди на озон"])).toBe(false);
+    expect(namedInWords("ozon.ru", ["зайди на озон"])).toBe(true);
+    expect(namedInWords("yandex.ru", ["ссылка на карту в яндекс go"])).toBe(
+      true
+    );
+    expect(namedInWords("ozon.ru", ["зайди на самокат"])).toBe(false);
+    expect(namedInWords("ozon.ru", ["озонатор"])).toBe(false);
     expect(namedInWords("ozon.ru", ["notozon.ru"])).toBe(false);
     expect(namedInWords("ozon.ru", ["ozon.ru.evil.test"])).toBe(false);
     expect(namedInWords("ozon.ru", [])).toBe(false);
