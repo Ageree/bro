@@ -53,7 +53,7 @@ const snapshotSchema = z.strictObject({
     source: z.literal("diehard"),
     system: z.enum(["VISA", "MasterCard", "MASTERCARD", "MIR"]),
     type: z.literal("card"),
-    verifyStrategy: z.literal("card_antifraud"),
+    verifyStrategy: z.literal("card_antifraud").nullable(),
   }),
   validUntil: z.iso.datetime({ offset: true }),
   version: z.literal(1),
@@ -184,11 +184,11 @@ const pageSource = String.raw`
   };
   const cardShape = (method) => {
     if (!record(method) || method.type !== "card" || method.currency !== "RUB" || method.availability?.available !== true ||
-        method.source !== "diehard" || method.verifyStrategy !== "card_antifraud" ||
+        method.source !== "diehard" || method.verifyStrategy != null && method.verifyStrategy !== "card_antifraud" ||
         !["VISA", "MasterCard", "MASTERCARD", "MIR"].includes(method.system) || method.isYandexCard || method.meta || method.overspending) block("payment_unsupported");
     const last4 = typeof method.number === "string" ? /^[*•xX\s-]*(\d{4})$/.exec(method.number.trim())?.[1] || null : null;
     return { currency: method.currency, id: text(method.id, "payment_unverified"), last4, source: method.source,
-      system: method.system, type: method.type, verifyStrategy: method.verifyStrategy };
+      system: method.system, type: method.type, verifyStrategy: method.verifyStrategy ?? null };
   };
   const readCheckout = async () => {
     const address = savedAddress();

@@ -187,6 +187,53 @@ describe("Lavka purchase fixed page functions", () => {
     expect(transport.run.mock.calls[0]?.[1].access).toBe("read");
   });
 
+  it.each(["missing", "null"])(
+    "accepts an available verified card with %s verification strategy",
+    async (shape) => {
+      const card: Record<string, JsonValue> = {
+        ...methodsFixture.defaultMethod,
+      };
+      if (shape === "missing") delete card.verifyStrategy;
+      else card.verifyStrategy = null;
+      methods = { ...methodsFixture, defaultMethod: card, methods: [card] };
+      const prepared = await ready();
+      expect(prepared.snapshot.payment.verifyStrategy).toBeNull();
+      expect(await confirm(prepared)).toEqual({
+        kind: "placed",
+        orderId: "synthetic-order",
+        paymentStatus: "unknown",
+      });
+      expect(submitResponse).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("requires a new quote when the existing card becomes verified", async () => {
+    const prepared = await ready();
+    const card: Record<string, JsonValue> = {
+      ...methodsFixture.defaultMethod,
+    };
+    delete card.verifyStrategy;
+    methods = { ...methodsFixture, defaultMethod: card, methods: [card] };
+    expect(await confirm(prepared)).toEqual({
+      kind: "rejected",
+      reason: "payment_changed",
+    });
+    expect(submitResponse).not.toHaveBeenCalled();
+  });
+
+  it("still blocks unknown verification strategies on an available card", async () => {
+    const card = {
+      ...methodsFixture.defaultMethod,
+      verifyStrategy: "unrecognized_verification",
+    };
+    methods = { ...methodsFixture, defaultMethod: card, methods: [card] };
+    expect(await prepareLavkaPurchase("workspace:synthetic")).toEqual({
+      kind: "blocked",
+      reason: "payment_unsupported",
+    });
+    expect(submitResponse).not.toHaveBeenCalled();
+  });
+
   it("keeps exact decimal money without floating-point multiplication", async () => {
     withCart({
       totalPriceValue: "384.57",
