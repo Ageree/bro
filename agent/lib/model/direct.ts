@@ -1292,6 +1292,11 @@ export function directModelSelection(
     readonly historyTrim?: HistoryTrim;
     /** The only tools this step may call, when not every tool of the turn. */
     readonly offeredTools?: readonly string[];
+    /**
+     * The pilot of the quicker answer step (`fastReplyPilot`): the step
+     * runs without hidden reasoning, whatever the endpoint's effort.
+     */
+    readonly reasoningOff?: boolean;
     readonly replyNote?: string;
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
@@ -1400,6 +1405,8 @@ export function directModelSelection(
             endpoint.contextTokens,
             options.compaction.inputTokens
           ),
-    modelOptions: reasoningOptions(endpoint.reasoningEffort),
+    modelOptions: reasoningOptions(
+      options.reasoningOff ? "off" : endpoint.reasoningEffort
+    ),
   };
 }
