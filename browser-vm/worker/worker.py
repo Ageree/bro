@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-10.2"
+VERSION = "2026-10-10.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1659,7 +1659,7 @@ class Worker:
         if history.is_done():
             return "completed", final, None
         errors = [e for e in history.errors() if e]
-        return "failed", final, (errors[-1] if errors else "The agent stopped without finishing.")[:2000]
+        return "failed", final, (errors[-1] if errors else unfinished_reason(history, agent))[:2000]
 
     async def run_jev(self, run, session, text):
         """A bounded jev-ultrafast segment on the same Chrome; jev returns BLOCKED on widgets it cannot
@@ -1924,6 +1924,24 @@ CLEAR_CODE_BOXES = r"""(() => {
   }
   return true;
 })()"""
+
+def unfinished_reason(history, agent):
+    """Why a run that neither finished nor failed with an error stopped: the steps it took, the agent's own
+    stop and failure counters and its last actions, so the outcome says more than "stopped" (10.10: a playerok
+    sign-up run ended so, with no report and no way to tell a stop from a dead page). No page text, no input."""
+    parts = []
+    with contextlib.suppress(Exception):
+        parts.append(f"after {history.number_of_steps()} steps")
+    with contextlib.suppress(Exception):
+        state = agent.state
+        parts.append(f"stopped={bool(getattr(state, 'stopped', False))}, "
+                     f"failures={getattr(state, 'consecutive_failures', 0)}")
+    with contextlib.suppress(Exception):
+        names = [str(name) for name in history.action_names()[-3:]]
+        if names:
+            parts.append("last actions: " + ", ".join(names))
+    return "The agent stopped without finishing" + (" (" + "; ".join(parts) + ")" if parts else "") + "."
+
 
 def _code_chars(value):
     return re.sub(r"[^0-9A-Za-z]", "", value or "").lower()

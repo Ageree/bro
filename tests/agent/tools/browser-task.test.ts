@@ -10074,7 +10074,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
       expect(text).not.toContain(mailbox.email);
     }
     expect(continuationNote(result)).toContain(
-      "The run registers the account with your own AgentMail address and a password the tool made and saved in the vault"
+      "The run registers the account with your own AgentMail address and a password the tool made and keeps as this site's login on your side"
     );
     expect(continuationNote(result)).not.toContain(
       "The user's saved sign-in for this site is in the vault"

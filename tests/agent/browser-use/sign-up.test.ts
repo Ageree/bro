@@ -308,7 +308,7 @@ describe("what a settled sign-up leaves in the vault", () => {
     ).toBe("kept");
   });
 
-  it("says where the login is, never the password", async () => {
+  it("says Bro keeps the login, sends no one to a page, never the password", async () => {
     savedLogin(mailbox.email);
 
     const line = await settleSignUpLogin(
@@ -318,17 +318,19 @@ describe("what a settled sign-up leaves in the vault", () => {
     );
 
     expect(line).toContain(
-      "as «Аккаунт Бро на www.inaturalist.org», where they can see its login and password with «Показать данные для входа»"
+      "saved on your side as «Аккаунт Бро на www.inaturalist.org»"
     );
-    expect(line).toContain("раздел «Сейф» → «Входы»");
-    expect(line).toContain("/vault");
-    expect(line).toContain("Never write the password");
+    expect(line).toContain("never point them to the vault");
+    expect(line).toContain("забудь мой вход на www.inaturalist.org");
+    expect(line).not.toContain("раздел «Сейф»");
+    expect(line).not.toContain("/vault");
+    expect(line).toContain("never write the password");
     expect(line).not.toContain("Secret-1!");
     expect(deleteVaultItem).not.toHaveBeenCalled();
 
     await expect(
       settleSignUpLogin(scope, "https://www.inaturalist.org", "kept")
-    ).resolves.toContain("The login prepared for it stays in the user's vault");
+    ).resolves.toContain("The login prepared for it stays saved on your side");
     expect(deleteVaultItem).not.toHaveBeenCalled();
   });
 

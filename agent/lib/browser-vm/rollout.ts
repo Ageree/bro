@@ -49,6 +49,9 @@ type WorkerHealth = Awaited<ReturnType<typeof readBrowserVmWorkerHealth>>;
  * inside the two-minute lease of lifecycle.ts, with room for the alert.
  */
 const rolloutBudgetMs = 75_000;
+/** The wait before the update is asked again after a 401, and how often. */
+const clockRetryMs = 4_000;
+const clockRetries = 3;
 /** The file is some 100 KB: a download slower than this is a stuck one. */
 const downloadTimeoutMs = 15_000;
 /** The new worker is up within seconds; past this the errand goes on. */
@@ -206,12 +209,34 @@ export async function rollOutBrowserVmWorker(
 
   let accepted: boolean;
   try {
-    await updateBrowserVmWorkerCode(
-      vm,
-      code,
-      published.sha256,
-      Math.max(1_000, deadline - Date.now() - upWaitMs / 2)
-    );
+    // A sandbox woken from its snapshot keeps the clock of the snapshot for
+    // a few seconds, and the worker answers 401 «expired token» to a token
+    // signed with the right one (10.10: the update of a woken playerok
+    // sandbox was dropped so, and the errand ran on the old worker). The
+    // clock catches up within seconds: asked again, still inside the budget.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- An attempt follows the refusal of the one before.
+        await updateBrowserVmWorkerCode(
+          vm,
+          code,
+          published.sha256,
+          Math.max(1_000, deadline - Date.now() - upWaitMs / 2)
+        );
+        break;
+      } catch (error) {
+        if (
+          !(error instanceof BrowserVmWorkerError) ||
+          error.status !== 401 ||
+          attempt >= clockRetries ||
+          Date.now() + clockRetryMs + upWaitMs >= deadline
+        ) {
+          throw error;
+        }
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The wait is the point.
+        await sleep(clockRetryMs);
+      }
+    }
     accepted = true;
   } catch (error) {
     if (error instanceof BrowserVmWorkerError) {
