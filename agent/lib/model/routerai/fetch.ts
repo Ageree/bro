@@ -2,6 +2,7 @@ import { z } from "zod";
 import { watchedModelFetch } from "../stream-watchdog";
 import { failureStatus, reportedErrorSchema } from "./errors";
 import { withFoundationModelsFallback } from "./fallback";
+import { withRunInfraFirst } from "./runinfra";
 import { noteFailedHost, routedAroundFailedHosts } from "./hosts";
 
 const answerSchema = z
@@ -208,15 +209,19 @@ const attempts = 3;
  * nothing of a failed answer may reach eve. Bro sends its words through
  * `send_message`, so no person waits on the streamed text.
  *
- * A chat call whose route to RouterAI failed goes to Cloud.ru Foundation
- * Models when its key is set (`fallback.ts`).
+ * A chat call for a model RunInfra hosts goes there first when its key is
+ * set, and to RouterAI on any failure (`runinfra.ts`). A chat call whose
+ * route to RouterAI failed goes to Cloud.ru Foundation Models when its key
+ * is set (`fallback.ts`).
  */
 export async function routerAiModelFetch(
   input: string | URL | Request,
   init?: RequestInit
 ): Promise<Response> {
-  return withFoundationModelsFallback(input, init, async () =>
-    attemptRouterAiFetch(input, init, 1)
+  return withRunInfraFirst(input, init, () =>
+    withFoundationModelsFallback(input, init, async () =>
+      attemptRouterAiFetch(input, init, 1)
+    )
   );
 }
 

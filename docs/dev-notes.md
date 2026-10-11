@@ -801,6 +801,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   новый ключ из кабинета. Ключ из env облачной сессии может быть тем, мёртвым.
 - `ROUTERAI_API_KEY` облачной сессии приходит в типографских кавычках:
   `/api/v1/credits` без их снятия отвечает 401, хотя ключ рабочий.
+- С 11.10 чат-вызовы `deepseek/deepseek-v4.1-flash` идут сначала в RunInfra
+  (`RUNINFRA_API_KEY`, `agent/lib/model/routerai/runinfra.ts`): первый токен
+  0,9–1,0 с против 2,3–2,9 с у RouterAI, шаг с кэшем ≈0,11 ₽ против ≈0,04 ₽.
+  Любой сбой RunInfra (сеть, не 2xx, `error` в ответе) отдаёт тот же вызов
+  RouterAI и на 5 минут выключает RunInfra; поиск (`plugins`), другие модели и
+  сырые вызовы — только RouterAI. Цена RunInfra в долларах, в `usage.cost`
+  она уходит рублями по `USAGE_USD_RUB`. Откат — убрать ключ из `prod.json`.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
   SSE `data:{"error":…}`; без `routerai/fetch.ts` провайдер AI SDK принимал их
   за пустой ответ, и «скоро вернусь» не видел 402/429/5xx.
