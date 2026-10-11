@@ -34,6 +34,7 @@ const commitPath = "/external/3.0/ordercommit";
 const quotePath = "/3.0/routestats";
 const statusPath = "/3.0/taxiontheway";
 const requests: { path: string; body: JsonValue }[] = [];
+const redirectModes: RequestInit["redirect"][] = [];
 let quote = structuredClone(quoteFixture);
 let selected: JsonValue;
 let methods: JsonValue;
@@ -99,6 +100,7 @@ async function draft(prepared: Awaited<ReturnType<typeof ready>>) {
 beforeEach(() => {
   vi.resetAllMocks();
   requests.length = 0;
+  redirectModes.length = 0;
   quote = structuredClone(quoteFixture);
   persistedUserId = userId;
   selected = { id: "cash", type: "cash", zoneAvailable: true };
@@ -145,10 +147,11 @@ beforeEach(() => {
       Date,
       indexedDB: syntheticIndexedDb(),
       navigator: { userAgent: "Synthetic test" },
-      fetch: async (url: string, input: { body: string }) => {
+      fetch: async (url: string, input: RequestInit) => {
         const path = new URL(url).pathname;
-        const body = z.json().parse(JSON.parse(input.body));
+        const body = z.json().parse(JSON.parse(z.string().parse(input.body)));
         requests.push({ path, body });
+        redirectModes.push(input.redirect);
         const result = serve(path, body);
         return { status: result.status ?? 200, json: async () => result.body };
       },
@@ -305,6 +308,7 @@ describe("Go fixed provider functions", () => {
     expect(requests.filter((request) => request.path === commitPath)).toEqual([
       { path: commitPath, body: { id: userId, orderid: "synthetic-order" } },
     ]);
+    expect(redirectModes).toEqual(requests.map(() => "error"));
   });
 
   it("compares exact fresh fare and payment before draft, and expires locally", async () => {
