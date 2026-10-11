@@ -12,7 +12,7 @@ const alertRepeatAfterMs = 6 * 60 * 60_000;
  * needs. Nothing it tries on Browser Use again this turn will work.
  */
 export const browserUseOutOfCreditsNote =
-  "Nothing was started: the cloud browser service is unavailable right now (it refused new runs for billing reasons, which only the service owner can fix). Tell the user honestly in one short sentence that the browser service is temporarily unavailable, and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
+  "Nothing was started: the cloud browser service is unavailable right now (it refused new runs for billing reasons, which only the service owner can fix). Tell the user honestly in one short sentence, in the first person, that you cannot open sites right now (never «браузер» or «сервис» as a separate party), and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
 
 /**
  * Browser Use answered 402: the project has no credits, or the key reached

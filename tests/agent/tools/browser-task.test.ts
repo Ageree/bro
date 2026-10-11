@@ -4369,7 +4369,7 @@ describe("browser_task on a workspace's own browser VM", () => {
 
     expect(result).toMatchObject({ status: "unavailable" });
     expect(continuationNote(result)).toContain(
-      "the browser service is temporarily unavailable"
+      "you cannot open sites right now"
     );
     // Nothing is counted for the month, and no profile is asked for.
     expect(browserRunQuotaGate).not.toHaveBeenCalled();

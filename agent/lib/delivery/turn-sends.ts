@@ -237,7 +237,7 @@ export function headsUpDelivered(output: ToolResultPart["output"]) {
  * answer is out: the same text at each step, so the step's notes keep their
  * prompt cache until the reply directive changes anyway (`answered`).
  */
-export const earlyReplyNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, send one short heads-up as the first call of the step that calls that tool: send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, запускаю браузер»), then the tool call in the same step. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
+export const earlyReplyNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, send one short heads-up as the first call of the step that calls that tool: send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, смотрю на сайте»), then the tool call in the same step. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
 
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
