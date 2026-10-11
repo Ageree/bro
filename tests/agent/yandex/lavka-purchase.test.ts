@@ -28,6 +28,7 @@ const cartPath = "/api/v1/providers/cart/v1/retrieve";
 const layoutPath = "/api/v1/providers/orders/v1/checkout-layout";
 const methodsPath = "/api/v1/providers/payments/v1/methods";
 const submitPath = "/api/v1/orders/submit";
+const paymentPath = "/api/v1/providers/payments/v1/status";
 const { __PAGE_PROPS__: pageProps, __REACT_QUERY_STATE__: queryState } =
   pageFixture;
 const startupFixture = queryState.queries.find(
@@ -47,6 +48,7 @@ let layout: JsonValue;
 let globals = structuredClone(pageFixture);
 let saved = structuredClone(fixtureAddress);
 const submitResponse = vi.fn<() => JsonValue>();
+const paymentResponse = vi.fn<() => JsonValue>();
 const delayElapsed = vi.fn<(milliseconds: number) => void>();
 const serve = vi.fn<(path: string) => ReturnType<typeof response>>();
 
@@ -93,11 +95,13 @@ beforeEach(() => {
     },
   };
   submitResponse.mockReturnValue({ orderId: "synthetic-order" });
+  paymentResponse.mockReturnValue({ status: "success" });
   serve.mockImplementation((path) => {
     if (path === cartPath) return response(cart);
     if (path === layoutPath) return response(layout);
     if (path === methodsPath) return response(methods);
     if (path === submitPath) return response(submitResponse());
+    if (path === paymentPath) return response(paymentResponse());
     throw new Error("unexpected route");
   });
   transport.run.mockImplementation(async (_workspace, operation, args) => {
@@ -183,7 +187,7 @@ describe("Lavka purchase fixed page functions", () => {
 
   it("does not submit a quote that expired during the final request delay", async () => {
     const prepared = await ready();
-    let clock = Date.parse(prepared.snapshot.expiresAt) - 4500;
+    let clock = Date.parse(prepared.snapshot.expiresAt) - 1000;
     const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
     delayElapsed.mockImplementation((milliseconds) => {
       clock += milliseconds;
@@ -245,7 +249,7 @@ describe("Lavka purchase fixed page functions", () => {
       expect(await confirm(prepared)).toEqual({
         kind: "placed",
         orderId: "synthetic-order",
-        paymentStatus: "unknown",
+        paymentStatus: "paid",
       });
       expect(submitResponse).toHaveBeenCalledTimes(1);
     }
@@ -419,22 +423,24 @@ describe("Lavka purchase fixed page functions", () => {
     });
   });
 
-  it("submits once with the fresh address and existing card id, never reporting paid from orderId", async () => {
+  it("submits once with the fresh address and existing card id, and reads the payment as the site does", async () => {
     const prepared = await ready();
     requests.length = 0;
     expect(await confirm(prepared)).toEqual({
       kind: "placed",
       orderId: "synthetic-order",
-      paymentStatus: "unknown",
+      paymentStatus: "paid",
     });
     expect(requests.map((request) => request.path)).toEqual([
       cartPath,
       layoutPath,
       methodsPath,
-      cartPath,
       submitPath,
+      paymentPath,
     ]);
-    expect(requests.at(-1)?.body).toMatchObject({
+    expect(
+      requests.find(({ path }) => path === submitPath)?.body
+    ).toMatchObject({
       cartId: "synthetic-cart",
       cartVersion: 2,
       flowVersion: "grocery_flow_v1",
@@ -446,7 +452,7 @@ describe("Lavka purchase fixed page functions", () => {
     expect(submitResponse).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the live submit envelope without treating the order as paid", async () => {
+  it("reads the live submit envelope", async () => {
     const prepared = await ready();
     submitResponse.mockReturnValue({
       data: { orderId: "synthetic-wrapped-order" },
@@ -454,7 +460,7 @@ describe("Lavka purchase fixed page functions", () => {
     expect(await confirm(prepared)).toEqual({
       kind: "placed",
       orderId: "synthetic-wrapped-order",
-      paymentStatus: "unknown",
+      paymentStatus: "paid",
     });
     expect(submitResponse).toHaveBeenCalledTimes(1);
     expect(
@@ -530,23 +536,30 @@ describe("Lavka purchase fixed page functions", () => {
     expect(submitResponse).not.toHaveBeenCalled();
   });
 
-  it("checks the cart again after reading payment", async () => {
+  it("hands over the bank's confirmation form instead of calling the order paid", async () => {
     const prepared = await ready();
-    let reads = 0;
-    serve.mockImplementation((path) => {
-      if (path === cartPath)
-        return response(
-          ++reads === 1 ? cart : { ...cartFixture, cartVersion: 3 }
-        );
-      if (path === layoutPath) return response(layout);
-      if (path === methodsPath) return response(methods);
-      return response(submitResponse());
+    paymentResponse.mockReturnValue({
+      data: {
+        status: "wait_user_action",
+        payload: { type: "card", redirectUrl: "https://trust.test/3ds" },
+      },
     });
     expect(await confirm(prepared)).toEqual({
-      kind: "rejected",
-      reason: "checkout_changed",
+      kind: "placed",
+      orderId: "synthetic-order",
+      paymentStatus: "needs_confirmation",
+      confirmUrl: "https://trust.test/3ds",
     });
-    expect(submitResponse).not.toHaveBeenCalled();
+    expect(submitResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failed payment and keeps polling a pending one within its budget", async () => {
+    const prepared = await ready();
+    paymentResponse.mockReturnValueOnce({ status: "wait" });
+    paymentResponse.mockReturnValueOnce({ status: "fail" });
+    expect(await confirm(prepared)).toMatchObject({ paymentStatus: "failed" });
+    expect(paymentResponse).toHaveBeenCalledTimes(2);
+    expect(submitResponse).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a primitive or altered amount without opening a page", async () => {
