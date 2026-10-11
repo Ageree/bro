@@ -1,0 +1,57 @@
+{
+  "cartId": "synthetic-cart",
+  "offerId": "synthetic-offer",
+  "cartVersion": 2,
+  "validUntil": "2099-10-13T21:52:07.153685+00:00",
+  "availableForCheckout": true,
+  "totalPriceValue": "384",
+  "totalItemsPrice": "55",
+  "orderConditions": {
+    "deliveryCost": "329",
+    "fullDeliveryCost": "329",
+    "minimumOrderPrice": "0"
+  },
+  "items": [
+    {
+      "id": "synthetic-water",
+      "positionId": "synthetic-position",
+      "quantity": "1",
+      "quantityType": "unit",
+      "price": "55",
+      "catalogPrice": "55",
+      "currency": "RUB",
+      "title": "Вода без газа",
+      "restrictions": [],
+      "modifiers": [],
+      "isUnavailableOnDepot": false,
+      "isFromExtraDepot": false
+    }
+  ],
+  "deliveryType": "eats_dispatch",
+  "deliveryTimeInfo": {
+    "tariff": "default",
+    "smallOrderFeeEnabled": false,
+    "kind": "on_demand"
+  },
+  "logisticMethod": "onDemand",
+  "orderFlowVersion": "grocery_flow_v1",
+  "deliveryConditionsId": "synthetic-conditions",
+  "cashback": {
+    "exist": true,
+    "fullPayment": false,
+    "fullPaymentCharge": false
+  },
+  "paidServices": {
+    "retailServiceFee": { "amount": "0" },
+    "totalServiceFees": { "amount": "0" }
+  },
+  "statuses": {
+    "hasWeighedItems": false,
+    "hasRetailItems": false,
+    "hasPackages": false,
+    "hasRestrictionsItems": false,
+    "isRover": false,
+    "isDrone": false,
+    "isPickup": false
+  }
+}

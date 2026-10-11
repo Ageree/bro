@@ -285,6 +285,12 @@ export const env = createEnv({
         "YANDEX_API_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    YANDEX_PURCHASE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     BROWSER_VM_FILES_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),

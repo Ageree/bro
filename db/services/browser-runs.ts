@@ -405,7 +405,10 @@ export async function finishWalledBrowserRun(runId: string) {
 export async function handOffBrowserRunRetry(
   fromRunId: string,
   retry: Omit<BrowserRunInsert, "createdByUserId" | "workspaceId">,
-  options: { readonly queueRevision?: number } = {}
+  options: {
+    readonly queueRevision?: number;
+    readonly spendDispatchId?: string;
+  } = {}
 ) {
   return db.transaction(async (tx) => {
     const now = new Date();
@@ -437,15 +440,20 @@ export async function handOffBrowserRunRetry(
       });
     if (!from) return false;
     await tx.insert(browserRuns).values({ ...retry, ...from });
-    await tx
+    const [reservation] = await tx
       .update(spendEntries)
       .set({ browserRunId: retry.id, updatedAt: new Date() })
       .where(
         and(
-          eq(spendEntries.browserRunId, fromRunId),
+          eq(spendEntries.workspaceId, from.workspaceId),
+          eq(spendEntries.browserRunId, options.spendDispatchId ?? fromRunId),
           eq(spendEntries.status, "reserved")
         )
-      );
+      )
+      .returning({ id: spendEntries.id });
+    if (options.spendDispatchId !== undefined && !reservation) {
+      throw new Error("The payment dispatch reservation is unavailable.");
+    }
     return true;
   });
 }

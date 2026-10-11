@@ -13,6 +13,7 @@ import type {
 } from "@agent/lib/browser-use/client";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
+import type * as spending from "@db/services/spending";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -81,6 +82,8 @@ vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
     .BrowserUseError,
   browserUseBusy: (await importOriginal<typeof browserUseClient>())
     .browserUseBusy,
+  browserUseOutOfCredits: (await importOriginal<typeof browserUseClient>())
+    .browserUseOutOfCredits,
   cancelBrowserUseRun,
   createBrowserUseRun,
   findRecentBrowserUseRunByTaskLine,
@@ -95,6 +98,14 @@ vi.mock("@db/services/browser-runs", () => ({
   handOffBrowserRunRetry,
   parkBrowserRunForRetry,
   readBrowserRun,
+}));
+vi.mock("@db/services/spending", () => ({
+  moveSpendReservation: vi.fn<typeof spending.moveSpendReservation>(
+    async () => false
+  ),
+  readBrowserPaymentDispatch: vi.fn<typeof spending.readBrowserPaymentDispatch>(
+    async () => undefined
+  ),
 }));
 // Who asked for the errand decides how long its VM stays up after it.
 const keepBrowserVmForErrand = vi.hoisted(() =>

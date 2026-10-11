@@ -26,6 +26,8 @@ const applicationEnvironment = [
   "IMESSAGE_*",
   "MAILRU_MAIL_*",
   "YANDEX_MAIL_*",
+  "YANDEX_API_WORKSPACES",
+  "YANDEX_PURCHASE_WORKSPACES",
   "MAIL_WORKSPACES",
   "MODEL_PROVIDER",
   "MTS_EXOLVE_*",

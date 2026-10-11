@@ -97,7 +97,10 @@ export async function runYandexOperation(
         argument: args,
         fn: operation.run,
         loaded: operation.loaded,
-        runOn: (url) => landing(url) === "run",
+        runOn: (url) =>
+          landing(url) === "run" &&
+          (operation.access !== "purchase" ||
+            URL.parse(url)?.origin === new URL(operation.origin).origin),
         url: operation.origin,
       }),
       callBudgetMs

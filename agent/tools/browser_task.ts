@@ -8,6 +8,7 @@ import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
   stepIdentity,
@@ -1725,11 +1726,13 @@ async function typeCodeIntoRunBrowser(
   sessionId: string,
   code: string,
   /** For a code from the site's letter: the domain it may go to. */
-  domain?: string
+  domain?: string,
+  beforeType?: () => void
 ) {
   try {
     const cdpUrl = await findBrowserUseSessionCdpUrl(sessionId);
     if (cdpUrl === undefined) return undefined;
+    beforeType?.();
     const entry = await typeOneTimeCodeOverCdp(cdpUrl, code, { domain });
     console.info("[browser-use] one-time code entry", {
       // Never the code itself, and never the challenge URL: it carries tokens.
@@ -3427,29 +3430,42 @@ async function reserveConsentForRun(
   scope: AccessScope,
   consent: SubmissionConsent | undefined,
   errand: {
+    readonly paymentAllowed?: boolean;
     readonly replacingRunId?: string;
     readonly site: string | undefined;
   }
 ) {
-  if (consent?.kind !== "confirmed" || consent.by === "errand") {
-    return undefined;
+  const inherited =
+    (consent?.kind === "confirmed" &&
+      consent.by === "errand" &&
+      consentPays(consent)) ||
+    (consent === undefined && errand.paymentAllowed === true);
+  if (consent?.kind !== "confirmed" && !inherited) return undefined;
+  const cap =
+    consent?.kind === "confirmed" ? consent.submission.paymentCapRub : 0;
+  if (cap === undefined && !inherited) return undefined;
+  const placeholder = `${yandexPurchasePilot(scope) ? "pending:dispatch" : "pending"}:${crypto.randomUUID()}`;
+  if (inherited) {
+    await moveSpendReservation(errand.replacingRunId ?? "", placeholder, {
+      amountRub: cap ?? 0,
+      scope,
+    });
+    return { allowed: true as const, placeholder, preserved: true };
   }
-  const cap = consent.submission.paymentCapRub;
-  if (cap === undefined) return undefined;
-  const placeholder = `pending:${crypto.randomUUID()}`;
   const decision = await reserveConsentPayment(scope, {
-    amountRub: cap,
+    amountRub: cap ?? 0,
     browserRunId: placeholder,
-    category: consent.submission.kind ?? null,
+    category:
+      consent?.kind === "confirmed" ? (consent.submission.kind ?? null) : null,
     merchant: normalizeMerchant(errand.site),
     periodKey: await spendPeriodKey(scope),
     replacingRunId: errand.replacingRunId,
     // A payment the person agreed to themselves, on a card or in text.
-    source: consent.by === "standing" ? "standing" : "card",
-    standing: consent.by === "standing" ? consent.rule : undefined,
+    source: consent?.by === "standing" ? "standing" : "card",
+    standing: consent?.by === "standing" ? consent.rule : undefined,
   });
   return decision.allowed
-    ? { allowed: true as const, placeholder }
+    ? { allowed: true as const, placeholder, preserved: false }
     : { allowed: false as const };
 }
 
@@ -3493,7 +3509,7 @@ async function reserveSpendForRun(
     readonly texts: readonly (string | null | undefined)[];
   }
 ) {
-  const placeholder = `pending:${crypto.randomUUID()}`;
+  const placeholder = `${yandexPurchasePilot(scope) ? "pending:dispatch" : "pending"}:${crypto.randomUUID()}`;
   const decision = await reserveAutoPayment(scope, {
     browserRunId: placeholder,
     periodKey: await spendPeriodKey(scope),
@@ -3517,25 +3533,41 @@ async function reserveSpendForRun(
  */
 async function releasedOnFailure<T>(
   placeholder: string | undefined,
-  work: () => Promise<T>
+  work: () => Promise<T>,
+  restoreRunId?: string
 ) {
   try {
     return await work();
   } catch (error) {
-    if (placeholder) await releaseReservation(placeholder);
+    if (placeholder) await releaseReservation(placeholder, restoreRunId);
     throw error;
   }
 }
 
-async function releaseReservation(browserRunId: string) {
+async function releaseReservation(browserRunId: string, restoreRunId?: string) {
+  if (restoreRunId !== undefined) {
+    await moveSpendReservation(browserRunId, restoreRunId);
+    return;
+  }
   await settleSpendReservation(browserRunId, { charged: false });
+}
+
+function unknownPaymentDispatch(cause?: unknown) {
+  return new Error(
+    "A browser payment may already have been submitted. Its outcome is unknown; the reservation remains held. Do not repeat this payment, create a replacement, or buy it through another tool. Check the existing order and payment before doing anything else.",
+    { cause: cause instanceof Error ? cause.name : undefined }
+  );
 }
 
 /**
  * Recording a run that already exists in the cloud failed: nothing here would
  * ever settle it, so it is stopped and whatever it held is given back.
  */
-async function recordStartedRun<T>(runId: string, record: () => Promise<T>) {
+async function recordStartedRun<T>(
+  runId: string,
+  record: () => Promise<T>,
+  placeholder?: string
+) {
   try {
     await record();
   } catch (error) {
@@ -3547,6 +3579,7 @@ async function recordStartedRun<T>(runId: string, record: () => Promise<T>) {
         runId,
       });
     }
+    if (placeholder) throw unknownPaymentDispatch(error);
     await releaseReservation(runId);
     throw error;
   }
@@ -3606,11 +3639,16 @@ async function cancelTrackedRun(runId: string): Promise<boolean> {
  * idle session, as a run of its own, which waits for the VM if it has to.
  * Undefined then.
  */
-async function queueIntoLiveSession(sessionId: string, text: string) {
+async function queueIntoLiveSession(
+  sessionId: string,
+  text: string,
+  stickyPayment = false
+) {
   try {
     return await queueBrowserUseSessionMessage(sessionId, text);
   } catch (error) {
     if (
+      !stickyPayment &&
       isBrowserVmId(sessionId) &&
       error instanceof BrowserUseError &&
       error.status === 409
@@ -3627,12 +3665,15 @@ async function queueIntoLiveSession(sessionId: string, text: string) {
  * answers 404, and the run is made again without one so it opens a fresh
  * browser on the same profile, where the signed-in cookies live.
  */
-export async function createFollowUpRun(input: BrowserUseCreateRunInput) {
+export async function createFollowUpRun(
+  input: BrowserUseCreateRunInput,
+  stickyPayment = false
+) {
   const asked = input.sessionId !== undefined;
   try {
     return { reusedSession: asked, run: await createBrowserUseRun(input) };
   } catch (error) {
-    if (!(error instanceof BrowserUseError)) throw error;
+    if (stickyPayment || !(error instanceof BrowserUseError)) throw error;
     if (error.status === 409) return { reusedSession: asked, run: undefined };
     if (error.status !== 400 && error.status !== 404) throw error;
     return {
@@ -3684,6 +3725,7 @@ async function continueQueuedErrand(
     readonly delegatedByPerson: boolean;
     /** What this call's card or standing permission allowed to pay, held. */
     readonly heldPlaceholder: string | undefined;
+    readonly restoreRunId?: string;
     /** The person's own login was saved for the site on this call. */
     readonly loginSaved: boolean;
     readonly message: string;
@@ -3713,21 +3755,24 @@ async function continueQueuedErrand(
   ]
     .filter((part) => part !== undefined)
     .join("\n\n");
-  const updated = await releasedOnFailure(options.heldPlaceholder, () =>
-    updateQueuedBrowserRun(row.id, {
-      delegatedByPerson: options.delegatedByPerson,
-      paymentAllowed: row.paymentAllowed || options.allowPayment,
-      pendingTask,
-      submission:
-        options.confirmedNow?.kind === "confirmed"
-          ? options.confirmedNow.submission
-          : row.submission,
-    })
+  const updated = await releasedOnFailure(
+    options.heldPlaceholder,
+    () =>
+      updateQueuedBrowserRun(row.id, {
+        delegatedByPerson: options.delegatedByPerson,
+        paymentAllowed: row.paymentAllowed || options.allowPayment,
+        pendingTask,
+        submission:
+          options.confirmedNow?.kind === "confirmed"
+            ? options.confirmedNow.submission
+            : row.submission,
+      }),
+    options.restoreRunId
   );
   if (options.heldPlaceholder) {
     await (updated
       ? moveSpendReservation(options.heldPlaceholder, row.id)
-      : releaseReservation(options.heldPlaceholder));
+      : releaseReservation(options.heldPlaceholder, options.restoreRunId));
   }
   if (!updated) {
     return {
@@ -3906,6 +3951,7 @@ async function runBrowserTask(
     const placeholder = spend?.decision.allowed
       ? spend.placeholder
       : held?.placeholder;
+    const stickyPayment = placeholder?.startsWith("pending:dispatch:") === true;
     // The login a sign-up saved in the vault for this run, taken out again
     // when the run never starts.
     let signUpLogin: string | undefined;
@@ -3914,123 +3960,139 @@ async function runBrowserTask(
         await forgetAgentMailLogin(scope, signUpLogin);
       }
     };
-    const started = await undoneOnFailure(forgetSignUpLogin, () =>
-      releasedOnFailure(placeholder, async () => {
-        // The monthly ceiling is checked before anything is provisioned: a
-        // refused errand must not cost a remote profile or a bound secret.
-        const quota = await browserRunQuotaGate(scope);
-        if (!quota.allowed) {
-          return { kind: "quota_exhausted" as const, note: quota.note };
-        }
-        // Saved before the secrets are read, so the run is bound to it as to
-        // any login of the site's (`login_username`, `login_password`).
-        if (signUp?.kind === "new") {
-          signUpLogin = await saveAgentMailLogin(scope, signUp);
-        }
-        const [profileId, secrets, facts] = await Promise.all([
-          workspaceProfileId(scope, onVm),
-          resolveBrowserSecretBindings(scope, {
+    const paymentDispatch = { sent: false };
+    const startErrandRun = () =>
+      undoneOnFailure(forgetSignUpLogin, () =>
+        releasedOnFailure(undefined, async () => {
+          // The monthly ceiling is checked before anything is provisioned: a
+          // refused errand must not cost a remote profile or a bound secret.
+          const quota = await browserRunQuotaGate(scope);
+          if (!quota.allowed) {
+            return { kind: "quota_exhausted" as const, note: quota.note };
+          }
+          // Saved before the secrets are read, so the run is bound to it as to
+          // any login of the site's (`login_username`, `login_password`).
+          if (signUp?.kind === "new") {
+            signUpLogin = await saveAgentMailLogin(scope, signUp);
+          }
+          const [profileId, secrets, facts] = await Promise.all([
+            workspaceProfileId(scope, onVm),
+            resolveBrowserSecretBindings(scope, {
+              allowPayment,
+              // Only an errand the person asked for signs in with their phone:
+              // a scheduled or background run never sends them a code.
+              phoneSignIn: byPerson,
+              site: input.site,
+            }),
+            browserRunFacts(scope),
+          ]);
+          // Written before the VM is woken or touched: who waits for this
+          // errand decides how long its VM stays up after it.
+          if (isBrowserVmId(profileId)) {
+            await keepBrowserVmForErrand(scope.workspaceId, byPerson);
+          }
+          const task = composeBrowserTask({
+            aliases: secrets.aliases,
             allowPayment,
-            // Only an errand the person asked for signs in with their phone:
-            // a scheduled or background run never sends them a code.
-            phoneSignIn: byPerson,
-            site: input.site,
-          }),
-          browserRunFacts(scope),
-        ]);
-        // Written before the VM is woken or touched: who waits for this
-        // errand decides how long its VM stays up after it.
-        if (isBrowserVmId(profileId)) {
-          await keepBrowserVmForErrand(scope.workspaceId, byPerson);
-        }
-        const task = composeBrowserTask({
-          aliases: secrets.aliases,
-          allowPayment,
-          consent,
-          collectImages: input.collectImages === true,
-          deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
-            ? deliveryAddressFor(facts.addresses, errand)
-            : undefined,
-          errand:
-            spend?.decision.allowed && input.withinSpendLimit
-              ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
-              : sent,
-          facts: facts.details,
-          home: facts.home,
-          signUp:
-            signUp === undefined || signUp.kind === "saved"
-              ? undefined
-              : { fresh: signUp.kind === "new", username: signUp.username },
-          site,
-          staging,
-        });
-        // Another errand of the workspace in a browser on the same account
-        // may be signing in: this one waits for it and starts signed in,
-        // rather than sending a second code that cancels the first.
-        const waitsForAccount = await accountInUse(
-          scope.workspaceId,
-          input.site
-        );
-        if (waitsForAccount !== undefined) {
-          return {
-            aliases: secrets.aliases,
-            kind: "queued" as const,
-            profileId,
-            task,
-            waitsForAccount,
-          };
-        }
-        // While errands wait for a browser, the cap was full a minute ago:
-        // this one joins the back of the line instead of taking the slot
-        // the first in line is about to get.
-        if (await browserQueueOccupied(scope.workspaceId, profileId)) {
-          return {
-            aliases: secrets.aliases,
-            kind: "queued" as const,
-            profileId,
-            task,
-          };
-        }
-        // Only an errand that searches runs in flash mode: nothing allowed in
-        // the person's name, nothing to stage, nothing bound. A queued one is
-        // decided again from its row when it starts (`flash.ts`).
-        const search = await errandSearches(scope, {
-          bindings: secrets.bindings,
-          paymentAllowed: allowPayment,
-          staged: staging !== undefined,
-          submits: consent !== undefined,
-        });
-        try {
-          const run = await createBrowserUseRun({
-            customProxy: customProxy(),
-            inTurn: true,
-            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-            model: env.BROWSER_USE_MODEL,
-            profileId,
-            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-            search,
-            secretBindings: secrets.bindings,
-            task,
+            consent,
+            collectImages: input.collectImages === true,
+            deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
+              ? deliveryAddressFor(facts.addresses, errand)
+              : undefined,
+            errand:
+              spend?.decision.allowed && input.withinSpendLimit
+                ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
+                : sent,
+            facts: facts.details,
+            home: facts.home,
+            signUp:
+              signUp === undefined || signUp.kind === "saved"
+                ? undefined
+                : { fresh: signUp.kind === "new", username: signUp.username },
+            site,
+            staging,
           });
-          return { kind: "started" as const, profileId, run, secrets };
-        } catch (error) {
-          if (browserUseBusy(error)) {
+          // Another errand of the workspace in a browser on the same account
+          // may be signing in: this one waits for it and starts signed in,
+          // rather than sending a second code that cancels the first.
+          const waitsForAccount = await accountInUse(
+            scope.workspaceId,
+            input.site
+          );
+          if (waitsForAccount !== undefined) {
             return {
               aliases: secrets.aliases,
               kind: "queued" as const,
               profileId,
-              retryAfterMs: error.retryAfterMs,
+              task,
+              waitsForAccount,
+            };
+          }
+          // While errands wait for a browser, the cap was full a minute ago:
+          // this one joins the back of the line instead of taking the slot
+          // the first in line is about to get.
+          if (await browserQueueOccupied(scope.workspaceId, profileId)) {
+            return {
+              aliases: secrets.aliases,
+              kind: "queued" as const,
+              profileId,
               task,
             };
           }
-          if (browserUseOutOfCredits(error)) {
-            await reportBrowserUseOutOfCredits(error);
-            return { kind: "no_credits" as const };
+          // Only an errand that searches runs in flash mode: nothing allowed in
+          // the person's name, nothing to stage, nothing bound. A queued one is
+          // decided again from its row when it starts (`flash.ts`).
+          const search = await errandSearches(scope, {
+            bindings: secrets.bindings,
+            paymentAllowed: allowPayment,
+            staged: staging !== undefined,
+            submits: consent !== undefined,
+          });
+          try {
+            if (placeholder) paymentDispatch.sent = true;
+            const run = await createBrowserUseRun({
+              customProxy: customProxy(),
+              inTurn: true,
+              maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+              model: env.BROWSER_USE_MODEL,
+              profileId,
+              proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+              search,
+              secretBindings: secrets.bindings,
+              task,
+            });
+            return { kind: "started" as const, profileId, run, secrets };
+          } catch (error) {
+            if (browserUseBusy(error)) {
+              paymentDispatch.sent = false;
+              return {
+                aliases: secrets.aliases,
+                kind: "queued" as const,
+                profileId,
+                retryAfterMs: error.retryAfterMs,
+                task,
+              };
+            }
+            if (browserUseOutOfCredits(error)) {
+              paymentDispatch.sent = false;
+              await reportBrowserUseOutOfCredits(error);
+              return { kind: "no_credits" as const };
+            }
+            throw error;
           }
-          throw error;
-        }
-      })
-    );
+        })
+      );
+    let started: Awaited<ReturnType<typeof startErrandRun>>;
+    try {
+      started = await startErrandRun();
+    } catch (error) {
+      if (placeholder) {
+        if (stickyPayment && paymentDispatch.sent)
+          throw unknownPaymentDispatch(error);
+        await releaseReservation(placeholder);
+      }
+      throw error;
+    }
     if (started.kind === "quota_exhausted") {
       if (placeholder) await releaseReservation(placeholder);
       return { note: started.note, status: "quota_exhausted" };
@@ -4082,23 +4144,29 @@ async function runBrowserTask(
     }
     const { profileId, run, secrets } = started;
     await browserUseCreditsRestored();
-    if (placeholder) await moveSpendReservation(placeholder, run.id);
-    await recordStartedRun(run.id, () =>
-      createBrowserRun(scope, {
-        ...conversation,
-        id: run.id,
-        delegatedByPerson:
-          byPerson && (input.personWants === "done" || actsForPerson(input)),
-        paymentAllowed: allowPayment,
-        profileId,
-        sessionId: run.sessionId,
-        site: site ?? null,
-        startedByPerson: byPerson,
-        status: "running",
-        submission: confirmedSubmission(consent),
-        task: sent,
-      })
+    if (placeholder && !stickyPayment)
+      await moveSpendReservation(placeholder, run.id);
+    await recordStartedRun(
+      run.id,
+      () =>
+        createBrowserRun(scope, {
+          ...conversation,
+          id: run.id,
+          delegatedByPerson:
+            byPerson && (input.personWants === "done" || actsForPerson(input)),
+          paymentAllowed: allowPayment,
+          profileId,
+          sessionId: run.sessionId,
+          site: site ?? null,
+          startedByPerson: byPerson,
+          status: "running",
+          submission: confirmedSubmission(consent),
+          task: sent,
+        }),
+      stickyPayment ? placeholder : undefined
     );
+    if (placeholder && stickyPayment)
+      await moveSpendReservation(placeholder, run.id);
     const liveViewUrl = await waitForLiveViewUrl(run.id);
     if (liveViewUrl) {
       await updateBrowserRunProgress(run.id, { liveViewUrl });
@@ -4254,7 +4322,10 @@ async function runBrowserTask(
         : personInstruction(said, task, contacts.text);
     // Paying is allowed on every follow-up of an errand whose consent named
     // what it costs, not only on the call that brings it.
-    const allowPayment = input.allowPayment === true || consentPays(consent);
+    const allowPayment =
+      input.allowPayment === true ||
+      consentPays(consent) ||
+      (row.paymentAllowed && stillAllowed && confirmedNow === undefined);
     // A run already started with the card bound keeps it; only a payment
     // that run was not started with needs a run of its own.
     const bindsCardNow =
@@ -4274,7 +4345,8 @@ async function runBrowserTask(
       );
     }
     if (row.status === "queued") {
-      const heldForQueue = await reserveConsentForRun(scope, confirmedNow, {
+      const heldForQueue = await reserveConsentForRun(scope, consent, {
+        paymentAllowed: allowPayment,
         replacingRunId: row.id,
         site,
       });
@@ -4292,6 +4364,7 @@ async function runBrowserTask(
           consent,
           delegatedByPerson,
           heldPlaceholder: heldForQueue?.placeholder,
+          restoreRunId: heldForQueue?.preserved ? runId : undefined,
           loginSaved,
           message,
           scope,
@@ -4321,7 +4394,8 @@ async function runBrowserTask(
     // payment, which replaces whatever the errand held once it is granted.
     const held = spend
       ? undefined
-      : await reserveConsentForRun(scope, confirmedNow, {
+      : await reserveConsentForRun(scope, consent, {
+          paymentAllowed: allowPayment,
           replacingRunId: runId,
           site,
         });
@@ -4331,6 +4405,8 @@ async function runBrowserTask(
     const placeholder = spend?.decision.allowed
       ? spend.placeholder
       : held?.placeholder;
+    const stickyPayment = placeholder?.startsWith("pending:dispatch:") === true;
+    const restoreRunId = held?.preserved ? runId : undefined;
     const instruction =
       spend?.decision.allowed && input.withinSpendLimit
         ? `${message}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
@@ -4356,7 +4432,7 @@ async function runBrowserTask(
       ? await usesBrowserVm(scope)
       : row.profileId !== null && isBrowserVmId(row.profileId);
     if (!onVm && !browserUseCloudConfigured()) {
-      if (placeholder) await releaseReservation(placeholder);
+      if (placeholder) await releaseReservation(placeholder, restoreRunId);
       return { note: browserServiceOffNote, runId, status: "unavailable" };
     }
     // A follow-up is an errand of its own for the VM's idle window: the
@@ -4388,8 +4464,9 @@ async function runBrowserTask(
         });
       }
     };
+    const paymentDispatch = { sent: false };
     const continueErrandRun = () =>
-      releasedOnFailure(placeholder, async () => {
+      releasedOnFailure(undefined, async () => {
         // Both are round trips to the cloud and neither needs the other's answer.
         // A one-time code waiting its turn is a code closer to expiring, and the
         // entry is worth attempting whether or not a run is still on the page:
@@ -4405,8 +4482,13 @@ async function runBrowserTask(
           trackedRunIsLive(runId, row.completedAt),
           row.sessionId === null || typed === undefined || !page.held
             ? undefined
-            : typeCodeIntoRunBrowser(row.sessionId, typed, mail?.domain),
+            : typeCodeIntoRunBrowser(row.sessionId, typed, mail?.domain, () => {
+                if (placeholder) paymentDispatch.sent = true;
+              }),
         ]);
+        if (stickyPayment && paymentDispatch.sent) {
+          throw unknownPaymentDispatch();
+        }
         // Any code the follow-up hands over, typed straight in or not: the
         // person's own, checked above, or the one from the site's letter. One
         // that belonged to a page closed since goes nowhere.
@@ -4445,6 +4527,8 @@ async function runBrowserTask(
           const details = confirmedNow
             ? (await browserRunFacts(scope)).details
             : undefined;
+          const previouslyDispatched = paymentDispatch.sent;
+          if (placeholder) paymentDispatch.sent = true;
           const queued = await queueIntoLiveSession(
             row.sessionId,
             [
@@ -4459,8 +4543,10 @@ async function runBrowserTask(
               ),
             ]
               .filter((part) => part !== undefined)
-              .join("\n\n")
+              .join("\n\n"),
+            stickyPayment
           );
+          if (queued === undefined) paymentDispatch.sent = previouslyDispatched;
           // A VM session that took no message falls through to a follow-up
           // run of its own, below.
           if (queued !== undefined) {
@@ -4483,8 +4569,6 @@ async function runBrowserTask(
               };
             }
             return {
-              // The run was started with the card bound, so what this call
-              // allowed it to pay is its to pay.
               carriesPayment: true,
               kind: "replied" as const,
               reply: {
@@ -4620,24 +4704,30 @@ async function runBrowserTask(
           };
         }
         let followUp: Awaited<ReturnType<typeof createFollowUpRun>>;
+        const previouslyDispatched = paymentDispatch.sent;
         try {
-          followUp = await createFollowUpRun({
-            customProxy: customProxy(),
-            // A VM profile only (cloud ignores it).
-            freshExit: onVm && walled,
-            inTurn: true,
-            maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
-            model: env.BROWSER_USE_MODEL,
-            profileId,
-            proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-            secretBindings: secrets.bindings,
-            sessionId,
-            task: continuation,
-          });
+          if (placeholder) paymentDispatch.sent = true;
+          followUp = await createFollowUpRun(
+            {
+              customProxy: customProxy(),
+              // A VM profile only (cloud ignores it).
+              freshExit: onVm && walled,
+              inTurn: true,
+              maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
+              model: env.BROWSER_USE_MODEL,
+              profileId,
+              proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
+              secretBindings: secrets.bindings,
+              sessionId,
+              task: continuation,
+            },
+            stickyPayment
+          );
         } catch (error) {
           // The follow-up waits for a browser like any errand, with its
           // session remembered so it lands in the same tab if it still can.
           if (browserUseBusy(error)) {
+            paymentDispatch.sent = previouslyDispatched;
             return {
               continuation,
               kind: "queued" as const,
@@ -4648,12 +4738,14 @@ async function runBrowserTask(
             };
           }
           if (browserUseOutOfCredits(error)) {
+            paymentDispatch.sent = previouslyDispatched;
             await reportBrowserUseOutOfCredits(error);
             return { kind: "no_credits" as const };
           }
           throw error;
         }
         if (!followUp.run) {
+          paymentDispatch.sent = previouslyDispatched;
           if (row.sessionId === null) {
             throw new Error("A busy browser session needs its session id.");
           }
@@ -4674,6 +4766,7 @@ async function runBrowserTask(
           }
           // Bindings exist per run, so a busy session takes the message but
           // not the card: whatever was reserved for it is not going to be paid.
+          if (placeholder) paymentDispatch.sent = true;
           const queued = await queueBrowserUseSessionMessage(
             row.sessionId,
             [
@@ -4720,6 +4813,11 @@ async function runBrowserTask(
       continued = await continueErrandRun();
     } catch (error) {
       await giveBackPage();
+      if (placeholder) {
+        if (stickyPayment && paymentDispatch.sent)
+          throw unknownPaymentDispatch(error);
+        await releaseReservation(placeholder, restoreRunId);
+      }
       throw error;
     }
     // No run took the page over: the message went into the live run, or
@@ -4728,16 +4826,17 @@ async function runBrowserTask(
       await giveBackPage();
     }
     if (continued.kind === "replied" || continued.kind === "no_credits") {
+      if (stickyPayment && paymentDispatch.sent) {
+        throw unknownPaymentDispatch();
+      }
       if (
         continued.kind === "replied" &&
         continued.carriesPayment &&
-        held?.placeholder
+        placeholder
       ) {
-        // The live run keeps its card and now pays within what this call
-        // allowed; the decision already released what it held before.
-        await moveSpendReservation(held.placeholder, runId);
+        await moveSpendReservation(placeholder, runId);
       } else if (placeholder) {
-        await releaseReservation(placeholder);
+        await releaseReservation(placeholder, restoreRunId);
       }
       return continued.kind === "replied"
         ? withNoteLine(continued.reply, contacts.note())
@@ -4758,22 +4857,25 @@ async function runBrowserTask(
       }
     };
     if (continued.kind === "queued") {
-      const queued = await releasedOnFailure(placeholder, () =>
-        queueBrowserErrand(scope, {
-          ...conversation,
-          composedTask: continued.continuation,
-          delegatedByPerson,
-          fromRunId: runId,
-          paymentAllowed: allowPayment,
-          profileId: continued.profileId,
-          retryAfterMs: continued.retryAfterMs,
-          sessionId: continued.sessionId ?? null,
-          site: sentSite ?? null,
-          startedByPerson: byPerson,
-          submission: confirmedSubmission(consent),
-          task: message,
-          waitsForAccount: continued.waitsForAccount ?? null,
-        })
+      const queued = await releasedOnFailure(
+        placeholder,
+        () =>
+          queueBrowserErrand(scope, {
+            ...conversation,
+            composedTask: continued.continuation,
+            delegatedByPerson,
+            fromRunId: runId,
+            paymentAllowed: allowPayment,
+            profileId: continued.profileId,
+            retryAfterMs: continued.retryAfterMs,
+            sessionId: continued.sessionId ?? null,
+            site: sentSite ?? null,
+            startedByPerson: byPerson,
+            submission: confirmedSubmission(consent),
+            task: message,
+            waitsForAccount: continued.waitsForAccount ?? null,
+          }),
+        restoreRunId
       );
       await carrySpend(queued.runId);
       return withNoteLine(
@@ -4792,27 +4894,31 @@ async function runBrowserTask(
     // Bro stopped to keep the sign-ins is gone, and so is its live view.
     const sameBrowser = reusedSession && page.held;
     await browserUseCreditsRestored();
-    await carrySpend(followUp.id);
-    await recordStartedRun(followUp.id, () =>
-      createBrowserRun(
-        scope,
-        {
-          ...conversation,
-          id: followUp.id,
-          delegatedByPerson,
-          liveViewUrl: sameBrowser ? row.liveViewUrl : null,
-          paymentAllowed: allowPayment,
-          profileId,
-          sessionId: followUp.sessionId,
-          site: sentSite ?? null,
-          startedByPerson: byPerson,
-          status: "running",
-          submission: confirmedSubmission(consent),
-          task: message,
-        },
-        runId
-      )
+    if (!stickyPayment) await carrySpend(followUp.id);
+    await recordStartedRun(
+      followUp.id,
+      () =>
+        createBrowserRun(
+          scope,
+          {
+            ...conversation,
+            id: followUp.id,
+            delegatedByPerson,
+            liveViewUrl: sameBrowser ? row.liveViewUrl : null,
+            paymentAllowed: allowPayment,
+            profileId,
+            sessionId: followUp.sessionId,
+            site: sentSite ?? null,
+            startedByPerson: byPerson,
+            status: "running",
+            submission: confirmedSubmission(consent),
+            task: message,
+          },
+          runId
+        ),
+      stickyPayment ? placeholder : undefined
     );
+    if (stickyPayment) await carrySpend(followUp.id);
     // The follow-up holds the errand's browser now, a fresh one or the same.
     // Never fatal: the run is already going.
     try {
