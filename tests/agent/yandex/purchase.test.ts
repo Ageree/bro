@@ -307,6 +307,45 @@ describe("Yandex purchase consent", () => {
     );
   });
 
+  it("renews an expired unchanged Lavka quote under the same explicit yes and one claim", async () => {
+    const expired = row({ expiresAt: new Date(0) });
+    const fresh = { ...snapshot, offerId: "renewed-offer" };
+    services.read.mockResolvedValue(expired);
+    services.prepare.mockResolvedValue({
+      kind: "ready",
+      checkoutKey: fresh.cartId,
+      expiresAt: fresh.expiresAt,
+      publicQuote: quote,
+      snapshot: fresh,
+    });
+    services.claim.mockImplementation(async (_scope, input) =>
+      input.refresh
+        ? {
+            kind: "claimed",
+            purchase: row({ ...input.refresh, state: "submitting" }),
+          }
+        : { kind: "expired", purchase: expired }
+    );
+    expect(await confirm()).toMatchObject({ kind: "placed" });
+    expect(services.prepare).toHaveBeenCalledWith(
+      scope.workspaceId,
+      expired.providerSnapshot
+    );
+    expect(services.claim).toHaveBeenCalledTimes(1);
+    expect(services.claim).toHaveBeenCalledWith(
+      scope,
+      expect.objectContaining({
+        id: purchaseId,
+        confirmationQuestion: question,
+      })
+    );
+    expect(services.submit).toHaveBeenCalledWith(scope.workspaceId, {
+      amountMinor: quote.amountMinor,
+      snapshot: fresh,
+    });
+    expect(services.submit).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses an expired claim without calling Yandex", async () => {
     services.claim.mockResolvedValue({
       kind: "expired",

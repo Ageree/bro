@@ -138,6 +138,49 @@ beforeEach(() => {
 });
 
 describe("Lavka purchase fixed page functions", () => {
+  it("refreshes expired provider metadata without changing the approved purchase", async () => {
+    const original = await ready();
+    withCart({
+      cartVersion: original.snapshot.cartVersion + 1,
+      offerId: "renewed-offer",
+      deliveryConditionsId: "renewed-delivery",
+      validUntil: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const renewed = await prepareLavkaPurchase("workspace:synthetic", {
+      ...original.snapshot,
+      expiresAt: new Date(0).toISOString(),
+    });
+    expect(renewed.kind).toBe("ready");
+    if (renewed.kind !== "ready") throw new Error(renewed.reason);
+    expect(renewed.publicQuote).toEqual(original.publicQuote);
+    expect(requests.filter(({ path }) => path === submitPath)).toHaveLength(0);
+    expect(await confirm(renewed)).toMatchObject({ kind: "placed" });
+    expect(requests.filter(({ path }) => path === submitPath)).toHaveLength(1);
+  });
+
+  it.each(["price", "items", "address", "card", "cart"])(
+    "does not carry consent across changed %s",
+    async (changed) => {
+      const original = await ready();
+      const approved = structuredClone(original.snapshot);
+      if (changed === "price") approved.amountMinor += 1;
+      if (changed === "items")
+        approved.items = approved.items.map((item) => ({
+          ...item,
+          id: "another-item",
+        }));
+      if (changed === "address") approved.addressHash = "b".repeat(64);
+      if (changed === "card") approved.payment.id = "another-saved-card";
+      if (changed === "cart") approved.cartId = "another-cart";
+      expect(
+        await prepareLavkaPurchase("workspace:synthetic", approved)
+      ).toEqual({ kind: "blocked", reason: "checkout_changed" });
+      expect(requests.filter(({ path }) => path === submitPath)).toHaveLength(
+        0
+      );
+    }
+  );
+
   it("does not submit a quote that expired during the final request delay", async () => {
     const prepared = await ready();
     let clock = Date.parse(prepared.snapshot.expiresAt) - 4500;

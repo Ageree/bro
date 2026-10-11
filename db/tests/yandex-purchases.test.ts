@@ -65,6 +65,44 @@ function quote(fingerprint = "cart:1:version:1") {
 }
 
 describe("Yandex purchase intents", () => {
+  it("atomically claims one renewed Lavka snapshot without replacing its consent", async () => {
+    const purchases = await purchasesDatabase();
+    const original = { ...quote(), expiresAt: new Date(0) };
+    const created = await purchases.createYandexPurchase(alice, original);
+    if (created.kind !== "created") throw new Error("Expected a purchase.");
+    const refresh = {
+      expiresAt: new Date(Date.now() + 60_000),
+      providerSnapshot: { ...original.providerSnapshot, offerId: "fresh" },
+    };
+    const results = await Promise.all(
+      ["call:1", "call:2"].map((callId) =>
+        purchases.claimYandexPurchase(alice, {
+          id: created.purchase.id,
+          rootSessionId: original.rootSessionId,
+          confirmationQuestion: original.confirmationQuestion,
+          callId,
+          refresh,
+        })
+      )
+    );
+    expect(results.map(({ kind }) => kind).toSorted()).toEqual([
+      "claimed",
+      "existing",
+    ]);
+    expect(
+      await purchases.readYandexPurchase(alice, {
+        id: created.purchase.id,
+        rootSessionId: original.rootSessionId,
+      })
+    ).toMatchObject({
+      ...refresh,
+      state: "submitting",
+      confirmationQuestion: original.confirmationQuestion,
+      fingerprint: original.fingerprint,
+      amountMinor: original.amountMinor,
+    });
+  }, 30_000);
+
   it("stores the server scope, UUID and exact question and deduplicates concurrent preparation", async () => {
     const purchases = await purchasesDatabase();
     const input = quote();
