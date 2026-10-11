@@ -14,7 +14,7 @@ SELECT json_build_object(
   'reservedBrowserPayments', (SELECT count(*) FROM spend_entries
     WHERE workspace_id = :'workspace' AND status = 'reserved'),
   'unresolvedPurchases', (SELECT count(*) FROM yandex_purchases
-    WHERE workspace_id = :'workspace' AND state IN ('submitting', 'unknown')),
+    WHERE workspace_id = :'workspace' AND state IN ('submitting', 'unknown', 'active')),
   'purchasesByState', (SELECT COALESCE(json_object_agg(state, total), '{}'::json)
     FROM (SELECT state, count(*) AS total FROM yandex_purchases
       WHERE workspace_id = :'workspace' GROUP BY state) counts),

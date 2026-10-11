@@ -1,0 +1,17 @@
+{
+  "status": "complete",
+  "currency_rules": { "code": "RUB", "cost_precision": 2 },
+  "payment": { "type": "cash" },
+  "tariff": { "class": "econom", "fixed": true },
+  "cost": 100,
+  "final_cost": 100,
+  "cost_decimal_value": "100.00",
+  "final_cost_decimal_value": "100.00",
+  "cancel_disabled": true,
+  "tips": {
+    "available": false,
+    "decimal_value": "0",
+    "type": "percent",
+    "value": 0
+  }
+}

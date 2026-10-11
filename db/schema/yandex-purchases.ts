@@ -21,13 +21,13 @@ export const yandexPurchases = pgTable(
     workspaceId: text("workspace_id").notNull(),
     userId: text("user_id").notNull(),
     rootSessionId: text("root_session_id").notNull(),
-    service: text("service", { enum: ["lavka"] }).notNull(),
+    service: text("service", { enum: ["lavka", "go"] }).notNull(),
     checkoutKey: text("checkout_key").notNull(),
     fingerprint: text("fingerprint").notNull(),
     amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
     currency: text("currency", { enum: ["RUB"] }).notNull(),
     state: text("state", {
-      enum: ["quoted", "submitting", "placed", "rejected", "unknown"],
+      enum: ["quoted", "submitting", "placed", "rejected", "unknown", "active"],
     })
       .notNull()
       .default("quoted"),
@@ -44,6 +44,9 @@ export const yandexPurchases = pgTable(
       >(),
     merchantOrderId: text("merchant_order_id"),
     callId: text("call_id"),
+    phase: text("phase", {
+      enum: ["draft_claimed", "drafted", "commit_claimed", "accepted"],
+    }),
     expiresAt: timestamp("expires_at", {
       mode: "date",
       precision: 3,
@@ -86,9 +89,12 @@ export const yandexPurchases = pgTable(
       table.fingerprint
     ),
     uniqueIndex("yandex_purchases_active_uidx")
-      .on(table.workspaceId, table.service)
-      .where(sql`${table.state} IN ('submitting', 'unknown')`),
-    check("yandex_purchases_service_check", sql`${table.service} = 'lavka'`),
+      .on(table.workspaceId)
+      .where(sql`${table.state} IN ('submitting', 'unknown', 'active')`),
+    check(
+      "yandex_purchases_service_check",
+      sql`${table.service} IN ('lavka', 'go')`
+    ),
     check("yandex_purchases_currency_check", sql`${table.currency} = 'RUB'`),
     check(
       "yandex_purchases_amount_check",
@@ -96,7 +102,11 @@ export const yandexPurchases = pgTable(
     ),
     check(
       "yandex_purchases_state_check",
-      sql`${table.state} IN ('quoted', 'submitting', 'placed', 'rejected', 'unknown')`
+      sql`${table.state} IN ('quoted', 'submitting', 'placed', 'rejected', 'unknown', 'active')`
+    ),
+    check(
+      "yandex_purchases_phase_check",
+      sql`(${table.phase} IS NULL OR (${table.service} = 'go' AND ${table.phase} IN ('draft_claimed', 'drafted', 'commit_claimed', 'accepted'))) AND (${table.phase} NOT IN ('drafted', 'commit_claimed', 'accepted') OR ${table.merchantOrderId} IS NOT NULL) AND (${table.state} <> 'active' OR (${table.service} = 'go' AND ${table.phase} IS NOT NULL AND ${table.phase} = 'accepted' AND ${table.merchantOrderId} IS NOT NULL))`
     ),
     check(
       "yandex_purchases_attempt_check",

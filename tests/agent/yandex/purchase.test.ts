@@ -95,6 +95,7 @@ function row(overrides: Partial<YandexPurchase> = {}): YandexPurchase {
     id: purchaseId,
     merchantOrderId: null,
     outcome: null,
+    phase: null,
     providerSnapshot: snapshot,
     publicQuote: quote,
     rootSessionId: "session-1",

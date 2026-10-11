@@ -35,7 +35,7 @@ const safePayload = z.record(z.string(), z.json()).refine((payload) => {
 
 const preparedPurchase = z.object({
   rootSessionId: z.string().trim().min(1),
-  service: z.literal("lavka"),
+  service: z.enum(["lavka", "go"]),
   checkoutKey: z.string().trim().min(1),
   fingerprint: z.string().trim().min(1),
   amountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -83,6 +83,16 @@ export async function createYandexPurchase(
   await ensureScope(scope);
   return db.transaction(async (transaction) => {
     await lockWorkspaceSpending(transaction, scope);
+    const [active] = await transaction
+      .select({ id: yandexPurchases.id })
+      .from(yandexPurchases)
+      .where(
+        and(
+          eq(yandexPurchases.workspaceId, scope.workspaceId),
+          inArray(yandexPurchases.state, ["submitting", "unknown", "active"])
+        )
+      )
+      .limit(1);
     const [existing] = await transaction
       .select()
       .from(yandexPurchases)
@@ -94,6 +104,8 @@ export async function createYandexPurchase(
         )
       )
       .limit(1);
+    if (active && active.id !== existing?.id)
+      return { kind: "blocked" as const };
     if (existing) {
       if (
         existing.userId !== scope.userId ||
@@ -117,6 +129,7 @@ export async function createYandexPurchase(
             submittedAt: null,
             settledAt: null,
             outcome: null,
+            phase: null,
             expiresAt: prepared.expiresAt,
             confirmationQuestion: prepared.confirmationQuestion,
             publicQuote: prepared.publicQuote,
@@ -135,18 +148,6 @@ export async function createYandexPurchase(
       }
       return { kind: "existing" as const, purchase: existing };
     }
-    const [active] = await transaction
-      .select({ id: yandexPurchases.id })
-      .from(yandexPurchases)
-      .where(
-        and(
-          eq(yandexPurchases.workspaceId, scope.workspaceId),
-          eq(yandexPurchases.service, prepared.service),
-          inArray(yandexPurchases.state, ["submitting", "unknown"])
-        )
-      )
-      .limit(1);
-    if (active) return { kind: "blocked" as const };
     const [purchase] = await transaction
       .insert(yandexPurchases)
       .values({
@@ -163,14 +164,90 @@ export async function createYandexPurchase(
 
 export async function readYandexPurchase(
   scope: AccessScope,
-  input: Pick<YandexPurchase, "id" | "rootSessionId">
+  input: Pick<YandexPurchase, "id"> &
+    Partial<Pick<YandexPurchase, "rootSessionId">>
 ) {
   const [purchase] = await db
     .select()
     .from(yandexPurchases)
-    .where(ownedPurchase(scope, input))
+    .where(
+      and(
+        eq(yandexPurchases.id, input.id),
+        eq(yandexPurchases.workspaceId, scope.workspaceId),
+        eq(yandexPurchases.userId, scope.userId),
+        input.rootSessionId === undefined
+          ? undefined
+          : eq(yandexPurchases.rootSessionId, input.rootSessionId)
+      )
+    )
     .limit(1);
   return purchase;
+}
+
+export async function readActiveGoPurchase(scope: AccessScope) {
+  const [purchase] = await db
+    .select()
+    .from(yandexPurchases)
+    .where(
+      and(
+        eq(yandexPurchases.workspaceId, scope.workspaceId),
+        eq(yandexPurchases.userId, scope.userId),
+        eq(yandexPurchases.service, "go"),
+        inArray(yandexPurchases.state, ["active", "unknown", "submitting"])
+      )
+    )
+    .limit(1);
+  return purchase;
+}
+
+export async function settleGoCashLiability(
+  scope: AccessScope,
+  input: Pick<YandexPurchase, "id"> & {
+    orderId: string;
+    finalFareMinor: number;
+  }
+) {
+  const amount = z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .parse(input.finalFareMinor);
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceSpending(transaction, scope);
+    const [purchase] = await transaction
+      .select()
+      .from(yandexPurchases)
+      .where(
+        and(
+          eq(yandexPurchases.id, input.id),
+          eq(yandexPurchases.workspaceId, scope.workspaceId),
+          eq(yandexPurchases.userId, scope.userId),
+          eq(yandexPurchases.service, "go"),
+          eq(yandexPurchases.merchantOrderId, input.orderId),
+          inArray(yandexPurchases.state, ["active", "unknown", "submitting"]),
+          inArray(yandexPurchases.phase, ["accepted", "commit_claimed"])
+        )
+      )
+      .limit(1);
+    if (purchase?.providerSnapshot.payment !== "CASH") return undefined;
+    const now = new Date();
+    const [settled] = await transaction
+      .update(yandexPurchases)
+      .set({
+        state: "placed",
+        settledAt: now,
+        updatedAt: now,
+        outcome: {
+          kind: "cash_liability_known",
+          finalFareMinor: amount,
+          paymentStatus: "unknown",
+        },
+      })
+      .where(eq(yandexPurchases.id, purchase.id))
+      .returning();
+    return settled;
+  });
 }
 
 export async function claimYandexPurchase(
@@ -236,8 +313,7 @@ export async function claimYandexPurchase(
       .where(
         and(
           eq(yandexPurchases.workspaceId, scope.workspaceId),
-          eq(yandexPurchases.service, purchase.service),
-          inArray(yandexPurchases.state, ["submitting", "unknown"])
+          inArray(yandexPurchases.state, ["submitting", "unknown", "active"])
         )
       )
       .limit(1);
@@ -246,6 +322,7 @@ export async function claimYandexPurchase(
       .update(yandexPurchases)
       .set({
         state: "submitting",
+        phase: purchase.service === "go" ? "draft_claimed" : null,
         callId: input.callId,
         submittedAt: now,
         updatedAt: now,
@@ -267,12 +344,14 @@ export async function settleYandexPurchase(
   scope: AccessScope,
   input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
     callId: string;
-    state: "placed" | "rejected" | "unknown";
+    state: "placed" | "rejected" | "unknown" | "active";
     outcome: NonNullable<YandexPurchase["outcome"]>;
     merchantOrderId?: string;
   }
 ) {
-  const state = z.enum(["placed", "rejected", "unknown"]).parse(input.state);
+  const state = z
+    .enum(["placed", "rejected", "unknown", "active"])
+    .parse(input.state);
   const outcome = safePayload.parse(input.outcome);
   return db.transaction(async (transaction) => {
     await lockWorkspaceSpending(transaction, scope);
@@ -288,15 +367,37 @@ export async function settleYandexPurchase(
       .limit(1);
     if (!purchase) return undefined;
     if (purchase.state !== "submitting") return undefined;
+    if (purchase.service === "go" && state === "placed") return undefined;
+    if (
+      purchase.service === "go" &&
+      input.merchantOrderId !== undefined &&
+      input.merchantOrderId !== purchase.merchantOrderId
+    )
+      return undefined;
+    if (
+      state === "active" &&
+      (purchase.service !== "go" ||
+        purchase.phase !== "commit_claimed" ||
+        !purchase.merchantOrderId ||
+        input.merchantOrderId !== purchase.merchantOrderId)
+    )
+      return undefined;
+    if (
+      purchase.service === "go" &&
+      state === "rejected" &&
+      (purchase.phase !== "draft_claimed" || purchase.merchantOrderId !== null)
+    )
+      return undefined;
     const now = new Date();
     const [settled] = await transaction
       .update(yandexPurchases)
       .set({
         state,
+        phase: state === "active" ? "accepted" : purchase.phase,
         outcome,
         merchantOrderId: input.merchantOrderId ?? purchase.merchantOrderId,
         updatedAt: now,
-        settledAt: now,
+        settledAt: state === "active" ? null : now,
       })
       .where(
         and(
@@ -307,5 +408,63 @@ export async function settleYandexPurchase(
       )
       .returning();
     return settled;
+  });
+}
+
+export async function recordGoPurchaseDraft(
+  scope: AccessScope,
+  input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
+    callId: string;
+    orderId: string;
+  }
+) {
+  const orderId = z.string().min(1).max(200).parse(input.orderId);
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceSpending(transaction, scope);
+    const [purchase] = await transaction
+      .update(yandexPurchases)
+      .set({
+        merchantOrderId: orderId,
+        phase: "drafted",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          ownedPurchase(scope, input),
+          eq(yandexPurchases.callId, input.callId),
+          eq(yandexPurchases.service, "go"),
+          eq(yandexPurchases.state, "submitting"),
+          eq(yandexPurchases.phase, "draft_claimed")
+        )
+      )
+      .returning();
+    return purchase;
+  });
+}
+
+export async function claimGoPurchaseCommit(
+  scope: AccessScope,
+  input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
+    callId: string;
+    orderId: string;
+  }
+) {
+  return db.transaction(async (transaction) => {
+    await lockWorkspaceSpending(transaction, scope);
+    const [purchase] = await transaction
+      .update(yandexPurchases)
+      .set({ phase: "commit_claimed", updatedAt: new Date() })
+      .where(
+        and(
+          ownedPurchase(scope, input),
+          eq(yandexPurchases.callId, input.callId),
+          eq(yandexPurchases.service, "go"),
+          eq(yandexPurchases.state, "submitting"),
+          eq(yandexPurchases.phase, "drafted"),
+          eq(yandexPurchases.merchantOrderId, input.orderId)
+        )
+      )
+      .returning();
+    return purchase;
   });
 }

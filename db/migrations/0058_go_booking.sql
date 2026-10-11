@@ -1,0 +1,8 @@
+ALTER TABLE "yandex_purchases" DROP CONSTRAINT "yandex_purchases_service_check";--> statement-breakpoint
+ALTER TABLE "yandex_purchases" DROP CONSTRAINT "yandex_purchases_state_check";--> statement-breakpoint
+DROP INDEX "yandex_purchases_active_uidx";--> statement-breakpoint
+ALTER TABLE "yandex_purchases" ADD COLUMN "phase" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "yandex_purchases_active_uidx" ON "yandex_purchases" USING btree ("workspace_id") WHERE "yandex_purchases"."state" IN ('submitting', 'unknown', 'active');--> statement-breakpoint
+ALTER TABLE "yandex_purchases" ADD CONSTRAINT "yandex_purchases_phase_check" CHECK (("yandex_purchases"."phase" IS NULL OR ("yandex_purchases"."service" = 'go' AND "yandex_purchases"."phase" IN ('draft_claimed', 'drafted', 'commit_claimed', 'accepted'))) AND ("yandex_purchases"."phase" NOT IN ('drafted', 'commit_claimed', 'accepted') OR "yandex_purchases"."merchant_order_id" IS NOT NULL) AND ("yandex_purchases"."state" <> 'active' OR ("yandex_purchases"."service" = 'go' AND "yandex_purchases"."phase" IS NOT NULL AND "yandex_purchases"."phase" = 'accepted' AND "yandex_purchases"."merchant_order_id" IS NOT NULL)));--> statement-breakpoint
+ALTER TABLE "yandex_purchases" ADD CONSTRAINT "yandex_purchases_service_check" CHECK ("yandex_purchases"."service" IN ('lavka', 'go'));--> statement-breakpoint
+ALTER TABLE "yandex_purchases" ADD CONSTRAINT "yandex_purchases_state_check" CHECK ("yandex_purchases"."state" IN ('quoted', 'submitting', 'placed', 'rejected', 'unknown', 'active'));

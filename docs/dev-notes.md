@@ -998,6 +998,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   queue/captcha принимают только найденный запуск своей попытки, не повторяют
   create после пустого поиска. Флаг выключения не снимает уже созданный fence.
   Номер заказа не доказывает оплату; границы проверки — `docs/yandex-api/purchases.md`.
+- Go draft/commit ожидают raw `orderid`/`status`: `.data` публичного клиента —
+  HTTP-обёртка, не JSON сервера. Raw `taxiontheway` не содержит orderid, фронтенд
+  добавляет его сам. Фазы Go и workspace-wide защита активной поездки —
+  `docs/yandex-api/go-booking.md`. Только исходный/final CASH с exact final fare
+  и нулевыми недоступными tips закрывает fence как известное обязательство, не
+  `paid`; карта/отмена остаются неизвестными. Fingerprint Go привязан к ходу
+  человека, не к offer, чтобы завершённая поездка не повторилась с новой котировкой.
 - Лавка может вернуть `create_orders_disabled` на submit даже при
   `availableForCheckout: true`. Готовая корзина не доказывает доступность
   оформления; общий HTTP 400 после dispatch не разрешает повтор или снятие

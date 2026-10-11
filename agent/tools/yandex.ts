@@ -119,7 +119,7 @@ export default defineDynamic({
         yandex: defineTool({
           availableInSubagents: false,
           description: yandexPurchasePilot(scope)
-            ? `${description}\nFor Lavka, Yandex Eda and Go orders, use yandex_purchase instead of browser checkout. Assemble food carts through the fixed API operations, then prepare one final quote and deliver its exact confirmationQuestion once; confirm only after the person's own yes. For a direct taxi-booking request with an unambiguous known or resolved route, use Go book without an additional confirmation, keeping the currently selected supported payment method. A price-only inquiry is not a booking request. The browser checkout fallback above does not apply to these supported services. Never use browser_task to repeat an unknown/submitting purchase or replace an active ride.`
+            ? `${description}\nFor Lavka and Go order submission, use yandex_purchase instead of browser checkout. For the current Lavka cart, prepare one final quote and deliver its exact confirmationQuestion once; confirm only after the person's own yes. For a direct taxi-booking request with an unambiguous known or resolved route, use Go book without an additional confirmation, keeping the currently selected supported payment method. A price-only inquiry is not a booking request. The browser checkout fallback above does not apply to these supported services. Yandex Eda checkout is not supported by yandex_purchase yet. Never use browser_task to repeat an unknown/submitting purchase or replace an active ride.`
             : description,
           inputSchema,
           async execute(input, toolContext) {
