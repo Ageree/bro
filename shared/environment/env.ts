@@ -195,6 +195,8 @@ export const env = createEnv({
   server: {
     PHONE_AUTO_PROVISION: z.enum(["on", "off"]).default("off"),
     PHONE_WORKSPACES: workspaceListSchema.optional(),
+    // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
+    CONTACTS_WORKSPACES: workspaceListSchema.optional(),
     PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
     PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
     MTS_EXOLVE_API_KEY: trimmedValue.optional(),

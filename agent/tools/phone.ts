@@ -2,13 +2,8 @@ import { createHash } from "node:crypto";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
-import { ownTurnApproval } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import {
-  authorizedPhoneTurn,
-  phoneActionTurn,
-  recordPhoneAction,
-} from "@agent/lib/phone/policy";
+import { phoneActionTurn, rootApproval } from "@agent/lib/phone/policy";
 import { domesticPhoneSchema } from "@shared/phone/policy";
 import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
@@ -64,7 +59,7 @@ function publicNumber(row: Awaited<ReturnType<typeof readPhoneNumber>>) {
         setupRub: row.setupRub,
         monthlyRub: row.monthlyRub,
         sipMonthlyRub: row.sipMonthlyRub,
-        quotedAt: row.quotedAt,
+        quotedAt: row.quotedAt.toISOString(),
         privacy:
           "MTS Exolve and ElevenLabs process phone numbers, minimal call context and voice; the carrier may record calls, including forced recording on new numbers during the first 30 days. Bro stores a bounded summary, not raw audio or a full transcript. Incoming callers cannot access the owner's saved context.",
         note:
@@ -77,22 +72,15 @@ function publicNumber(row: Awaited<ReturnType<typeof readPhoneNumber>>) {
     : null;
 }
 
-function rootApproval(
-  context: Pick<
-    ApprovalContext,
-    "session" | "callId" | "toolName" | "toolInput"
-  >
+/** The allocation request as the model reads it: eve needs plain JSON, no Date. */
+function publicRequest(
+  row: Awaited<ReturnType<typeof readPhoneNumberRequest>>
 ) {
-  const input = JSON.stringify(context.toolInput ?? null);
-  if (authorizedPhoneTurn(context.session)) recordPhoneAction(context, input);
-  return phoneActionTurn(context, input)
-    ? ownTurnApproval(context)
-    : {
-        type: "denied" as const,
-        reason:
-          "Only an authenticated person's own root turn may initiate phone actions.",
-      };
+  return row
+    ? Object.assign({}, row, { nextAttemptAt: row.nextAttemptAt.toISOString() })
+    : null;
 }
+
 function paidApproval(
   context: Pick<
     ApprovalContext,
@@ -113,7 +101,7 @@ const quote = defineTool({
     const automatic = await readPhoneNumberRequest(scope);
     if (automatic)
       return {
-        automaticAllocation: automatic,
+        automaticAllocation: publicRequest(automatic),
         number: publicNumber(await readPhoneNumber(scope)),
         note: "This new workspace receives its dedicated number automatically at platform expense. No activation/payment approval is needed; allocation may be pending or waiting for operator funds/capacity. Do not start a second manual allocation.",
       };
@@ -288,8 +276,10 @@ const status = defineTool({
     const scope = phoneScope(context);
     return {
       number: publicNumber(await readPhoneNumber(scope)),
-      calls: await listPhoneCalls(scope, input.callId),
-      automaticAllocation: await readPhoneNumberRequest(scope),
+      calls: (await listPhoneCalls(scope, input.callId)).map((row) =>
+        Object.assign({}, row, { createdAt: row.createdAt.toISOString() })
+      ),
+      automaticAllocation: publicRequest(await readPhoneNumberRequest(scope)),
     };
   },
 });
