@@ -227,7 +227,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
             }
           );
           dispatchId = held ? nextDispatch : undefined;
-          claimedHere = held === true;
+          claimedHere = held;
         }
         const previous = await readBrowserUseRun(row.id);
         const secrets = await resolveBrowserSecretBindings(scope, {

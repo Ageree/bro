@@ -533,7 +533,7 @@ export async function startQueuedBrowserRun(
           }
         );
         dispatchId = held ? nextDispatch : undefined;
-        claimedHere = held === true;
+        claimedHere = held;
       }
       // Who asked for the errand decides how long its VM stays up after
       // it, written before the start wakes or touches the VM.
