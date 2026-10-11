@@ -246,7 +246,7 @@ export const earlyReplyNote = `When the answer needs slow work — a browser err
  * `browser_task` call reached the person 13.9 s in, after the whole task text
  * had been generated. Alone, it is a few tokens.
  */
-export const earlyReplySplitNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, first send one short heads-up: a step whose only call is send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, запускаю браузер»). Call no other tool in that step; the slow tool comes in the next step, once the heads-up is out. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
+export const earlyReplySplitNote = `When the answer needs slow work — a browser errand (browser_task start), web_search, the task agent (task), reading mail or Drive — and will take more than a few seconds, first send one short heads-up: a step whose only call is send_message with a single line of at most ${String(headsUpLength)} characters, in the person's language, that only says you are on it («Сейчас поищу», «Секунду, смотрю на сайте»). Call no other tool in that step; the slow tool comes in the next step, once the heads-up is out. The heads-up does not answer: once the result is in, send the answer itself. One heads-up per turn and no other status; a quick answer needs none.`;
 
 /** The comparable form of a message `send_message` was asked to send. */
 export function sentMessageOf(message: OutgoingMessage): SentMessage {
