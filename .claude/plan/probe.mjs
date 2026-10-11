@@ -29,7 +29,9 @@ async function readTurn(label, events, started) {
     const at = ((Date.now() - started) / 1000).toFixed(1).padStart(6);
     console.log(`${at}s ${event.type} ${brief(event)}`);
   }
-  console.log(`=== ход закончен за ${((Date.now() - started) / 1000).toFixed(1)} с`);
+  console.log(
+    `=== ход закончен за ${((Date.now() - started) / 1000).toFixed(1)} с`
+  );
 }
 
 let session;
