@@ -322,6 +322,79 @@ describe("(d) the answer after a heads-up", () => {
   });
 });
 
+describe("(e) a status said again after the browser errand started", () => {
+  // Prod, 11.10: without reasoning the model sent three statuses in a row
+  // about one errand: the heads-up, then two more.
+  const ask = "Найди в интернете, сколько стоит билет на Сапсан завтра";
+  const run = { runId: "run-1", status: "running" };
+  const errand = { site: "rzd.ru", task: ask };
+  const headsUp1 = "Секунду, смотрю цены на завтра.";
+  const status2 =
+    "Смотрю цены на Сапсан на завтра — пришлю, как соберу варианты.";
+  const status3 =
+    "Уточни на всякий: завтра — это понедельник, 12 октября. Смотрю цены на Сапсан.";
+  const started = [
+    person(ask),
+    ...inOneStep(
+      browserStep("start", run, errand),
+      sendMessage("a", headsUp1, textOutput(headsUpDeliveredNotice))
+    ),
+  ];
+
+  it("lets the errand be told once", () => {
+    expect(
+      sendRefusal(message(status2), turnSends(started), true)
+    ).toBeUndefined();
+  });
+
+  it("drops a third status that tells nothing the errand's message did not", () => {
+    const told = [
+      ...started,
+      ...sendMessage("b", status2, textOutput("submitted")),
+    ];
+
+    expect(sendRefusal(message(status3), turnSends(told), true)).toEqual({
+      skipped: "started",
+    });
+  });
+
+  it("still lets a message with news or a question through", () => {
+    const told = [
+      ...started,
+      ...sendMessage("b", status2, textOutput("submitted")),
+    ];
+
+    expect(
+      sendRefusal(
+        message("На 12 октября есть Сапсан в 08:00 за 3 500 ₽."),
+        turnSends(told),
+        true
+      )
+    ).toBeUndefined();
+    expect(
+      sendRefusal(
+        message("Тебе нужен утренний или вечерний рейс?"),
+        turnSends(told),
+        true
+      )
+    ).toBeUndefined();
+  });
+
+  it("leaves a turn without a heads-up as it was", () => {
+    const plain = [
+      person(ask),
+      ...inOneStep(
+        browserStep("start", run, errand),
+        sendMessage("a", status2, textOutput("submitted"))
+      ),
+    ];
+
+    expect(sendRefusal(message(status3), turnSends(plain))).not.toEqual({
+      skipped: "started",
+    });
+  });
+});
+
 function message(text: string) {
   return { kind: "message" as const, text };
 }

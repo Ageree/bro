@@ -493,6 +493,19 @@ export function sendRefusal(
   ) {
     return { skipped: "reported" };
   }
+  // The pilot's heads-up and the errand's message already say it is under
+  // way: a third line that only announces work again is the same status,
+  // whatever small fact (a weekday, a date) it adds (prod, 11.10).
+  if (
+    turn.headsUps.length > 0 &&
+    turn.errandTold &&
+    message.attachments.length === 0 &&
+    message.questions.length === 0 &&
+    message.requests.length === 0 &&
+    announcesWork(message)
+  ) {
+    return { skipped: "started" };
+  }
   const yields =
     turn.rewrites >= rewritesBeforeYield || outgoing.kind !== "message";
   const held = heldBack(message, turn);
