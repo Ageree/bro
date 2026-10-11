@@ -44,7 +44,7 @@ const inputSchema = z.object({
 const notThePerson =
   "Nothing was sent: a sign-in link is made only in a turn the person's own message opened.";
 const notTheirSite =
-  "Nothing was sent: the site must be one the person named in this conversation (its domain or a link). Ask which site, and its address.";
+  "Nothing was sent: the site must be one the person named in this conversation (its domain, a link, or the service's name such as «яндекс go»). If they named a service, call again with that service's own domain (taxi.yandex.ru for Яндекс Go); if they named nothing, ask which service.";
 
 /**
  * The person's words a link is checked against, taken before each step:
@@ -172,7 +172,7 @@ export default defineDynamic({
       return {
         "site-login-link": defineTool({
           description:
-            "Make a link where the person signs in to a site themselves, in a window of Bro's own browser, once; Bro then stays signed in there for later errands. Use it when an errand needs the person's account on a site and they are not signed in there (the browser asked for a password or code), or when they ask to sign in to a site in Bro's browser. The site must be one they named. Before calling it, find the site's sign-in form address (web_fetch the site, follow its «Войти» link) and pass it as signInPage, so the window opens on the form and not on the home page. Never for Госуслуги. After it, send the link and wait: do not ask for the password or a code in the chat.",
+            "Make a link where the person signs in to a site themselves, in a window of Bro's own browser, once; Bro then stays signed in there for later errands. Use it when an errand needs the person's account on a site and they are not signed in there (the browser asked for a password or code), or when they ask to sign in to a site in Bro's browser. The site must be one they named: by domain, by link, or by the service's name («яндекс go», «озон») — then pass the service's own domain yourself, and never ask the person for an address they did not give; if they say «найди сам», find it. Before calling it, find the site's sign-in form address (web_fetch the site, follow its «Войти» link) and pass it as signInPage, so the window opens on the form and not on the home page. Never for Госуслуги. After it, send the link and wait: do not ask for the password or a code in the chat.",
           inputSchema,
           async execute(input, toolContext) {
             return createLink(input, toolContext, words);
