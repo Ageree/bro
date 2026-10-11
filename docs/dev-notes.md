@@ -1055,6 +1055,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `prod.json` уже возвращал пилот: перед изменением env восстановите свежее
   операторское состояние и сверьте его render hash с `GET env`; после выката
   сохраняйте оба `*`, не перезаписывая остальные актуальные настройки.
+- Живой взгляд на сервисы Яндекса из браузера пула владельца (поиск API,
+  проверка операции) — `scripts/cloudru-app-host/yandex-probe.py <VM> spec.json`:
+  `{workspace, op, args}` зовёт операцию реестра, `{workspace, page, steps}`
+  пишет fetch/XHR страницы с телами. Результат — через S3, не в журнал job.
+  Бандлу ops с кодом браузера нужен `--loader:.md=text` (тексты навыков `?raw`).
 - Go draft/commit ожидают raw `orderid`/`status`: `.data` публичного клиента —
   HTTP-обёртка, не JSON сервера. Raw `taxiontheway` не содержит orderid, фронтенд
   добавляет его сам. Фазы Go и workspace-wide защита активной поездки —

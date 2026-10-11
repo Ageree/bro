@@ -639,6 +639,7 @@ def assemble(stage, version, commit):
     shutil.copy2(REPO / "scripts/cloudru-sandbox-probe/s3.py", stage / "ops/s3.py")
     shutil.copy2(BUILDS / "migrate.mjs", stage / "ops/migrate.mjs")
     shutil.copy2(BUILDS / "agent-mail.mjs", stage / "ops/agent-mail.mjs")
+    shutil.copy2(BUILDS / "yandex-probe.mjs", stage / "ops/yandex-probe.mjs")
     shutil.copy2(BUILDS / "phone-setup.mjs", stage / "ops/phone-setup.mjs")
     shutil.copy2(BUILDS / "phone-adopt.mjs", stage / "ops/phone-adopt.mjs")
     shutil.copy2(BUILDS / "phone-ready.mjs", stage / "ops/phone-ready.mjs")
@@ -689,11 +690,13 @@ def cmd_build(args):
          "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
         env)
     stage = BUILDS / "stage"
-    run(["pnpm", "exec", "esbuild", "scripts/cloudru-app-host/ops/agent-mail.ts", "--bundle", "--platform=node",
-         "--target=node24", "--format=esm", f"--outfile={BUILDS / 'agent-mail.mjs'}",
-         "--external:pg-native", "--log-level=warning",
-         "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
-        env)
+    for name in ("agent-mail", "yandex-probe"):
+        run(["pnpm", "exec", "esbuild", f"scripts/cloudru-app-host/ops/{name}.ts", "--bundle", "--platform=node",
+             "--target=node24", "--format=esm", f"--outfile={BUILDS / f'{name}.mjs'}",
+             # The browser code imports the skill texts (`*.md?raw`), as eve's bundler does.
+             "--external:pg-native", "--loader:.md=text", "--log-level=warning",
+             "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
+            env)
     for name in ("setup", "adopt", "ready"):
         run(["pnpm", "exec", "esbuild", f"scripts/phone/{name}.ts", "--bundle", "--platform=node",
              "--target=node24", "--format=esm", f"--outfile={BUILDS / f'phone-{name}.mjs'}",
