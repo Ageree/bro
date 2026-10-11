@@ -773,6 +773,17 @@ export const env = createEnv({
     // and `usage.cost` are in roubles. The key and every knob below are its
     // own, apart from the OPENROUTER_* ones, so switching back is one
     // variable (`agent/lib/model/endpoint.ts`).
+    // RunInfra serves the models it hosts ahead of RouterAI, which answers any
+    // call RunInfra fails (`agent/lib/model/routerai/runinfra.ts`). Unset,
+    // every call goes to RouterAI as before.
+    RUNINFRA_API_KEY: pastedKeySchema.optional(),
+    // The key goes to this address with every call: https only.
+    RUNINFRA_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.parse(value)?.protocol === "https:",
+        "RUNINFRA_BASE_URL must be an absolute https URL"
+      )
+      .default("https://api.runinfra.ai/v1"),
     ROUTERAI_API_KEY: pastedKeySchema.optional(),
     // The key goes to this address with every call: https only.
     ROUTERAI_BASE_URL: requiredValue
