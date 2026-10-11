@@ -189,12 +189,13 @@ describe("Lavka purchase fixed page functions", () => {
 
   it.each(["missing", "null"])(
     "accepts an available verified card with %s verification strategy",
-    async (shape) => {
-      const card: Record<string, JsonValue> = {
-        ...methodsFixture.defaultMethod,
-      };
-      if (shape === "missing") delete card.verifyStrategy;
-      else card.verifyStrategy = null;
+    async (verificationState) => {
+      const { verifyStrategy: _verificationStrategy, ...verifiedCard } =
+        methodsFixture.defaultMethod;
+      const card =
+        verificationState === "null"
+          ? { ...verifiedCard, verifyStrategy: null }
+          : verifiedCard;
       methods = { ...methodsFixture, defaultMethod: card, methods: [card] };
       const prepared = await ready();
       expect(prepared.snapshot.payment.verifyStrategy).toBeNull();
@@ -209,10 +210,8 @@ describe("Lavka purchase fixed page functions", () => {
 
   it("requires a new quote when the existing card becomes verified", async () => {
     const prepared = await ready();
-    const card: Record<string, JsonValue> = {
-      ...methodsFixture.defaultMethod,
-    };
-    delete card.verifyStrategy;
+    const { verifyStrategy: _verificationStrategy, ...card } =
+      methodsFixture.defaultMethod;
     methods = { ...methodsFixture, defaultMethod: card, methods: [card] };
     expect(await confirm(prepared)).toEqual({
       kind: "rejected",
