@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { webcrypto } from "node:crypto";
 import { createContext, runInContext } from "node:vm";
 import { z } from "zod";
 import {
@@ -94,6 +95,7 @@ export async function runInPage(
 ): Promise<OperationAnswer> {
   const context = createContext({
     console,
+    crypto: webcrypto,
     document: {
       scripts: (page.scripts ?? []).map((textContent) => ({
         textContent,
