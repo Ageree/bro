@@ -21,6 +21,7 @@ vi.mock("@agent/lib/yandex/transport", () => ({
 
 import {
   prepareLavkaPurchase,
+  readLavkaPurchaseStatus,
   submitLavkaPurchase,
 } from "@agent/lib/yandex/lavka/checkout";
 
@@ -40,7 +41,7 @@ const fixtureAddress = queryState.queries.find(
 if (!Array.isArray(fixtureAddress))
   throw new Error("saved address fixture missing");
 
-const requests: { path: string; body: JsonValue }[] = [];
+const requests: { path: string; body: JsonValue; method: string }[] = [];
 let cart: JsonValue;
 let methods: JsonValue;
 let layout: JsonValue;
@@ -105,9 +106,17 @@ beforeEach(() => {
       AbortSignal,
       Date,
       TextEncoder,
+      URLSearchParams,
       crypto: webcrypto,
-      fetch: async (path: string, init: { body: string }) => {
-        requests.push({ body: z.json().parse(JSON.parse(init.body)), path });
+      fetch: async (path: string, init: { body?: string; method: string }) => {
+        requests.push({
+          body:
+            init.body === undefined
+              ? null
+              : z.json().parse(JSON.parse(init.body)),
+          method: init.method,
+          path,
+        });
         const result = serve(path);
         return {
           headers: {
@@ -138,6 +147,154 @@ beforeEach(() => {
 });
 
 describe("Lavka purchase fixed page functions", () => {
+  it("reads native tracking/payment status without financial actions, exposing neither challenge nor private order data", async () => {
+    const prepared = await ready();
+    const input = {
+      orderId: "synthetic-order",
+      snapshot: { ...prepared.snapshot, expiresAt: new Date(0).toISOString() },
+    };
+    const trackedPath =
+      "/api/v1/providers/orders-tracking/v1/tracked-orders?devicePixelRatio=1&ids%5B0%5D=synthetic-order";
+    const paymentPath = "/api/v1/providers/payments/v1/status";
+    const order = {
+      id: input.orderId,
+      cartId: prepared.snapshot.cartId,
+      paymentMethodId: prepared.snapshot.payment.id,
+      paymentMethodType: "card",
+      status: "created",
+      statusUpdated: "2099-01-01T00:00:00Z",
+      paymentStatus: "unknown",
+      trackPaymentPlace: "checkout",
+      needTrackPayment: true,
+      address: { street: "Synthetic private street" },
+      actions: [{ type: "cancel", url: "/never-follow" }],
+    };
+    async function check(
+      tracked: JsonValue,
+      payment: JsonValue,
+      expected: Record<string, JsonValue>
+    ) {
+      requests.length = 0;
+      serve.mockImplementation((path) => {
+        if (path === trackedPath) return response(tracked);
+        if (path === paymentPath) return response(payment);
+        throw new Error("unexpected route");
+      });
+      const result = await readLavkaPurchaseStatus(
+        "workspace:synthetic",
+        input
+      );
+      expect(result).toMatchObject({
+        paymentStatus: "unknown",
+        status: { paymentCheck: "read" },
+      });
+      expect(result).toMatchObject(expected);
+      expect(requests).toEqual([
+        { path: trackedPath, method: "GET", body: null },
+        {
+          path: paymentPath,
+          method: "POST",
+          body: { orderId: input.orderId, paymentType: "card" },
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toMatch(
+        /synthetic-card|Synthetic private|never-expose|redirectUrl|challenge|never-follow/u
+      );
+      expect(transport.run.mock.lastCall?.[1].access).toBe("read");
+    }
+    const cancelled = {
+      ...order,
+      status: "closed",
+      resolution: "canceled",
+      needTrackPayment: false,
+    };
+    await check(
+      { data: [{ ...order, id: "unrelated-order" }, cancelled] },
+      { data: { status: "cancel" } },
+      {
+        kind: "cancelled",
+        status: { resolution: "canceled", paymentProtocolStatus: "cancel" },
+      }
+    );
+    await check([order], { status: "wait" }, { kind: "waiting" });
+    await check(
+      [order],
+      {
+        status: "wait_user_action",
+        payload: {
+          type: "card",
+          redirectUrl:
+            "https://synthetic.invalid/challenge?secret=never-expose",
+        },
+      },
+      { kind: "needs_owner_action", status: { needsOwnerAction: true } }
+    );
+    await check(
+      [order],
+      {
+        status: "fail",
+        payload: {
+          type: "error",
+          errorTitle: "Synthetic private error",
+          errorSubtitle: "never-expose",
+        },
+      },
+      { kind: "needs_owner_action", status: { paymentError: true } }
+    );
+    await check(
+      [order],
+      { status: "success" },
+      { kind: "waiting", status: { paymentProtocolStatus: "success" } }
+    );
+    await check(
+      [order],
+      { status: "need_to_skip" },
+      { kind: "waiting", status: { paymentProtocolStatus: "need_to_skip" } }
+    );
+    await check(
+      [order],
+      { status: "cancel" },
+      { kind: "waiting", status: { paymentProtocolStatus: "cancel" } }
+    );
+    requests.length = 0;
+    serve.mockImplementation((path) =>
+      path === trackedPath
+        ? response([{ ...order, status: "closed", resolution: "canceled" }])
+        : response({}, 503)
+    );
+    expect(
+      await readLavkaPurchaseStatus("workspace:synthetic", input)
+    ).toMatchObject({
+      kind: "cancelled",
+      paymentStatus: "unknown",
+      status: { paymentCheck: "unavailable", paymentProtocolStatus: null },
+    });
+    expect(requests).toHaveLength(2);
+    requests.length = 0;
+    serve.mockReturnValue(response([{ ...order, id: "another-order" }]));
+    expect(
+      await readLavkaPurchaseStatus("workspace:synthetic", input)
+    ).toMatchObject({ kind: "unknown", reason: "order_unavailable" });
+    expect(requests.map(({ path }) => path)).toEqual([trackedPath]);
+    requests.length = 0;
+    serve.mockReturnValue(
+      response([{ ...order, paymentMethodId: "another-card" }])
+    );
+    expect(
+      await readLavkaPurchaseStatus("workspace:synthetic", input)
+    ).toMatchObject({ kind: "unknown", reason: "order_mismatch" });
+    expect(requests.map(({ path }) => path)).toEqual([trackedPath]);
+    requests.length = 0;
+    expect(
+      await readLavkaPurchaseStatus("workspace:synthetic", {
+        ...input,
+        snapshot: {},
+      })
+    ).toMatchObject({ kind: "unknown", reason: "snapshot_invalid" });
+    expect(requests).toHaveLength(0);
+    expect(submitResponse).not.toHaveBeenCalled();
+  });
+
   it("refreshes expired provider metadata without changing the approved purchase", async () => {
     const original = await ready();
     withCart({

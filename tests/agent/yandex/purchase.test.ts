@@ -12,6 +12,7 @@ const services = vi.hoisted(() => ({
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
   read: vi.fn<typeof purchases.readYandexPurchase>(),
+  status: vi.fn<typeof lavka.readLavkaPurchaseStatus>(),
   settle: vi.fn<typeof purchases.settleYandexPurchase>(),
   submit: vi.fn<typeof lavka.submitLavkaPurchase>(),
 }));
@@ -28,6 +29,7 @@ vi.mock("@agent/lib/yandex/pilot", () => ({
 vi.mock("@agent/lib/yandex/lavka/checkout", async (original) => ({
   ...(await original<typeof lavka>()),
   prepareLavkaPurchase: services.prepare,
+  readLavkaPurchaseStatus: services.status,
   submitLavkaPurchase: services.submit,
 }));
 
@@ -428,4 +430,50 @@ describe("Yandex purchase consent", () => {
       /cartVersion|synthetic-cart|providerSnapshot|fingerprint/u
     );
   });
+
+  it.each(["placed", "submitting", "unknown"] as const)(
+    "reads the exact durable Lavka order from %s without settling or resubmitting",
+    async (state) => {
+      const tool = await resolve();
+      services.read.mockResolvedValue(
+        row({ state, merchantOrderId: "synthetic-order" })
+      );
+      services.status.mockResolvedValue({
+        kind: "cancelled",
+        paymentStatus: "unknown",
+        status: {
+          orderStatus: "closed",
+          resolution: "canceled",
+          statusUpdated: null,
+          providerPaymentStatus: "unknown",
+          paymentProtocolStatus: "cancel",
+          paymentCheck: "read",
+          paymentError: false,
+          needsOwnerAction: false,
+        },
+      });
+      expect(
+        await tool?.execute({ action: "status", purchaseId }, callContext())
+      ).toMatchObject({
+        kind: "cancelled",
+        paymentStatus: "unknown",
+        purchaseId,
+        orderId: "synthetic-order",
+      });
+      expect(services.status).toHaveBeenCalledWith(scope.workspaceId, {
+        orderId: "synthetic-order",
+        snapshot,
+      });
+      services.status.mockClear();
+      services.read.mockResolvedValue(row({ state: "unknown" }));
+      expect(
+        await tool?.execute({ action: "status", purchaseId }, callContext())
+      ).toMatchObject({ kind: "unknown" });
+      expect(services.status).not.toHaveBeenCalled();
+      expect(services.prepare).not.toHaveBeenCalled();
+      expect(services.claim).not.toHaveBeenCalled();
+      expect(services.submit).not.toHaveBeenCalled();
+      expect(services.settle).not.toHaveBeenCalled();
+    }
+  );
 });

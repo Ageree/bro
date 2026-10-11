@@ -80,6 +80,45 @@ const submitResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unknown") }),
 ]);
 
+const statusResultSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("unknown"),
+    paymentStatus: z.literal("unknown"),
+    reason: z.string(),
+  }),
+  z.object({
+    kind: z.enum(["cancelled", "waiting", "needs_owner_action", "closed"]),
+    paymentStatus: z.literal("unknown"),
+    status: z.object({
+      orderStatus: z.enum([
+        "created",
+        "assembling",
+        "assembled",
+        "performer_found",
+        "delivering",
+        "delivery_arrived",
+        "closed",
+      ]),
+      statusUpdated: z.iso.datetime({ offset: true }).nullable(),
+      resolution: z.enum(["canceled", "succeeded", "failed"]).nullable(),
+      providerPaymentStatus: z.enum(["unknown", "failed"]).nullable(),
+      paymentProtocolStatus: z
+        .enum([
+          "wait",
+          "wait_user_action",
+          "fail",
+          "success",
+          "cancel",
+          "need_to_skip",
+        ])
+        .nullable(),
+      paymentCheck: z.enum(["read", "unavailable"]),
+      paymentError: z.boolean(),
+      needsOwnerAction: z.boolean(),
+    }),
+  }),
+]);
+
 const pageSource = String.raw`
   const ok = (data) => ({ status: "ok", data });
   const block = (reason) => { throw Object.assign(new Error("checkout blocked"), { reason }); };
@@ -101,7 +140,7 @@ const pageSource = String.raw`
     const page = window.__PAGE_PROPS__;
     if (!page?.csrfToken || !page?.pageEnv) block("page_unavailable");
     const options = {
-      method: "POST",
+      method: body === undefined ? "GET" : "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Csrf-Token-Bff": page.csrfToken,
@@ -122,7 +161,7 @@ const pageSource = String.raw`
         response.status >= 400 && /html/.test(response.headers.get("content-type") || "")) block("captcha");
     if (response.status !== 200) block("http_error");
     const data = await response.json();
-    if (!record(data)) block("response_invalid");
+    if (!record(data) && !(body === undefined && Array.isArray(data))) block("response_invalid");
     return data;
   };
   const savedAddress = () => {
@@ -291,6 +330,91 @@ const submitOperation = defineYandexOperation({
   }`,
   service: "yandex-lavka",
 });
+
+const statusOperation = defineYandexOperation({
+  about:
+    "Reads only the exact stored Lavka order and its card payment protocol status, without completing payment.",
+  access: "read",
+  args: z.object({
+    orderId: z.string().min(1).max(200),
+    cartId: snapshotSchema.shape.cartId,
+    payment: snapshotSchema.shape.payment.pick({ id: true, type: true }),
+  }),
+  id: "lavka.purchase_status",
+  origin: "https://lavka.yandex.ru/",
+  result: statusResultSchema,
+  run: `async function (args) {${pageSource}
+    try {
+      const query = new URLSearchParams({ devicePixelRatio: String(window.devicePixelRatio || 1), "ids[0]": args.orderId });
+      const tracked = await request("/api/v1/providers/orders-tracking/v1/tracked-orders?" + query);
+      const orders = record(tracked) && "data" in tracked ? tracked.data : tracked;
+      if (!Array.isArray(orders)) block("response_invalid");
+      const matches = orders.filter((order) => record(order) && order.id === args.orderId);
+      if (matches.length !== 1) block("order_unavailable");
+      const order = matches[0];
+      if (order.cartId !== args.cartId || order.paymentMethodId !== args.payment.id ||
+          order.paymentMethodType !== args.payment.type) block("order_mismatch");
+      if (!["created", "assembling", "assembled", "performer_found", "delivering", "delivery_arrived", "closed"].includes(order.status)) block("response_invalid");
+      let payment = null;
+      try {
+        const response = await request("/api/v1/providers/payments/v1/status", { orderId: args.orderId, paymentType: args.payment.type });
+        payment = "data" in response ? response.data : response;
+      } catch {}
+      const protocol = ["wait", "wait_user_action", "fail", "success", "cancel", "need_to_skip"].includes(payment?.status) ? payment.status : null;
+      const paymentError = payment?.payload?.type === "error";
+      const needsOwnerAction = payment?.payload?.type === "card" && !!payment.payload.redirectUrl ||
+        protocol === "wait_user_action" || protocol === "fail" || paymentError;
+      const resolution = ["canceled", "succeeded", "failed"].includes(order.resolution) ? order.resolution : null;
+      const kind = order.status === "closed" && resolution === "canceled" ? "cancelled" :
+        order.status === "closed" ? "closed" : needsOwnerAction ? "needs_owner_action" : "waiting";
+      return ok({ kind, paymentStatus: "unknown", status: {
+        orderStatus: order.status, resolution,
+        statusUpdated: typeof order.statusUpdated === "string" && Number.isFinite(Date.parse(order.statusUpdated)) ? order.statusUpdated : null,
+        providerPaymentStatus: ["unknown", "failed"].includes(order.paymentStatus) ? order.paymentStatus : null,
+        paymentProtocolStatus: protocol, paymentCheck: protocol === null ? "unavailable" : "read",
+        paymentError, needsOwnerAction,
+      } });
+    } catch (error) {
+      return ok({ kind: "unknown", paymentStatus: "unknown", reason: typeof error?.reason === "string" ? error.reason : "unavailable" });
+    }
+  }`,
+  service: "yandex-lavka",
+});
+
+export async function readLavkaPurchaseStatus(
+  workspaceId: string,
+  input: { readonly orderId: string; readonly snapshot: JsonValue }
+): Promise<z.output<typeof statusResultSchema>> {
+  const snapshot = snapshotSchema.safeParse(input.snapshot);
+  if (!snapshot.success)
+    return {
+      kind: "unknown",
+      paymentStatus: "unknown",
+      reason: "snapshot_invalid",
+    };
+  const args = statusOperation.args.safeParse({
+    orderId: input.orderId,
+    cartId: snapshot.data.cartId,
+    payment: { id: snapshot.data.payment.id, type: snapshot.data.payment.type },
+  });
+  if (!args.success)
+    return {
+      kind: "unknown",
+      paymentStatus: "unknown",
+      reason: "order_invalid",
+    };
+  const outcome = await runYandexOperation(
+    workspaceId,
+    statusOperation,
+    args.data
+  );
+  if (outcome.kind !== "ok")
+    return { kind: "unknown", paymentStatus: "unknown", reason: outcome.kind };
+  const result = statusResultSchema.safeParse(outcome.data);
+  return result.success
+    ? result.data
+    : { kind: "unknown", paymentStatus: "unknown", reason: "response_invalid" };
+}
 
 export async function prepareLavkaPurchase(
   workspaceId: string,
