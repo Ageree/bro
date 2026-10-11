@@ -133,15 +133,3 @@ describe("the step that relays a tool result", () => {
     expect(relaysToolResult([user, call, result, user])).toBe(false);
   });
 });
-
-describe("the pilot list of the split heads-up", () => {
-  it("is a list of its own", async () => {
-    vi.resetModules();
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    vi.stubEnv("EARLY_REPLY_SPLIT_WORKSPACES", workspaceId);
-    const { earlyReplySplitPilot } = await import("@agent/lib/delivery/fast");
-    expect(await earlyReplySplitPilot({ workspaceId })).toBe(true);
-    expect(await earlyReplySplitPilot({ workspaceId: "other" })).toBe(false);
-    vi.stubEnv("EARLY_REPLY_SPLIT_WORKSPACES", "");
-  });
-});

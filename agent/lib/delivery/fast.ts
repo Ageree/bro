@@ -50,15 +50,6 @@ export function fastReplyPilot(scope: Scope, turn?: Turn) {
   return listed("fast-reply", env.FAST_REPLY_WORKSPACES, scope, turn);
 }
 
-export function earlyReplySplitPilot(scope: Scope, turn?: Turn) {
-  return listed(
-    "early-reply-split",
-    env.EARLY_REPLY_SPLIT_WORKSPACES,
-    scope,
-    turn
-  );
-}
-
 export function fastFirstStepPilot(scope: Scope, turn?: Turn) {
   return listed("fast-first-step", env.FAST_FIRST_STEP_WORKSPACES, scope, turn);
 }
