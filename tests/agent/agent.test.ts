@@ -22,6 +22,7 @@ const services = vi.hoisted(() => ({
   recordStepHistory: vi.fn<typeof CompactionRecord.recordStepHistory>(),
   directModelActive: vi.fn<() => boolean>(),
   earlyReplyPilot: vi.fn<() => Promise<boolean>>(),
+  fastReplyPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
 }));
@@ -56,6 +57,9 @@ vi.mock("@agent/lib/compaction/pilot", () => ({
 }));
 vi.mock("@agent/lib/delivery/pilot", () => ({
   earlyReplyPilot: services.earlyReplyPilot,
+}));
+vi.mock("@agent/lib/delivery/fast", () => ({
+  fastReplyPilot: services.fastReplyPilot,
 }));
 vi.mock("@agent/lib/compaction/call", () => ({
   compactionCallMiddleware: () => ({}),
@@ -109,6 +113,7 @@ beforeEach(() => {
   services.compactionPilot.mockResolvedValue(false);
   services.compactionHeld.mockReturnValue(false);
   services.earlyReplyPilot.mockResolvedValue(false);
+  services.fastReplyPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
 });
 
@@ -200,6 +205,26 @@ describe("interactive delivery enforcement", () => {
         withheldTools: ["task"],
       }
     );
+  });
+
+  it("keeps every step of a turn in one reasoning mode in the fast-reply pilot", async () => {
+    services.fastReplyPilot.mockResolvedValue(true);
+
+    // Before the answer, and after it: a step that switched mode would read
+    // its whole prompt uncached.
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+    expect(services.modelSelection.mock.lastCall?.[1]?.reasoningOff).toBe(true);
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(delivered)
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.reasoningOff).toBe(true);
+
+    services.fastReplyPilot.mockResolvedValue(false);
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+    expect(
+      services.modelSelection.mock.lastCall?.[1]?.reasoningOff
+    ).toBeUndefined();
   });
 
   it("lets the model finish once send_message went through", async () => {

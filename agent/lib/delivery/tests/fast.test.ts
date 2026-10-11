@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { readWorkspaceScope } from "@db/services/scope";
-import type { ModelMessage } from "ai";
 import type { readAccountEmail } from "@db/services/users";
 
 const services = vi.hoisted(() => ({
@@ -30,7 +29,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.stubEnv("FAST_REPLY_WORKSPACES", "");
-  vi.stubEnv("FAST_FIRST_STEP_WORKSPACES", "");
   vi.stubEnv("OPENROUTER_API_KEY", "");
 });
 
@@ -85,51 +83,5 @@ describe("the pilot list of fast answer steps", () => {
     services.readAccountEmail.mockRejectedValue(new Error("db down"));
     expect(await fastReplyPilot({ workspaceId }, turn)).toBe(true);
     expect(services.readAccountEmail).toHaveBeenCalledOnce();
-  });
-});
-
-describe("the pilot list of the first step", () => {
-  it("is a list of its own", async () => {
-    vi.resetModules();
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    vi.stubEnv("FAST_REPLY_WORKSPACES", "*");
-    vi.stubEnv("FAST_FIRST_STEP_WORKSPACES", "other");
-    const { fastFirstStepPilot, fastReplyPilot } =
-      await import("@agent/lib/delivery/fast");
-    expect(await fastReplyPilot({ workspaceId })).toBe(true);
-    expect(await fastFirstStepPilot({ workspaceId })).toBe(false);
-  });
-});
-
-describe("the step that relays a tool result", () => {
-  const user: ModelMessage = { content: "Который час?", role: "user" };
-  const call: ModelMessage = {
-    content: [
-      { input: {}, toolCallId: "c1", toolName: "clock", type: "tool-call" },
-    ],
-    role: "assistant",
-  };
-  const result: ModelMessage = {
-    content: [
-      {
-        output: { type: "text", value: "12:00" },
-        toolCallId: "c1",
-        toolName: "clock",
-        type: "tool-result",
-      },
-    ],
-    role: "tool",
-  };
-
-  it("is a step after a result of the turn, not the first", async () => {
-    vi.stubEnv("FAST_REPLY_WORKSPACES", "*");
-    const { relaysToolResult } = await import("@agent/lib/delivery/fast");
-    expect(relaysToolResult([user])).toBe(false);
-    expect(relaysToolResult([user, call, result])).toBe(true);
-  });
-
-  it("ignores results of earlier turns", async () => {
-    const { relaysToolResult } = await import("@agent/lib/delivery/fast");
-    expect(relaysToolResult([user, call, result, user])).toBe(false);
   });
 });

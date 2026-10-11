@@ -984,15 +984,12 @@ export const env = createEnv({
     // Unset, a first message that only announces work goes back to be
     // rewritten, as before.
     EARLY_REPLY_WORKSPACES: workspaceListSchema.optional(),
-    // The pilot of a quicker answer step: workspace ids or owners' emails, or
-    // `*` for every workspace, whose steps that only relay a tool's result to
-    // the person run without hidden reasoning (`agent/lib/delivery/fast.ts`).
-    // Only with the direct model. Unset, every step reasons as before.
+    // The pilot of a quicker reply: workspace ids or owners' emails, or `*`
+    // for every workspace, whose steps in a person's turn run without hidden
+    // reasoning, every step of the turn in one mode so DeepInfra's prompt
+    // cache (kept per mode) holds (`agent/lib/delivery/fast.ts`). Only with
+    // the direct model. Unset, every step reasons as before.
     FAST_REPLY_WORKSPACES: workspaceListSchema.optional(),
-    // Further, the first step of a person's turn too, the one that picks the
-    // tool or writes the answer outright: a plain chat turn spent most of
-    // its 9 s there thinking. Same list format. Unset, it reasons as before.
-    FAST_FIRST_STEP_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of flash mode for browser errands that only search: workspace
     // ids or owners' emails, or `*` for every workspace, whose errands on
     // their own browser (a VM or a sandbox of the pool) run browser-use's

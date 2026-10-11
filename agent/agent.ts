@@ -43,11 +43,7 @@ import {
   turnDeclinedErrand,
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
-import {
-  fastFirstStepPilot,
-  fastReplyPilot,
-  relaysToolResult,
-} from "@agent/lib/delivery/fast";
+import { fastReplyPilot } from "@agent/lib/delivery/fast";
 import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import {
   approvedResendOwed,
@@ -260,7 +256,6 @@ export default defineAgent({
           compacted,
           earlyReply,
           fastReply,
-          fastFirstStep,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -289,10 +284,8 @@ export default defineAgent({
           // A person's turn may open with «сейчас поищу» before slow work;
           // `send_message` asks the same verdict of the turn.
           kind === "person" ? earlyReplyPilot(scope, step) : false,
-          // The step that relays a tool's result needs no hidden reasoning.
+          // Every step of the turn runs without hidden reasoning.
           kind === "person" ? fastReplyPilot(scope, step) : false,
-          // And, where named, the first step of the turn too.
-          kind === "person" ? fastFirstStepPilot(scope, step) : false,
         ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
@@ -379,11 +372,7 @@ export default defineAgent({
           historyTrim: historyTrimmed
             ? eligibleHistory(ctx.messages, step)
             : undefined,
-          reasoningOff:
-            requireToolCall &&
-            ((fastReply && relaysToolResult(ctx.messages)) || fastFirstStep)
-              ? true
-              : undefined,
+          reasoningOff: fastReply ? true : undefined,
           replyNote: notes.length > 0 ? notes.join("\n\n") : undefined,
           silent,
           // The skills pilot reads Bro's rules from `bro-skill` blocks in the

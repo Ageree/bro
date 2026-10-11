@@ -678,8 +678,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   шаг с `send_message`; третий шаг (текст после отправки) он не ждёт. Долго
   чаще из-за инструментов: yandex 6–11 с, yandex_purchase 15–23 с, phone-call
   15 с. Ход без инструментов с 1000 знаков reasoning на шаге 0 — 9 с.
-  `FAST_REPLY_WORKSPACES` выключает reasoning на шаге, который пересказывает
-  результат инструмента, `FAST_FIRST_STEP_WORKSPACES` — и на первом шаге
+  `FAST_REPLY_WORKSPACES` выключает reasoning на всех шагах хода человека
   (`agent/lib/delivery/fast.ts`). Замер DeepInfra, 36k токенов, forced
   `send_message`, кэш: reasoning `low` 3,2 с (разброс 2,9–6,7), `off` 2,8 с
   (2,4–3,4); прирост растёт с длиной рассуждений. Кэш DeepInfra раздельный
