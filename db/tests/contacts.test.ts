@@ -61,6 +61,25 @@ describe("address book", () => {
     expect(await names("папе")).toEqual([]);
   });
 
+  it("returns both Лена and Лёня for a stem they share, so Bro asks which one", async () => {
+    const service = await book();
+    await service.saveContact(alice, {
+      name: "Лена",
+      phones: ["+79161234567"],
+    });
+    await service.saveContact(alice, {
+      name: "Лёня",
+      phones: ["+79251112233"],
+    });
+    const names = (await service.findContacts(alice, "Лене")).map(
+      (row) => row.name
+    );
+    expect(names.toSorted()).toEqual(["Лена", "Лёня"]);
+    expect(
+      (await service.findContacts(alice, "Лена")).map((row) => row.name)
+    ).toEqual(["Лена"]);
+  });
+
   it("treats ё and е alike and keeps workspaces apart", async () => {
     const service = await book();
     await service.saveContact(alice, {
