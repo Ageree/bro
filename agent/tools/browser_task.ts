@@ -1845,7 +1845,7 @@ function sameBrowserBackend(left: string, right: string) {
  * is not set up on this deployment.
  */
 const browserServiceOffNote =
-  "Nothing was started: the cloud browser service is not available right now. Tell the user honestly in one short sentence that the browser service is temporarily unavailable, and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
+  "Nothing was started: the cloud browser service is not available right now. Tell the user honestly in one short sentence, in the first person, that you cannot open sites right now (never «браузер» or «сервис» as a separate party), and offer what you can do without a browser (web_search, web_fetch) or to try again later. Do not call browser_task start or continue again in this turn and do not promise a time.";
 
 /**
  * The cancel was asked for, but the run's last step had not finished when
@@ -4175,7 +4175,7 @@ async function runBrowserTask(
       boundSecrets: secrets.aliases,
       liveViewUrl,
       note: [
-        "The run continues in the background. Its outcome arrives as a new message; do not poll for it.",
+        "The run continues in the background. Its outcome arrives as a new message; do not poll for it. Tell the user in the first person («смотрю на сайте»), never about a browser, run or helper.",
         nothingDoneYetNote(),
         signUp === undefined || signUp.kind === "saved"
           ? boundSignInNote(secrets.aliases)

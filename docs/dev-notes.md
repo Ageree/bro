@@ -768,6 +768,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   из `gateway.cost`, туда кладётся рубли ÷ `USAGE_USD_RUB` (`direct.ts`); в
   `usage_costs` такой шаг — рубли без `cost_usd` (`agent/hooks/usage-costs.ts`);
   шаги OpenRouter пишутся без цены.
+- Бро для человека — один, от первого лица (правило в `message-style.md`, повтор в `completion.ts` и нотах `browser_task`): без «помощника», «запуска», «браузера» как отдельного исполнителя. Страховки в `send_message` нет: человек сам говорит «браузер».
 - Модель по умолчанию — `deepseek/deepseek-v4.1-flash`
   (`shared/environment/env.ts`); в Vercel она не задана, кабинет её не меняет.
   Подсказки id в кабинете — свои у каждого провайдера (`model-selector.tsx`):
