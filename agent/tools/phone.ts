@@ -197,6 +197,12 @@ const call = defineTool({
     .object({
       target: domesticPhoneSchema,
       task: z.string().trim().min(1).max(3000),
+      familiar: z
+        .boolean()
+        .optional()
+        .describe(
+          'true, if the call goes to the user themselves or a person they know personally (friend, relative, colleague): the voice greets with a casual "Алло, привет!" and speaks informally. Omit for businesses, services and strangers: "Здравствуйте!".'
+        ),
     })
     .strict(),
   async execute(input, context) {
@@ -247,6 +253,7 @@ const call = defineTool({
         localCallId: started.id,
         task: input.task,
         repeatCall,
+        familiar: input.familiar,
       });
       await recordCallAccepted(
         started.id,

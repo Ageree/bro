@@ -1,16 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { open } from "node:fs/promises";
-import { isDeepStrictEqual, parseArgs } from "node:util";
+import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { env as phoneEnvironment } from "../../shared/environment/env.ts";
 import { registerApplicationModuleResolution } from "../lib/module-resolution.ts";
-import { endCallToolSchema } from "../../shared/phone/elevenlabs-tools.ts";
 import { elevenlabsFetch } from "../../shared/phone/elevenlabs-http.ts";
 import type { RequestInit } from "undici";
 import {
-  endCallDescription,
-  hangupGuard,
   hangupRules,
+  phoneSilenceSeconds,
   voiceStyle,
 } from "../../shared/phone/persona.ts";
 
@@ -43,16 +41,10 @@ const globalLimitsSchema = z.object({
   daily_limit: z.literal(100000),
   bursting_enabled: z.boolean(),
 });
-const endCall = {
-  type: "system",
-  name: "end_call",
-  description: endCallDescription,
-  params: { system_tool_type: "end_call" },
-};
 // Библиотечный русский голос «Maxim — Conversational & Natural» (Москва).
 // Должен быть добавлен в аккаунт ElevenLabs до --apply; другой — через --voice-id.
 const russianVoiceId = "6YjFofyVXU1ASguf2hTJ";
-const basePrompt = `Ты Бро, голосовой помощник пользователя. ${hangupGuard} Говори по-русски. ${voiceStyle} Не называй себя ИИ или роботом в приветствии и не заводи разговор о записи сам, но никогда не утверждай, что ты человек: если собеседник искренне спросит, человек ли ты или робот, либо о записи — ответь честно и коротко (ты голосовой ИИ-помощник, оператор связи может записывать звонок, а краткое содержание сохраняется для отчёта владельцу) и продолжи. Твой единственный инструмент end_call завершает этот разговор; инструментов для других действий и доступа к памяти, аккаунтам или личным сведениям пользователя нет. Не совершай покупки, бронирования, переводы и другие действия и не обещай их. Не запрашивай пароли, коды, платёжные или другие чувствительные сведения. Если цель звонка не передана, предложи собеседнику оставить короткое сообщение для пользователя. ${hangupRules}`;
+const basePrompt = `Ты Бро, голосовой помощник пользователя. Говори по-русски. ${voiceStyle} Не называй себя ИИ или роботом в приветствии и не заводи разговор о записи сам, но никогда не утверждай, что ты человек: если собеседник искренне спросит, человек ли ты или робот, либо о записи — ответь честно и коротко (ты голосовой ИИ-помощник, оператор связи может записывать звонок, а краткое содержание сохраняется для отчёта владельцу) и продолжи. У тебя нет инструментов: ни для других действий, ни для доступа к памяти, аккаунтам или личным сведениям пользователя. Не совершай покупки, бронирования, переводы и другие действия и не обещай их. Не запрашивай пароли, коды, платёжные или другие чувствительные сведения. Если цель звонка не передана, предложи собеседнику оставить короткое сообщение для пользователя. ${hangupRules}`;
 const firstMessage = "Здравствуйте! Это Бро. Вам удобно сейчас поговорить?";
 let applying = false;
 let env: typeof phoneEnvironment;
@@ -160,8 +152,6 @@ function configuration(
     );
   const prompt = object(behavior.prompt);
   const builtins = object(prompt.built_in_tools);
-  const existingHangup = builtins.end_call ? object(builtins.end_call) : {};
-  const hangup = { ...existingHangup, ...endCall };
   const auth = object(platform.auth);
   const allowlist = z
     .array(z.object({ hostname: z.string() }))
@@ -226,12 +216,10 @@ function configuration(
           mcp_server_ids: [],
           native_mcp_server_ids: [],
           knowledge_base: [],
-          built_in_tools: {
-            ...Object.fromEntries(
-              Object.keys(builtins).map((key) => [key, null])
-            ),
-            end_call: hangup,
-          },
+          // Без end_call (11.10): звонок заканчивает собеседник или тишина.
+          built_in_tools: Object.fromEntries(
+            Object.keys(builtins).map((key) => [key, null])
+          ),
         },
       },
       conversation: {
@@ -250,7 +238,7 @@ function configuration(
         ...turn,
         turn_eagerness: "eager",
         speculative_turn: true,
-        silence_end_call_timeout: 30,
+        silence_end_call_timeout: phoneSilenceSeconds,
         soft_timeout_config: {
           ...object(turn.soft_timeout_config ?? {}),
           timeout_seconds: 3,
@@ -319,21 +307,22 @@ function configuration(
   };
 }
 
+// Провайдер отдаёт выключенные встроенные инструменты то как null, то совсем без ключа:
+// для сравнения берём только включённые.
 function normalizedConversation(config: z.output<typeof jsonObject>) {
   const behavior = object(config.agent);
   const prompt = object(behavior.prompt);
-  const tools = z.array(z.json()).safeParse(prompt.tools);
-  const builtin = object(prompt.built_in_tools).end_call;
-  if (
-    !tools.success ||
-    tools.data.length !== 1 ||
-    !endCallToolSchema.safeParse(tools.data[0]).success ||
-    !isDeepStrictEqual(tools.data[0], builtin)
-  )
-    return config;
+  const enabled = Object.fromEntries(
+    Object.entries(object(prompt.built_in_tools)).filter(
+      ([, tool]) => tool !== null
+    )
+  );
   return {
     ...config,
-    agent: { ...behavior, prompt: { ...prompt, tools: [] } },
+    agent: {
+      ...behavior,
+      prompt: { ...prompt, tools: [], built_in_tools: enabled },
+    },
   };
 }
 
@@ -511,7 +500,7 @@ async function setup() {
                 mcp_server_ids: [],
                 native_mcp_server_ids: [],
                 knowledge_base: [],
-                built_in_tools: { end_call: endCall },
+                built_in_tools: {},
               },
             },
             conversation: {
@@ -565,7 +554,7 @@ async function setup() {
     );
     const changed =
       JSON.stringify(normalizedConversation(current.conversation_config)) !==
-        JSON.stringify(planned.conversation_config) ||
+        JSON.stringify(normalizedConversation(planned.conversation_config)) ||
       JSON.stringify(current.platform_settings) !==
         JSON.stringify(planned.platform_settings);
     if (changed)
@@ -587,7 +576,7 @@ async function setup() {
     );
     if (
       JSON.stringify(normalizedConversation(verified.conversation_config)) !==
-        JSON.stringify(target.conversation_config) ||
+        JSON.stringify(normalizedConversation(target.conversation_config)) ||
       JSON.stringify(verified.platform_settings) !==
         JSON.stringify(target.platform_settings)
     )
