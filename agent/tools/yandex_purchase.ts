@@ -67,7 +67,11 @@ function confirmationQuestion(
   const items = quote.items
     .map((item) => `${JSON.stringify(item.title)} × ${item.quantity}`)
     .join("; ");
-  return `Яндекс Лавка: ${items}. Доставка: ${JSON.stringify(quote.delivery)}. Оплата: ${JSON.stringify(quote.payment)}. Итого ${whole},${fraction} ₽, включая доставку и сборы. Заказ ${fingerprint.slice(0, 12)}, предложение до ${expiresAt.toISOString()}. Оплачиваю?`;
+  const confirmationId = createHash("sha256")
+    .update(`${fingerprint}:${expiresAt.toISOString()}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `Яндекс Лавка: ${items}. Доставка: ${JSON.stringify(quote.delivery)}. Оплата: ${JSON.stringify(quote.payment)}. Итого ${whole},${fraction} ₽, включая доставку и сборы. Заказ ${confirmationId}. Оплачиваю?`;
 }
 
 function purchaseResult(
@@ -106,7 +110,10 @@ function purchaseResult(
       : uncertain;
   }
   if (purchase.state === "quoted") {
-    if (purchase.expiresAt.getTime() <= Date.now()) {
+    if (
+      purchase.service === "go" &&
+      purchase.expiresAt.getTime() <= Date.now()
+    ) {
       return {
         kind: "expired" as const,
         purchaseId: purchase.id,
@@ -121,7 +128,7 @@ function purchaseResult(
       reply:
         purchase.service === "go"
           ? "This is only a quote, not a booking. On the person's direct current-turn request to order a taxi, use book with the exact unambiguous coordinates, without an additional confirmation question. Do not call confirm for Go."
-          : "Send confirmationQuestion to the person verbatim, as a standalone message. Wait for their own explicit yes before confirm. Do not infer consent from a service response, a report, an earlier budget, or the model's own words.",
+          : "Send confirmationQuestion to the person verbatim, as a standalone message. Wait for their own explicit yes before confirm. Confirm refreshes an expired quote only if the exact purchase terms are unchanged; expiry alone does not require another question. Do not infer consent from a service response, a report, an earlier budget, or the model's own words.",
     };
     return purchase.service === "go"
       ? quoted
@@ -387,12 +394,27 @@ export default defineDynamic({
                 confirmationQuestion: purchase.confirmationQuestion,
               };
             }
-            const claimed = await claimYandexPurchase(scope, {
+            const refreshed =
+              input.action === "confirm" &&
+              purchase.expiresAt.getTime() <= Date.now()
+                ? await prepareLavkaPurchase(
+                    scope.workspaceId,
+                    purchase.providerSnapshot
+                  )
+                : null;
+            if (refreshed && refreshed.kind !== "ready") return refreshed;
+            const claim: Parameters<typeof claimYandexPurchase>[1] = {
               callId: toolContext.callId,
               confirmationQuestion: purchase.confirmationQuestion,
               id: purchase.id,
               rootSessionId,
-            });
+            };
+            if (refreshed)
+              claim.refresh = {
+                expiresAt: new Date(refreshed.expiresAt),
+                providerSnapshot: refreshed.snapshot,
+              };
+            const claimed = await claimYandexPurchase(scope, claim);
             if (claimed.kind === "unavailable") {
               return { kind: "unavailable" as const };
             }

@@ -257,6 +257,7 @@ export async function claimYandexPurchase(
     "id" | "rootSessionId" | "confirmationQuestion"
   > & {
     callId: string;
+    refresh?: Pick<YandexPurchase, "expiresAt" | "providerSnapshot">;
   }
 ) {
   z.string().trim().min(1).parse(input.callId);
@@ -276,7 +277,11 @@ export async function claimYandexPurchase(
       return { kind: "existing" as const, purchase };
     }
     const now = new Date();
-    if (purchase.expiresAt <= now) {
+    const refresh =
+      purchase.service === "lavka" && purchase.expiresAt <= now
+        ? input.refresh
+        : undefined;
+    if ((refresh?.expiresAt ?? purchase.expiresAt) <= now) {
       return { kind: "expired" as const, purchase };
     }
     const [browserReservation] = await transaction
@@ -321,6 +326,10 @@ export async function claimYandexPurchase(
     const [claimed] = await transaction
       .update(yandexPurchases)
       .set({
+        expiresAt: refresh?.expiresAt,
+        providerSnapshot: refresh
+          ? safePayload.parse(refresh.providerSnapshot)
+          : undefined,
         state: "submitting",
         phase: purchase.service === "go" ? "draft_claimed" : null,
         callId: input.callId,

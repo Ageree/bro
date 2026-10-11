@@ -293,11 +293,34 @@ const submitOperation = defineYandexOperation({
 });
 
 export async function prepareLavkaPurchase(
-  workspaceId: string
+  workspaceId: string,
+  approvedSnapshot?: JsonValue
 ): Promise<z.output<typeof prepareResultSchema>> {
   const outcome = await runYandexOperation(workspaceId, prepareOperation, {});
   if (outcome.kind !== "ok") return { kind: "blocked", reason: outcome.kind };
   const result = prepareResultSchema.safeParse(outcome.data);
+  if (
+    result.success &&
+    result.data.kind === "ready" &&
+    approvedSnapshot !== undefined
+  ) {
+    const approved = snapshotSchema.safeParse(approvedSnapshot);
+    const terms = snapshotSchema
+      .omit({
+        cartVersion: true,
+        deliveryConditionsId: true,
+        expiresAt: true,
+        offerId: true,
+        validUntil: true,
+      })
+      .strip();
+    if (
+      !approved.success ||
+      JSON.stringify(terms.parse(approved.data)) !==
+        JSON.stringify(terms.parse(result.data.snapshot))
+    )
+      return { kind: "blocked", reason: "checkout_changed" };
+  }
   return result.success
     ? result.data
     : { kind: "blocked", reason: "response_invalid" };
