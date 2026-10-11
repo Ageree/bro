@@ -268,10 +268,13 @@ describe("Go fixed provider functions", () => {
   );
 
   it.each([
-    { status: 429, headers: {} },
-    { status: 500, headers: { "x-yataxi-retry-action": "stop" } },
-    { status: 503, headers: { "retry-after": "60" } },
-    { status: 503, headers: { "x-yataxi-retry-interval-ms": "1000" } },
+    { status: 429, headers: new Headers() },
+    { status: 500, headers: new Headers({ "x-yataxi-retry-action": "stop" }) },
+    { status: 503, headers: new Headers({ "retry-after": "60" }) },
+    {
+      status: 503,
+      headers: new Headers({ "x-yataxi-retry-interval-ms": "1000" }),
+    },
   ])(
     "does not retry reads after provider rate or retry instructions: $status $headers",
     async (response) => {
