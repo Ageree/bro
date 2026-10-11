@@ -421,6 +421,13 @@
       "when": 1791712809679,
       "tag": "0059_go_booking",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791752456116,
+      "tag": "0060_retire_go_purchases",
+      "breakpoints": true
     }
   ]
 }

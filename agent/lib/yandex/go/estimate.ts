@@ -2,7 +2,8 @@ import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 import { goApiPage, goSession } from "./session";
 
-const place = z.union([
+/** A place for Go: an address text or [longitude, latitude]. */
+export const goPlace = z.union([
   z.string().min(1).max(200),
   z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]),
 ]);
@@ -32,20 +33,18 @@ const estimateResult = z.union([
 
 /**
  * Yandex Go's price estimate between two places, by tariff, with the pickup
- * time. It reads the prices of now (an estimate) and creates no order. The
- * taxi itself is not ordered by this tool: a ride is booked only by
- * browser_task, with the person's yes.
+ * time. It reads the prices of now (an estimate) and creates no order.
  */
 export const goEstimateOperation = defineYandexOperation({
   about:
-    "The price and the pickup time of each Yandex Go tariff from one place to another, now (an estimate; it creates no order). from and to are an address text or [longitude, latitude]; near biases the address search to a point. It cannot order a taxi: a ride is ordered only by browser_task, with the person's yes.",
+    "The price and the pickup time of each Yandex Go tariff from one place to another, now (an estimate; it creates no order). from and to are an address text or [longitude, latitude]; near biases the address search to a point. To order the ride, use yandex_purchase book.",
   access: "read",
   args: z.object({
-    from: place,
+    from: goPlace,
     near: z
       .tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)])
       .default([37.6177, 55.7558]),
-    to: place,
+    to: goPlace,
   }),
   id: "go.estimate",
   origin: goApiPage,

@@ -1060,13 +1060,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `{workspace, op, args}` зовёт операцию реестра, `{workspace, page, steps}`
   пишет fetch/XHR страницы с телами. Результат — через S3, не в журнал job.
   Бандлу ops с кодом браузера нужен `--loader:.md=text` (тексты навыков `?raw`).
-- Go draft/commit ожидают raw `orderid`/`status`: `.data` публичного клиента —
-  HTTP-обёртка, не JSON сервера. Raw `taxiontheway` не содержит orderid, фронтенд
-  добавляет его сам. Фазы Go и workspace-wide защита активной поездки —
-  `docs/yandex-api/go-booking.md`. Только исходный/final CASH с exact final fare
-  и нулевыми недоступными tips закрывает fence как известное обязательство, не
-  `paid`; карта/отмена остаются неизвестными. Fingerprint Go привязан к ходу
-  человека, не к offer, чтобы завершённая поездка не повторилась с новой котировкой.
+- Заказ Go (11.10) — одна операция `go.book` в одной вкладке: suggest →
+  finalsuggest → routestats → orderdraft → ordercommit (на 202 коммит шлётся
+  снова, как на сайте; draft — никогда). Защита от второй поездки — активный
+  заказ в истории самого Яндекса (`is_active`), а не таблица: прежние фазы в
+  `yandex_purchases` при сбое навсегда блокировали все покупки воркспейса.
+  Отмена — `taxiontheway` с `break: "user"` (`go.cancel`); проверено вживую.
 - Go использует общий native-кеш CSRF в `localStorage` (`csrf_token`:
   `token`, `validUntil`, запас 60 с). Безусловный `/csrf_token` перед каждой
   фазой добавлял точку отказа даже при живом токене. `net::ERR_TUNNEL_CONNECTION_FAILED`

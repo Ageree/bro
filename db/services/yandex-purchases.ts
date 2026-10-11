@@ -35,7 +35,7 @@ const safePayload = z.record(z.string(), z.json()).refine((payload) => {
 
 const preparedPurchase = z.object({
   rootSessionId: z.string().trim().min(1),
-  service: z.enum(["lavka", "go"]),
+  service: z.literal("lavka"),
   checkoutKey: z.string().trim().min(1),
   fingerprint: z.string().trim().min(1),
   amountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -184,72 +184,6 @@ export async function readYandexPurchase(
   return purchase;
 }
 
-export async function readActiveGoPurchase(scope: AccessScope) {
-  const [purchase] = await db
-    .select()
-    .from(yandexPurchases)
-    .where(
-      and(
-        eq(yandexPurchases.workspaceId, scope.workspaceId),
-        eq(yandexPurchases.userId, scope.userId),
-        eq(yandexPurchases.service, "go"),
-        inArray(yandexPurchases.state, ["active", "unknown", "submitting"])
-      )
-    )
-    .limit(1);
-  return purchase;
-}
-
-export async function settleGoCashLiability(
-  scope: AccessScope,
-  input: Pick<YandexPurchase, "id"> & {
-    orderId: string;
-    finalFareMinor: number;
-  }
-) {
-  const amount = z
-    .number()
-    .int()
-    .nonnegative()
-    .max(Number.MAX_SAFE_INTEGER)
-    .parse(input.finalFareMinor);
-  return db.transaction(async (transaction) => {
-    await lockWorkspaceSpending(transaction, scope);
-    const [purchase] = await transaction
-      .select()
-      .from(yandexPurchases)
-      .where(
-        and(
-          eq(yandexPurchases.id, input.id),
-          eq(yandexPurchases.workspaceId, scope.workspaceId),
-          eq(yandexPurchases.userId, scope.userId),
-          eq(yandexPurchases.service, "go"),
-          eq(yandexPurchases.merchantOrderId, input.orderId),
-          inArray(yandexPurchases.state, ["active", "unknown", "submitting"]),
-          inArray(yandexPurchases.phase, ["accepted", "commit_claimed"])
-        )
-      )
-      .limit(1);
-    if (purchase?.providerSnapshot.payment !== "CASH") return undefined;
-    const now = new Date();
-    const [settled] = await transaction
-      .update(yandexPurchases)
-      .set({
-        state: "placed",
-        settledAt: now,
-        updatedAt: now,
-        outcome: {
-          kind: "cash_liability_known",
-          finalFareMinor: amount,
-          paymentStatus: "unknown",
-        },
-      })
-      .where(eq(yandexPurchases.id, purchase.id))
-      .returning();
-    return settled;
-  });
-}
-
 export async function claimYandexPurchase(
   scope: AccessScope,
   input: Pick<
@@ -331,7 +265,6 @@ export async function claimYandexPurchase(
           ? safePayload.parse(refresh.providerSnapshot)
           : undefined,
         state: "submitting",
-        phase: purchase.service === "go" ? "draft_claimed" : null,
         callId: input.callId,
         submittedAt: now,
         updatedAt: now,
@@ -353,14 +286,12 @@ export async function settleYandexPurchase(
   scope: AccessScope,
   input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
     callId: string;
-    state: "placed" | "rejected" | "unknown" | "active";
+    state: "placed" | "rejected" | "unknown";
     outcome: NonNullable<YandexPurchase["outcome"]>;
     merchantOrderId?: string;
   }
 ) {
-  const state = z
-    .enum(["placed", "rejected", "unknown", "active"])
-    .parse(input.state);
+  const state = z.enum(["placed", "rejected", "unknown"]).parse(input.state);
   const outcome = safePayload.parse(input.outcome);
   return db.transaction(async (transaction) => {
     await lockWorkspaceSpending(transaction, scope);
@@ -376,37 +307,15 @@ export async function settleYandexPurchase(
       .limit(1);
     if (!purchase) return undefined;
     if (purchase.state !== "submitting") return undefined;
-    if (purchase.service === "go" && state === "placed") return undefined;
-    if (
-      purchase.service === "go" &&
-      input.merchantOrderId !== undefined &&
-      input.merchantOrderId !== purchase.merchantOrderId
-    )
-      return undefined;
-    if (
-      state === "active" &&
-      (purchase.service !== "go" ||
-        purchase.phase !== "commit_claimed" ||
-        !purchase.merchantOrderId ||
-        input.merchantOrderId !== purchase.merchantOrderId)
-    )
-      return undefined;
-    if (
-      purchase.service === "go" &&
-      state === "rejected" &&
-      (purchase.phase !== "draft_claimed" || purchase.merchantOrderId !== null)
-    )
-      return undefined;
     const now = new Date();
     const [settled] = await transaction
       .update(yandexPurchases)
       .set({
         state,
-        phase: state === "active" ? "accepted" : purchase.phase,
         outcome,
         merchantOrderId: input.merchantOrderId ?? purchase.merchantOrderId,
         updatedAt: now,
-        settledAt: state === "active" ? null : now,
+        settledAt: now,
       })
       .where(
         and(
@@ -417,63 +326,5 @@ export async function settleYandexPurchase(
       )
       .returning();
     return settled;
-  });
-}
-
-export async function recordGoPurchaseDraft(
-  scope: AccessScope,
-  input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
-    callId: string;
-    orderId: string;
-  }
-) {
-  const orderId = z.string().min(1).max(200).parse(input.orderId);
-  return db.transaction(async (transaction) => {
-    await lockWorkspaceSpending(transaction, scope);
-    const [purchase] = await transaction
-      .update(yandexPurchases)
-      .set({
-        merchantOrderId: orderId,
-        phase: "drafted",
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          ownedPurchase(scope, input),
-          eq(yandexPurchases.callId, input.callId),
-          eq(yandexPurchases.service, "go"),
-          eq(yandexPurchases.state, "submitting"),
-          eq(yandexPurchases.phase, "draft_claimed")
-        )
-      )
-      .returning();
-    return purchase;
-  });
-}
-
-export async function claimGoPurchaseCommit(
-  scope: AccessScope,
-  input: Pick<YandexPurchase, "id" | "rootSessionId"> & {
-    callId: string;
-    orderId: string;
-  }
-) {
-  return db.transaction(async (transaction) => {
-    await lockWorkspaceSpending(transaction, scope);
-    const [purchase] = await transaction
-      .update(yandexPurchases)
-      .set({ phase: "commit_claimed", updatedAt: new Date() })
-      .where(
-        and(
-          ownedPurchase(scope, input),
-          eq(yandexPurchases.callId, input.callId),
-          eq(yandexPurchases.service, "go"),
-          eq(yandexPurchases.state, "submitting"),
-          eq(yandexPurchases.phase, "drafted"),
-          eq(yandexPurchases.merchantOrderId, input.orderId)
-        )
-      )
-      .returning();
-    return purchase;
   });
 }

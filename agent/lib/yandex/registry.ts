@@ -2,6 +2,7 @@ import { afishaSearchOperation } from "./afisha/search";
 import { afishaTicketsOperation } from "./afisha/tickets";
 import { foodOperations } from "./food/operations";
 import type { YandexOperation } from "./operations";
+import { goRideOperation } from "./go/booking";
 import { goEstimateOperation } from "./go/estimate";
 import { goRidesOperation } from "./go/rides";
 import { marketOperations } from "./market";
@@ -21,6 +22,7 @@ export const yandexOperations: readonly [
   statusOperation,
   goEstimateOperation,
   goRidesOperation,
+  goRideOperation,
   mapsSearchOperation,
   mapsOrgOperation,
   afishaSearchOperation,
