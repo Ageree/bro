@@ -44,6 +44,7 @@ import {
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import {
+  earlyReplySplitPilot,
   fastFirstStepPilot,
   fastReplyPilot,
   relaysToolResult,
@@ -52,6 +53,7 @@ import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import {
   approvedResendOwed,
   earlyReplyNote,
+  earlyReplySplitNote,
   turnMustEnd,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
@@ -261,6 +263,7 @@ export default defineAgent({
           earlyReply,
           fastReply,
           fastFirstStep,
+          earlyReplySplit,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
@@ -293,6 +296,8 @@ export default defineAgent({
           kind === "person" ? fastReplyPilot(scope, step) : false,
           // And, where named, the first step of the turn too.
           kind === "person" ? fastFirstStepPilot(scope, step) : false,
+          // The heads-up of the early-reply pilot in a step of its own.
+          kind === "person" ? earlyReplySplitPilot(scope, step) : false,
         ]);
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
@@ -313,7 +318,12 @@ export default defineAgent({
           // every step until the answer is out; the heads-up itself is no
           // delivery (`turnSends`). A turn that must end writes nothing.
           earlyReply && sends.delivered.length === 0 && !pastAnswer
-            ? earlyReplyNote
+            ? earlyReplySplit
+              ? // Out already, the heads-up needs no second ask.
+                sends.headsUps.length === 0
+                ? earlyReplySplitNote
+                : undefined
+              : earlyReplyNote
             : undefined,
           staleReport ? staleReportNote : undefined,
           cardsHeld && !silent
