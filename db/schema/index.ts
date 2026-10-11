@@ -7,6 +7,7 @@ export * from "./browser-runs";
 export * from "./browser-vms";
 export * from "./channel-identities";
 export * from "./chats";
+export * from "./contacts";
 export * from "./conversation-log";
 export * from "./drive-files";
 export * from "./generated-images";

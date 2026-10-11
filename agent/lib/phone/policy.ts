@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { defineState, type SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
-import { startedByPerson } from "@agent/lib/mode";
+import type { ApprovalContext } from "eve/tools/approval";
+import { ownTurnApproval, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 
 const phoneTurn = defineState<{
@@ -125,4 +126,25 @@ export function authorizedPhoneTurn(session: SessionContext["session"]) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Approval of an action only the person's own root turn may start: phone
+ * calls and writes to the address book.
+ */
+export function rootApproval(
+  context: Pick<
+    ApprovalContext,
+    "session" | "callId" | "toolName" | "toolInput"
+  >
+) {
+  const input = JSON.stringify(context.toolInput ?? null);
+  if (authorizedPhoneTurn(context.session)) recordPhoneAction(context, input);
+  return phoneActionTurn(context, input)
+    ? ownTurnApproval(context)
+    : {
+        type: "denied" as const,
+        reason:
+          "Only an authenticated person's own root turn may initiate phone actions.",
+      };
 }

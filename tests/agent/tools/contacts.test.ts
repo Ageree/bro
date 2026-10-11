@@ -76,6 +76,17 @@ describe("contacts and the ways to message them", () => {
     expect(result.messaging).not.toContain("read-only");
   });
 
+  it("returns a contact's phone numbers for phone-call", async () => {
+    const result = await contactsSearch.execute(
+      { pageSize: 10, query: "Лёша" },
+      composioToolContext("ca_google")
+    );
+    if (Symbol.asyncIterator in result) throw new Error("One result.");
+    expect(result.contacts[0]?.person?.phoneNumbers).toEqual([
+      { type: "MOBILE", value: "+79117317917" },
+    ]);
+  });
+
   it("adds Slack only when the person's Slack is connected", async () => {
     composio.connect({ authConfigId: "ac_slack", toolkit: "slack" });
 

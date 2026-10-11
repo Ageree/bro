@@ -2,13 +2,8 @@ import { createHash } from "node:crypto";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
-import { ownTurnApproval } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import {
-  authorizedPhoneTurn,
-  phoneActionTurn,
-  recordPhoneAction,
-} from "@agent/lib/phone/policy";
+import { phoneActionTurn, rootApproval } from "@agent/lib/phone/policy";
 import { domesticPhoneSchema } from "@shared/phone/policy";
 import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
@@ -77,22 +72,6 @@ function publicNumber(row: Awaited<ReturnType<typeof readPhoneNumber>>) {
     : null;
 }
 
-function rootApproval(
-  context: Pick<
-    ApprovalContext,
-    "session" | "callId" | "toolName" | "toolInput"
-  >
-) {
-  const input = JSON.stringify(context.toolInput ?? null);
-  if (authorizedPhoneTurn(context.session)) recordPhoneAction(context, input);
-  return phoneActionTurn(context, input)
-    ? ownTurnApproval(context)
-    : {
-        type: "denied" as const,
-        reason:
-          "Only an authenticated person's own root turn may initiate phone actions.",
-      };
-}
 function paidApproval(
   context: Pick<
     ApprovalContext,
