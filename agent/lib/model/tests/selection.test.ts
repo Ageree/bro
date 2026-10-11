@@ -183,6 +183,29 @@ describe("model selection", () => {
     });
   });
 
+  it("runs a step of the fast-reply pilot without reasoning", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+
+    const { modelSelection } = await import("@agent/lib/model/selection");
+    expect(
+      modelSelection("deepseek/deepseek-v4.1-flash", {
+        reasoningOff: true,
+        toolChoice: "auto",
+      })
+    ).toMatchObject({
+      modelOptions: {
+        providerOptions: { openrouter: { reasoning: { enabled: false } } },
+      },
+    });
+    expect(
+      modelSelection("deepseek/deepseek-v4.1-flash", { toolChoice: "auto" })
+    ).toMatchObject({
+      modelOptions: {
+        providerOptions: { openrouter: { reasoning: { effort: "low" } } },
+      },
+    });
+  });
+
   it("makes a step that must reach the person call a tool", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     const doGenerate = vi.fn<LanguageModelV4["doGenerate"]>();

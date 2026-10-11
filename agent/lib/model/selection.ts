@@ -22,7 +22,8 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * is never set for a Gateway id (`stepContextPilot`), nor is `skillBlocks`,
  * the skills pilot (`skillsPilot`), nor `historyTrim`, the pilot of trimming
  * old history (`historyTrimPilot`), nor `compaction`, the pilot of compacting
- * a long conversation (`compactionPilot`).
+ * a long conversation (`compactionPilot`), nor `reasoningOff`, the pilot of
+ * the quicker answer step (`fastReplyPilot`).
  */
 export function modelSelection(
   modelId: string,
@@ -35,6 +36,7 @@ export function modelSelection(
       typeof directModelSelection
     >[1]["historyTrim"];
     readonly offeredTools?: readonly string[];
+    readonly reasoningOff?: boolean;
     readonly replyNote?: string;
     readonly silent?: boolean;
     readonly skillBlocks?: boolean;
@@ -53,6 +55,7 @@ export function modelSelection(
         delivered: options.delivered,
         historyTrim: options.historyTrim,
         offeredTools: options.offeredTools,
+        reasoningOff: options.reasoningOff,
         replyNote: options.replyNote,
         silent: options.silent,
         skillBlocks: options.skillBlocks,
