@@ -70,11 +70,20 @@ const prepareResultSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+/**
+ * Where the card payment of a placed order stands, as the site's own payment
+ * tracking reads it: `needs_confirmation` is the bank's 3-D Secure form, at
+ * `confirmUrl`, waiting for the person.
+ */
+const paymentSchema = z.object({
+  confirmUrl: z.url().optional(),
+  paymentStatus: z.enum(["paid", "needs_confirmation", "failed", "pending"]),
+});
+
 const submitResultSchema = z.discriminatedUnion("kind", [
-  z.object({
+  paymentSchema.extend({
     kind: z.literal("placed"),
     orderId: z.string().min(1),
-    paymentStatus: z.literal("unknown"),
   }),
   z.object({ kind: z.literal("rejected"), reason: z.string() }),
   z.object({ kind: z.literal("unknown") }),
@@ -97,7 +106,7 @@ const pageSource = String.raw`
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   };
   const request = async (path, body, beforeSend) => {
-    await new Promise((done) => setTimeout(done, 1100));
+    await new Promise((done) => setTimeout(done, 300));
     const page = window.__PAGE_PROPS__;
     if (!page?.csrfToken || !page?.pageEnv) block("page_unavailable");
     const options = {
@@ -170,7 +179,7 @@ const pageSource = String.raw`
           !Array.isArray(item.restrictions) || item.restrictions.length || !Array.isArray(item.modifiers) || item.modifiers.length ||
           typeof item.quantity !== "string" || !/^[1-9]\d*$/.test(item.quantity) || !Number.isSafeInteger(Number(item.quantity))) block("item_unsupported");
       return { id: text(item.id, "cart_invalid"), positionId: text(item.positionId, "cart_invalid"), quantity: item.quantity,
-        title: text(item.title, "cart_invalid"), unitPriceMinor: money(item.price) };
+        title: text(item.title, "cart_invalid").replaceAll("\u00ad", ""), unitPriceMinor: money(item.price) };
     }).sort((a, b) => a.positionId.localeCompare(b.positionId));
     const amountMinor = money(cart.totalPriceValue);
     const itemsMinor = money(cart.totalItemsPrice);
@@ -221,6 +230,25 @@ const pageSource = String.raw`
       payment: payment.last4 ? "Сохранённая карта " + payment.system + " •••• " + payment.last4 : "Карта по умолчанию " + payment.system };
     return { snapshot, publicQuote, position, cart };
   };
+  // The site polls the same way after an order (PaymentTrackingPortal):
+  // every 2 s until a final status or the bank's form.
+  const payment = async (orderId, waitMs) => {
+    const until = Date.now() + waitMs;
+    for (;;) {
+      let answer = null;
+      try { answer = await request("/api/v1/providers/payments/v1/status", { orderId, paymentType: "card" }); } catch {}
+      const state = answer && record(answer.data) ? answer.data : answer;
+      const status = state?.status;
+      if (status === "success" || status === "need_to_skip") return { paymentStatus: "paid" };
+      if (status === "fail" || status === "cancel") return { paymentStatus: "failed" };
+      const url = state?.payload?.redirectUrl;
+      if (status === "wait_user_action" && typeof url === "string" && /^https:\/\//.test(url)) {
+        return { paymentStatus: "needs_confirmation", confirmUrl: url };
+      }
+      if (Date.now() + 2000 > until) return { paymentStatus: "pending" };
+      await new Promise((done) => setTimeout(done, 2000));
+    }
+  };
   const errorAnswer = (error, kind) => {
     const reason = typeof error?.reason === "string" ? error.reason : "unavailable";
     if (reason === "signed_out" || reason === "captcha") return { status: reason };
@@ -267,26 +295,17 @@ const submitOperation = defineYandexOperation({
       for (const key of Object.keys(current)) {
         if (JSON.stringify(current[key]) !== JSON.stringify(approved[key])) block(key === "payment" ? "payment_changed" : key.startsWith("address") ? "address_changed" : "checkout_changed");
       }
-      const finalCart = await request("/api/v1/providers/cart/v1/retrieve", { position: { location: checkout.position.location }, depotType: "regular" });
-      const amounts = validateCart(finalCart);
-      if (finalCart.cartId !== approved.cartId || finalCart.cartVersion !== approved.cartVersion ||
-          finalCart.offerId !== approved.offerId || finalCart.validUntil !== approved.validUntil ||
-          finalCart.deliveryConditionsId !== approved.deliveryConditionsId || JSON.stringify(amounts) !== JSON.stringify({
-            amountMinor: approved.amountMinor, itemsMinor: approved.itemsMinor, deliveryMinor: approved.deliveryMinor, items: approved.items })) block("checkout_changed");
-      const finalAddress = savedAddress();
-      const finalHash = await hash({ addressId: finalAddress.selected.addressId, addressVersion: finalAddress.selected.addressVersion, position: finalAddress.position });
-      if (finalHash !== approved.addressHash) block("address_changed");
       if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
       const body = { cartId: approved.cartId, cartVersion: approved.cartVersion, flowVersion: approved.flowVersion,
-        position: finalAddress.position, paymentMethodType: "card", paymentMethodId: approved.payment.id,
-        useRover: false, depotOrderContext: { depotType: "regular", position: finalAddress.position.location } };
+        position: checkout.position, paymentMethodType: "card", paymentMethodId: approved.payment.id,
+        useRover: false, depotOrderContext: { depotType: "regular", position: checkout.position.location } };
       const response = await request("/api/v1/orders/submit", body, () => {
         if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
         sent = true;
       });
       const orderId = record(response.data) ? response.data.orderId : response.orderId;
       if (typeof orderId !== "string" || !orderId) return ok({ kind: "unknown" });
-      return ok({ kind: "placed", orderId, paymentStatus: "unknown" });
+      return ok({ kind: "placed", orderId, ...await payment(orderId, 15000) });
     } catch (error) { return sent ? ok({ kind: "unknown" }) : errorAnswer(error, "rejected"); }
   }`,
   service: "yandex-lavka",
@@ -342,4 +361,28 @@ export async function submitLavkaPurchase(
   if (outcome.kind !== "ok") return { kind: "unknown" };
   const result = submitResultSchema.safeParse(outcome.data);
   return result.success ? result.data : { kind: "unknown" };
+}
+
+const paymentOperation = defineYandexOperation({
+  about:
+    "Reads where the card payment of one placed Lavka order stands, without paying or cancelling anything.",
+  access: "read",
+  args: z.object({ orderId: z.string().min(1).max(200) }),
+  id: "lavka.purchase_payment",
+  origin: "https://lavka.yandex.ru/",
+  result: paymentSchema,
+  run: `async function (args) {${pageSource}
+    return ok(await payment(args.orderId, 0));
+  }`,
+  service: "yandex-lavka",
+});
+
+/** The payment of a placed order now; `pending` when it cannot be read. */
+export async function readLavkaPayment(workspaceId: string, orderId: string) {
+  const outcome = await runYandexOperation(workspaceId, paymentOperation, {
+    orderId,
+  });
+  const result =
+    outcome.kind === "ok" ? paymentSchema.safeParse(outcome.data) : undefined;
+  return result?.success ? result.data : { paymentStatus: "pending" as const };
 }

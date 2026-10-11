@@ -4,6 +4,7 @@ import { lavkaAddressesOperation } from "@agent/lib/yandex/food/addresses";
 import {
   edaCartOperation,
   lavkaCartOperation,
+  lavkaCartSetOperation,
 } from "@agent/lib/yandex/food/cart";
 import { edaMenuOperation } from "@agent/lib/yandex/food/menu";
 import {
@@ -51,10 +52,12 @@ const menu = z.object({ catalog: json, menu: json }).parse(fixture("eda-menu"));
 const coordinates = { lat: 55.7539, lon: 37.6208 };
 
 describe("the food operations", () => {
-  it("are read only, on Yandex's own sites, and in the registry", () => {
-    expect(foodOperations).toHaveLength(9);
+  it("only read, except the Lavka cart change, and are in the registry", () => {
+    expect(foodOperations).toHaveLength(10);
     for (const operation of foodOperations) {
-      expect(operation.access).toBe("read");
+      expect(operation.access).toBe(
+        operation === lavkaCartSetOperation ? "cart" : "read"
+      );
       expect(yandexOperations).toContain(operation);
     }
     expect(yandexOperations.map((operation) => operation.id)).toEqual(
@@ -68,6 +71,7 @@ describe("the food operations", () => {
         "food.eda_menu",
         "food.eda_cart",
         "food.lavka_cart",
+        "food.lavka_cart_set",
       ])
     );
   });
@@ -215,6 +219,37 @@ describe("the food operations", () => {
         )
       )
     ).toMatchObject({ blocker: "cart_empty", canCheckout: false, items: [] });
+  });
+
+  it("sets Lavka quantities on the current cart version and answers the new cart", async () => {
+    const updated = {
+      ...z.record(z.string(), json).parse(fixture("lavka-cart")),
+      availableForCheckout: true,
+      checkoutUnavailableReason: null,
+      items: [{ id: "p1", price: "45", quantity: "2", title: "Поп\u00adкорн" }],
+      totalItemsCount: 2,
+    };
+    const data = await dataOf(
+      lavkaCartSetOperation,
+      page(
+        [
+          {
+            body: {
+              ...z.record(z.string(), json).parse(fixture("lavka-cart")),
+              nextIdempotencyToken: "token-1",
+            },
+            path: "/api/v1/providers/cart/v1/retrieve",
+          },
+          { body: updated, path: "/api/v1/providers/cart/v1/update" },
+        ],
+        lavkaPage
+      ),
+      { items: [{ id: "p1", price: 45, quantity: 2 }] }
+    );
+    expect(data).toMatchObject({
+      canCheckout: true,
+      items: [{ id: "p1", name: "Попкорн", price: 45, qty: 2 }],
+    });
   });
 
   it("answers signed_out when the service says the person is not signed in", async () => {

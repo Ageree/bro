@@ -224,7 +224,7 @@ beforeEach(() => {
   services.submit.mockResolvedValue({
     kind: "placed",
     orderId: "synthetic-order",
-    paymentStatus: "unknown",
+    paymentStatus: "paid",
   });
   services.settle.mockResolvedValue(
     row({ state: "placed", merchantOrderId: "synthetic-order" })

@@ -33,6 +33,7 @@ import {
 import {
   lavkaPublicQuoteSchema,
   prepareLavkaPurchase,
+  readLavkaPayment,
   submitLavkaPurchase,
 } from "@agent/lib/yandex/lavka/checkout";
 import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
@@ -134,6 +135,19 @@ function purchaseResult(
       ? quoted
       : { ...quoted, confirmationQuestion: purchase.confirmationQuestion };
   }
+  if (purchase.service === "lavka" && purchase.state === "placed") {
+    const payment = lavkaPayment.safeParse(purchase.outcome);
+    const paymentStatus = payment.data?.paymentStatus ?? "pending";
+    return {
+      kind: "placed" as const,
+      orderId: purchase.merchantOrderId,
+      purchaseId: purchase.id,
+      quote: quote.data,
+      paymentStatus,
+      confirmUrl: payment.data?.confirmUrl,
+      reply: lavkaPaymentReply[paymentStatus],
+    };
+  }
   return {
     kind: purchase.state,
     orderId: purchase.merchantOrderId,
@@ -147,6 +161,21 @@ function purchaseResult(
           : "This attempt was rejected without placing an order. Prepare a new quote and ask again if the person still wants it.",
   };
 }
+
+const lavkaPayment = z.object({
+  confirmUrl: z.url().optional(),
+  paymentStatus: z.enum(["paid", "needs_confirmation", "failed", "pending"]),
+});
+
+const lavkaPaymentReply = {
+  paid: "The order is placed and Lavka reports the card payment as successful. Tell the person it is ordered and paid. Never order it again.",
+  needs_confirmation:
+    "The order is placed, but the bank asks the person to confirm the card payment (3-D Secure). Send them confirmUrl and ask them to open it and confirm; without that Lavka cancels the order. Check with status afterwards. Never order it again.",
+  failed:
+    "The order was created but the card payment failed, so Lavka will cancel it. Tell the person; do not retry on your own. A new order needs a fresh prepare and their yes.",
+  pending:
+    "The order is placed and the card payment is still processing. Tell the person it is ordered and the payment is being confirmed; check with status if they ask. Never order it again.",
+} as const;
 
 function goBookingSummary(
   quote: z.output<typeof goPublicQuoteSchema>,
@@ -373,6 +402,21 @@ export default defineDynamic({
                 ...purchaseResult(checked.purchase),
                 status: checked.status,
               };
+            }
+            if (
+              input.action === "status" &&
+              purchase.service === "lavka" &&
+              purchase.state === "placed" &&
+              purchase.merchantOrderId !== null
+            ) {
+              const payment = await readLavkaPayment(
+                scope.workspaceId,
+                purchase.merchantOrderId
+              );
+              return purchaseResult({
+                ...purchase,
+                outcome: { ...purchase.outcome, ...payment },
+              });
             }
             if (input.action === "status" || purchase.state !== "quoted") {
               return purchaseResult(purchase);
