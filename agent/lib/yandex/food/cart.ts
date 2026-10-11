@@ -42,6 +42,109 @@ export const edaCartOperation = defineYandexOperation({
   service: "yandex-eda",
 });
 
+const edaCart = z.object({
+  deliveryFee: z.number(),
+  items: z.array(
+    z.object({
+      itemId: z.number().int(),
+      name: z.string(),
+      price: z.number(),
+      quantity: z.number().int().min(1),
+    })
+  ),
+  subtotal: z.number(),
+  total: z.number(),
+});
+
+/**
+ * Sets how many of each dish the person's Yandex Eda cart holds from one
+ * restaurant, as the site does: a change of a dish already in the cart is one
+ * PUT of its absolute quantity (add_bulk would add to it), 0 deletes it, and a
+ * new dish is one add_bulk. Restaurants only: the slug is one of
+ * food.eda_search's or food.eda_menu's.
+ */
+export const edaCartSetOperation = defineYandexOperation({
+  about:
+    "Set how many of each dish the person's Yandex Eda cart holds from one restaurant (0 removes it; other dishes stay). Arguments: lat and lon (the delivery coordinates), place (the restaurant's slug from food.eda_search or food.eda_menu), items: each {id, quantity} with the dish id from food.eda_menu. Answers the cart: items with prices, delivery fee, subtotal and total.",
+  access: "cart",
+  args: z.object({
+    items: z
+      .array(
+        z.object({
+          id: z.number().int().positive(),
+          quantity: z.number().int().min(0).max(50),
+        })
+      )
+      .min(1)
+      .max(20),
+    lat: z.number().min(-90).max(90),
+    lon: z.number().min(-180).max(180),
+    place: z.string().min(1).max(200),
+  }),
+  id: "food.eda_cart_set",
+  origin: "https://eda.yandex.ru/",
+  result: edaCart,
+  run: `async function (args) {
+  const headers = {
+    "Content-Type": "application/json;charset=UTF-8",
+    "X-Platform": "desktop_web",
+    "X-App-Version": "18.50.1",
+    "X-Ya-Coordinates": "latitude=" + args.lat + ",longitude=" + args.lon,
+  };
+  // soft_multi is what makes the site's cart of this place visible to reads.
+  const query =
+    "latitude=" + args.lat + "&longitude=" + args.lon +
+    "&shippingType=delivery&screen=menu&autoTranslate=false&soft_multi=true" +
+    "&placeSlug=" + encodeURIComponent(args.place);
+  const send = async (method, url, body) => {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (response.status === 401) return { blocked: "signed_out" };
+    if (response.status >= 400 && /html/.test(response.headers.get("content-type") || "")) return { blocked: "captcha" };
+    if (response.status !== 200) throw new Error("http " + response.status);
+    return { cart: (await response.json()).cart };
+  };
+  const read = await send("POST", "/eats/v1/cart/v2/full-carts?" + query + "&plus_subscription_toggle_state=false&combo_subscription_toggle_state=false", {});
+  if (read.blocked) return { status: read.blocked };
+  let cart = read.cart;
+  for (const wanted of args.items) {
+    const current = (cart.items || []).find((item) => item.item_id === wanted.id);
+    let change = null;
+    if (current && wanted.quantity === 0) {
+      change = await send("DELETE", "/api/v1/cart/" + current.id + "?" + query);
+    } else if (current && wanted.quantity !== current.quantity) {
+      change = await send("PUT", "/api/v1/cart/" + current.id + "?" + query, { quantity: wanted.quantity, itemOptions: [] });
+    } else if (!current && wanted.quantity > 0) {
+      change = await send("POST", "/api/v1/cart/add_bulk?" + query, {
+        items: [{ item_id: wanted.id, quantity: wanted.quantity }],
+        place_slug: args.place,
+        place_business: "restaurant",
+      });
+    }
+    if (change && change.blocked) return { status: change.blocked };
+    if (change) cart = change.cart;
+  }
+  return {
+    status: "ok",
+    data: {
+      deliveryFee: Number(cart.decimal_delivery_fee),
+      items: (cart.items || []).slice(0, 30).map((item) => ({
+        itemId: item.item_id,
+        name: item.name.trim(),
+        price: item.price,
+        quantity: item.quantity,
+      })),
+      subtotal: Number(cart.decimal_subtotal),
+      total: Number(cart.decimal_total),
+    },
+  };
+}`,
+  service: "yandex-eda",
+});
+
 const lavkaCart = z.object({
   blocker: z.string().nullable(),
   canCheckout: z.boolean(),

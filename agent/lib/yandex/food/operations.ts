@@ -1,5 +1,6 @@
 import {
   edaCartOperation,
+  edaCartSetOperation,
   lavkaCartOperation,
   lavkaCartSetOperation,
 } from "./cart";
@@ -22,6 +23,7 @@ export const foodOperations = [
   lavkaSearchOperation,
   edaMenuOperation,
   edaCartOperation,
+  edaCartSetOperation,
   lavkaCartOperation,
   lavkaCartSetOperation,
 ] as const;
