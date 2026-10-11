@@ -42,18 +42,24 @@ const finalsuggest = (text: string): FakeResponse => ({
 
 /** The Go page: fixtures by path, with answers a test changes by path. */
 async function goPage(answers: Record<string, FakeResponse | FakeResponse[]>) {
-  const base: Record<string, FakeResponse | FakeResponse[]> = {
-    "/csrf_token": { body: await fixture("go/csrf-token.json") },
-    "/4.0/orderhistory/v2/list": {
-      body: await fixture("go/orderhistory.json"),
-    },
-    "/4.0/persuggest/v1/suggest": { body: await fixture("go/suggest.json") },
-    "/4.0/persuggest/v1/finalsuggest": finalsuggest("Мичуринский проспект, 56"),
-    "/3.0/routestats": { body: await fixture("go/routestats.json") },
-    "/external/3.0/orderdraft": { body: { orderid: "new-order" } },
-    "/external/3.0/ordercommit": { body: { status: "search" } },
-    ...answers,
-  };
+  const base = new Map<string, FakeResponse | FakeResponse[]>([
+    ["/csrf_token", { body: await fixture("go/csrf-token.json") }],
+    [
+      "/4.0/orderhistory/v2/list",
+      {
+        body: await fixture("go/orderhistory.json"),
+      },
+    ],
+    ["/4.0/persuggest/v1/suggest", { body: await fixture("go/suggest.json") }],
+    [
+      "/4.0/persuggest/v1/finalsuggest",
+      finalsuggest("Мичуринский проспект, 56"),
+    ],
+    ["/3.0/routestats", { body: await fixture("go/routestats.json") }],
+    ["/external/3.0/orderdraft", { body: { orderid: "new-order" } }],
+    ["/external/3.0/ordercommit", { body: { status: "search" } }],
+    ...Object.entries(answers),
+  ]);
   const requests: { body: JsonValue; path: string }[] = [];
   return {
     requests,
@@ -66,7 +72,7 @@ async function goPage(answers: Record<string, FakeResponse | FakeResponse[]>) {
           body: z.json().parse(JSON.parse(init.body ?? "null")),
           path: url.pathname,
         });
-        const answer = base[url.pathname];
+        const answer = base.get(url.pathname);
         if (Array.isArray(answer))
           return answer.shift() ?? { body: {}, status: 500 };
         return answer ?? { body: {}, status: 404 };
