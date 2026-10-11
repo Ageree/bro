@@ -10,20 +10,21 @@ import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
 
 const userId = "0123456789abcdef0123456789abcdef";
 
-const activeHistory = {
-  orders: [
-    {
-      service: "taxi",
-      data: {
-        is_active: true,
-        order_id: "active-order",
-        taxi_status: "driving",
-        route: { source: "Мичуринский проспект, 56", destination: "Раменки" },
-        payment: { cost: 415 },
-        vehicle: { color: "белый", model: "Kia Rio", car_number: "А001АА77" },
-      },
-    },
-  ],
+const activeLaunch = {
+  orders: [{ orderid: "active-order", status: "driving" }],
+};
+
+const activeOrder = {
+  status: "driving",
+  cancel_disabled: false,
+  final_cost: 415,
+  request: {
+    route: [
+      { short_text: "Мичуринский проспект, 56" },
+      { short_text: "Раменки" },
+    ],
+  },
+  driver: { color: "белый", car_model: "Kia Rio", plates: "А001АА77" },
 };
 
 const finalsuggest = (text: string): FakeResponse => ({
@@ -44,12 +45,7 @@ const finalsuggest = (text: string): FakeResponse => ({
 async function goPage(answers: Record<string, FakeResponse | FakeResponse[]>) {
   const base = new Map<string, FakeResponse | FakeResponse[]>([
     ["/csrf_token", { body: await fixture("go/csrf-token.json") }],
-    [
-      "/4.0/orderhistory/v2/list",
-      {
-        body: await fixture("go/orderhistory.json"),
-      },
-    ],
+    ["/3.0/launch", { body: { orders: [] } }],
     ["/4.0/persuggest/v1/suggest", { body: await fixture("go/suggest.json") }],
     [
       "/4.0/persuggest/v1/finalsuggest",
@@ -122,7 +118,8 @@ describe("go.book", () => {
 
   it("answers the ride that is on instead of booking a second one", async () => {
     const { page, sent } = await goPage({
-      "/4.0/orderhistory/v2/list": { body: activeHistory },
+      "/3.0/launch": { body: activeLaunch },
+      "/3.0/taxiontheway": { body: activeOrder },
     });
     const data = dataOf(await runInPage(goBookOperation.run, book(), page));
     expect(data).toMatchObject({
@@ -177,7 +174,8 @@ describe("go.book", () => {
 describe("go.ride and go.cancel", () => {
   it("reads the ride that is on", async () => {
     const { page } = await goPage({
-      "/4.0/orderhistory/v2/list": { body: activeHistory },
+      "/3.0/launch": { body: activeLaunch },
+      "/3.0/taxiontheway": { body: activeOrder },
     });
     expect(dataOf(await runInPage(goRideOperation.run, {}, page))).toEqual({
       ride: {
@@ -193,9 +191,9 @@ describe("go.ride and go.cancel", () => {
 
   it("cancels the ride that is on as the cancel button does", async () => {
     const { page, sent } = await goPage({
-      "/4.0/orderhistory/v2/list": { body: activeHistory },
+      "/3.0/launch": { body: activeLaunch },
       "/3.0/taxiontheway": [
-        { body: { status: "driving", cancel_disabled: false } },
+        { body: activeOrder },
         { body: { status: "cancelled" } },
       ],
     });
@@ -203,7 +201,7 @@ describe("go.ride and go.cancel", () => {
       kind: "cancelled",
       orderId: "active-order",
     });
-    expect(sent("/3.0/taxiontheway")[1]?.body).toMatchObject({
+    expect(sent("/3.0/taxiontheway").at(-1)?.body).toMatchObject({
       orderid: "active-order",
       break: "user",
     });
@@ -211,7 +209,7 @@ describe("go.ride and go.cancel", () => {
 
   it("leaves a ride Yandex no longer lets cancel, and says there is none to cancel", async () => {
     const locked = await goPage({
-      "/4.0/orderhistory/v2/list": { body: activeHistory },
+      "/3.0/launch": { body: activeLaunch },
       "/3.0/taxiontheway": {
         body: { status: "transporting", cancel_disabled: true },
       },
