@@ -103,7 +103,9 @@ export function namedInWords(domain: string, said: readonly string[]) {
     `(?:^|[^a-z\\d-])(?:[a-z\\d-]+\\.)*${domain.replaceAll(".", "\\.")}(?![a-z\\d-]|\\.[a-z\\d])`,
     "iu"
   );
-  return said.some((words) => pattern.test(words)) || namedByBrand(domain, said);
+  return (
+    said.some((words) => pattern.test(words)) || namedByBrand(domain, said)
+  );
 }
 
 /**
@@ -132,11 +134,16 @@ function namedByBrand(domain: string, said: readonly string[]) {
     (name) => name.length >= 2
   );
   return said.some((words) => {
-    const tokens = words.toLowerCase().split(/[^\p{L}\p{N}-]+/u);
+    // A word with a dot inside is an address, not a brand name: `ozon.evil.test`
+    // must not pass for «ozon».
+    const tokens = new Set(
+      words
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}.-]+/u)
+        .map((token) => token.replace(/^[.-]+|[.-]+$/gu, ""))
+    );
     return names.some((name) =>
-      name.includes(" ")
-        ? words.toLowerCase().includes(name)
-        : tokens.includes(name)
+      name.includes(" ") ? words.toLowerCase().includes(name) : tokens.has(name)
     );
   });
 }
