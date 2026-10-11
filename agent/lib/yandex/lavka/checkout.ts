@@ -284,8 +284,9 @@ const submitOperation = defineYandexOperation({
         if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
         sent = true;
       });
-      if (typeof response.orderId !== "string" || !response.orderId) return ok({ kind: "unknown" });
-      return ok({ kind: "placed", orderId: response.orderId, paymentStatus: "unknown" });
+      const orderId = record(response.data) ? response.data.orderId : response.orderId;
+      if (typeof orderId !== "string" || !orderId) return ok({ kind: "unknown" });
+      return ok({ kind: "placed", orderId, paymentStatus: "unknown" });
     } catch (error) { return sent ? ok({ kind: "unknown" }) : errorAnswer(error, "rejected"); }
   }`,
   service: "yandex-lavka",

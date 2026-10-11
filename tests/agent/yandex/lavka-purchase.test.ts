@@ -357,6 +357,35 @@ describe("Lavka purchase fixed page functions", () => {
     expect(submitResponse).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the live submit envelope without treating the order as paid", async () => {
+    const prepared = await ready();
+    submitResponse.mockReturnValue({
+      data: { orderId: "synthetic-wrapped-order" },
+    });
+    expect(await confirm(prepared)).toEqual({
+      kind: "placed",
+      orderId: "synthetic-wrapped-order",
+      paymentStatus: "unknown",
+    });
+    expect(submitResponse).toHaveBeenCalledTimes(1);
+    expect(
+      requests.filter((request) => request.path === submitPath)
+    ).toHaveLength(1);
+  });
+
+  it.each<JsonValue>([{}, { orderId: "" }, { orderId: null }, { orderId: 42 }])(
+    "keeps an invalid wrapped order id unknown without retries: %j",
+    async (data) => {
+      const prepared = await ready();
+      submitResponse.mockReturnValue({ data });
+      expect(await confirm(prepared)).toEqual({ kind: "unknown" });
+      expect(submitResponse).toHaveBeenCalledTimes(1);
+      expect(
+        requests.filter((request) => request.path === submitPath)
+      ).toHaveLength(1);
+    }
+  );
+
   it("rejects changed exact prices without posting an order", async () => {
     const prepared = await ready();
     withCart({
