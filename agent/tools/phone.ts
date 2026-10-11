@@ -59,7 +59,7 @@ function publicNumber(row: Awaited<ReturnType<typeof readPhoneNumber>>) {
         setupRub: row.setupRub,
         monthlyRub: row.monthlyRub,
         sipMonthlyRub: row.sipMonthlyRub,
-        quotedAt: row.quotedAt,
+        quotedAt: row.quotedAt.toISOString(),
         privacy:
           "MTS Exolve and ElevenLabs process phone numbers, minimal call context and voice; the carrier may record calls, including forced recording on new numbers during the first 30 days. Bro stores a bounded summary, not raw audio or a full transcript. Incoming callers cannot access the owner's saved context.",
         note:
@@ -69,6 +69,15 @@ function publicNumber(row: Awaited<ReturnType<typeof readPhoneNumber>>) {
               ? "Operator reconciliation is required. Resources may still incur monthly fees; do not buy, re-import or redial automatically."
               : undefined,
       }
+    : null;
+}
+
+/** The allocation request as the model reads it: eve needs plain JSON, no Date. */
+function publicRequest(
+  row: Awaited<ReturnType<typeof readPhoneNumberRequest>>
+) {
+  return row
+    ? Object.assign({}, row, { nextAttemptAt: row.nextAttemptAt.toISOString() })
     : null;
 }
 
@@ -92,7 +101,7 @@ const quote = defineTool({
     const automatic = await readPhoneNumberRequest(scope);
     if (automatic)
       return {
-        automaticAllocation: automatic,
+        automaticAllocation: publicRequest(automatic),
         number: publicNumber(await readPhoneNumber(scope)),
         note: "This new workspace receives its dedicated number automatically at platform expense. No activation/payment approval is needed; allocation may be pending or waiting for operator funds/capacity. Do not start a second manual allocation.",
       };
@@ -267,8 +276,10 @@ const status = defineTool({
     const scope = phoneScope(context);
     return {
       number: publicNumber(await readPhoneNumber(scope)),
-      calls: await listPhoneCalls(scope, input.callId),
-      automaticAllocation: await readPhoneNumberRequest(scope),
+      calls: (await listPhoneCalls(scope, input.callId)).map((row) =>
+        Object.assign({}, row, { createdAt: row.createdAt.toISOString() })
+      ),
+      automaticAllocation: publicRequest(await readPhoneNumberRequest(scope)),
     };
   },
 });

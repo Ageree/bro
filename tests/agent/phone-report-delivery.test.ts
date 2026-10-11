@@ -68,7 +68,7 @@ function row(): ReportRow {
   };
 }
 
-function deliver(send: () => Promise<{ status: string }>) {
+function deliver(send: (message: string) => Promise<{ status: string }>) {
   // SAFETY: the delivery only calls `send` on the handle.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A bare handle stands in for the session handle.
   const attachSession = vi.fn<AttachSessionFn>(() => ({ send }) as never);
@@ -96,6 +96,23 @@ describe("handing a phone report to its conversation", () => {
       token
     );
     expect(finishPhoneReport).not.toHaveBeenCalled();
+  });
+
+  it("tells the report turn to speak in the first person and leave the cost out", async () => {
+    const send = vi.fn<(message: string) => Promise<{ status: string }>>(() =>
+      Promise.resolve({ status: "accepted" })
+    );
+    await deliver(send);
+
+    const message = send.mock.calls[0]?.[0] ?? "";
+    expect(message).toContain("Speak in the first person");
+    expect(message).toContain("never «агент»");
+    expect(message).toContain(
+      "Do not mention the cost of the call unless the owner asks"
+    );
+    // The figures are not in the payload: the report turn cannot repeat them.
+    expect(message).not.toContain("voiceCostUsd");
+    expect(message).not.toContain("carrierCostRub");
   });
 
   it("does not call a dispatch that is still unanswered after 20 seconds a failure", async () => {
