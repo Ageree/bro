@@ -655,8 +655,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Карты аккаунта в Trust общие для сервисов, но Go держит их в
   `unverified_cards` (`card_antifraud`, `usable: false`), пока карта не
   проверена банком; веб Go это не умеет (мост `goplatform.private.payments.verify`
-  есть только в приложении). Trust `/web/create_verification_intent` с
+  есть только в приложении). Проверка общая: после оплаты картой с 3-D Secure
+  в Еде (12.10) та же карта в Go стала `available` и оплатила поездку, а Еда
+  дальше списывала без 3-D Secure. Trust `/web/create_verification_intent` с
   сервисным токеном такси отвечает «Validation failed» — параметры не подобраны.
+- После кода банка страница 3-D Secure сама уходит на Яндекс
+  (`process_psp_3ds`): закрыть её раньше — деньги заблокированы, а Лавка
+  платежа не видит (`wait_user_action`) и через ~7 минут отменяет заказ с
+  возвратом (12.10).
 - Заказ Еды (`agent/lib/yandex/eda/checkout.ts`, проверено вживую 12.10): страница
   `/checkout` не нужна. `POST /api/v2/cart/go-checkout` с адресом даёт предложения с
   картой и `requestId`; `POST /api/v1/orders` берёт цену только с `request_id`
