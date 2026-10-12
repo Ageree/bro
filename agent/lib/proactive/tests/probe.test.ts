@@ -29,6 +29,23 @@ const window = {
 
 let composio: FakeComposio;
 
+/** A timed event of the person's, with a place, as the calendar read gives it. */
+function ownEvent(
+  id: string,
+  start: string,
+  extra: { readonly location?: string; readonly summary?: string } = {}
+) {
+  return {
+    id,
+    location: "ул. Тверская, 7, Москва",
+    organizer: { self: true },
+    start: { dateTime: start },
+    status: "confirmed",
+    summary: id,
+    ...extra,
+  };
+}
+
 function requestUrl(input: string | URL | Request) {
   return input instanceof Request ? input.url : input.toString();
 }
@@ -353,6 +370,74 @@ describe("probeGoogleSignals", () => {
     await probeGoogleSignals(scope, { ...window, flightReminders: false });
     expect(calendarFields()).toBe(
       "items(id,status,start,summary,location,eventType,organizer(self),attendees(self,responseStatus))"
+    );
+  });
+
+  it("reads 30 hours ahead for the pilot's calendar prep, and leaves the rest of the check at 26", async () => {
+    composio.connect({ id: "ca_google", toolkit: "googlesuper" });
+    composio.proxy.mockImplementation(({ url }) =>
+      url.hostname === "gmail.googleapis.com"
+        ? { data: { messages: [] } }
+        : {
+            data: {
+              items: [
+                // Nine hours ahead: both the check's event and its prep.
+                ownEvent("tour", "2026-09-24T18:00:00.000Z"),
+                // Twenty-seven hours ahead: prep only.
+                ownEvent("far", "2026-09-25T12:00:00.000Z"),
+                // Thirty-one hours ahead: neither.
+                ownEvent("beyond", "2026-09-25T16:00:00.000Z"),
+                // Twenty-eight hours ahead, a flight of the person's: the
+                // flight watch keeps it, as the read did see it.
+                ownEvent("flight-far", "2026-09-25T13:00:00.000Z", {
+                  location: "Аэропорт Шереметьево",
+                  summary: "Рейс SU 1234",
+                }),
+              ],
+            },
+          }
+    );
+
+    await expect(
+      probeGoogleSignals(scope, { ...window, calendarPrep: true })
+    ).resolves.toEqual({
+      calendarSeenUntil: new Date("2026-09-25T15:00:00.000Z"),
+      flights: [
+        {
+          eventId: "flight-far",
+          location: "Аэропорт Шереметьево",
+          start: "2026-09-25T13:00:00.000Z",
+          summary: "Рейс SU 1234",
+          timeZone: null,
+        },
+      ],
+      signals: [
+        {
+          dedupeKey: "tour@2026-09-24T18:00:00.000Z",
+          itemId: "tour",
+          source: "calendar",
+          threadId: null,
+        },
+        {
+          dedupeKey: "tour@2026-09-24T18:00:00.000Z#T-3h",
+          itemId: "tour",
+          source: "calendar_prep",
+          threadId: null,
+        },
+        {
+          dedupeKey: "far@2026-09-25T12:00:00.000Z#T-24h",
+          itemId: "far",
+          source: "calendar_prep",
+          threadId: null,
+        },
+      ],
+      state: "connected",
+    });
+    const calendarRequest = composio.proxy.mock.calls
+      .map(([request]) => request.url)
+      .find((url) => url.hostname === "www.googleapis.com");
+    expect(calendarRequest?.searchParams.get("timeMax")).toBe(
+      "2026-09-25T15:00:00.000Z"
     );
   });
 

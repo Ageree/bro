@@ -12,6 +12,8 @@ import {
 } from "@agent/lib/google-workspace/client";
 import {
   calendarHorizonMs,
+  calendarPrepHorizonMs,
+  calendarPrepSignals,
   calendarSignals,
   flightEvents,
   flightReminders,
@@ -211,6 +213,12 @@ async function readJson<Schema extends z.ZodType>(
 export async function probeGoogleSignals(
   scope: AccessScope,
   window: {
+    /**
+     * The agency pilot's day check: events up to 30 hours ahead, with their
+     * places and whose they are, so calendar prep can hand them over. The
+     * events beyond the usual horizon are left to prep.
+     */
+    readonly calendarPrep?: boolean;
     /** Whether the check itself reminds of flights; it does by default. */
     readonly flightReminders?: boolean;
     readonly mailAfter: Date;
@@ -231,42 +239,56 @@ export async function probeGoogleSignals(
   if (connection.state !== "connected") return { state: connection.state };
   const { google } = connection;
   try {
+    const horizonMs = window.calendarPrep
+      ? calendarPrepHorizonMs
+      : calendarHorizonMs;
     const [messages, events] = await Promise.all([
       listMailIds(google, gmailProbeQuery(window.mailAfter)),
       readJson(
         google,
         proactiveEventListSchema,
         googleUrl(calendarApi, "/calendars/primary/events", {
-          // Whether an event is the person's own matters only to the pilot's
-          // flight watches; outside the pilot the request is as before.
+          // Whether an event is the person's own matters to the pilot's
+          // flight watches and calendar prep; outside them the request is as
+          // before.
           fields:
-            window.flightReminders === false
+            window.flightReminders === false || window.calendarPrep
               ? proactiveEventFields
               : proactiveEventBaseFields,
           maxResults: maxCalendarEvents,
           orderBy: "startTime",
           singleEvents: true,
-          timeMax: new Date(
-            window.now.getTime() + calendarHorizonMs
-          ).toISOString(),
+          timeMax: new Date(window.now.getTime() + horizonMs).toISOString(),
           timeMin: window.now.toISOString(),
         })
       ),
     ]);
-    const items = events.items ?? [];
+    const all = events.items ?? [];
     const night = window.nightOnly === true;
+    // Calendar prep looks further ahead than the rest of the check does.
+    const items = window.calendarPrep
+      ? all.filter(
+          (event) =>
+            !(
+              Date.parse(event.start?.dateTime ?? "") - window.now.getTime() >
+              calendarHorizonMs
+            )
+        )
+      : all;
     const reminders =
       window.flightReminders === false
         ? []
         : flightReminders(items, window.now, window.timeZone, { night });
-    const flights = flightEvents(items, window.now);
+    // Flights come from the whole read: `calendarSeenUntil` says it saw them
+    // all, so a flight past the usual horizon must not be taken for gone.
+    const flights = flightEvents(all, window.now);
     // Until when the read saw every event: a full page may have left later
     // ones out, and a flight among them is not gone.
     const calendarSeenUntil =
-      items.length < maxCalendarEvents
-        ? new Date(window.now.getTime() + calendarHorizonMs)
+      all.length < maxCalendarEvents
+        ? new Date(window.now.getTime() + horizonMs)
         : new Date(
-            Date.parse(items.at(-1)?.start?.dateTime ?? "") ||
+            Date.parse(all.at(-1)?.start?.dateTime ?? "") ||
               window.now.getTime()
           );
     if (!night) {
@@ -277,6 +299,7 @@ export async function probeGoogleSignals(
           ...calendarSignals(items, window.now, window.timeZone),
           ...reminders,
           ...gmailSignals(messages),
+          ...(window.calendarPrep ? calendarPrepSignals(all, window.now) : []),
         ],
         state: "connected" as const,
       };

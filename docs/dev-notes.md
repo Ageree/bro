@@ -1493,6 +1493,16 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `nothing_to_report` (`agent/lib/schedules/outcome.ts`).
 - У воркера и хода-отчёта нет сетевых `web_fetch`/`find_images`/`web_search`:
   письмо не должно увести на чужой адрес (`tests/agent/capabilities.test.ts`).
+- Агентный воркер (`AGENCY_WORKSPACES`): вид запуска решается при отправке
+  (`proactiveRunKind`, `agent/lib/schedules/identity.ts`), режим читает пилот на
+  каждом шаге. Отчёт идёт по `job.kind` (`proactive`), как у обычного запуска.
+- `route_time` (`agent/tools/route_time.ts`) знает режимы `interactive` и
+  `scheduled-worker`, но не `agentic-worker`: подготовка выхода по времени там
+  не работает, пока режим не добавлен.
+- Почта агента: `listAgentMessages` не умеет фильтр по времени, поэтому
+  граница по `agent_mail_checked_at` считается в коде, одна страница из 50
+  (`agent/lib/proactive/agent-mail.ts`). Календарь пилота читает на 30 часов
+  вперёд, обычные сигналы остаются в 26 (`probeGoogleSignals`, `calendarPrep`).
 
 ## Бенчмарк
 

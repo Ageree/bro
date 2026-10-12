@@ -1,0 +1,1 @@
+ALTER TABLE "proactive_watches" ADD COLUMN "agent_mail_checked_at" timestamp (3) with time zone;
