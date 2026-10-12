@@ -59,7 +59,9 @@ const optionalServices = [
   "CROSS_CHANNEL_WORKSPACES",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "MAIL_WORKSPACES",
   "MEMORY_DIGEST_MODEL",
+  "YANDEX_API_WORKSPACES",
   "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
   "OWNER_TRANSCRIPTS",
@@ -411,6 +413,21 @@ describe("privacy", () => {
     expect(facts.keptData().join("\n")).toContain(
       "Владелец сервиса может читать тексты переписки"
     );
+  });
+
+  it("names personal mail, Yandex services and the code sandbox once they are on", async () => {
+    const { facts } = await withServices({
+      MAIL_WORKSPACES: "*",
+      SANDBOX_WORKSPACES: "*",
+      YANDEX_API_WORKSPACES: "*",
+    });
+    const processors = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash")
+      .join("\n");
+
+    expect(processors).toContain("Mail.ru или Яндекса");
+    expect(processors).toContain("Еда, Лавка, Go, Маркет");
+    expect(processors).toContain("песочнице на сервере Selectel");
   });
 
   it("says nothing of browser VMs a deployment without them does not have", async () => {

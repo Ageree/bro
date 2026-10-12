@@ -1,30 +1,57 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import PrivacyPage, { metadata } from "@app/(public)/privacy/page";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => {
+  vi.resetModules();
+});
+
+async function render(transcripts: "on" | "off") {
+  vi.stubEnv("OWNER_TRANSCRIPTS", transcripts);
+  vi.resetModules();
+  const page = await import("@app/(public)/privacy/page");
+  return {
+    html: renderToStaticMarkup(createElement(page.default)),
+    page,
+  };
+}
 
 describe("privacy page", () => {
-  const html = renderToStaticMarkup(createElement(PrivacyPage));
-
-  it("names the operator, where the data lives and who gets it", () => {
+  it("names the operator, where the data lives and who gets it", async () => {
+    const { html } = await render("off");
     expect(html).toContain("ИП Соловьев Савелий Андреевич");
     expect(html).toContain("Selectel в России");
-    for (const service of ["RouterAI", "Composio", "ElevenLabs", "AgentMail"]) {
+    for (const service of [
+      "RouterAI",
+      "Composio",
+      "ElevenLabs",
+      "AgentMail",
+      "Mail.ru и Яндекс",
+      "Песочница для кода",
+    ]) {
       expect(html).toContain(service);
     }
+    expect(html).toContain("за пределами России");
     expect(html).not.toMatch(/Vercel|Neon/u);
     expect(html).toContain('href="mailto:solsav1703@gmail.com"');
     expect(html).toContain('href="/oferta"');
+    expect(html).toContain("в течение 30 дней");
   });
 
-  it("tells the beta reader the owner reads transcripts for 30 days", () => {
-    expect(html).toContain("5. Бета");
-    expect(html).toContain("владелец сервиса может читать");
-    expect(html).toContain("хранятся 30 дн.");
-    expect(html).toContain("коды, пароли и ссылки входа из них вырезаются");
+  it("promises owner reading only when transcripts are kept", async () => {
+    const on = (await render("on")).html;
+    expect(on).toContain("владелец сервиса может читать");
+    expect(on).toContain("хранятся 30 дн.");
+    expect(on).toContain("коды, пароли и ссылки входа из них вырезаются");
+
+    const off = (await render("off")).html;
+    expect(off).toContain("для владельца сервиса не сохраняются");
+    expect(off).not.toContain("может читать вашу переписку");
   });
 
-  it("stays out of search indexes", () => {
-    expect(metadata.robots).toEqual({ index: false });
+  it("is rendered per request and stays out of search indexes", async () => {
+    const { page } = await render("off");
+    expect(page.dynamic).toBe("force-dynamic");
+    expect(page.metadata.robots).toEqual({ index: false });
   });
 });

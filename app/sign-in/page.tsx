@@ -63,16 +63,16 @@ export default async function SignInPage({
             />
           )}
           <p className="type-fine mt-6 text-muted-foreground">
-            Продолжая, ты принимаешь{" "}
-            <Link className="underline underline-offset-[0.2em]" href="/oferta">
-              условия
-            </Link>{" "}
-            и{" "}
+            Продолжая, вы соглашаетесь на обработку персональных данных по{" "}
             <Link
               className="underline underline-offset-[0.2em]"
               href="/privacy"
             >
-              политику конфиденциальности
+              политике конфиденциальности
+            </Link>{" "}
+            и принимаете{" "}
+            <Link className="underline underline-offset-[0.2em]" href="/oferta">
+              оферту
             </Link>
             .
           </p>
