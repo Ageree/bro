@@ -33,3 +33,8 @@
 - Android: вход на сайт только кодом из iMessage, Telegram привязывается
   только через сайт, так что без iPhone в Бро не попасть.
 - Внешний пинг доступности (UptimeRobot или аналог) заводит владелец.
+
+## Идущие сессии
+- U3a — `session_019Jvm12snCstRcXGppvXfVS` (Opus)
+- U4 — `session_01HziZd14RV6dyAoq9JBDKCu` (Sonnet)
+- U6a — `session_015bQVUp2H5wk8xNeeTpffqD` (Opus)
