@@ -565,3 +565,31 @@ export async function pruneProactiveSignals(before: Date) {
     .delete(proactiveSignals)
     .where(lt(proactiveSignals.createdAt, before));
 }
+
+/**
+ * Forgets the proactive runs that are over and reported: the run cap counts
+ * a day back, so a finished run older than `before` is only clutter. A run
+ * still waiting for its report, or for an answer, stays.
+ */
+export async function pruneProactiveRuns(before: Date) {
+  await db
+    .delete(scheduledAgentRuns)
+    .where(
+      and(
+        lt(scheduledAgentRuns.scheduledFor, before),
+        inArray(scheduledAgentRuns.status, ["completed", "dead_letter"]),
+        inArray(scheduledAgentRuns.reportStatus, [
+          "not_needed",
+          "delivered",
+          "suppressed",
+        ]),
+        inArray(
+          scheduledAgentRuns.jobId,
+          db
+            .select({ id: scheduledAgentJobs.id })
+            .from(scheduledAgentJobs)
+            .where(eq(scheduledAgentJobs.kind, "proactive"))
+        )
+      )
+    );
+}

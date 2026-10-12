@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { agencyActionClasses, agencyActions, db } from "@db";
 
 type AgencyActionInput = Pick<
@@ -169,4 +169,12 @@ export function findAgencyActions(workspaceId: string, idPrefix: string) {
       )
     )
     .limit(2);
+}
+
+/**
+ * Forgets journal rows older than `before`: the repeat guard looks seven days
+ * back and an undo a person asks for is recent, so older rows are clutter.
+ */
+export async function pruneAgencyActions(before: Date) {
+  await db.delete(agencyActions).where(lt(agencyActions.createdAt, before));
 }

@@ -261,6 +261,51 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     });
   });
 
+  it("forgets finished, reported runs once they are old, so they stop counting", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const queue = (at: Date, signal: typeof bossMail) =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: at,
+        maxRunsPerDay: 1,
+        now: at,
+        signals: [signal],
+        workspaceId: alice.workspaceId,
+      });
+    const first = queuedRunId(await queue(now, bossMail));
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!first || !claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.completeScheduledAgentRun(
+      first,
+      claim.run.leaseToken,
+      "turn-1",
+      { kind: "nothing_to_report", reason: "Nothing new." },
+      now
+    );
+    const nextMail = { ...bossMail, dedupeKey: "m2", itemId: "m2" };
+    const soon = new Date(now.getTime() + 60 * 60_000);
+    expect(await queue(soon, nextMail)).toEqual({ status: "capped" });
+
+    // A run newer than the cut-off stays and keeps counting.
+    await proactive.pruneProactiveRuns(new Date(now.getTime() - 60_000));
+    expect(await queue(soon, nextMail)).toEqual({ status: "capped" });
+
+    await proactive.pruneProactiveRuns(new Date(now.getTime() + 60_000));
+    expect(await queue(soon, nextMail)).toMatchObject({ status: "queued" });
+  });
+
   it("reminds of a flight a run already saw, once per reminder, past the daily cap", async () => {
     const { jobs, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);

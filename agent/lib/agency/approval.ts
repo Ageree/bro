@@ -14,7 +14,7 @@ import {
 } from "./budget";
 import { disclosesHomeDetail } from "./disclosure";
 import { agencyInputHash } from "./journal";
-import { agencyPilot } from "./pilot";
+import { agencyLimited, agencyPilot } from "./pilot";
 
 /** What the agentic worker is about to do, as its approval reads it. */
 export interface AgencyDetails {
@@ -87,7 +87,12 @@ export async function agencyApproval(
     scope.workspaceId,
     new Date(Date.now() - agencyBudgetWindowMs)
   );
-  const limit = budgetRefusal(usage, actionClass);
+  // An action class with no authorized action (`other`) stays refused even
+  // when the pilot runs without limits.
+  const limit =
+    agencyLimited(scope.workspaceId) || actionClass === "other"
+      ? budgetRefusal(usage, actionClass)
+      : undefined;
   if (limit !== undefined) return refused(limit);
 
   const inputHash = agencyInputHash(action.tool, action.input);

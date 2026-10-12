@@ -964,6 +964,10 @@ export const env = createEnv({
         "AGENCY_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // `off` lifts the agentic worker's daily limits (proactive runs and
+    // actions) for the workspaces in AGENCY_WORKSPACES: the beta runs without
+    // them. Unset or `on`, the limits apply (`agent/lib/agency/pilot.ts`).
+    AGENCY_LIMITS: z.enum(["on", "off"]).optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,

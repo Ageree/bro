@@ -34,7 +34,7 @@ describe("waking the agentic worker on a finished call or run", () => {
 
     const [phone, browser] = proactive.queueFollowUpRun.mock.calls;
     expect(phone?.[0]).toMatchObject({
-      maxRunsPerDay: 12,
+      maxRunsPerDay: 30,
       signal: {
         dedupeKey: "call-1",
         itemId: "call-1",

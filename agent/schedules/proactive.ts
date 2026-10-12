@@ -1,7 +1,7 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
-import { agencyPilot } from "@agent/lib/agency/pilot";
+import { agencyPilot, proactiveRunCap } from "@agent/lib/agency/pilot";
 import { agentMailCheck } from "@agent/lib/proactive/agent-mail";
 import {
   probeFailure,
@@ -30,6 +30,7 @@ import {
   type FlightWatch,
   flightWatchOf,
 } from "@agent/lib/subscriptions/watches";
+import { pruneAgencyActions } from "@db/services/agency";
 import {
   advanceAgentMailWatermark,
   advanceProactiveWatermark,
@@ -38,6 +39,7 @@ import {
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
   type ProactiveSignal,
+  pruneProactiveRuns,
   pruneProactiveSignals,
   queueProactiveRun,
 } from "@db/services/proactive";
@@ -62,6 +64,9 @@ import { resolveTimeZone } from "@shared/user-profile/schema";
 const checkEveryMs = 15 * 60_000;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
+/** Finished, reported proactive runs and journal rows are forgotten after this. */
+const runRetentionMs = 14 * 24 * 60 * 60_000;
+const actionRetentionMs = 30 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;
 /**
  * How far back a night check reads subjects: one check's worth, plus the
@@ -92,6 +97,8 @@ export default defineSchedule({
 async function runProactiveChecks(to: ScheduleToFn) {
   const now = new Date();
   await pruneProactiveSignals(new Date(now.getTime() - signalRetentionMs));
+  await pruneProactiveRuns(new Date(now.getTime() - runRetentionMs));
+  await pruneAgencyActions(new Date(now.getTime() - actionRetentionMs));
   const watches = await claimDueProactiveWatches({
     leaseForMs: checkEveryMs,
     limit: 25,
@@ -359,7 +366,7 @@ async function checkByDay(
     ...(mail && { agentMailCheckedAt: mail.checkedAt }),
     jobId: watch.jobId,
     mailCheckedAt: now,
-    maxRunsPerDay,
+    maxRunsPerDay: proactiveRunCap(watch.workspaceId, maxRunsPerDay),
     now,
     signals,
     workspaceId: watch.workspaceId,
@@ -450,7 +457,7 @@ async function checkAtNight(
       ? await queueProactiveRun({
           jobId: watch.jobId,
           mailCheckedAt: watch.mailCheckedAt,
-          maxRunsPerDay,
+          maxRunsPerDay: proactiveRunCap(watch.workspaceId, maxRunsPerDay),
           now,
           signals,
           workspaceId: watch.workspaceId,

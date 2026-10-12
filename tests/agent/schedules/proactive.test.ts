@@ -10,6 +10,7 @@ import type {
   deferProactiveWatch,
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
+  pruneProactiveRuns,
   pruneProactiveSignals,
   queueProactiveRun,
 } from "@db/services/proactive";
@@ -27,6 +28,7 @@ import type {
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
+import type { pruneAgencyActions } from "@db/services/agency";
 import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const proactive = vi.hoisted(() => ({
@@ -64,6 +66,10 @@ const flights = vi.hoisted(() => ({
 
 vi.mock("@agent/lib/agency/pilot", () => ({
   agencyPilot: agency.pilot,
+  proactiveRunCap: (_workspaceId: string, limit: number) => limit,
+}));
+vi.mock("@db/services/agency", () => ({
+  pruneAgencyActions: vi.fn<typeof pruneAgencyActions>(),
 }));
 vi.mock("@agent/lib/proactive/agent-mail", () => ({
   agentMailCheck: agentMail.check,
@@ -75,6 +81,7 @@ vi.mock("@db/services/proactive", () => ({
   deferProactiveWatch: proactive.defer,
   filterUnseenProactiveSignals: proactive.filterUnseen,
   listProactiveRunSignals: proactive.listSignals,
+  pruneProactiveRuns: vi.fn<typeof pruneProactiveRuns>(),
   pruneProactiveSignals: proactive.prune,
   queueProactiveRun: proactive.queue,
 }));
@@ -184,7 +191,7 @@ describe("proactive schedule", () => {
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
-      maxRunsPerDay: 12,
+      maxRunsPerDay: 30,
       now: afternoon,
       signals: [flight],
       workspaceId: "workspace:alice",
@@ -875,7 +882,7 @@ describe("proactive schedule", () => {
       agentMailCheckedAt: afternoon,
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
-      maxRunsPerDay: 12,
+      maxRunsPerDay: 30,
       now: afternoon,
       signals: [inbox],
       workspaceId: "workspace:alice",
