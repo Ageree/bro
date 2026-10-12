@@ -87,6 +87,7 @@ export async function sendOwnerDigest(now = new Date()) {
     to: now,
   });
   return alertOwner("owner-digest", ownerDigestText(day), {
+    kind: "digest",
     now,
     repeatAfterMs,
   });

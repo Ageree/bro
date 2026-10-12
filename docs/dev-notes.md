@@ -330,6 +330,16 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   владелец меняет режим permissions сам. Базу читайте узким ops-скриптом через
   PR: `host.py ops` гоняет скрипты выкаченного релиза (`usage-stats.sh`,
   `memory-keys.sh`).
+- Бот баг-репортов (`BUG_BOT=on`, `agent/lib/bug-bot/`, тик `agent/schedules/bug-bot.ts`):
+  люди пишут служебному боту `OPS_ALERT_BOT_TOKEN`, отчёты уходят в
+  `OPS_ALERT_CHAT_ID` с шапкой `🐞 #bug №N`, реплай владельца — человеку. Токен
+  должен отличаться от `TELEGRAM_BOT_TOKEN`: `host.py` на профиле stand кладёт
+  токен Бро в `OPS_ALERT_BOT_TOKEN`, и опрос `getUpdates` отнял бы обновления у
+  `tg-bridge` (409), поэтому при равных токенах бот выключен (`bugBotTarget`).
+  Опрос — long polling внутри минутного тика, ~55 с, offset в `bug_bot_state`;
+  409 ставит паузу на 5 минут. Метки сообщений владельцу: `ownerMessageLabels`
+  в `agent/lib/owner-alert.ts` (`#alert`, `#bug`, `#digest`), у `watchdog.py`
+  свой `ALERT_TAG`.
 - Журнал ходов владельца — `turn_log` (хук `agent/hooks/turn-log.ts`, сервис
   чтения `db/services/turn-log.ts`): id хода повторяется, поэтому открытой
   бывает лишь одна строка сессии и хода, а открытая старше 6 ч — `lost`.
@@ -1448,6 +1458,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - eve подписывает карточку лишь «Approve tool call: …»: текст собирает
   `shared/chat/approval-card.ts`. В iMessage eve примет ответ текстом, только
   равный id, английской метке или номеру (`channel/resolve-text.js`).
+
+- Тексты о данных: `agent/lib/privacy/facts.ts` (что Бро говорит людям) и
+  `app/(public)/privacy` (страница) называют одни и те же сервисы — правьте
+  вместе. Хостинг в фактах записан кодом (Selectel, Россия), а не берётся из
+  env; промпт `role/interactive.md` («Vercel, Neon») остаётся за юнитом U8.
 
 ## Лимит трат без спроса
 

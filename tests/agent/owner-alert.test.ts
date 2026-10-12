@@ -171,7 +171,10 @@ describe("where owner alerts go", () => {
 
     const { body, url } = sent(network);
     expect(url).toBe("https://api.telegram.org/botops-test-token/sendMessage");
-    expect(body).toEqual({ chat_id: "2002", text: "Баланс кончился" });
+    expect(body).toEqual({
+      chat_id: "2002",
+      text: "🚨 #alert\nБаланс кончился",
+    });
   });
 
   it("marks an alert through Bro's own bot as not Bro's", async () => {
@@ -184,9 +187,25 @@ describe("where owner alerts go", () => {
       "https://api.telegram.org/bottelegram-test-token/sendMessage"
     );
     expect(body.chat_id).toBe("1001");
-    expect(body.text).toMatch(/^⚙️ Служебное уведомление для владельца/u);
+    expect(body.text).toMatch(
+      /^🚨 #alert\n⚙️ Служебное уведомление для владельца/u
+    );
     expect(body.text).toContain("не Бро");
     expect(body.text.endsWith("\n\nБаланс кончился")).toBe(true);
+  });
+
+  it("tags a digest as a digest", async () => {
+    capture.env.OPS_ALERT_BOT_TOKEN = "ops-test-token";
+    capture.env.OPS_ALERT_CHAT_ID = "2002";
+    const network = stubTelegram();
+
+    await alertOwner(key, "Сводка", {
+      kind: "digest",
+      now: start,
+      repeatAfterMs,
+    });
+
+    expect(sent(network).body.text).toBe("📊 #digest\nСводка");
   });
 
   it("keeps the service chat with Bro's bot when no service bot is given", async () => {

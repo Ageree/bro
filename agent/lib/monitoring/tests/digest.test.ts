@@ -68,7 +68,7 @@ describe("the owner's daily summary", () => {
     expect(mocks.alertOwner).toHaveBeenCalledWith(
       "owner-digest",
       expect.stringContaining("Сводка за сутки"),
-      { now, repeatAfterMs: 20 * 60 * 60_000 }
+      { kind: "digest", now, repeatAfterMs: 20 * 60 * 60_000 }
     );
   });
 

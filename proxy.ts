@@ -10,6 +10,7 @@ export async function proxy(request: NextRequest) {
     // message on that line creates the account.
     pathname === "/" ||
     pathname === "/oferta" ||
+    pathname === "/privacy" ||
     // YooKassa signs nothing this proxy could check. The route trusts only the
     // payment id in the body and re-fetches the payment itself.
     pathname === "/api/yookassa" ||
