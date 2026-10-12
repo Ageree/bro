@@ -35,6 +35,7 @@ describe("the first message's context", () => {
     const text = (await context("")).join("\n");
     expect(text).toContain("в бете");
     expect(text).not.toContain("@");
+    expect(text).not.toContain("О сбоях");
   });
 
   it("adds nothing once the workspace has been introduced", async () => {

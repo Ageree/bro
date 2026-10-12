@@ -89,6 +89,17 @@ describe("yandex account.ready", () => {
     });
   });
 
+  it("says Go was never opened when Go keeps no user, reading nothing", async () => {
+    const { page, paths } = await goPage({ body: {} });
+    const answer = await runInPage(
+      accountReadyOperation.run,
+      {},
+      { ...page, indexedDb: {} }
+    );
+    expect(dataOf(answer)).toEqual({ error: "no_user_id" });
+    expect(paths).toEqual([]);
+  });
+
   it("answers signed_out when Go says nobody is signed in", async () => {
     const { answer } = await ready({ body: {}, status: 401 });
     expect(answer).toEqual({ status: "signed_out" });
@@ -112,6 +123,7 @@ describe("what account.ready tells the model to do next", () => {
       { canVerify: true }
     );
     expect(reply).toContain("Ready");
+    expect(reply).toContain("should work in Eda, Lavka and Go");
     expect(reply).not.toContain("verify_card");
   });
 
@@ -146,6 +158,12 @@ describe("what account.ready tells the model to do next", () => {
   it("does not guess when the cards could not be read", () => {
     expect(
       readinessReply({ error: "http_500" }, { canVerify: true })
-    ).toContain("Do not guess");
+    ).toContain("Say nothing about the cards");
+  });
+
+  it("does not call Yandex ready when Go was never opened", () => {
+    const reply = readinessReply({ error: "no_user_id" }, { canVerify: true });
+    expect(reply).toContain("never opened Yandex Go");
+    expect(reply).not.toContain("Ready");
   });
 });

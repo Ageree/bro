@@ -17,11 +17,10 @@ const firstContactMarker =
  */
 function betaNote() {
   const bot = env.BUG_BOT_USERNAME;
+  // Without the bot nobody passes a fault on, so none is promised.
   const report =
-    bot === undefined
-      ? "О сбоях пусть просто пишет тебе."
-      : `О сбоях и идеях — в Telegram @${bot}.`;
-  return `Для знакомства: Бро сейчас в бете. ${report} Условия — https://brobro.tech/oferta, что хранится и как удалить — https://brobro.tech/privacy.`;
+    bot === undefined ? "" : ` О сбоях и идеях — в Telegram @${bot}.`;
+  return `Для знакомства: Бро сейчас в бете.${report} Условия — https://brobro.tech/oferta, что хранится и как удалить — https://brobro.tech/privacy.`;
 }
 
 /**

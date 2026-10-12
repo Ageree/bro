@@ -14,6 +14,7 @@ import {
   readinessReply,
   signInFirstReply,
 } from "@agent/lib/yandex/ready";
+import { statusOperation } from "@agent/lib/yandex/status";
 import {
   findYandexOperation,
   yandexOperations,
@@ -88,6 +89,17 @@ async function callYandex(
       .success
   ) {
     return { ok: false as const, reply: notThePerson };
+  }
+  if (operation.id === accountReadyOperation.id) {
+    // Signed in is Yandex ID's word, not Go's: a person who never opened Go
+    // has no Go session, and an anonymous Go session has no cards.
+    const signedIn = await runYandexOperation(workspaceId, statusOperation, {});
+    if (signedIn.kind === "signed_out") {
+      return { ok: false as const, reply: signInFirstReply };
+    }
+    if (signedIn.kind !== "ok") {
+      return { ok: false as const, reply: refusals[signedIn.kind] };
+    }
   }
   const outcome = await runYandexOperation(
     workspaceId,

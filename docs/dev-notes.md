@@ -686,7 +686,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
 
 - Мини-онбординг Яндекса (12.10): `yandex` `account.ready` (`agent/lib/yandex/ready.ts`)
-  читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
+  сначала спрашивает вход у Яндекс ID (`status`): сессия Go входа не доказывает —
+  у того, кто ни разу не открывал Go, `goSession` даёт `no_user_id`, а у анонима
+  список карт пуст. Потом читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
   через `yandex_purchase` `verify_card` только после «да», где привязать карту) несёт
   `reply` результата, а не промпт. Знакомство (`first-contact`) узнаёт о бете, боте
   багов (`BUG_BOT_USERNAME`) и ссылках из контекстной строки `firstContactContext`.

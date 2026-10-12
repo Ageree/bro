@@ -7,6 +7,7 @@ import { Alert } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
 import { Spinner } from "@web/components/ui/spinner";
 import {
+  closedBy,
   doneLabel,
   endedText,
   finishingText,
@@ -242,7 +243,7 @@ export function Viewer({ id }: { readonly id: string }) {
           closing.current = true;
           setPhase({
             kind: "ended",
-            result: message.t === "cancel" ? "cancelled" : "expired",
+            result: closedBy[message.t],
           });
           break;
         }
@@ -513,7 +514,7 @@ export function Viewer({ id }: { readonly id: string }) {
       {notice === null ? null : <Alert variant="information">{notice}</Alert>}
       <div className="relative">
         <button
-          aria-label="Окно браузера Бро: нажимайте и печатайте прямо здесь"
+          aria-label="Окно компьютера Бро: нажимайте и печатайте прямо здесь"
           className="block w-full cursor-default touch-none border border-border bg-muted p-0"
           onClick={onClick}
           onKeyDown={onKeyDown}
