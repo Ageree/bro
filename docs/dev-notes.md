@@ -41,7 +41,7 @@
 - У ElevenLabs `metadata.cost_fiat` — USD, не RUB. SIP-плату Exolve нужно
   сверять и перед созданием SIP после паузы: первые три бесплатны, следующие
   платные; прежняя котировка не гарантирует бесплатный новый SIP.
-- На Cloud.ru прямой ElevenLabs API может отвечать редиректом country-access
+- С адресов Cloud.ru (история; на Selectel не проверяли) прямой ElevenLabs API может отвечать редиректом country-access
   notice. Для него есть отдельный `ELEVENLABS_PROXY_URL` с TLS-проверкой:
   только SDK телефонии и операторский setup, не глобальный fetch/браузер.
 - Голос телефонии (09.10): у пилотного агента стоял `cjVigY5qzO86Huf0OWal` —
@@ -133,10 +133,11 @@
   код и миграции, слияние в bro-next при зелёном CI, выкат, откат и рестарт
   на VM прода, env прода (`prod.json`, `host.py env`, `state save/restore`),
   deployd, ops-скрипты и серийную консоль, чтение и запись базы прода,
-  создание и удаление своих ресурсов Cloud.ru.
+  создание и удаление своих ресурсов Cloud.ru и Selectel.
 - Правила владельца для всех сессий (03.10): спрашивать его только о том, что
   может лишь он (ключ из кабинета сервиса, код из SMS, пополнение);
-  `bro-app-1`, `sbx-code-2` и базу прода не удалять; его Gmail и
+  `bro-app-1` и `sbx-code-2` (Cloud.ru, уборка — с его разрешения), `bro-app-sel-2`,
+  `bro-dedicated-3` и базу прода не удалять; его Gmail и
   Календарь — только чтение, тестовые события можно, но потом удалить;
   поручения браузеру с его аккаунта (он же аккаунт бенчмарка) — только на
   чтение, брони и оплаты не подтверждать; до 3 000 ₽ сверх обычного расхода
@@ -244,7 +245,7 @@
   на общем сервере сверх 19 ГБ `hostd` ответит 507 — пока пул у одного пилота,
   это не мешает; при росте — отдавать потолок в `/v1/capacity`. Аккаунт Cloud.ru
   10.10 приостановлен за неуплату (VM выключены, S3 — `TenantSuspended`):
-  ниже про Cloud.ru — история. Операции: `BRO_CLOUD=selectel` и
+  всё про Cloud.ru — история (`docs/cloudru-migration.md`, «История»). Операции: `BRO_CLOUD=selectel` и
   `BRO_APP_HOST_DIR=/root/.bro-app-host-selectel` (полный путь), у
   `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Ключи — в env
   облачной сессии: `SELECTEL_API_KEY` (или `SELECTEL_TOKEN`),
@@ -309,7 +310,7 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   подписанный POST deployd — через loopback из serial-консоли, статус — GET.
 
 - Прод с 02.10 был на VM Cloud.ru, с 10.10 — Selectel; Vercel `bro-next` как
-  путь отката закончился 09.10 (уборка — `docs/cloudru-migration.md`). Убирая «ветку
+  путь отката закончился 09.10 (уборка и история Cloud.ru — `docs/cloudru-migration.md`). Убирая «ветку
   OpenRouter», не трогайте `createOpenRouter` в `agent/lib/model/direct.ts`:
   через него с другим `baseURL` ходит RouterAI — единственный провайдер прода.
 - Слияние прод не обновляет: релиз — `host.py deploy <VM>`, и он собирает
@@ -373,10 +374,29 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   (`DEPLOY_SIGNING_KEY`, пароли консолей, env-файлы): сначала
   `host.py state restore`, после смены ключей — `host.py state save`
   (`scripts/cloudru-app-host/README.md`, «Ключ и артефакты»). Восстановленный
-  кэш IAM-токена (`~/.bro-app-host/token`) просрочен, а свежий `mtime` прячет
+  кэш IAM-токена Cloud.ru (`~/.bro-app-host/token`) просрочен, а свежий `mtime` прячет
   это от `cloudru.py`: консоль падает на 401 «Jwt is expired» — удалите файл.
   `host.py logs` отдаёт лишь хвост в 2000 строк; окно постарше — консолью:
   `journalctl --since … | gzip` и presigned PUT в бакет стенда (`s3.py`).
+
+- `host.py update-host` ходит через серийную консоль Cloud.ru
+  (`scripts/cloudru-sandbox-probe/console.py`) и VM Selectel не находит («no
+  such VM»): код хоста на Selectel им не обновить, нужен свой путь. Бронь
+  `POST /host-update`, которую команда берёт до сбоя, держит слот deployd:
+  снимите её `DELETE host-update` (`scripts/cloudru-app-host/host.py`), иначе
+  релизы, env и ops-задачи не стартуют.
+- Для `host.py` с Selectel нужен `SELECTEL_PROJECT`: id проекта даёт
+  `GET https://api.selectel.ru/vpc/resell/v2/projects` с `X-Token`. Каталог
+  `vendor/` не входит в `state restore`, поэтому перед `update-host` —
+  `host.py vendor`.
+- У аккаунтов, вошедших по телефону, почта синтетическая
+  (`phone-…@local-vault.invalid`): в `ADMIN_USER_IDS` кладите id пользователя,
+  а не почту.
+- Оркестрация облачных сессий: `send_message` из сессии-исполнителя ждёт
+  ручного одобрения и вешает её, поэтому исполнители координатору не пишут —
+  он следит за PR сам. Ревьюер-субагент в чекауте координатора только читает
+  (`git diff`, `git show`, без checkout). PR с конфликтом против базы не
+  запускает CI вовсе: сначала слейте базу.
 
 ## eve
 
@@ -433,13 +453,6 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
 - Стенду VM не ставьте `TEST=1`, чтобы выключить расписания: его читает и
   Better Auth (`isTest()`) и снимает проверку Origin. Расписания глушит
   `EVE_SCHEDULES=off` (`agent/lib/schedules/enabled.ts`).
-- Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
-  VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
-  видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
-  регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
-  В каждой базе есть схема провайдера `cloudru` с `pg_stat_statements` и
-  `pgaudit`: дамп без их исключения не восстанавливается («schema "cloudru"
-  already exists»), исключает `dump()` в `db-lib.sh` (нужен `pg_dump` ≥ 17).
 - В `psql -c` переменные `:'x'` не подставляются — SQL с ними подавайте на
   stdin. `pg_dump` падает на чужой таблице без прав: `db-lib.sh` исключает
   таблицы других ролей, но бэкап и перенос тогда валятся, пока таблицы нет в
@@ -452,19 +465,6 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
 - esbuild тянет в бандл с graphile-worker весь `typescript` (9 МБ, через
   `graphile-config`): `--external:typescript`. В облачной сессии нет `zstd`
   для `tar -I zstd`: `apt-get install -y zstd`.
-- Сеть Cloud.ru (02.10): `api.telegram.org` по DNS закрыт, отвечает лишь
-  149.154.167.220 и теряет ~1/6 SYN — на VM Бро весь Telegram идёт через
-  `scripts/cloudru-app-host/tg-egress/` (код не трогать). VM проекта не
-  достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
-  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
-  таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
-  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`), и
-  `brobro.tech` — только когда домен уже на VM: иначе вызовы task-агента прода
-  уходят с Vercel на VM.
-- Переключение 02.10: cron Vercel выключает `PATCH /v1/projects/<id>/crons`
-  с `{"enabled": false}` (`crons.disabledAt`); для страховки на Vercel ещё
-  `EVE_SCHEDULES=off` с передеплоем. Явная A-запись в DNS Vercel перекрывает
-  системный ALIAS проекта — домены с проекта снимать не пришлось.
 - Релиз для VM собирается с `MODEL_PROVIDER` VM (`build_env` в
   `scripts/cloudru-app-host/host.py`): `web_search` выбирается при загрузке
   модуля, и без него в сборку попадал инструмент Gateway — RouterAI отвечал 400
@@ -476,10 +476,6 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   `host.py update-host`, а не пересоздание. Oneshot-юниты (`bro-egress`) он
   сам не перезапускает: что хосту нужно сразу, зовёт `install-code.sh`
   (`egress.sh`), а рестарт `bro-egress` перезапустил бы Caddy, web и eve.
-- Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
-  `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
-  Telegram на Vercel и живые хосты пула работают, только если значения
-  сведены до окна (`docs/cloudru-migration.md`, «Переключение»).
 - Хунки патча:
   - `durableMemoryToolsContext`: с фото в истории инструменты памяти пропадали;
     хунк опустошает `messages` в их замыкании, так что `tools()` провайдера
@@ -587,11 +583,6 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   настоящем `runsc` — `SANDBOXD_REAL_ROOTFS=<корень> go test ./...` в
   `sandbox/sandboxd`. Прямой URL релиза runsc отвечает 404 — ставить `.deb`
   из apt-репозитория gVisor со сверкой подписи и sha256.
-- `set-power reboot` Cloud.ru — жёсткий сброс (теряются последние секунды
-  записи), а `runcmd` cloud-init идёт раз на инстанс: установку, которую
-  может оборвать перезагрузка, кладите в `/var/lib/cloud/scripts/per-boot/`
-  и делайте повторяемой (`browser-vm/host/boot.py`,
-  `docs/browser-infra-notes.md`).
 - Хост песочниц для кода — `scripts/cloudru-code-host/` (имена `sbx-*`): VM
   или, в проде с 10.10, выделенный сервер рядом с браузерами (`host.py
 user-data`, `sandbox/README.md`); runsc едет на хост объектом S3 (`boot.py vendor`), не
@@ -878,18 +869,6 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   «Please create service account on the project scope»; IAM-токен проекта
   пускает лишь в `GET /v1/models`. Владелец 04.10: FM пока не заводим — ключа
   нет, запасной путь спит; код не убирать и ключ не искать.
-- 03.10 маршрут Cloud.ru → routerai.ru (узел сразу после MSK-IX) терял
-  до 40% пакетов: шаг Бро (~250 КБ) грузился КБ/с и падал 503 или «other
-  side closed», с других сетей тот же ключ отвечал за секунды. Это не бан
-  IP: свежий адрес Cloud.ru вёл себя так же. Проверка — `curl` с телом
-  250 КБ с VM через консоль (`scripts/cloudru-sandbox-probe/console.py`,
-  `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос. Тогда же с Cloud.ru
-  быстро отвечали FM, aitunnel, vsegpt, proxyapi, `api.deepseek.com` и Timeweb
-  (дорог: 41 ₽ за 1 млн входа без скидки на кэш) — кандидаты в запасные.
-  04.10 с новой пробной VM (`cloudru.py create`, без ключей прода) те же
-  250 КБ уходили за 0,1 с, а шаг DeepSeek в 37 тыс. токенов через
-  `deepinfra` давал первый токен за 3 с: медленный ответ ищите в числе шагов
-  и в инструментах, а не в модели.
 - RouterAI — единственный провайдер прода, 402 «Insufficient balance» не
   переключает и на FM: при пустом балансе Бро молчит всем (03.10 — дважды).
   Баланс — `GET /api/v1/credits` ключом прода (рубли) или пробный ход
@@ -1100,7 +1079,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 ## Браузерные поручения
 
 План перехода — `docs/browser-cloud-migration.md` (итоги проверок — раздел
-12): свой браузер на VM Cloud.ru по запросу с постоянным профилем, общий Бро не
+12): свой браузер по запросу с постоянным профилем (VM Cloud.ru, с 10.10 — выделенный сервер Selectel), общий Бро не
 копируем в VM. Человеку браузер не показываем: коды и согласия — только в чате
 (исключение — окно входа по ссылке, ниже и `docs/login-handoff.md`).
 Сторона VM — `browser-vm/` (worker, образ), пилотный стенд — `scripts/cloudru-browser-pilot/`.
@@ -1299,9 +1278,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
   7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
   Сменить его прогретому хосту — удалить VM хоста через Compute API, не
-  трогая адрес: пул сам уберёт запись и адрес и создаст новый. Пока Cloud.ru
-  удаляет VM, reconcile пишет 422 `vm_can_not_be_deleted_from_current_state`
-  и шлёт тревогу «хост упал» — это ожидаемо.
+  трогая адрес: пул сам уберёт запись и адрес и создаст новый (на Cloud.ru, где
+  пул жил до 10.10; на Selectel хост постоянный).
 - Номер worker (`VERSION`) берите из свежего `origin/bro-next` перед PR и
   сверяйте с открытыми PR: 05.10 две сессии дважды выпустили разные worker под
   одним номером (`.5`, `.6`). Какой worker в корне пула, видно лишь в самом

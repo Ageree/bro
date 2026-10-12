@@ -580,3 +580,51 @@ status`) — до решения об откате.
   и обучен на английском; Decisions API в ограниченном превью, без цены, и
   из РФ им пользоваться нельзя по условиям OpenAI — ждать его не нужно,
   слой решения делаем заменяемым.
+
+## История: заметки из dev-notes
+
+Прод с 10.10 на Selectel (`docs/selectel-migration.md`), аккаунт Cloud.ru
+приостановлен. Эти записи вынесены из `docs/dev-notes.md`: они верны для
+Cloud.ru и нужны, только если что-то оттуда поднимают заново.
+
+- Managed PostgreSQL Cloud.ru отвечает только по внутреннему адресу подсети
+  VM: всё с базой — ops-скрипты на VM (`db-*.sh`), из сессии и Vercel её не
+  видно. API по умолчанию создаёт базы с локалью `C`, где `ILIKE` не знает
+  регистра кириллицы (поиск памяти): только `C.UTF-8` (`host.py pg databases`).
+  В каждой базе есть схема провайдера `cloudru` с `pg_stat_statements` и
+  `pgaudit`: дамп без их исключения не восстанавливается («schema "cloudru"
+  already exists»), исключает `dump()` в `db-lib.sh` (нужен `pg_dump` ≥ 17).
+- Сеть Cloud.ru (02.10): `api.telegram.org` по DNS закрыт, отвечает лишь
+  149.154.167.220 и теряет ~1/6 SYN — на VM Бро весь Telegram идёт через
+  `scripts/cloudru-app-host/tg-egress/` (код не трогать). VM проекта не
+  достаёт до публичного IP другой: к VM проекта — `fetch` с `withPrivateRoute`
+  (`agent/lib/browser-vm/private-route.ts`, `CLOUDRU_PRIVATE_ROUTING=on`), а
+  таймаут — после `await resolvePrivateRoute(url)`: листинг Compute API ждёт
+  до 5 с; хосту песочниц — `--hosts-entry` (`sandbox/host/boot.py`), и
+  `brobro.tech` — только когда домен уже на VM: иначе вызовы task-агента прода
+  уходят с Vercel на VM.
+- Переключение 02.10: cron Vercel выключает `PATCH /v1/projects/<id>/crons`
+  с `{"enabled": false}` (`crons.disabledAt`); для страховки на Vercel ещё
+  `EVE_SCHEDULES=off` с передеплоем. Явная A-запись в DNS Vercel перекрывает
+  системный ALIAS проекта — домены с проекта снимать не пришлось.
+- Секреты `new-secrets.json` (`TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+  `BROWSER_VM_SIGNING_KEY`…) новые, а sensitive на Vercel не прочитать: откат
+  Telegram на Vercel и живые хосты пула работают, только если значения
+  сведены до окна (`docs/cloudru-migration.md`, «Переключение»).
+- `set-power reboot` Cloud.ru — жёсткий сброс (теряются последние секунды
+  записи), а `runcmd` cloud-init идёт раз на инстанс: установку, которую
+  может оборвать перезагрузка, кладите в `/var/lib/cloud/scripts/per-boot/`
+  и делайте повторяемой (`browser-vm/host/boot.py`,
+  `docs/browser-infra-notes.md`).
+- 03.10 маршрут Cloud.ru → routerai.ru (узел сразу после MSK-IX) терял
+  до 40% пакетов: шаг Бро (~250 КБ) грузился КБ/с и падал 503 или «other
+  side closed», с других сетей тот же ключ отвечал за секунды. Это не бан
+  IP: свежий адрес Cloud.ru вёл себя так же. Проверка — `curl` с телом
+  250 КБ с VM через консоль (`scripts/cloudru-sandbox-probe/console.py`,
+  `PROBE_STATE_DIR=~/.bro-app-host`), не мелкий запрос. Тогда же с Cloud.ru
+  быстро отвечали FM, aitunnel, vsegpt, proxyapi, `api.deepseek.com` и Timeweb
+  (дорог: 41 ₽ за 1 млн входа без скидки на кэш) — кандидаты в запасные.
+  04.10 с новой пробной VM (`cloudru.py create`, без ключей прода) те же
+  250 КБ уходили за 0,1 с, а шаг DeepSeek в 37 тыс. токенов через
+  `deepinfra` давал первый токен за 3 с: медленный ответ ищите в числе шагов
+  и в инструментах, а не в модели.

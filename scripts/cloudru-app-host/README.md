@@ -1,9 +1,17 @@
 # Свой сервер Бро на Cloud.ru
 
+> **Статус (12.10).** Текущий прод — `bro-app-sel-2` на Selectel с 10.10
+> (`docs/selectel-migration.md`); операции — `BRO_CLOUD=selectel`,
+> `BRO_APP_HOST_DIR=/root/.bro-app-host-selectel`. Аккаунт Cloud.ru
+> приостановлен, `bro-app-1` и Vercel как путь отката — история: текст ниже
+> описывает переезд на Cloud.ru и остаётся справкой по устройству хоста.
+> `host.py update-host` на VM Selectel не работает (`docs/dev-notes.md`,
+> «Прод на VM»).
+
 Этап 4 переезда (`docs/cloudru-migration.md`): Бро целиком на одной VM
-Cloud.ru. Одна и та же VM сначала служит репетиционным стендом
+Cloud.ru. Одна и та же VM сначала служила репетиционным стендом
 (`cloud.brobro.tech`, расписания выключены, ключей отправки людям нет), потом
-становится продом (`brobro.tech`). Прод на Vercel остаётся путём отката.
+стала продом (`brobro.tech`) — до 10.10. Прод на Vercel был путём отката.
 
 ```
 Caddy :443 ─ /eve/* ───────────────▶ bro-eve  node .output/server/index.mjs  127.0.0.1:4274
