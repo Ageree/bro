@@ -1,5 +1,5 @@
 import { queueFollowUpRun } from "@db/services/proactive";
-import { agencyPilot } from "@agent/lib/agency/pilot";
+import { agencyPilot, proactiveRunCap } from "@agent/lib/agency/pilot";
 import { followUpSignal, maxRunsPerDay } from "./signals";
 
 /**
@@ -18,7 +18,7 @@ export async function wakeAgencyForOutcome(input: {
   if (!agencyPilot(input.workspaceId)) return;
   try {
     const queued = await queueFollowUpRun({
-      maxRunsPerDay,
+      maxRunsPerDay: proactiveRunCap(input.workspaceId, maxRunsPerDay),
       now: new Date(),
       signal: followUpSignal(input.source, input.id),
       workspaceId: input.workspaceId,

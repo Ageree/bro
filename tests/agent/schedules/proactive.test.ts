@@ -10,6 +10,7 @@ import type {
   deferProactiveWatch,
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
+  pruneProactiveRuns,
   pruneProactiveSignals,
   queueProactiveRun,
 } from "@db/services/proactive";
@@ -27,6 +28,7 @@ import type {
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
+import type { pruneAgencyActions } from "@db/services/agency";
 import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const proactive = vi.hoisted(() => ({
@@ -64,6 +66,10 @@ const flights = vi.hoisted(() => ({
 
 vi.mock("@agent/lib/agency/pilot", () => ({
   agencyPilot: agency.pilot,
+  proactiveRunCap: (_workspaceId: string, limit: number) => limit,
+}));
+vi.mock("@db/services/agency", () => ({
+  pruneAgencyActions: vi.fn<typeof pruneAgencyActions>(),
 }));
 vi.mock("@agent/lib/proactive/agent-mail", () => ({
   agentMailCheck: agentMail.check,
@@ -75,6 +81,7 @@ vi.mock("@db/services/proactive", () => ({
   deferProactiveWatch: proactive.defer,
   filterUnseenProactiveSignals: proactive.filterUnseen,
   listProactiveRunSignals: proactive.listSignals,
+  pruneProactiveRuns: vi.fn<typeof pruneProactiveRuns>(),
   pruneProactiveSignals: proactive.prune,
   queueProactiveRun: proactive.queue,
 }));
