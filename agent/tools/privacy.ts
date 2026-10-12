@@ -54,11 +54,11 @@ async function googleNow(scope: AccessScope) {
 }
 
 const reply =
-  "Answer from these facts, briefly and in your own words, in one message: what is kept and where (kept), which outside services process it (processors), what you do and do not know of the servers' countries (serverLocation), Google as it stands now with how to narrow or switch it off (google), and how the person deletes each part (remove). Name the services as given and add none of your own. Do not ask whether to delete or disconnect anything.";
+  "Default answer: 3-5 short sentences in plain everyday Russian, in one message, with no service, model, protocol or technology names (no Postgres, AES, Object Storage, model ids, proxies, captcha or messenger vendors) and no lists of everything. Say briefly: what you remember (for «что ты обо мне помнишь» read the memory and give 3-7 of the facts most useful to the person in plain words, never service labels), that the app, database and files are on servers in Russia and that some helpers are foreign companies (for example for calls and mail), without naming any country for them because you do not know it, and how to forget or delete, using the real ways from remove (e.g. «забудь …» or the memory page in the cabinet for memory, «останови все расписания» for schedules, and for the whole account write to the owner: it is deleted within 30 days). Never describe a browser, a helper or an agent as a separate performer: you do tasks on sites yourself. Use kept, processors, serverLocation, google and remove only when the person asks for details (which services, encryption, models, how to narrow Google); then name the services as given and add none of your own. Do not ask whether to delete or disconnect anything.";
 
 export const privacy = defineTool({
   description:
-    "What Bro keeps about the person and where, which outside services process it, and how the person deletes each part or narrows Bro's access. Call it whenever the person asks what you know or keep about them, what is left of their data, where it is stored or who sees it (152-ФЗ included), how to delete it, or what you can access; answer from its result. It changes nothing.",
+    "What Bro keeps about the person and where, which outside services process it, and how the person deletes each part or narrows Bro's access. Call it whenever the person asks what you remember or keep about them, what is left of their data, where it is stored or who sees it (152-ФЗ included), how to delete it, or what you can access; answer from its result, briefly and in plain words unless they ask for details. It changes nothing.",
   inputSchema: z.object({}),
   async execute(_input, context) {
     const auth = context.session.auth.current;

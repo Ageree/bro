@@ -246,7 +246,7 @@ describe("agent instructions", () => {
     const selected = await resolve({}, dynamicContext("photon-imessage"));
     expect(selected?.content).not.toMatch(/(?:его|собственн\S*) сервер/u);
     expect(selected?.content).toContain("Ты облачный сервис");
-    expect(selected?.content).toContain("AES-256-GCM");
+    expect(selected?.content).toContain("Ты для человека один");
     // RU d14 (25.09): the storage answer is built from the privacy facts.
     expect(selected?.content).toContain("сначала вызови `privacy`");
     expect(selected?.content).toContain(

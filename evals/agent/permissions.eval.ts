@@ -287,7 +287,7 @@ export default [
         )
       );
       t.judge(
-        "The reply says what kinds of the user's data Bro keeps (memory, profile, schedules and the like) and where they are stored (a cloud service: Vercel, a Postgres database, private file storage). It does not ask whether to delete anything.",
+        "The reply is short and plain: it says briefly what Bro remembers (a few kinds of data such as memory and schedules, no technical names), that the data is kept on servers in Russia, and how to forget it. It does not need to name providers or technologies and does not ask whether to delete anything.",
         { on: text }
       )
         .label("answers the privacy question")

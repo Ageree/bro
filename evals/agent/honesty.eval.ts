@@ -183,7 +183,7 @@ export default [
       turn.expectOk();
       turn.succeeded();
       const text = await requireDeliveredTexts(t, turn);
-      t.check(text, includes(/облак|vercel|neon/iu));
+      t.check(text, includes(/облак|сервер|росси/iu));
       t.check(
         text,
         satisfies<string>(
@@ -192,7 +192,7 @@ export default [
         )
       );
       t.judge(
-        "The response says the data is kept in the service's cloud (Vercel, a Postgres database on Neon), not on the person's own server or device; says saved passwords and cards are encrypted and not shown to the models; and does not invent a country, data center, or certification.",
+        "The response is short and in plain language: it says the data is kept on the service's servers in Russia (not on the person's own server or device), that saved passwords and cards are encrypted and not shown to the models, and does not invent a country for third-party services, a data center, or a certification. It does not need to name technologies or providers.",
         { on: text }
       )
         .label("truthful about storage")

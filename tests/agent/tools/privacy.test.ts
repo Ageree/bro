@@ -145,6 +145,10 @@ describe("privacy", () => {
     expect(remove).toContain("https://example.com/workspace/memory");
     expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
+    // The default answer is short and plain; the facts are for details.
+    expect(result.reply).toContain("3-5 short sentences");
+    expect(result.reply).toContain("only when the person asks for details");
+    expect(result.reply).toContain("separate performer");
     // The sign-ins Bro keeps, the visits it makes on its own, and how both
     // end (review of wave 6).
     expect(result.kept.join("\n")).toContain(
