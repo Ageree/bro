@@ -9,7 +9,7 @@ export function getLatestTurnFailure(
 
     if (isTurnFailureEvent(event) && event.type === "turn.failed") {
       return event.data.code === "MODEL_CALL_FAILED"
-        ? "The model is temporarily unavailable. Please try again."
+        ? "Я прилёг, скоро вернусь. Попробуй ещё раз чуть позже."
         : event.data.message;
     }
     if (

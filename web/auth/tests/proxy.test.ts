@@ -46,11 +46,13 @@ describe("auth proxy matcher", () => {
     ).toBe(true);
   });
 
-  it("serves the public landing and its offer without a session", async () => {
+  it("serves the public landing, its offer and its privacy policy without a session", async () => {
     const responses = await Promise.all(
-      ["https://example.com/", "https://example.com/oferta"].map(
-        async (url) => await proxy(new NextRequest(url))
-      )
+      [
+        "https://example.com/",
+        "https://example.com/oferta",
+        "https://example.com/privacy",
+      ].map(async (url) => await proxy(new NextRequest(url)))
     );
 
     for (const response of responses) {
