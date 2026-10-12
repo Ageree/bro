@@ -34,6 +34,7 @@ const applicationEnvironment = [
   "NODE_ENV",
   "OPENROUTER_*",
   "OPS_ALERT_*",
+  "OWNER_*",
   "PAID_*",
   "PHONE_*",
   "PRICE_RUB",
