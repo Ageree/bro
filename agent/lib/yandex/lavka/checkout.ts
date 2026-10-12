@@ -228,7 +228,7 @@ const pageSource = String.raw`
     const publicQuote = { amountMinor: amounts.amountMinor, currency: "RUB", delivery,
       items: amounts.items.map(({ title, quantity }) => ({ title, quantity })),
       payment: payment.last4 ? "Сохранённая карта " + payment.system + " •••• " + payment.last4 : "Карта по умолчанию " + payment.system };
-    return { snapshot, publicQuote, position, cart };
+    return { snapshot, publicQuote, position, cart, card: match, address: a };
   };
   // The site polls the same way after an order (PaymentTrackingPortal):
   // every 2 s until a final status or the bank's form.
@@ -296,7 +296,17 @@ const submitOperation = defineYandexOperation({
         if (JSON.stringify(current[key]) !== JSON.stringify(approved[key])) block(key === "payment" ? "payment_changed" : key.startsWith("address") ? "address_changed" : "checkout_changed");
       }
       if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
-      const body = { cartId: approved.cartId, cartVersion: approved.cartVersion, flowVersion: approved.flowVersion,
+      // The site writes the card into the cart before it submits; a cart
+      // without one becomes an order Lavka cancels at once, payment unknown.
+      const { card, address: a } = checkout;
+      const additionalData = {};
+      for (const key of ["entrance", "floor", "doorcode", "city", "street", "house", "flat", "comment"]) if (a[key]) additionalData[key] = a[key];
+      const paid = await request("/api/v1/providers/cart/v1/set-payment", { cartId: approved.cartId, cartVersion: approved.cartVersion,
+        position: { location: checkout.position.location }, additionalData, idempotencyToken: crypto.randomUUID(), depotType: "regular",
+        paymentMethod: { id: card.id, type: "card", meta: { card: { verified: !card.verifyStrategy, cardBank: card.cardBank, issuerCountry: card.cardCountry, system: card.system } } } });
+      if (paid.cartId !== approved.cartId || !Number.isSafeInteger(paid.cartVersion) || paid.paymentMethod?.id !== card.id) block("checkout_changed");
+      if (money(paid.totalPriceValue) !== args.amountMinor) block("amount_changed");
+      const body = { cartId: approved.cartId, cartVersion: paid.cartVersion, flowVersion: approved.flowVersion,
         position: checkout.position, paymentMethodType: "card", paymentMethodId: approved.payment.id,
         useRover: false, depotOrderContext: { depotType: "regular", position: checkout.position.location } };
       const response = await request("/api/v1/orders/submit", body, () => {

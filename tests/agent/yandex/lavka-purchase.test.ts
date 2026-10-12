@@ -27,6 +27,7 @@ import {
 const cartPath = "/api/v1/providers/cart/v1/retrieve";
 const layoutPath = "/api/v1/providers/orders/v1/checkout-layout";
 const methodsPath = "/api/v1/providers/payments/v1/methods";
+const setPaymentPath = "/api/v1/providers/cart/v1/set-payment";
 const submitPath = "/api/v1/orders/submit";
 const paymentPath = "/api/v1/providers/payments/v1/status";
 const { __PAGE_PROPS__: pageProps, __REACT_QUERY_STATE__: queryState } =
@@ -47,6 +48,7 @@ let methods: JsonValue;
 let layout: JsonValue;
 let globals = structuredClone(pageFixture);
 let saved = structuredClone(fixtureAddress);
+const setPaymentResponse = vi.fn<() => JsonValue>();
 const submitResponse = vi.fn<() => JsonValue>();
 const paymentResponse = vi.fn<() => JsonValue>();
 const delayElapsed = vi.fn<(milliseconds: number) => void>();
@@ -94,12 +96,18 @@ beforeEach(() => {
       ],
     },
   };
+  setPaymentResponse.mockImplementation(() => ({
+    ...cartFixture,
+    cartVersion: 3,
+    paymentMethod: { id: "synthetic-card", type: "card" },
+  }));
   submitResponse.mockReturnValue({ orderId: "synthetic-order" });
   paymentResponse.mockReturnValue({ status: "success" });
   serve.mockImplementation((path) => {
     if (path === cartPath) return response(cart);
     if (path === layoutPath) return response(layout);
     if (path === methodsPath) return response(methods);
+    if (path === setPaymentPath) return response(setPaymentResponse());
     if (path === submitPath) return response(submitResponse());
     if (path === paymentPath) return response(paymentResponse());
     throw new Error("unexpected route");
@@ -435,14 +443,22 @@ describe("Lavka purchase fixed page functions", () => {
       cartPath,
       layoutPath,
       methodsPath,
+      setPaymentPath,
       submitPath,
       paymentPath,
     ]);
     expect(
-      requests.find(({ path }) => path === submitPath)?.body
+      requests.find(({ path }) => path === setPaymentPath)?.body
     ).toMatchObject({
       cartId: "synthetic-cart",
       cartVersion: 2,
+      paymentMethod: { id: "synthetic-card", type: "card" },
+    });
+    expect(
+      requests.find(({ path }) => path === submitPath)?.body
+    ).toMatchObject({
+      cartId: "synthetic-cart",
+      cartVersion: 3,
       flowVersion: "grocery_flow_v1",
       paymentMethodId: "synthetic-card",
       paymentMethodType: "card",
@@ -450,6 +466,21 @@ describe("Lavka purchase fixed page functions", () => {
     });
     expect(transport.run.mock.calls.at(-1)?.[1].access).toBe("purchase");
     expect(submitResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not submit when writing the card changes the cart's total", async () => {
+    const prepared = await ready();
+    setPaymentResponse.mockImplementation(() => ({
+      ...cartFixture,
+      cartVersion: 3,
+      paymentMethod: { id: "synthetic-card", type: "card" },
+      totalPriceValue: "999",
+    }));
+    expect(await confirm(prepared)).toEqual({
+      kind: "rejected",
+      reason: "amount_changed",
+    });
+    expect(submitResponse).not.toHaveBeenCalled();
   });
 
   it("reads the live submit envelope", async () => {
@@ -626,9 +657,15 @@ describe("Lavka purchase fixed page functions", () => {
       serve.mockImplementation((path) =>
         path === submitPath
           ? response({}, status)
-          : response(
-              path === cartPath ? cart : path === layoutPath ? layout : methods
-            )
+          : path === setPaymentPath
+            ? response(setPaymentResponse())
+            : response(
+                path === cartPath
+                  ? cart
+                  : path === layoutPath
+                    ? layout
+                    : methods
+              )
       );
       expect(await confirm(prepared)).toEqual({ kind: "unknown" });
       expect(
