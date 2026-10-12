@@ -36,14 +36,15 @@ type ProxyMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
 const refusedRetryMs = 3_000;
 
 /**
- * Whether Composio itself refused the request before making it: a 403 of its
- * own that names no gone account. The proxy answers HTTP 200 for whatever
- * the provider said, whatever the status (the app's own 403 and 429 arrive in
- * `status`, not here), so an error raised here means the provider's API was
- * never called, and asking again cannot do a write twice.
+ * Whether Composio itself refused a read: a 403 of its own that names no gone
+ * account. Only GETs are asked again. The proxy answers HTTP 200 for whatever
+ * the provider said, which suggests an error raised here means the provider
+ * was never called, but nothing in Composio's documentation says so, so a
+ * write is never repeated on that guess.
  */
-function refusedBeforeExecuting(cause: unknown) {
+function refusedRead(cause: unknown, method: ProxyMethod) {
   return (
+    method === "GET" &&
     cause instanceof ComposioError &&
     cause.status === 403 &&
     !isMissingConnectedAccount(cause)
@@ -63,6 +64,12 @@ export async function composioProxy(
     /** Extra headers, such as an API version; Composio adds the credential. */
     readonly headers?: Readonly<Record<string, string>>;
     readonly method: ProxyMethod;
+    /**
+     * Ask a GET once more after a bare 403 of Composio's own. Callers that
+     * already retry (the proactive check's `onceMore`) leave it off, so a
+     * refusal is not asked four times.
+     */
+    readonly retryRefusedRead?: boolean;
     readonly signal: AbortSignal;
     readonly url: string;
   }
@@ -84,7 +91,9 @@ export async function composioProxy(
   try {
     return await send();
   } catch (error) {
-    if (!refusedBeforeExecuting(error)) throw error;
+    if (!request.retryRefusedRead || !refusedRead(error, request.method)) {
+      throw error;
+    }
     await setTimeout(refusedRetryMs, undefined, { signal: request.signal });
     return send();
   }

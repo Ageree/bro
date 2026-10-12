@@ -103,6 +103,7 @@ export async function appRequest(
   });
   try {
     const response = await composioProxy(token, {
+      retryRefusedRead: true,
       ...request,
       signal: ctx.abortSignal,
     });
