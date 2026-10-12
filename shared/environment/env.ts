@@ -1057,6 +1057,18 @@ export const env = createEnv({
         "OPS_ALERT_CHAT_ID must be a numeric Telegram chat id or an @channel"
       )
       .optional(),
+    // The bug-report bot (`agent/lib/bug-bot`): people write to the service bot
+    // OPS_ALERT_BOT_TOKEN, the reports are forwarded to OPS_ALERT_CHAT_ID. Off
+    // by default, and never on Bro's own bot token (see `bugBotTarget`).
+    BUG_BOT: z.enum(["on", "off"]).default("off"),
+    // The handle of that bot without @, for Bro's `/bug` hint; unset, `/bug`
+    // goes to the model as any message.
+    BUG_BOT_USERNAME: requiredValue
+      .refine(
+        (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
+        "BUG_BOT_USERNAME must be the bot handle without a leading @"
+      )
+      .optional(),
     // Whether the FREE_*/PAID_* ceilings above and the paywall are enforced
     // at all. Off by default: the closed beta runs with no usage limits, by
     // the owner's decision. "on" restores the per-day/per-month ceilings and

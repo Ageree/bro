@@ -81,6 +81,7 @@ const telegramUploads = {
 const albumSizeRange = { maximum: 10, minimum: 2 } as const;
 const startLinkPattern =
   /^\/start(?:@[A-Za-z0-9_]+)?\s+link_(?<token>[\w-]+)$/u;
+const bugCommandPattern = /^\/bug(?:@[A-Za-z0-9_]+)?(?:\s|$)/u;
 const unlinkedHintIntervalMs = 60 * 60_000;
 const maximumThrottledChats = 500;
 
@@ -325,6 +326,12 @@ export default telegramChannel({
       return null;
     }
 
+    // The bug bot is a separate bot: /bug only points to it, before any model.
+    if (env.BUG_BOT_USERNAME && bugCommandPattern.test(message.text)) {
+      await context.telegram.sendMessage(bugHintText(env.BUG_BOT_USERNAME));
+      return null;
+    }
+
     const identity = await findChannelIdentity("telegram", from.id);
     if (!identity) {
       if (shouldSendUnlinkedHint(message.chat.id)) {
@@ -385,6 +392,10 @@ export default telegramChannel({
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
+
+function bugHintText(botUsername: string) {
+  return `Нашли ошибку? Напишите @${botUsername}: опишите, что сломалось, можно со скриншотом.`;
+}
 
 const unlinkedHintText = [
   "Этот телеграм пока не привязан ни к одному кабинету.",

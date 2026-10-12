@@ -330,6 +330,16 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   владелец меняет режим permissions сам. Базу читайте узким ops-скриптом через
   PR: `host.py ops` гоняет скрипты выкаченного релиза (`usage-stats.sh`,
   `memory-keys.sh`).
+- Бот баг-репортов (`BUG_BOT=on`, `agent/lib/bug-bot/`, тик `agent/schedules/bug-bot.ts`):
+  люди пишут служебному боту `OPS_ALERT_BOT_TOKEN`, отчёты уходят в
+  `OPS_ALERT_CHAT_ID` с шапкой `🐞 #bug №N`, реплай владельца — человеку. Токен
+  должен отличаться от `TELEGRAM_BOT_TOKEN`: `host.py` на профиле stand кладёт
+  токен Бро в `OPS_ALERT_BOT_TOKEN`, и опрос `getUpdates` отнял бы обновления у
+  `tg-bridge` (409), поэтому при равных токенах бот выключен (`bugBotTarget`).
+  Опрос — long polling внутри минутного тика, ~55 с, offset в `bug_bot_state`;
+  409 ставит паузу на 5 минут. Метки сообщений владельцу: `ownerMessageLabels`
+  в `agent/lib/owner-alert.ts` (`#alert`, `#bug`, `#digest`), у `watchdog.py`
+  свой `ALERT_TAG`.
 - Тревоги владельцу (баланс RouterAI, пул) шлёт `agent/lib/owner-alert.ts`
   служебным ботом `OPS_ALERT_BOT_TOKEN` в `OPS_ALERT_CHAT_ID` (пара сторожа
   VM). Без него — ботом Бро в чат владельца с Бро, с шапкой «прислала проверка,
