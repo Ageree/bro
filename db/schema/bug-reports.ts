@@ -69,4 +69,10 @@ export const bugBotState = pgTable("bug_bot_state", {
   id: text("id").primaryKey(),
   nextOffset: bigint("next_offset", { mode: "number" }).notNull(),
   pausedUntil: at("paused_until"),
+  // One tick at a time: a second reader of getUpdates would get a 409.
+  leaseUntil: at("lease_until"),
+  // The update that keeps failing and how many times, so one poison update
+  // is skipped after a few tries instead of blocking the queue.
+  failedUpdateId: bigint("failed_update_id", { mode: "number" }),
+  failedCount: integer("failed_count").notNull().default(0),
 });

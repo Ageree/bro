@@ -46,6 +46,32 @@ function reportHeader(report: Report) {
   ].join(" · ");
 }
 
+// Notices to the person (greeting, refusals) at most once a minute each, so
+// one chatty sender cannot make the bot a chatterbox. Per process.
+const noticeIntervalMs = 60_000;
+const noticedAt = new Map<string, number>();
+
+function noticeAllowed(chatId: string, kind: string, now: Date) {
+  const key = `${kind}:${chatId}`;
+  const last = noticedAt.get(key);
+  if (last !== undefined && now.getTime() - last < noticeIntervalMs) {
+    return false;
+  }
+  if (noticedAt.size >= 1000) noticedAt.clear();
+  noticedAt.set(key, now.getTime());
+  return true;
+}
+
+async function notify(
+  target: Target,
+  chatId: string,
+  kind: string,
+  text: string,
+  now: Date
+) {
+  if (noticeAllowed(chatId, kind, now)) await say(target, chatId, text);
+}
+
 function say(target: Target, chatId: string, text: string) {
   return callBotApi(
     target.botToken,
@@ -77,19 +103,21 @@ export async function handleBugBotUpdate(
   const chatId = String(message.chat.id);
   const text = (message.text ?? message.caption ?? "").trim();
   if (/^\/start(?:@\w+)?(?:\s|$)/u.test(text)) {
-    await say(target, chatId, greeting);
+    await notify(target, chatId, "start", greeting, now);
     return;
   }
   const photoFileId = message.photo?.at(-1)?.file_id;
   if (!text && !photoFileId) {
-    await say(target, chatId, emptyNotice);
+    await notify(target, chatId, "empty", emptyNotice, now);
     return;
   }
   if (text.length > maximumReportLength) {
-    await say(
+    await notify(
       target,
       chatId,
-      `Получилось слишком длинно (больше ${String(maximumReportLength)} знаков). Опишите короче.`
+      "long",
+      `Получилось слишком длинно (больше ${String(maximumReportLength)} знаков). Опишите короче.`,
+      now
     );
     return;
   }
@@ -99,10 +127,12 @@ export async function handleBugBotUpdate(
     new Date(now.getTime() - hourMs)
   );
   if (recent >= reportsPerHour) {
-    await say(
+    await notify(
       target,
       chatId,
-      "Вы уже отправили несколько сообщений за последний час. Подождите немного и напишите ещё раз."
+      "limit",
+      "Вы уже отправили несколько сообщений за последний час. Подождите немного и напишите ещё раз.",
+      now
     );
     return;
   }
@@ -121,7 +151,16 @@ export async function handleBugBotUpdate(
   // Filed already: this update came again after a crash.
   if (!report) return;
   await say(target, chatId, `Принято, №${String(report.id)}. Спасибо!`);
-  await forwardBugReport(target, report);
+  // A failed forward is not this update's failure: the report is filed, and
+  // the next tick forwards it again (`forwardPendingBugReports`).
+  try {
+    await forwardBugReport(target, report);
+  } catch (error) {
+    console.warn("[bug-bot] a report could not be forwarded", {
+      cause: error,
+      id: report.id,
+    });
+  }
 }
 
 /** Sends a filed report to the owner's chat and remembers the message. */

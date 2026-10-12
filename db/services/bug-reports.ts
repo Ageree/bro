@@ -1,4 +1,4 @@
-import { and, count, eq, gte } from "drizzle-orm";
+import { and, count, eq, gte, isNull, lt, or } from "drizzle-orm";
 import { bugBotState, bugReportReplies, bugReports, db } from "@db";
 
 const stateId = "bug-bot";
@@ -121,4 +121,53 @@ export async function listUnforwardedBugReports(limit = 20) {
     .where(eq(bugReports.status, "new"))
     .orderBy(bugReports.id)
     .limit(limit);
+}
+
+/**
+ * Takes the tick's lease: true when no other tick holds it. One conditional
+ * upsert, so two ticks cannot both read `getUpdates` at once.
+ */
+export async function acquireBugBotLease(now: Date, leaseMs: number) {
+  const rows = await db
+    .insert(bugBotState)
+    .values({
+      id: stateId,
+      leaseUntil: new Date(now.getTime() + leaseMs),
+      nextOffset: 0,
+    })
+    .onConflictDoUpdate({
+      set: { leaseUntil: new Date(now.getTime() + leaseMs) },
+      setWhere: or(
+        isNull(bugBotState.leaseUntil),
+        lt(bugBotState.leaseUntil, now)
+      ),
+      target: bugBotState.id,
+    })
+    .returning({ id: bugBotState.id });
+  return rows.length > 0;
+}
+
+export async function releaseBugBotLease() {
+  await db
+    .update(bugBotState)
+    .set({ leaseUntil: null })
+    .where(eq(bugBotState.id, stateId));
+}
+
+/** Counts one more failure of this update; the count starts over for another. */
+export async function recordBugBotUpdateFailure(updateId: number) {
+  const [row] = await db
+    .select({
+      count: bugBotState.failedCount,
+      id: bugBotState.failedUpdateId,
+    })
+    .from(bugBotState)
+    .where(eq(bugBotState.id, stateId))
+    .limit(1);
+  const failedCount = row?.id === updateId ? row.count + 1 : 1;
+  await db
+    .update(bugBotState)
+    .set({ failedCount, failedUpdateId: updateId })
+    .where(eq(bugBotState.id, stateId));
+  return failedCount;
 }

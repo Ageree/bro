@@ -308,6 +308,49 @@ describe("bug reports", () => {
     expect(later[0]?.method).toBe("getUpdates");
   }, 70_000);
 
+  it("does not move the offset past an update that failed, and skips a poison one after three tries", async () => {
+    const update = privateMessage(50, "баг");
+    // The report cannot be filed: the update is retried, not lost.
+    const fileFailure = vi
+      .spyOn(await import("@db/services/bug-reports"), "fileBugReport")
+      .mockRejectedValue(new Error("write failed"));
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      stubBotApi({ updates: [update] });
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Ticks follow one another. */
+      await runBugBotTick(() => now);
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Ticks follow one another. */
+      const [state] = await database.select().from(schema.bugBotState);
+      expect(state?.nextOffset).toBe(0);
+      expect(state?.failedCount).toBe(attempt);
+      expect(state?.leaseUntil).toBeNull();
+    }
+    // The third failure skips it, so the queue goes on.
+    stubBotApi({ updates: [update] });
+    await runBugBotTick(() => now);
+    const [state] = await database.select().from(schema.bugBotState);
+    expect(state?.nextOffset).toBe(51);
+    fileFailure.mockRestore();
+  }, 70_000);
+
+  it("never runs two ticks at once", async () => {
+    const calls = stubBotApi();
+    await database.insert(schema.bugBotState).values({
+      id: "bug-bot",
+      leaseUntil: new Date(Date.now() + 60_000),
+      nextOffset: 0,
+    });
+    await runBugBotTick(() => now);
+    expect(calls).toEqual([]);
+  });
+
+  it("answers a repeated /start once a minute", async () => {
+    const calls = stubBotApi();
+    const later = new Date(now.getTime() + 5 * 60 * 60_000);
+    await handleBugBotUpdate(target, privateMessage(60, "/start", 91), later);
+    await handleBugBotUpdate(target, privateMessage(61, "/start", 91), later);
+    expect(calls).toHaveLength(1);
+  });
+
   it("moves the offset past what it handled", async () => {
     stubBotApi({ updates: [privateMessage(40, "баг")] });
     await runBugBotTick(() => now);

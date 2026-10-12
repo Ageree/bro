@@ -15,6 +15,7 @@ import {
   redeemChannelLinkToken,
 } from "@db/services/channel-identities";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
 import {
   fallbackDeliveryText,
@@ -327,7 +328,11 @@ export default telegramChannel({
     }
 
     // The bug bot is a separate bot: /bug only points to it, before any model.
-    if (env.BUG_BOT_USERNAME && bugCommandPattern.test(message.text)) {
+    if (
+      env.BUG_BOT_USERNAME &&
+      bugBotTarget() &&
+      bugCommandPattern.test(message.text)
+    ) {
       await context.telegram.sendMessage(bugHintText(env.BUG_BOT_USERNAME));
       return null;
     }

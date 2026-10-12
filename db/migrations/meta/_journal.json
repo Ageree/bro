@@ -463,6 +463,13 @@
       "when": 1791818120369,
       "tag": "0065_bug_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1791820354541,
+      "tag": "0066_bug_bot_lease",
+      "breakpoints": true
     }
   ]
 }
