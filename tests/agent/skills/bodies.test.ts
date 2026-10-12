@@ -214,7 +214,7 @@ const moved: Partial<Record<SkillName, readonly string[]>> = {
   "about-bro": [
     "Ты облачный сервис",
     "Ты облачный сервис, а не программа на компьютере или сервере человека",
-    "AES-256-GCM",
+    "Ты для человека один",
   ],
   "first-contact": [
     "`first-contact`",
