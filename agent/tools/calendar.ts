@@ -132,6 +132,9 @@ export default defineDynamic({
               "calendar-list-events": calendarListEvents,
               "calendar-update-event": calendarUpdateEvent,
             },
+            "agentic-worker": {
+              "calendar-list-events": calendarListEvents,
+            },
             "proactive-worker": {
               "calendar-list-events": calendarListEvents,
             },

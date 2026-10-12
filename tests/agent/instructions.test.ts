@@ -48,6 +48,53 @@ describe("agent instructions", () => {
     expect(selected?.content).not.toContain("заведённую человеком");
   });
 
+  it("gives the agentic worker its own role in its pilot, and the proactive one outside it", async () => {
+    const context = dynamicContext("scheduled-worker", "scheduled-worker");
+    const agentic = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            ...context.session.auth.current,
+            attributes: { workspaceId: "personal:workspace" },
+          },
+          initiator: {
+            attributes: {
+              scheduledRunKind: "agentic",
+              workspaceId: "personal:workspace",
+            },
+            authenticator: "scheduled-worker",
+            principalId: "user-1",
+            principalType: "user",
+          },
+        },
+      },
+    } satisfies DynamicResolveContext;
+
+    // The role reads the pilot when its module loads.
+    vi.resetModules();
+    vi.stubEnv("AGENCY_WORKSPACES", "personal:workspace");
+    const piloted = (await import("@agent/instructions/20-role")).default;
+    vi.stubEnv("AGENCY_WORKSPACES", "");
+    vi.resetModules();
+    const resolvePiloted = piloted.events["turn.started"];
+    expect(resolvePiloted).toBeDefined();
+    if (!resolvePiloted) return;
+    const role = await resolvePiloted({}, agentic);
+    expect(role?.content).toContain("Оплачиваю?");
+    expect(role?.content).toContain("Передавать нечего.");
+    expect(role?.content).not.toContain("Личное и социальное");
+
+    const resolve = roleInstructions.events["turn.started"];
+    expect(resolve).toBeDefined();
+    if (!resolve) return;
+    const outside = await resolve({}, agentic);
+    expect(outside?.content).toContain("Личное и социальное");
+    expect(outside?.content).not.toContain("Оплачиваю?");
+  });
+
   it("limits scheduled-result turns to reporting", async () => {
     const resolve = roleInstructions.events["turn.started"];
     expect(resolve).toBeDefined();

@@ -51,3 +51,29 @@ export const reportTurnTools = [
   "workstreams__read",
   "workstreams__save",
 ] as const;
+
+/**
+ * The reads a proactive check has: each tool module grants them to the
+ * `proactive-worker` mode (`agent/tools/calendar.ts`, `gmail.ts`, `mail.ts`,
+ * `agent_mail.ts`). The agentic worker keeps the same reads.
+ */
+export const proactiveReadTools = [
+  "calendar-list-events",
+  "gmail-read-thread",
+  "gmail-search",
+] as const;
+
+/**
+ * PLACEHOLDER: the write tools the agentic worker will be granted by a later
+ * slice of the agency feature. None are granted yet, so the worker only reads.
+ */
+export const agenticWriteTools: readonly string[] = [];
+
+/**
+ * All the agentic worker is offered: the proactive check's reads and the
+ * agentic write tools, which are none for now.
+ */
+export const agenticWorkerTurnTools: readonly string[] = [
+  ...proactiveReadTools,
+  ...agenticWriteTools,
+];

@@ -1,5 +1,7 @@
 import type { DynamicResolveContext } from "eve";
 import { defineInstructions } from "eve/instructions";
+import { z } from "zod";
+import { agencyPilot } from "@agent/lib/agency/pilot";
 
 interface AgentModeContext {
   readonly session: {
@@ -16,17 +18,30 @@ function agentMode(authenticator: string | undefined) {
   return "interactive" as const;
 }
 
-type AgentMode = ReturnType<typeof agentMode> | "proactive-worker";
+type AgentMode =
+  | ReturnType<typeof agentMode>
+  | "agentic-worker"
+  | "proactive-worker";
 
 // Bro's own mail and calendar checks run as scheduled workers with a
 // narrower toolset and their own role, so they are a mode of their own.
+// The agentic worker is the proactive check upgraded: the same trigger, marked
+// `agentic`, and only in its pilot (AGENCY_WORKSPACES). Outside the pilot the
+// mark gives the proactive check, as it did before.
 function workerMode(
   worker: Pick<
     NonNullable<AgentModeContext["session"]["auth"]["initiator"]>,
     "attributes"
   >
 ) {
-  return worker.attributes.scheduledRunKind === "proactive"
+  const { attributes } = worker;
+  if (attributes.scheduledRunKind === "agentic") {
+    const workspaceId = z.string().safeParse(attributes.workspaceId);
+    return workspaceId.success && agencyPilot(workspaceId.data)
+      ? ("agentic-worker" as const)
+      : ("proactive-worker" as const);
+  }
+  return attributes.scheduledRunKind === "proactive"
     ? ("proactive-worker" as const)
     : ("scheduled-worker" as const);
 }

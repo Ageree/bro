@@ -160,6 +160,7 @@ describe("the instruction catalog", () => {
   it("finds no markers where eve or a worker reads the text", () => {
     const files = [
       "../../../instructions.md",
+      "../../../instructions/content/role/agentic-worker.md",
       "../../../instructions/content/role/proactive-worker.md",
       "../../../instructions/content/role/scheduled-report.md",
       "../../../instructions/content/role/scheduled-worker.md",

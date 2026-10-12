@@ -261,6 +261,7 @@ function resolveMailTools(context: DynamicResolveContext) {
   };
   return resolveModeValue<typeof reads | typeof interactive>(context, {
     interactive,
+    "agentic-worker": reads,
     "proactive-worker": reads,
     "scheduled-report": reads,
     "scheduled-worker": reads,
