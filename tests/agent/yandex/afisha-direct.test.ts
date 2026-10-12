@@ -48,4 +48,19 @@ describe("afisha.search without a browser", () => {
     );
     expect(await afishaSearchDirect(args)).toBeDefined();
   });
+
+  it("keeps the direct way open when only this request was wrong", async () => {
+    // An earlier test's pause is in the module's memory: be well past it.
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    const fetchSpy = vi.fn<typeof fetch>(async () =>
+      Response.json({ data: null, errors: [{ message: "unknown city" }] })
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await afishaSearchDirect(args)).toBeUndefined();
+    fetchSpy.mockResolvedValue(
+      Response.json(await fixture("afisha/search.json"))
+    );
+    expect(await afishaSearchDirect(args)).toBeDefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });

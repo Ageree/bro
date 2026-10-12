@@ -24,18 +24,15 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  *
  *   host.py ops NAME yandex-session-probe.sh s3get:<spec key> s3put:<result key>
  *
- * Spec: `{workspace}`. The cookies live in this process's memory only: they
+ * Spec: `{workspace}`, which must equal YANDEX_PROBE_WORKSPACE in the ops
+ * environment (the owner's). The cookies live in this process's memory only: they
  * are not written to a file, a log or the result. The result holds cookie
  * NAMES and their count, and for each request a status, a time, the host a
  * redirect points to and whether the answer looks signed in: no body, no
  * header value, no cookie value.
  */
 
-const specSchema = z.strictObject({
-  // Only with the owner's word (12.10) and only after the reads all succeed.
-  purchase: z.boolean().default(false),
-  workspace: z.string().min(1),
-});
+const specSchema = z.strictObject({ workspace: z.string().min(1) });
 
 const cookiesSchema = z.object({
   cookies: z.array(
@@ -167,6 +164,12 @@ async function ask(
   }
 }
 
+const accepted = (answer: Awaited<ReturnType<typeof ask>>) =>
+  "status" in answer &&
+  answer.status === 200 &&
+  answer.signedIn &&
+  answer.redirectsTo === null;
+
 async function main() {
   const [specUrl, resultUrl] = process.argv.slice(2);
   if (!specUrl || !resultUrl) {
@@ -174,9 +177,13 @@ async function main() {
       "Usage: yandex-session-probe.sh SPEC_GET_URL RESULT_PUT_URL"
     );
   }
-  const { purchase, workspace } = specSchema.parse(
-    await (await fetch(specUrl)).json()
-  );
+  const { workspace } = specSchema.parse(await (await fetch(specUrl)).json());
+  // Only the owner's workspace, named by the operator's environment: the
+  // spec alone cannot point this at somebody else's cookies.
+  // oxlint-disable-next-line no-restricted-properties -- an operator-only variable of this script, not application configuration
+  if (process.env.YANDEX_PROBE_WORKSPACE !== workspace) {
+    throw new Error("The workspace is not the one allowed for the probe.");
+  }
   const tab = await createBrowserVmBrowser({
     profileId: browserVmProfileId(workspace, 0),
     wake: true,
@@ -191,35 +198,29 @@ async function main() {
   const through = new ProxyAgent(
     `http://${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password)}@${proxy.host}:${String(proxy.port)}`
   );
-  // Twice each: the first may be slower, the second is the steady one.
-  const both = async (dispatcher: ProxyAgent | undefined) =>
-    (
-      await Promise.all(
-        probes.map(async (probe) => [
-          await ask(probe, cookies, dispatcher),
-          await ask(probe, cookies, dispatcher),
-        ])
-      )
-    ).flat();
-  const direct = await both(undefined);
-  const proxied = await both(through);
-  const readsAccepted = [...direct, ...proxied].every(
-    (answer) => "status" in answer && answer.status === 200 && answer.signedIn
-  );
+  // One request at a time, the proxy's exit first (the address the person's
+  // browser has): the server's own address only if every proxied read was
+  // accepted, and the first refusal, captcha or sign-in redirect stops all.
+  const run = async (dispatcher: ProxyAgent | undefined) => {
+    const answers: Awaited<ReturnType<typeof ask>>[] = [];
+    // Twice each: the first may be slower, the second is the steady one.
+    for (const probe of probes.flatMap((one) => [one, one])) {
+      // oxlint-disable-next-line no-await-in-loop -- stop at the first refusal
+      const answer = await ask(probe, cookies, dispatcher);
+      answers.push(answer);
+      if (!accepted(answer)) break;
+    }
+    return answers;
+  };
+  const proxied = await run(through);
+  const direct =
+    proxied.length === probes.length * 2 && proxied.every(accepted)
+      ? await run(undefined)
+      : [];
   const result = {
     cookieCount: cookies.length,
     cookieNames: [...new Set(cookies.map((cookie) => cookie.name))].toSorted(),
     direct,
-    // The purchase phase (cheapest reversible order, cancelled at once) is
-    // not written yet: it is built from what the reads above show works.
-    purchase: {
-      ran: false,
-      reason: !purchase
-        ? "not asked"
-        : readsAccepted
-          ? "reads accepted; phase not implemented"
-          : "reads were not all accepted",
-    },
     proxied,
     // The person must still be signed in, in the browser.
     stillSignedIn: {

@@ -75,10 +75,20 @@ export async function afishaSearchDirect(
         signal: AbortSignal.timeout(directBudgetMs),
       }
     );
-    const body = responseSchema.safeParse(
-      response.status === 200 ? await response.json() : undefined
-    );
-    if (!body.success || !body.data.data) throw new Error("refused");
+    // A refusal of the server (blocked, throttled, a captcha page instead of
+    // JSON, a timeout) leaves it alone for a while; an answer that is only
+    // not what this request needed (a city it does not know) is this call's
+    // fault and leaves the direct way open for the others.
+    if (
+      response.status === 403 ||
+      response.status === 429 ||
+      response.status >= 500
+    ) {
+      throw new Error("refused");
+    }
+    if (response.status !== 200) return undefined;
+    const body = responseSchema.safeParse(await response.json());
+    if (!body.success || !body.data.data) return undefined;
     const events = body.data.data.search.groups.flatMap((group) =>
       group.documents.flatMap(
         ({ object: { __typename: typename, ...object } }) =>
