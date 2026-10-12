@@ -245,6 +245,35 @@ type Account = Pick<
   "createdAt" | "email" | "name" | "phoneNumber"
 >;
 
+/** The channels each workspace has had a turn on, sorted. */
+export async function workspaceChannels(workspaceIds: readonly string[]) {
+  if (workspaceIds.length === 0) return new Map<string, string[]>();
+  const rows = await db
+    .selectDistinct({
+      channel: turnLog.channel,
+      workspaceId: turnLog.workspaceId,
+    })
+    .from(turnLog)
+    .where(inArray(turnLog.workspaceId, [...workspaceIds]))
+    .orderBy(asc(turnLog.channel));
+  const channels = new Map<string, string[]>();
+  for (const { channel, workspaceId } of rows) {
+    channels.set(workspaceId, [...(channels.get(workspaceId) ?? []), channel]);
+  }
+  return channels;
+}
+
+/** The email of a Better Auth account (a scope's id without its prefix). */
+export async function readAccountEmail(scopeUserId: string) {
+  if (!scopeUserId.startsWith(betterAuthPrincipalPrefix)) return undefined;
+  const [row] = await db
+    .select({ email: user.email })
+    .from(user)
+    .where(eq(user.id, scopeUserId.slice(betterAuthPrincipalPrefix.length)))
+    .limit(1);
+  return row?.email;
+}
+
 /** The shortest way to name a workspace to the owner. */
 export function workspaceLabel(
   workspaceId: string,

@@ -1057,6 +1057,9 @@ export const env = createEnv({
         "OPS_ALERT_CHAT_ID must be a numeric Telegram chat id or an @channel"
       )
       .optional(),
+    // Who may open /workspace/admin: Better Auth user ids or emails,
+    // separated by commas. Unset, nobody can: the page answers 404.
+    ADMIN_USER_IDS: workspaceListSchema.optional(),
     // Whether the owner's turn log keeps the text of each turn — the
     // person's words, Bro's replies, tools' arguments and results, with
     // codes, passwords, card and document numbers cut out

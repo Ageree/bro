@@ -358,4 +358,26 @@ describe("turn log", { timeout: 30_000 }, () => {
       log.countFailedPeople("MODEL_CALL_FAILED 402", at("07:25:00"))
     ).resolves.toBe(1);
   });
+
+  it("lists each workspace's channels and finds an account's email", async () => {
+    const { log } = await logDatabase();
+    await log.recordTurnStart(turn({ sessionId: "a" }));
+    await log.recordTurnStart(turn({ sessionId: "b" }));
+    await log.recordTurnStart({
+      ...turn({ sessionId: "c", workspaceId: bob.workspaceId }),
+      channel: "web",
+    });
+
+    const channels = await log.workspaceChannels([
+      alice.workspaceId,
+      bob.workspaceId,
+    ]);
+    expect(channels.get(alice.workspaceId)).toEqual(["telegram"]);
+    expect(channels.get(bob.workspaceId)).toEqual(["web"]);
+    await expect(log.workspaceChannels([])).resolves.toEqual(new Map());
+    await expect(log.readAccountEmail(alice.userId)).resolves.toBe(
+      "alice@example.com"
+    );
+    await expect(log.readAccountEmail("alice")).resolves.toBeUndefined();
+  });
 });

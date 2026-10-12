@@ -7,6 +7,7 @@ import {
   SidebarInset,
   SidebarProvider,
 } from "@web/components/ui/sidebar";
+import { isAdminScope } from "@web/auth/admin";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { TRPCProvider } from "@web/trpc/client";
 import { AuthenticatedAccountControl } from "./_components/account-control";
@@ -24,7 +25,7 @@ import {
 export default async function AuthenticatedLayout({
   children,
 }: LayoutProps<"/">) {
-  await requireRequestScope();
+  const showAdmin = await isAdminScope(await requireRequestScope());
 
   return (
     <TRPCProvider>
@@ -36,7 +37,7 @@ export default async function AuthenticatedLayout({
             </Link>
           </SidebarHeader>
           <SidebarContent>
-            <AuthenticatedNavigation />
+            <AuthenticatedNavigation showAdmin={showAdmin} />
           </SidebarContent>
           <SidebarFooter className="p-0">
             <AuthenticatedAccountControl />

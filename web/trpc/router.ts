@@ -40,12 +40,102 @@ import { telegramLinkUrl } from "@shared/identity/telegram-link";
 import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
 import { vaultCreateItemSchema } from "@shared/vault/schema";
+import {
+  listOwnerUsers,
+  listWorkspaceTurns,
+  readTurnTranscript,
+  workspaceChannels,
+} from "@db/services/turn-log";
+import { isAdminScope } from "@web/auth/admin";
 import { createTRPCRouter, protectedProcedure } from "./init";
+
+/**
+ * The owner's pages. Anyone else gets NOT_FOUND, as if there were no such
+ * route: a probe learns nothing about whether the page exists.
+ */
+const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+  if (!(await isAdminScope(ctx.scope))) {
+    throw new TRPCError({ code: "NOT_FOUND" });
+  }
+  return next();
+});
+
+const hourMs = 60 * 60_000;
+
+function byWorkspace<Row extends { readonly workspaceId: string }>(
+  rows: readonly Row[]
+) {
+  return new Map(rows.map((row) => [row.workspaceId, row]));
+}
 
 /** An eve memory scope key, as the cabinet page received it. */
 const scopeKeySchema = z.string().min(1).max(512);
 
 export const appRouter = createTRPCRouter({
+  admin: {
+    /** People, most recently active first, with 24 h, 7 d and 30 d figures. */
+    users: adminProcedure.query(async () => {
+      const to = new Date();
+      const since = (hours: number) => ({
+        from: new Date(to.getTime() - hours * hourMs),
+        to,
+      });
+      const [day, week, month] = await Promise.all([
+        listOwnerUsers(since(24)),
+        listOwnerUsers(since(24 * 7)),
+        listOwnerUsers(since(24 * 30)),
+      ]);
+      const channels = await workspaceChannels(
+        month.map((row) => row.workspaceId)
+      );
+      const dayRows = byWorkspace(day);
+      const weekRows = byWorkspace(week);
+      return month.map((row) => ({
+        channels: channels.get(row.workspaceId) ?? [],
+        costDayRub: dayRows.get(row.workspaceId)?.costRub ?? 0,
+        costMonthRub: row.costRub,
+        failedDay: dayRows.get(row.workspaceId)?.failed ?? 0,
+        failedWeek: weekRows.get(row.workspaceId)?.failed ?? 0,
+        label: row.label,
+        lastTurnAt: row.lastTurnAt,
+        signedUpAt: row.signedUpAt,
+        turnsDay: dayRows.get(row.workspaceId)?.turns ?? 0,
+        turnsWeek: weekRows.get(row.workspaceId)?.turns ?? 0,
+        workspaceId: row.workspaceId,
+      }));
+    }),
+    /** One workspace's turns of the last 30 days, no text. */
+    turns: adminProcedure
+      .input(
+        z.object({
+          failedOnly: z.boolean().default(false),
+          workspaceId: z.string().min(1).max(256),
+        })
+      )
+      .query(async ({ input }) => {
+        const to = new Date();
+        const turns = await listWorkspaceTurns(input.workspaceId, {
+          from: new Date(to.getTime() - 30 * 24 * hourMs),
+          to,
+        });
+        return input.failedOnly
+          ? turns.filter(({ outcome }) => outcome === "failed")
+          : turns;
+      }),
+    /** The kept text of one turn, asked for when the row is opened. */
+    transcript: adminProcedure
+      .input(z.object({ turnLogId: z.uuid() }))
+      .query(async ({ input }) => {
+        const found = await readTurnTranscript(input.turnLogId);
+        if (!found) throw new TRPCError({ code: "NOT_FOUND" });
+        return found.entries.map((entry) => ({
+          createdAt: entry.createdAt.toISOString(),
+          role: entry.role,
+          text: entry.text,
+          toolName: entry.toolName,
+        }));
+      }),
+  },
   chats: {
     save: protectedProcedure
       .input(saveChatSchema)

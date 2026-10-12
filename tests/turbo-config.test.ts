@@ -4,6 +4,7 @@ import { z } from "zod";
 
 const applicationEnvironment = [
   "ACCESS_*",
+  "ADMIN_*",
   "AGENTMAIL_*",
   "BETTER_AUTH_*",
   // Login and vault keys still fall back to Blob on Vercel

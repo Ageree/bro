@@ -5,6 +5,7 @@
       "dependsOn": ["^build:app"],
       "env": [
         "ACCESS_*",
+        "ADMIN_*",
         "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
@@ -53,6 +54,7 @@
       "dependsOn": ["db:migrate:deploy"],
       "env": [
         "ACCESS_*",
+        "ADMIN_*",
         "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
@@ -109,6 +111,7 @@
       "cache": false,
       "passThroughEnv": [
         "ACCESS_*",
+        "ADMIN_*",
         "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
@@ -167,6 +170,7 @@
       "cache": false,
       "passThroughEnv": [
         "ACCESS_*",
+        "ADMIN_*",
         "AGENTMAIL_*",
         "BETTER_AUTH_*",
         "BLOB_*",
