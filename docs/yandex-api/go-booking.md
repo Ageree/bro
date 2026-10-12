@@ -15,7 +15,10 @@
 2. Место: текст → `/4.0/persuggest/v1/suggest` → `position`;
    `/4.0/persuggest/v1/finalsuggest` (`pin_drop`) даёт объект адреса для маршрута.
 3. Оплата: `cash`, `card` (подтверждённая карта из `/3.0/paymentmethods`) или
-   `current` — выбранная в Go (IndexedDB `persist:payment-methods`).
+   `current` — выбранная в Go (IndexedDB `persist:payment-methods`); с `card`
+   и `cardLast4` — карта, которую назвал человек (иначе `card_not_found`). Нет
+   подтверждённой — `no_verified_card` с `unverifiedCardId` (выбранная в Go
+   или первая из `unverified_cards`).
 4. `/3.0/routestats` — фиксированная цена эконома (`max_price_as_decimal`) и
    `offer`; выше `maxPriceRub` — `over_limit`, без заказа.
 5. `/external/3.0/orderdraft` → `orderid`. Отказ черновика — ничего не заказано.
@@ -30,3 +33,16 @@
 заказ в поиске виден в `launch.orders`, а в истории — нет. Через чат Бро
 `book` занял 4,6 с. Поля машины в `taxiontheway` (`driver`) после назначения не
 проверены вживую: заказ отменяли раньше.
+
+## Проверка карты банком (`agent/lib/yandex/go/card.ts`)
+
+Go держит привязанную карту в `unverified_cards` (`verify_strategy:
+card_antifraud`), пока банк её не подтвердил; проверка общая для сервисов
+Яндекса. На `no_verified_card` `yandex_purchase` зовёт `go.card_verify`: со
+страницы Go `POST https://trust.yandex.ru/web/create_verification_intent?service_token=<trustToken Go>`
+с телом `{currency, binding_id, form_params: {integrationProfileId, mode:
+"default", flow: "card", type: "verification", query_params: {theme, lang,
+layout}}}` (как `verifyPaymentMethodV2` веб-SDK Trust) → 201 и `form_url`
+`https://trust.yandex.ru/web/binding?…verification_intent_id=…`. Ссылку
+человек получает один раз за разговор (повтор `book` в течение 10 минут даёт
+ту же) и открывает сам; Бро её не открывает.
