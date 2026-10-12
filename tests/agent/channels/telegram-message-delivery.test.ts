@@ -334,6 +334,44 @@ describe("Telegram message delivery", () => {
     });
   });
 
+  it("resends text as plain words with their links when Telegram refuses the markup", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+    request.mockRejectedValueOnce(
+      new Error("Bad Request: can't parse entities: Unsupported start tag")
+    );
+
+    await handleActionResult(
+      sendMessageResult({
+        kind: "message",
+        text: "Вот [карточка товара](https://mvideo.ru/p/1?a=1&b=2) за 5 < 6 ₽",
+      }),
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("sendMessage", {
+      chat_id: "4242",
+      text: "Вот карточка товара: https://mvideo.ru/p/1?a=1&b=2 за 5 < 6 ₽",
+    });
+    warn.mockRestore();
+  });
+
+  it("does not retry a failure that is not about the markup", async () => {
+    const { context, request } = handlerContext();
+    request.mockRejectedValueOnce(new Error("fetch failed"));
+
+    await expect(
+      handleActionResult(
+        sendMessageResult({ kind: "message", text: "Привет" }),
+        context,
+        sessionContext()
+      )
+    ).rejects.toThrow("fetch failed");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("splits a reply that exceeds the Telegram text cap", async () => {
     const { context, request } = handlerContext();
     const paragraph = "a".repeat(4_000);

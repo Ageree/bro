@@ -30,6 +30,14 @@ describe("iMessage text compilation", () => {
     );
   });
 
+  it("shows the word and the address of a link, escaping nothing", () => {
+    expect(
+      toIMessageText(
+        "вот [карточка товара](https://mvideo.ru/products/tv-1?a=1&b=2)"
+      )
+    ).toBe("вот карточка товара\nhttps://mvideo.ru/products/tv-1?a=1&b=2");
+  });
+
   it("strips inline code and bold markers", () => {
     expect(toIMessageText("Пиши `browser_task` и **жди**")).toBe(
       "Пиши browser_task и жди"

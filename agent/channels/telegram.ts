@@ -46,6 +46,8 @@ import {
 } from "@agent/lib/schedules/report-lifecycle";
 import {
   splitTelegramHtml,
+  splitTelegramPlain,
+  telegramHtmlToPlain,
   toTelegramHtml,
 } from "@agent/lib/telegram-format/html";
 import {
@@ -605,20 +607,46 @@ async function sendText(
   options: { readonly preview?: boolean } = {}
 ) {
   if (!context.telegram.chatId) return;
-  for (const chunk of splitTelegramHtml(toTelegramHtml(text))) {
-    const body = {
-      chat_id: context.telegram.chatId,
-      parse_mode: "HTML",
-      text: chunk,
-    };
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
-    await context.telegram.request(
-      "sendMessage",
-      options.preview === false
-        ? { ...body, link_preview_options: { is_disabled: true } }
-        : body
-    );
+  const withPreview = <Body extends object>(body: Body) =>
+    options.preview === false
+      ? { ...body, link_preview_options: { is_disabled: true } }
+      : body;
+  const chatId = context.telegram.chatId;
+  const chunks = splitTelegramHtml(toTelegramHtml(text));
+  let plainFrom = chunks.length;
+  for (const [index, chunk] of chunks.entries()) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
+      await context.telegram.request(
+        "sendMessage",
+        withPreview({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || !rejectedMarkup(error)) throw error;
+      console.warn("[telegram] markup refused, sent as plain text", {
+        cause: error,
+      });
+      plainFrom = index;
+      break;
+    }
   }
+  // The person must get the words even when Telegram refuses the markup:
+  // the chunk it refused and the ones after it go again as plain text, links
+  // written out as «слово: https://…». Chunks already delivered stay.
+  for (const chunk of chunks.slice(plainFrom)) {
+    for (const plain of splitTelegramPlain(telegramHtmlToPlain(chunk))) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
+      await context.telegram.request(
+        "sendMessage",
+        withPreview({ chat_id: chatId, text: plain })
+      );
+    }
+  }
+}
+
+/** Whether a failed `sendMessage` was Telegram's 400 on the message's markup. */
+function rejectedMarkup(error: Error) {
+  return /\b400\b|bad request|can't parse|parse entities/iu.test(error.message);
 }
 
 /**

@@ -57,6 +57,24 @@ describe("the sign-in link a message carries", () => {
     });
   });
 
+  it("is replaced inside a word link, with or without its scheme", async () => {
+    recordLoginHandoffLink(link);
+    const { withHttpsLinks } = await import("@agent/lib/delivery/links");
+
+    for (const target of [
+      copied,
+      "brobro.tech/handoff/uU9hry_OH-oo21PlwBlXGXl",
+    ]) {
+      const sent = withExactLoginHandoffLink({
+        kind: "message",
+        text: `Войди по [этой ссылке](${target}).`,
+      });
+      expect(withHttpsLinks(sent.text)).toBe(
+        `Войди по [этой ссылке](${link}).`
+      );
+    }
+  });
+
   it("is replaced in a native link too", () => {
     recordLoginHandoffLink(link);
 

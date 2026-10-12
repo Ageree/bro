@@ -8,6 +8,7 @@ import {
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
+import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
 import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
 import { isSharedFileLink } from "../lib/sandbox/files";
 import { reportTurnHoldsFiles } from "../lib/sandbox/pilot";
@@ -86,6 +87,17 @@ type SentMessage = z.infer<typeof sendMessageOutputSchema>;
  * (`reportTurnHoldsFiles`).
  */
 function withoutFetchedUrls(message: SentMessage): SentMessage {
+  if (message.kind === "message" && message.text !== undefined) {
+    // A tappable word would hide where the link leads (`withVisibleLinks`).
+    return withoutFetchedAttachments({
+      ...message,
+      text: withVisibleLinks(message.text, isSharedFileLink),
+    });
+  }
+  return withoutFetchedAttachments(message);
+}
+
+function withoutFetchedAttachments(message: SentMessage): SentMessage {
   if (message.kind === "link") {
     const { replyTo, url } = message;
     return replyTo === undefined
@@ -161,12 +173,14 @@ function defineSendMessage(
 ) {
   return defineTool({
     description:
-      "Send exactly one user-visible message to the current conversation. This is the delivery path for questions, progress updates, blockers, and final answers that need words. Choose kind message for plain text, private image artifacts, and HTTPS attachments; text and attachments may be combined. Text is delivered exactly as written, so write it like a brief natural text message and do not use Markdown. On Telegram and iMessage attachments are downloaded and uploaded to the conversation, so the person receives real photos and files; the web chat renders them from the URL. Give the direct HTTPS URL of the file itself, such as an image URL, never a page that contains it; to send the photos from a page, call find_images with the page URL first and attach the image URLs it returns. Up to 10 attachments ride on one message and each must be about 10 MB or smaller; an attachment that cannot be downloaded falls back to a link. Set replyTo to record which message is being answered: use current for an ordinary answer, clarification, status update, or follow-up prompted by the current user message, including when the user changes topics; use task with a task ID from Eve's Task state for delayed background work; and use automation with the automation ID supplied by a scheduled report. Omit replyTo only when the message is genuinely standalone and does not answer any particular user message, such as an unsolicited announcement or proactive notice, or when no applicable handle is available. Use only handles present in the current context. Choose kind link with a URL to send a standalone native preview. Put an ordinary URL in message text when a preview is not wanted. When you list options, keep each price and fact with the option it was found for, and say «все» or «ни один» only of the options you checked. Call send_message multiple times only when you intentionally want separate messages. Call it directly without an assistant-text preamble, and do not repeat delivered content afterward.",
+      "Send exactly one user-visible message to the current conversation. This is the delivery path for questions, progress updates, blockers, and final answers that need words. Choose kind message for plain text, private image artifacts, and HTTPS attachments; text and attachments may be combined. Text is delivered as written, so write it like a brief natural text message and do not use Markdown, except a link: write it as [word](https://full-address) — the word is what the person taps in Telegram and the web chat, and iMessage shows the word and the address — always with https://, and to the page of the very thing you name, never a promo, search or home page. On Telegram and iMessage attachments are downloaded and uploaded to the conversation, so the person receives real photos and files; the web chat renders them from the URL. Give the direct HTTPS URL of the file itself, such as an image URL, never a page that contains it; to send the photos from a page, call find_images with the page URL first and attach the image URLs it returns. Up to 10 attachments ride on one message and each must be about 10 MB or smaller; an attachment that cannot be downloaded falls back to a link. Set replyTo to record which message is being answered: use current for an ordinary answer, clarification, status update, or follow-up prompted by the current user message, including when the user changes topics; use task with a task ID from Eve's Task state for delayed background work; and use automation with the automation ID supplied by a scheduled report. Omit replyTo only when the message is genuinely standalone and does not answer any particular user message, such as an unsolicited announcement or proactive notice, or when no applicable handle is available. Use only handles present in the current context. Choose kind link with a URL to send a standalone native preview. Put an ordinary URL in message text when a preview is not wanted. When you list options, keep each price and fact with the option it was found for, and say «все» or «ни один» only of the options you checked. Call send_message multiple times only when you intentionally want separate messages. Call it directly without an assistant-text preamble, and do not repeat delivered content afterward.",
     inputSchema: sendMessageOutputSchema,
     execute(message, context) {
       const emit = () => {
         if (pastAnswer) return { skipped: "past" as const };
-        const outgoing = withoutBookkeeping(withExactLoginHandoffLink(message));
+        const outgoing = withoutBookkeeping(
+          withHttpsLinksInText(withExactLoginHandoffLink(message))
+        );
         if (!outgoing) return { skipped: "sentinel" as const };
         const refused = sendRefusal(outgoing, turn, earlyReply);
         if (refused) return refused;
@@ -215,6 +229,13 @@ function defineSendMessage(
       );
     },
   });
+}
+
+/** The send with `https://` on every link address its text leaves bare. */
+function withHttpsLinksInText(message: SentMessage): SentMessage {
+  if (message.kind === "link" || message.text === undefined) return message;
+  const text = withHttpsLinks(message.text);
+  return text === message.text ? message : { ...message, text };
 }
 
 function defineReactToMessage(

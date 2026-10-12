@@ -372,32 +372,32 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-report":
-        "73fc444c20dd432a63848a19c39e7a2331f8d99f8c16c53772b318e033ef53f9",
+        "62d6b8df61374f0e8e3e738037031d31435eee15b41c99afc4830173f37cb800",
       "proactive-worker":
         "b09b9cdafbd7f1eb1b80a1d070038207742f0119de28cb9b7bb4455ca582ff9e",
       "scheduled-report":
-        "7aa43ede170feced629d5c94b9df469fd4721c430c162b00a6ab1c7b0f4be2b4",
+        "6fb11a6b19ddcd7d9f442ef1a4c3b4751d8ba12b3b7648d402d2a4385152cb45",
       "scheduled-worker":
         "d0919a9fe12e9d5e76c06b2a4821430a724926cc8b48a94741fabecf0ffa2509",
       telegram:
-        "29e7b28c5af7ef69cfae9a331ba0c84cb73806257cbb30ae48f63df865e9303e",
-      web: "d5cc08fb4cef7297226cf6b7d44ea047aa5e5f5c05ae65ff331c794161ec9b4a",
+        "9a6337aee931f2d2ba6567d740efa895f67e4e0f5f9f22113556cedfd775dae7",
+      web: "5150784e9b6683e4d6903f64f54d73d6d73ec291d7f1947f9ee9e9e03969a83a",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "ce5a5859bde56a9519825bac602502cf52de3a2bded5a70bf9099bcf9c4712e5",
+        "6dab338eb6f5db5f2091993f39e748f99b4f4ef36efa9e469c9640a4ecdf8a33",
       "proactive-worker":
         "44390f9721a3895cd947c51ee393d4a1fda462f7f82528cfe2cf12c11a9436db",
       "scheduled-report":
-        "75a9edf6feea07626b69faf83193e89a65a035147019cd197fe2d127c8d9c9e8",
+        "15bc2e1d24be6681525ac381a71117c30b3282238752f151ee8cc68213ee853e",
       "scheduled-worker":
-        "285207cd03b669c035c6cf3d98513631ba6001fdb9d72c119dde5621318ddfe0",
+        "2e89eb0cdb24ec7dfb2b1345d3f75bc7cdbb78fd272065ff61f065a2992970c5",
       telegram:
-        "3442431aedbd8a16a3fc25c07f4bd5d355a8624756134e191634d79decaf5348",
-      web: "8c6a69dc91b8252117907807a78e850eefcdd7463c12a808bb3af7cab342a2c8",
+        "2fd725f4f1acb8574070d1fd394b6bd722e8697be3e0a7c0c2a227a4c5bd5ab6",
+      web: "d84f0f701efaaf3bdd73efb0bf7367bb325f4507a74c9a9aaf559a763501d66c",
     } satisfies Record<Kind, string>,
   },
 };

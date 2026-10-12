@@ -321,12 +321,10 @@ describe("agent instructions", () => {
     const selected = await resolve({}, dynamicContext("scheduled-result"));
     expect(selected?.content).toContain("обычное сообщение в текущий чат");
     expect(selected?.content).toContain(
-      "Для конкретных вариантов, которые вернул `browser_task`"
+      "ссылку давай словом: `[карточка товара](https://…)`"
     );
-    expect(selected?.content).toContain("[понятное название](URL)");
-    expect(selected?.content).toContain(
-      "компилятор iMessage оставит понятное название и голый URL"
-    );
+    expect(selected?.content).toContain("[карточка товара](https://…)");
+    expect(selected?.content).toContain("в iMessage придут слово и адрес");
   });
 
   it("keeps every interactive reply in the person's language and plain text", async () => {

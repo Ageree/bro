@@ -10,7 +10,9 @@ export const telegramMessageTextMaxLength = 4096;
 const fencePattern = /^\s*```/u;
 const bulletPattern = /^(?<indent>\s*)[-*]\s+(?<content>.*)$/u;
 const inlineCodePattern = /`([^`]+)`/u;
-const linkPattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gu;
+// A URL may hold balanced parentheses (`/wiki/Foo_(bar)`).
+const linkPattern =
+  /\[([^\]\n]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/gu;
 const boldPattern = /\*\*(?!\s)([^*\n]+?)\*\*/gu;
 const italicPattern = /(^|[^\w`])_(?!\s)([^_\n]+?)_(?=$|[^\w])/gu;
 // Escaped text never contains a literal angle bracket, so `<index>` is a
@@ -97,7 +99,9 @@ function markupHtml(text: string) {
   const withAnchors = escapeTelegramHtml(text).replaceAll(
     linkPattern,
     (_match, label: string, url: string) => {
-      anchors.push(`<a href="${url}">${label}</a>`);
+      anchors.push(
+        `<a href="${url.replaceAll('"', "&quot;")}">${plainLabel(label)}</a>`
+      );
       return `<${String(anchors.length - 1)}>`;
     }
   );
@@ -108,6 +112,45 @@ function markupHtml(text: string) {
       anchorPlaceholderPattern,
       (match, index: string) => anchors[Number(index)] ?? match
     );
+}
+
+// A label sits inside the anchor, where emphasis is not applied, so its
+// markers would show as stars.
+function plainLabel(label: string) {
+  return label.replaceAll(/\*\*|__|`/gu, "");
+}
+
+/**
+ * The text a rendered chunk says, for a chunk Telegram refused: anchors
+ * become «слово: адрес», other tags go, entities are decoded.
+ */
+export function telegramHtmlToPlain(html: string) {
+  return html
+    .replaceAll(
+      /<a href="([^"]*)">([\s\S]*?)<\/a>/gu,
+      (_whole, href: string, label: string) =>
+        label === href ? href : `${label}: ${href}`
+    )
+    .replaceAll(/<\/?[a-z]+>/gu, "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+/** Splits plain text (no markup) to Telegram's cap, at a newline or a space. */
+export function splitTelegramPlain(text: string) {
+  const messages: string[] = [];
+  let rest = text;
+  while (rest.length > telegramMessageTextMaxLength) {
+    const head = rest.slice(0, telegramMessageTextMaxLength);
+    const cut = Math.max(head.lastIndexOf("\n"), head.lastIndexOf(" "));
+    const at = cut > 0 ? cut : telegramMessageTextMaxLength;
+    messages.push(rest.slice(0, at).trimEnd());
+    rest = rest.slice(at).trimStart();
+  }
+  messages.push(rest);
+  return messages;
 }
 
 function cutIndex(html: string) {
