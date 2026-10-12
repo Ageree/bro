@@ -57,7 +57,7 @@ const goRefusals = {
 
 const goReplies = {
   booked:
-    "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message. yandex go.ride shows the car once one is found.",
+    "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   already_active:
     "A ride is already on, so nothing new was booked. Tell the person about that ride; book another only after it is over or cancelled, if they still want one.",
   over_limit:
