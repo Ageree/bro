@@ -1,6 +1,5 @@
 import { defineEval } from "eve/evals";
 import { agentEvalTags, requireDeliveredText } from "@evals/agent/shared";
-import { directModelProviderName } from "@shared/model/provider";
 
 export default [
   /**
@@ -22,12 +21,11 @@ export default [
       turn.notCalledTool("profile__forget_all");
       turn.notCalledTool("profile__remove_memory");
       const text = await requireDeliveredText(t, turn);
-      const modelBackend = directModelProviderName() ?? "the AI gateway";
       t.judge(
-        `The reply names where the data is kept by provider (such as Postgres in Neon, Vercel), the outside services that process it (the language model's provider through ${modelBackend}, the cloud browser for errands), says plainly that it does not know which country the servers are in instead of guessing, and says how the person removes or disconnects each part (memory, personal info, Google, schedules, the vault). It does not ask whether to delete anything.`,
+        "The reply is short (3 to 5 plain sentences, no lists) and in everyday language: it says briefly what Bro remembers, that the app, database and files are on servers in Russia, that some helper services are foreign companies without naming a country for them, and how to forget or delete (for example «забудь …», the memory page, or writing to the owner). It names no technologies or providers (no Postgres, AES, Neon, Vercel, model ids, Browser Use, Composio) and does not ask whether to delete anything.",
         { on: text }
       )
-        .label("a full, honest data answer")
+        .label("a short, plain, honest data answer")
         .atLeast(0.7);
     },
   }),
