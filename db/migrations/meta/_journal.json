@@ -477,6 +477,13 @@
       "when": 1791822818866,
       "tag": "0067_bug_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1791824526846,
+      "tag": "0068_browser_report_abandoned",
+      "breakpoints": true
     }
   ]
 }

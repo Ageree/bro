@@ -1,0 +1,1 @@
+ALTER TABLE "browser_runs" ADD COLUMN "report_abandoned_at" timestamp (3) with time zone;
