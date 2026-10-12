@@ -8233,6 +8233,24 @@ describe("browser_task takes an errand the person asked to be done to its last s
     );
   });
 
+  it("keeps a price ceiling from being searched in descending order", async () => {
+    // QA 12.10: «велосипед до 15000» sorted «Дороже»: 12 results at 15 000 ₽.
+    const task = await startFor(
+      "найди на Avito велосипед до 15000 ₽ в Петербурге",
+      "Найти велосипед до 15000 ₽ на Avito",
+      "look"
+    );
+    expect(task).toContain(
+      "never sort by price descending («Дороже»), which fills the first page with items at the ceiling"
+    );
+    expect(task).toContain(
+      "name the sort order and the filters you actually applied"
+    );
+    expect(task).toContain(
+      "sit at the filter's edge, say so as a likely problem with the search"
+    );
+  });
+
   it("gives a run staged in the person's turn their details to fill in", async () => {
     readAccountPhoneNumber.mockResolvedValue("+79990000001");
 
