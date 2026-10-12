@@ -187,4 +187,83 @@ describe("the Yandex tool", () => {
     services.run.mockResolvedValue({ kind: "failed", reason: "answer" });
     expect(await call(asked)).toMatchObject({ ok: false });
   });
+
+  describe("account.ready", () => {
+    async function ready(
+      answers: Record<string, Awaited<ReturnType<typeof runYandexOperation>>>
+    ) {
+      services.run.mockImplementation(
+        async (_workspace, operation) =>
+          answers[operation.id] ?? { kind: "failed", reason: "answer" }
+      );
+      const found = await tool(asked);
+      if (!found) throw new Error("Expected yandex.");
+      const result = await found.execute(
+        { operation: "account.ready" },
+        callContext()
+      );
+      return {
+        asked: services.run.mock.calls.map(([, operation]) => operation.id),
+        reply: "reply" in result ? result.reply : "",
+        result,
+      };
+    }
+    const signedIn = {
+      data: { requestWorks: true, signedIn: true },
+      kind: "ok" as const,
+    };
+
+    it("asks Yandex ID, not Go, whether the person is signed in", async () => {
+      const {
+        asked: calls,
+        reply,
+        result,
+      } = await ready({
+        "account.ready": {
+          data: { cards: [], signedIn: true },
+          kind: "ok",
+        },
+        status: { kind: "signed_out" },
+      });
+      expect(result).toMatchObject({ ok: false });
+      expect(reply).toContain("Not signed in to Yandex yet");
+      expect(reply).toContain("signInPage https://passport.yandex.ru/auth");
+      expect(calls).toEqual(["status"]);
+    });
+
+    it("does not call a person who never opened Go ready", async () => {
+      const { asked: calls, reply } = await ready({
+        "account.ready": { data: { error: "no_user_id" }, kind: "ok" },
+        status: signedIn,
+      });
+      expect(calls).toEqual(["status", "account.ready"]);
+      expect(reply).toContain("never opened Yandex Go");
+      expect(reply).toContain("Do not say Yandex is ready");
+    });
+
+    it("says no card is linked only when Yandex ID has the person signed in", async () => {
+      const { reply } = await ready({
+        "account.ready": { data: { cards: [], signedIn: true }, kind: "ok" },
+        status: signedIn,
+      });
+      expect(reply).toContain("no bank card is linked");
+    });
+
+    it("offers the bank's link for a card Go holds back", async () => {
+      const { reply, result } = await ready({
+        "account.ready": {
+          data: {
+            cards: [
+              { id: "card-x2b", last4: "6443", title: "Мир", verified: false },
+            ],
+            signedIn: true,
+          },
+          kind: "ok",
+        },
+        status: signedIn,
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(reply).toContain("verify_card and cardId card-x2b");
+    });
+  });
 });

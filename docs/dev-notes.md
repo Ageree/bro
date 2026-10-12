@@ -736,6 +736,15 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   опрос `eats-payments/v1/order/tracking`: `done`, `3ds_required` со ссылкой,
   `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
 
+- Мини-онбординг Яндекса (12.10): `yandex` `account.ready` (`agent/lib/yandex/ready.ts`)
+  сначала спрашивает вход у Яндекс ID (`status`): сессия Go входа не доказывает —
+  у того, кто ни разу не открывал Go, `goSession` даёт `no_user_id`, а у анонима
+  список карт пуст. Потом читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
+  через `yandex_purchase` `verify_card` только после «да», где привязать карту) несёт
+  `reply` результата, а не промпт. Знакомство (`first-contact`) узнаёт о бете, боте
+  багов (только при `bugBotTarget()` и `BUG_BOT_USERNAME`, иначе — ни слова) из контекстной строки
+  `firstContactContext`; условий, приватности и ссылок в знакомстве нет (владелец 12.10).
+
 ## Composio: Google, Notion, Slack и другие приложения
 
 - Адрес возврата карточки входа eve строит от базы мира, а на VM это loopback
@@ -1473,7 +1482,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Тексты о данных: `agent/lib/privacy/facts.ts` (что Бро говорит людям) и
   `app/(public)/privacy` (страница) называют одни и те же сервисы — правьте
   вместе. Хостинг в фактах записан кодом (Selectel, Россия), а не берётся из
-  env; промпт `role/interactive.md` («Vercel, Neon») остаётся за юнитом U8.
+  env.
 
 ## Лимит трат без спроса
 
