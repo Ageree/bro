@@ -1,7 +1,7 @@
 /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must be applied in order. */
 import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { beginAgencyAction } from "@db/services/agency";
@@ -139,20 +139,103 @@ describe("agency actions", { timeout: 30_000 }, () => {
     const [row] = await agency.listRecentAgencyActions(alice.workspaceId, 1);
     expect(row?.undo).toEqual(undo);
 
-    // A failed action is recorded too: its outcome may be unknown, so it is not retried.
+    // A failed action does not refuse its retry: it runs again on the same row.
     const failed = startedId(
       await agency.beginAgencyAction(plan("send-failed"))
     );
     expect(await agency.finishAgencyAction(failed, "failed")).toBe(true);
     expect(
       await agency.agencyActionRecorded(alice.workspaceId, "send-failed")
-    ).toBe(true);
+    ).toBe(false);
     expect(await agency.beginAgencyAction(plan("send-failed"))).toEqual({
-      kind: "duplicate",
+      kind: "started",
+      id: failed,
     });
     expect(
       await agency.agencyActionRecorded(alice.workspaceId, "never-taken")
     ).toBe(false);
+  });
+
+  it("refuses a repeat of a planned action only while the row is recent", async () => {
+    const { agency, db } = await openDatabase();
+
+    const id = startedId(await agency.beginAgencyAction(plan("planned-1")));
+    expect(await agency.beginAgencyAction(plan("planned-1"))).toEqual({
+      kind: "duplicate",
+    });
+
+    // A run that died mid-call leaves its row planned; past the window it is re-armed.
+    await ageRow(db, id, "31 minutes");
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "planned-1")
+    ).toBe(false);
+    expect(await agency.beginAgencyAction(plan("planned-1"))).toEqual({
+      kind: "started",
+      id,
+    });
+    // The re-armed row is new, so it refuses again straight away.
+    expect(await agency.beginAgencyAction(plan("planned-1"))).toEqual({
+      kind: "duplicate",
+    });
+    expect(await rowsWithHash(db, "planned-1")).toHaveLength(1);
+  });
+
+  it("refuses a repeat of a done action for a week, then re-arms it", async () => {
+    const { agency, db } = await openDatabase();
+    const undo = {
+      input: { calendarId: "primary", eventId: "e2" },
+      tool: "calendar-delete-event",
+    };
+
+    const id = startedId(
+      await agency.beginAgencyAction(plan("done-1", "calendar"))
+    );
+    expect(await agency.finishAgencyAction(id, "done", undo)).toBe(true);
+    expect(await agency.beginAgencyAction(plan("done-1", "calendar"))).toEqual({
+      kind: "duplicate",
+    });
+
+    await ageRow(db, id, "6 days");
+    expect(await agency.agencyActionRecorded(alice.workspaceId, "done-1")).toBe(
+      true
+    );
+
+    await ageRow(db, id, "8 days");
+    expect(await agency.agencyActionRecorded(alice.workspaceId, "done-1")).toBe(
+      false
+    );
+    expect(await agency.beginAgencyAction(plan("done-1", "calendar"))).toEqual({
+      kind: "started",
+      id,
+    });
+    const [row] = await rowsWithHash(db, "done-1");
+    expect(row).toMatchObject({ status: "planned", undo: null });
+    expect(await rowsWithHash(db, "done-1")).toHaveLength(1);
+  });
+
+  it("re-arms an undone action, and keeps the new plan's summary", async () => {
+    const { agency, db } = await openDatabase();
+
+    const id = startedId(
+      await agency.beginAgencyAction(plan("undone-1", "calendar"))
+    );
+    expect(await agency.finishAgencyAction(id, "done")).toBe(true);
+    expect(await agency.markAgencyActionUndone(id)).toBe(true);
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "undone-1")
+    ).toBe(false);
+
+    expect(
+      await agency.beginAgencyAction({
+        ...plan("undone-1", "calendar"),
+        summary: "Событие создано снова",
+      })
+    ).toEqual({ kind: "started", id });
+    const [row] = await rowsWithHash(db, "undone-1");
+    expect(row).toMatchObject({
+      status: "planned",
+      summary: "Событие создано снова",
+    });
   });
 
   it("refuses an action class or status the schema does not know", async () => {
@@ -206,6 +289,22 @@ describe("agency actions", { timeout: 30_000 }, () => {
     ]);
   });
 });
+
+type TestDatabase = Awaited<ReturnType<typeof openDatabase>>["db"];
+
+/** Moves a row's creation back, as if its run had started that long ago. */
+async function ageRow(db: TestDatabase, id: string, interval: string) {
+  await db.execute(
+    sql`UPDATE agency_actions SET created_at = now() - ${interval}::interval WHERE id = ${id}`
+  );
+}
+
+function rowsWithHash(db: TestDatabase, inputHash: string) {
+  return db
+    .select()
+    .from(schema.agencyActions)
+    .where(eq(schema.agencyActions.inputHash, inputHash));
+}
 
 /** Why the database refused a write, or undefined when it took it. */
 async function refusal(write: Promise<unknown>) {

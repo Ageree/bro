@@ -258,6 +258,7 @@ export default defineDynamic({
               "calendar-update-event": calendarUpdateEvent,
             },
             "agentic-worker": {
+              "calendar-check-availability": calendarCheckAvailability,
               "calendar-create-event": agenticCreateEvent,
               "calendar-delete-event": agenticDeleteEvent,
               "calendar-list-events": calendarListEvents,

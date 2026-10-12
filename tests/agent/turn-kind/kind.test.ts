@@ -185,7 +185,7 @@ describe("the agentic worker's turn", () => {
     expect(await kindIn("workspace-2")).toBe("proactive-worker");
   });
 
-  it("is offered the proactive check's reads, its contacts and orders, and the writes it is granted", () => {
+  it("is offered the proactive check's reads, its own reads and the writes it is granted", () => {
     expect(
       turnTools({
         askedQuestion: false,
@@ -199,8 +199,15 @@ describe("the agentic worker's turn", () => {
     ).toEqual({
       offeredTools: [
         ...proactiveReadTools,
+        "agent-mail-inbox",
+        "agent-mail-list",
+        "agent-mail-read",
+        "calendar-check-availability",
         "contacts-search",
         "list_orders",
+        "mail-read",
+        "mail-search",
+        "route_time",
         ...agenticWriteTools,
       ],
       withheldTools: ["task"],

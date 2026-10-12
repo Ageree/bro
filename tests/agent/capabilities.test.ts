@@ -156,6 +156,7 @@ describe("authored mode capability matrix", () => {
       expect(
         await authoredCapabilities("scheduled-worker", agentic, pilot)
       ).toEqual([
+        "calendar-check-availability",
         "calendar-create-event",
         "calendar-delete-event",
         "calendar-list-events",
@@ -192,6 +193,7 @@ describe("authored mode capability matrix", () => {
       "personal:workspace",
       [
         "ask_question",
+        "calendar-check-availability",
         "calendar-create-event",
         "calendar-delete-event",
         "calendar-list-events",
@@ -202,6 +204,7 @@ describe("authored mode capability matrix", () => {
         "gmail-search",
         "gmail-send",
         "list_orders",
+        "route_time",
         "task_cancel",
         "web_search",
       ],

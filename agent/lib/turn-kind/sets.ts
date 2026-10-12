@@ -65,11 +65,22 @@ export const proactiveReadTools = [
 
 /**
  * The reads the agentic worker has beyond the proactive check's: the
- * person's contacts, to find whom to write to, and their orders.
+ * person's contacts, to find whom to write to, their orders, their mail in
+ * Mail.ru or Yandex and in the agent's own mailbox, their calendar's free
+ * time, and `route_time` for a walk or a drive to a place. No web page
+ * (`web_fetch`, `web_search`): a link an email chose would carry the
+ * person's data out.
  */
 const agenticReadTools: readonly string[] = [
+  "agent-mail-inbox",
+  "agent-mail-list",
+  "agent-mail-read",
+  "calendar-check-availability",
   "contacts-search",
   "list_orders",
+  "mail-read",
+  "mail-search",
+  "route_time",
 ];
 
 /**

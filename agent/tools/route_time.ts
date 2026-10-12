@@ -862,14 +862,16 @@ const shortRouteTime = defineTool({
 
 export default defineDynamic({
   events: {
-    // A person's question and a digest they scheduled; Bro's own mail
-    // checks and report turns never send an address anywhere.
+    // A person's question, a digest they scheduled and the agentic worker's
+    // walks; Bro's own mail checks and report turns never send an address
+    // anywhere.
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
         interactive: {
           route_time:
             skillsLayout(context) === "core" ? shortRouteTime : routeTime,
         },
+        "agentic-worker": { route_time: routeTime },
         "scheduled-worker": { route_time: routeTime },
       }),
   },

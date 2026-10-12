@@ -48,7 +48,7 @@ const notAgenticRun = refused(
  *
  * Granted, the action runs without a card. Refused: a background task's
  * turn, a workspace outside the pilot, a send or a call in the person's
- * quiet hours, a day's budget used up, an action already journaled, and
+ * quiet hours, a day's budget used up, an action its journal still blocks, and
  * text that gives out the person's home address or phone number.
  */
 export async function agencyApproval(

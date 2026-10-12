@@ -49,9 +49,10 @@ const duplicateRefusal =
 /**
  * Runs one action of the agentic worker through the journal: planned before
  * the call, done after it, failed when it throws. A repeat of the same input
- * finds its row and is refused, so a retried run never takes the action
- * twice; a failed action is not retried either, since its outcome may be
- * unknown. Any other turn runs `run` as it is.
+ * is refused while its row still blocks it (`beginAgencyAction`), so a
+ * retried run does not take a done or still-planned action twice. A failed
+ * or undone row, or one past its window, lets the action run again. Any
+ * other turn runs `run` as it is.
  */
 export async function journaledAgencyCall<T>(
   context: Pick<ApprovalContext, "session">,

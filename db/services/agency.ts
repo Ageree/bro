@@ -13,17 +13,47 @@ type AgencyActionInput = Pick<
   | "undo"
 >;
 
+/** A planned row older than this is an abandoned run: its action may repeat. */
+const plannedWindowMs = 30 * 60_000;
+/** A done action is not repeated within this window; after it, the input may act again. */
+const doneWindowMs = 7 * 24 * 60 * 60_000;
+
+/**
+ * The rows that refuse a repeat of their action now: planned and younger
+ * than the planned window, or done within the done window. A failed or
+ * undone row, a stale planned row and an old done row do not refuse it.
+ */
+function blockingSql(now: Date) {
+  const plannedSince = new Date(now.getTime() - plannedWindowMs).toISOString();
+  const doneSince = new Date(now.getTime() - doneWindowMs).toISOString();
+  return sql`((${agencyActions.status} = 'planned' AND ${agencyActions.createdAt} >= ${plannedSince}::timestamptz) OR (${agencyActions.status} = 'done' AND ${agencyActions.createdAt} >= ${doneSince}::timestamptz))`;
+}
+
 /**
  * Records an action before it is taken. The input hash is the idempotency key:
- * a run that retries the same action finds the row it already wrote and must
- * not take the action again.
+ * an identical action is refused while its row still blocks it (`blockingSql`).
+ * A row that does not block is re-armed to planned in the same statement, so
+ * the one row per hash, and its unique index, stay.
  */
 export async function beginAgencyAction(input: AgencyActionInput) {
+  const now = new Date();
   const [row] = await db
     .insert(agencyActions)
     .values(input)
-    .onConflictDoNothing({
+    .onConflictDoUpdate({
       target: [agencyActions.workspaceId, agencyActions.inputHash],
+      set: {
+        actionClass: input.actionClass,
+        counterparty: input.counterparty ?? null,
+        createdAt: now,
+        runId: input.runId ?? null,
+        status: "planned",
+        summary: input.summary,
+        tool: input.tool,
+        undo: null,
+        updatedAt: now,
+      },
+      setWhere: sql`NOT ${blockingSql(now)}`,
     })
     .returning({ id: agencyActions.id });
   return row === undefined
@@ -50,9 +80,9 @@ export async function finishAgencyAction(
 }
 
 /**
- * Whether an action with this input hash was ever recorded in the workspace,
- * whatever its status: a failed action is not retried either, since its
- * outcome may be unknown.
+ * Whether a repeat of an action with this input hash would be refused now:
+ * its row is planned and recent, or done within the done window
+ * (`blockingSql`). A failed, undone or stale row does not refuse it.
  */
 export async function agencyActionRecorded(
   workspaceId: string,
@@ -64,7 +94,8 @@ export async function agencyActionRecorded(
     .where(
       and(
         eq(agencyActions.workspaceId, workspaceId),
-        eq(agencyActions.inputHash, inputHash)
+        eq(agencyActions.inputHash, inputHash),
+        blockingSql(new Date())
       )
     )
     .limit(1);

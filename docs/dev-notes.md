@@ -1493,16 +1493,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `nothing_to_report` (`agent/lib/schedules/outcome.ts`).
 - У воркера и хода-отчёта нет сетевых `web_fetch`/`find_images`/`web_search`:
   письмо не должно увести на чужой адрес (`tests/agent/capabilities.test.ts`).
-- Агентный воркер (`AGENCY_WORKSPACES`): вид запуска решается при отправке
-  (`proactiveRunKind`, `agent/lib/schedules/identity.ts`), режим читает пилот на
-  каждом шаге. Отчёт идёт по `job.kind` (`proactive`), как у обычного запуска.
-- `route_time` (`agent/tools/route_time.ts`) знает режимы `interactive` и
-  `scheduled-worker`, но не `agentic-worker`: подготовка выхода по времени там
-  не работает, пока режим не добавлен.
-- Почта агента: `listAgentMessages` не умеет фильтр по времени, поэтому
-  граница по `agent_mail_checked_at` считается в коде, одна страница из 50
-  (`agent/lib/proactive/agent-mail.ts`). Календарь пилота читает на 30 часов
-  вперёд, обычные сигналы остаются в 26 (`probeGoogleSignals`, `calendarPrep`).
+- Агентный работник (`AGENCY_WORKSPACES`): вид запуска решает `proactiveRunKind`
+  (`agent/lib/schedules/identity.ts`), режим читает пилот на каждом шаге.
+  Гварды, журнал `agency_actions` и бюджет — `agent/lib/agency/`; повтор того же
+  действия блокируют planned до 30 мин и done до 7 дней, failed/undone
+  переигрываются. Пауза и откат — `agency_control`, ключ `agency_paused`. Откат:
+  снять флаг, и запуски пойдут обычным проактивным воркером. Оплата спрашивает.
+- `web_fetch`/`web_search` воркеру не выданы: ссылка из текста письма вынесла бы
+  данные. `route_time` выдан (текст места уходит в OSM). `phone-call` и
+  `browser_task` пока не выданы: решение владельца.
+- Почта агента листается без фильтра по времени: граница по
+  `agent_mail_checked_at` в коде, одна страница из 50
+  (`agent/lib/proactive/agent-mail.ts`).
 
 ## Бенчмарк
 
