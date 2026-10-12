@@ -50,6 +50,14 @@ describe("the Yandex order confirmation policy", () => {
     });
   });
 
+  it("sends Yandex errands to the API first, a named restaurant to Eda, not to its own site", async () => {
+    const resolve = yandexInstructions.events["turn.started"];
+    const instruction = await resolve?.({}, context());
+    expect(instruction?.content).toContain("сначала делай через `yandex`");
+    expect(instruction?.content).toContain("на сайт самого заведения не ходи");
+    expect(instruction?.content).not.toContain("пока не поддержано");
+  });
+
   it("leaves a disabled workspace's instructions unchanged", async () => {
     purchasePilot.mockReturnValue(false);
     const resolve = yandexInstructions.events["turn.started"];
