@@ -1538,6 +1538,17 @@ describe("the person's rules in the profile", () => {
     ]);
   });
 
+  // QA 12.10: «Привет, что ты умеешь?» was answered with a saved payment
+  // reminder, and Bro offered to set one that already existed.
+  it("keeps saved records in the background of unrelated requests", () => {
+    const [, header] = renderProfile([
+      currentRecord(0, { text: "Завтра в 12 заплатить за квартиру." }),
+    ]).split("\n");
+
+    expect(header).toContain("never in a greeting");
+    expect(header).toContain("already set");
+  });
+
   // Owner 26.09: a request runs without a card now, so the rule is the one
   // thing between «напиши маме» and a sent email.
   it("puts a saved rule above a request that otherwise runs at once", () => {
