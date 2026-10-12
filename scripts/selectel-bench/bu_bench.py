@@ -7,6 +7,8 @@ KEY = open("/etc/bench/routerai").read().strip()
 LITHOS_BASE = "https://api.lithosai.cloud/v1"
 try: LITHOS_KEY = open("/etc/bench/lithos").read().strip()
 except OSError: LITHOS_KEY = ""
+try: RUNINFRA_KEY = open("/etc/bench/runinfra").read().strip()
+except OSError: RUNINFRA_KEY = ""
 OUT = "/var/www/bench/bu.jsonl"
 CDP = "http://127.0.0.1:9222"
 BUDGET_RUB = float(os.environ.get("BENCH_BUDGET_RUB", "70"))
@@ -17,6 +19,8 @@ def lithos(tier, **extra):
     # Lithos answers OpenAI-style; no usage.cost (rates are per model, tokens are logged), nothing provider-specific in the body.
     return {"model": f"deepseek-ai/DeepSeek-V4.1-Flash{tier}", "body": {}, "flash": False, "base_url": LITHOS_BASE, "key": LITHOS_KEY, **extra}
 CONFIGS = {
+    # What Bro's chat model runs on in prod since 11.10 (agent/lib/model/routerai/runinfra.ts).
+    "runinfra": {"model": "deepseek-v4-1-flash", "body": {"reasoning_effort": "none"}, "flash": False, "base_url": "https://api.runinfra.ai/v1", "key": RUNINFRA_KEY},
     "lith_ultra": lithos("-ultra"),
     "lith_ultra_chat": lithos("-ultra-chat"),
     "lith_fast": lithos("-fast"),

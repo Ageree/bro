@@ -23,6 +23,7 @@ extension = "\n\n".join(
 )
 key = os.environ["ROUTERAI_API_KEY"].strip().strip("“”‘’«»\"' ")
 lithos = os.environ.get("LITHOSAI_API_KEY", "").strip()
+runinfra = os.environ.get("RUNINFRA_API_KEY", "").strip()
 
 
 def b64(data):
@@ -34,6 +35,7 @@ script = (
     .replace("__ROLE__", role)
     .replace("__KEY_B64__", b64(key))
     .replace("__LITHOS_B64__", b64(lithos))
+    .replace("__RUNINFRA_B64__", b64(runinfra))
     .replace("__BU_B64__", b64((HERE / "bu_bench.py").read_bytes()))
     .replace("__CDP_B64__", b64((HERE / "cdp.py").read_bytes()))
     .replace("__EXT_B64__", b64(extension + "\n"))

@@ -9,6 +9,7 @@ log "cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs) nproc=$(np
 echo "127.0.1.1 $(hostname)" >> /etc/hosts; useradd -m -s /bin/bash bench 2>/dev/null
 echo '__KEY_B64__' | base64 -d > /etc/bench/routerai; chown bench /etc/bench/routerai; chmod 600 /etc/bench/routerai
 echo '__LITHOS_B64__' | base64 -d > /etc/bench/lithos; chown bench /etc/bench/lithos; chmod 600 /etc/bench/lithos
+echo '__RUNINFRA_B64__' | base64 -d > /etc/bench/runinfra; chown bench /etc/bench/runinfra; chmod 600 /etc/bench/runinfra
 echo '__BU_B64__' | base64 -d > /opt/bench/bu_bench.py
 echo '__CDP_B64__' | base64 -d > /opt/bench/cdp.py
 echo '__EXT_B64__' | base64 -d > /opt/bench/extend_system.txt
@@ -39,5 +40,5 @@ for i in $(seq 1 150); do curl -s -m 1 http://127.0.0.1:9222/json/version >/dev/
 log "bu-start configs=__CONFIGS__ tasks=__TASKS__"
 sudo -u bench BENCH_BUDGET_RUB=__BUDGET__ /home/bench/venv/bin/python /opt/bench/bu_bench.py __CONFIGS__ __TASKS__ > $R/bu-stdout.txt 2>&1
 log "bu-exit rc=$?"
-shred -u /etc/bench/routerai /etc/bench/lithos
+shred -u /etc/bench/routerai /etc/bench/lithos /etc/bench/runinfra
 log "done epoch=$(date +%s.%N) uptime=$(cut -d' ' -f1 /proc/uptime)"
