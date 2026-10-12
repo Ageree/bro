@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const take = vi.fn();
+const take = vi.fn<
+  () => Promise<
+    {
+      conversationChannel: "eve" | "photon" | "telegram";
+      conversationId: string;
+      id: string;
+      site: string | null;
+      task: string;
+    }[]
+  >
+>();
 vi.mock("@db/services/browser-runs", () => ({
   takeAbandonedBrowserRunReports: take,
 }));
@@ -41,21 +51,26 @@ describe("abandoned browser run report notice", () => {
         task: "web chat",
       },
     ]);
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(Response.json({ ok: true }));
+    const sent: { url: string; body: unknown }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const request = new Request(url, init);
+      sent.push({ body: await request.json(), url: request.url });
+      return Response.json({ ok: true });
+    });
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const { noticeAbandonedBrowserRunReports } =
+    const { abandonedReportNotice, noticeAbandonedBrowserRunReports } =
       await import("@agent/lib/browser-use/abandoned-notice");
 
     await noticeAbandonedBrowserRunReports(new Date());
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] ?? [];
-    expect(String(url)).toBe("https://api.telegram.org/bottoken/sendMessage");
-    expect(JSON.parse(String(init?.body))).toMatchObject({
-      chat_id: "42",
-      text: expect.stringContaining("Найди билеты"),
-    });
+    expect(sent).toEqual([
+      {
+        body: {
+          chat_id: "42",
+          text: abandonedReportNotice({ site: null, task: "Найди билеты" }),
+        },
+        url: "https://api.telegram.org/bottoken/sendMessage",
+      },
+    ]);
   });
 });

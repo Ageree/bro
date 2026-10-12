@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposioError } from "@shared/composio/api";
 
-const composioRequest = vi.hoisted(() => vi.fn());
+const composioRequest = vi.hoisted(() =>
+  vi.fn<() => Promise<{ data: object; status: number }>>()
+);
 vi.mock("@shared/composio/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@shared/composio/api")>()),
+  ...(await importOriginal()),
   composioRequest,
 }));
 
@@ -44,11 +46,10 @@ describe("composioProxy", () => {
       new ComposioError(403, undefined, "refused")
     );
 
-    const result = proxied();
-    const settled = expect(result).rejects.toMatchObject({ status: 403 });
-    await vi.advanceTimersByTimeAsync(3_000);
-
-    await settled;
+    await Promise.all([
+      expect(proxied()).rejects.toMatchObject({ status: 403 }),
+      vi.advanceTimersByTimeAsync(3_000),
+    ]);
     expect(composioRequest).toHaveBeenCalledTimes(2);
   });
 
