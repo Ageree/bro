@@ -2,6 +2,7 @@ import { cardToolsBeforeOutcome } from "@agent/lib/delivery/browser-report";
 import { actionsHeldForAnswer } from "@agent/lib/delivery/questions";
 import type { TurnKind } from "./kind";
 import {
+  agenticWorkerTurnTools,
   backgroundTaskTurnTools,
   reportTurnTools,
   taskAgentTool,
@@ -67,15 +68,17 @@ export function turnTools(step: {
         ? step.browserFiles
           ? ["browser_files", ...backgroundTaskTurnTools]
           : backgroundTaskTurnTools
-        : step.stableContext && step.kind === "browser-report"
-          ? step.browserFiles
-            ? [
-                "browser_files",
-                ...(step.taskAgent ? [taskAgentTool] : []),
-                ...reportTurnTools,
-              ]
-            : reportTurnTools
-          : undefined;
+        : step.kind === "agentic-worker"
+          ? agenticWorkerTurnTools
+          : step.stableContext && step.kind === "browser-report"
+            ? step.browserFiles
+              ? [
+                  "browser_files",
+                  ...(step.taskAgent ? [taskAgentTool] : []),
+                  ...reportTurnTools,
+                ]
+              : reportTurnTools
+            : undefined;
   const withheldTools = step.stableContext
     ? [...askQuestion, ...held, ...task]
     : [

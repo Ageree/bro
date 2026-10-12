@@ -122,6 +122,7 @@ export default defineDynamic({
         context,
         {
           interactive: interactiveTools,
+          "agentic-worker": readTools,
           "proactive-worker": readTools,
           "scheduled-report": readTools,
           "scheduled-worker": readTools,

@@ -508,6 +508,11 @@ export default defineDynamic({
           ),
           "gmail-update": gmailUpdate,
         },
+        // Bro's own checks and the agentic worker read the same way.
+        "agentic-worker": {
+          "gmail-read-thread": defineGmailReadThread(reads, null),
+          "gmail-search": gmailSearchTool,
+        },
         "proactive-worker": {
           "gmail-read-thread": defineGmailReadThread(reads, null),
           "gmail-search": gmailSearchTool,

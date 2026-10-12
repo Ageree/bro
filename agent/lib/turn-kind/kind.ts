@@ -18,6 +18,7 @@ import type { StepIdentity } from "./step";
  * are.
  */
 export type TurnKind =
+  | "agentic-worker"
   | "background-task"
   | "browser-report"
   | "person"
@@ -61,6 +62,7 @@ function callerTurnKind(context: Parameters<typeof turnKind>[0]): TurnKind {
   return (
     resolveModeValue<TurnKind>(context, {
       interactive: "person",
+      "agentic-worker": "agentic-worker",
       "proactive-worker": "proactive-worker",
       "scheduled-report": "scheduled-report",
       "scheduled-worker": "scheduled-worker",
