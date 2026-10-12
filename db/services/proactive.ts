@@ -243,6 +243,7 @@ export async function claimDueProactiveWatches(options: {
   return db.transaction(async (transaction) => {
     const due = await transaction
       .select({
+        agentMailCheckedAt: proactiveWatches.agentMailCheckedAt,
         createdByUserId: proactiveWatches.createdByUserId,
         googleState: proactiveWatches.googleState,
         jobId: proactiveWatches.jobId,
@@ -355,6 +356,21 @@ export async function advanceProactiveWatermark(
     .where(eq(proactiveWatches.workspaceId, workspaceId));
 }
 
+/**
+ * Moves only the agent inbox watermark. Google's watermark and connection
+ * state stay as they are, so a night check can start the agent's watermark
+ * without moving the one the morning check reads Google's mail from.
+ */
+export async function advanceAgentMailWatermark(
+  workspaceId: string,
+  agentMailCheckedAt: Date
+) {
+  await db
+    .update(proactiveWatches)
+    .set({ agentMailCheckedAt, updatedAt: agentMailCheckedAt })
+    .where(eq(proactiveWatches.workspaceId, workspaceId));
+}
+
 /** The candidates no earlier proactive run has been handed. */
 export async function filterUnseenProactiveSignals<
   T extends Pick<ProactiveSignal, "dedupeKey" | "source">,
@@ -391,6 +407,8 @@ export async function filterUnseenProactiveSignals<
  * waited for the cap to reset could start before anyone heard of it.
  */
 export async function queueProactiveRun(input: {
+  /** The agent inbox watermark, moved with the run when it was checked. */
+  readonly agentMailCheckedAt?: Date;
   readonly jobId: string;
   readonly mailCheckedAt: Date;
   readonly maxRunsPerDay: number;
@@ -425,7 +443,8 @@ export async function queueProactiveRun(input: {
         )
       );
     const carriesEvent = input.signals.some(
-      (signal) => signal.source === "calendar"
+      (signal) =>
+        signal.source === "calendar" || signal.source === "calendar_prep"
     );
     if (!carriesEvent && (recent?.count ?? 0) >= input.maxRunsPerDay) {
       return { status: "capped" as const };
@@ -457,6 +476,7 @@ export async function queueProactiveRun(input: {
     await transaction
       .update(proactiveWatches)
       .set({
+        agentMailCheckedAt: input.agentMailCheckedAt,
         googleState: "connected",
         mailCheckedAt: input.mailCheckedAt,
         updatedAt: input.now,

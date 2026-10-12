@@ -2,7 +2,9 @@ import type { Session } from "eve/channels";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
+import type { agentMailCheck } from "@agent/lib/proactive/agent-mail";
 import type {
+  advanceAgentMailWatermark,
   advanceProactiveWatermark,
   claimDueProactiveWatches,
   deferProactiveWatch,
@@ -29,6 +31,7 @@ import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const proactive = vi.hoisted(() => ({
   advance: vi.fn<typeof advanceProactiveWatermark>(),
+  advanceAgentMail: vi.fn<typeof advanceAgentMailWatermark>(),
   claimWatches: vi.fn<typeof claimDueProactiveWatches>(),
   defer: vi.fn<typeof deferProactiveWatch>(),
   filterUnseen: vi.fn<typeof filterUnseenProactiveSignals>(),
@@ -43,6 +46,12 @@ const jobs = vi.hoisted(() => ({
 }));
 const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
 const rank = vi.hoisted(() => vi.fn<typeof rankMail>());
+const agency = vi.hoisted(() => ({
+  pilot: vi.fn<(workspaceId: string) => boolean>(() => false),
+}));
+const agentMail = vi.hoisted(() => ({
+  check: vi.fn<typeof agentMailCheck>(),
+}));
 const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
 const flights = vi.hoisted(() => ({
   drive: vi.fn<typeof flightModule.measureDrive>(),
@@ -53,7 +62,14 @@ const flights = vi.hoisted(() => ({
   sync: vi.fn<typeof syncFlightWatches>(),
 }));
 
+vi.mock("@agent/lib/agency/pilot", () => ({
+  agencyPilot: agency.pilot,
+}));
+vi.mock("@agent/lib/proactive/agent-mail", () => ({
+  agentMailCheck: agentMail.check,
+}));
 vi.mock("@db/services/proactive", () => ({
+  advanceAgentMailWatermark: proactive.advanceAgentMail,
   advanceProactiveWatermark: proactive.advance,
   claimDueProactiveWatches: proactive.claimWatches,
   deferProactiveWatch: proactive.defer,
@@ -120,6 +136,8 @@ describe("proactive schedule", () => {
     });
     jobs.claimRuns.mockResolvedValue([]);
     jobs.setSession.mockResolvedValue(true);
+    agency.pilot.mockReturnValue(false);
+    agentMail.check.mockResolvedValue(undefined);
     profile.mockResolvedValue({
       ...emptyUserProfile,
       addressLine1: "ул. Профсоюзная, 12",
@@ -742,6 +760,220 @@ describe("proactive schedule", () => {
       "worker-session"
     );
   });
+
+  it("dispatches a run of the agency pilot as agentic, with the agentic prompt", async () => {
+    agency.pilot.mockReturnValue(true);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    proactive.listSignals.mockResolvedValue([flight]);
+    const claim = proactiveClaim();
+    jobs.claimRuns.mockResolvedValue([claim]);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    await runSchedule(to);
+
+    expect(agency.pilot).toHaveBeenCalledWith("workspace:alice");
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "decide what, if anything, is worth doing for the person, do it, and report it."
+    );
+    expect(send.mock.calls[0]?.[0]).not.toContain("worth writing first about");
+    expect(send.mock.calls[0]?.[1].auth).toMatchObject({
+      attributes: {
+        scheduledRunKind: "agentic",
+        scheduledRunLeaseToken: claim.run.leaseToken,
+        workspaceId: "workspace:alice",
+      },
+      authenticator: "scheduled-worker",
+    });
+  });
+
+  it("keeps a run outside the agency pilot a proactive one, with the prompt it had", async () => {
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    proactive.listSignals.mockResolvedValue([flight]);
+    jobs.claimRuns.mockResolvedValue([proactiveClaim()]);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+
+    await runSchedule(vi.fn<ScheduleToFn>(() => ({ send })));
+
+    expect(send.mock.calls[0]?.[0]).toContain("worth writing first about");
+    expect(send.mock.calls[0]?.[0]).not.toContain("report it.");
+    expect(send.mock.calls[0]?.[1].auth).toMatchObject({
+      attributes: { scheduledRunKind: "proactive" },
+    });
+  });
+
+  it("reads the pilot's calendar 30 hours ahead and queues its calendar prep, which may pass the cap", async () => {
+    agency.pilot.mockReturnValue(true);
+    const prep = {
+      dedupeKey: "tour@2026-09-23T18:00:00.000Z#T-3h",
+      itemId: "tour",
+      source: "calendar_prep" as const,
+      threadId: null,
+    };
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [prep],
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      expect.objectContaining({ calendarPrep: true })
+    );
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ signals: [prep] })
+    );
+  });
+
+  it("hands the pilot's new agent mail over with the run, and moves its watermark with it", async () => {
+    agency.pilot.mockReturnValue(true);
+    const inbox = {
+      dedupeKey: "agent-m1",
+      itemId: "agent-m1",
+      source: "agent_mail" as const,
+      threadId: "agent-t1",
+    };
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    agentMail.check.mockResolvedValue({
+      checkedAt: afternoon,
+      signals: [inbox],
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(agentMail.check).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      new Date("2026-09-23T11:40:00.000Z"),
+      afternoon
+    );
+    expect(proactive.filterUnseen).toHaveBeenCalledWith("workspace:alice", [
+      inbox,
+    ]);
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
+      agentMailCheckedAt: afternoon,
+      jobId: "00000000-0000-4000-8000-000000000001",
+      mailCheckedAt: afternoon,
+      maxRunsPerDay: 12,
+      now: afternoon,
+      signals: [inbox],
+      workspaceId: "workspace:alice",
+    });
+    expect(proactive.advance).not.toHaveBeenCalled();
+    expect(proactive.advanceAgentMail).not.toHaveBeenCalled();
+  });
+
+  it("dedupes the agent mail a run has handed over: it moves only the agent's watermark", async () => {
+    agency.pilot.mockReturnValue(true);
+    const inbox = {
+      dedupeKey: "agent-m1",
+      itemId: "agent-m1",
+      source: "agent_mail" as const,
+      threadId: "agent-t1",
+    };
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [],
+      state: "connected",
+    });
+    agentMail.check.mockResolvedValue({
+      checkedAt: afternoon,
+      signals: [inbox],
+    });
+    proactive.filterUnseen.mockResolvedValue([]);
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(proactive.filterUnseen).toHaveBeenCalledWith("workspace:alice", [
+      inbox,
+    ]);
+    expect(proactive.queue).not.toHaveBeenCalled();
+    expect(proactive.advance).toHaveBeenCalledExactlyOnceWith(
+      "workspace:alice",
+      afternoon
+    );
+    expect(proactive.advanceAgentMail).toHaveBeenCalledExactlyOnceWith(
+      "workspace:alice",
+      afternoon
+    );
+  });
+
+  it("keeps the Google check when the agent's inbox cannot be read", async () => {
+    agency.pilot.mockReturnValue(true);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
+    agentMail.check.mockResolvedValue(undefined);
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ signals: [flight] })
+    );
+    // The inbox's watermark stays where it was: nothing was read from it.
+    expect(proactive.queue.mock.calls[0]?.[0]).not.toHaveProperty(
+      "agentMailCheckedAt"
+    );
+    expect(proactive.advanceAgentMail).not.toHaveBeenCalled();
+  });
+
+  it("starts the pilot's agent inbox watermark at night, reading none of the mail", async () => {
+    agency.pilot.mockReturnValue(true);
+    // 23:30 in Moscow.
+    const night = new Date("2026-09-23T20:30:00.000Z");
+    vi.setSystemTime(night);
+    proactive.claimWatches.mockResolvedValue([
+      {
+        ...watch(),
+        agentMailCheckedAt: null,
+        leaseUntil: new Date("2026-09-23T20:45:00.000Z"),
+      },
+    ]);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [flight],
+      state: "connected",
+    });
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(agentMail.check).not.toHaveBeenCalled();
+    expect(proactive.advanceAgentMail).toHaveBeenCalledExactlyOnceWith(
+      "workspace:alice",
+      night
+    );
+    // The night check looks as it always did: no calendar prep, no inbox.
+    expect(probe.mock.calls[0]?.[1]).not.toHaveProperty("calendarPrep");
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ signals: [flight] })
+    );
+  });
 });
 
 async function runSchedule(to: ScheduleToFn) {
@@ -765,6 +997,7 @@ async function runSchedule(to: ScheduleToFn) {
 
 function watch(): Awaited<ReturnType<typeof claimDueProactiveWatches>>[number] {
   return {
+    agentMailCheckedAt: new Date("2026-09-23T11:40:00.000Z"),
     createdByUserId: "better-auth:alice",
     googleState: "connected",
     jobId: "00000000-0000-4000-8000-000000000001",

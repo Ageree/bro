@@ -693,6 +693,88 @@ describe("proactive watches", { timeout: 30_000 }, () => {
       )
     ).toEqual([]);
   });
+
+  it("keeps the agent inbox watermark apart from Google's, and moves it with the run that hands mail over", async () => {
+    const { db, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    expect(watch.agentMailCheckedAt).toBeNull();
+
+    const inbox = {
+      dedupeKey: "agent-m1",
+      itemId: "agent-m1",
+      source: "agent_mail" as const,
+      threadId: "agent-t1",
+    };
+    const later = new Date(now.getTime() + 15 * 60_000);
+    expect(
+      await proactive.queueProactiveRun({
+        agentMailCheckedAt: later,
+        jobId: watch.jobId,
+        maxRunsPerDay: 12,
+        mailCheckedAt: now,
+        now: later,
+        signals: [inbox],
+        workspaceId: alice.workspaceId,
+      })
+    ).toMatchObject({ status: "queued" });
+    // Handed over once: the same message is not a signal of the next check.
+    expect(
+      await proactive.filterUnseenProactiveSignals(alice.workspaceId, [inbox])
+    ).toEqual([]);
+    expect(await db.query.proactiveWatches.findFirst()).toMatchObject({
+      agentMailCheckedAt: later,
+      mailCheckedAt: now,
+    });
+
+    // Without mail to hand over, the agent's watermark moves alone.
+    const evening = new Date(now.getTime() + 2 * 60 * 60_000);
+    await proactive.advanceAgentMailWatermark(alice.workspaceId, evening);
+    expect(await db.query.proactiveWatches.findFirst()).toMatchObject({
+      agentMailCheckedAt: evening,
+      // Google's state is the run's own, set when it was queued.
+      googleState: "connected",
+      mailCheckedAt: now,
+    });
+  });
+
+  it("lets a calendar prep run pass the daily cap, as a calendar event does", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const prep = {
+      dedupeKey: "tour@2026-09-23T18:00:00.000Z#T-3h",
+      itemId: "tour",
+      source: "calendar_prep" as const,
+      threadId: null,
+    };
+    const queue = (signals: readonly (typeof bossMail | typeof prep)[]) =>
+      proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: now,
+        // No run is allowed for mail; the cap alone decides.
+        maxRunsPerDay: 0,
+        now,
+        signals,
+        workspaceId: alice.workspaceId,
+      });
+
+    expect(await queue([bossMail])).toEqual({ status: "capped" });
+    const runId = queuedRunId(await queue([prep]));
+    expect(runId).toBeDefined();
+    if (!runId) return;
+    expect(await proactive.listProactiveRunSignals(runId)).toEqual([prep]);
+  });
 });
 
 describe("remembered chats", { timeout: 30_000 }, () => {

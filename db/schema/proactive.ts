@@ -32,6 +32,14 @@ export const proactiveWatches = pgTable(
       precision: 3,
       withTimezone: true,
     }).notNull(),
+    // The agent's own inbox watermark, for the agency pilot. Null until the
+    // first check of the pilot starts it at that check's time, so mail that
+    // came before the pilot is never replayed.
+    agentMailCheckedAt: timestamp("agent_mail_checked_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     nextCheckAt: timestamp("next_check_at", {
       mode: "date",
       precision: 3,
