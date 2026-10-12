@@ -23,6 +23,7 @@ export * from "./phone";
 export * from "./proactive";
 export * from "./schedules";
 export * from "./sessions";
+export * from "./sign-in-codes";
 export * from "./spending";
 export * from "./subscriptions";
 export * from "./turn-log";

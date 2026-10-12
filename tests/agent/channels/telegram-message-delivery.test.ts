@@ -4,6 +4,7 @@ import type {
 } from "eve/channels/telegram";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import type * as PublicFetch from "@agent/lib/sandbox/public-fetch";
 import type * as ArtifactObjects from "@shared/object-storage/artifacts";
 import type * as EnvModule from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -44,6 +45,13 @@ const telegramChannelCapture = vi.hoisted(() => ({
 const scheduleDeliveryCapture = vi.hoisted(() => ({
   finalize: vi.fn<typeof finalizeScheduledReport>(),
   release: vi.fn<typeof releaseScheduledReport>(),
+}));
+
+// Attachments are downloaded through `fetchPublic`, which dials the site
+// itself; here it goes to the stubbed global fetch like every other request.
+vi.mock("@agent/lib/sandbox/public-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof PublicFetch>()),
+  fetchPublic: async (url: URL, init?: RequestInit) => fetch(url, init),
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({

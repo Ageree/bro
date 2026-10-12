@@ -22,6 +22,7 @@ import {
   isBlockedHost,
   maximumAttachmentBytes,
 } from "@agent/lib/outbound-media/attachments";
+import { fetchPublic } from "@agent/lib/sandbox/public-fetch";
 
 const pageTimeoutMs = 15_000;
 const probeTimeoutMs = 8_000;
@@ -290,7 +291,9 @@ type FetchFailure =
 /**
  * Follows redirects by hand so every hop is checked: fetch's own redirect
  * handling would reach a private or plain-HTTP address before the caller saw
- * where it was going.
+ * where it was going. Each hop connects only to an address its name resolves
+ * to and that is public (`fetchPublic`): a page or the model could name a
+ * host that points at the VM itself or the cloud's metadata service.
  */
 async function fetchFollowingRedirects(
   url: URL,
@@ -304,13 +307,16 @@ async function fetchFollowingRedirects(
   if (isBlockedHost(url.hostname)) return { failure: "blocked-host" };
   let response: Response;
   try {
-    response = await fetch(url, { ...init, redirect: "manual" });
+    response = await fetchPublic(url, init);
   } catch (error) {
+    const name = error instanceof Error ? error.name : "";
     return {
       failure:
-        error instanceof Error && error.name === "TimeoutError"
+        name === "TimeoutError"
           ? "timeout"
-          : "network",
+          : name === "BlockedHostError"
+            ? "blocked-host"
+            : "network",
     };
   }
   const location = redirectStatuses.has(response.status)
@@ -685,7 +691,11 @@ async function probeImage(
   const fetched = await fetchFollowingRedirects(
     new URL(candidate.href),
     {
-      headers: { range: `bytes=0-${String(probeByteCount - 1)}` },
+      // A compressed range would not decode on its own.
+      headers: {
+        "accept-encoding": "identity",
+        range: `bytes=0-${String(probeByteCount - 1)}`,
+      },
       signal: AbortSignal.timeout(probeTimeoutMs),
     },
     maximumRedirects

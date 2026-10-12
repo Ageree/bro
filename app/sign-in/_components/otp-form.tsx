@@ -17,6 +17,7 @@ import { Input } from "@web/components/ui/input";
 import { PhoneNumberField } from "./phone-field";
 
 const sendCodeFallbackMessage = "Не вышло отправить код. Попробуй ещё раз.";
+const codeLimitMessage = "Слишком много кодов подряд. Попробуй через 10 минут.";
 
 export function PhoneOtpAuthForm({
   callbackUrl,
@@ -202,7 +203,13 @@ function IMessageCodeNotice({
 export function phoneOtpErrorMessage(error: {
   readonly code?: string;
   readonly message?: string;
+  readonly status?: number;
 }) {
+  // Bro's own limit (`db/services/auth/code-sends.ts`) and Better Auth's
+  // per-address one, which answers 429 with no code.
+  if (error.code === "IMESSAGE_CODE_LIMIT_REACHED" || error.status === 429) {
+    return codeLimitMessage;
+  }
   return error.code?.startsWith("IMESSAGE_") && error.message
     ? error.message
     : sendCodeFallbackMessage;
