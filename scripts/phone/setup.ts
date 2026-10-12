@@ -247,6 +247,7 @@ function configuration(
         soft_timeout_config: {
           ...object(turn.soft_timeout_config ?? {}),
           timeout_seconds: -1,
+          message: "",
         },
       },
     },
