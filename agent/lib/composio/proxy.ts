@@ -1,5 +1,10 @@
+import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
-import { composioRequest } from "@shared/composio/api";
+import {
+  ComposioError,
+  composioRequest,
+  isMissingConnectedAccount,
+} from "@shared/composio/api";
 
 /**
  * What Composio's proxy hands back: the upstream API's own status, headers
@@ -24,6 +29,28 @@ type ProxyResponse = z.output<typeof proxyResponseSchema>;
 type ProxyMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
 
 /**
+ * How long a refused request waits before it is asked once more. From the
+ * VM's addresses Composio now and then answers a bare 403 that the same
+ * request, three seconds later, does not get.
+ */
+const refusedRetryMs = 3_000;
+
+/**
+ * Whether Composio itself refused the request before making it: a 403 of its
+ * own that names no gone account. The proxy answers HTTP 200 for whatever
+ * the provider said, whatever the status (the app's own 403 and 429 arrive in
+ * `status`, not here), so an error raised here means the provider's API was
+ * never called, and asking again cannot do a write twice.
+ */
+function refusedBeforeExecuting(cause: unknown) {
+  return (
+    cause instanceof ComposioError &&
+    cause.status === 403 &&
+    !isMissingConnectedAccount(cause)
+  );
+}
+
+/**
  * One request to a provider's API made as the person: Composio signs it
  * with the grant of `connectedAccountId`, which never reaches Bro. `url` is
  * absolute and stays on the toolkit's own domain (Composio refuses any
@@ -40,19 +67,27 @@ export async function composioProxy(
     readonly url: string;
   }
 ) {
-  return composioRequest(proxyResponseSchema, "/tools/execute/proxy", {
-    body: {
-      body: request.body ?? null,
-      connected_account_id: connectedAccountId,
-      endpoint: request.url,
-      method: request.method,
-      parameters: Object.entries(request.headers ?? {}).map(
-        ([name, value]) => ({ name, type: "header", value })
-      ),
-    },
-    method: "POST",
-    signal: request.signal,
-  });
+  const send = () =>
+    composioRequest(proxyResponseSchema, "/tools/execute/proxy", {
+      body: {
+        body: request.body ?? null,
+        connected_account_id: connectedAccountId,
+        endpoint: request.url,
+        method: request.method,
+        parameters: Object.entries(request.headers ?? {}).map(
+          ([name, value]) => ({ name, type: "header", value })
+        ),
+      },
+      method: "POST",
+      signal: request.signal,
+    });
+  try {
+    return await send();
+  } catch (error) {
+    if (!refusedBeforeExecuting(error)) throw error;
+    await setTimeout(refusedRetryMs, undefined, { signal: request.signal });
+    return send();
+  }
 }
 
 /**
