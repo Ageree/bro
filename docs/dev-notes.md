@@ -330,6 +330,14 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   владелец меняет режим permissions сам. Базу читайте узким ops-скриптом через
   PR: `host.py ops` гоняет скрипты выкаченного релиза (`usage-stats.sh`,
   `memory-keys.sh`).
+- Журнал ходов владельца — `turn_log` (хук `agent/hooks/turn-log.ts`, сервис
+  чтения `db/services/turn-log.ts`): id хода повторяется, поэтому открытой
+  бывает лишь одна строка сессии и хода, а открытая старше 6 ч — `lost`.
+  Тексты (`turn_log_entries`) — только при `OWNER_TRANSCRIPTS=on`, через общий
+  с `conversation_log` фильтр `agent/lib/privacy/secrets.ts`; ключи JSON вида
+  `password` выкидываются до фильтра: слово «password» в строке срезает фильтр
+  всего хвоста. Сбой хода человека — `alertOwner` раз в час на пару
+  воркспейс+код, сводка — `agent/schedules/owner-digest.ts`.
 - Тревоги владельцу (баланс RouterAI, пул) шлёт `agent/lib/owner-alert.ts`
   служебным ботом `OPS_ALERT_BOT_TOKEN` в `OPS_ALERT_CHAT_ID` (пара сторожа
   VM). Без него — ботом Бро в чат владельца с Бро, с шапкой «прислала проверка,

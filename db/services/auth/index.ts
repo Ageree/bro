@@ -80,10 +80,9 @@ async function initializeAuth() {
                 await releaseSignInCodeSend({
                   address: ctx ? requestAddress(ctx) : null,
                   phoneNumber: to,
-                }).catch((release: unknown) => {
-                  console.warn("[auth] sign-in code slot was not given back", {
-                    name: release instanceof Error ? release.name : "unknown",
-                  });
+                }).catch(() => {
+                  // Nothing about the number goes to the log.
+                  console.warn("[auth] sign-in code slot was not given back");
                 });
                 throw error;
               }

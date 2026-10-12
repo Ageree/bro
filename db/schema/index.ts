@@ -26,6 +26,7 @@ export * from "./sessions";
 export * from "./sign-in-codes";
 export * from "./spending";
 export * from "./subscriptions";
+export * from "./turn-log";
 export * from "./usage";
 export * from "./usage-costs";
 export * from "./vault";
