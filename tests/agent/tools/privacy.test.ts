@@ -62,6 +62,9 @@ const optionalServices = [
   "MEMORY_DIGEST_MODEL",
   "MODEL_PROVIDER",
   "OPENROUTER_API_KEY",
+  "OWNER_TRANSCRIPTS",
+  "BROWSER_HOST_CLOUD",
+  "BROWSER_HOST_STATIC",
   "ROUTERAI_API_KEY",
   "SANDBOX_HOST_ID",
   "SANDBOX_HOST_ORIGIN",
@@ -119,15 +122,17 @@ describe("privacy", () => {
 
     const result = await overview(tool);
 
-    expect(result.kept.join("\n")).toMatch(/Postgres в Neon/u);
+    expect(result.kept.join("\n")).toMatch(/Postgres Selectel \(Россия\)/u);
     expect(result.kept.join("\n")).toMatch(/AES-256-GCM/u);
     const processors = result.processors.join("\n");
     expect(processors).toContain("deepseek/deepseek-v4.1-flash");
     expect(processors).toContain("OpenRouter");
     expect(processors).toContain("Browser Use");
     expect(processors).toContain("Composio");
-    // No guessed country: the settings name none.
+    // The own servers are in Russia; no guessed country for the others.
+    expect(result.serverLocation).toContain("Selectel в России");
     expect(result.serverLocation).toContain("не знает");
+    expect(result.kept.join("\n")).not.toMatch(/Vercel|Neon/u);
     expect(result.google).toBe(googleAccessOptions("full"));
     const remove = result.remove.join("\n");
     expect(remove).toContain("«удали всё, что ты про меня помнишь»");
@@ -203,7 +208,7 @@ describe("privacy", () => {
     );
   });
 
-  it("names Cloud.ru as the keeper of files once the bucket is configured", async () => {
+  it("names Selectel as the keeper of files once the bucket is configured", async () => {
     const { facts } = await withServices({
       BROWSER_STATE_BUCKET: "bucket-test",
       CLOUDRU_KEY_ID: "key-id",
@@ -213,10 +218,8 @@ describe("privacy", () => {
 
     expect(
       facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
-    ).toContain("хранит Cloud.ru в приватном хранилище Object Storage");
-    expect(facts.keptData().join("\n")).toMatch(
-      /Object Storage облака Cloud\.ru/u
-    );
+    ).toContain("хранит Selectel в приватном хранилище Object Storage");
+    expect(facts.keptData().join("\n")).toMatch(/Object Storage Selectel/u);
   });
 
   it("names the task agent's sandbox as a keeper of files once the person's files reach it", async () => {
@@ -231,7 +234,7 @@ describe("privacy", () => {
       SANDBOX_HOST_ORIGIN: "https://sandbox.example.test",
       SANDBOX_SIGNING_KEY: "ab".repeat(32),
     };
-    const sentence = "копируются в его песочницу на Cloud.ru";
+    const sentence = "копируются в его песочницу на сервере Selectel";
     const kept = async (services: Parameters<typeof withServices>[0]) =>
       (await withServices(services)).facts.keptData().join("\n");
     // Every gate of `taskFilesEnabled`: the files' list, the task agent's
@@ -383,10 +386,30 @@ describe("privacy", () => {
     expect(processors).not.toContain("прокси-сервер деплоя");
     expect(processors).toContain("раз в 3 дн. облачный браузер сам");
     expect(facts.keptData().join("\n")).toContain("держит вход");
-    // The zone is a setting, so the VMs' country is known; the rest is not.
-    expect(facts.serverLocation()).toContain("Cloud.ru (зона ru.AZ-3, Россия)");
-    expect(facts.serverLocation()).toContain(
-      "остальных сервисов, Бро не знает"
+    expect(facts.serverLocation()).toContain("Selectel в России");
+    expect(facts.serverLocation()).toContain("остальных сервисов");
+  });
+
+  it("names the pool's own Selectel servers and the owner's transcripts, and DeepInfra behind RouterAI", async () => {
+    const { facts } = await withServices({
+      ...browserVmTestEnvironment,
+      BROWSER_HOST_CLOUD: "static",
+      BROWSER_HOST_STATIC: "host-1@203.0.113.7",
+      BROWSER_VM_PROXY:
+        "premium-residential.geonode.com:9000:geonode_bro-session-{session}:secret",
+      MODEL_PROVIDER: "routerai",
+      OWNER_TRANSCRIPTS: "on",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    const processors = facts
+      .dataProcessors("deepseek/deepseek-v4.1-flash")
+      .join("\n");
+
+    expect(processors).toContain("выделенном сервере Selectel в России");
+    expect(processors).not.toContain("Cloud.ru");
+    expect(processors).toContain("хост DeepInfra");
+    expect(facts.keptData().join("\n")).toContain(
+      "Владелец сервиса может читать тексты переписки"
     );
   });
 
@@ -399,7 +422,7 @@ describe("privacy", () => {
       facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
     ).not.toContain("Cloud.ru");
     // Without the bucket nothing is stored, so no place of files is named.
-    expect(facts.keptData().join("\n")).not.toContain("Cloud.ru");
+    expect(facts.keptData().join("\n")).not.toContain("Object Storage");
     expect(facts.serverLocation()).not.toContain("Cloud.ru");
     expect(facts.serverLocation()).toContain(
       "регион нигде в его настройках не записан"

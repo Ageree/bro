@@ -13,9 +13,10 @@ import { photonConfigured } from "@shared/photon/credentials";
 
 /**
  * What Bro keeps about the person and where, as this deployment is built:
- * the app and the agent run on Vercel, the records live in Postgres on Neon,
- * files in Bro's private bucket in Object Storage on Cloud.ru. On 25.09 (RU d14) Bro said only «в
- * облаке сервиса» and «Postgres в облаке».
+ * the app and the agent run on a Selectel VM in Russia (`docs/dev-notes.md`,
+ * «Прод на VM»), the records live in Selectel's managed Postgres, files in
+ * Bro's private bucket in Selectel Object Storage. On 25.09 (RU d14) Bro said
+ * only «в облаке сервиса» and «Postgres в облаке».
  */
 export function keptData(
   options: {
@@ -30,20 +31,25 @@ export function keptData(
           "Телефония: привязка выделенного номера к владельцу, идентификаторы провайдеров, состояния звонков и известные расходы — в Postgres. Бро не сохраняет аудио или полную расшифровку; краткий итог и номер собеседника очищаются после доставки отчёта, когда с запуска прошло 30 дней. Привязка номера и история состояний остаются для защиты от повторного звонка и учёта платного ресурса.",
         ]
       : []),
-    `Память (факты, предпочтения, правила), сохранённые дела, личные данные (имя, телефон, почта, адрес), расписания, сейф, заказы и итоги поручений${yooKassaConfigured() ? ", история оплат подписки" : ""}${browserUseConfigured() ? ", сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом" : ""} — в базе Postgres в Neon.`,
+    `Память (факты, предпочтения, правила), сохранённые дела, личные данные (имя, телефон, почта, адрес), расписания, сейф, заказы и итоги поручений${yooKassaConfigured() ? ", история оплат подписки" : ""}${browserUseConfigured() ? ", сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом" : ""} — в управляемой базе Postgres Selectel (Россия).`,
     "Пароли и карты из сейфа лежат там же в зашифрованном виде (AES-256-GCM): языковая модель их не видит.",
     // Without the bucket nothing is stored (`artifactStorageConfigured`).
     ...(artifactStorageConfigured()
       ? [
-          "Файлы — вложения писем, файлы с Диска, нарисованные картинки и снимки страниц из поручений — в приватном хранилище Object Storage облака Cloud.ru.",
+          "Файлы — вложения писем, файлы с Диска, нарисованные картинки и снимки страниц из поручений — в приватном хранилище Object Storage Selectel (Россия).",
         ]
       : []),
     ...(taskFilesDeployed()
       ? [
-          "Файлы, которые Бро передаёт помощнику с компьютером, копируются в его песочницу на Cloud.ru и в приватное хранилище Object Storage Cloud.ru.",
+          "Файлы, которые Бро передаёт помощнику с компьютером, копируются в его песочницу на сервере Selectel (Россия) и в приватное хранилище Object Storage Selectel.",
         ]
       : []),
-    "Приложение и сам Бро работают на Vercel; история переписки (сессии Бро) хранится там же, в Vercel Workflow.",
+    "Приложение и сам Бро работают на виртуальной машине Selectel в России; история переписки (сессии Бро) хранится в той же базе Postgres.",
+    ...(env.OWNER_TRANSCRIPTS === "on"
+      ? [
+          `Владелец сервиса может читать тексты переписки с Бро, чтобы находить и чинить ошибки: они хранятся ${String(env.OWNER_TRANSCRIPTS_RETENTION_DAYS)} дн. и затем удаляются, коды и пароли из них вырезаются. Метаданные ходов (время, длительность, ошибки) хранятся и без текстов.`,
+        ]
+      : []),
     ...(options.conversationLog === true
       ? [
           "Сообщения человека в веб-чате, Telegram и iMessage (каждое до 500 знаков) 14 дней хранятся и в той же базе Postgres, чтобы в одном чате Бро знал, о чём человек писал в другом; «удали всё, что ты про меня помнишь» стирает их сразу; что уже попало в сводку другого чата, остаётся в истории того чата, как вся переписка. Стёртые и истёкшие строки ещё до 14 дней остаются в ночных зашифрованных резервных копиях базы.",
@@ -80,7 +86,7 @@ export function dataProcessors(
         ]
       : []),
     direct !== undefined
-      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${direct} передаёт поисковикам Exa и Perplexity.`
+      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает${direct === "RouterAI" && modelId.startsWith("deepseek/") ? " (для моделей DeepSeek — хост DeepInfra)" : ""}. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${direct} передаёт поисковикам Exa и Perplexity.`
       : `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через Vercel AI Gateway к её провайдеру.`,
     ...(direct === "RouterAI" && env.RUNINFRA_API_KEY !== undefined
       ? [
@@ -99,7 +105,7 @@ export function dataProcessors(
       : []),
     ...(artifactStorageConfigured()
       ? [
-          "Файлы (вложения писем, файлы с Диска, нарисованные картинки, снимки страниц) хранит Cloud.ru в приватном хранилище Object Storage: открыть их можно только через Бро.",
+          "Файлы (вложения писем, файлы с Диска, нарисованные картинки, снимки страниц) хранит Selectel в приватном хранилище Object Storage (Россия): открыть их можно только через Бро.",
         ]
       : []),
     ...browserVms(),
@@ -151,7 +157,7 @@ function browserVms() {
     ? "Geonode"
     : `сервис ${proxyHost}`;
   return [
-    `Поручения на сайтах выполняет браузер Бро на виртуальной машине в облаке Cloud.ru (${browserVmZone()}), у каждого человека своей: он видит страницы и данные, нужные поручению, и получает пароль или карту из сейфа только на время запуска и только для сайта поручения. На диске машины, даже выключенной, хранятся профиль браузера с куки сайтов, куда он входил, тексты и итоги поручений и снимки страниц.`,
+    `Поручения на сайтах выполняет браузер Бро на ${browserVmPlace()}, у каждого человека своей: он видит страницы и данные, нужные поручению, и получает пароль или карту из сейфа только на время запуска и только для сайта поручения. На диске машины, даже выключенной, хранятся профиль браузера с куки сайтов, куда он входил, тексты и итоги поручений и снимки страниц.`,
     `Браузером на этой машине управляет языковая модель ${env.BROWSER_VM_MODEL} через ${modelService}: модель видит текст поручения и страницы, которые открывает браузер.`,
     `Браузер на этой машине ходит на сайты через резидентный прокси ${proxyService}: прокси видит, на какие сайты он заходит.`,
     ...(env.BROWSER_VM_TWOCAPTCHA_API_KEY === undefined
@@ -163,12 +169,16 @@ function browserVms() {
 }
 
 /**
- * The one place the settings do name: the Cloud.ru zone the browser VMs are
- * created in. Zones named `ru.*` are Cloud.ru's Russian data centres.
+ * Where the browser VMs run: the pool's own Selectel servers
+ * (`BROWSER_HOST_CLOUD=static`), or a Cloud.ru zone, whose `ru.*` names are
+ * Cloud.ru's Russian data centres.
  */
-function browserVmZone() {
+function browserVmPlace() {
+  if (env.BROWSER_HOST_CLOUD === "static") {
+    return "виртуальной машине на выделенном сервере Selectel в России";
+  }
   const zone = env.CLOUDRU_ZONE;
-  return zone.startsWith("ru.") ? `зона ${zone}, Россия` : `зона ${zone}`;
+  return `виртуальной машине в облаке Cloud.ru (${zone.startsWith("ru.") ? `зона ${zone}, Россия` : `зона ${zone}`})`;
 }
 
 /**
@@ -205,14 +215,11 @@ function messengers() {
 }
 
 /**
- * Neither the deployment's settings nor its code name a region for any of
- * these services, so Bro cannot say where the servers stand — and must not
- * guess «в России» for a person who asks because of 152-ФЗ. The browser VMs
- * are the one exception: the Cloud.ru zone they are created in is a setting.
+ * The app, the database, the files and the browser VMs stand in Russia, on
+ * Selectel's servers. The other services (the model's hosts, Composio,
+ * ElevenLabs and the rest) publish no region in Bro's settings, so Bro must
+ * not guess one for them — a person asks because of 152-ФЗ.
  */
 export function serverLocation() {
-  if (!browserVmConfigured()) {
-    return "В каких странах стоят серверы этих сервисов, Бро не знает: регион нигде в его настройках не записан. Утверждать, что данные хранятся в России (или что за её пределами), он не может.";
-  }
-  return `Виртуальные машины браузера стоят в облаке Cloud.ru (${browserVmZone()}): зона записана в настройках Бро. В каких странах стоят серверы остальных сервисов, Бро не знает: регион нигде в его настройках не записан. Утверждать, что остальные данные хранятся в России (или что за её пределами), он не может.`;
+  return "Приложение, база данных и файлы Бро стоят на серверах Selectel в России. В каких странах стоят серверы остальных сервисов (языковая модель и её хосты, Composio, звонки, почта и другие), Бро не знает: регион нигде в его настройках не записан. Утверждать, что их данные хранятся в России (или что за её пределами), он не может.";
 }
