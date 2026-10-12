@@ -180,8 +180,9 @@ async function main() {
   const { workspace } = specSchema.parse(await (await fetch(specUrl)).json());
   // Only the owner's workspace, named by the operator's environment: the
   // spec alone cannot point this at somebody else's cookies.
-  // oxlint-disable-next-line no-restricted-properties -- an operator-only variable of this script, not application configuration
-  if (process.env.YANDEX_PROBE_WORKSPACE !== workspace) {
+  // oxlint-disable-next-line eslint/no-restricted-properties -- a one-shot CLI on the VM with the ops environment, not the app
+  const environment = process.env;
+  if (environment.YANDEX_PROBE_WORKSPACE !== workspace) {
     throw new Error("The workspace is not the one allowed for the probe.");
   }
   const tab = await createBrowserVmBrowser({
