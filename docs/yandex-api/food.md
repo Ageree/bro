@@ -502,6 +502,38 @@ return {
 истории заказов — на непустой корзине **не проверены**. Фикстура `lavka-cart.json`.
 Замер: 864/552/485 → **552 мс**.
 
+## food.eda_cart_set — корзина Еды, изменение (живая проверка 11.10)
+
+Проверено вживую на пуле владельца, заведение `doner24_mqn27`, корзина пуста в конце.
+Все запросы — с `soft_multi=true` в query: без него `full-carts` не видит позицию,
+добавленную `add_bulk` (та же корзина с ним видна).
+
+- Чтение корзины заведения: `POST /eats/v1/cart/v2/full-carts?<query>&plus_subscription_toggle_state=false&combo_subscription_toggle_state=false`, тело `{}` → `cart.items[]` (`id` — id позиции корзины, `item_id` — id блюда из меню, `name`, `price`, `quantity`), `cart.decimal_subtotal`, `decimal_delivery_fee`, `decimal_total`.
+- Новое блюдо: `POST /api/v1/cart/add_bulk?<query>`, тело `{items: [{item_id, quantity}], place_slug, place_business: "restaurant"}` → `{cart}`. **Для блюда, уже лежащего в корзине, add_bulk прибавляет количество** (получили 1 → 2), поэтому его меняют через PUT.
+- Изменение количества: `PUT /api/v1/cart/<id позиции>?<query>`, тело `{quantity, itemOptions: []}` → `{cart}` с новым количеством.
+- Удаление: `DELETE /api/v1/cart/<id позиции>?<query>` → `{cart}` без позиции.
+- `<query>` = `latitude&longitude&shippingType=delivery&screen=menu&autoTranslate=false&soft_multi=true&placeSlug=<slug>`.
+
+Источник контрактов — бандл `eats.desktop.50492-*.js` (`cart.addItem`, `changeItem`, `addBulkItems`) и `eats.desktop.98332-*.js`.
+
+### Оформление Еды — что найдено и что не проверено
+
+Не проверено живьём: заказ запрещён протоколом, а вход в оформление на пуле не работает.
+
+- Страница `eda.yandex.ru/checkout` на пуле редиректит на `/?redirectFrom=not_auth`: адреса доставки в аккаунте Еды
+  сайт выбирает сам (`app.lastSelectedAddress`), пул его не выбрал. Выбирать адрес через `superapp-selected-address`
+  значит писать в аккаунт владельца, это не сделано.
+- Адреса аккаунта: `GET /api/v3/user/addresses` → массив; у «Дом» `title: "Дом"`, id — ULID-строка (`01K…`/`01J…`).
+- Карты: список берётся у Trust, `GET ${хост Trust}/web/payment_methods` с заголовком `X-Service-Token`
+  (бандл `eats.desktop.PaymentOptions-*.js`, фильтр `card*`/`sbp*`). Сервисного токена в пуле нет.
+- Заказ: `POST /api/v1/orders` (доставка) с телом из `createOrder` (`eats.desktop.98332-*.js`): `paymentMethodId`,
+  `phone`, `changeOn`, `personsQuantity`, `courierOptions`, `extendedOptions`, `deliveryTime`, `payment`, `place_slug`,
+  `address`, `userAddressId`, `request_id`. Транспорт не переписывает ключи (интерсепторы только заголовки), поэтому ключи
+  уходят как написаны; верифицировать можно только живым заказом.
+- Статус оплаты после заказа: `POST /eats/v1/eats-payments/v1/order/tracking`, тело `{order_id}` (опрос с паузами);
+  `GET /api/v1/orders/<orderNr>` — заказ; `GET /api/v1/orders/awaiting-payment` — неоплаченный заказ.
+- Мульти-заказ (`/eats/v1/eats-orders-linking/v1/multiorder/checkout`) — другой поток, не нужен для одного заведения.
+
 ## Оформление заказа (только «какой запрос это был бы»)
 
 Не исследовалось. Лавка: `POST /api/v1/providers/orders/v1/checkout-layout`,

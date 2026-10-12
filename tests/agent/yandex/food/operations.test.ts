@@ -3,6 +3,7 @@ import { z } from "zod";
 import { lavkaAddressesOperation } from "@agent/lib/yandex/food/addresses";
 import {
   edaCartOperation,
+  edaCartSetOperation,
   lavkaCartOperation,
   lavkaCartSetOperation,
 } from "@agent/lib/yandex/food/cart";
@@ -51,12 +52,35 @@ const lavkaPage = pageGlobals.parse({
 const menu = z.object({ catalog: json, menu: json }).parse(fixture("eda-menu"));
 const coordinates = { lat: 55.7539, lon: 37.6208 };
 
+const cartLine = (
+  id: number,
+  itemId: number,
+  name: string,
+  price: number,
+  quantity: number
+) => ({ id, item_id: itemId, name, price, quantity });
+
+const cartAnswer = (
+  items: ReturnType<typeof cartLine>[],
+  subtotal: string,
+  total: string
+) => ({
+  cart: {
+    items,
+    decimal_delivery_fee: "309",
+    decimal_subtotal: subtotal,
+    decimal_total: total,
+  },
+});
+
 describe("the food operations", () => {
-  it("only read, except the Lavka cart change, and are in the registry", () => {
-    expect(foodOperations).toHaveLength(10);
+  it("only read, except the cart changes, and are in the registry", () => {
+    expect(foodOperations).toHaveLength(11);
     for (const operation of foodOperations) {
       expect(operation.access).toBe(
-        operation === lavkaCartSetOperation ? "cart" : "read"
+        operation === edaCartSetOperation || operation === lavkaCartSetOperation
+          ? "cart"
+          : "read"
       );
       expect(yandexOperations).toContain(operation);
     }
@@ -70,6 +94,7 @@ describe("the food operations", () => {
         "food.lavka_search",
         "food.eda_menu",
         "food.eda_cart",
+        "food.eda_cart_set",
         "food.lavka_cart",
         "food.lavka_cart_set",
       ])
@@ -250,6 +275,99 @@ describe("the food operations", () => {
       canCheckout: true,
       items: [{ id: "p1", name: "Попкорн", price: 45, qty: 2 }],
     });
+  });
+
+  it("sets Eda dish quantities with the site's requests: PUT for a dish in the cart, add for a new one", async () => {
+    const eda = page([
+      {
+        body: cartAnswer(
+          [cartLine(9062519531, 3025138918, "Самса ", 200, 1)],
+          "200",
+          "509"
+        ),
+        path: "/eats/v1/cart/v2/full-carts",
+      },
+      {
+        body: cartAnswer(
+          [cartLine(9062519531, 3025138918, "Самса ", 200, 2)],
+          "400",
+          "709"
+        ),
+        path: "/api/v1/cart/9062519531",
+      },
+      {
+        body: cartAnswer(
+          [
+            cartLine(9062519531, 3025138918, "Самса ", 200, 2),
+            cartLine(9062520000, 3029100650, "Плов", 550, 1),
+          ],
+          "950",
+          "1259"
+        ),
+        path: "/api/v1/cart/add_bulk",
+      },
+    ]);
+    const data = await dataOf(edaCartSetOperation, eda, {
+      items: [
+        { id: 3025138918, quantity: 2 },
+        { id: 3029100650, quantity: 1 },
+      ],
+      lat: 55.695511,
+      lon: 37.485725,
+      place: "doner24_mqn27",
+    });
+    expect(data).toEqual({
+      deliveryFee: 309,
+      items: [
+        { itemId: 3025138918, name: "Самса", price: 200, quantity: 2 },
+        { itemId: 3029100650, name: "Плов", price: 550, quantity: 1 },
+      ],
+      subtotal: 950,
+      total: 1259,
+    });
+  });
+
+  it("removes an Eda dish set to 0 with DELETE and answers the emptied cart", async () => {
+    const eda = page([
+      {
+        body: {
+          cart: {
+            items: [
+              {
+                id: 9062519531,
+                item_id: 3025138918,
+                name: "Самса",
+                price: 200,
+                quantity: 1,
+              },
+            ],
+            decimal_delivery_fee: "0",
+            decimal_subtotal: "200",
+            decimal_total: "200",
+          },
+        },
+        path: "/eats/v1/cart/v2/full-carts",
+      },
+      {
+        body: {
+          cart: {
+            items: [],
+            decimal_delivery_fee: "0",
+            decimal_subtotal: "0",
+            decimal_total: "0",
+          },
+        },
+        path: "/api/v1/cart/9062519531",
+      },
+    ]);
+    expect(
+      await dataOf(edaCartSetOperation, eda, {
+        items: [{ id: 3025138918, quantity: 0 }],
+        lat: 55.695511,
+        lon: 37.485725,
+        place: "doner24_mqn27",
+      })
+    ).toEqual({ deliveryFee: 0, items: [], subtotal: 0, total: 0 });
   });
 
   it("answers signed_out when the service says the person is not signed in", async () => {
