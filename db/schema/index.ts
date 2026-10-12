@@ -25,6 +25,7 @@ export * from "./schedules";
 export * from "./sessions";
 export * from "./spending";
 export * from "./subscriptions";
+export * from "./turn-log";
 export * from "./usage";
 export * from "./usage-costs";
 export * from "./vault";
