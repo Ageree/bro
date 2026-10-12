@@ -30,6 +30,15 @@ describe("phone OTP errors", () => {
     ).toBe("This number is not reachable on iMessage.");
   });
 
+  it.each([
+    { code: "IMESSAGE_CODE_LIMIT_REACHED", message: "Too many.", status: 429 },
+    { message: "Too many requests. Please try again later.", status: 429 },
+  ])("says when to ask again after too many codes", (error) => {
+    expect(phoneOtpErrorMessage(error)).toBe(
+      "Слишком много кодов подряд. Попробуй через 10 минут."
+    );
+  });
+
   it("does not expose unrelated server errors", () => {
     expect(
       phoneOtpErrorMessage({

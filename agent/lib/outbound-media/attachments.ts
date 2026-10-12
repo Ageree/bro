@@ -9,6 +9,7 @@ import { isIP } from "node:net";
 import type { MessageAttachment } from "@shared/chat/message-delivery";
 import { downloadWithin } from "../inbound-media/download";
 import { resolveMediaType } from "../inbound-media/media-type";
+import { fetchPublic } from "../sandbox/public-fetch";
 
 /**
  * Telegram refuses a photo upload past 10 MB, which is also the cap the
@@ -167,6 +168,9 @@ async function prepareAttachment(
 
   const download = await downloadWithin(url, maximumAttachmentBytes, {
     allowUrl: (next) => !isBlockedHost(next.hostname),
+    // The model picks this URL, maybe from a page or a letter: each hop goes
+    // only to an address its name resolves to and that is public.
+    fetch: fetchPublic,
   });
   if (download.kind !== "bytes") {
     const reason = download.kind === "oversize" ? "oversize" : download.reason;
@@ -201,9 +205,9 @@ async function prepareAttachment(
 
 /**
  * Rejects the hosts an outbound fetch must never reach, on the URL the model
- * supplied and on every redirect hop. No name is resolved here, so a hostname
- * pointing at a private address is not caught; the deployment's egress rules
- * are the backstop for that.
+ * supplied and on every redirect hop. No name is resolved here: a hostname
+ * pointing at a private address is caught by the connection itself
+ * (`fetchPublic` in `agent/lib/sandbox/public-fetch.ts`).
  */
 export function isBlockedHost(hostname: string) {
   const host = hostname

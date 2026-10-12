@@ -1,7 +1,8 @@
-import { betterAuth } from "better-auth";
-import { APIError } from "better-auth/api";
+import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { APIError, createAuthMiddleware, getIP } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { phoneNumber } from "better-auth/plugins/phone-number";
+import { z } from "zod";
 import { account, db, session, user, verification } from "@db";
 import { betterAuthBaseURL } from "@shared/environment/origin";
 import { localPhoneAuthBypassEnabled } from "@shared/environment";
@@ -12,6 +13,7 @@ import {
   photonOtpFailure,
   sendPhotonText,
 } from "./photon";
+import { claimSignInCodeSend, releaseSignInCodeSend } from "./code-sends";
 import { phoneUserEmail, phoneUserName } from "./phone-user";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
 
@@ -47,10 +49,22 @@ async function initializeAuth() {
       "/reset-password/:token",
       "/send-verification-email",
       "/sign-in/email",
+      // Nobody here has a password, and for an unverified number this path
+      // sends a code past the limit below without asking for one.
+      "/sign-in/phone-number",
       "/sign-in/social",
       "/sign-up/email",
       "/verify-email",
     ],
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (localPhoneAuthBypassEnabled || ctx.path !== sendCodePath) return;
+        const to = sendCodeBodySchema.safeParse(ctx.body).data?.phoneNumber;
+        // The endpoint itself refuses a malformed number; that sends nothing.
+        if (to === undefined || !isE164PhoneNumber(to)) return;
+        await limitSignInCodes({ address: requestAddress(ctx), to });
+      }),
+    },
     plugins: [
       phoneNumber({
         allowedAttempts: 3,
@@ -59,7 +73,20 @@ async function initializeAuth() {
         requireVerification: true,
         sendOTP: localPhoneAuthBypassEnabled
           ? () => undefined
-          : ({ code, phoneNumber: to }) => sendPhoneCode({ code, to }),
+          : async ({ code, phoneNumber: to }, ctx) => {
+              try {
+                await sendPhoneCode({ code, to });
+              } catch (error) {
+                await releaseSignInCodeSend({
+                  address: ctx ? requestAddress(ctx) : null,
+                  phoneNumber: to,
+                }).catch(() => {
+                  // Nothing about the number goes to the log.
+                  console.warn("[auth] sign-in code slot was not given back");
+                });
+                throw error;
+              }
+            },
         signUpOnVerification: {
           getTempEmail: phoneUserEmail,
           getTempName: () => phoneUserName,
@@ -70,6 +97,46 @@ async function initializeAuth() {
       }),
     ],
     secret: betterAuthSecret,
+  });
+}
+
+const sendCodePath = "/phone-number/send-otp";
+
+/**
+ * Caddy sets `x-forwarded-for` to the client alone, and Next keeps it, so
+ * this is the visitor's address, not loopback.
+ */
+function requestAddress(ctx: {
+  readonly context: { readonly options: BetterAuthOptions };
+  readonly headers?: Headers;
+  readonly request?: Request;
+}) {
+  return getIP(
+    ctx.request ?? ctx.headers ?? new Headers(),
+    ctx.context.options
+  );
+}
+const sendCodeBodySchema = z.object({ phoneNumber: z.string() });
+
+/**
+ * Better Auth's own limit counts requests per address in each process's
+ * memory, so a restart forgets it and a number is never counted at all:
+ * anyone could flood a stranger with codes from Bro's iMessage line. This
+ * runs before the endpoint stores a new code: a refused request must not
+ * replace the code the person already has.
+ */
+async function limitSignInCodes({
+  address,
+  to,
+}: {
+  readonly address: string | null;
+  readonly to: string;
+}) {
+  if (await claimSignInCodeSend({ address, phoneNumber: to })) return;
+  throw new APIError("TOO_MANY_REQUESTS", {
+    code: "IMESSAGE_CODE_LIMIT_REACHED",
+    message:
+      "Слишком много запросов кода. Подожди немного и запроси код ещё раз.",
   });
 }
 

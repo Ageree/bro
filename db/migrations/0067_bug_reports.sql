@@ -1,7 +1,10 @@
 CREATE TABLE "bug_bot_state" (
 	"id" text PRIMARY KEY NOT NULL,
 	"next_offset" bigint NOT NULL,
-	"paused_until" timestamp (3) with time zone
+	"paused_until" timestamp (3) with time zone,
+	"lease_until" timestamp (3) with time zone,
+	"failed_update_id" bigint,
+	"failed_count" integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "bug_report_replies" (

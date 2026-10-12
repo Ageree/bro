@@ -1069,6 +1069,22 @@ export const env = createEnv({
         "BUG_BOT_USERNAME must be the bot handle without a leading @"
       )
       .optional(),
+    // Whether the owner's turn log keeps the text of each turn — the
+    // person's words, Bro's replies, tools' arguments and results, with
+    // codes, passwords, card and document numbers cut out
+    // (`agent/hooks/turn-log.ts`). Off by default: on only once people have
+    // agreed to it. The turns' metadata is kept either way.
+    OWNER_TRANSCRIPTS: z.enum(["on", "off"]).default("off"),
+    // How many days a turn's text is kept before the hourly sweep deletes it.
+    OWNER_TRANSCRIPTS_RETENTION_DAYS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .default(30),
+    // The hour, Moscow time, of the owner's daily summary in Telegram
+    // (`agent/schedules/owner-digest.ts`).
+    OWNER_DIGEST_HOUR: z.coerce.number().int().min(0).max(23).default(9),
     // Whether the FREE_*/PAID_* ceilings above and the paywall are enforced
     // at all. Off by default: the closed beta runs with no usage limits, by
     // the owner's decision. "on" restores the per-day/per-month ceilings and
