@@ -607,22 +607,20 @@ async function sendText(
   options: { readonly preview?: boolean } = {}
 ) {
   if (!context.telegram.chatId) return;
-  const preview =
+  const withPreview = <Body extends object>(body: Body) =>
     options.preview === false
-      ? { link_preview_options: { is_disabled: true } }
-      : {};
+      ? { ...body, link_preview_options: { is_disabled: true } }
+      : body;
   const chatId = context.telegram.chatId;
   const chunks = splitTelegramHtml(toTelegramHtml(text));
   let plainFrom = chunks.length;
   for (const [index, chunk] of chunks.entries()) {
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
-      await context.telegram.request("sendMessage", {
-        chat_id: chatId,
-        parse_mode: "HTML",
-        text: chunk,
-        ...preview,
-      });
+      await context.telegram.request(
+        "sendMessage",
+        withPreview({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+      );
     } catch (error) {
       if (!(error instanceof Error) || !rejectedMarkup(error)) throw error;
       console.warn("[telegram] markup refused, sent as plain text", {
@@ -638,11 +636,10 @@ async function sendText(
   for (const chunk of chunks.slice(plainFrom)) {
     for (const plain of splitTelegramPlain(telegramHtmlToPlain(chunk))) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
-      await context.telegram.request("sendMessage", {
-        chat_id: chatId,
-        text: plain,
-        ...preview,
-      });
+      await context.telegram.request(
+        "sendMessage",
+        withPreview({ chat_id: chatId, text: plain })
+      );
     }
   }
 }
