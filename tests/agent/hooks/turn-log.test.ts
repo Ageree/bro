@@ -336,7 +336,7 @@ describe("the turn log hook", () => {
             toolName: "web_fetch",
           },
           sequence: 1,
-          status: "succeeded",
+          status: "completed",
           stepIndex: 0,
           turnId: "turn_1",
         },
