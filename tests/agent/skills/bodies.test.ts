@@ -222,7 +222,7 @@ const moved: Partial<Record<SkillName, readonly string[]>> = {
     "предложи голосовое",
     "не зови `connect_google`, а сразу читай",
     "Второй раз не знакомься никогда",
-    "ты сам ему позвонишь",
+    "свой личный номер телефона",
     "`phone-status`",
     "`accepted` — это не дозвон",
   ],
