@@ -90,7 +90,7 @@ const goReplies = {
  * check, which only the Go app runs: the web has no way to do it.
  */
 const goNoCardReply =
-  "Nothing was booked: Yandex Go has not verified any of the person's cards yet. Tell them their cards are already linked, Go only asks to confirm one once in the Yandex Go app (payment methods, the card, confirm); until then you can book with cash.";
+  "Nothing was booked: Yandex Go has not verified any of the person's cards yet. Tell them their cards are already linked, Go only asks to confirm one once: in the Yandex Go app (payment methods, the card, confirm), or by paying once with that card in Lavka or Eda and confirming it with the bank there; until then you can book with cash.";
 
 const goResultSchema = z
   .object({
