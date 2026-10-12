@@ -585,4 +585,22 @@ describe("Yandex Go with an unverified card", () => {
     expect(result).not.toHaveProperty("verifyUrl");
     expect(JSON.stringify(result)).toContain("Yandex Go app");
   });
+
+  it("gives the bank's link on its own, for the onboarding, booking nothing", async () => {
+    const tool = await resolve([
+      { role: "user", content: "Да, присылай ссылку банка" },
+    ]);
+    const result = await tool?.execute(
+      { action: "verify_card", cardId: "card-x4d" },
+      callContext()
+    );
+    expect(result).toMatchObject({ kind: "verify_card", verifyUrl });
+    expect(JSON.stringify(result)).toContain("account.ready");
+    expect(JSON.stringify(result)).not.toContain("book again");
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.card_verify" }),
+      { cardId: "card-x4d" }
+    );
+  });
 });

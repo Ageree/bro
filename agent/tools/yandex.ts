@@ -10,6 +10,11 @@ import {
 import { operationArguments } from "@agent/lib/yandex/operations";
 import { yandexPilot, yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 import {
+  accountReadyOperation,
+  readinessReply,
+  signInFirstReply,
+} from "@agent/lib/yandex/ready";
+import {
   findYandexOperation,
   yandexOperations,
 } from "@agent/lib/yandex/registry";
@@ -89,6 +94,24 @@ async function callYandex(
     operation,
     operationArguments(operation, input)
   );
+  if (operation.id === accountReadyOperation.id) {
+    // The onboarding's next step rides in the result, not the prompt.
+    if (outcome.kind === "signed_out") {
+      return { ok: false as const, reply: signInFirstReply };
+    }
+    const readiness = accountReadyOperation.result.safeParse(
+      outcome.kind === "ok" ? outcome.data : undefined
+    );
+    if (readiness.success) {
+      return {
+        data: readiness.data,
+        ok: true as const,
+        reply: readinessReply(readiness.data, {
+          canVerify: yandexPurchasePilot({ workspaceId }),
+        }),
+      };
+    }
+  }
   if (outcome.kind === "ok") return { data: outcome.data, ok: true as const };
   return { ok: false as const, reply: refusals[outcome.kind] };
 }

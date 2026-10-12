@@ -187,4 +187,30 @@ describe("the Yandex tool", () => {
     services.run.mockResolvedValue({ kind: "failed", reason: "answer" });
     expect(await call(asked)).toMatchObject({ ok: false });
   });
+
+  it("carries the onboarding's next step in account.ready's result", async () => {
+    const found = await tool(asked);
+    if (!found) throw new Error("Expected yandex.");
+    const ready = async () =>
+      found.execute({ operation: "account.ready" }, callContext());
+    services.run.mockResolvedValue({ kind: "signed_out" });
+    const signedOut = await ready();
+    expect(signedOut).toMatchObject({ ok: false });
+    expect("reply" in signedOut ? signedOut.reply : "").toContain(
+      "signInPage https://passport.yandex.ru/auth"
+    );
+    services.run.mockResolvedValue({
+      data: {
+        cards: [
+          { id: "card-x2b", last4: "6443", title: "Мир", verified: false },
+        ],
+        signedIn: true,
+      },
+      kind: "ok",
+    });
+    const held = await ready();
+    expect(held).toMatchObject({ ok: true });
+    expect("reply" in held ? held.reply : "").toContain("verify_card");
+    expect(services.run.mock.calls.at(-1)?.[1].id).toBe("account.ready");
+  });
 });

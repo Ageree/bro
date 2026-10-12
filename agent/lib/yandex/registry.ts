@@ -8,6 +8,7 @@ import { goRidesOperation } from "./go/rides";
 import { marketOperations } from "./market";
 import { mapsOrgOperation } from "./maps/org";
 import { mapsSearchOperation } from "./maps/search";
+import { accountReadyOperation } from "./ready";
 import { statusOperation } from "./status";
 
 /**
@@ -20,6 +21,7 @@ export const yandexOperations: readonly [
   ...(readonly YandexOperation[]),
 ] = [
   statusOperation,
+  accountReadyOperation,
   goEstimateOperation,
   goRidesOperation,
   goRideOperation,

@@ -7,6 +7,20 @@ import { Alert } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
 import { Spinner } from "@web/components/ui/spinner";
 import {
+  doneLabel,
+  endedText,
+  finishingText,
+  framingText,
+  goneText,
+  liveHint,
+  loadingText,
+  noticeText,
+  problemText,
+  retryLabel,
+  startingText,
+} from "./copy";
+import { Intro } from "./intro";
+import {
   finishedSchema,
   namedKeys,
   openedSchema,
@@ -23,39 +37,19 @@ type Phase =
   | { readonly kind: "finishing" }
   | {
       readonly kind: "ended";
-      readonly result: "cancelled" | "failed" | "no" | "unknown" | "yes";
+      readonly result: keyof typeof endedText;
     }
-  | { readonly kind: "problem"; readonly text: string };
+  | {
+      readonly kind: "problem";
+      readonly retry: boolean;
+      readonly text: string;
+    };
 
 interface Bar {
   readonly host: string;
   readonly ok: boolean;
   readonly secure: boolean;
 }
-
-const goneText = {
-  ended: "Это окно уже закрыто.",
-  expired: "Ссылка устарела. Попросите Бро прислать новую.",
-  missing: "Такой ссылки нет.",
-  taken:
-    "Эту ссылку уже открыли с другого устройства. Попросите Бро прислать новую.",
-} as const;
-
-const problemText = {
-  busy: "Браузер Бро сейчас занят поручением. Подождите минуту и нажмите «Начать» ещё раз.",
-  failed: "Не получилось открыть окно. Попробуйте ещё раз через минуту.",
-  unsupported:
-    "На этом сервере окно входа ещё не работает. Напишите Бро, он запросит коды в чате.",
-} as const;
-
-const endedText = {
-  cancelled: "Окно закрыто. Ничего не сохранено.",
-  failed:
-    "Окно закрылось раньше, чем вход завершился. Попросите Бро прислать новую ссылку.",
-  no: "Похоже, сайт всё ещё просит войти. Напишите Бро, он пришлёт новую ссылку.",
-  unknown: "Готово. Бро проверит вход при следующем поручении на этом сайте.",
-  yes: "Готово: вход сохранён, Бро остался в вашем аккаунте. Возвращайтесь в чат.",
-} as const;
 
 const base = "/eve/v1/login-handoff";
 // Pixels a gesture must travel before it is more than a tap, and how often a
@@ -124,7 +118,7 @@ export function Viewer({ id }: { readonly id: string }) {
       const preview = await call("GET", id, previewSchema);
       if (cancelled) return;
       if (preview?.domain === undefined) {
-        setPhase({ kind: "problem", text: goneText.missing });
+        setPhase({ kind: "problem", retry: false, text: goneText.missing });
       } else if (
         (preview.state === "pending" && preview.expired !== true) ||
         (preview.state === "claimed" && preview.mine === true)
@@ -133,6 +127,7 @@ export function Viewer({ id }: { readonly id: string }) {
       } else {
         setPhase({
           kind: "problem",
+          retry: false,
           text: preview.state === "pending" ? goneText.expired : goneText.ended,
         });
       }
@@ -226,15 +221,11 @@ export function Viewer({ id }: { readonly id: string }) {
           break;
         }
         case "blocked": {
-          setNotice(
-            `Переход на ${message.host} закрыт: это не тот сайт, куда вы входите.`
-          );
+          setNotice(noticeText.blocked(message.host));
           break;
         }
         case "popup": {
-          setNotice(
-            "Открылось окно входа (например, через Яндекс или VK). Оно показано здесь."
-          );
+          setNotice(noticeText.popup);
           break;
         }
         case "popup-closed": {
@@ -251,12 +242,12 @@ export function Viewer({ id }: { readonly id: string }) {
           closing.current = true;
           setPhase({
             kind: "ended",
-            result: message.t === "cancel" ? "cancelled" : "failed",
+            result: message.t === "cancel" ? "cancelled" : "expired",
           });
           break;
         }
         case "error": {
-          setNotice("Браузер не отвечает. Пробую ещё раз.");
+          setNotice(noticeText.error);
           break;
         }
       }
@@ -266,7 +257,7 @@ export function Viewer({ id }: { readonly id: string }) {
       // A lost connection: the same window is opened again, with a new token.
       retries.current += 1;
       if (retries.current > 5) {
-        setPhase({ kind: "problem", text: problemText.failed });
+        setPhase({ kind: "problem", retry: true, text: problemText.failed });
         return;
       }
       void wait(1_000).then(start);
@@ -279,7 +270,7 @@ export function Viewer({ id }: { readonly id: string }) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The browser starts in its own time; the page asks again.
       const opened = await call("POST", `${id}/open`, openedSchema);
       if (opened === undefined) {
-        setPhase({ kind: "problem", text: problemText.failed });
+        setPhase({ kind: "problem", retry: true, text: problemText.failed });
         return;
       }
       if (opened.kind === "ready") {
@@ -291,16 +282,18 @@ export function Viewer({ id }: { readonly id: string }) {
         await wait(Math.min(Math.max(opened.retryAfterMs, 2_000), 10_000));
         continue;
       }
-      setPhase({
-        kind: "problem",
-        text:
-          opened.kind === "gone"
-            ? goneText[opened.reason]
-            : problemText[opened.kind],
-      });
+      setPhase(
+        opened.kind === "gone"
+          ? { kind: "problem", retry: false, text: goneText[opened.reason] }
+          : {
+              kind: "problem",
+              retry: opened.kind !== "unsupported",
+              text: problemText[opened.kind],
+            }
+      );
       return;
     }
-    setPhase({ kind: "problem", text: problemText.failed });
+    setPhase({ kind: "problem", retry: true, text: problemText.failed });
   }
 
   function place(event: PointerEvent<HTMLButtonElement>) {
@@ -446,45 +439,47 @@ export function Viewer({ id }: { readonly id: string }) {
     return (
       <p className="type-body text-muted-foreground">
         <Spinner className="mr-2 inline" />
-        Открываю…
+        {loadingText}
       </p>
     );
   }
   if (phase.kind === "problem") {
-    return <Alert variant="warning">{phase.text}</Alert>;
+    return (
+      <div className="flex max-w-[34rem] flex-col gap-4">
+        <Alert variant="warning">{phase.text}</Alert>
+        {phase.retry ? (
+          <div>
+            <Button
+              className="w-full sm:w-auto"
+              onClick={() => {
+                retries.current = 0;
+                closing.current = false;
+                void start();
+              }}
+              variant="paper"
+            >
+              {retryLabel}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    );
   }
   if (phase.kind === "intro") {
     return (
-      <div className="flex max-w-[34rem] flex-col gap-4">
-        <h1 className="type-page-title">Вход на {phase.domain}</h1>
-        <p className="type-body">
-          Сейчас откроется страница {phase.domain} в браузере Бро, как в обычном
-          окне: двигайте курсор, нажимайте на поля и печатайте прямо в ней.
-          Логин, пароль и код вводите там же. Бро не сохраняет их. Если сайт
-          предлагает «Запомнить меня», отметьте это — вход продержится дольше.
-          Когда войдёте, нажмите «Готово».
-        </p>
-        <p className="type-caption text-muted-foreground">
-          Ссылка работает с одного устройства. Не пересылайте её никому.
-        </p>
-        <div>
-          <Button
-            onClick={() => {
-              void start();
-            }}
-            variant="paper"
-          >
-            Начать
-          </Button>
-        </div>
-      </div>
+      <Intro
+        domain={phase.domain}
+        onStart={() => {
+          void start();
+        }}
+      />
     );
   }
   if (phase.kind === "starting") {
     return (
       <p className="type-body text-muted-foreground">
         <Spinner className="mr-2 inline" />
-        Запускаю браузер Бро. Это может занять до минуты…
+        {startingText}
       </p>
     );
   }
@@ -492,7 +487,7 @@ export function Viewer({ id }: { readonly id: string }) {
     return (
       <p className="type-body text-muted-foreground">
         <Spinner className="mr-2 inline" />
-        Сохраняю вход…
+        {finishingText}
       </p>
     );
   }
@@ -514,6 +509,7 @@ export function Viewer({ id }: { readonly id: string }) {
           <span className="type-caption text-destructive">не тот сайт</span>
         ) : null}
       </div>
+      <p className="type-caption text-muted-foreground">{liveHint}</p>
       {notice === null ? null : <Alert variant="information">{notice}</Alert>}
       <div className="relative">
         <button
@@ -545,7 +541,7 @@ export function Viewer({ id }: { readonly id: string }) {
         {framed ? null : (
           <p className="type-body pointer-events-none absolute inset-0 flex items-center justify-center text-muted-foreground">
             <Spinner className="mr-2 inline" />
-            Загружаю страницу…
+            {framingText}
           </p>
         )}
         <input
@@ -570,7 +566,7 @@ export function Viewer({ id }: { readonly id: string }) {
           }}
           variant="paper"
         >
-          Готово — я вошёл
+          {doneLabel}
         </Button>
         <Button
           onClick={() => {

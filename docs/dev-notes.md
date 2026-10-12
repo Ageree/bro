@@ -685,6 +685,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   опрос `eats-payments/v1/order/tracking`: `done`, `3ds_required` со ссылкой,
   `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
 
+- Мини-онбординг Яндекса (12.10): `yandex` `account.ready` (`agent/lib/yandex/ready.ts`)
+  читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
+  через `yandex_purchase` `verify_card` только после «да», где привязать карту) несёт
+  `reply` результата, а не промпт. Знакомство (`first-contact`) узнаёт о бете, боте
+  багов (`BUG_BOT_USERNAME`) и ссылках из контекстной строки `firstContactContext`.
+
 ## Composio: Google, Notion, Slack и другие приложения
 
 - Адрес возврата карточки входа eve строит от базы мира, а на VM это loopback

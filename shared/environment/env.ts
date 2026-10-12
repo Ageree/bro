@@ -616,6 +616,14 @@ export const env = createEnv({
     // The pilot: workspace ids, or the emails of their owners, that get a VM
     // whatever BROWSER_BACKEND says.
     BROWSER_VM_WORKSPACES: workspaceListSchema.optional(),
+    // The Telegram bot (handle without @) where beta testers report bugs;
+    // the first-contact introduction names it. Unset, Bro does not mention it.
+    BUG_BOT_USERNAME: requiredValue
+      .refine(
+        (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
+        "BUG_BOT_USERNAME must be the bot handle without a leading @"
+      )
+      .optional(),
     // Cloud.ru Evolution, where the browser VMs live. The image is the one
     // `browser-vm/image/build.py` sealed; the security group is the one it
     // created. Without a project id the first project of the key's customer
