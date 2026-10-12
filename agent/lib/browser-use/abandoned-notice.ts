@@ -3,7 +3,10 @@ import {
   type iMessageAdapter,
 } from "@photon-ai/chat-adapter-imessage";
 import { z } from "zod";
-import { takeAbandonedBrowserRunReports } from "@db/services/browser-runs";
+import {
+  markBrowserRunNoticeSent,
+  takeAbandonedBrowserRunReports,
+} from "@db/services/browser-runs";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import { env } from "@shared/environment";
 import { photonProjectCredentials } from "@shared/photon/credentials";
@@ -36,22 +39,25 @@ export function abandonedReportNotice(
 
 /**
  * Tell the people whose browser errand finished but whose report ran out of
- * delivery attempts, once each and without the model: the report turn is what
- * kept failing. A web chat has no address to send to, so it only gets a log
- * line; the person finds the result by asking, as the notice says.
+ * delivery attempts, without the model: the report turn is what kept failing.
+ * A notice that fails is taken again later, and only a sent one takes the run
+ * off the owner's overdue watch. A web chat has no address to send to: its
+ * runs are never taken, stay on that watch, and the person finds the result
+ * by asking.
  */
 export async function noticeAbandonedBrowserRunReports(now = new Date()) {
   const runs = await takeAbandonedBrowserRunReports(now);
   await Promise.all(
     runs.map(async (run) => {
       try {
-        const sent = await sendNotice(run);
+        await sendNotice(run);
+        await markBrowserRunNoticeSent(run.id, now);
         console.warn("[browser-use] undelivered report given up", {
           channel: run.conversationChannel,
-          notified: sent,
           runId: run.id,
         });
       } catch (error) {
+        // Taken again after a while: the person has not been told.
         console.warn("[browser-use] undelivered report notice failed", {
           cause: error,
           channel: run.conversationChannel,
@@ -67,7 +73,9 @@ async function sendNotice(run: AbandonedRun) {
   if (run.conversationChannel === "telegram") {
     const chatId = telegramChatIdFromConversationId(run.conversationId);
     const botToken = env.TELEGRAM_BOT_TOKEN;
-    if (!chatId || !botToken) return false;
+    if (!chatId || !botToken) {
+      throw new Error("Telegram is not set up for this conversation.");
+    }
     const response = await fetch(
       `${telegramApiBaseUrl}/bot${botToken}/sendMessage`,
       {
@@ -83,14 +91,14 @@ async function sendNotice(run: AbandonedRun) {
     if (!response.ok || accepted !== true) {
       throw new Error(`Telegram notice failed (${String(response.status)}).`);
     }
-    return true;
+    return;
   }
   if (run.conversationChannel === "photon") {
     photonAdapter ??= createiMessageAdapter({
       credentials: photonProjectCredentials,
     });
     await photonAdapter.postMessage(run.conversationId, { raw: text });
-    return true;
+    return;
   }
-  return false;
+  throw new Error("This conversation has no address to send a notice to.");
 }

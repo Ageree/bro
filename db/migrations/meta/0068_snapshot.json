@@ -1,5 +1,5 @@
 {
-  "id": "5a051e40-a61f-46cb-bc08-ff6f2049eb61",
+  "id": "617789ac-8ec5-4eeb-a8e7-f23b8bad330a",
   "prevId": "d8d39d9f-9cc7-4a74-be51-816909d62061",
   "version": "7",
   "dialect": "postgresql",
@@ -1665,6 +1665,12 @@
         },
         "report_abandoned_at": {
           "name": "report_abandoned_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "report_notice_sent_at": {
+          "name": "report_notice_sent_at",
           "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": false

@@ -11,7 +11,9 @@ const take = vi.fn<
     }[]
   >
 >();
+const markSent = vi.hoisted(() => vi.fn<() => Promise<void>>());
 vi.mock("@db/services/browser-runs", () => ({
+  markBrowserRunNoticeSent: markSent,
   takeAbandonedBrowserRunReports: take,
 }));
 vi.mock("@shared/environment", () => ({
@@ -21,6 +23,7 @@ vi.mock("@shared/environment", () => ({
 afterEach(() => {
   vi.restoreAllMocks();
   take.mockReset();
+  markSent.mockReset();
 });
 
 describe("abandoned browser run report notice", () => {
@@ -34,7 +37,7 @@ describe("abandoned browser run report notice", () => {
     );
   });
 
-  it("sends each taken run's notice to its Telegram chat directly", async () => {
+  it("sends each taken run's notice directly, and records only the ones that landed", async () => {
     take.mockResolvedValue([
       {
         conversationChannel: "telegram",
@@ -44,18 +47,21 @@ describe("abandoned browser run report notice", () => {
         task: "Найди билеты",
       },
       {
-        conversationChannel: "eve",
-        conversationId: "session-1",
+        conversationChannel: "telegram",
+        conversationId: "43::",
         id: "run-2",
         site: null,
-        task: "web chat",
+        task: "Закажи еду",
       },
     ]);
     const sent: { url: string; body: unknown }[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const request = new Request(url, init);
       sent.push({ body: await request.json(), url: request.url });
-      return Response.json({ ok: true });
+      // The second chat refuses: its person has not been told.
+      return sent.length === 1
+        ? Response.json({ ok: true })
+        : Response.json({ ok: false }, { status: 403 });
     });
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { abandonedReportNotice, noticeAbandonedBrowserRunReports } =
@@ -71,6 +77,14 @@ describe("abandoned browser run report notice", () => {
         },
         url: "https://api.telegram.org/bottoken/sendMessage",
       },
+      {
+        body: {
+          chat_id: "43",
+          text: abandonedReportNotice({ site: null, task: "Закажи еду" }),
+        },
+        url: "https://api.telegram.org/bottoken/sendMessage",
+      },
     ]);
+    expect(markSent.mock.calls.map(([id]) => id)).toEqual(["run-1"]);
   });
 });

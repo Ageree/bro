@@ -108,9 +108,16 @@ export const browserRuns = pgTable(
       withTimezone: true,
     }),
     reportAttempts: integer("report_attempts").notNull().default(0),
-    // Set once, when delivery has run out of attempts and the person was told
-    // directly that the result did not arrive: no more tries, no more noise.
+    // When a tick took the notice that this report ran out of delivery
+    // attempts (a claim, retried after `abandonedNoticeRetryMs` if the send
+    // did not land), and when that notice reached the person. Only a notified
+    // run leaves the owner's overdue watch.
     reportAbandonedAt: timestamp("report_abandoned_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    reportNoticeSentAt: timestamp("report_notice_sent_at", {
       mode: "date",
       precision: 3,
       withTimezone: true,

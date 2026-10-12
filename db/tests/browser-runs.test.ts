@@ -1286,41 +1286,76 @@ async function applyMigrations(database: PGlite) {
 }
 
 describe("browser run reports out of attempts", () => {
-  it("are handed out once and leave the overdue list", async () => {
+  const other = "22222222-2222-4222-8222-222222222222";
+  const web = "33333333-3333-4333-8333-333333333333";
+
+  async function fixture() {
     const browserRuns = await browserRunsDatabase();
     const now = new Date();
     const finished = new Date(now.getTime() - 10 * 60_000);
-    const other = "22222222-2222-4222-8222-222222222222";
-    await browserRuns.createBrowserRun(alice, {
+    const spent = {
       ...conversation(),
       completedAt: finished,
+      report: "Order placed",
+      status: "done" as const,
+    };
+    await browserRuns.createBrowserRun(alice, {
+      ...spent,
       id: runId,
-      report: "Order placed",
       reportAttempts: 10,
-      status: "done",
     });
     await browserRuns.createBrowserRun(alice, {
-      ...conversation(),
-      completedAt: finished,
+      ...spent,
       id: other,
-      report: "Order placed",
       reportAttempts: 3,
-      status: "done",
     });
-    const settledBefore = new Date(now.getTime() - 2 * 60_000);
+    await browserRuns.createBrowserRun(alice, {
+      ...spent,
+      conversationChannel: "eve",
+      id: web,
+      reportAttempts: 10,
+    });
+    return {
+      browserRuns,
+      now,
+      settledBefore: new Date(now.getTime() - 2 * 60_000),
+    };
+  }
 
-    expect(
-      await browserRuns.listOverdueBrowserRunReports(settledBefore, now)
-    ).toHaveLength(2);
+  it("are taken once at a time, and a web chat's never", async () => {
+    const { browserRuns, now } = await fixture();
 
-    const taken = await browserRuns.takeAbandonedBrowserRunReports(now);
-    expect(taken.map((row) => row.id)).toEqual([runId]);
+    const [first, second] = await Promise.all([
+      browserRuns.takeAbandonedBrowserRunReports(now),
+      browserRuns.takeAbandonedBrowserRunReports(now),
+    ]);
+
+    expect([...first, ...second].map((row) => row.id)).toEqual([runId]);
+  });
+
+  it("stay on the overdue list until the person was told, and are taken again if the send failed", async () => {
+    const { browserRuns, now, settledBefore } = await fixture();
+    const overdue = async () =>
+      (await browserRuns.listOverdueBrowserRunReports(settledBefore, now))
+        .map((row) => row.id)
+        .toSorted();
+
+    await browserRuns.takeAbandonedBrowserRunReports(now);
+    // Taken but not sent: still overdue, and not taken again at once.
+    expect(await overdue()).toEqual([runId, other, web].toSorted());
     expect(await browserRuns.takeAbandonedBrowserRunReports(now)).toEqual([]);
 
-    const overdue = await browserRuns.listOverdueBrowserRunReports(
-      settledBefore,
-      now
-    );
-    expect(overdue.map((row) => row.id)).toEqual([other]);
+    // The send failed: taken again after the retry delay.
+    const later = new Date(now.getTime() + 11 * 60_000);
+    const retaken = await browserRuns.takeAbandonedBrowserRunReports(later);
+    expect(retaken.map((row) => row.id)).toEqual([runId]);
+
+    await browserRuns.markBrowserRunNoticeSent(runId, later);
+    expect(await overdue()).toEqual([other, web].toSorted());
+    expect(
+      await browserRuns.takeAbandonedBrowserRunReports(
+        new Date(later.getTime() + 60 * 60_000)
+      )
+    ).toEqual([]);
   });
 });
