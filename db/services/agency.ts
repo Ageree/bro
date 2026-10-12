@@ -33,17 +33,41 @@ export async function beginAgencyAction(input: AgencyActionInput) {
 
 /**
  * Settles a planned action. Returns false when the row is not planned, so a
- * settled or unknown action is never settled twice.
+ * settled or unknown action is never settled twice. `undo` is the call that
+ * reverses a done action, when the action has one.
  */
 export async function finishAgencyAction(
   id: string,
-  status: "done" | "failed"
+  status: "done" | "failed",
+  undo: AgencyActionInput["undo"] = null
 ) {
   const rows = await db
     .update(agencyActions)
-    .set({ status, updatedAt: new Date() })
+    .set({ status, undo, updatedAt: new Date() })
     .where(and(eq(agencyActions.id, id), eq(agencyActions.status, "planned")))
     .returning({ id: agencyActions.id });
+  return rows.length > 0;
+}
+
+/**
+ * Whether an action with this input hash was ever recorded in the workspace,
+ * whatever its status: a failed action is not retried either, since its
+ * outcome may be unknown.
+ */
+export async function agencyActionRecorded(
+  workspaceId: string,
+  inputHash: string
+) {
+  const rows = await db
+    .select({ id: agencyActions.id })
+    .from(agencyActions)
+    .where(
+      and(
+        eq(agencyActions.workspaceId, workspaceId),
+        eq(agencyActions.inputHash, inputHash)
+      )
+    )
+    .limit(1);
   return rows.length > 0;
 }
 

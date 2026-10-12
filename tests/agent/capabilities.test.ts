@@ -143,7 +143,7 @@ describe("authored mode capability matrix", () => {
     ).toEqual(["calendar-list-events", "gmail-read-thread", "gmail-search"]);
   });
 
-  it("gives the agentic worker Bro's own checks' reads, and in its pilot only", async () => {
+  it("gives the agentic worker its writes and reads in its pilot only", async () => {
     const reads = ["calendar-list-events", "gmail-read-thread", "gmail-search"];
     const agentic = { scheduledRunKind: "agentic" };
     // Outside the pilot the mark is the proactive check, as it was.
@@ -155,7 +155,17 @@ describe("authored mode capability matrix", () => {
       const pilot = await freshModules();
       expect(
         await authoredCapabilities("scheduled-worker", agentic, pilot)
-      ).toEqual(reads);
+      ).toEqual([
+        "calendar-create-event",
+        "calendar-delete-event",
+        "calendar-list-events",
+        "calendar-update-event",
+        "contacts-search",
+        "gmail-draft",
+        "gmail-read-thread",
+        "gmail-search",
+        "gmail-send",
+      ]);
     } finally {
       vi.stubEnv("AGENCY_WORKSPACES", "");
       vi.resetModules();
@@ -163,15 +173,42 @@ describe("authored mode capability matrix", () => {
   });
 
   it.each([
-    ["Bro's own checks", { scheduledRunKind: "proactive" }, ""],
+    [
+      "Bro's own checks",
+      { scheduledRunKind: "proactive" },
+      "",
+      [
+        "ask_question",
+        "calendar-list-events",
+        "gmail-read-thread",
+        "gmail-search",
+        "task_cancel",
+        "web_search",
+      ],
+    ],
     [
       "the agentic worker in its pilot",
       { scheduledRunKind: "agentic" },
       "personal:workspace",
+      [
+        "ask_question",
+        "calendar-create-event",
+        "calendar-delete-event",
+        "calendar-list-events",
+        "calendar-update-event",
+        "contacts-search",
+        "gmail-draft",
+        "gmail-read-thread",
+        "gmail-search",
+        "gmail-send",
+        "list_orders",
+        "task_cancel",
+        "web_search",
+      ],
     ],
   ])(
-    "leaves %s no tool beyond reading new mail and events",
-    async (_case, attributes, pilot) => {
+    "leaves %s no tool beyond its reads and, for the worker, its writes",
+    async (_case, attributes, pilot, expected) => {
       vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
       vi.stubEnv("AGENCY_WORKSPACES", pilot);
       // The tool modules read the pilot when they load.
@@ -206,14 +243,7 @@ describe("authored mode capability matrix", () => {
       // ask_question and task_cancel are eve-native tools that cannot be gated
       // per mode; neither reaches outside the session. The gateway web_search is
       // provider-managed; with OpenRouter the search is ours and gated (below).
-      expect(names.flat().toSorted()).toEqual([
-        "ask_question",
-        "calendar-list-events",
-        "gmail-read-thread",
-        "gmail-search",
-        "task_cancel",
-        "web_search",
-      ]);
+      expect(names.flat().toSorted()).toEqual(expected.toSorted());
     }
   );
 
