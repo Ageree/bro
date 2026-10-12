@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ownTurnApproval, startedByPerson } from "@agent/lib/mode";
 
 function caller(
@@ -105,5 +105,68 @@ describe("non-purchase delegated actions", () => {
         },
       })
     ).toMatchObject({ type: "denied" });
+  });
+});
+
+// The pilot is read from the environment when the module loads.
+async function loadMode(pilot: string) {
+  vi.resetModules();
+  vi.stubEnv("AGENCY_WORKSPACES", pilot);
+  return import("@agent/lib/mode");
+}
+
+describe("the agentic worker", () => {
+  const workspace = "workspace:alice";
+
+  afterEach(() => {
+    vi.stubEnv("AGENCY_WORKSPACES", "");
+  });
+
+  function checkOf(scheduledRunKind?: string) {
+    const attributes = { workspaceId: workspace };
+    return session(
+      caller(
+        "scheduled-worker",
+        scheduledRunKind === undefined
+          ? attributes
+          : { ...attributes, scheduledRunKind }
+      )
+    );
+  }
+
+  const valueByMode = {
+    "agentic-worker": "agentic",
+    "proactive-worker": "proactive",
+    "scheduled-worker": "scheduled",
+  };
+
+  it("is the proactive check's mode, marked agentic, in the pilot", async () => {
+    const mode = await loadMode(workspace);
+    expect(mode.resolveModeValue(checkOf("agentic"), valueByMode)).toBe(
+      "agentic"
+    );
+    expect(mode.resolveModeValue(checkOf("proactive"), valueByMode)).toBe(
+      "proactive"
+    );
+    expect(mode.resolveModeValue(checkOf(), valueByMode)).toBe("scheduled");
+  });
+
+  it("is the proactive check outside the pilot, and everywhere with *", async () => {
+    const outside = await loadMode("workspace:bob");
+    expect(outside.resolveModeValue(checkOf("agentic"), valueByMode)).toBe(
+      "proactive"
+    );
+    const everyone = await loadMode("*");
+    expect(everyone.resolveModeValue(checkOf("agentic"), valueByMode)).toBe(
+      "agentic"
+    );
+  });
+
+  it("is not a person's turn, and gets no card for what it does", async () => {
+    const mode = await loadMode(workspace);
+    expect(mode.startedByPerson(checkOf("agentic"))).toBe(false);
+    expect(mode.ownTurnApproval(checkOf("agentic"))).toMatchObject({
+      type: "denied",
+    });
   });
 });

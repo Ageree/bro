@@ -5,6 +5,8 @@ import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import { agencyApproval } from "@agent/lib/agency/approval";
+import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -601,7 +603,7 @@ function searchLine() {
  */
 type SubmissionConsent =
   | {
-      readonly by: "card" | "delegated" | "errand" | "person";
+      readonly by: "agency" | "card" | "delegated" | "errand" | "person";
       readonly kind: "confirmed";
       readonly submission: ConfirmedSubmission;
     }
@@ -709,6 +711,8 @@ function commitmentLine(
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
     const header = {
+      agency:
+        "Bro's own agency rule started this one submission in the person's name: it is free, and it was not put to the person on a card. You may fill it in and press its final button, with the known details below:",
       card: "The person confirmed on an approval card this one submission in their name. You may fill it in and press its final button, with the known details below:",
       person:
         cap === undefined
@@ -1760,9 +1764,13 @@ function conversationTarget(context: ToolContext) {
   const conversationChannel = z
     .enum(["eve", "photon", "telegram"])
     .parse(auth.attributes.conversationChannel);
+  // The agentic worker's report goes to the chat its job writes to, not to
+  // its own session, which no person reads.
   const conversationId =
     conversationChannel === "eve"
-      ? context.session.id
+      ? agencyWorkerTurn(context)
+        ? z.string().min(1).parse(auth.attributes.conversationId)
+        : context.session.id
       : conversationChannel === "photon"
         ? z
             .string()
@@ -1940,6 +1948,42 @@ type ModeContext = Parameters<typeof resolveModeValue>[0] & {
 /** Only a person in the conversation can confirm acting in their name. */
 function inConversation(context: ModeContext) {
   return resolveModeValue(context, { interactive: true }) === true;
+}
+
+/**
+ * Whether this turn is the agentic worker's own: an errand it starts that
+ * acts in the person's name is granted by `agencyApproval` (class `submit`,
+ * budgeted, journaled), and its run keeps no consent of the person's.
+ */
+function agencyWorkerTurn(context: ModeContext) {
+  return resolveModeValue(context, { "agentic-worker": true }) === true;
+}
+
+const agencyPaymentRefusal =
+  "Nothing was started: the agentic worker never pays and never binds a card. Start the errand without allowPayment and withinSpendLimit: the run stages it up to the payment step, and the person is asked «Оплачиваю?» in their own chat.";
+
+const agencyPaidRefusal =
+  "Nothing was submitted: the agentic worker books only what costs nothing, so submission.chargeRub must be 0. Start the errand without allowSubmit: the run stages the paid option up to its payment step, and the person is asked about the exact total.";
+
+const agencyStartRefusal =
+  "Nothing was started: the agentic worker may only start a free errand in the person's name. Continuing a run, or any new decision, belongs to the person's own chat.";
+
+/** Start results that started no run: nothing was done, nothing is recorded. */
+const notStartedStatuses: ReadonlySet<string> = new Set([
+  "needs_approval",
+  "quota_exhausted",
+  "site_not_found",
+  "unavailable",
+]);
+
+/** What the agentic worker may not start on its own; undefined when it may. */
+function agencyErrandRefusal(input: BrowserTaskInput) {
+  if (input.allowPayment === true || input.withinSpendLimit !== undefined)
+    return agencyPaymentRefusal;
+  if (input.allowSubmit === true && input.submission?.chargeRub !== 0)
+    return agencyPaidRefusal;
+  if (input.action !== "start") return agencyStartRefusal;
+  return undefined;
 }
 
 const backgroundConsentRefusal =
@@ -3202,6 +3246,7 @@ async function consentFor(
   const confirmed =
     (byPerson || delegated) &&
     errand !== undefined &&
+    errand.startedByPerson !== false &&
     errandStillAllowed(errand)
       ? (errand.submission ?? undefined)
       : undefined;
@@ -3210,6 +3255,13 @@ async function consentFor(
   }
   const { submission } = input;
   if (submission === undefined) return undefined;
+  if (agencyWorkerTurn(context)) {
+    return {
+      by: "agency",
+      kind: "confirmed",
+      submission: withPaymentCap(submission, undefined),
+    };
+  }
   const standing =
     byPerson && (submission.chargeRub ?? 0) === 0 && input.allowPayment !== true
       ? await standingConsent(input, submission, scope, errand)
@@ -3241,6 +3293,9 @@ function continuesDelegatedErrand(
     input.action !== "continue" ||
     errand === undefined ||
     errand.status === "stopped" ||
+    // An errand the agentic worker started carries no person's word into
+    // its report turns, whatever it was given.
+    errand.startedByPerson === false ||
     !inConversation(context) ||
     errand.rootSessionId !== context.session.id ||
     !errandStillAllowed(errand) ||
@@ -3286,6 +3341,33 @@ function approvalScope(context: ModeContext) {
 }
 
 /**
+ * The agentic worker's start of a free errand in the person's name: its
+ * agency grant (`submit`) decides it, after the refusals that keep it from
+ * paying, from a paid errand, or from choosing among options it was not
+ * given. Nothing here reads a page or a message.
+ */
+async function agencyStartApproval(
+  input: BrowserTaskInput,
+  context: ModeContext
+): Promise<ApprovalStatus> {
+  const refused = agencyErrandRefusal(input);
+  if (refused) return { reason: refused, type: "denied" };
+  const { submission } = input;
+  if (submission === undefined)
+    return { reason: missingSubmissionRefusal, type: "denied" };
+  const open = openSubmissionTerms(submission);
+  if (open.length > 0)
+    return { reason: unchosenOptionRefusal(open), type: "denied" };
+  const granted = await agencyApproval(context, "submit", () => ({
+    counterparty: input.site,
+    input: JSON.stringify(input),
+    text: input.task,
+    tool: "browser_task",
+  }));
+  return granted ?? { reason: agencyStartRefusal, type: "denied" };
+}
+
+/**
  * The approval policy of `browser_task`. Submitting in the person's name —
  * a booking, an appointment, an application, a job application, a receipt,
  * an order — and paying off the standing limit rest on the person's own
@@ -3314,6 +3396,7 @@ export async function browserTaskApproval(
   if (input.signUpWith !== undefined) {
     return { reason: signUpWithConsentRefusal, type: "denied" };
   }
+  if (agencyWorkerTurn(context)) return agencyStartApproval(input, context);
   if (!inConversation(context)) {
     return { reason: backgroundConsentRefusal, type: "denied" };
   }
@@ -3380,7 +3463,12 @@ async function consentFromInput(
   errand?: ErrandRow
 ): Promise<SubmissionConsent | undefined> {
   if (!actsForPerson(input)) return undefined;
-  if (!inConversation(context)) throw new Error(backgroundConsentRefusal);
+  if (agencyWorkerTurn(context)) {
+    const refused = agencyErrandRefusal(input);
+    if (refused) throw new Error(refused);
+  } else if (!inConversation(context)) {
+    throw new Error(backgroundConsentRefusal);
+  }
   if (paysOnSpendLimit(input))
     throw new Error(paymentQuestionRefusal(undefined));
   const consent = await consentFor(input, scope, errand, said, context);
@@ -4284,6 +4372,7 @@ async function runBrowserTask(
     // that confirmation and allows nothing more.
     const confirmedBefore: SubmissionConsent | undefined =
       row.submission &&
+      row.startedByPerson !== false &&
       (byPerson || delegated || mail !== undefined) &&
       stillAllowed
         ? { by: "errand", kind: "confirmed", submission: row.submission }
@@ -5188,15 +5277,37 @@ export default defineDynamic({
           : signUp
             ? signUpInputSchema
             : inputSchema,
-        execute: (input, toolContext) =>
-          startsUsed && input.action === "start"
-            ? Promise.resolve({
-                note: turnStartLimitNotice,
-                status: "start_limit",
-              })
-            : runWithGivenLogin(input, toolContext, heard, turn, loginSources),
+        execute: (input, toolContext) => {
+          if (startsUsed && input.action === "start")
+            return Promise.resolve({
+              note: turnStartLimitNotice,
+              status: "start_limit",
+            });
+          const run = () =>
+            runWithGivenLogin(input, toolContext, heard, turn, loginSources);
+          if (!agencyWorkerTurn(toolContext) || !actsForPerson(input))
+            return run();
+          // A start that started nothing fails its journal row, so the same
+          // errand may be tried again; a queued or running one stays recorded.
+          return journaledAgencyCall(
+            toolContext,
+            {
+              actionClass: "submit",
+              counterparty: input.site,
+              input: JSON.stringify(input),
+              tool: "browser_task",
+            },
+            async () => {
+              const result = await run();
+              if (notStartedStatuses.has(result.status))
+                throw new Error(result.note);
+              return result;
+            }
+          );
+        },
       });
       return resolveModeValue(context, {
+        "agentic-worker": { browser_task: tool },
         interactive: { browser_task: tool },
         "scheduled-worker": { browser_task: tool },
       });

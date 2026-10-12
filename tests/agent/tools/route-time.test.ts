@@ -728,6 +728,30 @@ describe("route_time", () => {
     expect(await names("scheduled-result")).toEqual([]);
   });
 
+  it("is offered to the agentic worker in its pilot only", async () => {
+    // The pilot is read from the environment when the module loads.
+    vi.resetModules();
+    vi.stubEnv("AGENCY_WORKSPACES", "personal:workspace");
+    try {
+      const tools = (await import("@agent/tools/route_time")).default;
+      const resolve = tools.events["turn.started"];
+      if (!resolve) throw new Error("route_time resolves per turn.");
+      const names = async (scheduledRunKind: string) =>
+        Object.keys(
+          (await resolve(
+            {},
+            resolveContext("scheduled-worker", scheduledRunKind)
+          )) ?? {}
+        );
+
+      expect(await names("agentic")).toEqual(["route_time"]);
+      expect(await names("proactive")).toEqual([]);
+    } finally {
+      vi.stubEnv("AGENCY_WORKSPACES", "");
+      vi.resetModules();
+    }
+  });
+
   it("measures walks from one start to several places in one routing request", async () => {
     const result = await measure({
       from: "отель Метрополь, Москва",

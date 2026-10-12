@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cardToolsBeforeOutcome } from "@agent/lib/delivery/browser-report";
 import { actionsHeldForAnswer } from "@agent/lib/delivery/questions";
 import { turnKind } from "@agent/lib/turn-kind/kind";
 import {
+  agenticWriteTools,
   backgroundTaskTurnTools,
+  proactiveReadTools,
   reportTurnTools,
 } from "@agent/lib/turn-kind/sets";
 import { stepIdentity } from "@agent/lib/turn-kind/step";
@@ -144,5 +146,97 @@ describe("the step a resolver runs for", () => {
       stepIdentity({ data: { stepIndex: 2, turnId: "turn-1" } }, "session-1")
     ).toEqual({ sessionId: "session-1", stepIndex: 2, turnId: "turn-1" });
     expect(stepIdentity({}, "session-1")).toEqual({ sessionId: "session-1" });
+  });
+});
+
+describe("the agentic worker's turn", () => {
+  const step = { sessionId: "session-1", stepIndex: 0, turnId: "turn_1" };
+  // The check of the catalog, marked agentic: its workspace is workspace-1.
+  const base = catalogContext("proactive-worker");
+  const { current } = base.session.auth;
+  const agentic = {
+    ...base,
+    session: {
+      ...base.session,
+      auth: {
+        current,
+        initiator: {
+          ...current,
+          attributes: { ...current.attributes, scheduledRunKind: "agentic" },
+        },
+      },
+    },
+  };
+
+  // The pilot is read from the environment when the module loads.
+  async function kindIn(pilot: string) {
+    vi.resetModules();
+    vi.stubEnv("AGENCY_WORKSPACES", pilot);
+    const { turnKind: kindOf } = await import("@agent/lib/turn-kind/kind");
+    return kindOf(agentic, step);
+  }
+
+  afterEach(() => {
+    vi.stubEnv("AGENCY_WORKSPACES", "");
+  });
+
+  it("is the agentic worker's kind in its pilot, and the proactive check's outside it", async () => {
+    expect(await kindIn("workspace-1")).toBe("agentic-worker");
+    expect(await kindIn("workspace-2")).toBe("proactive-worker");
+  });
+
+  it("is offered the proactive check's reads, its own reads and the writes it is granted", () => {
+    expect(
+      turnTools({
+        askedQuestion: false,
+        cardsHeld: false,
+        heldForAnswer: false,
+        kind: "agentic-worker",
+        reportPastAnswer: false,
+        stableContext: false,
+        taskAgent: false,
+      })
+    ).toEqual({
+      offeredTools: [
+        ...proactiveReadTools,
+        "agent-mail-inbox",
+        "agent-mail-list",
+        "agent-mail-read",
+        "calendar-check-availability",
+        "contacts-search",
+        "list_orders",
+        "mail-read",
+        "mail-search",
+        "phone-status",
+        "route_time",
+        ...agenticWriteTools,
+      ],
+      withheldTools: ["task"],
+    });
+    expect(agenticWriteTools).toEqual([
+      "agent-mail-send",
+      "browser_task",
+      "calendar-create-event",
+      "calendar-delete-event",
+      "calendar-update-event",
+      "gmail-draft",
+      "gmail-send",
+      "mail-send",
+      "phone-call",
+    ]);
+  });
+
+  it("offers the agentic worker no web page, which an email could steer to a URL of its choice", () => {
+    const offered = turnTools({
+      askedQuestion: false,
+      cardsHeld: false,
+      heldForAnswer: false,
+      kind: "agentic-worker",
+      reportPastAnswer: false,
+      stableContext: false,
+      taskAgent: false,
+    }).offeredTools;
+    expect(offered).not.toContain("web_fetch");
+    expect(offered).not.toContain("web_search");
   });
 });

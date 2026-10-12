@@ -1501,6 +1501,27 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `nothing_to_report` (`agent/lib/schedules/outcome.ts`).
 - У воркера и хода-отчёта нет сетевых `web_fetch`/`find_images`/`web_search`:
   письмо не должно увести на чужой адрес (`tests/agent/capabilities.test.ts`).
+- Агентный работник (`AGENCY_WORKSPACES`): вид запуска решает `proactiveRunKind`
+  (`agent/lib/schedules/identity.ts`), режим читает пилот на каждом шаге.
+  Гварды, журнал `agency_actions` и бюджет — `agent/lib/agency/`; повтор того же
+  действия блокируют planned до 30 мин и done до 7 дней, failed/undone
+  переигрываются. Пауза и откат — `agency_control`, ключ `agency_paused`. Откат:
+  снять флаг, и запуски пойдут обычным проактивным воркером. Оплата спрашивает.
+- `web_fetch`/`web_search` воркеру не выданы: ссылка из текста письма вынесла бы
+  данные. `route_time` выдан (текст места уходит в OSM). Звонок (`phone-call`,
+  грант `call`) и поручение браузера (`browser_task`, грант `submit`, только
+  старт бесплатного с `allowSubmit` и `submission.chargeRub: 0`) выданы пилоту
+  (владелец 12.10). Оплаты не выдаются: `allowPayment`, `withinSpendLimit` и
+  платный заказ отказывают, поручение останавливается у «Оплачиваю?» отчёта.
+  Ход воркера не читается как ход человека: `agencyWorkerTurn` в
+  `agent/lib/phone/policy.ts`, `agencyStartApproval` в `agent/tools/browser_task.ts`;
+  отчёты идут в чат задания, а не в сессию воркера. Итог звонка и поручения
+  будит воркер (`agent/lib/proactive/follow-up.ts`): очередь хранит только
+  запуск, поэтому итог, пришедший при занятом или упорном лимите, не догоняется
+  после доставки отчёта.
+- Почта агента листается без фильтра по времени: граница по
+  `agent_mail_checked_at` в коде, одна страница из 50
+  (`agent/lib/proactive/agent-mail.ts`).
 
 ## Бенчмарк
 

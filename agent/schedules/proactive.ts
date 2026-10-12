@@ -1,6 +1,8 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
+import { agencyPilot } from "@agent/lib/agency/pilot";
+import { agentMailCheck } from "@agent/lib/proactive/agent-mail";
 import {
   probeFailure,
   probeGoogleSignals,
@@ -12,10 +14,12 @@ import {
 } from "@agent/lib/proactive/quiet-hours";
 import {
   mailSearchStart,
+  maxRunsPerDay,
   proactiveRunPrompt,
   reminderOf,
   selectRunSignals,
 } from "@agent/lib/proactive/signals";
+import { proactiveRunKind } from "@agent/lib/schedules/identity";
 import {
   flightFacts,
   flightReminderSignals,
@@ -27,6 +31,7 @@ import {
   flightWatchOf,
 } from "@agent/lib/subscriptions/watches";
 import {
+  advanceAgentMailWatermark,
   advanceProactiveWatermark,
   claimDueProactiveWatches,
   deferProactiveWatch,
@@ -55,11 +60,6 @@ import { resolveTimeZone } from "@shared/user-profile/schema";
 // Each workspace is looked at every 15 minutes; the cron only spreads the
 // checks. A missing Google grant is re-read a few times a day, not every tick.
 const checkEveryMs = 15 * 60_000;
-/**
- * At most this many model runs per workspace in any 24 hours; past it, new
- * signals wait. Twelve covers a heavy day of mail that matters.
- */
-const maxRunsPerDay = 12;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;
@@ -128,7 +128,12 @@ async function checkWorkspace(watch: ClaimedWatch, now: Date) {
     night: quietUntil !== undefined,
     workspaceId: watch.workspaceId,
   };
-  const check = { evening: eveningUntil !== undefined, pilot, timeZone };
+  const check = {
+    agency: agencyPilot(watch.workspaceId),
+    evening: eveningUntil !== undefined,
+    pilot,
+    timeZone,
+  };
   try {
     const result = await (quietUntil
       ? checkAtNight(watch, now, check, quietUntil)
@@ -152,6 +157,8 @@ async function checkWorkspace(watch: ClaimedWatch, now: Date) {
  * whether it is the evening, when only mail waits for the morning.
  */
 interface CheckMode {
+  /** Whether the workspace is in the agency pilot (`agencyPilot`). */
+  readonly agency: boolean;
   readonly evening: boolean;
   readonly pilot: boolean;
   readonly timeZone: string;
@@ -301,11 +308,12 @@ const noFlights = {
 async function checkByDay(
   watch: ClaimedWatch,
   now: Date,
-  { pilot, timeZone }: CheckMode
+  { agency, pilot, timeZone }: CheckMode
 ) {
   const probe = await probeGoogleSignals(
     { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
     {
+      ...(agency && { calendarPrep: true }),
       flightReminders: !pilot,
       mailAfter: mailSearchStart(watch.mailCheckedAt, now),
       now,
@@ -319,14 +327,27 @@ async function checkByDay(
         seenUntil: probe.calendarSeenUntil,
       })
     : noFlights;
+  // Only the agency pilot reads the agent's inbox; its watermark moves with
+  // the run that hands the mail over, or alone when there is nothing new.
+  const mail = agency
+    ? await agentMailCheck(
+        { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+        watch.agentMailCheckedAt,
+        now
+      )
+    : undefined;
   // A flight's reminder first: the run's cap must not cut it.
   const unseen = await filterUnseenProactiveSignals(watch.workspaceId, [
     ...flights.signals,
     ...probe.signals,
+    ...(mail?.signals ?? []),
   ]);
   if (unseen.length === 0) {
     await flights.record({ carried: [], queued: false, unseen });
     await advanceProactiveWatermark(watch.workspaceId, now);
+    if (mail) {
+      await advanceAgentMailWatermark(watch.workspaceId, mail.checkedAt);
+    }
     return { outcome: "nothing_new", signalCount: 0, ...flights.logged };
   }
   // After a pause (a reconnect, the end of quiet hours, turning proactive
@@ -335,6 +356,7 @@ async function checkByDay(
   const { droppedMail, signals } = await catchUpSignals(watch, unseen);
   await flights.prepare(signals);
   const queued = await queueProactiveRun({
+    ...(mail && { agentMailCheckedAt: mail.checkedAt }),
     jobId: watch.jobId,
     mailCheckedAt: now,
     maxRunsPerDay,
@@ -388,7 +410,7 @@ async function catchUpSignals(
 async function checkAtNight(
   watch: ClaimedWatch,
   now: Date,
-  { evening, pilot, timeZone }: CheckMode,
+  { agency, evening, pilot, timeZone }: CheckMode,
   quietUntil: Date
 ) {
   const probe = await probeGoogleSignals(
@@ -439,6 +461,11 @@ async function checkAtNight(
     queued: queued?.status === "queued",
     unseen,
   });
+  // The agent's inbox waits for the morning, but a pilot that starts now
+  // starts its watermark now, so the mail of the night is not left out.
+  if (agency && watch.agentMailCheckedAt === null) {
+    await advanceAgentMailWatermark(watch.workspaceId, now);
+  }
   if (quietUntil < watch.leaseUntil) {
     await deferProactiveWatch(watch, quietUntil);
   }
@@ -484,11 +511,15 @@ async function dispatchProactiveRun(
     const facts = (await subscriptionsPilot(scope))
       ? await reminderFacts(claim.job.workspaceId, signals, timeZone)
       : undefined;
+    // Decided now, not when the run was queued: the pilot can be switched off
+    // in between, and the run then follows the switch.
+    const runKind = proactiveRunKind(claim.job.workspaceId);
     const session = await to(scheduledRunChannel, {
       restart: claim.run.workerSessionId !== null,
       runId: claim.run.id,
     }).send(
       proactiveRunPrompt({
+        agentic: runKind === "agentic",
         flightFacts: facts,
         home: profile,
         quietUntil: quietUntil && localRunLabel(quietUntil, timeZone),
@@ -501,7 +532,7 @@ async function dispatchProactiveRun(
             conversationChannel: claim.job.conversationChannel,
             conversationId: claim.job.conversationId,
             scheduleId: claim.job.id,
-            scheduledRunKind: "proactive",
+            scheduledRunKind: runKind,
             scheduledRunLeaseToken: leaseToken,
             scheduledRunId: claim.run.id,
             workspaceId: claim.job.workspaceId,

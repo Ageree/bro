@@ -4,6 +4,7 @@ import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { checkModelCredits, creditCheckDue } from "@agent/lib/model/credits";
 import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
+import { proactiveRunKind } from "@agent/lib/schedules/identity";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import { subscriptionReportDue } from "@agent/lib/subscriptions/delivery";
 import {
@@ -158,7 +159,7 @@ function scheduledInputAuth(
     ["workspaceId", claim.job.workspaceId],
   ]);
   if (claim.job.kind === "proactive") {
-    attributes.set("scheduledRunKind", "proactive");
+    attributes.set("scheduledRunKind", proactiveRunKind(claim.job.workspaceId));
   }
   return {
     attributes: Object.fromEntries(attributes),

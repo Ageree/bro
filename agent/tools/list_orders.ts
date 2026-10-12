@@ -84,6 +84,7 @@ export default defineDynamic({
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
         interactive: { list_orders: listOrdersTool },
+        "agentic-worker": { list_orders: listOrdersTool },
       }),
   },
 });

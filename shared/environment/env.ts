@@ -954,6 +954,16 @@ export const env = createEnv({
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
     // price watch that code checks without the model (`watch-create`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
+    // ids, or `*` for every workspace, whose proactive checks run as the
+    // agentic worker when the run is marked `agentic`
+    // (`agent/lib/mode.ts`). Unset, nobody: every check stays proactive.
+    AGENCY_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "AGENCY_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,

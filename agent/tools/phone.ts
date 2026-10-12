@@ -3,7 +3,13 @@ import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { phoneActionTurn, rootApproval } from "@agent/lib/phone/policy";
+import {
+  agencyWorkerTurn,
+  phoneActionTurn,
+  rootApproval,
+} from "@agent/lib/phone/policy";
+import { agencyApproval, type AgencyDetails } from "@agent/lib/agency/approval";
+import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { domesticPhoneSchema } from "@shared/phone/policy";
 import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
@@ -36,10 +42,15 @@ function callerScope(context: Pick<ToolContext, "session">) {
   return scopeFromPrincipal(caller);
 }
 
-function phoneScope(context: ToolContext, serializedAction?: string) {
+function pilotScope(context: ToolContext) {
   const scope = callerScope(context);
   if (!phonePilot(scope))
     throw new Error("Phone pilot is disabled for this workspace.");
+  return scope;
+}
+
+function phoneScope(context: ToolContext, serializedAction?: string) {
+  const scope = pilotScope(context);
   if (
     serializedAction !== undefined &&
     !phoneActionTurn(context, serializedAction)
@@ -176,96 +187,151 @@ const activate = defineTool({
   },
 });
 
+const callInputSchema = z
+  .object({
+    target: domesticPhoneSchema,
+    task: z.string().trim().min(1).max(3000),
+    familiar: z
+      .boolean()
+      .optional()
+      .describe(
+        'true, if the call goes to the user themselves or a person they know personally (friend, relative, colleague): the voice greets with a casual "Алло, привет!" and speaks informally. Omit for businesses, services and strangers: "Здравствуйте!".'
+      ),
+  })
+  .strict();
+
+/** The agentic worker's call, as its approval and journal read it. */
+function callDetails(input: z.infer<typeof callInputSchema>): AgencyDetails {
+  return {
+    counterparty: input.target,
+    input: JSON.stringify(input),
+    text: input.task,
+    tool: "phone-call",
+  };
+}
+
+/**
+ * A call is the person's own word (`rootApproval`), or, in the agentic
+ * worker's own turn, the agency grant: budgeted, journaled, quiet hours
+ * aware (`agencyApproval`). Nothing else gets the worker a call.
+ */
+async function callApproval(context: ApprovalContext) {
+  return (
+    (await agencyApproval(context, "call", () =>
+      callDetails(callInputSchema.parse(context.toolInput))
+    )) ?? rootApproval(context)
+  );
+}
+
 const call = defineTool({
   availableInSubagents: false,
-  approval: rootApproval,
+  approval: callApproval,
   description:
-    "Place one Russian voice call on the user's current explicit request, using their dedicated Bro number. Target must be a full domestic +7 number: the person may give it, or it may be the number of the place or contact they asked you to call that you found in this conversation (maps, search, a site, contacts); do not ask them to retype it. task contains only this call's minimal necessary context, never whole saved memory, credentials, OTPs or unrelated personal facts. The voice agent does not call itself an AI in its greeting or raise recording on its own, but never claims to be human and answers honestly when asked whether it is one or whether the call is recorded. It can carry out the exact explicitly requested conversational errand, including booking, rescheduling or cancelling a no-fee appointment or restaurant table, ask questions and take a message. It must stop for unapproved fees, financial commitments or missing required facts; it cannot buy, invent personal details, or mutate digital accounts or calendars. The durable job reports in this chat; duplicate/uncertain jobs must never be redialled automatically. A phone connection is not task success; check phone-status.",
-  inputSchema: z
-    .object({
-      target: domesticPhoneSchema,
-      task: z.string().trim().min(1).max(3000),
-      familiar: z
-        .boolean()
-        .optional()
-        .describe(
-          'true, if the call goes to the user themselves or a person they know personally (friend, relative, colleague): the voice greets with a casual "Алло, привет!" and speaks informally. Omit for businesses, services and strangers: "Здравствуйте!".'
-        ),
-    })
-    .strict(),
+    "Place one Russian voice call on the user's current explicit request, or, in the agentic worker's own run, one it decided itself within its call budget, using their dedicated Bro number. Target must be a full domestic +7 number: the person may give it, or it may be the number of the place or contact they asked you to call that you found in this conversation (maps, search, a site, contacts); do not ask them to retype it. task contains only this call's minimal necessary context, never whole saved memory, credentials, OTPs or unrelated personal facts. The voice agent does not call itself an AI in its greeting or raise recording on its own, but never claims to be human and answers honestly when asked whether it is one or whether the call is recorded. It can carry out the exact explicitly requested conversational errand, including booking, rescheduling or cancelling a no-fee appointment or restaurant table, ask questions and take a message. It must stop for unapproved fees, financial commitments or missing required facts; it cannot buy, invent personal details, or mutate digital accounts or calendars. The durable job reports in this chat; duplicate/uncertain jobs must never be redialled automatically. A phone connection is not task success; check phone-status.",
+  inputSchema: callInputSchema,
   async execute(input, context) {
-    const scope = phoneScope(context, JSON.stringify(input));
-    const target = domesticPhoneSchema.parse(input.target);
-    await requirePhoneAgentReady();
-    const originatingTurn = phoneActionTurn(context, JSON.stringify(input));
-    if (!originatingTurn)
-      throw new Error("Originating phone authorization is unavailable.");
-    const operationId = `${scope.workspaceId}:${context.session.id}:${originatingTurn}:${context.callId}`;
-    const planned = await planOutboundCall(scope, {
-      operationId,
-      inputHash: createHash("sha256")
-        .update(JSON.stringify({ target, task: input.task }))
-        .digest("hex"),
-      target,
-      task: input.task,
-      ...phoneReportRoute(context),
-    });
-    const started = await claimCallStart(scope, planned.row.id);
-    if (!started)
-      return {
-        callId: planned.row.id,
-        state: planned.row.state,
-        duplicate: !planned.created,
-      };
-    const number = await readPhoneNumber(scope);
-    if (!number?.outboundPhoneNumberId || !number.agentId || !number.sipId) {
-      await recordCallUncertain(started.id);
-      return {
-        callId: started.id,
-        state: "uncertain",
-        note: "Number mapping is unavailable; no redial.",
-      };
-    }
-    const repeatCall = await hasEarlierConnectedCall(
-      scope,
-      target,
-      started.id
-    ).catch(() => false);
-    try {
-      const accepted = await startCall({
-        phoneNumberId: number.outboundPhoneNumberId,
-        publicNumber: number.number,
-        sipId: number.sipId,
-        agentId: number.agentId,
-        target,
-        localCallId: started.id,
-        task: input.task,
-        repeatCall,
-        familiar: input.familiar,
-      });
-      await recordCallAccepted(
-        started.id,
-        accepted.conversationId,
-        accepted.accepted
+    if (agencyWorkerTurn(context))
+      return journaledAgencyCall(
+        context,
+        {
+          actionClass: "call",
+          counterparty: input.target,
+          input: JSON.stringify(input),
+          tool: "phone-call",
+        },
+        () =>
+          placeCall(
+            context,
+            input,
+            pilotScope(context),
+            context.session.turn.id
+          )
       );
-      return {
-        callId: started.id,
-        state: accepted.accepted ? "accepted" : "processing",
-        initiationAccepted: accepted.accepted,
-        note: accepted.accepted
-          ? "Provider accepted the request; this does not prove a connection or task success. The result will be reported here."
-          : "The provider rejected call initiation but supplied a conversation receipt. No successful start or connection is claimed; the receipt will be reconciled and no redial will occur.",
-      };
-    } catch {
-      await recordCallUncertain(started.id);
-      return {
-        callId: started.id,
-        state: "uncertain",
-        note: "Provider acceptance is unknown; reconciliation will not redial or invent a successful connection.",
-      };
-    }
+    const serialized = JSON.stringify(input);
+    return placeCall(
+      context,
+      input,
+      phoneScope(context, serialized),
+      phoneActionTurn(context, serialized)
+    );
   },
 });
+
+async function placeCall(
+  context: ToolContext,
+  input: z.infer<typeof callInputSchema>,
+  scope: ReturnType<typeof pilotScope>,
+  originatingTurn: string | null
+) {
+  const target = domesticPhoneSchema.parse(input.target);
+  await requirePhoneAgentReady();
+  if (!originatingTurn)
+    throw new Error("Originating phone authorization is unavailable.");
+  const operationId = `${scope.workspaceId}:${context.session.id}:${originatingTurn}:${context.callId}`;
+  const planned = await planOutboundCall(scope, {
+    operationId,
+    inputHash: createHash("sha256")
+      .update(JSON.stringify({ target, task: input.task }))
+      .digest("hex"),
+    target,
+    task: input.task,
+    ...phoneReportRoute(context),
+  });
+  const started = await claimCallStart(scope, planned.row.id);
+  if (!started)
+    return {
+      callId: planned.row.id,
+      state: planned.row.state,
+      duplicate: !planned.created,
+    };
+  const number = await readPhoneNumber(scope);
+  if (!number?.outboundPhoneNumberId || !number.agentId || !number.sipId) {
+    await recordCallUncertain(started.id);
+    return {
+      callId: started.id,
+      state: "uncertain",
+      note: "Number mapping is unavailable; no redial.",
+    };
+  }
+  const repeatCall = await hasEarlierConnectedCall(
+    scope,
+    target,
+    started.id
+  ).catch(() => false);
+  try {
+    const accepted = await startCall({
+      phoneNumberId: number.outboundPhoneNumberId,
+      publicNumber: number.number,
+      sipId: number.sipId,
+      agentId: number.agentId,
+      target,
+      localCallId: started.id,
+      task: input.task,
+      repeatCall,
+      familiar: input.familiar,
+    });
+    await recordCallAccepted(
+      started.id,
+      accepted.conversationId,
+      accepted.accepted
+    );
+    return {
+      callId: started.id,
+      state: accepted.accepted ? "accepted" : "processing",
+      initiationAccepted: accepted.accepted,
+      note: accepted.accepted
+        ? "Provider accepted the request; this does not prove a connection or task success. The result will be reported here."
+        : "The provider rejected call initiation but supplied a conversation receipt. No successful start or connection is claimed; the receipt will be reconciled and no redial will occur.",
+    };
+  } catch {
+    await recordCallUncertain(started.id);
+    return {
+      callId: started.id,
+      state: "uncertain",
+      note: "Provider acceptance is unknown; reconciliation will not redial or invent a successful connection.",
+    };
+  }
+}
 
 const status = defineTool({
   availableInSubagents: false,

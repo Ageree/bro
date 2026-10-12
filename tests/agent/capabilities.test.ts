@@ -25,6 +25,63 @@ const groupedTools = [
   vault,
 ];
 
+const loadedModules = {
+  groupedTools,
+  personalInfoMemory,
+  profileMemory,
+  workstreamMemory,
+};
+
+type LoadedModules = typeof loadedModules;
+
+/**
+ * The same modules, loaded afresh: their environment (`env`) is read when
+ * they load, so a test that stubs a pilot takes its own copies.
+ */
+async function freshModules(): Promise<LoadedModules> {
+  vi.resetModules();
+  const [
+    calendarModule,
+    contactsModule,
+    formOfAddressModule,
+    gmailModule,
+    messagingModule,
+    proactiveMessageModule,
+    schedulesModule,
+    vaultModule,
+    personalInfoModule,
+    profileModule,
+    workstreamModule,
+  ] = await Promise.all([
+    import("@agent/tools/calendar"),
+    import("@agent/tools/contacts"),
+    import("@agent/tools/form_of_address"),
+    import("@agent/tools/gmail"),
+    import("@agent/tools/messaging"),
+    import("@agent/tools/proactive_messages"),
+    import("@agent/tools/schedules"),
+    import("@agent/tools/vault"),
+    import("@agent/memory/personal_info"),
+    import("@agent/memory/profile"),
+    import("@agent/memory/workstreams"),
+  ]);
+  return {
+    groupedTools: [
+      calendarModule.default,
+      contactsModule.default,
+      formOfAddressModule.default,
+      gmailModule.default,
+      messagingModule.default,
+      proactiveMessageModule.default,
+      schedulesModule.default,
+      vaultModule.default,
+    ],
+    personalInfoMemory: personalInfoModule.default,
+    profileMemory: profileModule.default,
+    workstreamMemory: workstreamModule.default,
+  };
+}
+
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
     // `schedules-answer` joins them only in a turn that replies to a
@@ -86,48 +143,113 @@ describe("authored mode capability matrix", () => {
     ).toEqual(["calendar-list-events", "gmail-read-thread", "gmail-search"]);
   });
 
-  it("leaves Bro's own checks no tool beyond reading new mail and events", async () => {
-    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
-    const context = dynamicContext("scheduled-worker", {
-      scheduledRunKind: "proactive",
-    });
-    const directory = new URL("../../agent/tools/", import.meta.url);
-    const names = await Promise.all(
-      readdirSync(directory)
-        .filter((file) => file.endsWith(".ts"))
-        .map(async (file) => {
-          const name = file.replace(/\.ts$/u, "");
-          const toolModule: unknown = await import(
-            new URL(file, directory).href
-          );
-          const perTurn = dynamicToolModuleSchema.safeParse(toolModule).data;
-          // Messaging resolves per step to see what the turn already sent.
-          const perStep = stepToolModuleSchema.safeParse(toolModule).data;
-          const resolve =
-            perTurn?.default.events["turn.started"] ??
-            perStep?.default.events["step.started"];
-          // A module without a resolver is a static tool of its own name.
-          if (!resolve) return [name];
-          const resolved = await resolve({}, context);
-          if (!resolved) return [];
-          return "execute" in resolved ? [name] : Object.keys(resolved);
-        })
+  it("gives the agentic worker its writes and reads in its pilot only", async () => {
+    const reads = ["calendar-list-events", "gmail-read-thread", "gmail-search"];
+    const agentic = { scheduledRunKind: "agentic" };
+    // Outside the pilot the mark is the proactive check, as it was.
+    expect(await authoredCapabilities("scheduled-worker", agentic)).toEqual(
+      reads
     );
-    // Only this test's stub is undone; the suite's own environment stays.
-    vi.stubEnv("BROWSER_USE_API_KEY", undefined);
-
-    // ask_question and task_cancel are eve-native tools that cannot be gated
-    // per mode; neither reaches outside the session. The gateway web_search is
-    // provider-managed; with OpenRouter the search is ours and gated (below).
-    expect(names.flat().toSorted()).toEqual([
-      "ask_question",
-      "calendar-list-events",
-      "gmail-read-thread",
-      "gmail-search",
-      "task_cancel",
-      "web_search",
-    ]);
+    vi.stubEnv("AGENCY_WORKSPACES", "personal:workspace");
+    try {
+      const pilot = await freshModules();
+      expect(
+        await authoredCapabilities("scheduled-worker", agentic, pilot)
+      ).toEqual([
+        "calendar-check-availability",
+        "calendar-create-event",
+        "calendar-delete-event",
+        "calendar-list-events",
+        "calendar-update-event",
+        "contacts-search",
+        "gmail-draft",
+        "gmail-read-thread",
+        "gmail-search",
+        "gmail-send",
+      ]);
+    } finally {
+      vi.stubEnv("AGENCY_WORKSPACES", "");
+      vi.resetModules();
+    }
   });
+
+  it.each([
+    [
+      "Bro's own checks",
+      { scheduledRunKind: "proactive" },
+      "",
+      [
+        "ask_question",
+        "calendar-list-events",
+        "gmail-read-thread",
+        "gmail-search",
+        "task_cancel",
+        "web_search",
+      ],
+    ],
+    [
+      "the agentic worker in its pilot",
+      { scheduledRunKind: "agentic" },
+      "personal:workspace",
+      [
+        "ask_question",
+        "browser_task",
+        "calendar-check-availability",
+        "calendar-create-event",
+        "calendar-delete-event",
+        "calendar-list-events",
+        "calendar-update-event",
+        "contacts-search",
+        "gmail-draft",
+        "gmail-read-thread",
+        "gmail-search",
+        "gmail-send",
+        "list_orders",
+        "route_time",
+        "task_cancel",
+        "web_search",
+      ],
+    ],
+  ])(
+    "leaves %s no tool beyond its reads and, for the worker, its writes",
+    async (_case, attributes, pilot, expected) => {
+      vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
+      vi.stubEnv("AGENCY_WORKSPACES", pilot);
+      // The tool modules read the pilot when they load.
+      vi.resetModules();
+      const context = dynamicContext("scheduled-worker", attributes);
+      const directory = new URL("../../agent/tools/", import.meta.url);
+      const names = await Promise.all(
+        readdirSync(directory)
+          .filter((file) => file.endsWith(".ts"))
+          .map(async (file) => {
+            const name = file.replace(/\.ts$/u, "");
+            const toolModule: unknown = await import(
+              new URL(file, directory).href
+            );
+            const perTurn = dynamicToolModuleSchema.safeParse(toolModule).data;
+            // Messaging resolves per step to see what the turn already sent.
+            const perStep = stepToolModuleSchema.safeParse(toolModule).data;
+            const resolve =
+              perTurn?.default.events["turn.started"] ??
+              perStep?.default.events["step.started"];
+            // A module without a resolver is a static tool of its own name.
+            if (!resolve) return [name];
+            const resolved = await resolve({}, context);
+            if (!resolved) return [];
+            return "execute" in resolved ? [name] : Object.keys(resolved);
+          })
+      );
+      // Only this test's stubs are undone; the suite's own environment stays.
+      vi.stubEnv("BROWSER_USE_API_KEY", undefined);
+      vi.stubEnv("AGENCY_WORKSPACES", "");
+
+      // ask_question and task_cancel are eve-native tools that cannot be gated
+      // per mode; neither reaches outside the session. The gateway web_search is
+      // provider-managed; with OpenRouter the search is ours and gated (below).
+      expect(names.flat().toSorted()).toEqual(expected.toSorted());
+    }
+  );
 
   it("fetches pages and photos only in conversations and user-set tasks", async () => {
     const pageTools = [
@@ -259,13 +381,14 @@ async function loadBrowserTask(apiKey: string) {
 
 async function authoredCapabilities(
   authenticator: string,
-  initiatorAttributes?: Record<string, string>
+  initiatorAttributes?: Record<string, string>,
+  modules: LoadedModules = loadedModules
 ) {
   const context = dynamicContext(authenticator, initiatorAttributes);
   const capabilities: string[] = [];
 
   const resolvedGroups = await Promise.all(
-    groupedTools.map(async (definition) => {
+    modules.groupedTools.map(async (definition) => {
       // Messaging resolves per step to see what the turn already sent.
       const resolve =
         "step.started" in definition.events
@@ -277,7 +400,7 @@ async function authoredCapabilities(
   );
   capabilities.push(...resolvedGroups.flat());
 
-  const personalInfoTools = await personalInfoMemory.provider.tools({
+  const personalInfoTools = await modules.personalInfoMemory.provider.tools({
     ...context,
     memory: {
       scope: {
@@ -295,7 +418,7 @@ async function authoredCapabilities(
     );
   }
 
-  const workstreamTools = await workstreamMemory.provider.tools({
+  const workstreamTools = await modules.workstreamMemory.provider.tools({
     ...context,
     memory: {
       scope: {
@@ -312,7 +435,7 @@ async function authoredCapabilities(
       ...Object.keys(workstreamTools).map((name) => `workstreams__${name}`)
     );
 
-  const profileTools = await profileMemory.provider.tools({
+  const profileTools = await modules.profileMemory.provider.tools({
     ...context,
     memory: {
       scope: {

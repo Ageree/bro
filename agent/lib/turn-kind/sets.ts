@@ -51,3 +51,66 @@ export const reportTurnTools = [
   "workstreams__read",
   "workstreams__save",
 ] as const;
+
+/**
+ * The reads a proactive check has: each tool module grants them to the
+ * `proactive-worker` mode (`agent/tools/calendar.ts`, `gmail.ts`, `mail.ts`,
+ * `agent_mail.ts`). The agentic worker keeps the same reads.
+ */
+export const proactiveReadTools = [
+  "calendar-list-events",
+  "gmail-read-thread",
+  "gmail-search",
+] as const;
+
+/**
+ * The reads the agentic worker has beyond the proactive check's: the
+ * person's contacts, to find whom to write to, their orders, their mail in
+ * Mail.ru or Yandex and in the agent's own mailbox, their calendar's free
+ * time, and `route_time` for a walk or a drive to a place. No web page
+ * (`web_fetch`, `web_search`): a link an email chose would carry the
+ * person's data out.
+ */
+const agenticReadTools: readonly string[] = [
+  "agent-mail-inbox",
+  "agent-mail-list",
+  "agent-mail-read",
+  "calendar-check-availability",
+  "contacts-search",
+  "list_orders",
+  "mail-read",
+  "mail-search",
+  "phone-status",
+  "route_time",
+];
+
+/**
+ * The write tools the agentic worker is granted. Each one's approval
+ * (`agent/lib/agency/approval.ts`) grants it on its own, under the budget
+ * and the guards; a tool's own rules (a saved rule, the connection) still
+ * apply. `browser_task` starts only a free errand that acts in the person's
+ * name (`submit`) or looks; `phone-call` places a call (`call`). No payment
+ * is among them: a payment keeps its question to the person, and a paid
+ * errand is staged up to it.
+ */
+export const agenticWriteTools: readonly string[] = [
+  "agent-mail-send",
+  "browser_task",
+  "calendar-create-event",
+  "calendar-delete-event",
+  "calendar-update-event",
+  "gmail-draft",
+  "gmail-send",
+  "mail-send",
+  "phone-call",
+];
+
+/**
+ * All the agentic worker is offered: the proactive check's reads, its own
+ * reads and the agentic write tools.
+ */
+export const agenticWorkerTurnTools: readonly string[] = [
+  ...proactiveReadTools,
+  ...agenticReadTools,
+  ...agenticWriteTools,
+];

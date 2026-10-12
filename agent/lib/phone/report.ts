@@ -9,6 +9,7 @@ import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import photon from "@agent/channels/photon";
 import telegram from "@agent/channels/telegram";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
+import { wakeAgencyForOutcome } from "@agent/lib/proactive/follow-up";
 
 export async function deliverPhoneReports(delivery: {
   attachSession?: AttachSessionFn;
@@ -55,6 +56,13 @@ export async function deliverPhoneReports(delivery: {
           untrustedSummary: row.summary,
         }),
       ].join("\n\n");
+      // Before the report goes out, so a busy run is retried by the next
+      // tick while the report is still claimable (dedupe keeps it to one).
+      await wakeAgencyForOutcome({
+        id: row.id,
+        source: "phone",
+        workspaceId: row.workspaceId,
+      });
       async function dispatch() {
         if (!conversationId)
           throw new Error("Phone reports require a bound conversation.");

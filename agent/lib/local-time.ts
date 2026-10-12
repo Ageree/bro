@@ -6,6 +6,7 @@
  */
 export const clockModes = {
   interactive: true,
+  "agentic-worker": false,
   "proactive-worker": false,
   "scheduled-report": false,
   "scheduled-worker": true,
