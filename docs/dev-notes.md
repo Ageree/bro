@@ -1466,7 +1466,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Тексты о данных: `agent/lib/privacy/facts.ts` (что Бро говорит людям) и
   `app/(public)/privacy` (страница) называют одни и те же сервисы — правьте
   вместе. Хостинг в фактах записан кодом (Selectel, Россия), а не берётся из
-  env; промпт `role/interactive.md` («Vercel, Neon») остаётся за юнитом U8.
+  env.
 
 ## Лимит трат без спроса
 
