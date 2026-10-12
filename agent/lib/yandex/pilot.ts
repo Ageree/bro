@@ -17,3 +17,12 @@ export function yandexPurchasePilot(scope: { readonly workspaceId: string }) {
     (list.includes("*") || list.includes(scope.workspaceId))
   );
 }
+
+/** Whether the workspace's public reads may skip the browser (YANDEX_DIRECT_WORKSPACES). */
+export function yandexDirectPilot(scope: { readonly workspaceId: string }) {
+  const list = env.YANDEX_DIRECT_WORKSPACES ?? [];
+  return (
+    yandexPilot(scope) &&
+    (list.includes("*") || list.includes(scope.workspaceId))
+  );
+}

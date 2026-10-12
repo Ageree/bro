@@ -287,6 +287,14 @@ export const env = createEnv({
         "YANDEX_API_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Public Yandex reads (Afisha search) asked from the server itself, no
+    // browser; any refusal falls back to the pool tab. Unset, nobody.
+    YANDEX_DIRECT_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_DIRECT_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     YANDEX_PURCHASE_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),

@@ -6,6 +6,8 @@ import {
   createBrowserVmBrowser,
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
+import { afishaSearchDirect } from "./afisha/direct";
+import { yandexDirectPilot } from "./pilot";
 import {
   type JsonValue,
   type YandexOperation,
@@ -67,6 +69,8 @@ export async function runYandexOperation(
   operation: YandexOperation,
   args: JsonValue
 ): Promise<YandexOutcome> {
+  const direct = await tryDirect(workspaceId, operation, args);
+  if (direct !== undefined) return direct;
   if (!(await usesBrowserPool({ workspaceId }))) {
     return { kind: "unavailable" };
   }
@@ -144,6 +148,32 @@ export async function runYandexOperation(
       });
     }
   }
+}
+
+/**
+ * A public read that needs no sign-in is asked from the server itself, no
+ * tab: about a second instead of five or more. Only for the workspaces in
+ * YANDEX_DIRECT_WORKSPACES; a refusal of any kind falls through to the tab.
+ */
+async function tryDirect(
+  workspaceId: string,
+  operation: YandexOperation,
+  args: JsonValue
+): Promise<YandexOutcome | undefined> {
+  if (operation.id !== "afisha.search" || !yandexDirectPilot({ workspaceId })) {
+    return undefined;
+  }
+  const began = Date.now();
+  const answer = await afishaSearchDirect(args);
+  if (answer === undefined) return undefined;
+  const data = operation.result.safeParse(answer);
+  if (!data.success) return undefined;
+  console.info("[yandex] direct", {
+    ms: Date.now() - began,
+    operation: operation.id,
+    workspaceId,
+  });
+  return { data: data.data, kind: "ok" };
 }
 
 /** The blank tab on the workspace's profile, its sandbox woken for it. */

@@ -49,7 +49,7 @@ export const edaSearchOperation = defineYandexOperation({
     query: z.string().min(1).max(200),
   }),
   id: "food.eda_search",
-  origin: "https://eda.yandex.ru/",
+  origin: "https://eda.yandex.ru/robots.txt",
   result: z.object({
     places: z.array(edaPlace),
     total: z.string().nullable(),

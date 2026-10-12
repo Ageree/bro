@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 
+/** The page's own search request; the server-side one sends the same. */
+export const afishaSearchGraphql =
+  "query BroSearch($text: String!, $docs: Int!) { search(text: $text, groups: 5, docs: $docs, page: 0, filterByDeviceType: web, filterByTypes: [event], groupBy: groupCode) { groups { code title documentsTotal documents { object { __typename ... on SearchObjectEvent { id url title placeTitle minPrice { value } datePreview { text } type { name } tickets { saleStatus } } } } } } }";
+
 const event = z.object({
   id: z.string(),
   kind: z.string().nullable(),
@@ -31,7 +35,7 @@ export const afishaSearchOperation = defineYandexOperation({
     query: z.string().min(1).max(200),
   }),
   id: "afisha.search",
-  origin: "https://afisha.yandex.ru/moscow",
+  origin: "https://afisha.yandex.ru/robots.txt",
   result: z.union([
     z.object({ events: z.array(event).max(10) }),
     z.object({ error: z.string() }),
@@ -54,11 +58,7 @@ export const afishaSearchOperation = defineYandexOperation({
   };
   const d = await gql(
     "BroSearch",
-    "query BroSearch($text: String!, $docs: Int!) {\\n" +
-      "  search(text: $text, groups: 5, docs: $docs, page: 0, filterByDeviceType: web, filterByTypes: [event], groupBy: groupCode) {\\n" +
-      "    groups { code title documentsTotal documents { object { __typename ... on SearchObjectEvent { id url title placeTitle minPrice { value } datePreview { text } type { name } tickets { saleStatus } } } } }\\n" +
-      "  }\\n" +
-      "}",
+    ${JSON.stringify(afishaSearchGraphql)},
     { text: args.query, docs: args.limit }
   );
   if (d.wall) return { status: "signed_out" };
