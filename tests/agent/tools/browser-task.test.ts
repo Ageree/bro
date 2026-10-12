@@ -8241,7 +8241,7 @@ describe("browser_task takes an errand the person asked to be done to its last s
       "look"
     );
     expect(task).toContain(
-      "never sort by price descending («Дороже»), which fills the first page with items at the ceiling"
+      "never sort by price descending («Дороже» or the site's equivalent), which fills the first page with items at the ceiling"
     );
     expect(task).toContain(
       "name the sort order and the filters you actually applied"
