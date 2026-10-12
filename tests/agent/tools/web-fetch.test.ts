@@ -1,3 +1,5 @@
+import dns, { type LookupAddress, type LookupOptions } from "node:dns";
+import { syncBuiltinESMExports } from "node:module";
 import type { ToolContext } from "eve/tools";
 import { WEB_FETCH_OUTPUT_SCHEMA } from "eve/tools/web_fetch";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const fetchMock =
   vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>();
 const routes = new Map<string, () => Response>();
+/** What eve answers for a URL that would reach the machine or its network. */
+const privateAddressRefusal =
+  "URL must not target localhost, private, link-local, or reserved IP addresses.";
 
 function pageAt(url: string, html: string, status = 200) {
   routes.set(
@@ -286,5 +291,68 @@ describe("web_fetch", () => {
     await expect(
       fetchPage("https://slow.example/a", toolContext(turn.signal))
     ).rejects.toThrow("timeout");
+  });
+
+  // eve refuses these itself (`requestPublicUrl`, which checks every hop and
+  // every resolved address); Bro's wrapper relies on it, so an eve update
+  // that drops the check must fail here. eve and the world's queue listen on
+  // loopback, and the cloud's metadata service sits at 169.254.169.254.
+  it.each([
+    "https://127.0.0.1/",
+    "https://127.0.0.1:4274/.well-known/workflow/v1/flow",
+    "https://localhost/",
+    "https://[::1]/",
+    "https://[::ffff:127.0.0.1]/",
+    "https://169.254.169.254/latest/meta-data/",
+    "https://10.0.0.5/",
+    "https://192.168.1.1/",
+    "https://0x7f000001/",
+  ])("never asks %s", async (url) => {
+    await expect(fetchPage(url)).rejects.toThrow(privateAddressRefusal);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never follows a redirect to a private address", async () => {
+    const url = "https://short.example/go";
+    routes.set(
+      url,
+      () =>
+        new Response(null, {
+          headers: { location: "https://169.254.169.254/latest/meta-data/" },
+          status: 302,
+        })
+    );
+
+    await expect(fetchPage(url)).rejects.toThrow(privateAddressRefusal);
+    expect(fetchMock.mock.calls.map(([asked]) => String(asked))).toEqual([url]);
+  });
+
+  it("never connects to a name that resolves to a private address", async () => {
+    vi.unstubAllGlobals();
+    // eve is loaded by Node itself, past vitest's mocks: the name is
+    // answered by swapping the builtin's own export for every importer.
+    const asked: string[] = [];
+    // SAFETY: eve asks with `all: true`, the overload this answers.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- One overload of an overloaded builtin is implemented.
+    const lookup = vi.spyOn(dns, "lookup").mockImplementation(((
+      hostname: string,
+      _options: LookupOptions,
+      callback: (error: null, addresses: LookupAddress[]) => void
+    ) => {
+      asked.push(hostname);
+      callback(null, [{ address: "169.254.169.254", family: 4 }]);
+    }) as typeof dns.lookup);
+    syncBuiltinESMExports();
+    try {
+      // undici reports the refused lookup as the cause of «fetch failed».
+      await expect(fetchPage("https://rebind.example/")).rejects.toHaveProperty(
+        "cause.message",
+        privateAddressRefusal
+      );
+      expect(asked).toEqual(["rebind.example"]);
+    } finally {
+      lookup.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 });

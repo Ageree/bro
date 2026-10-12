@@ -1,9 +1,43 @@
+import type * as Dns from "node:dns";
+import type * as PublicFetch from "@agent/lib/sandbox/public-fetch";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   maximumAttachmentBatchBytes,
   maximumAttachmentBytes,
   prepareAttachmentDelivery,
 } from "./attachments";
+
+/**
+ * The names a test resolves; a hop the connection makes itself only when a
+ * test asks for it (`dns.connect`), otherwise the stubbed global fetch.
+ */
+const dns = vi.hoisted(() => ({
+  answer: new Array<Dns.LookupAddress>(),
+  connect: false,
+}));
+
+vi.mock("node:dns", async (importOriginal) => {
+  const original = await importOriginal<typeof Dns>();
+  return {
+    ...original,
+    lookup: (
+      _hostname: string,
+      _options: Dns.LookupOptions,
+      callback: (error: null, addresses: Dns.LookupAddress[]) => void
+    ) => {
+      callback(null, dns.answer);
+    },
+  };
+});
+
+vi.mock("@agent/lib/sandbox/public-fetch", async (importOriginal) => {
+  const original = await importOriginal<typeof PublicFetch>();
+  return {
+    ...original,
+    fetchPublic: (url: URL, init?: RequestInit) =>
+      dns.connect ? original.fetchPublic(url, init) : fetch(url, init),
+  };
+});
 
 const fetchMock =
   vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>();
@@ -50,6 +84,8 @@ function streamed(size: number, contentType: string) {
 }
 
 beforeEach(() => {
+  dns.answer = [];
+  dns.connect = false;
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -211,6 +247,23 @@ describe("prepareAttachmentDelivery", () => {
     expect(delivery.failures).toEqual([{ reason: "blocked-host", url }]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(["127.0.0.1", "169.254.169.254", "10.0.0.5", "::1"])(
+    "never connects to a name that resolves to %s",
+    async (address) => {
+      dns.answer = [{ address, family: address.includes(":") ? 6 : 4 }];
+      dns.connect = true;
+      fetchMock.mockResolvedValue(served(jpeg, "image/jpeg"));
+      const url = "https://rebind.example/photo.jpg";
+
+      const delivery = await prepareAttachmentDelivery([
+        { kind: "image", url },
+      ]);
+
+      expect(delivery.failures).toEqual([{ reason: "blocked-host", url }]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
 
   it("keeps markup served as an image as a link", async () => {
     fetchMock.mockResolvedValueOnce(

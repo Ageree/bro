@@ -585,6 +585,23 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
   пишет обёртка маршрута (`agent/channels/eve.ts`), иначе ранний поток — 403.
+- Коды входа (iMessage с линии Бро): Better Auth режет сам лишь по IP в памяти
+  процесса (`/phone-number/*` — 10 в минуту, только при `NODE_ENV=production`) и
+  номер не считает. Свой лимит — в базе (`sign_in_code_sends`,
+  `db/services/auth/code-sends.ts`): номер 3 за 10 минут и 10 в сутки, адрес 10
+  и 40. Проверка — в `hooks.before`, а не в `sendOTP`: эндпоинт пишет новый код
+  до `sendOTP`, и отказ подменил бы код, который у человека уже есть;
+  `/sign-in/phone-number` выключен — он слал код мимо лимита. IP верен: Caddy
+  ставит `x-forwarded-for` одним адресом клиента, Next его не трогает (`??=`),
+  а Better Auth верит лишь одиночному значению. Принятая цена: любой может
+  исчерпать лимит чужого номера и закрыть ему вход по коду на 10 минут (сутки —
+  при 10 запросах). Код, который iMessage не отправил, слот возвращает
+  (`releaseSignInCodeSend`).
+- `web_fetch` eve сам не пускает на приватные адреса: каждый редирект и каждый
+  адрес из DNS (`execution/web-fetch/request.js`); после обновления eve это
+  ловит `tests/agent/tools/web-fetch.test.ts`. Свои загрузки по URL от модели
+  (`find_images`, вложения `send_message`) идут через `fetchPublic`, а не
+  глобальный `fetch`: `isBlockedHost` смотрит лишь имя.
 - `first-contact` решает `workspaces.introduced_at`
   (`claimWorkspaceIntroduction`), а не `chats`: переезд из Convex их не пишет.
 - Любой сбой модели (и переполнение контекста) — `turn.failed`
