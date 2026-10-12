@@ -264,6 +264,17 @@
   `--public-url https://brobro.tech --apply --output /tmp/x.env`.
 - Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
   меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
+- Память VM (4 ГБ): у `bro-eve` куча `--max-old-space-size=1280`, у `bro-web` 640
+  (действует с рестарта), swap 2 ГБ делает `install-code.sh` (не фатально: без
+  места или при сбое — предупреждение). `MemoryHigh`/`MemoryMax` в юниты не
+  ставьте, пока на проде не снят `systemctl show bro-eve bro-web -p MemoryPeak`:
+  лимит cgroup после `daemon-reload` убьёт живой eve посреди хода.
+- Баланс Selectel проверяет `watchdog.py` раз в 15 минут. Ключ —
+  `SELECTEL_BILLING_TOKEN` (только чтение биллинга, не `SELECTEL_TOKEN`: тот
+  удаляет VM, а ops-env получают все ops-скрипты релиза) в `/etc/bro/ops-env`.
+  Порядок: сначала `host.py update-host`, потом `host.py env … --with-selectel-balance`
+  (берёт ключ из env сессии); `host.py env` без флага ключ снимает, проверка
+  тихо выключается. Порог — `SELECTEL_BALANCE_MIN_RUB` (1000).
 - Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
   Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
   Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,
@@ -1528,6 +1539,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200
   вместо dispatch. V4 Browser Use не присылает вебхук, так что локальный
   `browser-runs` без этого тика не доставит законченный отчёт в чат.
+- Голый 403 Composio (`ComposioError`, не 403 провайдера) `composioProxy` повторяет
+  один раз через 3 с лишь для GET и лишь при `retryRefusedRead` (так зовут
+  `withGoogleAuth` и `appRequest`; проактивная проверка повторяет сама через
+  `onceMore`). Запись не повторяется: документации Composio, что такой 403 значит
+  «провайдера не вызывали», нет, а прокси при этом отвечает HTTP 200 на любой
+  статус провайдера — только догадка.
 - Composio с адреса Cloud.ru изредка отвечает голым 403 (03.10: 5 из 9 ночных
   проверок), а тот же ключ из сессии — 200. Проверка почты спрашивает ещё раз
   через 3 с (`onceMore` в `agent/lib/proactive/probe.ts`); `ComposioError.answer`

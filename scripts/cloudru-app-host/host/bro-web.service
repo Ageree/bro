@@ -19,7 +19,10 @@ Group=bro
 WorkingDirectory=/srv/bro/current/web
 EnvironmentFile=/etc/bro/env
 Environment=NODE_ENV=production TZ=UTC PORT=3000 HOSTNAME=127.0.0.1
-ExecStart=/usr/local/bin/node server.js
+# The heap cap makes V8 collect before the VM runs out of memory, on a 4 GB VM shared with Caddy, deployd, the
+# bridge and tg-egress. Takes effect at the next restart. No MemoryHigh/MemoryMax yet: a cgroup limit needs
+# the peaks measured on production first (docs/dev-notes.md).
+ExecStart=/usr/local/bin/node --max-old-space-size=640 server.js
 Restart=always
 RestartSec=3
 # Next exits at once on SIGTERM (code 143): a planned stop or restart, not a failure.

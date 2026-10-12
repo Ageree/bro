@@ -243,7 +243,11 @@ export function googleUrl(
  * Google's REST APIs for one connected account, called through Composio's
  * proxy. A non-2xx answer throws {@link GoogleApiError}.
  */
-export function googleClient(connectedAccountId: string, signal: AbortSignal) {
+export function googleClient(
+  connectedAccountId: string,
+  signal: AbortSignal,
+  options: { readonly retryRefusedRead?: boolean } = {}
+) {
   async function send(request: {
     readonly body?: object;
     readonly method?: GoogleMethod;
@@ -252,6 +256,7 @@ export function googleClient(connectedAccountId: string, signal: AbortSignal) {
     const response = await composioProxy(connectedAccountId, {
       body: request.body,
       method: request.method ?? "GET",
+      retryRefusedRead: options.retryRefusedRead,
       signal,
       url: request.url,
     });
@@ -309,7 +314,9 @@ export async function withGoogleAuth<T>(
   execute: (client: GoogleClient) => Promise<T>
 ) {
   const { connectedAccountId, requireAuth } = await googleConnectedAccount(ctx);
-  const client = googleClient(connectedAccountId, ctx.abortSignal);
+  const client = googleClient(connectedAccountId, ctx.abortSignal, {
+    retryRefusedRead: true,
+  });
 
   for (let attempt = 0; ; attempt += 1) {
     try {

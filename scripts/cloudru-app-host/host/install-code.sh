@@ -8,6 +8,35 @@
 set -euo pipefail
 HOST=$(cd "$(dirname "$0")" && pwd)
 
+# swap:begin
+# A 2 GB swap file on a 4 GB VM: memory pressure slows it down before the OOM killer picks a process. Never
+# fatal (a warning, and the units below are installed all the same), idempotent, and no restart. The file
+# is built under another name and moved into place only once it is formatted, so /swapfile is either absent
+# or a whole swap file; one that is not active (an earlier swapon failed) is activated again, and one that is
+# no swap file is replaced. It needs 3 GB free on /: 2 GB for the file and a margin the VM keeps.
+SWAPFILE=${BRO_SWAPFILE:-/swapfile}
+ensure_swap() {
+  swapon --show=NAME --noheadings | grep -qx "$SWAPFILE" && return 0
+  if ! swaplabel "$SWAPFILE" >/dev/null 2>&1; then
+    local free_mb
+    free_mb=$(df --output=avail -BM "$(dirname "$SWAPFILE")" | tail -n 1 | tr -dc '0-9') || return 1
+    [ "${free_mb:-0}" -ge 3072 ] || { echo "only ${free_mb:-0} MB free"; return 1; }
+    rm -f "$SWAPFILE" "$SWAPFILE.new"
+    (umask 077 && { fallocate -l 2G "$SWAPFILE.new" || dd if=/dev/zero of="$SWAPFILE.new" bs=1M count=2048; }) \
+      && chmod 600 "$SWAPFILE.new" && mkswap "$SWAPFILE.new" >/dev/null && mv "$SWAPFILE.new" "$SWAPFILE" \
+      || { rm -f "$SWAPFILE.new"; return 1; }
+  fi
+  swapon "$SWAPFILE" || return 1
+  grep -qs "^$SWAPFILE " /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+  # Swap is for spikes, not for the working set.
+  echo "vm.swappiness=10" > /etc/sysctl.d/90-bro-swap.conf
+  sysctl -q -w vm.swappiness=10
+}
+if ! ensure_swap; then
+  echo "warning: no swap file was set up; the host's code is installed without it" >&2
+fi
+# swap:end
+
 for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service bro-watchdog.timer \
   bro-backup.service bro-backup.timer bro-backup-alert.service caddy.service bro-egress.service; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"

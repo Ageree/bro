@@ -55,7 +55,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deployd import EVE_HEALTH, WEB_HEALTH, Paths, read_env, write_private  # noqa: E402
+from deployd import EVE_HEALTH, WEB_HEALTH, Paths, read_env, read_ops_env, write_private  # noqa: E402
 
 DOWN_BEFORE_ALERT_S = 5 * 60
 EGRESS_RESTART_EVERY_S = 10 * 60
@@ -65,8 +65,11 @@ REPEAT_S = 60 * 60
 MAINTENANCE_S = 3 * 3600
 TG_HOLD_S = 3 * 3600
 BACKUP_FRESH_S = 26 * 3600
+SELECTEL_BALANCES = "https://api.selectel.ru/v3/balances"
+SELECTEL_MIN_RUB = 1000.0
+SELECTEL_CHECK_EVERY_S = 15 * 60
 NAMES = {"web": "Next (сайт и вход)", "eve": "eve (агент, каналы)", "caddy": "Caddy (HTTPS)",
-         "backup": "ночной бэкап базы", "tg-egress": "путь к api.telegram.org (tg-egress)",
+         "backup": "ночной бэкап базы", "selectel": "баланс Selectel", "tg-egress": "путь к api.telegram.org (tg-egress)",
          "tg-bridge": "мост Telegram (входящие сообщения бота)",
          "tg-hold": "приём сообщений Telegram (ни вебхука, ни моста после hold)"}
 # A planned stop of these units pauses these checks: eve stopped, the bridge cannot hand anything over.
@@ -120,6 +123,47 @@ def backup_unit_failed():
                             capture_output=True, text=True)
     unit = dict(line.partition("=")[::2] for line in result.stdout.splitlines())
     return result.returncode != 0 or unit.get("LoadState") != "loaded" or unit.get("Result") != "success"
+
+
+def selectel_balance_rub(token, timeout=15):
+    """The primary billing's balance in rubles (the API counts kopecks), debt taken off; None when Selectel
+    does not answer or answers something else: a failed read is not a low balance."""
+    request = urllib.request.Request(SELECTEL_BALANCES, headers={"X-Token": token})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read())["data"]["billings"]
+        billing = next(b for b in data if b.get("billing_type") == "primary")
+        kopecks = billing["balances_values_sum"] - billing.get("debt_sum", 0)
+    except (OSError, urllib.error.URLError, ValueError, KeyError, TypeError, StopIteration):
+        return None
+    if isinstance(kopecks, bool) or not isinstance(kopecks, (int, float)):
+        return None
+    return kopecks / 100
+
+
+def selectel_ok(paths, now, state):
+    """None when the check is off (no SELECTEL_BILLING_TOKEN in /etc/bro/ops-env: the account's key is
+    root's, never in the app's env that the model's tools run with) or Selectel could not be read this
+    time (the last verdict stands); else whether the balance is at least SELECTEL_BALANCE_MIN_RUB. Read
+    every SELECTEL_CHECK_EVERY_S, not every minute. At zero Selectel takes the VMs and Object Storage."""
+    ops = read_ops_env(paths)
+    token = ops.get("SELECTEL_BILLING_TOKEN")
+    if not token:
+        state.pop("selectelBalance", None)
+        return None
+    try:
+        minimum = float(ops.get("SELECTEL_BALANCE_MIN_RUB") or SELECTEL_MIN_RUB)
+    except ValueError:
+        minimum = SELECTEL_MIN_RUB
+    last = state.get("selectelBalance")
+    if not (isinstance(last, dict) and now - last.get("at", 0) < SELECTEL_CHECK_EVERY_S):
+        rub = selectel_balance_rub(token)
+        if rub is None:
+            print("selectel balance: not read", flush=True)
+            return None if not isinstance(last, dict) else last.get("rub", 0) >= minimum
+        last = state["selectelBalance"] = {"at": now, "rub": rub}
+    last["min"] = minimum
+    return last["rub"] >= minimum
 
 
 def egress_check(paths):
@@ -187,6 +231,9 @@ def probe(paths, env, now, state, skip=frozenset()):
     fresh = backup_fresh(paths, env, now, state)
     if fresh is not None:
         checks["backup"] = fresh and not backup_unit_failed()
+    balance = selectel_ok(paths, now, state)
+    if balance is not None:
+        checks["selectel"] = balance
     return checks
 
 
@@ -268,7 +315,11 @@ def step(state, checks, now, host, skip=frozenset()):
             if "alertedAt" in entry or "recovered" in entry:
                 since = entry["recovered"] if "recovered" in entry else entry["downSince"]
                 state[name] = {"recovered": since}
-                messages.append((name, f"Бро на {host}: {NAMES[name]} снова работает (лежал с {clock(since)})."))
+                if name == "selectel":
+                    text = f"Бро на {host}: баланс Selectel снова выше порога (был ниже с {clock(since)})."
+                else:
+                    text = f"Бро на {host}: {NAMES[name]} снова работает (лежал с {clock(since)})."
+                messages.append((name, text))
             else:
                 state[name] = {}
                 sent(state, name)  # an alert that never went out is moot now
@@ -283,6 +334,11 @@ def step(state, checks, now, host, skip=frozenset()):
                         f"{int((now - entry['downSince']) // 60) + TG_HOLD_S // 60} мин; через 24 ч от hold "
                         f"Telegram выбросит накопленное. Включить: host.py ops {host} tg-bridge.sh "
                         f"switch-to-bridge (или switch-to-webhook).")
+            elif name == "selectel":
+                balance = state.get("selectelBalance", {})
+                text = (f"Бро на {host}: баланс Selectel {balance.get('rub', 0):.0f} ₽, ниже порога "
+                        f"{balance.get('min', SELECTEL_MIN_RUB):.0f} ₽. При нуле пропадут VM и хранилище S3: "
+                        f"пополнить в панели my.selectel.ru.")
             elif name == "backup":
                 text = (f"Бро на {host}: ночной бэкап базы не в порядке с {clock(entry['downSince'])}: "
                         f"нет удачного 26 часов, нет ключа или последний запуск (бэкап или проверка) упал. "

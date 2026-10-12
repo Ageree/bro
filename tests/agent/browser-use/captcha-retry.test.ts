@@ -139,6 +139,8 @@ function parkedRow(captchaAttempt: number) {
     queueRevision: 0,
     replyAnchorMessageId: "message-1",
     report: null,
+    reportAbandonedAt: null,
+    reportNoticeSentAt: null,
     reportAttempts: 0,
     reportClaimedAt: null,
     reportDeliveredAt: null,

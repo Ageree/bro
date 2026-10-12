@@ -231,8 +231,9 @@ def read_env(paths):
 
 
 # Credentials only the ops scripts need, never the app (whose env the model's tools run with): Neon's owner
-# URL while moving off it and for the week of a possible rollback (db-copy.sh).
-OPS_ONLY_ENV = ("NEON_DATABASE_URL",)
+# URL while moving off it and for the week of a possible rollback (db-copy.sh); the Selectel key and the
+# threshold of the watchdog's balance check (watchdog.py, which runs as root and reads this file).
+OPS_ONLY_ENV = ("NEON_DATABASE_URL", "SELECTEL_BILLING_TOKEN", "SELECTEL_BALANCE_MIN_RUB")
 
 
 def read_ops_env(paths):

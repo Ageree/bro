@@ -3,6 +3,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   gt,
   inArray,
   isNotNull,
@@ -941,6 +942,7 @@ export async function listOverdueBrowserRunReports(
       and(
         isNotNull(browserRuns.report),
         isNull(browserRuns.reportDeliveredAt),
+        isNull(browserRuns.reportNoticeSentAt),
         lt(browserRuns.completedAt, settledBefore),
         gt(
           browserRuns.completedAt,
@@ -950,6 +952,76 @@ export async function listOverdueBrowserRunReports(
     )
     .orderBy(asc(browserRuns.completedAt))
     .limit(50);
+}
+
+/** A notice that was taken but not sent is taken again after this. */
+const abandonedNoticeRetryMs = 10 * 60_000;
+
+/** Channels a notice can be sent to without a session: a web chat has none. */
+const noticeChannels = ["photon", "telegram"] as const;
+
+function abandonedNoticeDue(now: Date) {
+  return and(
+    isNotNull(browserRuns.report),
+    isNull(browserRuns.reportDeliveredAt),
+    isNull(browserRuns.reportNoticeSentAt),
+    inArray(browserRuns.conversationChannel, noticeChannels),
+    gte(browserRuns.reportAttempts, maximumReportAttempts),
+    or(
+      isNull(browserRuns.reportAbandonedAt),
+      lt(
+        browserRuns.reportAbandonedAt,
+        new Date(now.getTime() - abandonedNoticeRetryMs)
+      )
+    ),
+    // The last attempt may still be in flight or waiting on its turn.
+    or(
+      isNull(browserRuns.reportClaimedAt),
+      lt(browserRuns.reportClaimedAt, new Date(now.getTime() - reportLeaseMs))
+    ),
+    gt(browserRuns.completedAt, new Date(now.getTime() - reportRetryWindowMs))
+  );
+}
+
+/**
+ * Take the runs whose report ran out of delivery attempts and whose person
+ * has not been told. Taking is a claim: two ticks cannot both get a run (the
+ * outer update re-checks the conditions), and a notice that then fails to
+ * send is taken again after `abandonedNoticeRetryMs`, until
+ * {@link markBrowserRunNoticeSent}.
+ */
+export async function takeAbandonedBrowserRunReports(
+  now = new Date(),
+  limit = 20
+) {
+  const due = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(abandonedNoticeDue(now))
+    .orderBy(asc(browserRuns.completedAt))
+    .limit(limit);
+  return db
+    .update(browserRuns)
+    .set({ reportAbandonedAt: now, updatedAt: now })
+    .where(and(inArray(browserRuns.id, due), abandonedNoticeDue(now)))
+    .returning({
+      conversationChannel: browserRuns.conversationChannel,
+      conversationId: browserRuns.conversationId,
+      id: browserRuns.id,
+      site: browserRuns.site,
+      task: browserRuns.task,
+    });
+}
+
+/** The person was told: the run is done with, for them and for the owner. */
+export async function markBrowserRunNoticeSent(
+  runId: string,
+  now = new Date()
+) {
+  await db
+    .update(browserRuns)
+    .set({ reportNoticeSentAt: now, updatedAt: now })
+    .where(eq(browserRuns.id, runId));
 }
 
 export async function listPendingBrowserRunReports(limit: number) {

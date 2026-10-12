@@ -108,6 +108,20 @@ export const browserRuns = pgTable(
       withTimezone: true,
     }),
     reportAttempts: integer("report_attempts").notNull().default(0),
+    // When a tick took the notice that this report ran out of delivery
+    // attempts (a claim, retried after `abandonedNoticeRetryMs` if the send
+    // did not land), and when that notice reached the person. Only a notified
+    // run leaves the owner's overdue watch.
+    reportAbandonedAt: timestamp("report_abandoned_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    reportNoticeSentAt: timestamp("report_notice_sent_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // Whether the run was started with the saved card bound. A background
     // retry binds the same secrets again, so it has to know.
     paymentAllowed: boolean("payment_allowed").notNull().default(false),

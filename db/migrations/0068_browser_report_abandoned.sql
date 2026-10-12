@@ -1,0 +1,2 @@
+ALTER TABLE "browser_runs" ADD COLUMN "report_abandoned_at" timestamp (3) with time zone;--> statement-breakpoint
+ALTER TABLE "browser_runs" ADD COLUMN "report_notice_sent_at" timestamp (3) with time zone;

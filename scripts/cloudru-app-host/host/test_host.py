@@ -12,6 +12,7 @@ import hashlib
 import http.server
 import io
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -761,6 +762,45 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
 
+    def test_the_selectel_balance_alerts_below_the_threshold_and_only_with_its_key(self):
+        def answer(kopecks, debt=0):
+            body = {"status": "success", "data": {"billings": [
+                {"billing_type": "other", "balances_values_sum": 9_999_999, "debt_sum": 0},
+                {"billing_type": "primary", "balances_values_sum": kopecks, "debt_sum": debt}]}}
+            return mock.MagicMock(read=lambda: json.dumps(body).encode(),
+                                  __enter__=lambda self: self, __exit__=lambda *a: None)
+
+        with tempfile.TemporaryDirectory() as root:
+            paths = deployd.Paths(root)
+            state, now = {}, 3_000_000
+            # No key in ops-env: the check is off, and no request goes out.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=AssertionError):
+                self.assertIsNone(watchdog.selectel_ok(paths, now, state))
+            paths.ops_env.parent.mkdir(parents=True)
+            paths.ops_env.write_text("SELECTEL_BILLING_TOKEN=k\nSELECTEL_BALANCE_MIN_RUB=500\n")
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=answer(80_000)) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, now, state))
+                self.assertEqual(call.call_args.args[0].get_header("X-token"), "k")
+            self.assertEqual(state["selectelBalance"]["rub"], 800.0)
+            # Read every 15 minutes: a minute later the verdict stands without a request.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=AssertionError):
+                self.assertTrue(watchdog.selectel_ok(paths, now + 60, state))
+            # Debt counts against the balance; below the threshold is down.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=answer(80_000, debt=40_000)):
+                self.assertFalse(watchdog.selectel_ok(paths, now + 1000, state))
+            # A read that fails is not a low balance: the last verdict stands, and with none the check is idle.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+                self.assertFalse(watchdog.selectel_ok(paths, now + 2000, state))
+                self.assertIsNone(watchdog.selectel_ok(paths, now + 2000, {}))
+            # Ten minutes down becomes an alert that names the sum and the threshold.
+            text = watchdog.step({"selectel": {"downSince": 0}, "selectelBalance": state["selectelBalance"]},
+                                 {"selectel": False}, 600, "bro-app-sel-2")[0][1]
+            self.assertIn("баланс Selectel 400 ₽, ниже порога 500 ₽", text)
+            self.assertIn("selectel", deployd.OPS_ONLY_ENV[1].lower())
+            paths.ops_env.unlink()
+            self.assertIsNone(watchdog.selectel_ok(paths, now + 5000, state))
+            self.assertNotIn("selectelBalance", state)
+
     def test_an_alert_reaches_the_webhook_when_telegram_does_not(self):
         posted = []
 
@@ -979,6 +1019,77 @@ class BootTest(unittest.TestCase):
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
         for unit in ("bro-web.service", "bro-eve.service"):
             self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
+
+    def test_eve_and_web_have_a_heap_cap_and_no_cgroup_limit_yet(self):
+        for unit, heap in (("bro-eve.service", 1280), ("bro-web.service", 640)):
+            text = (HERE / unit).read_text()
+            self.assertIn(f"\nExecStart=/usr/local/bin/node --max-old-space-size={heap} ", text, unit)
+            # A cgroup limit on a live unit kills it at the next daemon-reload's restart: not before the
+            # peaks are measured on production (docs/dev-notes.md).
+            self.assertNotRegex(text, r"(?m)^Memory(High|Max)=", unit)
+
+    def swap_run(self, free_mb, fallocate_ok=True, mkswap_ok=True, label_ok=False, active=False, existing=False):
+        """Runs install-code.sh's swap block against stubs in a temporary root; returns (exit code, root)."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        swapfile = root / "swapfile"
+        if existing:
+            swapfile.write_text("")
+        stubs = {
+            "df": f'echo Avail; echo "{free_mb}M"',
+            "swapon": f'if [ "$1" = --show=NAME ]; then {"echo " + str(swapfile) if active else ":"}; '
+                      f'else echo on >> "{root}/swapon.log"; fi',
+            "swaplabel": "exit 0" if label_ok else "exit 1",
+            "fallocate": f'{"" if fallocate_ok else "exit 1; "}truncate -s 2G "${{@: -1}}"',
+            "dd": "exit 0" if fallocate_ok else "exit 1",
+            "mkswap": "exit 0" if mkswap_ok else "exit 1",
+            "sysctl": "exit 0",
+        }
+        for name, body in stubs.items():
+            (bin_dir / name).write_text(f"#!/bin/bash\n{body}\n")
+            (bin_dir / name).chmod(0o755)
+        text = (HERE / "install-code.sh").read_text()
+        block = text[text.index("# swap:begin"):text.index("# swap:end")]
+        block = block.replace("/etc/fstab", str(root / "fstab")).replace("/etc/sysctl.d/90-bro-swap.conf", str(root / "sysctl"))
+        script = root / "swap.sh"
+        script.write_text("set -euo pipefail\n" + block + "\necho finished\n")
+        result = subprocess.run(["bash", str(script)], env={"PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                "BRO_SWAPFILE": str(swapfile)}, capture_output=True, text=True)
+        return result, root
+
+    def test_install_code_adds_the_swap_file_once_and_never_fails_the_install(self):
+        subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)
+        install = (HERE / "install-code.sh").read_text()
+        # install-code.sh is also what a live VM gets (host.py update-host): no restart of the units.
+        self.assertNotRegex(install, r"systemctl (re)?start bro-(eve|web|egress)")
+        result, root = self.swap_run(free_mb=10000)
+        self.assertIn("finished", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((root / "swapfile").exists())
+        self.assertFalse((root / "swapfile.new").exists())
+        self.assertIn("on", (root / "swapon.log").read_text())
+        self.assertIn(str(root / "swapfile"), (root / "fstab").read_text())
+        # Already active: nothing is done.
+        result, root = self.swap_run(free_mb=10000, active=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((root / "swapfile").exists())
+
+    def test_a_swap_file_that_cannot_be_made_is_a_warning_and_leaves_no_half_file(self):
+        for name, kwargs in (("no room", {"free_mb": 1000}), ("fallocate and dd fail", {"free_mb": 10000, "fallocate_ok": False}),
+                             ("mkswap fails", {"free_mb": 10000, "mkswap_ok": False})):
+            result, root = self.swap_run(**kwargs)
+            self.assertEqual(result.returncode, 0, name + result.stderr)
+            self.assertIn("finished", result.stdout, name)
+            self.assertIn("warning: no swap file", result.stderr, name)
+            self.assertFalse((root / "swapfile").exists(), name)
+            self.assertFalse((root / "swapfile.new").exists(), name)
+        # A formatted file an earlier swapon failed on is activated again without being rebuilt.
+        result, root = self.swap_run(free_mb=1000, label_ok=True, existing=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("warning", result.stderr)
+        self.assertIn("on", (root / "swapon.log").read_text())
 
     def test_telegram_comes_with_the_host(self):
         subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)

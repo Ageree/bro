@@ -1,5 +1,10 @@
+import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
-import { composioRequest } from "@shared/composio/api";
+import {
+  ComposioError,
+  composioRequest,
+  isMissingConnectedAccount,
+} from "@shared/composio/api";
 
 /**
  * What Composio's proxy hands back: the upstream API's own status, headers
@@ -24,6 +29,29 @@ type ProxyResponse = z.output<typeof proxyResponseSchema>;
 type ProxyMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
 
 /**
+ * How long a refused request waits before it is asked once more. From the
+ * VM's addresses Composio now and then answers a bare 403 that the same
+ * request, three seconds later, does not get.
+ */
+const refusedRetryMs = 3_000;
+
+/**
+ * Whether Composio itself refused a read: a 403 of its own that names no gone
+ * account. Only GETs are asked again. The proxy answers HTTP 200 for whatever
+ * the provider said, which suggests an error raised here means the provider
+ * was never called, but nothing in Composio's documentation says so, so a
+ * write is never repeated on that guess.
+ */
+function refusedRead(cause: unknown, method: ProxyMethod) {
+  return (
+    method === "GET" &&
+    cause instanceof ComposioError &&
+    cause.status === 403 &&
+    !isMissingConnectedAccount(cause)
+  );
+}
+
+/**
  * One request to a provider's API made as the person: Composio signs it
  * with the grant of `connectedAccountId`, which never reaches Bro. `url` is
  * absolute and stays on the toolkit's own domain (Composio refuses any
@@ -36,23 +64,39 @@ export async function composioProxy(
     /** Extra headers, such as an API version; Composio adds the credential. */
     readonly headers?: Readonly<Record<string, string>>;
     readonly method: ProxyMethod;
+    /**
+     * Ask a GET once more after a bare 403 of Composio's own. Callers that
+     * already retry (the proactive check's `onceMore`) leave it off, so a
+     * refusal is not asked four times.
+     */
+    readonly retryRefusedRead?: boolean;
     readonly signal: AbortSignal;
     readonly url: string;
   }
 ) {
-  return composioRequest(proxyResponseSchema, "/tools/execute/proxy", {
-    body: {
-      body: request.body ?? null,
-      connected_account_id: connectedAccountId,
-      endpoint: request.url,
-      method: request.method,
-      parameters: Object.entries(request.headers ?? {}).map(
-        ([name, value]) => ({ name, type: "header", value })
-      ),
-    },
-    method: "POST",
-    signal: request.signal,
-  });
+  const send = () =>
+    composioRequest(proxyResponseSchema, "/tools/execute/proxy", {
+      body: {
+        body: request.body ?? null,
+        connected_account_id: connectedAccountId,
+        endpoint: request.url,
+        method: request.method,
+        parameters: Object.entries(request.headers ?? {}).map(
+          ([name, value]) => ({ name, type: "header", value })
+        ),
+      },
+      method: "POST",
+      signal: request.signal,
+    });
+  try {
+    return await send();
+  } catch (error) {
+    if (!request.retryRefusedRead || !refusedRead(error, request.method)) {
+      throw error;
+    }
+    await setTimeout(refusedRetryMs, undefined, { signal: request.signal });
+    return send();
+  }
 }
 
 /**
