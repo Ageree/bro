@@ -20,6 +20,17 @@ const viaBroHeader =
   "⚙️ Служебное уведомление для владельца: его прислала проверка сервера, а не Бро, и Бро его не видит.";
 
 /**
+ * The first line of every message the service bot writes to the owner, so
+ * the chat can be searched by tag. The watchdog (`host/watchdog.py`) and the
+ * bug bot (`agent/lib/bug-bot`) tag theirs the same way.
+ */
+export const ownerMessageLabels = {
+  alert: "🚨 #alert",
+  bug: "🐞 #bug",
+  digest: "📊 #digest",
+} as const;
+
+/**
  * Where the owner hears alerts, the same pair the host's watchdog uses: the
  * service bot OPS_ALERT_BOT_TOKEN in OPS_ALERT_CHAT_ID, each falling back to
  * Bro's own bot and the owner's chat with it. Nothing without a bot and chat.
@@ -46,6 +57,8 @@ export async function alertOwner(
   text: string,
   options: {
     readonly minimumDrop?: number;
+    /** Which tag the message carries; an alert unless it is a digest. */
+    readonly kind?: "alert" | "digest";
     readonly now?: Date;
     readonly repeatAfterMs: number;
     readonly value?: number;
@@ -65,7 +78,10 @@ export async function alertOwner(
     await sendOwnerMessage(
       target.botToken,
       target.chatId,
-      target.viaBro ? `${viaBroHeader}\n\n${text}` : text
+      [
+        ownerMessageLabels[options.kind ?? "alert"],
+        target.viaBro ? `${viaBroHeader}\n\n${text}` : text,
+      ].join("\n")
     );
   } catch (error) {
     await releaseOperationalAlertClaim(key, claim, now);
