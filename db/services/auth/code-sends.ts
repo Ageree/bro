@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, eq, gt, lt, sql } from "drizzle-orm";
+import { and, count, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { db, signInCodeSends } from "@db";
 
 const minuteMs = 60_000;
@@ -26,6 +26,24 @@ function hashed(kind: "address" | "phone", value: string) {
   return `${kind}:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+/** The counters one code goes against: its number and, when known, its sender. */
+function keysOf({
+  address,
+  phoneNumber,
+}: {
+  readonly address: string | null;
+  readonly phoneNumber: string;
+}) {
+  return [
+    { key: hashed("phone", phoneNumber), limits: signInCodeLimits.phone },
+    ...(address === null
+      ? []
+      : [
+          { key: hashed("address", address), limits: signInCodeLimits.address },
+        ]),
+  ];
+}
+
 /**
  * Counts one sign-in code against the number and the client address, unless
  * either has used up a window. Answers whether the code may go out; a refused
@@ -42,14 +60,7 @@ export async function claimSignInCodeSend({
   readonly now?: Date;
   readonly phoneNumber: string;
 }) {
-  const keys = [
-    { key: hashed("phone", phoneNumber), limits: signInCodeLimits.phone },
-    ...(address === null
-      ? []
-      : [
-          { key: hashed("address", address), limits: signInCodeLimits.address },
-        ]),
-  ];
+  const keys = keysOf({ address, phoneNumber });
   return db.transaction(async (transaction) => {
     for (const { key } of keys.toSorted((a, b) => a.key.localeCompare(b.key))) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Locks are taken one by one, in order.
@@ -80,4 +91,30 @@ export async function claimSignInCodeSend({
       .values(keys.map(({ key }) => ({ key, sentAt: now })));
     return true;
   });
+}
+
+/**
+ * Gives back the slot of a code that never left: when iMessage fails, three
+ * failures in a row would otherwise lock the person out for ten minutes. The
+ * latest send under each key goes, which is this one unless another request
+ * for the same number raced it; then that one is freed instead, and either
+ * way the count matches the codes that went out.
+ */
+export async function releaseSignInCodeSend({
+  address,
+  phoneNumber,
+}: {
+  readonly address: string | null;
+  readonly phoneNumber: string;
+}) {
+  const keys = keysOf({ address, phoneNumber }).map(({ key }) => key);
+  await db.execute(sql`
+    delete from ${signInCodeSends}
+    where ctid in (
+      select distinct on (${signInCodeSends.key}) ctid
+      from ${signInCodeSends}
+      where ${inArray(signInCodeSends.key, keys)}
+      order by ${signInCodeSends.key}, ${signInCodeSends.sentAt} desc
+    )
+  `);
 }

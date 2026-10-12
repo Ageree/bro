@@ -1,4 +1,4 @@
-import { betterAuth } from "better-auth";
+import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { APIError, createAuthMiddleware, getIP } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { phoneNumber } from "better-auth/plugins/phone-number";
@@ -13,7 +13,7 @@ import {
   photonOtpFailure,
   sendPhotonText,
 } from "./photon";
-import { claimSignInCodeSend } from "./code-sends";
+import { claimSignInCodeSend, releaseSignInCodeSend } from "./code-sends";
 import { phoneUserEmail, phoneUserName } from "./phone-user";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
 
@@ -62,13 +62,7 @@ async function initializeAuth() {
         const to = sendCodeBodySchema.safeParse(ctx.body).data?.phoneNumber;
         // The endpoint itself refuses a malformed number; that sends nothing.
         if (to === undefined || !isE164PhoneNumber(to)) return;
-        // Caddy sets `x-forwarded-for` to the client alone, and Next keeps
-        // it, so this is the visitor's address, not loopback.
-        const address = getIP(
-          ctx.request ?? ctx.headers ?? new Headers(),
-          ctx.context.options
-        );
-        await limitSignInCodes({ address, to });
+        await limitSignInCodes({ address: requestAddress(ctx), to });
       }),
     },
     plugins: [
@@ -79,7 +73,21 @@ async function initializeAuth() {
         requireVerification: true,
         sendOTP: localPhoneAuthBypassEnabled
           ? () => undefined
-          : ({ code, phoneNumber: to }) => sendPhoneCode({ code, to }),
+          : async ({ code, phoneNumber: to }, ctx) => {
+              try {
+                await sendPhoneCode({ code, to });
+              } catch (error) {
+                await releaseSignInCodeSend({
+                  address: ctx ? requestAddress(ctx) : null,
+                  phoneNumber: to,
+                }).catch((release: unknown) => {
+                  console.warn("[auth] sign-in code slot was not given back", {
+                    name: release instanceof Error ? release.name : "unknown",
+                  });
+                });
+                throw error;
+              }
+            },
         signUpOnVerification: {
           getTempEmail: phoneUserEmail,
           getTempName: () => phoneUserName,
@@ -94,6 +102,21 @@ async function initializeAuth() {
 }
 
 const sendCodePath = "/phone-number/send-otp";
+
+/**
+ * Caddy sets `x-forwarded-for` to the client alone, and Next keeps it, so
+ * this is the visitor's address, not loopback.
+ */
+function requestAddress(ctx: {
+  readonly context: { readonly options: BetterAuthOptions };
+  readonly headers?: Headers;
+  readonly request?: Request;
+}) {
+  return getIP(
+    ctx.request ?? ctx.headers ?? new Headers(),
+    ctx.context.options
+  );
+}
 const sendCodeBodySchema = z.object({ phoneNumber: z.string() });
 
 /**

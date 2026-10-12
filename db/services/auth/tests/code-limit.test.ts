@@ -136,6 +136,23 @@ describe("sign-in code limit", () => {
     );
   });
 
+  it("gives back the slot of a code iMessage failed to send", async () => {
+    const { send } = await signIn();
+    const { PhotonDeliveryError } = await import("@db/services/auth/photon");
+    mocks.sendPhotonText.mockRejectedValue(
+      new PhotonDeliveryError({ kind: "ConnectionError" })
+    );
+
+    const failed = await inTurn(
+      ["203.0.113.21", "203.0.113.22", "203.0.113.23"],
+      async (address) => send("+79990000005", address)
+    );
+    mocks.sendPhotonText.mockResolvedValue(undefined);
+
+    expect(failed).toEqual([502, 502, 502]);
+    await expect(send("+79990000005", "203.0.113.24")).resolves.toBe(200);
+  });
+
   it("stops one address flooding many numbers", async () => {
     mocks.sendPhotonText.mockResolvedValue(undefined);
     const { send } = await signIn();
@@ -174,7 +191,7 @@ describe("sign-in code limit", () => {
     await expect(claim(24 * 60 + 1)).resolves.toBe(true);
   });
 
-  it("gives the last code to only one of two requests at once", async () => {
+  it("counts parallel requests for one number against the same three", async () => {
     const { claimSignInCodeSend } = await codeSends();
     const claim = async () =>
       claimSignInCodeSend({
