@@ -387,14 +387,18 @@ describe("the food operations", () => {
   });
 });
 
-describe("Lavka read operations on a light page", () => {
-  const embedded = (id: string, value: unknown) =>
-    `<script id="${id}" type="mime/invalid" nonce="x">${JSON.stringify(value)}</script>`;
+const embedded = (id: string, value: z.infer<typeof json> | undefined) =>
+  `<script id="${id}" type="mime/invalid" nonce="x">${JSON.stringify(value)}</script>`;
 
+describe("Lavka read operations on a light page", () => {
   it("read the page state from the home page's embedded JSON when the page has none", async () => {
+    const globals = new Map(Object.entries(lavkaPage));
     const home = [
-      embedded("__page_props__-data", lavkaPage.__PAGE_PROPS__),
-      embedded("__react_query_state__-data", lavkaPage.__REACT_QUERY_STATE__),
+      embedded("__page_props__-data", globals.get("__PAGE_PROPS__")),
+      embedded(
+        "__react_query_state__-data",
+        globals.get("__REACT_QUERY_STATE__")
+      ),
     ].join("<script>other()</script>");
     const context = page([{ body: null, path: "/", text: home }]);
     expect(await dataOf(lavkaAddressesOperation, context)).toEqual(
