@@ -95,3 +95,21 @@ export async function markAgencyActionUndone(id: string) {
     .returning({ id: agencyActions.id });
   return rows.length > 0;
 }
+
+/**
+ * The workspace's actions whose id starts with `idPrefix`: the short id the
+ * person sees in the list, or the whole id. Two rows at most, so the caller
+ * tells an unknown prefix from an ambiguous one.
+ */
+export function findAgencyActions(workspaceId: string, idPrefix: string) {
+  return db
+    .select()
+    .from(agencyActions)
+    .where(
+      and(
+        eq(agencyActions.workspaceId, workspaceId),
+        sql`${agencyActions.id}::text LIKE ${`${idPrefix}%`}`
+      )
+    )
+    .limit(2);
+}

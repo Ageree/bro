@@ -67,6 +67,7 @@ export const toolGroups: readonly ToolGroup[] = [
  * `agent/lib/skills/tests/tools.test.ts` fails on a new tool left out.
  */
 const toolGroupEntries = {
+  agency_control: "core",
   apps: "apps",
   ask_question: "core",
   browser_task: "core",
