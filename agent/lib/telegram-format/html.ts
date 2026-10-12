@@ -10,7 +10,9 @@ export const telegramMessageTextMaxLength = 4096;
 const fencePattern = /^\s*```/u;
 const bulletPattern = /^(?<indent>\s*)[-*]\s+(?<content>.*)$/u;
 const inlineCodePattern = /`([^`]+)`/u;
-const linkPattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gu;
+// A URL may hold balanced parentheses (`/wiki/Foo_(bar)`).
+const linkPattern =
+  /\[([^\]\n]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/gu;
 const boldPattern = /\*\*(?!\s)([^*\n]+?)\*\*/gu;
 const italicPattern = /(^|[^\w`])_(?!\s)([^_\n]+?)_(?=$|[^\w])/gu;
 // Escaped text never contains a literal angle bracket, so `<index>` is a
@@ -97,7 +99,7 @@ function markupHtml(text: string) {
   const withAnchors = escapeTelegramHtml(text).replaceAll(
     linkPattern,
     (_match, label: string, url: string) => {
-      anchors.push(`<a href="${url}">${label}</a>`);
+      anchors.push(`<a href="${url.replaceAll('"', "&quot;")}">${label}</a>`);
       return `<${String(anchors.length - 1)}>`;
     }
   );

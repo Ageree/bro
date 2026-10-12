@@ -93,4 +93,36 @@ describe("Telegram message splitting", () => {
 
     expect(parts).toEqual(["a".repeat(telegramMessageTextMaxLength), "aaaaa"]);
   });
+
+  it("escapes markup around a word link and quotes inside its URL", () => {
+    expect(
+      toTelegramHtml(
+        'Цена <5000 & выше: [карточка "A&B"](https://a.ru/p?q="x"&b=1)'
+      )
+    ).toBe(
+      'Цена &lt;5000 &amp; выше: <a href="https://a.ru/p?q=&quot;x&quot;&amp;b=1">карточка "A&amp;B"</a>'
+    );
+  });
+
+  it("keeps balanced parentheses in a link URL", () => {
+    expect(
+      toTelegramHtml("[Doc](https://en.wikipedia.org/wiki/Function_(math)) тут")
+    ).toBe(
+      '<a href="https://en.wikipedia.org/wiki/Function_(math)">Doc</a> тут'
+    );
+  });
+
+  it("splits a long text of word links without cutting an anchor", () => {
+    const line =
+      "• [карточка товара номер 1234567890](https://mvideo.ru/products/televizor-1234567890?a=1&b=2) 49 990 ₽";
+    const text = Array.from({ length: 80 }, () => line).join("\n");
+    const chunks = splitTelegramHtml(toTelegramHtml(text));
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(telegramMessageTextMaxLength);
+      expect(chunk.match(/<a /gu)?.length).toBe(chunk.match(/<\/a>/gu)?.length);
+    }
+    expect(chunks.join("\n").match(/<a /gu)?.length).toBe(80);
+  });
 });

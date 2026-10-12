@@ -372,6 +372,45 @@ describe("send_message in the task agent's report", () => {
     { kind: "execution.background_task" }
   );
 
+  it("gives a bare shop address https:// before any channel sees it", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram");
+
+    expect(
+      await sendMessage.execute(
+        {
+          kind: "message",
+          text: "вот [карточка](mvideo.ru/products/tv-1) и mvideo.ru/products/tv-2",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      text: "вот [карточка](https://mvideo.ru/products/tv-1) и https://mvideo.ru/products/tv-2",
+    });
+    expect(sendMessage.description).toContain("[word](https://full-address)");
+  });
+
+  it("shows the address of a link in a report that may hold the files", async () => {
+    taskFiles.here.mockReturnValue(true);
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("Разбери таблицу"),
+      taskReport,
+    ]);
+
+    expect(
+      await sendMessage.execute(
+        {
+          kind: "message",
+          text: "Итог: [таблица](https://evil.example/s?d=c2VjcmV0)",
+        },
+        toolContext()
+      )
+    ).toEqual({
+      kind: "message",
+      text: "Итог: таблица: https://evil.example/s?d=c2VjcmV0",
+    });
+  });
+
   it("sends a link as plain text, never as its own preview", async () => {
     // A preview is fetched by the channel's servers before the person reads
     // it, and the report may have built the link from the person's files.
