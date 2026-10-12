@@ -22,6 +22,9 @@ const snapshotSchema = targetSchema.extend({
     .array(
       z.strictObject({
         id: z.number().int(),
+        // The cart's own line: a new cart has new ones, so the same dish
+        // ordered again is a new purchase, not the one already placed.
+        positionId: z.number().int(),
         priceMinor: minor,
         quantity: z.number().int().positive(),
       })
@@ -96,8 +99,8 @@ const pageSource = String.raw`
     const lines = cart?.items || [];
     if (lines.length === 0) block("empty_cart");
     const items = lines.map((line) => {
-      if (!Number.isInteger(line.item_id) || !Number.isInteger(line.quantity) || line.quantity < 1 || typeof line.name !== "string") block("cart_invalid");
-      return { id: line.item_id, priceMinor: money(line.price), quantity: line.quantity, title: line.name.trim() };
+      if (!Number.isInteger(line.item_id) || !Number.isInteger(line.id) || !Number.isInteger(line.quantity) || line.quantity < 1 || typeof line.name !== "string") block("cart_invalid");
+      return { id: line.item_id, positionId: line.id, priceMinor: money(line.price), quantity: line.quantity, title: line.name.trim() };
     });
     const homes = (await request("GET", "/api/v3/user/addresses")).filter((a) =>
       Math.abs(a.location?.latitude - args.lat) < 1e-5 && Math.abs(a.location?.longitude - args.lon) < 1e-5);
@@ -116,7 +119,7 @@ const pageSource = String.raw`
     const amountMinor = money(offer.possiblePayment.costForCustomer?.value);
     if (amountMinor !== money(cart.decimal_total)) block("money_inconsistent");
     const snapshot = { addressId: home.id, addressVersion: home.version, amountMinor, cardId: offer.possiblePayment.id,
-      items: items.map(({ id, priceMinor, quantity }) => ({ id, priceMinor, quantity })), lat: args.lat, lon: args.lon, place: args.place };
+      items: items.map(({ id, positionId, priceMinor, quantity }) => ({ id, positionId, priceMinor, quantity })), lat: args.lat, lon: args.lon, place: args.place };
     const publicQuote = { amountMinor, currency: "RUB",
       delivery: [home.short_text, home.office ? "кв. " + home.office : null].filter(Boolean).join(", "),
       items: items.map(({ title, quantity }) => ({ title, quantity: String(quantity) })),
