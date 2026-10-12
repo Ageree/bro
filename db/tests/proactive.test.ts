@@ -777,6 +777,99 @@ describe("proactive watches", { timeout: 30_000 }, () => {
   });
 });
 
+const followUp = (id: string) => ({
+  dedupeKey: id,
+  itemId: id,
+  source: "phone" as const,
+  threadId: null,
+});
+
+describe("follow-ups of a finished call or run", { timeout: 30_000 }, () => {
+  it("queues a finished item on the watch's job and moves no check watermark", async () => {
+    const { db, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const later = new Date(now.getTime() + 60 * 60_000);
+
+    const queued = await proactive.queueFollowUpRun({
+      maxRunsPerDay: 12,
+      now: later,
+      signal: followUp("call-1"),
+      workspaceId: alice.workspaceId,
+    });
+    expect(queued.status).toBe("queued");
+    const runId = queued.status === "queued" ? queued.runId : undefined;
+    if (!runId) throw new Error("Expected a queued run.");
+    expect(await proactive.listProactiveRunSignals(runId)).toEqual([
+      followUp("call-1"),
+    ]);
+    // The check's mail watermark and Google state are the check's to move.
+    const [watch] = await db.select().from(schema.proactiveWatches);
+    expect(watch?.mailCheckedAt).toEqual(now);
+    expect(watch?.googleState).toBe("unknown");
+  });
+
+  it("hands one finished item to one run, and queues nothing for a workspace without a watch", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const input = {
+      maxRunsPerDay: 12,
+      now,
+      signal: followUp("call-1"),
+      workspaceId: alice.workspaceId,
+    };
+
+    expect(await proactive.queueFollowUpRun(input)).toMatchObject({
+      status: "queued",
+    });
+    expect(await proactive.queueFollowUpRun(input)).toEqual({
+      status: "seen",
+    });
+    expect(
+      await proactive.queueFollowUpRun({
+        ...input,
+        workspaceId: "workspace:bob",
+      })
+    ).toEqual({ status: "no-watch" });
+  });
+
+  it("waits for an open run, and stays quiet when the person turned proactive messages off", async () => {
+    const { profiles, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    const input = {
+      maxRunsPerDay: 12,
+      now,
+      signal: followUp("call-2"),
+      workspaceId: alice.workspaceId,
+    };
+    // A check's run is still open: a second run would be a second message.
+    await proactive.queueProactiveRun({
+      jobId: watch.jobId,
+      mailCheckedAt: now,
+      maxRunsPerDay: 12,
+      now,
+      signals: [bossMail],
+      workspaceId: alice.workspaceId,
+    });
+    expect(await proactive.queueFollowUpRun(input)).toEqual({
+      status: "busy",
+    });
+
+    await profiles.setProactiveMessages(alice, false);
+    expect(
+      await proactive.queueFollowUpRun({
+        ...input,
+        signal: followUp("call-3"),
+      })
+    ).toEqual({ status: "no-watch" });
+  });
+});
+
 describe("remembered chats", { timeout: 30_000 }, () => {
   it("keeps the messenger and the web chat apart, preferring the messenger", async () => {
     const { db, proactive } = await openDatabase();

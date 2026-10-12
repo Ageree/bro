@@ -2,8 +2,30 @@ import { createHash } from "node:crypto";
 import { defineState, type SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import type { ApprovalContext } from "eve/tools/approval";
-import { ownTurnApproval, startedByPerson } from "@agent/lib/mode";
+import {
+  ownTurnApproval,
+  resolveModeValue,
+  startedByPerson,
+} from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+
+/**
+ * Whether this turn is the agentic worker's own, in its pilot: a call it
+ * places is granted by `agencyApproval` (class `call`, budgeted, quiet hours
+ * aware) and journaled (`journaledAgencyCall`), not by a message of the
+ * person. A background task or a delegated session is never the worker's.
+ * Every other turn keeps the person's own rules above.
+ */
+export function agencyWorkerTurn(context: Pick<ToolContext, "session">) {
+  if (context.session.parent) return false;
+  const { current, initiator } = context.session.auth;
+  if (
+    current?.authenticator === "background-task" ||
+    initiator?.authenticator === "background-task"
+  )
+    return false;
+  return resolveModeValue(context, { "agentic-worker": true }) === true;
+}
 
 const phoneTurn = defineState<{
   turnId: string | null;

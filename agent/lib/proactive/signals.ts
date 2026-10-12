@@ -437,9 +437,15 @@ export function calendarPrepSignals(
 }
 
 /**
+ * At most this many proactive runs per workspace in any 24 hours; past it,
+ * new signals wait. Twelve covers a heavy day of mail that matters.
+ */
+export const maxRunsPerDay = 12;
+
+/**
  * A finished phone call or browser run, keyed by its id, for the agency
- * worker to follow up. Nothing queues these yet: the phone and browser
- * reports would hand them over.
+ * worker to follow up. Queued when the report of the item is delivered, for
+ * the agency pilot only (`agent/lib/proactive/follow-up.ts`).
  */
 export function followUpSignal(
   source: "browser" | "phone",

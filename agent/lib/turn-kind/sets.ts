@@ -80,6 +80,7 @@ const agenticReadTools: readonly string[] = [
   "list_orders",
   "mail-read",
   "mail-search",
+  "phone-status",
   "route_time",
 ];
 
@@ -87,16 +88,21 @@ const agenticReadTools: readonly string[] = [
  * The write tools the agentic worker is granted. Each one's approval
  * (`agent/lib/agency/approval.ts`) grants it on its own, under the budget
  * and the guards; a tool's own rules (a saved rule, the connection) still
- * apply. No payment is among them: a payment keeps its question to the person.
+ * apply. `browser_task` starts only a free errand that acts in the person's
+ * name (`submit`) or looks; `phone-call` places a call (`call`). No payment
+ * is among them: a payment keeps its question to the person, and a paid
+ * errand is staged up to it.
  */
 export const agenticWriteTools: readonly string[] = [
   "agent-mail-send",
+  "browser_task",
   "calendar-create-event",
   "calendar-delete-event",
   "calendar-update-event",
   "gmail-draft",
   "gmail-send",
   "mail-send",
+  "phone-call",
 ];
 
 /**

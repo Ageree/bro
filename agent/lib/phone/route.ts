@@ -1,6 +1,7 @@
 import type { SessionContext } from "eve/context";
 import { z } from "zod";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
+import { agencyWorkerTurn } from "./policy";
 
 export function phoneReportRoute(context: Pick<SessionContext, "session">) {
   if (context.session.parent)
@@ -9,9 +10,13 @@ export function phoneReportRoute(context: Pick<SessionContext, "session">) {
   const conversationChannel = z
     .enum(["eve", "photon", "telegram"])
     .parse(caller?.attributes.conversationChannel);
+  // The agentic worker's own session is not the person's chat: its report
+  // goes to the chat its job writes to, as the worker's own caller names it.
   const conversationId =
     conversationChannel === "eve"
-      ? context.session.id
+      ? agencyWorkerTurn(context)
+        ? z.string().min(1).parse(caller?.attributes.conversationId)
+        : context.session.id
       : conversationChannel === "photon"
         ? z
             .string()

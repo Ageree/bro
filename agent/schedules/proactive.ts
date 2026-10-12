@@ -14,6 +14,7 @@ import {
 } from "@agent/lib/proactive/quiet-hours";
 import {
   mailSearchStart,
+  maxRunsPerDay,
   proactiveRunPrompt,
   reminderOf,
   selectRunSignals,
@@ -59,11 +60,6 @@ import { resolveTimeZone } from "@shared/user-profile/schema";
 // Each workspace is looked at every 15 minutes; the cron only spreads the
 // checks. A missing Google grant is re-read a few times a day, not every tick.
 const checkEveryMs = 15 * 60_000;
-/**
- * At most this many model runs per workspace in any 24 hours; past it, new
- * signals wait. Twelve covers a heavy day of mail that matters.
- */
-const maxRunsPerDay = 12;
 const disconnectedRetryMs = 6 * 60 * 60_000;
 const signalRetentionMs = 14 * 24 * 60 * 60_000;
 const workerStartupLimitMs = 5 * 60_000;

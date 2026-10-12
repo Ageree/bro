@@ -137,20 +137,17 @@ describe("the agentic worker's approval", () => {
   it("denies a background task's turn, whoever opened it", async () => {
     const { agencyApproval } = await approvals();
     // The background task speaks for the worker that started it.
-    const background = await agencyApproval(
-      {
-        session: {
-          auth: {
-            current: { ...worker, authenticator: "background-task" },
-            initiator: worker,
-          },
-          id: "session-3",
-          turn: { id: "turn-3", sequence: 0 },
+    const delegated = {
+      session: {
+        auth: {
+          current: { ...worker, authenticator: "background-task" },
+          initiator: worker,
         },
+        id: "session-3",
+        turn: { id: "turn-3", sequence: 0 },
       },
-      "send",
-      () => email
-    );
+    };
+    const background = await agencyApproval(delegated, "send", () => email);
     expect(background).toMatchObject({ type: "denied" });
     expect(agency.agencyBudgetUsage).not.toHaveBeenCalled();
   });

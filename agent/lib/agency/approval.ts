@@ -52,7 +52,11 @@ const notAgenticRun = refused(
  * text that gives out the person's home address or phone number.
  */
 export async function agencyApproval(
-  context: Pick<ApprovalContext, "session">,
+  context: {
+    readonly session: Pick<ApprovalContext["session"], "auth"> & {
+      readonly parent?: unknown;
+    };
+  },
   actionClass: AgencyActionClass,
   details: () => AgencyDetails
 ): Promise<ApprovalStatus | null> {

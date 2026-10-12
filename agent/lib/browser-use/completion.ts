@@ -24,6 +24,8 @@ import {
   type BrowserUseRunStatus,
 } from "./client";
 import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
+import { agencyPilot } from "@agent/lib/agency/pilot";
+import { wakeAgencyForOutcome } from "@agent/lib/proactive/follow-up";
 import { keepBrowserVmForPersonStep } from "@agent/lib/browser-vm/idle";
 import { recordBrowserUseRunCost } from "@agent/lib/costs/browser";
 import {
@@ -840,6 +842,17 @@ export async function deliverBrowserRunReport(
 ) {
   const row = await claimBrowserRunReport(runId);
   if (!row?.report) return;
+  // A run that could have acted in the person's name wakes the agentic
+  // worker, in its pilot; before the send, so a busy run is retried by the
+  // next claim while the report is still pending (dedupe keeps it to one).
+  // The pilot is read first: outside it no run pays for the check.
+  if (agencyPilot(row.workspaceId) && (await couldHaveActed(row, false))) {
+    await wakeAgencyForOutcome({
+      id: runId,
+      source: "browser",
+      workspaceId: row.workspaceId,
+    });
+  }
   const attempt = {
     attempt: row.reportAttempts,
     channel: row.conversationChannel,

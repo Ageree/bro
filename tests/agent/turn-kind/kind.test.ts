@@ -207,6 +207,7 @@ describe("the agentic worker's turn", () => {
         "list_orders",
         "mail-read",
         "mail-search",
+        "phone-status",
         "route_time",
         ...agenticWriteTools,
       ],
@@ -214,12 +215,14 @@ describe("the agentic worker's turn", () => {
     });
     expect(agenticWriteTools).toEqual([
       "agent-mail-send",
+      "browser_task",
       "calendar-create-event",
       "calendar-delete-event",
       "calendar-update-event",
       "gmail-draft",
       "gmail-send",
       "mail-send",
+      "phone-call",
     ]);
   });
 

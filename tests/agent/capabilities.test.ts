@@ -193,6 +193,7 @@ describe("authored mode capability matrix", () => {
       "personal:workspace",
       [
         "ask_question",
+        "browser_task",
         "calendar-check-availability",
         "calendar-create-event",
         "calendar-delete-event",

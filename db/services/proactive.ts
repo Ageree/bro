@@ -404,13 +404,16 @@ export async function filterUnseenProactiveSignals<
  * message in parallel) or once the workspace had `maxRunsPerDay` runs in the
  * last 24 hours (a busy inbox never turns into a model run per check). A run
  * carrying a calendar event passes the cap: events are few, and one that
- * waited for the cap to reset could start before anyone heard of it.
+ * waited for the cap to reset could start before anyone heard of it. Without
+ * `mailCheckedAt` the run is a follow-up (`queueFollowUpRun`): it moves no
+ * watermark, and the watch keeps what a check last saw.
  */
 export async function queueProactiveRun(input: {
   /** The agent inbox watermark, moved with the run when it was checked. */
   readonly agentMailCheckedAt?: Date;
   readonly jobId: string;
-  readonly mailCheckedAt: Date;
+  /** The mail watermark, moved with the run when a check made it. */
+  readonly mailCheckedAt?: Date;
   readonly maxRunsPerDay: number;
   readonly now: Date;
   readonly signals: readonly ProactiveSignal[];
@@ -473,20 +476,69 @@ export async function queueProactiveRun(input: {
         }))
       )
       .onConflictDoNothing();
-    await transaction
-      .update(proactiveWatches)
-      .set({
-        agentMailCheckedAt: input.agentMailCheckedAt,
-        googleState: "connected",
-        mailCheckedAt: input.mailCheckedAt,
-        updatedAt: input.now,
-      })
-      .where(eq(proactiveWatches.workspaceId, input.workspaceId));
+    if (input.mailCheckedAt !== undefined) {
+      await transaction
+        .update(proactiveWatches)
+        .set({
+          agentMailCheckedAt: input.agentMailCheckedAt,
+          googleState: "connected",
+          mailCheckedAt: input.mailCheckedAt,
+          updatedAt: input.now,
+        })
+        .where(eq(proactiveWatches.workspaceId, input.workspaceId));
+    }
     await transaction
       .update(scheduledAgentJobs)
       .set({ lastRunAt: input.now, updatedAt: input.now })
       .where(eq(scheduledAgentJobs.id, input.jobId));
     return { runId: run.id, status: "queued" as const };
+  });
+}
+
+/**
+ * Queues a run for one finished item (a phone call, a browser run) on the
+ * workspace's proactive watch. `no-watch` when the workspace has no active
+ * watch or its person turned proactive messages off; `seen` when the item
+ * was handed over before. The cap and a busy job apply as for a check's run,
+ * and a caller that retries gets the item again. The check's watermarks stay
+ * where they are.
+ */
+export async function queueFollowUpRun(input: {
+  readonly maxRunsPerDay: number;
+  readonly now: Date;
+  readonly signal: ProactiveSignal;
+  readonly workspaceId: string;
+}) {
+  const [watch] = await db
+    .select({ jobId: proactiveWatches.jobId })
+    .from(proactiveWatches)
+    .innerJoin(
+      scheduledAgentJobs,
+      eq(proactiveWatches.jobId, scheduledAgentJobs.id)
+    )
+    .leftJoin(
+      userProfiles,
+      eq(userProfiles.workspaceId, proactiveWatches.workspaceId)
+    )
+    .where(
+      and(
+        eq(proactiveWatches.workspaceId, input.workspaceId),
+        eq(scheduledAgentJobs.status, "active"),
+        sql`coalesce(${userProfiles.proactiveMessages}, true)`
+      )
+    )
+    .limit(1);
+  if (!watch) return { status: "no-watch" as const };
+  const unseen = await filterUnseenProactiveSignals(input.workspaceId, [
+    input.signal,
+  ]);
+  if (unseen.length === 0) return { status: "seen" as const };
+  return queueProactiveRun({
+    jobId: watch.jobId,
+    maxRunsPerDay: input.maxRunsPerDay,
+    now: input.now,
+    signals: unseen,
+    workspaceId: input.workspaceId,
   });
 }
 
