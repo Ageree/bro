@@ -100,10 +100,10 @@ beforeEach(() => {
           method: init.method ?? "GET",
           path: url.pathname,
         });
-        const answer = answers.get(url.pathname);
-        if (Array.isArray(answer))
-          return answer.shift() ?? { body: {}, status: 500 };
-        return answer ?? { body: {}, status: 404 };
+        const fake = answers.get(url.pathname);
+        if (Array.isArray(fake))
+          return fake.shift() ?? { body: {}, status: 500 };
+        return fake ?? { body: {}, status: 404 };
       },
     });
     if (answer.status !== "ok") return { kind: answer.status };

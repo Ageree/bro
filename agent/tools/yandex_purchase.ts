@@ -85,6 +85,13 @@ const goReplies = {
     "Yandex no longer lets this ride be cancelled from here. Tell the person to cancel it in the Yandex Go app or by calling the driver.",
 } as const;
 
+/**
+ * The cards are bound to Yandex, but Go takes one only after its own bank
+ * check, which only the Go app runs: the web has no way to do it.
+ */
+const goNoCardReply =
+  "Nothing was booked: Yandex Go has not verified any of the person's cards yet. Tell them their cards are already linked, Go only asks to confirm one once in the Yandex Go app (payment methods, the card, confirm); until then you can book with cash.";
+
 const goResultSchema = z
   .object({
     kind: z.enum([
@@ -97,6 +104,7 @@ const goResultSchema = z
       "no_ride",
       "cannot_cancel",
     ]),
+    reason: z.string().optional(),
   })
   .loose();
 
@@ -255,7 +263,11 @@ export default defineDynamic({
               if (outcome.kind !== "ok")
                 return { kind: outcome.kind, reply: goRefusals[outcome.kind] };
               const result = goResultSchema.parse(outcome.data);
-              return { ...result, reply: goReplies[result.kind] };
+              const reply =
+                result.reason === "no_verified_card"
+                  ? goNoCardReply
+                  : goReplies[result.kind];
+              return { ...result, reply };
             }
             if (input.action === "prepare") {
               const prepared =

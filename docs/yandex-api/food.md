@@ -523,7 +523,7 @@ return {
 - `POST /api/v2/cart/go-checkout?longitude&latitude`, тело `{address, place_slug, payment: {recently_link_cards: false}}`
   → `offers[]` (у каждого `possiblePayment` с картой и `costForCustomer`, `requestId`), `meta.phone`.
 - `POST /api/v1/orders`: `{paymentMethodId, phone, personsQuantity, courierOptions: [], extendedOptions: [], payment,
-  place_slug, address, userAddressId, plus_subscription_toggle_state: false, request_id: <requestId предложения>}` →
+place_slug, address, userAddressId, plus_subscription_toggle_state: false, request_id: <requestId предложения>}` →
   `{order_nr}`. Нужен заголовок `X-Device-Id` (свой случайный), иначе 400 `UserData` 6; чужой `request_id` — 400
   `OrderData` 59 («спрос вырос»).
 - Оплата: `POST /eats/v1/eats-payments/v1/order/tracking` `{order_id}` → `order.payment.status`: `done`, `3ds_required`

@@ -649,6 +649,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 ## Яндекс Еда
 
 - Корзина Еды: `add_bulk` прибавляет количество к блюду, уже лежащему в корзине; менять его — PUT `/api/v1/cart/<id позиции>`. Чтение корзины видит позиции только с `soft_multi=true` в query (`agent/lib/yandex/food/cart.ts`, `food.eda_cart_set`).
+- Ссылку банка (3-D Secure) открывает только человек: открытие её в браузере
+  Бро (12.10, проба) тратит сессию банка, вторая — «Invalid request», и Лавка
+  отменила заказ. Окно подтверждения — около 6 минут.
+- Карты аккаунта в Trust общие для сервисов, но Go держит их в
+  `unverified_cards` (`card_antifraud`, `usable: false`), пока карта не
+  проверена банком; веб Go это не умеет (мост `goplatform.private.payments.verify`
+  есть только в приложении). Trust `/web/create_verification_intent` с
+  сервисным токеном такси отвечает «Validation failed» — параметры не подобраны.
 - Заказ Еды (`agent/lib/yandex/eda/checkout.ts`, проверено вживую 12.10): страница
   `/checkout` не нужна. `POST /api/v2/cart/go-checkout` с адресом даёт предложения с
   картой и `requestId`; `POST /api/v1/orders` берёт цену только с `request_id`
