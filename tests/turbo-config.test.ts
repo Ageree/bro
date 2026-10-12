@@ -16,6 +16,7 @@ const applicationEnvironment = [
   "BROWSER_STATE_*",
   "BROWSER_USE_*",
   "BROWSER_VM_*",
+  "BUG_BOT*",
   "CLOUDRU_*",
   "COMPOSIO_*",
   "DATABASE_DRIVER",

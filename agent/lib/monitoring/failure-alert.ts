@@ -84,7 +84,7 @@ export async function alertTurnFailure(failure: {
           `Последний: ${who}, ${failure.channel}`,
           when,
         ].join("\n"),
-        { now: failure.at, repeatAfterMs }
+        { kind: "alert", now: failure.at, repeatAfterMs }
       );
       return;
     }
@@ -97,7 +97,7 @@ export async function alertTurnFailure(failure: {
         `Код: ${failure.errorCode}`,
         when,
       ].join("\n"),
-      { now: failure.at, repeatAfterMs }
+      { kind: "alert", now: failure.at, repeatAfterMs }
     );
   } catch (error) {
     console.warn("[turn-log] the failure alert was not sent", {

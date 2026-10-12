@@ -406,6 +406,7 @@ describe("the turn log hook", () => {
     expect(text).toContain("MODEL_CALL_FAILED 400");
     expect(text).not.toContain("qwerty");
     expect(options?.repeatAfterMs).toBe(60 * 60_000);
+    expect(options?.kind).toBe("alert");
   });
 
   it("does not tell the owner of Bro's own failed turn", async () => {
