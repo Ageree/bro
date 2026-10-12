@@ -1284,3 +1284,43 @@ async function applyMigrations(database: PGlite) {
   }
   /* oxlint-enable eslint/no-await-in-loop */
 }
+
+describe("browser run reports out of attempts", () => {
+  it("are handed out once and leave the overdue list", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const now = new Date();
+    const finished = new Date(now.getTime() - 10 * 60_000);
+    const other = "22222222-2222-4222-8222-222222222222";
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: finished,
+      id: runId,
+      report: "Order placed",
+      reportAttempts: 10,
+      status: "done",
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      completedAt: finished,
+      id: other,
+      report: "Order placed",
+      reportAttempts: 3,
+      status: "done",
+    });
+    const settledBefore = new Date(now.getTime() - 2 * 60_000);
+
+    expect(
+      await browserRuns.listOverdueBrowserRunReports(settledBefore, now)
+    ).toHaveLength(2);
+
+    const taken = await browserRuns.takeAbandonedBrowserRunReports(now);
+    expect(taken.map((row) => row.id)).toEqual([runId]);
+    expect(await browserRuns.takeAbandonedBrowserRunReports(now)).toEqual([]);
+
+    const overdue = await browserRuns.listOverdueBrowserRunReports(
+      settledBefore,
+      now
+    );
+    expect(overdue.map((row) => row.id)).toEqual([other]);
+  });
+});

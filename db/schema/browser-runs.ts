@@ -108,6 +108,13 @@ export const browserRuns = pgTable(
       withTimezone: true,
     }),
     reportAttempts: integer("report_attempts").notNull().default(0),
+    // Set once, when delivery has run out of attempts and the person was told
+    // directly that the result did not arrive: no more tries, no more noise.
+    reportAbandonedAt: timestamp("report_abandoned_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
     // Whether the run was started with the saved card bound. A background
     // retry binds the same secrets again, so it has to know.
     paymentAllowed: boolean("payment_allowed").notNull().default(false),

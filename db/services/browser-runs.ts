@@ -3,6 +3,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   gt,
   inArray,
   isNotNull,
@@ -941,6 +942,7 @@ export async function listOverdueBrowserRunReports(
       and(
         isNotNull(browserRuns.report),
         isNull(browserRuns.reportDeliveredAt),
+        isNull(browserRuns.reportAbandonedAt),
         lt(browserRuns.completedAt, settledBefore),
         gt(
           browserRuns.completedAt,
@@ -950,6 +952,53 @@ export async function listOverdueBrowserRunReports(
     )
     .orderBy(asc(browserRuns.completedAt))
     .limit(50);
+}
+
+/**
+ * Take the runs whose report ran out of delivery attempts and whose person
+ * has not been told. Taking marks them, so the notice goes out once however
+ * many ticks look: a notice that then fails to send is logged, not retried.
+ */
+export async function takeAbandonedBrowserRunReports(
+  now = new Date(),
+  limit = 20
+) {
+  const stale = db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        isNotNull(browserRuns.report),
+        isNull(browserRuns.reportDeliveredAt),
+        isNull(browserRuns.reportAbandonedAt),
+        gte(browserRuns.reportAttempts, maximumReportAttempts),
+        // The last attempt may still be in flight or waiting on its turn.
+        or(
+          isNull(browserRuns.reportClaimedAt),
+          lt(
+            browserRuns.reportClaimedAt,
+            new Date(now.getTime() - reportLeaseMs)
+          )
+        ),
+        gt(
+          browserRuns.completedAt,
+          new Date(now.getTime() - reportRetryWindowMs)
+        )
+      )
+    )
+    .orderBy(asc(browserRuns.completedAt))
+    .limit(limit);
+  return db
+    .update(browserRuns)
+    .set({ reportAbandonedAt: now, updatedAt: now })
+    .where(inArray(browserRuns.id, stale))
+    .returning({
+      conversationChannel: browserRuns.conversationChannel,
+      conversationId: browserRuns.conversationId,
+      id: browserRuns.id,
+      site: browserRuns.site,
+      task: browserRuns.task,
+    });
 }
 
 export async function listPendingBrowserRunReports(limit: number) {
