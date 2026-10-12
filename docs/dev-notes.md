@@ -359,6 +359,11 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   `password` выкидываются до фильтра: слово «password» в строке срезает фильтр
   всего хвоста. Сбой хода человека — `alertOwner` раз в час на пару
   воркспейс+код, сводка — `agent/schedules/owner-digest.ts`.
+- Страница владельца `/workspace/admin` (`ADMIN_USER_IDS`: id Better Auth или
+  email через запятую; пусто — не пускает никого). Охрана одна — `adminProcedure`
+  в `web/trpc/router.ts`: страницы зовут те же процедуры через `createCaller`
+  (`admin/_lib/caller.ts`), чужому — 404. Текст хода грузится по клику отдельным
+  запросом `admin.transcript`, списком его нет.
 - Тревоги владельцу (баланс RouterAI, пул) шлёт `agent/lib/owner-alert.ts`
   служебным ботом `OPS_ALERT_BOT_TOKEN` в `OPS_ALERT_CHAT_ID` (пара сторожа
   VM). Без него — ботом Бро в чат владельца с Бро, с шапкой «прислала проверка,

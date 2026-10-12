@@ -1057,6 +1057,9 @@ export const env = createEnv({
         "OPS_ALERT_CHAT_ID must be a numeric Telegram chat id or an @channel"
       )
       .optional(),
+    // Who may open /workspace/admin: Better Auth user ids or emails,
+    // separated by commas. Unset, nobody can: the page answers 404.
+    ADMIN_USER_IDS: workspaceListSchema.optional(),
     // The bug-report bot (`agent/lib/bug-bot`): people write to the service bot
     // OPS_ALERT_BOT_TOKEN, the reports are forwarded to OPS_ALERT_CHAT_ID. Off
     // by default, and never on Bro's own bot token (see `bugBotTarget`).

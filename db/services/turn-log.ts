@@ -258,44 +258,63 @@ export function workspaceLabel(
 
 /**
  * Every workspace that had a turn, for the owner's list of people: who it
- * is, when they signed up, their last turn of any kind, and within
- * `[from, to)` their turns, failed turns and what they cost (every source
- * of `usage_costs`, not only turns). Most recently active first.
+ * is, the channels it has used, when they signed up, their last turn of any
+ * kind, their turns and failed turns within the last 24 hours, 7 days and 30
+ * days, and what they cost (every source of `usage_costs`, not only turns)
+ * within 24 hours and 30 days. Most recently active first. One pass over
+ * `turn_log` and one over `usage_costs`, however many windows.
  */
-export async function listOwnerUsers(window: {
-  readonly from: Date;
-  readonly to: Date;
-}) {
-  const inWindow = and(
-    gte(turnLog.startedAt, window.from),
-    lt(turnLog.startedAt, window.to)
-  );
+export async function listOwnerUsers(now = new Date()) {
+  const since = (hours: number) =>
+    gte(turnLog.startedAt, new Date(now.getTime() - hours * hourMs));
+  const day = since(24);
+  const week = since(24 * 7);
+  const failed = eq(turnLog.outcome, "failed");
   const [activity, costs] = await Promise.all([
     db
       .select({
-        failed: sql<number>`(count(*) filter (where ${inWindow} and ${turnLog.outcome} = 'failed'))::int`,
+        channels: sql<
+          string[]
+        >`array_agg(distinct ${turnLog.channel} order by ${turnLog.channel})`,
+        failedDay: sql<number>`(count(*) filter (where ${and(day, failed)}))::int`,
+        failedWeek: sql<number>`(count(*) filter (where ${and(week, failed)}))::int`,
         lastTurnAt: sql<Date>`max(${turnLog.startedAt})`.mapWith(
           turnLog.startedAt
         ),
-        turns: sql<number>`(count(*) filter (where ${inWindow}))::int`,
+        turnsDay: sql<number>`(count(*) filter (where ${day}))::int`,
+        turnsWeek: sql<number>`(count(*) filter (where ${week}))::int`,
         workspaceId: turnLog.workspaceId,
       })
       .from(turnLog)
       .groupBy(turnLog.workspaceId),
-    workspaceCosts(window),
+    db
+      .select({
+        costDayRub: sql<number>`coalesce(sum(${usageCosts.costRub}) filter (where ${gte(usageCosts.occurredAt, new Date(now.getTime() - dayMs))}), 0)::float8`,
+        costMonthRub: sql<number>`coalesce(sum(${usageCosts.costRub}), 0)::float8`,
+        workspaceId: usageCosts.workspaceId,
+      })
+      .from(usageCosts)
+      .where(gte(usageCosts.occurredAt, new Date(now.getTime() - 30 * dayMs)))
+      .groupBy(usageCosts.workspaceId),
   ]);
+  const costOf = new Map(costs.map((row) => [row.workspaceId, row]));
   const accounts = await workspaceAccounts(
     activity.map((row) => row.workspaceId)
   );
   return activity
     .map((row) => {
       const account = accounts.get(row.workspaceId);
+      const cost = costOf.get(row.workspaceId);
       return {
-        costRub: costs.get(row.workspaceId) ?? 0,
-        failed: row.failed,
+        channels: row.channels,
+        failedDay: row.failedDay,
+        failedWeek: row.failedWeek,
         lastTurnAt: row.lastTurnAt,
-        turns: row.turns,
+        turnsDay: row.turnsDay,
+        turnsWeek: row.turnsWeek,
         workspaceId: row.workspaceId,
+        costDayRub: cost?.costDayRub ?? 0,
+        costMonthRub: cost?.costMonthRub ?? 0,
         email: account?.email ?? null,
         label: workspaceLabel(row.workspaceId, account),
         name: account?.name ?? null,
@@ -306,10 +325,21 @@ export async function listOwnerUsers(window: {
     .toSorted((a, b) => b.lastTurnAt.getTime() - a.lastTurnAt.getTime());
 }
 
+/** Who one workspace is to the owner, for the title of its page. */
+export async function describeWorkspace(workspaceId: string) {
+  const accounts = await workspaceAccounts([workspaceId]);
+  return workspaceLabel(workspaceId, accounts.get(workspaceId));
+}
+
 /** One workspace's turns that started within `[from, to)`, newest first. */
 export async function listWorkspaceTurns(
   workspaceId: string,
-  window: { readonly from: Date; readonly limit?: number; readonly to: Date }
+  window: {
+    readonly failedOnly?: boolean;
+    readonly from: Date;
+    readonly limit?: number;
+    readonly to: Date;
+  }
 ) {
   return db
     .select()
@@ -318,7 +348,8 @@ export async function listWorkspaceTurns(
       and(
         eq(turnLog.workspaceId, workspaceId),
         gte(turnLog.startedAt, window.from),
-        lt(turnLog.startedAt, window.to)
+        lt(turnLog.startedAt, window.to),
+        ...(window.failedOnly ? [eq(turnLog.outcome, "failed" as const)] : [])
       )
     )
     .orderBy(desc(turnLog.startedAt))
@@ -341,6 +372,7 @@ export async function readTurnTranscript(turnLogId: string) {
   const entries = await db
     .select({
       createdAt: turnLogEntries.createdAt,
+      id: turnLogEntries.id,
       role: turnLogEntries.role,
       text: turnLogEntries.text,
       toolName: turnLogEntries.toolName,

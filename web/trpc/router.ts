@@ -40,12 +40,74 @@ import { telegramLinkUrl } from "@shared/identity/telegram-link";
 import { modelIdSchema } from "@shared/model/id";
 import { userProfileSchema } from "@shared/user-profile/schema";
 import { vaultCreateItemSchema } from "@shared/vault/schema";
+import {
+  describeWorkspace,
+  listOwnerUsers,
+  listWorkspaceTurns,
+  readTurnTranscript,
+} from "@db/services/turn-log";
+import { isAdminScope } from "@web/auth/admin";
 import { createTRPCRouter, protectedProcedure } from "./init";
+
+/**
+ * The owner's pages. Anyone else gets NOT_FOUND, as if there were no such
+ * route: a probe learns nothing about whether the page exists.
+ */
+const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+  if (!(await isAdminScope(ctx.scope))) {
+    throw new TRPCError({ code: "NOT_FOUND" });
+  }
+  return next();
+});
+
+const hourMs = 60 * 60_000;
+
+/** How many of a workspace's latest turns the owner's page lists. */
+const adminTurnsLimit = 200;
 
 /** An eve memory scope key, as the cabinet page received it. */
 const scopeKeySchema = z.string().min(1).max(512);
 
 export const appRouter = createTRPCRouter({
+  admin: {
+    /** People, most recently active first, with 24 h, 7 d and 30 d figures. */
+    users: adminProcedure.query(() => listOwnerUsers()),
+    /** One workspace's latest turns of the last 30 days, no text. */
+    turns: adminProcedure
+      .input(
+        z.object({
+          failedOnly: z.boolean().default(false),
+          workspaceId: z.string().min(1).max(256),
+        })
+      )
+      .query(async ({ input }) => {
+        const to = new Date();
+        const [label, turns] = await Promise.all([
+          describeWorkspace(input.workspaceId),
+          listWorkspaceTurns(input.workspaceId, {
+            failedOnly: input.failedOnly,
+            from: new Date(to.getTime() - 30 * 24 * hourMs),
+            limit: adminTurnsLimit,
+            to,
+          }),
+        ]);
+        return { label, limit: adminTurnsLimit, turns };
+      }),
+    /** The kept text of one turn, asked for when the row is opened. */
+    transcript: adminProcedure
+      .input(z.object({ turnLogId: z.uuid() }))
+      .query(async ({ input }) => {
+        const found = await readTurnTranscript(input.turnLogId);
+        if (!found) throw new TRPCError({ code: "NOT_FOUND" });
+        return found.entries.map((entry) => ({
+          id: entry.id,
+          createdAt: entry.createdAt.toISOString(),
+          role: entry.role,
+          text: entry.text,
+          toolName: entry.toolName,
+        }));
+      }),
+  },
   chats: {
     save: protectedProcedure
       .input(saveChatSchema)

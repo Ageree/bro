@@ -24,15 +24,25 @@ const navigation = [
  * A row is a thumb's worth of paper: the padding that makes it one is taken
  * back off the column, so the block sits exactly where the text alone would.
  */
-export function AuthenticatedNavigation() {
+export function AuthenticatedNavigation({
+  showAdmin = false,
+}: {
+  readonly showAdmin?: boolean;
+}) {
   const active = activeRoute(usePathname());
+  const items = showAdmin
+    ? [
+        ...navigation,
+        { href: "/workspace/admin", id: "admin", label: "Владелец" },
+      ]
+    : navigation;
 
   return (
     <SidebarGroup className="px-bro-rail py-0">
       <SidebarGroupContent>
         <nav aria-label="Основная навигация">
           <ul className="my-[-0.5rem] flex list-none flex-col bro-rail">
-            {navigation.map((item) => (
+            {items.map((item) => (
               <li key={item.id}>
                 <Link
                   aria-current={active === item.id ? "page" : undefined}
@@ -59,7 +69,10 @@ export function AuthenticatedNavigation() {
 export function AuthenticatedMobileHeader() {
   const { toggleSidebar } = useSidebar();
   const active = activeRoute(usePathname());
-  const label = navigation.find((item) => item.id === active)?.label;
+  const label =
+    active === "admin"
+      ? "Владелец"
+      : navigation.find((item) => item.id === active)?.label;
 
   return (
     <header className="flex items-baseline justify-between gap-4 border-b border-border px-bro-pad py-[0.85rem] md:hidden">
@@ -77,6 +90,7 @@ export function AuthenticatedMobileHeader() {
 }
 
 function activeRoute(pathname: string) {
+  if (pathname.startsWith("/workspace/admin")) return "admin";
   if (pathname.startsWith("/workspace")) return "workspace";
   if (pathname.startsWith("/vault")) return "vault";
   if (pathname.startsWith("/personal-info")) return "personal-info";
