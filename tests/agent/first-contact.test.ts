@@ -20,22 +20,22 @@ async function context(bot: string) {
 }
 
 describe("the first message's context", () => {
-  it("tells the introduction of the beta, the bug bot and the terms", async () => {
+  it("names the beta and the bug bot, and no terms or privacy", async () => {
     claim.mockResolvedValue(true);
-    const text = (await context("bro_bugs_bot")).join("\n");
+    const lines = await context("bro_bugs_bot");
+    expect(lines).toHaveLength(2);
+    const text = lines.join("\n");
     expect(text).toContain("`first-contact`");
-    expect(text).toContain("в бете");
+    expect(text).toContain("Бро сейчас в бете");
     expect(text).toContain("@bro_bugs_bot");
-    expect(text).toContain("https://brobro.tech/oferta");
-    expect(text).toContain("https://brobro.tech/privacy");
+    expect(text).not.toMatch(/oferta|privacy|Условия|хранится/u);
   });
 
-  it("names no bot when none is set", async () => {
+  it("says nothing of the beta when no bot is set", async () => {
     claim.mockResolvedValue(true);
-    const text = (await context("")).join("\n");
-    expect(text).toContain("в бете");
-    expect(text).not.toContain("@");
-    expect(text).not.toContain("О сбоях");
+    const lines = await context("");
+    expect(lines).toHaveLength(1);
+    expect(lines.join("\n")).not.toContain("бете");
   });
 
   it("adds nothing once the workspace has been introduced", async () => {

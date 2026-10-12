@@ -691,7 +691,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   список карт пуст. Потом читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
   через `yandex_purchase` `verify_card` только после «да», где привязать карту) несёт
   `reply` результата, а не промпт. Знакомство (`first-contact`) узнаёт о бете, боте
-  багов (`BUG_BOT_USERNAME`) и ссылках из контекстной строки `firstContactContext`.
+  багов (`BUG_BOT_USERNAME`, без него — ни слова) из контекстной строки
+  `firstContactContext`; условий, приватности и ссылок в знакомстве нет (владелец 12.10).
 
 ## Composio: Google, Notion, Slack и другие приложения
 

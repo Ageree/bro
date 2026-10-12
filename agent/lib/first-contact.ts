@@ -11,16 +11,17 @@ const firstContactMarker =
   "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
 
 /**
- * What the introduction says of the beta, with the deployment's own links:
- * the bug bot only when BUG_BOT_USERNAME names one, so the model never
- * invents a handle.
+ * The beta and where faults go, only when BUG_BOT_USERNAME names a bot: the
+ * model never invents a handle, and without a bot nobody passes a fault on.
+ * The introduction names no terms, privacy or data rules (owner, 12.10).
  */
 function betaNote() {
   const bot = env.BUG_BOT_USERNAME;
-  // Without the bot nobody passes a fault on, so none is promised.
-  const report =
-    bot === undefined ? "" : ` О сбоях и идеях — в Telegram @${bot}.`;
-  return `Для знакомства: Бро сейчас в бете.${report} Условия — https://brobro.tech/oferta, что хранится и как удалить — https://brobro.tech/privacy.`;
+  return bot === undefined
+    ? []
+    : [
+        `Для знакомства: Бро сейчас в бете. О сбоях и идеях — в Telegram @${bot}.`,
+      ];
 }
 
 /**
@@ -33,6 +34,6 @@ function betaNote() {
  */
 export async function firstContactContext(scope: AccessScope) {
   return (await claimWorkspaceIntroduction(scope))
-    ? [firstContactMarker, betaNote()]
+    ? [firstContactMarker, ...betaNote()]
     : [];
 }

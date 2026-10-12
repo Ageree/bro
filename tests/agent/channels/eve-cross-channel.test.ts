@@ -116,10 +116,9 @@ describe("a web message in the cross-channel pilot", () => {
 
     const result = await onMessage(messageContext(), "привет");
 
-    expect(result.context).toHaveLength(3);
+    expect(result.context).toHaveLength(2);
     expect(result.context?.[0]).toContain("`first-contact`");
-    expect(result.context?.[1]).toContain("в бете");
-    expect(result.context?.[2]).toContain(
+    expect(result.context?.[1]).toContain(
       "[iMessage, вт 29.09 14:05] Person: Привет!"
     );
   });
