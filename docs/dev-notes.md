@@ -1090,12 +1090,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   У уже подтверждённой карты Лавка не присылает `verifyStrategy`: клиент считает
   её `verified`. В снимке отсутствие нормализуется в `null`; смена стратегии
   после вопроса всё равно требует нового предложения и подтверждения.
-- Оплата Лавки картой: после `orders/submit` сайт сам опрашивает
-  `payments/v1/status` (`{orderId, paymentType: "card"}`, раз в 2 с) до
-  `success`/`fail`/`cancel` или `wait_user_action` с `payload.redirectUrl` —
-  форма банка (3-D Secure). Заказы API 11.10 без этого шага отменялись с
-  `paymentStatus: unknown`; теперь submit ждёт статус до 15 с, а ссылку банка
-  Бро отдаёт человеку (`agent/lib/yandex/lavka/checkout.ts`).
+- Оплата Лавки картой: перед `orders/submit` сайт пишет карту в корзину
+  (`cart/v1/set-payment`, `meta.card`, новая `cartVersion`); заказ из корзины
+  без карты Лавка отменяет за 0,6 с, `payments/v1/status` — `cancel` (так
+  падали все заказы API до 12.10). После submit сайт опрашивает статус раз в
+  2 с: карта с `verifyStrategy: card_antifraud` даёт `init`, затем
+  `wait_user_action` со ссылкой trust.yandex.ru (3-D Secure) — её Бро отдаёт
+  человеку (`agent/lib/yandex/lavka/checkout.ts`). Страница оформления — `/check`.
 - Двухминутный TTL котировки Лавки — не срок согласия человека. После его
   «да» истёкшую котировку перечитываем: только служебные offer/version/expiry
   могут обновиться, товары, цены, адрес, cartId и карта должны совпасть.
