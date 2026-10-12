@@ -4,13 +4,23 @@ import httpx
 from browser_use import Agent, BrowserSession, ChatOpenRouter
 
 KEY = open("/etc/bench/routerai").read().strip()
+LITHOS_BASE = "https://api.lithosai.cloud/v1"
+try: LITHOS_KEY = open("/etc/bench/lithos").read().strip()
+except OSError: LITHOS_KEY = ""
 OUT = "/var/www/bench/bu.jsonl"
 CDP = "http://127.0.0.1:9222"
 BUDGET_RUB = float(os.environ.get("BENCH_BUDGET_RUB", "70"))
 EXTEND_SYSTEM = open("/opt/bench/extend_system.txt").read().strip()
 DS = {"reasoning": {"enabled": False}, "provider": {"order": ["deepinfra"], "require_parameters": True}}
 DST = {"reasoning": {"enabled": False}, "provider": {"order": ["together"], "allow_fallbacks": False}}
+def lithos(tier, **extra):
+    # Lithos answers OpenAI-style; no usage.cost (rates are per model, tokens are logged), nothing provider-specific in the body.
+    return {"model": f"deepseek-ai/DeepSeek-V4.1-Flash{tier}", "body": {}, "flash": False, "base_url": LITHOS_BASE, "key": LITHOS_KEY, **extra}
 CONFIGS = {
+    "lith_ultra": lithos("-ultra"),
+    "lith_ultra_chat": lithos("-ultra-chat"),
+    "lith_fast": lithos("-fast"),
+    "lith_ultra_chat_t20": lithos("-ultra-chat", llm_timeout=20),
     "ds_full": {"model": "deepseek/deepseek-v4.1-flash", "body": DS, "flash": False},
     "ds_flash": {"model": "deepseek/deepseek-v4.1-flash", "body": DS, "flash": True},
     "dst_full": {"model": "deepseek/deepseek-v4.1-flash", "body": DST, "flash": False},
@@ -66,7 +76,7 @@ def fresh_tab():
 async def one(task_id, cfg_id, spent):
     cfg = CONFIGS[cfg_id]; meter = Meter()
     http = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10), event_hooks={"request": [meter.on_request], "response": [meter.on_response]})
-    llm = ChatOpenRouter(model=cfg["model"], base_url="https://routerai.ru/api/v1", api_key=KEY, http_client=http, extra_body={"extra_body": cfg["body"]})
+    llm = ChatOpenRouter(model=cfg["model"], base_url=cfg.get("base_url", "https://routerai.ru/api/v1"), api_key=cfg.get("key", KEY), http_client=http, extra_body={"extra_body": cfg["body"]})
     tab = fresh_tab()
     t_run = time.monotonic()
     browser = BrowserSession(cdp_url=CDP, keep_alive=True)

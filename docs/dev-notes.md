@@ -1293,6 +1293,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Узкое место браузерного поручения — LLM шага и число шагов, не VM и профиль:
   Chrome до CDP — 0,2–0,8 с, профиль 178 МБ распаковывается за 0,35 с. Замеры,
   гипотезы и сравнение моделей — `docs/browser-speed.md`.
+- Lithos AI (12.10, кандидат для браузера и телефонии, в проде нет): API как у
+  OpenAI, `https://api.lithosai.cloud/v1`, ключ `LITHOSAI_API_KEY`, в OpenRouter
+  и RouterAI провайдера нет. DeepSeek V4.1 Flash — четыре id
+  `deepseek-ai/DeepSeek-V4.1-Flash[-fast|-ultra|-ultra-chat]`. Замер текстом из
+  облачной сессии (шаг ~8,9k токенов, кэш 8,7k, `json_schema` strict работает):
+  первый токен у `-ultra-chat` 0,38 с, у остальных 0,9–1,1 с. Браузерный прогон
+  на Selectel: конфиги `lith_*` в `scripts/selectel-bench/bu_bench.py`; база —
+  RunInfra, а не Together/DeepInfra (его ключа в env сессии нет).
 
 Файлы без пути — в `agent/lib/browser-use/`.
 

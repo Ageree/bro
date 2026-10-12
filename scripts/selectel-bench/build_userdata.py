@@ -22,6 +22,7 @@ extension = "\n\n".join(
     for name in ("EXTEND_SYSTEM", "BATCH_HINT")
 )
 key = os.environ["ROUTERAI_API_KEY"].strip().strip("“”‘’«»\"' ")
+lithos = os.environ.get("LITHOSAI_API_KEY", "").strip()
 
 
 def b64(data):
@@ -32,6 +33,7 @@ script = (
     (HERE / "userdata.tpl.sh").read_text()
     .replace("__ROLE__", role)
     .replace("__KEY_B64__", b64(key))
+    .replace("__LITHOS_B64__", b64(lithos))
     .replace("__BU_B64__", b64((HERE / "bu_bench.py").read_bytes()))
     .replace("__CDP_B64__", b64((HERE / "cdp.py").read_bytes()))
     .replace("__EXT_B64__", b64(extension + "\n"))
