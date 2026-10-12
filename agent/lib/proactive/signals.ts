@@ -438,9 +438,11 @@ export function calendarPrepSignals(
 
 /**
  * At most this many proactive runs per workspace in any 24 hours; past it,
- * new signals wait. Twelve covers a heavy day of mail that matters.
+ * new signals wait. The count is per workspace (its proactive job), and a run
+ * that found nothing to report counts too. Thirty leaves room for the agentic
+ * worker, which also follows up on calls and errands.
  */
-export const maxRunsPerDay = 12;
+export const maxRunsPerDay = 30;
 
 /**
  * A finished phone call or browser run, keyed by its id, for the agency

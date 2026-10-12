@@ -184,7 +184,7 @@ describe("proactive schedule", () => {
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith({
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
-      maxRunsPerDay: 12,
+      maxRunsPerDay: 30,
       now: afternoon,
       signals: [flight],
       workspaceId: "workspace:alice",
@@ -875,7 +875,7 @@ describe("proactive schedule", () => {
       agentMailCheckedAt: afternoon,
       jobId: "00000000-0000-4000-8000-000000000001",
       mailCheckedAt: afternoon,
-      maxRunsPerDay: 12,
+      maxRunsPerDay: 30,
       now: afternoon,
       signals: [inbox],
       workspaceId: "workspace:alice",
