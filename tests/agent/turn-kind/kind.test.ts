@@ -185,7 +185,7 @@ describe("the agentic worker's turn", () => {
     expect(await kindIn("workspace-2")).toBe("proactive-worker");
   });
 
-  it("is offered the proactive check's reads and no write tool yet", () => {
+  it("is offered the proactive check's reads, its contacts and orders, and the writes it is granted", () => {
     expect(
       turnTools({
         askedQuestion: false,
@@ -197,9 +197,36 @@ describe("the agentic worker's turn", () => {
         taskAgent: false,
       })
     ).toEqual({
-      offeredTools: [...proactiveReadTools],
+      offeredTools: [
+        ...proactiveReadTools,
+        "contacts-search",
+        "list_orders",
+        ...agenticWriteTools,
+      ],
       withheldTools: ["task"],
     });
-    expect(agenticWriteTools).toEqual([]);
+    expect(agenticWriteTools).toEqual([
+      "agent-mail-send",
+      "calendar-create-event",
+      "calendar-delete-event",
+      "calendar-update-event",
+      "gmail-draft",
+      "gmail-send",
+      "mail-send",
+    ]);
+  });
+
+  it("offers the agentic worker no web page, which an email could steer to a URL of its choice", () => {
+    const offered = turnTools({
+      askedQuestion: false,
+      cardsHeld: false,
+      heldForAnswer: false,
+      kind: "agentic-worker",
+      reportPastAnswer: false,
+      stableContext: false,
+      taskAgent: false,
+    }).offeredTools;
+    expect(offered).not.toContain("web_fetch");
+    expect(offered).not.toContain("web_search");
   });
 });

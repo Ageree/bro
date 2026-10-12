@@ -137,6 +137,8 @@ export default defineDynamic({
       return googleWorkspaceConfigured()
         ? resolveModeValue(context, {
             interactive: { "contacts-search": tool },
+            // The worker places no call, so its search does not point at one.
+            "agentic-worker": { "contacts-search": contactsSearch },
             "scheduled-worker": { "contacts-search": tool },
           })
         : null;

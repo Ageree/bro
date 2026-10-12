@@ -64,16 +64,36 @@ export const proactiveReadTools = [
 ] as const;
 
 /**
- * PLACEHOLDER: the write tools the agentic worker will be granted by a later
- * slice of the agency feature. None are granted yet, so the worker only reads.
+ * The reads the agentic worker has beyond the proactive check's: the
+ * person's contacts, to find whom to write to, and their orders.
  */
-export const agenticWriteTools: readonly string[] = [];
+const agenticReadTools: readonly string[] = [
+  "contacts-search",
+  "list_orders",
+];
 
 /**
- * All the agentic worker is offered: the proactive check's reads and the
- * agentic write tools, which are none for now.
+ * The write tools the agentic worker is granted. Each one's approval
+ * (`agent/lib/agency/approval.ts`) grants it on its own, under the budget
+ * and the guards; a tool's own rules (a saved rule, the connection) still
+ * apply. No payment is among them: a payment keeps its question to the person.
+ */
+export const agenticWriteTools: readonly string[] = [
+  "agent-mail-send",
+  "calendar-create-event",
+  "calendar-delete-event",
+  "calendar-update-event",
+  "gmail-draft",
+  "gmail-send",
+  "mail-send",
+];
+
+/**
+ * All the agentic worker is offered: the proactive check's reads, its own
+ * reads and the agentic write tools.
  */
 export const agenticWorkerTurnTools: readonly string[] = [
   ...proactiveReadTools,
+  ...agenticReadTools,
   ...agenticWriteTools,
 ];

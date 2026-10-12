@@ -118,6 +118,43 @@ describe("agency actions", { timeout: 30_000 }, () => {
     ).toHaveLength(2);
   });
 
+  it("finds a recorded action by its hash in its own workspace, whatever its status, and keeps the undo it settled with", async () => {
+    const { agency } = await openDatabase();
+
+    const created = startedId(
+      await agency.beginAgencyAction(plan("calendar-undo", "calendar"))
+    );
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "calendar-undo")
+    ).toBe(true);
+    expect(
+      await agency.agencyActionRecorded(bob.workspaceId, "calendar-undo")
+    ).toBe(false);
+
+    const undo = {
+      input: { calendarId: "primary", eventId: "e1" },
+      tool: "calendar-delete-event",
+    };
+    expect(await agency.finishAgencyAction(created, "done", undo)).toBe(true);
+    const [row] = await agency.listRecentAgencyActions(alice.workspaceId, 1);
+    expect(row?.undo).toEqual(undo);
+
+    // A failed action is recorded too: its outcome may be unknown, so it is not retried.
+    const failed = startedId(
+      await agency.beginAgencyAction(plan("send-failed"))
+    );
+    expect(await agency.finishAgencyAction(failed, "failed")).toBe(true);
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "send-failed")
+    ).toBe(true);
+    expect(await agency.beginAgencyAction(plan("send-failed"))).toEqual({
+      kind: "duplicate",
+    });
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "never-taken")
+    ).toBe(false);
+  });
+
   it("refuses an action class or status the schema does not know", async () => {
     const { db } = await openDatabase();
 
