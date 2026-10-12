@@ -233,26 +233,71 @@ describe("turn log", { timeout: 30_000 }, () => {
       workspaceId: alice.workspaceId,
     });
 
-    const people = await log.listOwnerUsers({
-      from: at("00:00:00"),
-      to: at("23:00:00"),
-    });
+    // A turn nine days back is in no window but the figures' 30 days.
+    await log.recordTurnStart(
+      turn({
+        sessionId: "old",
+        startedAt: new Date("2026-10-03T07:00:00.000Z"),
+      })
+    );
+
+    const people = await log.listOwnerUsers(at("23:00:00"));
     expect(
-      people.map(({ costRub, failed, label, turns }) => ({
-        costRub,
-        failed,
-        label,
-        turns,
-      }))
+      people.map(
+        ({
+          channels,
+          costDayRub,
+          costMonthRub,
+          failedDay,
+          failedWeek,
+          label,
+          turnsDay,
+          turnsWeek,
+        }) => ({
+          channels,
+          costDayRub,
+          costMonthRub,
+          failedDay,
+          failedWeek,
+          label,
+          turnsDay,
+          turnsWeek,
+        })
+      )
     ).toEqual([
-      { costRub: 0, failed: 0, label: "bob@example.com", turns: 1 },
-      { costRub: 3, failed: 1, label: "Алиса (+79990001122)", turns: 1 },
+      {
+        channels: ["telegram"],
+        costDayRub: 0,
+        costMonthRub: 0,
+        failedDay: 0,
+        failedWeek: 0,
+        label: "bob@example.com",
+        turnsDay: 1,
+        turnsWeek: 1,
+      },
+      {
+        channels: ["telegram"],
+        costDayRub: 3,
+        costMonthRub: 3,
+        failedDay: 1,
+        failedWeek: 1,
+        label: "Алиса (+79990001122)",
+        turnsDay: 1,
+        turnsWeek: 1,
+      },
     ]);
-    const turns = await log.listWorkspaceTurns(alice.workspaceId, {
-      from: at("00:00:00"),
-      to: at("23:00:00"),
-    });
+    const window = { from: at("00:00:00"), to: at("23:00:00") };
+    const turns = await log.listWorkspaceTurns(alice.workspaceId, window);
     expect(turns.map(({ errorCode }) => errorCode)).toEqual(["X"]);
+    await log.recordTurnStart(turn({ sessionId: "ok", turnId: "turn_9" }));
+    const failedOnly = await log.listWorkspaceTurns(alice.workspaceId, {
+      ...window,
+      failedOnly: true,
+    });
+    expect(failedOnly.map(({ outcome }) => outcome)).toEqual(["failed"]);
+    await expect(log.describeWorkspace(alice.workspaceId)).resolves.toBe(
+      "Алиса (+79990001122)"
+    );
   });
 
   it("summarizes the day for the owner", async () => {
@@ -357,27 +402,5 @@ describe("turn log", { timeout: 30_000 }, () => {
     await expect(
       log.countFailedPeople("MODEL_CALL_FAILED 402", at("07:25:00"))
     ).resolves.toBe(1);
-  });
-
-  it("lists each workspace's channels and finds an account's email", async () => {
-    const { log } = await logDatabase();
-    await log.recordTurnStart(turn({ sessionId: "a" }));
-    await log.recordTurnStart(turn({ sessionId: "b" }));
-    await log.recordTurnStart({
-      ...turn({ sessionId: "c", workspaceId: bob.workspaceId }),
-      channel: "web",
-    });
-
-    const channels = await log.workspaceChannels([
-      alice.workspaceId,
-      bob.workspaceId,
-    ]);
-    expect(channels.get(alice.workspaceId)).toEqual(["telegram"]);
-    expect(channels.get(bob.workspaceId)).toEqual(["web"]);
-    await expect(log.workspaceChannels([])).resolves.toEqual(new Map());
-    await expect(log.readAccountEmail(alice.userId)).resolves.toBe(
-      "alice@example.com"
-    );
-    await expect(log.readAccountEmail("alice")).resolves.toBeUndefined();
   });
 });

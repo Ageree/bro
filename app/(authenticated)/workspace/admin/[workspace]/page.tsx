@@ -18,17 +18,18 @@ export default async function Page({
 }: PageProps<"/workspace/admin/[workspace]">) {
   const { workspace } = await params;
   const { failed } = await searchParams;
-  const workspaceId = decodeURIComponent(workspace);
+  const workspaceId = decodeWorkspace(workspace);
   const failedOnly = failed === "1";
-  const [users, turns] = await adminQuery((admin) =>
-    Promise.all([admin.users(), admin.turns({ failedOnly, workspaceId })])
+  // The guard runs inside the query, so a bad parameter is a 404 only for
+  // the owner; anyone else gets the same 404 before the parameter is read.
+  const { label, limit, turns } = await adminQuery((admin) =>
+    admin.turns({ failedOnly, workspaceId })
   );
-  const person = users.find((row) => row.workspaceId === workspaceId);
   const base = `/workspace/admin/${encodeURIComponent(workspaceId)}`;
 
   return (
     <Document>
-      <DocumentTitle>{person?.label ?? workspaceId}</DocumentTitle>
+      <DocumentTitle>{label}</DocumentTitle>
       <p className="type-status text-muted-foreground">
         <Link className="bro-link" href="/workspace/admin">
           ← Все люди
@@ -36,7 +37,11 @@ export default async function Page({
       </p>
       <Section
         headingId="admin-turns-heading"
-        state={`${String(turns.length)} за 30 дней`}
+        state={
+          turns.length >= limit
+            ? `последние ${String(limit)}`
+            : `${String(turns.length)} за 30 дней`
+        }
         title="Ходы"
       >
         <p className="type-status text-muted-foreground">
@@ -67,4 +72,13 @@ export default async function Page({
       </Section>
     </Document>
   );
+}
+
+/** A malformed `%` escape decodes to nothing, which the procedure refuses. */
+function decodeWorkspace(segment: string) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return "";
+  }
 }

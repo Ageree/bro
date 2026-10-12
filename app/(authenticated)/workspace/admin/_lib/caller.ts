@@ -16,7 +16,14 @@ export async function adminQuery<Result>(
   try {
     return await run(appRouter.createCaller({ origin: "", scope }).admin);
   } catch (error) {
-    if (error instanceof TRPCError && error.code === "NOT_FOUND") notFound();
+    // A page parameter the procedure refuses is a page that does not exist,
+    // for the owner as for anyone.
+    if (
+      error instanceof TRPCError &&
+      (error.code === "NOT_FOUND" || error.code === "BAD_REQUEST")
+    ) {
+      notFound();
+    }
     throw error;
   }
 }
