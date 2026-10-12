@@ -69,7 +69,7 @@ describe("the sign-in link a message carries", () => {
         kind: "message",
         text: `Войди по [этой ссылке](${target}).`,
       });
-      expect(sent.kind === "message" && withHttpsLinks(sent.text ?? "")).toBe(
+      expect(withHttpsLinks(sent.text)).toBe(
         `Войди по [этой ссылке](${link}).`
       );
     }
