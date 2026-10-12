@@ -21,7 +21,7 @@ watchdog.py); the Compute API, serial console and S3 signing are the stand's
   python host.py deploy NAME [--version V]      build (unless --version), then release it on the VM: migrate,
                                                 switch, health within 120 s or back to the previous release
   python host.py rollback NAME [--version V]    the release before the current one (or V)
-  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon] [--allow-missing] [--no-alert-webhook]
+  python host.py env NAME --profile stand|prod [--dry-run] [--with-neon] [--with-selectel-balance] [--allow-missing] [--no-alert-webhook]
                                                 compose /etc/bro/env and PUT it (names only are printed);
                                                 --with-neon: Neon's URL in /etc/bro/ops-env, ops scripts only;
                                                 prod refuses a missing expected name or no https alert webhook
@@ -919,6 +919,15 @@ def cmd_env(args):
         if not neon or not clean(str(neon)):
             sys.exit("no DATABASE_URL_UNPOOLED in vercel-production.json for NEON_DATABASE_URL")
         ops_env["NEON_DATABASE_URL"] = clean(str(neon))
+    if args.with_selectel_balance:
+        # The watchdog (root, on the VM) checks the Selectel balance with this key: it lives in ops-env beside
+        # Neon's URL, never in the app's env. Without the flag a later `host.py env` takes it away again.
+        key = (os.environ.get("SELECTEL_TOKEN") or os.environ.get("SELECTEL_API_KEY") or "").strip().strip("\"'“”")
+        if not key:
+            sys.exit("no SELECTEL_TOKEN or SELECTEL_API_KEY in the environment for --with-selectel-balance")
+        ops_env["SELECTEL_BALANCE_TOKEN"] = key
+        if os.environ.get("SELECTEL_BALANCE_MIN_RUB"):
+            ops_env["SELECTEL_BALANCE_MIN_RUB"] = os.environ["SELECTEL_BALANCE_MIN_RUB"].strip()
     by_source = {}
     for name in sorted(values):
         by_source.setdefault(sources[name], []).append(name)
@@ -965,11 +974,11 @@ def cmd_env(args):
         print(f"note: BACKUPS=off ({sources.get('BACKUPS')}): no nightly backups on this VM")
     if ops_env:
         print(f"ops scripts only (/etc/bro/ops-env, not the app's env): {' '.join(sorted(ops_env))}")
-        if args.profile == "stand":
+        if args.with_neon and args.profile == "stand":
             print("WARNING: the stand gets production Neon's owner URL: db-copy.sh may read it (a rehearsal), "
                   "never write it (neon is a target only with HOST_PROFILE=prod); host.py env without "
                   "--with-neon takes it away again")
-        else:
+        elif args.with_neon:
             print("note: run host.py env without --with-neon once the rollback week is over: that removes it")
     missing = [name for name in REQUIRED if name not in values]
     if missing:
@@ -1419,6 +1428,9 @@ def parser():
     env.add_argument("--with-neon", action="store_true",
                      help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
                           "in /etc/bro/ops-env for the ops scripts only")
+    env.add_argument("--with-selectel-balance", action="store_true",
+                     help="SELECTEL_TOKEN/SELECTEL_API_KEY (and SELECTEL_BALANCE_MIN_RUB, default 1000) for the "
+                          "watchdog's balance check, in /etc/bro/ops-env")
     env.set_defaults(fn=cmd_env)
     sites = sub.add_parser("sites")
     sites.add_argument("name")

@@ -264,6 +264,13 @@
   `--public-url https://brobro.tech --apply --output /tmp/x.env`.
 - Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
   меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
+- Лимиты памяти VM (4 ГБ): `bro-eve` — `MemoryHigh=1536M`, `MemoryMax=2G`, куча
+  1280 МБ; `bro-web` — 768M / 1G / 640 МБ; swap 2 ГБ делает `install-code.sh`.
+  Юниты применяются только при следующем рестарте eve/web (релиз), `bro-egress`
+  не перезапускается. Баланс Selectel проверяет `watchdog.py` раз в 15 минут:
+  ключ — `SELECTEL_BALANCE_TOKEN` в `/etc/bro/ops-env` (не в env приложения),
+  кладёт `host.py env --with-selectel-balance`; `host.py env` без флага ключ
+  снимает, проверка тихо выключается. Порог — `SELECTEL_BALANCE_MIN_RUB` (1000).
 - Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
   Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
   Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,
@@ -1488,6 +1495,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200
   вместо dispatch. V4 Browser Use не присылает вебхук, так что локальный
   `browser-runs` без этого тика не доставит законченный отчёт в чат.
+- Голый 403 Composio повторяет сам `composioProxy` (`agent/lib/composio/proxy.ts`),
+  один раз через 3 с, в том числе для записи: прокси отвечает HTTP 200 на любой
+  статус провайдера, поэтому `ComposioError` 403 значит «провайдера не вызывали».
 - Composio с адреса Cloud.ru изредка отвечает голым 403 (03.10: 5 из 9 ночных
   проверок), а тот же ключ из сессии — 200. Проверка почты спрашивает ещё раз
   через 3 с (`onceMore` в `agent/lib/proactive/probe.ts`); `ComposioError.answer`

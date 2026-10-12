@@ -762,6 +762,45 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("бэкап базы", text)
         self.assertIn("host.py logs bro-app-1 bro-backup", text)
 
+    def test_the_selectel_balance_alerts_below_the_threshold_and_only_with_its_key(self):
+        def answer(kopecks, debt=0):
+            body = {"status": "success", "data": {"billings": [
+                {"billing_type": "other", "balances_values_sum": 9_999_999, "debt_sum": 0},
+                {"billing_type": "primary", "balances_values_sum": kopecks, "debt_sum": debt}]}}
+            return mock.MagicMock(read=lambda: json.dumps(body).encode(),
+                                  __enter__=lambda self: self, __exit__=lambda *a: None)
+
+        with tempfile.TemporaryDirectory() as root:
+            paths = deployd.Paths(root)
+            state, now = {}, 3_000_000
+            # No key in ops-env: the check is off, and no request goes out.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=AssertionError):
+                self.assertIsNone(watchdog.selectel_ok(paths, now, state))
+            paths.ops_env.parent.mkdir(parents=True)
+            paths.ops_env.write_text("SELECTEL_BALANCE_TOKEN=k\nSELECTEL_BALANCE_MIN_RUB=500\n")
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=answer(80_000)) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, now, state))
+                self.assertEqual(call.call_args.args[0].get_header("X-token"), "k")
+            self.assertEqual(state["selectelBalance"]["rub"], 800.0)
+            # Read every 15 minutes: a minute later the verdict stands without a request.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=AssertionError):
+                self.assertTrue(watchdog.selectel_ok(paths, now + 60, state))
+            # Debt counts against the balance; below the threshold is down.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=answer(80_000, debt=40_000)):
+                self.assertFalse(watchdog.selectel_ok(paths, now + 1000, state))
+            # A read that fails is not a low balance: the last verdict stands, and with none the check is idle.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+                self.assertFalse(watchdog.selectel_ok(paths, now + 2000, state))
+                self.assertIsNone(watchdog.selectel_ok(paths, now + 2000, {}))
+            # Ten minutes down becomes an alert that names the sum and the threshold.
+            text = watchdog.step({"selectel": {"downSince": 0}, "selectelBalance": state["selectelBalance"]},
+                                 {"selectel": False}, 600, "bro-app-sel-2")[0][1]
+            self.assertIn("баланс Selectel 400 ₽, ниже порога 500 ₽", text)
+            self.assertIn("selectel", deployd.OPS_ONLY_ENV[1].lower())
+            paths.ops_env.unlink()
+            self.assertIsNone(watchdog.selectel_ok(paths, now + 5000, state))
+            self.assertNotIn("selectelBalance", state)
+
     def test_an_alert_reaches_the_webhook_when_telegram_does_not(self):
         posted = []
 
