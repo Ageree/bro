@@ -24,4 +24,23 @@ describe("turn failures", () => {
 
     expect(getLatestTurnFailure(events)).toBe("Child failed.");
   });
+
+  it("says in Russian that the model is unavailable", () => {
+    const events = [
+      {
+        data: {
+          code: "MODEL_CALL_FAILED",
+          message: "Model call failed.",
+          sequence: 1,
+          turnId: "turn_0",
+        },
+        meta: { at: "2026-08-27T20:00:00.000Z", id: "failed" },
+        type: "turn.failed",
+      },
+    ] satisfies MessageStreamEvent[];
+
+    expect(getLatestTurnFailure(events)).toBe(
+      "Я прилёг, скоро вернусь. Попробуй ещё раз чуть позже."
+    );
+  });
 });

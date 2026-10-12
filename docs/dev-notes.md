@@ -1463,6 +1463,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `shared/chat/approval-card.ts`. В iMessage eve примет ответ текстом, только
   равный id, английской метке или номеру (`channel/resolve-text.js`).
 
+- Тексты о данных: `agent/lib/privacy/facts.ts` (что Бро говорит людям) и
+  `app/(public)/privacy` (страница) называют одни и те же сервисы — правьте
+  вместе. Хостинг в фактах записан кодом (Selectel, Россия), а не берётся из
+  env; промпт `role/interactive.md` («Vercel, Neon») остаётся за юнитом U8.
+
 ## Лимит трат без спроса
 
 - Политика — `settings` (`spend_limit`), траты — `spend_entries`. Решения — под

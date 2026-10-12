@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { Masthead, OfferLink } from "@web/components/paper/masthead";
@@ -61,6 +62,20 @@ export default async function SignInPage({
               imessagePhoneNumber={imessagePhoneNumber}
             />
           )}
+          <p className="type-fine mt-6 text-muted-foreground">
+            Продолжая, вы соглашаетесь на обработку персональных данных по{" "}
+            <Link
+              className="underline underline-offset-[0.2em]"
+              href="/privacy"
+            >
+              политике конфиденциальности
+            </Link>{" "}
+            и принимаете{" "}
+            <Link className="underline underline-offset-[0.2em]" href="/oferta">
+              оферту
+            </Link>
+            .
+          </p>
         </section>
       </main>
     </div>
