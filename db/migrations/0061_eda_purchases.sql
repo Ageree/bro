@@ -1,0 +1,2 @@
+ALTER TABLE "yandex_purchases" DROP CONSTRAINT "yandex_purchases_service_check";--> statement-breakpoint
+ALTER TABLE "yandex_purchases" ADD CONSTRAINT "yandex_purchases_service_check" CHECK ("yandex_purchases"."service" IN ('lavka', 'go', 'eda'));

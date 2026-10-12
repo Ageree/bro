@@ -35,7 +35,7 @@ const safePayload = z.record(z.string(), z.json()).refine((payload) => {
 
 const preparedPurchase = z.object({
   rootSessionId: z.string().trim().min(1),
-  service: z.literal("lavka"),
+  service: z.enum(["lavka", "eda"]),
   checkoutKey: z.string().trim().min(1),
   fingerprint: z.string().trim().min(1),
   amountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -212,7 +212,7 @@ export async function claimYandexPurchase(
     }
     const now = new Date();
     const refresh =
-      purchase.service === "lavka" && purchase.expiresAt <= now
+      purchase.service !== "go" && purchase.expiresAt <= now
         ? input.refresh
         : undefined;
     if ((refresh?.expiresAt ?? purchase.expiresAt) <= now) {

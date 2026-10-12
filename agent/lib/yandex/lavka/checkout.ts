@@ -8,7 +8,8 @@ const minorAmountSchema = z
   .nonnegative()
   .max(Number.MAX_SAFE_INTEGER);
 
-export const lavkaPublicQuoteSchema = z.object({
+/** What the person is asked to pay for, whatever the service. */
+export const purchaseQuoteSchema = z.object({
   amountMinor: minorAmountSchema,
   currency: z.literal("RUB"),
   delivery: z.string().min(1),
@@ -65,7 +66,7 @@ const prepareResultSchema = z.discriminatedUnion("kind", [
     checkoutKey: z.string().min(1),
     expiresAt: z.iso.datetime(),
     kind: z.literal("ready"),
-    publicQuote: lavkaPublicQuoteSchema,
+    publicQuote: purchaseQuoteSchema,
     snapshot: snapshotSchema,
   }),
 ]);

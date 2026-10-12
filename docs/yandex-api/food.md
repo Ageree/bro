@@ -516,23 +516,19 @@ return {
 
 Источник контрактов — бандл `eats.desktop.50492-*.js` (`cart.addItem`, `changeItem`, `addBulkItems`) и `eats.desktop.98332-*.js`.
 
-### Оформление Еды — что найдено и что не проверено
+### Оформление Еды (живая проверка 12.10)
 
-Не проверено живьём: заказ запрещён протоколом, а вход в оформление на пуле не работает.
+Заказ — `yandex_purchase` (`agent/lib/yandex/eda/checkout.ts`), без страницы `/checkout`:
 
-- Страница `eda.yandex.ru/checkout` на пуле редиректит на `/?redirectFrom=not_auth`: адреса доставки в аккаунте Еды
-  сайт выбирает сам (`app.lastSelectedAddress`), пул его не выбрал. Выбирать адрес через `superapp-selected-address`
-  значит писать в аккаунт владельца, это не сделано.
-- Адреса аккаунта: `GET /api/v3/user/addresses` → массив; у «Дом» `title: "Дом"`, id — ULID-строка (`01K…`/`01J…`).
-- Карты: список берётся у Trust, `GET ${хост Trust}/web/payment_methods` с заголовком `X-Service-Token`
-  (бандл `eats.desktop.PaymentOptions-*.js`, фильтр `card*`/`sbp*`). Сервисного токена в пуле нет.
-- Заказ: `POST /api/v1/orders` (доставка) с телом из `createOrder` (`eats.desktop.98332-*.js`): `paymentMethodId`,
-  `phone`, `changeOn`, `personsQuantity`, `courierOptions`, `extendedOptions`, `deliveryTime`, `payment`, `place_slug`,
-  `address`, `userAddressId`, `request_id`. Транспорт не переписывает ключи (интерсепторы только заголовки), поэтому ключи
-  уходят как написаны; верифицировать можно только живым заказом.
-- Статус оплаты после заказа: `POST /eats/v1/eats-payments/v1/order/tracking`, тело `{order_id}` (опрос с паузами);
-  `GET /api/v1/orders/<orderNr>` — заказ; `GET /api/v1/orders/awaiting-payment` — неоплаченный заказ.
-- Мульти-заказ (`/eats/v1/eats-orders-linking/v1/multiorder/checkout`) — другой поток, не нужен для одного заведения.
+- `POST /api/v2/cart/go-checkout?longitude&latitude`, тело `{address, place_slug, payment: {recently_link_cards: false}}`
+  → `offers[]` (у каждого `possiblePayment` с картой и `costForCustomer`, `requestId`), `meta.phone`.
+- `POST /api/v1/orders`: `{paymentMethodId, phone, personsQuantity, courierOptions: [], extendedOptions: [], payment,
+place_slug, address, userAddressId, plus_subscription_toggle_state: false, request_id: <requestId предложения>}` →
+  `{order_nr}`. Нужен заголовок `X-Device-Id` (свой случайный), иначе 400 `UserData` 6; чужой `request_id` — 400
+  `OrderData` 59 («спрос вырос»).
+- Оплата: `POST /eats/v1/eats-payments/v1/order/tracking` `{order_id}` → `order.payment.status`: `done`, `3ds_required`
+  (`payload.url` — форма банка), `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
+- Карты: `GET https://trust.yandex.ru/web/payment_methods` по cookie со страницы Еды (CORS открыт), те же `card-x…`, что в Лавке.
 
 ## Оформление заказа (только «какой запрос это был бы»)
 

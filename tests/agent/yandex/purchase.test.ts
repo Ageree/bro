@@ -3,12 +3,15 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type * as purchases from "@db/services/yandex-purchases";
+import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
 import type { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof purchases.claimYandexPurchase>(),
   create: vi.fn<typeof purchases.createYandexPurchase>(),
+  edaPrepare: vi.fn<typeof eda.prepareEdaPurchase>(),
+  edaSubmit: vi.fn<typeof eda.submitEdaPurchase>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
   read: vi.fn<typeof purchases.readYandexPurchase>(),
@@ -24,6 +27,11 @@ vi.mock("@db/services/yandex-purchases", () => ({
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   yandexPurchasePilot: services.pilot,
+}));
+vi.mock("@agent/lib/yandex/eda/checkout", async (original) => ({
+  ...(await original<typeof eda>()),
+  prepareEdaPurchase: services.edaPrepare,
+  submitEdaPurchase: services.edaSubmit,
 }));
 vi.mock("@agent/lib/yandex/lavka/checkout", async (original) => ({
   ...(await original<typeof lavka>()),
@@ -271,6 +279,55 @@ describe("Yandex purchase consent", () => {
     expect(prepared?.expiresAt.getTime()).toBeLessThanOrEqual(
       Date.now() + 300_000
     );
+    expect(services.submit).not.toHaveBeenCalled();
+  });
+
+  it("asks about an Eda order in Eda's name and places it through Eda", async () => {
+    const target = { lat: 55.7, lon: 37.5, place: "karavaevy" };
+    const edaSnapshot = {
+      ...target,
+      addressId: "home",
+      addressVersion: 1,
+      amountMinor: 24_950,
+      cardId: "card-x1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      items: [{ id: 1, priceMinor: 5_000, quantity: 1 }],
+    };
+    services.edaPrepare.mockResolvedValue({
+      checkoutKey: "karavaevy:home",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      kind: "ready",
+      publicQuote: quote,
+      snapshot: edaSnapshot,
+    });
+    const tool = await resolve();
+    await tool?.execute(
+      { action: "prepare", service: "eda", ...target },
+      callContext()
+    );
+    expect(services.edaPrepare).toHaveBeenCalledWith(
+      scope.workspaceId,
+      expect.objectContaining(target)
+    );
+    const prepared = services.create.mock.calls[0]?.[1];
+    expect(prepared?.service).toBe("eda");
+    expect(prepared?.confirmationQuestion).toMatch(/^Яндекс Еда: «Вода» × 1/u);
+    const edaRow = row({ service: "eda", providerSnapshot: edaSnapshot });
+    services.read.mockResolvedValue(edaRow);
+    services.claim.mockResolvedValue({
+      kind: "claimed",
+      purchase: { ...edaRow, callId: "call-1", state: "submitting" },
+    });
+    services.edaSubmit.mockResolvedValue({
+      kind: "placed",
+      orderId: "261012-1",
+      paymentStatus: "paid",
+    });
+    expect(await confirm()).toMatchObject({ kind: "placed" });
+    expect(services.edaSubmit).toHaveBeenCalledWith(scope.workspaceId, {
+      amountMinor: 24_950,
+      snapshot: edaSnapshot,
+    });
     expect(services.submit).not.toHaveBeenCalled();
   });
 
