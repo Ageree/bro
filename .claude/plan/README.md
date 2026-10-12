@@ -61,3 +61,15 @@
 - Порядок миграций: #401 (0065) слит; дальше #403, потом #402 — каждый
   перегенерирует поверх bro-next.
 - Ревьюеры-субагенты — только `git diff`/`git show`, без checkout в рабочем каталоге.
+
+## После выката 12.10 (релиз 20261012-203508-7b6564f5)
+
+- Слиты #401–#407; env прода: OWNER_TRANSCRIPTS=on, BUG_BOT=on (@opsalertbot1bot),
+  ADMIN_USER_IDS (id владельца + почта), ROUTERAI_CREDITS_ALERT_RUB=1500.
+- Не выкачен код хоста (swap, #alert сторожа, баланс Selectel): `host.py update-host`
+  ходит через консоль Cloud.ru и VM Selectel не находит — нужен путь для Selectel.
+- QA на аккаунте владельца: блокеров нет. В работе: U8b (фраза звонка,
+  `session_01SmQ8nmY15rXuHL3mfkvq86`), U9 (короткий ответ о данных,
+  `session_019DJ3ueyKFGQCrPVEravTjj`), U10 (честные выводы поиска,
+  `session_01EVHYK8mDbaioeessmt19Ty`). После U8b — U11: личное без просьбы
+  всплывает в ответах («что умеешь» → напоминание об оплате квартиры).
