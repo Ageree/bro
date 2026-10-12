@@ -569,6 +569,12 @@ describe("settling a browser run", () => {
       "Say which options the run checked and which it did not"
     );
     expect(prompt).toContain("attach the screenshot the run saved");
+    // QA 12.10: Avito sorted «Дороже» under a 15 000 ₽ ceiling, and Bro told
+    // the person bikes under 15 000 hardly exist.
+    expect(prompt).toContain(
+      "A page or two of results from one site is not the market"
+    );
+    expect(prompt).toContain("a price ceiling sorted from the highest price");
   });
 
   it("does not let a names-only option search masquerade as complete", async () => {

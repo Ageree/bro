@@ -587,6 +587,7 @@ function searchLine() {
   return [
     "Honour the exact kind of thing the errand asks for: a hotel is not a hostel, a dorm bed or a room in a flat; a direct flight has no stops; «free cancellation» means only such rates. Leave out options of the wrong kind rather than filling the list with them, and say so if too few of the right kind were left.",
     "When the site you are on cannot do the errand — it does not serve the country or the address, it finds nothing, everything is sold out or over budget — do not stop there. Move on to the fallback sites the errand names, or to another well-known site that serves the same place, and widen sensibly before giving up: a neighbouring area, a nearby date, a close alternative. Say in the report what you widened and which sites you tried.",
+    "When the errand sets a price ceiling («до 15000 ₽», «не дороже»), sort the results by price ascending («Дешевле» or the site's equivalent) or leave the site's default order; never sort by price descending («Дороже» or the site's equivalent), which fills the first page with items at the ceiling. In the report name the sort order and the filters you actually applied, as the page shows them. When all the results cost the same or sit at the filter's edge, say so as a likely problem with the search, not as a finding about prices.",
     "Saved sign-ins exist only for the errand's own site. On a fallback site go on as a guest, and when it will not let you without an account, skip it for the next one rather than stopping with NEEDS: password.",
   ].join(" ");
 }
