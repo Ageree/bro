@@ -91,7 +91,7 @@ function withoutFetchedUrls(message: SentMessage): SentMessage {
     // A tappable word would hide where the link leads (`withVisibleLinks`).
     return withoutFetchedAttachments({
       ...message,
-      text: withVisibleLinks(message.text),
+      text: withVisibleLinks(message.text, isSharedFileLink),
     });
   }
   return withoutFetchedAttachments(message);

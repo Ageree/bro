@@ -38,6 +38,27 @@ describe("withHttpsLinks", () => {
     }
   });
 
+  it("leaves false positives alone (reviewer cases)", () => {
+    for (const text of [
+      "Привет.Как/дела",
+      "г.Москва/область",
+      "см. node.js/docs",
+      "файл report.pdf/x",
+      "`mvideo.ru/products/1`",
+      "```\ncurl mvideo.ru/p/1\n```",
+      "[док](report.pdf)",
+    ]) {
+      expect(withHttpsLinks(text)).toBe(text);
+    }
+  });
+
+  it("leaves an unpaired closing parenthesis out of the address", () => {
+    expect(withHttpsLinks("(см. mvideo.ru/p/1)")).toBe(
+      "(см. https://mvideo.ru/p/1)"
+    );
+    expect(withHttpsLinks("mvideo.ru/p/1)")).toBe("https://mvideo.ru/p/1)");
+  });
+
   it("keeps trailing punctuation outside the address", () => {
     expect(withHttpsLinks("смотри mvideo.ru/p/1, потом mvideo.ru/p/2.")).toBe(
       "смотри https://mvideo.ru/p/1, потом https://mvideo.ru/p/2."
@@ -61,8 +82,37 @@ describe("withVisibleLinks", () => {
     );
   });
 
-  it("leaves images and artifact paths", () => {
-    const text = "![подпись](/artifacts/abc) ![p](https://a.ru/i.png)";
-    expect(withVisibleLinks(text)).toBe(text);
+  it("shows an image inside a link as text, loading nothing", () => {
+    expect(
+      withVisibleLinks(
+        "[![лого](https://evil.example/i.png?d=1)](https://evil.example/go)"
+      )
+    ).toBe("лого: https://evil.example/go");
+  });
+
+  it("shows a link with a title, in angle brackets, or by reference", () => {
+    expect(withVisibleLinks('[a](https://x.ru/p "t")')).toBe(
+      "a: https://x.ru/p"
+    );
+    expect(withVisibleLinks("[a](<https://x.ru/p q>)")).toBe(
+      "a: https://x.ru/p q"
+    );
+    expect(
+      withVisibleLinks(
+        "см. [a][1] и [b]\n\n[1]: https://x.ru/p\n[b]: <https://y.ru/q> 'T'"
+      )
+    ).toBe("см. a: https://x.ru/p и b: https://y.ru/q");
+  });
+
+  it("shows an external image as text and keeps own files and artifacts", () => {
+    const own = "https://bro.test/eve/v1/sandbox-files/1/c.png?sig=ok";
+    expect(withVisibleLinks("![p](https://evil.example/i.png)")).toBe(
+      "p: https://evil.example/i.png"
+    );
+    expect(
+      withVisibleLinks(`![подпись](/artifacts/abc) ![c](${own})`, (url) =>
+        url.startsWith("https://bro.test/")
+      )
+    ).toBe(`![подпись](/artifacts/abc) ![c](${own})`);
   });
 });

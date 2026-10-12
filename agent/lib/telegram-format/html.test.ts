@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   splitTelegramHtml,
+  splitTelegramPlain,
+  telegramHtmlToPlain,
   telegramMessageTextMaxLength,
   toTelegramHtml,
 } from "./html";
@@ -124,5 +126,24 @@ describe("Telegram message splitting", () => {
       expect(chunk.match(/<a /gu)?.length).toBe(chunk.match(/<\/a>/gu)?.length);
     }
     expect(chunks.join("\n").match(/<a /gu)?.length).toBe(80);
+  });
+
+  it("drops emphasis markers from a link label", () => {
+    expect(toTelegramHtml("[**Телевизор** __X__](https://a.ru/p)")).toBe(
+      '<a href="https://a.ru/p">Телевизор X</a>'
+    );
+  });
+
+  it("writes a rendered chunk as plain words and splits plain text", () => {
+    expect(
+      telegramHtmlToPlain(
+        '<b>Итог</b>: <a href="https://a.ru/p?x=1&amp;y=&quot;2&quot;">карточка</a> 5 &lt; 6'
+      )
+    ).toBe('Итог: карточка: https://a.ru/p?x=1&y="2" 5 < 6');
+    const chunks = splitTelegramPlain("слово ".repeat(1500));
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(telegramMessageTextMaxLength);
+    }
   });
 });
