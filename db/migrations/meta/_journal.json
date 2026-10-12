@@ -449,6 +449,13 @@
       "when": 1791804051463,
       "tag": "0063_agent_mail_checked_at",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1791804915333,
+      "tag": "0064_agency_paused_setting",
+      "breakpoints": true
     }
   ]
 }
