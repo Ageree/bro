@@ -139,17 +139,29 @@ describe("agency actions", { timeout: 30_000 }, () => {
     const [row] = await agency.listRecentAgencyActions(alice.workspaceId, 1);
     expect(row?.undo).toEqual(undo);
 
-    // A failed action does not refuse its retry: it runs again on the same row.
+    // A failed action of another class does not refuse its retry: it runs
+    // again on the same row.
     const failed = startedId(
-      await agency.beginAgencyAction(plan("send-failed"))
+      await agency.beginAgencyAction(plan("call-failed", "call"))
     );
     expect(await agency.finishAgencyAction(failed, "failed")).toBe(true);
     expect(
-      await agency.agencyActionRecorded(alice.workspaceId, "send-failed")
+      await agency.agencyActionRecorded(alice.workspaceId, "call-failed")
     ).toBe(false);
+    expect(await agency.beginAgencyAction(plan("call-failed", "call"))).toEqual(
+      { kind: "started", id: failed }
+    );
+
+    // A failed send does refuse it: the letter may have left before the call threw.
+    const failedSend = startedId(
+      await agency.beginAgencyAction(plan("send-failed"))
+    );
+    expect(await agency.finishAgencyAction(failedSend, "failed")).toBe(true);
+    expect(
+      await agency.agencyActionRecorded(alice.workspaceId, "send-failed")
+    ).toBe(true);
     expect(await agency.beginAgencyAction(plan("send-failed"))).toEqual({
-      kind: "started",
-      id: failed,
+      kind: "duplicate",
     });
     expect(
       await agency.agencyActionRecorded(alice.workspaceId, "never-taken")

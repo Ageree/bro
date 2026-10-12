@@ -20,13 +20,15 @@ const doneWindowMs = 7 * 24 * 60 * 60_000;
 
 /**
  * The rows that refuse a repeat of their action now: planned and younger
- * than the planned window, or done within the done window. A failed or
- * undone row, a stale planned row and an old done row do not refuse it.
+ * than the planned window, or done within the done window. A failed send
+ * refuses it too for the done window: the provider may have taken the letter
+ * before the call threw, and a repeat would send it twice. A failed action of
+ * another class, an undone row, a stale planned row and an old done row do not refuse it.
  */
 function blockingSql(now: Date) {
   const plannedSince = new Date(now.getTime() - plannedWindowMs).toISOString();
   const doneSince = new Date(now.getTime() - doneWindowMs).toISOString();
-  return sql`((${agencyActions.status} = 'planned' AND ${agencyActions.createdAt} >= ${plannedSince}::timestamptz) OR (${agencyActions.status} = 'done' AND ${agencyActions.createdAt} >= ${doneSince}::timestamptz))`;
+  return sql`((${agencyActions.status} = 'planned' AND ${agencyActions.createdAt} >= ${plannedSince}::timestamptz) OR (${agencyActions.status} = 'done' AND ${agencyActions.createdAt} >= ${doneSince}::timestamptz) OR (${agencyActions.status} = 'failed' AND ${agencyActions.actionClass} = 'send' AND ${agencyActions.createdAt} >= ${doneSince}::timestamptz))`;
 }
 
 /**
