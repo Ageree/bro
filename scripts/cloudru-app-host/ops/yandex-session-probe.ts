@@ -24,8 +24,7 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  *
  *   host.py ops NAME yandex-session-probe.sh s3get:<spec key> s3put:<result key>
  *
- * Spec: `{workspace}`, which must equal YANDEX_PROBE_WORKSPACE in the ops
- * environment (the owner's). The cookies live in this process's memory only: they
+ * Spec: `{workspace}`, which must equal the third argument (the owner's id). The cookies live in this process's memory only: they
  * are not written to a file, a log or the result. The result holds cookie
  * NAMES and their count, and for each request a status, a time, the host a
  * redirect points to and whether the answer looks signed in: no body, no
@@ -171,18 +170,16 @@ const accepted = (answer: Awaited<ReturnType<typeof ask>>) =>
   answer.redirectsTo === null;
 
 async function main() {
-  const [specUrl, resultUrl] = process.argv.slice(2);
+  const [specUrl, resultUrl, allowedWorkspace] = process.argv.slice(2);
   if (!specUrl || !resultUrl) {
     throw new Error(
-      "Usage: yandex-session-probe.sh SPEC_GET_URL RESULT_PUT_URL"
+      "Usage: yandex-session-probe.sh SPEC_GET_URL RESULT_PUT_URL WORKSPACE_ID"
     );
   }
   const { workspace } = specSchema.parse(await (await fetch(specUrl)).json());
-  // Only the owner's workspace, named by the operator's environment: the
-  // spec alone cannot point this at somebody else's cookies.
-  // oxlint-disable-next-line eslint/no-restricted-properties -- a one-shot CLI on the VM with the ops environment, not the app
-  const environment = process.env;
-  if (environment.YANDEX_PROBE_WORKSPACE !== workspace) {
+  // Only the owner's workspace, named by the operator on the command line:
+  // the spec alone cannot point this at somebody else's cookies.
+  if (allowedWorkspace !== workspace) {
     throw new Error("The workspace is not the one allowed for the probe.");
   }
   const tab = await createBrowserVmBrowser({

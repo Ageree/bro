@@ -29,7 +29,9 @@ def main():
         sys.exit(f"spec upload {code}")
     try:
         subprocess.run([sys.executable, str(HERE / "host.py"), "ops", name, os.environ.get("YANDEX_PROBE_SCRIPT", "yandex-probe.sh"),
-                        f"s3get:{prefix}/spec.json", f"s3put:{prefix}/result.json"], check=True)
+                        f"s3get:{prefix}/spec.json", f"s3put:{prefix}/result.json",
+                        *([os.environ["YANDEX_PROBE_WORKSPACE"]] if "YANDEX_PROBE_WORKSPACE" in os.environ else [])],
+                       check=True)
         code, body = s3.send(urllib.request.Request(s3.presign("GET", f"{prefix}/result.json", 600)))
         if code != 200:
             sys.exit(f"no result ({code})")
