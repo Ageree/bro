@@ -649,7 +649,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 ## Яндекс Еда
 
 - Корзина Еды: `add_bulk` прибавляет количество к блюду, уже лежащему в корзине; менять его — PUT `/api/v1/cart/<id позиции>`. Чтение корзины видит позиции только с `soft_multi=true` в query (`agent/lib/yandex/food/cart.ts`, `food.eda_cart_set`).
-- Оформление Еды не сделано: `/checkout` на пуле редиректит на главную (`not_auth`), пока не выбран адрес, а список карт — у Trust с сервисным токеном. Карта и адрес в ценовом котировании — только после проверки живым ходом (`docs/yandex-api/food.md`, «Оформление Еды»).
+- Заказ Еды (`agent/lib/yandex/eda/checkout.ts`, проверено вживую 12.10): страница
+  `/checkout` не нужна. `POST /api/v2/cart/go-checkout` с адресом даёт предложения с
+  картой и `requestId`; `POST /api/v1/orders` берёт цену только с `request_id`
+  этого предложения (со случайным — 400 `OrderData` 59 «спрос вырос») и без
+  заголовка `X-Device-Id` (любой, свой) отвечает 400 `UserData` 6. Оплата —
+  опрос `eats-payments/v1/order/tracking`: `done`, `3ds_required` со ссылкой,
+  `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
 
 ## Composio: Google, Notion, Slack и другие приложения
 

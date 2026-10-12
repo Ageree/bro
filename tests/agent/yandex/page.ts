@@ -94,6 +94,7 @@ export async function runInPage(
   page: FakePage
 ): Promise<OperationAnswer> {
   const context = createContext({
+    AbortSignal,
     console,
     crypto: webcrypto,
     document: {
@@ -111,6 +112,7 @@ export async function runInPage(
         method: init?.method,
       });
       return {
+        headers: { get: () => "application/json" },
         json: async () => response.body,
         status: response.status ?? 200,
         text: async () => JSON.stringify(response.body),

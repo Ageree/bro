@@ -428,6 +428,13 @@
       "when": 1791752456116,
       "tag": "0060_retire_go_purchases",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1791791041517,
+      "tag": "0061_eda_purchases",
+      "breakpoints": true
     }
   ]
 }
