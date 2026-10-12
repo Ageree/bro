@@ -72,11 +72,28 @@ describe("the owner's daily summary", () => {
     );
   });
 
-  it("is not sent in another hour", async () => {
+  // Review of U3a: a send that failed in its hour waited a whole day.
+  it("is tried again for a few hours after its hour, not later", async () => {
     const { sendOwnerDigest } = await digest("9");
+    // 12:07 Moscow: the last hour a failed summary is tried again.
     await expect(
-      sendOwnerDigest(new Date("2026-10-12T07:07:00.000Z"))
+      sendOwnerDigest(new Date("2026-10-12T09:07:00.000Z"))
+    ).resolves.toBe(true);
+    // 13:07 and 08:07 Moscow: outside the window.
+    await expect(
+      sendOwnerDigest(new Date("2026-10-12T10:07:00.000Z"))
     ).resolves.toBe(false);
-    expect(mocks.summarizeOwnerDay).not.toHaveBeenCalled();
+    await expect(
+      sendOwnerDigest(new Date("2026-10-12T05:07:00.000Z"))
+    ).resolves.toBe(false);
+    expect(mocks.summarizeOwnerDay).toHaveBeenCalledTimes(1);
+  });
+
+  it("wraps the window past midnight", async () => {
+    const { sendOwnerDigest } = await digest("23");
+    // 01:07 Moscow, two hours after 23:00.
+    await expect(
+      sendOwnerDigest(new Date("2026-10-11T22:07:00.000Z"))
+    ).resolves.toBe(true);
   });
 });

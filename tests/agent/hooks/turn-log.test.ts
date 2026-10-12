@@ -2,22 +2,26 @@ import type { HookContext } from "eve/hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as turnLogService from "@db/services/turn-log";
 import type { alertOwner } from "@agent/lib/owner-alert";
+import type * as secrets from "@agent/lib/privacy/secrets";
 import type turnLogHook from "@agent/hooks/turn-log";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
   alertOwner: vi.fn<typeof alertOwner>(),
   appendTurnEntries: vi.fn<typeof turnLogService.appendTurnEntries>(),
+  countFailedPeople: vi.fn<typeof turnLogService.countFailedPeople>(),
   recordTurnEnd: vi.fn<typeof turnLogService.recordTurnEnd>(),
   recordTurnStart: vi.fn<typeof turnLogService.recordTurnStart>(),
   recordTurnStep: vi.fn<typeof turnLogService.recordTurnStep>(),
   recordTurnTools: vi.fn<typeof turnLogService.recordTurnTools>(),
+  withoutSecrets: vi.fn<typeof secrets.withoutSecrets>(),
   workspaceAccounts: vi.fn<typeof turnLogService.workspaceAccounts>(),
 }));
 
 vi.mock("@db/services/turn-log", async (importOriginal) => ({
   ...(await importOriginal<typeof turnLogService>()),
   appendTurnEntries: mocks.appendTurnEntries,
+  countFailedPeople: mocks.countFailedPeople,
   recordTurnEnd: mocks.recordTurnEnd,
   recordTurnStart: mocks.recordTurnStart,
   recordTurnStep: mocks.recordTurnStep,
@@ -26,6 +30,13 @@ vi.mock("@db/services/turn-log", async (importOriginal) => ({
 }));
 
 vi.mock("@agent/lib/owner-alert", () => ({ alertOwner: mocks.alertOwner }));
+
+const actualSecrets = await vi.importActual<typeof secrets>(
+  "@agent/lib/privacy/secrets"
+);
+vi.mock("@agent/lib/privacy/secrets", () => ({
+  withoutSecrets: mocks.withoutSecrets,
+}));
 
 const scope = accessScopeForUser("better-auth:alice");
 
@@ -94,6 +105,26 @@ function received(message: string): EventOf<"message.received"> {
   };
 }
 
+function sendMessage(text: string): EventOf<"actions.requested"> {
+  return {
+    data: {
+      actions: [
+        {
+          callId: "call-1",
+          input: { text },
+          kind: "tool-call",
+          toolName: "send_message",
+        },
+      ],
+      sequence: 1,
+      stepIndex: 0,
+      turnId: "turn_1",
+    },
+    meta,
+    type: "actions.requested",
+  };
+}
+
 function failed(statusCode?: number): EventOf<"turn.failed"> {
   const data: EventOf<"turn.failed">["data"] = {
     code: "MODEL_CALL_FAILED",
@@ -109,6 +140,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.alertOwner.mockResolvedValue(true);
   mocks.appendTurnEntries.mockResolvedValue();
+  mocks.countFailedPeople.mockResolvedValue(1);
+  mocks.withoutSecrets.mockImplementation(actualSecrets.withoutSecrets);
   mocks.recordTurnEnd.mockResolvedValue(undefined);
   mocks.recordTurnStart.mockResolvedValue();
   mocks.recordTurnStep.mockResolvedValue();
@@ -353,7 +386,7 @@ describe("the turn log hook", () => {
 
   it("tells the owner of a person's failed turn without its text", async () => {
     const events = await loadHook("off");
-    await handler(events, "turn.failed")(failed(402), context());
+    await handler(events, "turn.failed")(failed(400), context());
     await vi.waitFor(() => {
       expect(mocks.alertOwner).toHaveBeenCalledTimes(1);
     });
@@ -362,15 +395,15 @@ describe("the turn log hook", () => {
       { sessionId: "session-1", turnId: "turn_1" },
       {
         endedAt: new Date(meta.at),
-        errorCode: "MODEL_CALL_FAILED 402",
+        errorCode: "MODEL_CALL_FAILED 400",
         outcome: "failed",
       }
     );
     const [key, text, options] = mocks.alertOwner.mock.calls[0] ?? [];
-    expect(key).toBe(`turn-failed:${scope.workspaceId}:MODEL_CALL_FAILED 402`);
+    expect(key).toBe(`turn-failed:${scope.workspaceId}:MODEL_CALL_FAILED 400`);
     expect(text).toContain("Алиса (+79990001122)");
     expect(text).toContain("telegram");
-    expect(text).toContain("MODEL_CALL_FAILED 402");
+    expect(text).toContain("MODEL_CALL_FAILED 400");
     expect(text).not.toContain("qwerty");
     expect(options?.repeatAfterMs).toBe(60 * 60_000);
   });
@@ -385,5 +418,134 @@ describe("the turn log hook", () => {
 
     expect(mocks.recordTurnEnd).toHaveBeenCalled();
     expect(mocks.alertOwner).not.toHaveBeenCalled();
+  });
+
+  // Review of U3a: eve fails the turn on a hook's exception, and the text
+  // was made outside the guard.
+  it("never fails the turn when the text filter throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.withoutSecrets.mockImplementation(() => {
+      throw new RangeError("filter broke");
+    });
+    const events = await loadHook("on");
+
+    await expect(
+      handler(events, "actions.requested")(sendMessage("Готово"), context())
+    ).resolves.toBeUndefined();
+    await expect(
+      handler(events, "message.received")(received("Привет"), context())
+    ).resolves.toBeUndefined();
+    await expect(
+      handler(events, "action.result")(
+        {
+          data: {
+            result: {
+              callId: "call-1",
+              kind: "tool-result",
+              output: { ok: true },
+              toolName: "web_fetch",
+            },
+            sequence: 1,
+            status: "completed",
+            stepIndex: 0,
+            turnId: "turn_1",
+          },
+          meta,
+          type: "action.result",
+        },
+        context()
+      )
+    ).resolves.toBeUndefined();
+
+    expect(mocks.appendTurnEntries).not.toHaveBeenCalled();
+    expect(mocks.recordTurnTools).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  // Review of U3a: a sign-in window and a shared file open to whoever
+  // holds the link.
+  it("cuts sign-in and shared-file links out of the text", async () => {
+    const events = await loadHook("on");
+    await handler(events, "actions.requested")(
+      sendMessage(
+        "Войди тут: https://brobro.tech/handoff/uU9hry_OH-oo21PlwBlXGYQD и файл https://brobro.tech/eve/v1/sandbox-files/abc123/report.pdf?sig=deadbeef готов"
+      ),
+      context()
+    );
+
+    const [line] = mocks.appendTurnEntries.mock.lastCall?.[0] ?? [];
+    expect(line?.text).toBe("Войди тут: [удалено] и файл [удалено] готов");
+  });
+
+  it("reads only the head of a huge result", async () => {
+    const events = await loadHook("on");
+    const output = { page: `${" ".repeat(10)}${"а".repeat(3_000_000)}` };
+    await handler(events, "action.result")(
+      {
+        data: {
+          result: {
+            callId: "call-1",
+            kind: "tool-result",
+            output,
+            toolName: "web_fetch",
+          },
+          sequence: 1,
+          status: "completed",
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+        meta,
+        type: "action.result",
+      },
+      context()
+    );
+
+    const [line] = mocks.appendTurnEntries.mock.lastCall?.[0] ?? [];
+    expect(line?.text).toBe(`{"page":"${" ".repeat(10)}${"а".repeat(1981)}`);
+  });
+
+  // Review of U3a: a provider's 402 fails every person, and the owner got
+  // an alert per person.
+  it("tells one alert for a provider's outage, with how many it reached", async () => {
+    const events = await loadHook("off");
+    mocks.countFailedPeople.mockResolvedValue(2);
+    const bob = accessScopeForUser("better-auth:bob");
+    await handler(events, "turn.failed")(failed(402), context());
+    await handler(events, "turn.failed")(
+      failed(402),
+      context({
+        ...caller(),
+        attributes: { workspaceId: bob.workspaceId },
+        principalId: bob.userId,
+      })
+    );
+    await vi.waitFor(() => {
+      expect(mocks.alertOwner).toHaveBeenCalledTimes(2);
+    });
+
+    const keys = mocks.alertOwner.mock.calls.map(([key]) => key);
+    expect(keys).toEqual([
+      "turn-failed:provider:MODEL_CALL_FAILED 402",
+      "turn-failed:provider:MODEL_CALL_FAILED 402",
+    ]);
+    expect(mocks.alertOwner.mock.calls[0]?.[1]).toContain(
+      "Людей за последний час: 2"
+    );
+    expect(mocks.countFailedPeople).toHaveBeenCalledWith(
+      "MODEL_CALL_FAILED 402",
+      new Date(new Date(meta.at).getTime() - 60 * 60_000)
+    );
+  });
+
+  it("keeps a person's own failure keyed by them", async () => {
+    const events = await loadHook("off");
+    await handler(events, "turn.failed")(failed(400), context());
+    await vi.waitFor(() => {
+      expect(mocks.alertOwner).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.alertOwner.mock.calls[0]?.[0]).toBe(
+      `turn-failed:${scope.workspaceId}:MODEL_CALL_FAILED 400`
+    );
+    expect(mocks.countFailedPeople).not.toHaveBeenCalled();
   });
 });

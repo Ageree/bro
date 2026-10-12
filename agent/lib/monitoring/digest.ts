@@ -4,10 +4,16 @@ import { env } from "@shared/environment";
 
 const dayMs = 24 * 60 * 60_000;
 /**
- * The summary is said once a day: an hourly tick in the summary's hour, on
- * one instance or several, claims it for the rest of the day.
+ * The summary is said once a day: the hourly tick that sends it, on one
+ * instance or several, claims it past the rest of the day's send hours.
  */
 const repeatAfterMs = 20 * 60 * 60_000;
+/**
+ * How many hours from OWNER_DIGEST_HOUR on a tick still tries: a send that
+ * failed (Telegram, the database) is tried again at the next ticks, and
+ * the claim above keeps the day's summary to one.
+ */
+const sendHours = 4;
 /** The most people the summary names by cost. */
 const costLines = 15;
 
@@ -67,12 +73,15 @@ export function ownerDigestText(
 }
 
 /**
- * Sends the owner the summary of the last 24 hours, once a day in
- * OWNER_DIGEST_HOUR (Moscow time). False when it is not that hour, or the
- * summary was already sent today, or no alert chat is configured.
+ * Sends the owner the summary of the last 24 hours, once a day, from
+ * OWNER_DIGEST_HOUR (Moscow time) for `sendHours` hours until it is sent.
+ * False outside those hours, when the day's summary was already sent, or
+ * when no alert chat is configured.
  */
 export async function sendOwnerDigest(now = new Date()) {
-  if (Number(moscowHour.format(now)) !== env.OWNER_DIGEST_HOUR) return false;
+  const sinceHour =
+    (Number(moscowHour.format(now)) - env.OWNER_DIGEST_HOUR + 24) % 24;
+  if (sinceHour >= sendHours) return false;
   const day = await summarizeOwnerDay({
     from: new Date(now.getTime() - dayMs),
     to: now,

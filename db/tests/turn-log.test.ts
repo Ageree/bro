@@ -330,4 +330,32 @@ describe("turn log", { timeout: 30_000 }, () => {
     const entries = await database.select().from(schema.turnLogEntries);
     expect(entries.map(({ eventId }) => eventId)).toEqual(["f"]);
   });
+
+  it("counts the people whose turns failed with a code since a moment", async () => {
+    const { log } = await logDatabase();
+    const fail = async (
+      sessionId: string,
+      workspaceId: string,
+      startedAt: Date,
+      errorCode = "MODEL_CALL_FAILED 402"
+    ) => {
+      await log.recordTurnStart(turn({ sessionId, startedAt, workspaceId }));
+      await log.recordTurnEnd(
+        { sessionId, turnId: "turn_1" },
+        { endedAt: startedAt, errorCode, outcome: "failed" }
+      );
+    };
+    await fail("a1", alice.workspaceId, at("07:10:00"));
+    await fail("a2", alice.workspaceId, at("07:20:00"));
+    await fail("b1", bob.workspaceId, at("07:30:00"));
+    await fail("b2", bob.workspaceId, at("05:00:00"));
+    await fail("b3", bob.workspaceId, at("07:40:00"), "MODEL_CALL_FAILED 400");
+
+    await expect(
+      log.countFailedPeople("MODEL_CALL_FAILED 402", at("07:00:00"))
+    ).resolves.toBe(2);
+    await expect(
+      log.countFailedPeople("MODEL_CALL_FAILED 402", at("07:25:00"))
+    ).resolves.toBe(1);
+  });
 });

@@ -29,7 +29,14 @@ const readAhead = 100;
  * placeholders saved.
  */
 export function withoutSecrets(message: string, limit: number) {
-  const characters = Array.from(message.trim());
+  // A character takes at most two UTF-16 units: the head is the whole read
+  // window, and the rest of a long text — a page, a tool's whole result —
+  // is never walked character by character.
+  const head = message.trimStart();
+  const cap = (limit + readAhead) * 2;
+  const characters = Array.from(
+    head.length > cap ? head.slice(0, cap) : head.trimEnd()
+  );
   const text = characters.slice(0, limit + readAhead).join("");
   const kept = characters.slice(0, limit).join("").length;
   const words = text.match(/\p{L}+/gu)?.length ?? 0;

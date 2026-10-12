@@ -152,6 +152,27 @@ export async function recordTurnEnd(
   return row;
 }
 
+/**
+ * How many people's turns failed with `errorCode` since `since`: the reach
+ * of a provider's outage, told in one alert.
+ */
+export async function countFailedPeople(errorCode: string, since: Date) {
+  const [row] = await db
+    .select({
+      people: sql<number>`count(distinct ${turnLog.workspaceId})::int`,
+    })
+    .from(turnLog)
+    .where(
+      and(
+        eq(turnLog.kind, "person"),
+        eq(turnLog.outcome, "failed"),
+        eq(turnLog.errorCode, errorCode),
+        gte(turnLog.startedAt, since)
+      )
+    );
+  return row?.people ?? 0;
+}
+
 /** Keeps transcript lines; a line of an event already kept is skipped. */
 export async function appendTurnEntries(entries: readonly TurnEntry[]) {
   const kept = entries.filter((entry) => entry.text.length > 0);

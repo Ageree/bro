@@ -77,9 +77,7 @@ export default defineHook({
         )
       );
       if (!transcriptsEnabled()) return;
-      await transcribe(
-        ctx,
-        turnId,
+      await transcribe(ctx, turnId, () =>
         calls.map(({ action, name }) => {
           const reply =
             name === "send_message"
@@ -102,7 +100,7 @@ export default defineHook({
     async "action.result"(event, ctx) {
       if (!transcriptsEnabled()) return;
       const { result, turnId } = event.data;
-      await transcribe(ctx, turnId, [
+      await transcribe(ctx, turnId, () => [
         {
           at: event.meta.at,
           eventId: event.meta.id,
@@ -124,7 +122,7 @@ export default defineHook({
         event.data.kind === undefined &&
         !ctx.session.parent &&
         startedByPerson(ctx);
-      await transcribe(ctx, event.data.turnId, [
+      await transcribe(ctx, event.data.turnId, () => [
         {
           at: event.meta.at,
           eventId: event.meta.id,
@@ -138,7 +136,7 @@ export default defineHook({
     async "message.completed"(event, ctx) {
       const { message, turnId } = event.data;
       if (message === null || !transcriptsEnabled()) return;
-      await transcribe(ctx, turnId, [
+      await transcribe(ctx, turnId, () => [
         {
           at: event.meta.at,
           eventId: event.meta.id,
@@ -205,12 +203,14 @@ function turnOf(ctx: HookContext, turnId: string) {
 
 /**
  * Keeps a turn's transcript lines; the caller checked OWNER_TRANSCRIPTS. A
- * line left empty by the cut is not kept.
+ * line left empty by the cut is not kept. The lines are made inside the
+ * guard: a filter that throws on some text costs its lines, not the turn
+ * (eve fails the turn on a hook's exception).
  */
 async function transcribe(
   ctx: HookContext,
   turnId: string,
-  lines: readonly (Pick<
+  lines: () => readonly (Pick<
     typeof turnLogEntries.$inferInsert,
     "eventId" | "part" | "role" | "text" | "toolName"
   > & { readonly at: string })[]
@@ -219,7 +219,7 @@ async function transcribe(
   if (workspaceId === undefined) return;
   await quietly("transcript", ctx, () =>
     appendTurnEntries(
-      lines.map((line) => ({
+      lines().map((line) => ({
         createdAt: new Date(line.at),
         eventId: line.eventId,
         part: line.part,

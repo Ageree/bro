@@ -1,6 +1,10 @@
 import type { JsonValue } from "eve/connections";
 import { z } from "zod";
-import { workspaceAccounts, workspaceLabel } from "@db/services/turn-log";
+import {
+  countFailedPeople,
+  workspaceAccounts,
+  workspaceLabel,
+} from "@db/services/turn-log";
 import { alertOwner } from "@agent/lib/owner-alert";
 
 /**
@@ -8,6 +12,13 @@ import { alertOwner } from "@agent/lib/owner-alert";
  * fails every message of a person who keeps writing.
  */
 const repeatAfterMs = 60 * 60_000;
+
+/**
+ * A model provider that is out of balance (402), limiting (429) or down
+ * (5xx) fails everyone at once: one alert for all people, keyed by the
+ * code alone, says how many it reached — not one per person.
+ */
+const providerOutagePattern = /^MODEL_CALL_FAILED (?:402|429|5\d\d)$/u;
 
 const failureDetailsSchema = z
   .object({
@@ -42,7 +53,8 @@ const moscowTime = new Intl.DateTimeFormat("ru-RU", {
 
 /**
  * Tells the owner that a person's turn failed: who (the account's name and
- * phone or email), the channel, the code and when — never what was said.
+ * phone or email), the channel, the code and when — never what was said. A
+ * provider's outage is one alert for everyone (`providerOutagePattern`).
  * Never throws: the turn has already failed, and the alert is the owner's.
  */
 export async function alertTurnFailure(failure: {
@@ -57,6 +69,25 @@ export async function alertTurnFailure(failure: {
       failure.workspaceId,
       accounts.get(failure.workspaceId)
     );
+    const when = `Время: ${moscowTime.format(failure.at)} МСК`;
+    if (providerOutagePattern.test(failure.errorCode)) {
+      const people = await countFailedPeople(
+        failure.errorCode,
+        new Date(failure.at.getTime() - repeatAfterMs)
+      );
+      await alertOwner(
+        `turn-failed:provider:${failure.errorCode}`,
+        [
+          "Сбой провайдера модели: ходы людей падают",
+          `Код: ${failure.errorCode}`,
+          `Людей за последний час: ${String(Math.max(people, 1))}`,
+          `Последний: ${who}, ${failure.channel}`,
+          when,
+        ].join("\n"),
+        { now: failure.at, repeatAfterMs }
+      );
+      return;
+    }
     await alertOwner(
       `turn-failed:${failure.workspaceId}:${failure.errorCode}`,
       [
@@ -64,7 +95,7 @@ export async function alertTurnFailure(failure: {
         `Кто: ${who}`,
         `Канал: ${failure.channel}`,
         `Код: ${failure.errorCode}`,
-        `Время: ${moscowTime.format(failure.at)} МСК`,
+        when,
       ].join("\n"),
       { now: failure.at, repeatAfterMs }
     );
