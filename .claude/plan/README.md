@@ -44,4 +44,4 @@
 - U3a — `session_019Jvm12snCstRcXGppvXfVS` (Opus)
 - U4 — `session_01HziZd14RV6dyAoq9JBDKCu` (Sonnet)
 - U6a — `session_015bQVUp2H5wk8xNeeTpffqD` (Opus)
-- U8 — см. ниже
+- U8 — `session_014QNgU1P9LsedYos6oAP8Yw` (Opus)
