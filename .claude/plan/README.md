@@ -44,4 +44,20 @@
 - U3a — `session_019Jvm12snCstRcXGppvXfVS` (Opus)
 - U4 — `session_01HziZd14RV6dyAoq9JBDKCu` (Sonnet)
 - U6a — `session_015bQVUp2H5wk8xNeeTpffqD` (Opus)
-- U8 — `session_014QNgU1P9LsedYos6oAP8Yw` (Opus)
+- U8 — `session_014QNgU1P9LsedYos6oAP8Yw` (Opus), PR #404
+- U6b — `session_014m41WHxRfiNHgcjQGsZV4R` (Sonnet)
+- U3b — `session_01DacC98peTXUMrhHQvHbuPX` (Sonnet)
+- U5 — `session_018hUZvDVw3qoqDCRGLQtcTm` (Sonnet)
+- U3a — слит #401, сессия в архиве. U4 — #402, U6a — #403.
+
+## Ещё решения владельца
+
+- Знакомство не упоминает privacy, условия, оферту; `/privacy` просто на сайте.
+- Окно входа: «вы управляете компьютером Бро» — оставить.
+- Исполнители не пишут координатору (send_message требует одобрения), рутины
+  не использовать — координатор следит сам.
+- После U8 показать владельцу интерактивный артефакт: как выглядит онбординг
+  (знакомство в чате, окно входа, Яндекс).
+- Порядок миграций: #401 (0065) слит; дальше #403, потом #402 — каждый
+  перегенерирует поверх bro-next.
+- Ревьюеры-субагенты — только `git diff`/`git show`, без checkout в рабочем каталоге.
