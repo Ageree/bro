@@ -96,7 +96,17 @@ export const proactiveSignals = pgTable(
   "proactive_signals",
   {
     workspaceId: text("workspace_id").notNull(),
-    source: text("source", { enum: ["gmail", "calendar"] }).notNull(),
+    source: text("source", {
+      enum: [
+        "gmail",
+        "calendar",
+        "agent_mail",
+        "phone",
+        "browser",
+        "calendar_prep",
+        "sweep",
+      ],
+    }).notNull(),
     dedupeKey: text("dedupe_key").notNull(),
     itemId: text("item_id").notNull(),
     threadId: text("thread_id"),
@@ -123,7 +133,7 @@ export const proactiveSignals = pgTable(
     }).onDelete("cascade"),
     check(
       "proactive_signals_source_check",
-      sql`${table.source} IN ('gmail', 'calendar')`
+      sql`${table.source} IN ('gmail', 'calendar', 'agent_mail', 'phone', 'browser', 'calendar_prep', 'sweep')`
     ),
     index("proactive_signals_run_idx").on(table.runId),
     index("proactive_signals_created_idx").on(table.createdAt),
