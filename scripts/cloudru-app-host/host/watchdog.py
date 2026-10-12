@@ -237,6 +237,10 @@ def probe(paths, env, now, state, skip=frozenset()):
     return checks
 
 
+# The first line of every alert in the owner's chat, the same tag agent/lib/owner-alert.ts puts on its own.
+ALERT_TAG = "🚨 #alert"
+
+
 def send(env, text):
     """Journald, then every channel there is; True when one of them took the alert."""
     print(f"alert: {text}", flush=True)
@@ -269,7 +273,7 @@ def send_telegram(env, text):
     if not token or not chat:
         print("no OPS_ALERT_BOT_TOKEN/OPS_ALERT_CHAT_ID: not sent to Telegram", flush=True)
         return False
-    data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat, "text": f"{ALERT_TAG}\n{text}"}).encode()
     try:
         with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=15) as r:
             return json.loads(r.read()).get("ok") is True

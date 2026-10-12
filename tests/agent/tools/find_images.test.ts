@@ -1,6 +1,40 @@
+import type * as Dns from "node:dns";
+import type * as PublicFetch from "@agent/lib/sandbox/public-fetch";
 import type { ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findImages } from "@agent/tools/find_images";
+
+/**
+ * The names a test resolves; a hop the connection makes itself only when a
+ * test asks for it (`dns.connect`), otherwise the stubbed global fetch.
+ */
+const dns = vi.hoisted(() => ({
+  answer: new Array<Dns.LookupAddress>(),
+  connect: false,
+}));
+
+vi.mock("node:dns", async (importOriginal) => {
+  const original = await importOriginal<typeof Dns>();
+  return {
+    ...original,
+    lookup: (
+      _hostname: string,
+      _options: Dns.LookupOptions,
+      callback: (error: null, addresses: Dns.LookupAddress[]) => void
+    ) => {
+      callback(null, dns.answer);
+    },
+  };
+});
+
+vi.mock("@agent/lib/sandbox/public-fetch", async (importOriginal) => {
+  const original = await importOriginal<typeof PublicFetch>();
+  return {
+    ...original,
+    fetchPublic: (url: URL, init?: RequestInit) =>
+      dns.connect ? original.fetchPublic(url, init) : fetch(url, init),
+  };
+});
 
 const fetchMock =
   vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>();
@@ -76,6 +110,8 @@ async function find(url = pageUrl, limit?: number) {
 }
 
 beforeEach(() => {
+  dns.answer = [];
+  dns.connect = false;
   routes.clear();
   fetchMock.mockReset();
   fetchMock.mockImplementation((url) => {
@@ -262,6 +298,18 @@ describe("find_images", () => {
     await expect(find()).rejects.toThrow(/blocked host/u);
     expect(requested()).toEqual([pageUrl]);
   });
+
+  it.each(["127.0.0.1", "169.254.169.254", "10.0.0.5", "::1"])(
+    "never connects to a page whose name resolves to %s",
+    async (address) => {
+      dns.answer = [{ address, family: address.includes(":") ? 6 : 4 }];
+      dns.connect = true;
+      pageAt(pageUrl, `<img src="/fine.jpg">`);
+
+      await expect(find()).rejects.toThrow(/blocked host/u);
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
 
   it("drops an image whose redirect leads to a blocked host", async () => {
     pageAt(pageUrl, `<img src="/redirected.jpg"><img src="/fine.jpg">`);

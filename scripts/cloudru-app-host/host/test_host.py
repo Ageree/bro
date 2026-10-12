@@ -825,6 +825,19 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("alert: tg down", " ".join(str(c) for c in printed.call_args_list))
         self.assertNotIn("1:x", " ".join(str(c) for c in printed.call_args_list))
 
+    def test_every_telegram_alert_starts_with_the_alert_tag(self):
+        posted = []
+
+        def urlopen(url, data=None, timeout=None):
+            posted.append(urllib.parse.parse_qs(data.decode())["text"][0])
+            return mock.MagicMock(read=lambda: b'{"ok": true}', __enter__=lambda self: self,
+                                  __exit__=lambda *a: None)
+
+        env = {"OPS_ALERT_BOT_TOKEN": "1:x", "OPS_ALERT_CHAT_ID": "5"}
+        with mock.patch.object(watchdog.urllib.request, "urlopen", urlopen), mock.patch("builtins.print"):
+            self.assertTrue(watchdog.send_telegram(env, "web down"))
+        self.assertEqual(posted, ["🚨 #alert\nweb down"])
+
     def test_undelivered_alerts_are_listed_until_they_go_out(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root)

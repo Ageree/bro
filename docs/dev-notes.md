@@ -337,6 +337,24 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   владелец меняет режим permissions сам. Базу читайте узким ops-скриптом через
   PR: `host.py ops` гоняет скрипты выкаченного релиза (`usage-stats.sh`,
   `memory-keys.sh`).
+- Бот баг-репортов (`BUG_BOT=on`, `agent/lib/bug-bot/`, тик `agent/schedules/bug-bot.ts`):
+  люди пишут служебному боту `OPS_ALERT_BOT_TOKEN`, отчёты уходят в
+  `OPS_ALERT_CHAT_ID` с шапкой `🐞 #bug №N`, реплай владельца — человеку. Токен
+  должен отличаться от `TELEGRAM_BOT_TOKEN`: `host.py` на профиле stand кладёт
+  токен Бро в `OPS_ALERT_BOT_TOKEN`, и опрос `getUpdates` отнял бы обновления у
+  `tg-bridge` (409), поэтому при равных токенах бот выключен (`bugBotTarget`).
+  Опрос — long polling внутри минутного тика, ~55 с, offset в `bug_bot_state`;
+  409 ставит паузу на 5 минут. Метки сообщений владельцу: `ownerMessageLabels`
+  в `agent/lib/owner-alert.ts` (`#alert`, `#bug`, `#digest`), у `watchdog.py`
+  свой `ALERT_TAG`.
+- Журнал ходов владельца — `turn_log` (хук `agent/hooks/turn-log.ts`, сервис
+  чтения `db/services/turn-log.ts`): id хода повторяется, поэтому открытой
+  бывает лишь одна строка сессии и хода, а открытая старше 6 ч — `lost`.
+  Тексты (`turn_log_entries`) — только при `OWNER_TRANSCRIPTS=on`, через общий
+  с `conversation_log` фильтр `agent/lib/privacy/secrets.ts`; ключи JSON вида
+  `password` выкидываются до фильтра: слово «password» в строке срезает фильтр
+  всего хвоста. Сбой хода человека — `alertOwner` раз в час на пару
+  воркспейс+код, сводка — `agent/schedules/owner-digest.ts`.
 - Тревоги владельцу (баланс RouterAI, пул) шлёт `agent/lib/owner-alert.ts`
   служебным ботом `OPS_ALERT_BOT_TOKEN` в `OPS_ALERT_CHAT_ID` (пара сторожа
   VM). Без него — ботом Бро в чат владельца с Бро, с шапкой «прислала проверка,
@@ -584,6 +602,23 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
   HTTP-ручки агента — маршруты каналов под `/eve/v1/` (`agent/channels/sandbox.ts`).
 - `POST /eve/v1/session` отвечает `202` раньше `session.started`: владельца
   пишет обёртка маршрута (`agent/channels/eve.ts`), иначе ранний поток — 403.
+- Коды входа (iMessage с линии Бро): Better Auth режет сам лишь по IP в памяти
+  процесса (`/phone-number/*` — 10 в минуту, только при `NODE_ENV=production`) и
+  номер не считает. Свой лимит — в базе (`sign_in_code_sends`,
+  `db/services/auth/code-sends.ts`): номер 3 за 10 минут и 10 в сутки, адрес 10
+  и 40. Проверка — в `hooks.before`, а не в `sendOTP`: эндпоинт пишет новый код
+  до `sendOTP`, и отказ подменил бы код, который у человека уже есть;
+  `/sign-in/phone-number` выключен — он слал код мимо лимита. IP верен: Caddy
+  ставит `x-forwarded-for` одним адресом клиента, Next его не трогает (`??=`),
+  а Better Auth верит лишь одиночному значению. Принятая цена: любой может
+  исчерпать лимит чужого номера и закрыть ему вход по коду на 10 минут (сутки —
+  при 10 запросах). Код, который iMessage не отправил, слот возвращает
+  (`releaseSignInCodeSend`).
+- `web_fetch` eve сам не пускает на приватные адреса: каждый редирект и каждый
+  адрес из DNS (`execution/web-fetch/request.js`); после обновления eve это
+  ловит `tests/agent/tools/web-fetch.test.ts`. Свои загрузки по URL от модели
+  (`find_images`, вложения `send_message`) идут через `fetchPublic`, а не
+  глобальный `fetch`: `isBlockedHost` смотрит лишь имя.
 - `first-contact` решает `workspaces.introduced_at`
   (`claimWorkspaceIntroduction`), а не `chats`: переезд из Convex их не пишет.
 - Любой сбой модели (и переполнение контекста) — `turn.failed`
