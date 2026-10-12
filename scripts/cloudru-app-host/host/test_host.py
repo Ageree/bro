@@ -12,6 +12,7 @@ import hashlib
 import http.server
 import io
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -966,6 +967,34 @@ class BootTest(unittest.TestCase):
         self.assertIn("PORT=3000 HOSTNAME=127.0.0.1", web)
         for unit in ("bro-web.service", "bro-eve.service"):
             self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
+
+    def test_eve_and_web_have_memory_limits_and_a_heap_cap(self):
+        limits = {}
+        for unit in ("bro-eve.service", "bro-web.service"):
+            text = (HERE / unit).read_text()
+            high = re.search(r"\nMemoryHigh=(\d+)([MG])\n", text)
+            top = re.search(r"\nMemoryMax=(\d+)([MG])\n", text)
+            heap = re.search(r"\nExecStart=/usr/local/bin/node --max-old-space-size=(\d+) ", text)
+            self.assertTrue(high and top and heap, unit)
+            megabytes = lambda m: int(m.group(1)) * (1024 if m.group(2) == "G" else 1)
+            # The heap is under the throttle, which is under the kill.
+            self.assertLess(int(heap.group(1)), megabytes(high), unit)
+            self.assertLess(megabytes(high), megabytes(top), unit)
+            limits[unit] = megabytes(top)
+        # Both at their limits still leave the 4 GB VM room for Caddy, deployd, the bridge and tg-egress.
+        self.assertLessEqual(sum(limits.values()), 3 * 1024)
+
+    def test_install_code_adds_the_swap_file_once(self):
+        subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)
+        install = (HERE / "install-code.sh").read_text()
+        self.assertIn("fallocate -l 2G", install)
+        # Idempotent: swapon only when the file is not active, fstab and mkswap only when missing.
+        self.assertIn('swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"', install)
+        self.assertIn('[ ! -f "$SWAPFILE" ]', install)
+        self.assertIn('grep -qs "^$SWAPFILE " /etc/fstab', install)
+        # install-code.sh is the part of provisioning a live VM also gets (host.py update-host), and it
+        # must not restart the units the limits are in.
+        self.assertNotRegex(install, r"systemctl (re)?start bro-(eve|web|egress)")
 
     def test_telegram_comes_with_the_host(self):
         subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)

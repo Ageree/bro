@@ -8,6 +8,23 @@
 set -euo pipefail
 HOST=$(cd "$(dirname "$0")" && pwd)
 
+# A 2 GB swap file on a 4 GB VM: memory pressure slows it down before the OOM killer picks a process. Idempotent
+# (a live VM that has swap keeps it), and no restart: the units' memory limits (bro-eve, bro-web) come into force
+# at their next restart, a release.
+SWAPFILE=/swapfile
+if ! swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
+  if [ ! -f "$SWAPFILE" ]; then
+    (umask 077 && { fallocate -l 2G "$SWAPFILE" || dd if=/dev/zero of="$SWAPFILE" bs=1M count=2048; })
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE" >/dev/null
+  fi
+  swapon "$SWAPFILE"
+fi
+grep -qs "^$SWAPFILE " /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+# Swap is for spikes, not for the working set.
+echo "vm.swappiness=10" > /etc/sysctl.d/90-bro-swap.conf
+sysctl -q -w vm.swappiness=10
+
 for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service bro-watchdog.timer \
   bro-backup.service bro-backup.timer bro-backup-alert.service caddy.service bro-egress.service; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
