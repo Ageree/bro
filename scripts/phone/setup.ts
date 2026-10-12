@@ -8,6 +8,8 @@ import { elevenlabsFetch } from "../../shared/phone/elevenlabs-http.ts";
 import type { RequestInit } from "undici";
 import {
   hangupRules,
+  phoneLlm,
+  phoneReasoningEffort,
   phoneSilenceSeconds,
   voiceStyle,
 } from "../../shared/phone/persona.ts";
@@ -211,6 +213,8 @@ function configuration(
           ...prompt,
           prompt: basePrompt,
           temperature: 0.3,
+          llm: phoneLlm,
+          reasoning_effort: phoneReasoningEffort,
           tools: [],
           tool_ids: [],
           mcp_server_ids: [],
@@ -239,10 +243,10 @@ function configuration(
         turn_eagerness: "eager",
         speculative_turn: true,
         silence_end_call_timeout: phoneSilenceSeconds,
+        // -1 выключает филлер: «Секунду…» на медленном шаге LLM звучал не к месту.
         soft_timeout_config: {
           ...object(turn.soft_timeout_config ?? {}),
-          timeout_seconds: 3,
-          message: "Секунду…",
+          timeout_seconds: -1,
         },
       },
     },
@@ -492,8 +496,8 @@ async function setup() {
               prompt: {
                 prompt: basePrompt,
                 temperature: 0.3,
-                llm: "gpt-6-luna",
-                reasoning_effort: "none",
+                llm: phoneLlm,
+                reasoning_effort: phoneReasoningEffort,
                 enable_reasoning_summary: false,
                 tools: [],
                 tool_ids: [],

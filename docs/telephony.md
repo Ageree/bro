@@ -246,8 +246,8 @@ override полей prompt/first message/max duration, агента без ин�
 `--voice-id <id>` без правки кода. Повторный запуск без `--voice-id` возвращает голос по умолчанию. Скрипт ставит
 `speculative_turn: true` (меньше пауз между репликами), ставит
 `turn_eagerness: eager` (с 10.10 по просьбе владельца: быстрее ответ; если начнёт
-перебивать собеседника, диктующего время или номер, верните `normal`), `prompt.temperature` 0.3, русский филлер «Секунду…» через 3 с
-молчания агента и `silence_end_call_timeout` 12 с (`phoneSilenceSeconds`): без `end_call`
+перебивать собеседника, диктующего время или номер, верните `normal`), `prompt.temperature` 0.3, `soft_timeout_config.timeout_seconds: -1` (филлера «Секунду…» нет),
+модель `deepseek-v41-flash` без рассуждений (`phoneLlm`) и `silence_end_call_timeout` 12 с (`phoneSilenceSeconds`): без `end_call`
 это единственный способ, которым Бро кончает звонок сам, а тихая линия после
 прощания иначе висела бы до лимита разговора. Исходящий звонок открывается
 приветствием сразу при соединении (`outboundGreeting`: «Здравствуйте!» или, при
