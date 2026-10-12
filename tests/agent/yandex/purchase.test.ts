@@ -291,7 +291,7 @@ describe("Yandex purchase consent", () => {
       amountMinor: 24_950,
       cardId: "card-x1",
       expiresAt: "2099-01-01T00:00:00.000Z",
-      items: [{ id: 1, priceMinor: 5_000, quantity: 1 }],
+      items: [{ id: 1, positionId: 7, priceMinor: 5_000, quantity: 1 }],
     };
     services.edaPrepare.mockResolvedValue({
       checkoutKey: "karavaevy:home",

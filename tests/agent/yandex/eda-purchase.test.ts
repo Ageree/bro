@@ -18,12 +18,12 @@ import {
 
 const target = { lat: 55.69551, lon: 37.48573, place: "karavaevy" };
 
-const cart = (price = 170) => ({
+const cart = (price = 170, line = 1) => ({
   cart: {
     decimal_total: String(price + 328),
     items: [
       {
-        id: 1,
+        id: line,
         item_id: 3004826043,
         name: "Блин с курицей ",
         price,
@@ -130,9 +130,20 @@ describe("Eda purchase", () => {
     expect(prepared.snapshot).toMatchObject({
       addressId: "home-address",
       cardId: "card-x1",
-      items: [{ id: 3004826043, priceMinor: 17000, quantity: 1 }],
+      items: [
+        { id: 3004826043, positionId: 1, priceMinor: 17000, quantity: 1 },
+      ],
     });
     expect(sent("/api/v1/orders")).toHaveLength(0);
+  });
+
+  it("quotes the same dish in a new cart as a new purchase, not the one already placed", async () => {
+    const first = await ready();
+    answers.set("/eats/v1/cart/v2/full-carts", { body: cart(170, 2) });
+    const again = await ready();
+    expect(again.publicQuote).toEqual(first.publicQuote);
+    expect(again.snapshot.items[0]?.positionId).toBe(2);
+    expect(again.snapshot).not.toEqual(first.snapshot);
   });
 
   it("does not quote an address the person has not saved", async () => {
