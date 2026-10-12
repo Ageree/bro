@@ -15,29 +15,28 @@ const ride = z.object({
 const failed = z.object({ kind: z.literal("failed"), reason: z.string() });
 
 /**
- * The person's ride that is on now, from their order history: Yandex's own
- * record, so a second booking is never made while one is on, whatever
+ * The person's ride that is on now, as the app finds it when it opens:
+ * `launch` lists the orders in progress (the order history does not, until a
+ * ride is over), `taxiontheway` tells where the first one stands. Yandex's
+ * own record, so a second booking is never made while one is on, whatever
  * happened to an earlier call.
  */
 const activeRideSource = String.raw`
   const activeRide = async () => {
-    const history = await session.post("/4.0/orderhistory/v2/list", {
-      services: { taxi: { image_tags: { size_hint: 9999 }, flavors: ["default"] } },
-      range: { results: 5 },
-      country_code: "RU",
-      include_service_metadata: true,
-    });
-    if (history.wall || history.error) throw Object.assign(new Error("history"), { wall: history.wall });
-    const order = (history.orders || []).find((o) => o.service === "taxi" && o.data?.is_active);
-    if (!order) return null;
-    const d = order.data;
-    const car = d.vehicle ? [d.vehicle.color, d.vehicle.model, d.vehicle.car_number].filter(Boolean).join(" ") : "";
+    const launch = await session.post("/3.0/launch", { id: session.userId });
+    if (launch.wall || launch.error) throw Object.assign(new Error("launch"), { wall: launch.wall });
+    const orderId = (launch.orders || []).find((o) => typeof o.orderid === "string")?.orderid;
+    if (!orderId) return null;
+    const t = await session.post("/3.0/taxiontheway", { orderid: orderId, format_currency: true, id: session.userId, show_text: true });
+    const route = (t.request?.route || []).map((point) => point.short_text || point.fullname || null);
+    const d = t.driver || {};
+    const car = [d.color, d.car_model || d.model, d.plates || d.car_number].filter((x) => typeof x === "string" && x).join(" ");
     return {
-      orderId: d.order_id,
-      status: d.taxi_status || d.status || null,
-      from: d.route?.source ?? null,
-      to: d.route?.destination ?? null,
-      price: typeof d.payment?.cost === "number" ? d.payment.cost : null,
+      orderId,
+      status: typeof t.status === "string" ? t.status : null,
+      from: route[0] ?? null,
+      to: route.length > 1 ? route[route.length - 1] : null,
+      price: typeof t.final_cost === "number" ? t.final_cost : null,
       car: car || null,
     };
   };
@@ -219,11 +218,12 @@ export const goCancelOperation = defineYandexOperation({
   run: `async function () {${goSession}
   const session = await goSession();
   if (session.wall || session.error) return goAnswer(session);
-  ${activeRideSource}
   const ok = (data) => ({ status: "ok", data });
-  const active = await activeRide();
-  if (!active) return ok({ kind: "no_ride" });
-  const order = { orderid: active.orderId, format_currency: true, id: session.userId, show_text: true };
+  const launch = await session.post("/3.0/launch", { id: session.userId });
+  if (launch.wall) return { status: "signed_out" };
+  const orderId = (launch.orders || []).find((o) => typeof o.orderid === "string")?.orderid;
+  if (!orderId) return ok({ kind: "no_ride" });
+  const order = { orderid: orderId, format_currency: true, id: session.userId, show_text: true };
   const now = await session.post("/3.0/taxiontheway", order);
   if (now.wall) return { status: "signed_out" };
   if (now.cancel_disabled === true || now.cancel_state?.state === "disabled") {
@@ -231,7 +231,7 @@ export const goCancelOperation = defineYandexOperation({
   }
   const after = await session.post("/3.0/taxiontheway", { ...order, break: "user" });
   return after.status === "cancelled"
-    ? ok({ kind: "cancelled", orderId: active.orderId })
+    ? ok({ kind: "cancelled", orderId })
     : ok({ kind: "failed", reason: after.error || String(after.status) });
 }`,
   service: "go",

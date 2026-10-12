@@ -9,8 +9,9 @@
 
 Всё в одной вкладке `taxi.yandex.ru/robots.txt`, запросами самой страницы:
 
-1. `/4.0/orderhistory/v2/list` — если есть заказ с `is_active`, второй не
-   создаётся: ответ `already_active` с этой поездкой.
+1. `/3.0/launch` — текущие заказы (`orders`; история заказов показывает поездку
+   лишь после конца). Если заказ есть, второй не создаётся: ответ
+   `already_active` с этой поездкой (`taxiontheway`: статус, маршрут, цена).
 2. Место: текст → `/4.0/persuggest/v1/suggest` → `position`;
    `/4.0/persuggest/v1/finalsuggest` (`pin_drop`) даёт объект адреса для маршрута.
 3. Оплата: `cash`, `card` (подтверждённая карта из `/3.0/paymentmethods`) или
@@ -21,8 +22,11 @@
 6. `/external/3.0/ordercommit` → `status` (`search`…). На 202 сайт шлёт коммит
    снова, мы тоже (до трёх раз); без ответа — `unknown` с `orderId`.
 
-Отмена: `/3.0/taxiontheway` текущего заказа; если `cancel_disabled` — нельзя,
+Отмена: заказ из `launch`, затем `/3.0/taxiontheway`; если `cancel_disabled` — нельзя,
 иначе тот же запрос с `break: "user"` → `status: "cancelled"`.
 
 Проверено вживую 11.10 пробой (`scripts/cloudru-app-host/yandex-probe.py`):
-наличные, дом → м. Раменки, 415 ₽, `search`, затем `cancelled` до назначения машины.
+наличные, дом → м. Раменки, 415 ₽, `search`, затем `cancelled` до назначения машины;
+заказ в поиске виден в `launch.orders`, а в истории — нет. Через чат Бро
+`book` занял 4,6 с. Поля машины в `taxiontheway` (`driver`) после назначения не
+проверены вживую: заказ отменяли раньше.
