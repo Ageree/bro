@@ -777,7 +777,7 @@ class WatchdogTest(unittest.TestCase):
             with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=AssertionError):
                 self.assertIsNone(watchdog.selectel_ok(paths, now, state))
             paths.ops_env.parent.mkdir(parents=True)
-            paths.ops_env.write_text("SELECTEL_BALANCE_TOKEN=k\nSELECTEL_BALANCE_MIN_RUB=500\n")
+            paths.ops_env.write_text("SELECTEL_BILLING_TOKEN=k\nSELECTEL_BALANCE_MIN_RUB=500\n")
             with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=answer(80_000)) as call:
                 self.assertTrue(watchdog.selectel_ok(paths, now, state))
                 self.assertEqual(call.call_args.args[0].get_header("X-token"), "k")
@@ -1020,33 +1020,76 @@ class BootTest(unittest.TestCase):
         for unit in ("bro-web.service", "bro-eve.service"):
             self.assertIn("Requires=bro-egress.service", (HERE / unit).read_text())
 
-    def test_eve_and_web_have_memory_limits_and_a_heap_cap(self):
-        limits = {}
-        for unit in ("bro-eve.service", "bro-web.service"):
+    def test_eve_and_web_have_a_heap_cap_and_no_cgroup_limit_yet(self):
+        for unit, heap in (("bro-eve.service", 1280), ("bro-web.service", 640)):
             text = (HERE / unit).read_text()
-            high = re.search(r"\nMemoryHigh=(\d+)([MG])\n", text)
-            top = re.search(r"\nMemoryMax=(\d+)([MG])\n", text)
-            heap = re.search(r"\nExecStart=/usr/local/bin/node --max-old-space-size=(\d+) ", text)
-            self.assertTrue(high and top and heap, unit)
-            megabytes = lambda m: int(m.group(1)) * (1024 if m.group(2) == "G" else 1)
-            # The heap is under the throttle, which is under the kill.
-            self.assertLess(int(heap.group(1)), megabytes(high), unit)
-            self.assertLess(megabytes(high), megabytes(top), unit)
-            limits[unit] = megabytes(top)
-        # Both at their limits still leave the 4 GB VM room for Caddy, deployd, the bridge and tg-egress.
-        self.assertLessEqual(sum(limits.values()), 3 * 1024)
+            self.assertIn(f"\nExecStart=/usr/local/bin/node --max-old-space-size={heap} ", text, unit)
+            # A cgroup limit on a live unit kills it at the next daemon-reload's restart: not before the
+            # peaks are measured on production (docs/dev-notes.md).
+            self.assertNotRegex(text, r"(?m)^Memory(High|Max)=", unit)
 
-    def test_install_code_adds_the_swap_file_once(self):
+    def swap_run(self, free_mb, fallocate_ok=True, mkswap_ok=True, label_ok=False, active=False, existing=False):
+        """Runs install-code.sh's swap block against stubs in a temporary root; returns (exit code, root)."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        swapfile = root / "swapfile"
+        if existing:
+            swapfile.write_text("")
+        stubs = {
+            "df": f'echo Avail; echo "{free_mb}M"',
+            "swapon": f'if [ "$1" = --show=NAME ]; then {"echo " + str(swapfile) if active else ":"}; '
+                      f'else echo on >> "{root}/swapon.log"; fi',
+            "swaplabel": "exit 0" if label_ok else "exit 1",
+            "fallocate": f'{"" if fallocate_ok else "exit 1; "}truncate -s 2G "${{@: -1}}"',
+            "dd": "exit 0" if fallocate_ok else "exit 1",
+            "mkswap": "exit 0" if mkswap_ok else "exit 1",
+            "sysctl": "exit 0",
+        }
+        for name, body in stubs.items():
+            (bin_dir / name).write_text(f"#!/bin/bash\n{body}\n")
+            (bin_dir / name).chmod(0o755)
+        text = (HERE / "install-code.sh").read_text()
+        block = text[text.index("# swap:begin"):text.index("# swap:end")]
+        block = block.replace("/etc/fstab", str(root / "fstab")).replace("/etc/sysctl.d/90-bro-swap.conf", str(root / "sysctl"))
+        script = root / "swap.sh"
+        script.write_text("set -euo pipefail\n" + block + "\necho finished\n")
+        result = subprocess.run(["bash", str(script)], env={"PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                "BRO_SWAPFILE": str(swapfile)}, capture_output=True, text=True)
+        return result, root
+
+    def test_install_code_adds_the_swap_file_once_and_never_fails_the_install(self):
         subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)
         install = (HERE / "install-code.sh").read_text()
-        self.assertIn("fallocate -l 2G", install)
-        # Idempotent: swapon only when the file is not active, fstab and mkswap only when missing.
-        self.assertIn('swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"', install)
-        self.assertIn('[ ! -f "$SWAPFILE" ]', install)
-        self.assertIn('grep -qs "^$SWAPFILE " /etc/fstab', install)
-        # install-code.sh is the part of provisioning a live VM also gets (host.py update-host), and it
-        # must not restart the units the limits are in.
+        # install-code.sh is also what a live VM gets (host.py update-host): no restart of the units.
         self.assertNotRegex(install, r"systemctl (re)?start bro-(eve|web|egress)")
+        result, root = self.swap_run(free_mb=10000)
+        self.assertIn("finished", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((root / "swapfile").exists())
+        self.assertFalse((root / "swapfile.new").exists())
+        self.assertIn("on", (root / "swapon.log").read_text())
+        self.assertIn(str(root / "swapfile"), (root / "fstab").read_text())
+        # Already active: nothing is done.
+        result, root = self.swap_run(free_mb=10000, active=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((root / "swapfile").exists())
+
+    def test_a_swap_file_that_cannot_be_made_is_a_warning_and_leaves_no_half_file(self):
+        for name, kwargs in (("no room", {"free_mb": 1000}), ("fallocate and dd fail", {"free_mb": 10000, "fallocate_ok": False}),
+                             ("mkswap fails", {"free_mb": 10000, "mkswap_ok": False})):
+            result, root = self.swap_run(**kwargs)
+            self.assertEqual(result.returncode, 0, name + result.stderr)
+            self.assertIn("finished", result.stdout, name)
+            self.assertIn("warning: no swap file", result.stderr, name)
+            self.assertFalse((root / "swapfile").exists(), name)
+            self.assertFalse((root / "swapfile.new").exists(), name)
+        # A formatted file an earlier swapon failed on is activated again without being rebuilt.
+        result, root = self.swap_run(free_mb=1000, label_ok=True, existing=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("warning", result.stderr)
+        self.assertIn("on", (root / "swapon.log").read_text())
 
     def test_telegram_comes_with_the_host(self):
         subprocess.run(["bash", "-n", str(HERE / "install-code.sh")], check=True)

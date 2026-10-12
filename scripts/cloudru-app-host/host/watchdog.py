@@ -142,12 +142,12 @@ def selectel_balance_rub(token, timeout=15):
 
 
 def selectel_ok(paths, now, state):
-    """None when the check is off (no SELECTEL_BALANCE_TOKEN in /etc/bro/ops-env: the account's key is
+    """None when the check is off (no SELECTEL_BILLING_TOKEN in /etc/bro/ops-env: the account's key is
     root's, never in the app's env that the model's tools run with) or Selectel could not be read this
     time (the last verdict stands); else whether the balance is at least SELECTEL_BALANCE_MIN_RUB. Read
     every SELECTEL_CHECK_EVERY_S, not every minute. At zero Selectel takes the VMs and Object Storage."""
     ops = read_ops_env(paths)
-    token = ops.get("SELECTEL_BALANCE_TOKEN")
+    token = ops.get("SELECTEL_BILLING_TOKEN")
     if not token:
         state.pop("selectelBalance", None)
         return None

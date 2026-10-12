@@ -19,12 +19,9 @@ Group=bro
 WorkingDirectory=/srv/bro/current/web
 EnvironmentFile=/etc/bro/env
 Environment=NODE_ENV=production TZ=UTC PORT=3000 HOSTNAME=127.0.0.1
-# The Next server shares a 4 GB VM with Caddy, deployd, the bridge and tg-egress. The heap cap makes V8 collect
-# before the cgroup limit is near; MemoryHigh throttles and reclaims (the swap file helps there); MemoryMax is the
-# line past which the kernel kills this unit alone, and Restart=always brings it back, instead of the OOM killer
-# choosing among all of them.
-MemoryHigh=768M
-MemoryMax=1G
+# The heap cap makes V8 collect before the VM runs out of memory, on a 4 GB VM shared with Caddy, deployd, the
+# bridge and tg-egress. Takes effect at the next restart. No MemoryHigh/MemoryMax yet: a cgroup limit needs
+# the peaks measured on production first (docs/dev-notes.md).
 ExecStart=/usr/local/bin/node --max-old-space-size=640 server.js
 Restart=always
 RestartSec=3

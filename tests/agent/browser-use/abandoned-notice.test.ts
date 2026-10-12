@@ -11,7 +11,7 @@ const take = vi.fn<
     }[]
   >
 >();
-const markSent = vi.hoisted(() => vi.fn<() => Promise<void>>());
+const markSent = vi.hoisted(() => vi.fn<(id: string) => Promise<void>>());
 vi.mock("@db/services/browser-runs", () => ({
   markBrowserRunNoticeSent: markSent,
   takeAbandonedBrowserRunReports: take,

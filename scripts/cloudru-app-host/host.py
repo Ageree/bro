@@ -920,12 +920,15 @@ def cmd_env(args):
             sys.exit("no DATABASE_URL_UNPOOLED in vercel-production.json for NEON_DATABASE_URL")
         ops_env["NEON_DATABASE_URL"] = clean(str(neon))
     if args.with_selectel_balance:
-        # The watchdog (root, on the VM) checks the Selectel balance with this key: it lives in ops-env beside
-        # Neon's URL, never in the app's env. Without the flag a later `host.py env` takes it away again.
-        key = (os.environ.get("SELECTEL_TOKEN") or os.environ.get("SELECTEL_API_KEY") or "").strip().strip("\"'“”")
+        # The watchdog (root, on the VM) reads the Selectel balance with this key: it lives in ops-env beside
+        # Neon's URL, never in the app's env. Only a key meant for billing: the account's full key can delete
+        # VMs, and ops-env reaches every ops script of a release. Without the flag a later `host.py env`
+        # takes it away again.
+        key = os.environ.get("SELECTEL_BILLING_TOKEN", "").strip().strip("\"'“”")
         if not key:
-            sys.exit("no SELECTEL_TOKEN or SELECTEL_API_KEY in the environment for --with-selectel-balance")
-        ops_env["SELECTEL_BALANCE_TOKEN"] = key
+            sys.exit("no SELECTEL_BILLING_TOKEN in the environment for --with-selectel-balance (a key that can "
+                     "only read billing; not SELECTEL_TOKEN, which can delete VMs)")
+        ops_env["SELECTEL_BILLING_TOKEN"] = key
         if os.environ.get("SELECTEL_BALANCE_MIN_RUB"):
             ops_env["SELECTEL_BALANCE_MIN_RUB"] = os.environ["SELECTEL_BALANCE_MIN_RUB"].strip()
     by_source = {}
@@ -1429,7 +1432,7 @@ def parser():
                      help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
                           "in /etc/bro/ops-env for the ops scripts only")
     env.add_argument("--with-selectel-balance", action="store_true",
-                     help="SELECTEL_TOKEN/SELECTEL_API_KEY (and SELECTEL_BALANCE_MIN_RUB, default 1000) for the "
+                     help="SELECTEL_BILLING_TOKEN (a read-only billing key; and SELECTEL_BALANCE_MIN_RUB, default 1000) for the "
                           "watchdog's balance check, in /etc/bro/ops-env")
     env.set_defaults(fn=cmd_env)
     sites = sub.add_parser("sites")
