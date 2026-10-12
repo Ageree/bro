@@ -73,6 +73,14 @@
   базового промпта; смена модели агента — `PATCH` `prompt.llm` вместе с
   `reasoning_effort` (у Claude его нет); Haiku 5.5 в ElevenLabs 10.10 нет, владелец
   оставил `gpt-6-luna`.
+- Паузы и «Секунду…» (12.10): в живом звонке `gpt-6-luna` отвечала 2–6 с, и через 3 с
+  `soft_timeout_config` вставлял фиксированное «Секунду…» поверх ответа. Теперь
+  `timeout_seconds: -1` (API: -1 или 0,5–8 с) и модель `deepseek-v41-flash`,
+  `reasoning_effort: none` (`phoneLlm` в `shared/phone/persona.ts`). Замер текстом
+  через WebSocket (`text_only`, временный агент): медиана до ответа 0,22–0,24 с против
+  0,8–1,3 с у luna, gpt-4.1-mini 0,49, haiku-4-5 0,54. Лимит списка моделей —
+  `GET /v1/convai/llm/list`. Упоминание слова «секунду» в запрете промпта само
+  провоцирует его: запрет сформулирован без слова.
 - Записная книжка Бро (`CONTACTS_WORKSPACES`, id или `*`; нужна и телефония):
   таблица `phone_contacts`, сервис `db/services/contacts.ts`, инструменты
   `contact-find/save/delete` в `agent/tools/phone-contacts.ts`. Запись — только
