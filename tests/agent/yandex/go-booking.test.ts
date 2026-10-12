@@ -5,6 +5,7 @@ import {
   goCancelOperation,
   goRideOperation,
 } from "@agent/lib/yandex/go/booking";
+import { goCardVerifyOperation } from "@agent/lib/yandex/go/card";
 import type { JsonValue } from "@agent/lib/yandex/operations";
 import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
 
@@ -54,9 +55,11 @@ async function goPage(answers: Record<string, FakeResponse | FakeResponse[]>) {
     ["/3.0/routestats", { body: await fixture("go/routestats.json") }],
     ["/external/3.0/orderdraft", { body: { orderid: "new-order" } }],
     ["/external/3.0/ordercommit", { body: { status: "search" } }],
+    // The page config that carries Go's Trust token.
+    ["/", { body: { trustToken: "taxifee_test" } }],
     ...Object.entries(answers),
   ]);
-  const requests: { body: JsonValue; path: string }[] = [];
+  const requests: { body: JsonValue; path: string; query: string }[] = [];
   return {
     requests,
     sent: (path: string) => requests.filter((r) => r.path === path),
@@ -67,6 +70,7 @@ async function goPage(answers: Record<string, FakeResponse | FakeResponse[]>) {
         requests.push({
           body: z.json().parse(JSON.parse(init.body ?? "null")),
           path: url.pathname,
+          query: url.search,
         });
         const answer = base.get(url.pathname);
         if (Array.isArray(answer))
@@ -168,6 +172,195 @@ describe("go.book", () => {
       kind: "unknown",
       orderId: "new-order",
     });
+  });
+});
+
+const visa = { id: "card-x1a", number: "****4310", system: "VISA" };
+const mir = {
+  currency: "RUB",
+  id: "card-x2b",
+  number: "****6443",
+  profile: { name: "yandex_default" },
+  title: "Мир •••• 6443",
+  usable: false,
+  verify_strategy: "card_antifraud",
+};
+
+describe("go.book with a card Go holds back", () => {
+  it("books nothing and names the card to verify", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [mir], unverified_cards: [mir] } },
+      },
+    });
+    const data = dataOf(
+      await runInPage(goBookOperation.run, book({ payment: "card" }), page)
+    );
+    expect(goBookOperation.result.parse(data)).toEqual({
+      kind: "failed",
+      reason: "no_verified_card",
+      unverifiedCardId: "card-x2b",
+    });
+    expect(sent("/3.0/routestats")).toHaveLength(0);
+  });
+
+  it("still books with a verified card beside an unverified one", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/paymentmethods": {
+        body: {
+          card: { available_cards: [visa, mir], unverified_cards: [mir] },
+        },
+      },
+    });
+    const data = dataOf(
+      await runInPage(goBookOperation.run, book({ payment: "card" }), page)
+    );
+    expect(data).toMatchObject({ kind: "booked", payment: "VISA ****4310" });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      payment: { type: "card", payment_method_id: "card-x1a" },
+    });
+  });
+});
+
+describe("go.book with the card the person named", () => {
+  const methods: FakeResponse = {
+    body: { card: { available_cards: [visa], unverified_cards: [mir] } },
+  };
+  const byCard = (cardLast4: string) => book({ cardLast4, payment: "card" });
+
+  it("books with that card, not the first one", async () => {
+    const second = { ...visa, id: "card-x3c", number: "****1111" };
+    const { page, sent } = await goPage({
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [visa, second] } },
+      },
+    });
+    const data = dataOf(
+      await runInPage(goBookOperation.run, byCard("1111"), page)
+    );
+    expect(data).toMatchObject({ kind: "booked", payment: "VISA ****1111" });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      payment: { payment_method_id: "card-x3c" },
+    });
+  });
+
+  it("names that card to verify when Go holds it back, though another is verified", async () => {
+    const { page, sent } = await goPage({ "/3.0/paymentmethods": methods });
+    expect(
+      dataOf(await runInPage(goBookOperation.run, byCard("6443"), page))
+    ).toEqual({
+      kind: "failed",
+      reason: "no_verified_card",
+      unverifiedCardId: "card-x2b",
+    });
+    expect(sent("/external/3.0/orderdraft")).toHaveLength(0);
+  });
+
+  it("books nothing with a card that is not linked", async () => {
+    const { page } = await goPage({ "/3.0/paymentmethods": methods });
+    expect(
+      dataOf(await runInPage(goBookOperation.run, byCard("0000"), page))
+    ).toEqual({ kind: "failed", reason: "card_not_found" });
+  });
+});
+
+describe("go.card_verify", () => {
+  const verify = goCardVerifyOperation.args.parse({ cardId: "card-x2b" });
+  const trustForm =
+    "https://trust.yandex.ru/web/binding?lang=ru&layout=default&theme=light&verification_intent_id=verification_intent_1#sign:ed25519:v1:AA==";
+
+  it("asks Trust for a verification intent of the card, as Trust's web SDK does", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/paymentmethods": {
+        body: {
+          card: { available_cards: [visa, mir], unverified_cards: [mir] },
+        },
+      },
+      "/web/create_verification_intent": {
+        body: { form_url: trustForm, id: "verification_intent_1" },
+        status: 201,
+      },
+    });
+    const data = dataOf(
+      await runInPage(goCardVerifyOperation.run, verify, page)
+    );
+    expect(goCardVerifyOperation.result.parse(data)).toEqual({
+      kind: "link",
+      card: "Мир •••• 6443",
+      last4: "6443",
+      url: trustForm,
+    });
+    expect(sent("/web/create_verification_intent")).toEqual([
+      {
+        body: {
+          binding_id: "card-x2b",
+          currency: "RUB",
+          form_params: {
+            flow: "card",
+            integrationProfileId: "yandex_default",
+            mode: "default",
+            query_params: { lang: "ru", layout: "default", theme: "light" },
+            type: "verification",
+          },
+        },
+        path: "/web/create_verification_intent",
+        query: "?service_token=taxifee_test",
+      },
+    ]);
+  });
+
+  it("makes no link for a card Go already takes or does not have", async () => {
+    const usable = await goPage({
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [{ ...mir, usable: true }] } },
+      },
+    });
+    expect(
+      dataOf(await runInPage(goCardVerifyOperation.run, verify, usable.page))
+    ).toEqual({ kind: "verified" });
+    const none = await goPage({
+      "/3.0/paymentmethods": { body: { card: { available_cards: [visa] } } },
+    });
+    expect(
+      dataOf(await runInPage(goCardVerifyOperation.run, verify, none.page))
+    ).toEqual({ kind: "failed", reason: "card_not_found" });
+    expect(none.sent("/web/create_verification_intent")).toHaveLength(0);
+  });
+
+  it("makes no link without Go's Trust token", async () => {
+    const { page, sent } = await goPage({
+      "/": { body: {} },
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [mir], unverified_cards: [mir] } },
+      },
+    });
+    expect(
+      dataOf(await runInPage(goCardVerifyOperation.run, verify, page))
+    ).toEqual({ kind: "failed", reason: "no_trust_token" });
+    expect(sent("/web/create_verification_intent")).toHaveLength(0);
+  });
+
+  it.each<FakeResponse & { reason: string }>([
+    {
+      body: { message: "Validation failed" },
+      reason: "trust_400",
+      status: 400,
+    },
+    {
+      body: { form_url: "https://example.com/web/binding?x=1" },
+      reason: "trust_201",
+      status: 201,
+    },
+  ])("passes on only Trust's own form ($reason)", async (answer) => {
+    const { page } = await goPage({
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [mir], unverified_cards: [mir] } },
+      },
+      "/web/create_verification_intent": answer,
+    });
+    expect(
+      dataOf(await runInPage(goCardVerifyOperation.run, verify, page))
+    ).toEqual({ kind: "failed", reason: answer.reason });
   });
 });
 

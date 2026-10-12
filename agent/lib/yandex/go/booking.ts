@@ -51,9 +51,13 @@ const activeRideSource = String.raw`
  */
 export const goBookOperation = defineYandexOperation({
   about:
-    "Book an econom Yandex Go ride now. from and to: address text or [longitude, latitude]; payment: cash, card or current (what is selected in Go); maxPriceRub: do not book above it.",
+    "Book an econom Yandex Go ride now. from and to: address text or [longitude, latitude]; payment: cash, card or current (what is selected in Go); cardLast4: with payment card, the last four digits of the card the person named; maxPriceRub: do not book above it.",
   access: "purchase",
   args: z.object({
+    cardLast4: z
+      .string()
+      .regex(/^\d{4}$/u)
+      .optional(),
     from: goPlace,
     maxPriceRub: z.number().positive().optional(),
     near: z
@@ -82,7 +86,7 @@ export const goBookOperation = defineYandexOperation({
       to: z.string(),
     }),
     z.object({ kind: z.literal("unknown"), orderId: z.string() }),
-    failed,
+    failed.extend({ unverifiedCardId: z.string().optional() }),
   ]),
   run: `async function (args) {${goSession}
   const session = await goSession();
@@ -137,10 +141,19 @@ export const goBookOperation = defineYandexOperation({
       if (selected?.type !== "cash") return fail("payment_unsupported");
     } else {
       const methods = await session.post("/3.0/paymentmethods", { location: from.geopoint, id: session.userId });
-      const unverified = new Set((methods.card?.unverified_cards || []).map((c) => c.id));
+      const pending = methods.card?.unverified_cards || [];
+      const unverified = new Set(pending.map((c) => c.id));
       const cards = (methods.card?.available_cards || []).filter((c) => !c.is_hidden && !unverified.has(c.id));
-      const card = cards.find((c) => c.id === selected?.id) || (args.payment === "card" ? cards[0] : null);
-      if (!card) return fail("no_verified_card");
+      // The card the person named, else the one selected in Go, else (for card) the first.
+      const named = args.payment === "card" ? args.cardLast4 : undefined;
+      const wanted = (c) => named ? String(c.number || "").endsWith(named) : c.id === selected?.id;
+      const card = cards.find(wanted) || (args.payment === "card" && !named ? cards[0] : null);
+      if (!card) {
+        // The card to verify: the wanted one, else the first Go holds back.
+        const held = pending.find(wanted) || (named ? null : pending[0]);
+        if (named && !held) return fail("card_not_found");
+        return ok({ kind: "failed", reason: "no_verified_card", ...(typeof held?.id === "string" ? { unverifiedCardId: held.id } : {}) });
+      }
       payment = { type: "card", id: card.id, label: [card.system, card.number].filter(Boolean).join(" ") || "карта" };
     }
   }

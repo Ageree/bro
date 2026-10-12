@@ -6,6 +6,8 @@ import type * as purchases from "@db/services/yandex-purchases";
 import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
 import type { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import type { JsonValue } from "@agent/lib/yandex/operations";
+import type { runYandexOperation } from "@agent/lib/yandex/transport";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof purchases.claimYandexPurchase>(),
@@ -14,6 +16,7 @@ const services = vi.hoisted(() => ({
   edaSubmit: vi.fn<typeof eda.submitEdaPurchase>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
+  run: vi.fn<typeof runYandexOperation>(),
   read: vi.fn<typeof purchases.readYandexPurchase>(),
   settle: vi.fn<typeof purchases.settleYandexPurchase>(),
   submit: vi.fn<typeof lavka.submitLavkaPurchase>(),
@@ -24,6 +27,9 @@ vi.mock("@db/services/yandex-purchases", () => ({
   createYandexPurchase: services.create,
   readYandexPurchase: services.read,
   settleYandexPurchase: services.settle,
+}));
+vi.mock("@agent/lib/yandex/transport", () => ({
+  runYandexOperation: services.run,
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   yandexPurchasePilot: services.pilot,
@@ -500,5 +506,83 @@ describe("Yandex purchase consent", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /cartVersion|synthetic-cart|providerSnapshot|fingerprint/u
     );
+  });
+});
+
+/** What the transport answers for an operation that went through. */
+const answer = (data: JsonValue) => ({ data, kind: "ok" as const });
+
+describe("Yandex Go with an unverified card", () => {
+  const verifyUrl =
+    "https://trust.yandex.ru/web/binding?verification_intent_id=verification_intent_1";
+  const book = {
+    action: "book" as const,
+    from: "Дом",
+    near: [37.6177, 55.7558] satisfies [number, number],
+    payment: "card" as const,
+    service: "go" as const,
+    to: "Раменки",
+  };
+
+  beforeEach(() => {
+    services.run.mockImplementation(async (_workspace, operation) =>
+      operation.id === "go.book"
+        ? answer({
+            kind: "failed",
+            reason: "no_verified_card",
+            unverifiedCardId: "card-x2b",
+          })
+        : answer({
+            kind: "link",
+            card: "Мир •••• 6443",
+            last4: "6443",
+            url: verifyUrl,
+          })
+    );
+  });
+
+  it("gives the person one bank link for the card, not a new one each try", async () => {
+    const tool = await resolve([
+      { role: "user", content: "Вызови такси до Раменок, по карте" },
+    ]);
+    const first = await tool?.execute(book, callContext());
+    expect(first).toMatchObject({
+      kind: "failed",
+      card: "Мир •••• 6443",
+      cardLast4: "6443",
+      verifyUrl,
+    });
+    expect(JSON.stringify(first)).not.toContain("card-x2b");
+    expect(services.run).toHaveBeenLastCalledWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.card_verify" }),
+      { cardId: "card-x2b", near: [37.6177, 55.7558] }
+    );
+    expect(await tool?.execute(book, callContext())).toMatchObject({
+      verifyUrl,
+    });
+    expect(
+      services.run.mock.calls.filter(
+        ([, operation]) => operation.id === "go.card_verify"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("falls back to the Go app when no link can be made", async () => {
+    services.run.mockImplementation(async (_workspace, operation) =>
+      operation.id === "go.book"
+        ? answer({
+            kind: "failed",
+            reason: "no_verified_card",
+            unverifiedCardId: "card-x3c",
+          })
+        : { kind: "ok", data: { kind: "failed", reason: "trust_400" } }
+    );
+    const tool = await resolve([
+      { role: "user", content: "Такси до Раменок по карте" },
+    ]);
+    const result = await tool?.execute(book, callContext());
+    expect(result).not.toHaveProperty("verifyUrl");
+    expect(JSON.stringify(result)).toContain("Yandex Go app");
   });
 });

@@ -156,6 +156,8 @@
   без `@`. Из-за `IMESSAGE_PROJECT_ID` в env сессии прямой `vitest run` падает
   и на `db/services/auth/tests/photon.test.ts` («resolves project credentials
   lazily»), даже на чистом bro-next: `env -u IMESSAGE_PROJECT_ID`.
+  `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` сессии без `S3_ENDPOINT` и
+  `S3_REGION` валят `pnpm build:eve` той же проверкой: снимайте и их.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
   `DATABASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`. knip в `pnpm check`:
   новый каталог точек входа (как `agent/instrumentation/`) — в `knip.config.ts`.
@@ -654,11 +656,15 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   отменила заказ. Окно подтверждения — около 6 минут.
 - Карты аккаунта в Trust общие для сервисов, но Go держит их в
   `unverified_cards` (`card_antifraud`, `usable: false`), пока карта не
-  проверена банком; веб Go это не умеет (мост `goplatform.private.payments.verify`
+  проверена банком; веб Go сам не умеет (мост `goplatform.private.payments.verify`
   есть только в приложении). Проверка общая: после оплаты картой с 3-D Secure
   в Еде (12.10) та же карта в Go стала `available` и оплатила поездку, а Еда
-  дальше списывала без 3-D Secure. Trust `/web/create_verification_intent` с
-  сервисным токеном такси отвечает «Validation failed» — параметры не подобраны.
+  дальше списывала без 3-D Secure. Ссылку проверки даёт Trust:
+  `create_verification_intent` с `service_token` Go (`trustToken` конфига
+  страницы) и `binding_id` отвечает 201 с `form_url`, только если в
+  `form_params` есть `integrationProfileId` (`yandex_default`, он же
+  `profile.name` карты), без него — 400 «Validation failed» (`go.card_verify`
+  в `agent/lib/yandex/go/card.ts`).
 - После кода банка страница 3-D Secure сама уходит на Яндекс
   (`process_psp_3ds`): закрыть её раньше — деньги заблокированы, а Лавка
   платежа не видит (`wait_user_action`) и через ~7 минут отменяет заказ с
