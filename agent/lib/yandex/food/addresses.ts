@@ -1,3 +1,4 @@
+import { lavkaPageSource } from "./lavka-page";
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 
@@ -12,7 +13,7 @@ export const lavkaAddressesOperation = defineYandexOperation({
   access: "read",
   args: z.object({}),
   id: "food.lavka_addresses",
-  origin: "https://lavka.yandex.ru/",
+  origin: "https://lavka.yandex.ru/robots.txt",
   result: z.object({
     addresses: z.array(
       z.object({
@@ -27,7 +28,10 @@ export const lavkaAddressesOperation = defineYandexOperation({
   // The saved addresses are in the page's query state, which the page
   // fills when it loads; no request is made for them.
   run: `async function () {
-  const queries = window.__REACT_QUERY_STATE__.queries;
+  ${lavkaPageSource}
+  const state = await lavkaPage();
+  if (state === null) return { status: "captcha" };
+  const queries = state.queries;
   const favorites = queries.find((entry) => entry.queryKey[0] === "FavoriteAddresses");
   const saved = favorites && favorites.state.data ? favorites.state.data : [];
   const addresses = saved.map((entry) => {
