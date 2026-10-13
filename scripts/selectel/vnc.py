@@ -222,7 +222,9 @@ def command_script(command, tag, put_url):
         "(",
         command,
         ') </dev/null >"$out" 2>&1',
-        f'echo "E{tag}E $?" >>"$out"',
+        # The marker on a line of its own: output that ends without a line break (`curl` of a health check,
+        # 13.10) would otherwise carry it at the end of its last line.
+        f"printf '\\nE{tag}E %s\\n' \"$?\" >>\"$out\"",
         f"for i in 1 2 3 4 5; do curl -fsS -m 60 -T \"$out\" '{put_url}' && break; sleep 5; done",
         'rm -f "$out"',
         "",
@@ -242,11 +244,13 @@ def typed_line(tag, get_url, digest):
 
 
 def parse_output(text, tag):
-    """(output, exit status) of an output object; status None without the end marker."""
-    match = re.search(rf"^E{tag}E (\d+)\s*$", text, re.M)
-    if not match:
+    """(output, exit status) of an output object; status None without the end marker. The last marker counts,
+    at the start of its line or not: the tag is random, and a script written before the marker had a line of
+    its own glued it to output that ended without a line break."""
+    matches = list(re.finditer(rf"E{tag}E (\d+)[ \t]*$", text, re.M))
+    if not matches:
         return text.strip(), None
-    return text[:match.start()].strip(), int(match.group(1))
+    return text[:matches[-1].start()].strip(), int(matches[-1].group(1))
 
 
 class Console:

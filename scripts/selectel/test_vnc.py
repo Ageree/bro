@@ -138,6 +138,15 @@ class ShellTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "typed line"):
             vnc.typed_line("abcd1234", "https://s3.example/" + "x" * vnc.MAX_LINE, "ab" * 32)
 
+    def test_output_without_a_final_line_break_keeps_its_status(self):
+        # 13.10: install's last step, curl of the health check, prints no line break; the status was lost.
+        out = self.root / "out"
+        self.bash(vnc.command_script('printf \'{"ok": true}\'', "abcd1234", out.as_uri()))
+        self.assertEqual(vnc.parse_output(out.read_text(), "abcd1234"), ('{"ok": true}', 0))
+        # The marker an older script glued to such a line, and blank lines before a marker, read the same.
+        self.assertEqual(vnc.parse_output('{"ok": true}Eabcd1234E 0\n', "abcd1234"), ('{"ok": true}', 0))
+        self.assertEqual(vnc.parse_output("done\n\n\nEabcd1234E 2\n", "abcd1234"), ("done", 2))
+
     def test_output_without_the_end_marker_has_no_status(self):
         self.assertEqual(vnc.parse_output("half\n", "abcd1234"), ("half", None))
         self.assertEqual(vnc.parse_output("x\nEabcd1234E 0\n", "ffff0000"), ("x\nEabcd1234E 0", None))
