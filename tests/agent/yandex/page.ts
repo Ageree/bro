@@ -22,6 +22,8 @@ export type OperationAnswer = z.infer<typeof operationAnswerSchema>;
  * `document`'s scripts, IndexedDB). Nothing else of the browser exists here.
  */
 export interface FakePage {
+  /** Holds a request before the service answers it, to tell requests that overlap from ones that queue. */
+  readonly hold?: (url: URL) => Promise<void>;
   readonly indexedDb?: JsonValue;
   readonly origin: string;
   readonly respond: (
@@ -29,6 +31,8 @@ export interface FakePage {
     init: { readonly body?: string | null; readonly method?: string }
   ) => FakeResponse;
   readonly scripts?: readonly string[];
+  /** Collects the delay of every `setTimeout` the page code asks for. */
+  readonly timeouts?: number[];
 }
 
 /** A file of the spec's fixtures, read as the answer of a request. */
@@ -107,6 +111,7 @@ export async function runInPage(
       input: string,
       init?: { body?: string | null; method?: string }
     ) => {
+      await page.hold?.(new URL(input, page.origin));
       const response = page.respond(new URL(input, page.origin), {
         body: init?.body,
         method: init?.method,
@@ -120,7 +125,8 @@ export async function runInPage(
     },
     indexedDB: fakeIndexedDb(page.indexedDb),
     navigator: { userAgent: "Mozilla/5.0 (test)" },
-    setTimeout: (callback: () => void) => {
+    setTimeout: (callback: () => void, ms?: number) => {
+      page.timeouts?.push(ms ?? 0);
       queueMicrotask(callback);
     },
     TextEncoder,
@@ -131,4 +137,34 @@ export async function runInPage(
     context
   );
   return operationAnswerSchema.parse(answer);
+}
+
+/**
+ * A `hold` for a test of requests that must overlap: each held request waits
+ * until `count` of them are waiting at once, or a short while, and `overlapped()` says
+ * whether they were. Code that sends them one after another never gets there.
+ */
+export function overlap(match: (url: URL) => boolean, count: number) {
+  let waiting = 0;
+  let met = false;
+  const { promise: together, resolve: release } =
+    Promise.withResolvers<undefined>();
+  return {
+    hold: async (url: URL) => {
+      if (!match(url)) return;
+      waiting += 1;
+      if (waiting >= count) {
+        met = true;
+        release(undefined);
+      }
+      await Promise.race([
+        together,
+        new Promise((done) => {
+          setTimeout(done, 100);
+        }),
+      ]);
+      waiting -= 1;
+    },
+    overlapped: () => met,
+  };
 }

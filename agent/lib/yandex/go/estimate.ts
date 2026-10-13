@@ -71,12 +71,12 @@ export const goEstimateOperation = defineYandexOperation({
       (suggest.results || []).find((r) => r.position);
     return hit ? { text: hit.text.trim(), position: hit.position } : { error: "address_not_found" };
   };
-  const a = await point(args.from);
+  // The two places are independent reads, so they go out together; the
+  // pauses between the requests that were here bought nothing (live 12.10:
+  // six runs back to back, no 429).
+  const [a, b] = await Promise.all([point(args.from), point(args.to)]);
   if (a.error || a.wall) return a.wall ? goAnswer(a) : { status: "ok", data: { error: a.error, which: "from" } };
-  await new Promise((r) => setTimeout(r, 1000));
-  const b = await point(args.to);
   if (b.error || b.wall) return b.wall ? goAnswer(b) : { status: "ok", data: { error: b.error, which: "to" } };
-  await new Promise((r) => setTimeout(r, 1000));
   const j = await post("/3.0/routestats", {
     id: session.userId,
     route: [a.position, b.position],
