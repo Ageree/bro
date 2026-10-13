@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { goEstimateOperation } from "@agent/lib/yandex/go/estimate";
 import { goRidesOperation } from "@agent/lib/yandex/go/rides";
 import type { JsonValue } from "@agent/lib/yandex/operations";
-import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
+import { type FakeResponse, dataOf, fixture, overlap, runInPage } from "./page";
 
 const userId = "0123456789abcdef0123456789abcdef";
 const origin = "https://taxi.yandex.ru/";
@@ -102,6 +102,24 @@ describe("go.estimate", () => {
       ],
       selected_class: "econom",
     });
+  });
+
+  it("looks both addresses up together and waits for nothing between requests", async () => {
+    const { page, requests } = await goPage();
+    const together = overlap(
+      (url) => url.pathname === "/4.0/persuggest/v1/suggest",
+      2
+    );
+    const timeouts: number[] = [];
+    const answer = await runInPage(goEstimateOperation.run, estimateArgs({}), {
+      ...page,
+      hold: together.hold,
+      timeouts,
+    });
+    expect(answer.status).toBe("ok");
+    expect(together.overlapped()).toBe(true);
+    expect(timeouts).toEqual([]);
+    expect(requests.map((r) => r.path).at(-1)).toBe("/3.0/routestats");
   });
 
   it("takes coordinates as they are, without geocoding them", async () => {

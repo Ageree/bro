@@ -95,8 +95,6 @@ export const goBookOperation = defineYandexOperation({
   const fail = (reason) => ok({ kind: "failed", reason });
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   ${activeRideSource}
-  const active = await activeRide();
-  if (active) return ok({ kind: "already_active", ride: active });
   const place = async (query, type) => {
     let position = query;
     if (!Array.isArray(query)) {
@@ -117,13 +115,11 @@ export const goBookOperation = defineYandexOperation({
     return { fullname: r.text, geopoint: r.position, short_text: r.title?.text || r.text, type: "address",
       ...(r.city ? { city: r.city } : {}), ...(r.uri ? { uri: r.uri } : {}) };
   };
-  const from = await place(args.from, "a");
-  if (!from) return fail("from_not_found");
-  const to = await place(args.to, "b");
-  if (!to) return fail("to_not_found");
-  let payment = { type: "cash", label: "наличные" };
-  if (args.payment !== "cash") {
-    let selected = null;
+  // Four independent reads go out together: Yandex's own record of a ride
+  // that is on, the two places, and the cards (the cards do not depend on the
+  // point: the same list at two places). Nothing is written until all four are
+  // in, and a ride that is on still answers first, whatever the rest found.
+  const selectedPayment = async () => {
     try {
       const db = await new Promise((done, fault) => {
         const open = indexedDB.open("turboapp-taxi");
@@ -135,12 +131,29 @@ export const goBookOperation = defineYandexOperation({
         get.onsuccess = () => done(get.result);
         get.onerror = () => done(null);
       });
-      selected = (typeof stored === "string" ? JSON.parse(stored) : stored)?.selectedPaymentMethod ?? null;
-    } catch {}
-    if (args.payment === "current" && selected?.type !== "card") {
+      return (typeof stored === "string" ? JSON.parse(stored) : stored)?.selectedPaymentMethod ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const selected = args.payment === "cash" ? null : await selectedPayment();
+  const needsCards = args.payment === "card" || (args.payment === "current" && selected?.type === "card");
+  const [active, from, to, methods] = await Promise.all([
+    activeRide(),
+    place(args.from, "a"),
+    place(args.to, "b"),
+    needsCards
+      ? session.post("/3.0/paymentmethods", { location: Array.isArray(args.from) ? args.from : args.near, id: session.userId })
+      : null,
+  ]);
+  if (active) return ok({ kind: "already_active", ride: active });
+  if (!from) return fail("from_not_found");
+  if (!to) return fail("to_not_found");
+  let payment = { type: "cash", label: "наличные" };
+  if (args.payment !== "cash") {
+    if (!needsCards) {
       if (selected?.type !== "cash") return fail("payment_unsupported");
     } else {
-      const methods = await session.post("/3.0/paymentmethods", { location: from.geopoint, id: session.userId });
       const pending = methods.card?.unverified_cards || [];
       const unverified = new Set(pending.map((c) => c.id));
       const cards = (methods.card?.available_cards || []).filter((c) => !c.is_hidden && !unverified.has(c.id));

@@ -7,7 +7,7 @@ import {
 } from "@agent/lib/yandex/go/booking";
 import { goCardVerifyOperation } from "@agent/lib/yandex/go/card";
 import type { JsonValue } from "@agent/lib/yandex/operations";
-import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
+import { type FakeResponse, dataOf, fixture, overlap, runInPage } from "./page";
 
 const userId = "0123456789abcdef0123456789abcdef";
 
@@ -118,6 +118,46 @@ describe("go.book", () => {
       id: userId,
       orderid: "new-order",
     });
+  });
+
+  it("reads the ride that is on and both places together, and writes only after all of them", async () => {
+    const { page, requests } = await goPage({});
+    const together = overlap(
+      (url) =>
+        url.pathname === "/3.0/launch" ||
+        url.pathname === "/4.0/persuggest/v1/suggest",
+      3
+    );
+    const timeouts: number[] = [];
+    const data = dataOf(
+      await runInPage(goBookOperation.run, book(), {
+        ...page,
+        hold: together.hold,
+        timeouts,
+      })
+    );
+    expect(data).toMatchObject({ kind: "booked" });
+    expect(together.overlapped()).toBe(true);
+    expect(timeouts).toEqual([]);
+    const paths = requests.map((r) => r.path);
+    const draft = paths.indexOf("/external/3.0/orderdraft");
+    expect(paths.indexOf("/3.0/launch")).toBeLessThan(draft);
+    expect(paths.lastIndexOf("/4.0/persuggest/v1/finalsuggest")).toBeLessThan(
+      paths.indexOf("/3.0/routestats")
+    );
+    expect(paths.indexOf("/3.0/routestats")).toBeLessThan(draft);
+  });
+
+  it("answers the ride that is on first, even when the places were not found", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/launch": { body: activeLaunch },
+      "/3.0/taxiontheway": { body: activeOrder },
+      "/4.0/persuggest/v1/suggest": { body: { results: [] } },
+    });
+    const data = dataOf(await runInPage(goBookOperation.run, book(), page));
+    expect(data).toMatchObject({ kind: "already_active" });
+    expect(sent("/3.0/routestats")).toHaveLength(0);
+    expect(sent("/external/3.0/orderdraft")).toHaveLength(0);
   });
 
   it("answers the ride that is on instead of booking a second one", async () => {
