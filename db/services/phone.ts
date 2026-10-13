@@ -827,6 +827,23 @@ export async function recordCallUncertain(id: string) {
     .where(and(eq(phoneCalls.id, id), eq(phoneCalls.state, "starting")));
 }
 
+/** The provider call was never submitted, so the same call may be asked for again. */
+export async function recordCallNotSubmitted(id: string) {
+  await db
+    .update(phoneCalls)
+    .set({
+      state: "failed",
+      outcome: "not_submitted",
+      summary:
+        "The call was not placed: provider checks failed before dialing.",
+      task: null,
+      durationSeconds: 0,
+      completedAt: new Date(),
+      checkedAt: new Date(),
+    })
+    .where(and(eq(phoneCalls.id, id), eq(phoneCalls.state, "starting")));
+}
+
 export async function listPhoneCalls(scope: AccessScope, callId?: string) {
   const rows = await db
     .select({
