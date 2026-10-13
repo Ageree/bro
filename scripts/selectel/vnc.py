@@ -9,7 +9,8 @@ websocket (wss://<api host>/console/v1/<path>), RFB 3.8 with no security of its 
 the access, one connection each). A VNC console takes keys and shows pixels, it gives no text back, so:
 
   - keys: tty1's login as root (with the password `host.py create` set by cloud-init and kept in
-    $PROBE_STATE_DIR/<name>.password, only when a prompt asks for it), then one line per command, typed as
+    $PROBE_STATE_DIR/<name>.password, only when the screen shows a prompt that does not echo the keys
+    typed), then one line per command, starting with `unset HISTFILE`, typed as
     RFB key events, slowly (KEY_PAUSE_S: a line of ~700 characters takes ~40 s);
   - the command itself travels as a script in Object Storage: the typed line fetches it by a presigned GET
     and runs it only when its sha256 matches, so a key the console dropped can break the line but never
@@ -29,7 +30,6 @@ import hashlib
 import os
 import re
 import secrets
-import socket
 import struct
 import sys
 import time
@@ -54,6 +54,10 @@ RETURN, SHIFT, CONTROL = 0xFF0D, 0xFFE1, 0xFFE3
 KEY_PAUSE_S = 0.025
 # A tty line in canonical mode holds 4095 characters; the typed lines here are well under a thousand.
 MAX_LINE = 3000
+# The probe for a password prompt: keys a prompt does not echo, and pixels they change when echoed. Sixteen
+# '#' light ~500 pixels of a 640x480 text console; a blinking cursor changes a cell, at most 128.
+ECHO_PROBE = "#" * 16
+ECHO_PIXELS = 300
 
 
 def keystrokes(text):
@@ -128,6 +132,10 @@ class RFB:
 
     def screen(self):
         """The whole screen as a PNG."""
+        return png(self.width, self.height, self.frame())
+
+    def frame(self):
+        """The whole screen, RGB bytes row by row."""
         self.ws.send_binary(struct.pack(">BBHHHH", 3, 0, 0, 0, self.width, self.height))
         rgb = bytearray(self.width * self.height * 3)
         while True:
@@ -145,7 +153,7 @@ class RFB:
                         rgb[start:start + w * 3:3] = line[2::4]
                         rgb[start + 1:start + w * 3:3] = line[1::4]
                         rgb[start + 2:start + w * 3:3] = line[0::4]
-                return png(self.width, self.height, bytes(rgb))
+                return bytes(rgb)
             if kind == 1:  # SetColourMapEntries
                 self.read(3)
                 self.read(struct.unpack(">H", self.read(2))[0] * 6)
@@ -154,6 +162,18 @@ class RFB:
                 self.read(struct.unpack(">I", self.read(4))[0])
             elif kind != 2:  # Bell has no body
                 raise ConnectionError(f"unexpected RFB message {kind}")
+
+
+def require():
+    """What the console needs, checked before host.py holds anything: websocket-client and the project's key."""
+    import importlib.util
+
+    from api import api_key, setting
+
+    if importlib.util.find_spec("websocket") is None:
+        sys.exit("the VNC console needs the websocket-client package (pip install websocket-client)")
+    api_key()
+    setting("SELECTEL_PROJECT")
 
 
 def console_websocket(server_id):
@@ -181,6 +201,18 @@ def console_websocket(server_id):
                                        timeout=30, sslopt=ca)
 
 
+def asks_password(rfb):
+    """True when the screen shows a prompt that does not echo: the probe keys change (almost) no pixels. ^U
+    then drops them, from the prompt's buffer or from a shell's line alike."""
+    before = rfb.frame()
+    rfb.type(ECHO_PROBE)
+    time.sleep(1.5)
+    after = rfb.frame()
+    rfb.type("\x15")
+    changed = sum(a != b for a, b in zip(before[::3], after[::3]))
+    return changed < ECHO_PIXELS
+
+
 def command_script(command, tag, put_url):
     """What the VM runs for one command: the command with no input, its output and the end marker in a file,
     that file PUT to the presigned link (a few tries: the console keeps no other copy)."""
@@ -198,10 +230,11 @@ def command_script(command, tag, put_url):
 
 
 def typed_line(tag, get_url, digest):
-    """The one line typed for a command. The leading space keeps it out of root's history (ignoreboth), ^U
-    clears what the line may hold already; the script runs only when it is the one this side wrote."""
+    """The one line typed for a command. ^U clears what the line may hold already; `unset HISTFILE` first, so the
+    shell never writes its history (the presigned links, anything typed) whatever HISTCONTROL says; the
+    script runs only when it is the one this side wrote."""
     script = f"/root/.bro-console-{tag}.sh"
-    line = (f"\x15 curl -fsS -m 60 -o {script} '{get_url}' && echo '{digest}  {script}' | sha256sum -c --quiet - "
+    line = (f"\x15 unset HISTFILE; curl -fsS -m 60 -o {script} '{get_url}' && echo '{digest}  {script}' | sha256sum -c --quiet - "
             f"&& bash {script}; rm -f {script}\r")
     if len(line) > MAX_LINE:
         raise ValueError(f"a typed line of {len(line)} characters")
@@ -266,21 +299,30 @@ class Console:
         return f"the console's screen is in {path}"
 
     def login(self):
-        """From any state of tty1 to a root shell, proved by a command each time. ^U clears a half-typed line,
-        `exit` logs a shell out (a login prompt takes it for a user name), the empty line after it ends a
-        password prompt ("Login incorrect" comes ~3 s later); then `login:` is certain. No ^C: tty1 may still
-        run the install of an update whose answer was lost, and these keys wait for it instead of cutting it.
+        """From any state of tty1 to a root shell, proved by a command. ^U clears a half-typed line, `exit`
+        logs a shell out (a login prompt takes it for a user name), the empty line after it ends a password
+        prompt ("Login incorrect" comes ~3 s later); then `login:` is certain, and `root` goes in. No ^C: tty1
+        may still run the install of an update whose answer was lost, and these keys wait for it instead.
 
-        Then `root` alone: on bro-app-sel-2 (13.10) tty1 lets root in with no password prompt, and a password
-        typed after it would land in the shell, on the screen and in its history. When a prompt does ask, it
-        takes the proving line as a wrong password (nothing of it is logged), and `root` and the password go
-        in the second time."""
-        self.keys("\x15exit\r", 3, "\r", 6, "root\r", 4)
-        if self.proved():
-            return
-        password = (STATE_DIR / f"{self.name}.password").read_text().strip()
-        self.keys(5, "root\r", 3, password + "\r", 8)
-        if self.proved():
+        The password goes in only when the screen shows a prompt that does not echo (asks_password): on
+        bro-app-sel-2 (13.10) root had none and tty1 opened a shell at once, where a password typed blind landed
+        in the shell, on the screen and in its history."""
+        rfb = self.connect()
+        try:
+            for step in ("\x15exit\r", 3, "\r", 6, "root\r", 4):
+                if isinstance(step, str):
+                    rfb.type(step)
+                else:
+                    time.sleep(step)
+            if asks_password(rfb):
+                password = (STATE_DIR / f"{self.name}.password").read_text().strip()
+                rfb.type(password + "\r")
+                time.sleep(8)
+            time.sleep(1)
+        finally:
+            rfb.ws.close()
+        # Twice: one key the console lost breaks a line, not the shell.
+        if self.proved() or self.proved():
             return
         sys.exit(f"no root shell on the console of {self.name}: {self.save_screen()}")
 
@@ -318,10 +360,17 @@ class Console:
             time.sleep(3)
 
     def forget(self, key):
-        try:
-            s3.signed("DELETE", key)
-        except (OSError, socket.timeout):  # it expires with its links anyway; nothing else reads it
-            pass
+        """Deletes an object of the console. One that stays is not reachable by its links once they expire,
+        but stays in the bucket: its key is reported (never a link) for the operator to delete."""
+        for attempt in range(3):
+            try:
+                code, _ = s3.signed("DELETE", key)
+                if code in (200, 204):
+                    return
+            except OSError:
+                pass
+            time.sleep(2 ** attempt)
+        print(f"could not delete {key} from Object Storage: delete it by hand", file=sys.stderr, flush=True)
 
     def close(self):
         """Logs the shell out: typed now, read by the shell only when it is at its prompt again."""

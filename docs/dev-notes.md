@@ -399,6 +399,8 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   `bro-app-sel-2` root был без пароля (`passwd -S` — NP), tty1 пускал без него, а
   `nullok` PAM давал `su` в root любому пользователю. `boot.cloud_init` пишет и
   `list`, а `update-host` на Selectel ставит хэш пароля из `<VM>.password`, если NP.
+  Пароль `vnc.py` набирает, только если экран не повторил пробные клавиши
+  (`asks_password`): иначе при NP он уходил в shell и его историю.
 - Для `host.py` с Selectel нужен `SELECTEL_PROJECT`: id проекта даёт
   `GET https://api.selectel.ru/vpc/resell/v2/projects` с `X-Token`. Каталог
   `vendor/` не входит в `state restore`, поэтому перед `update-host` —

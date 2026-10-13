@@ -2,6 +2,7 @@
 file:// links standing in for Object Storage's."""
 
 import hashlib
+import io
 import os
 import shutil
 import struct
@@ -122,7 +123,8 @@ class ShellTest(unittest.TestCase):
         script.write_text(f"touch {self.root}/ran\n")
         digest = hashlib.sha256(script.read_bytes()).hexdigest()
         line = vnc.typed_line("abcd1234", script.as_uri(), digest)
-        self.assertTrue(line.startswith("\x15 ") and line.endswith("\r"))  # cleared line, out of the history
+        # A cleared line, and the shell's history off before anything else runs.
+        self.assertTrue(line.startswith("\x15 unset HISTFILE; curl ") and line.endswith("\r"))
         vnc.keystrokes(line)  # every character can be typed
         self.bash(line[1:-1])
         self.assertTrue((self.root / "ran").exists())
@@ -190,28 +192,67 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(result, ("", None))
         self.assertEqual(len(deleted), 1)  # the script; the output may still come and lapses with its link
 
-    def test_login_types_no_password_when_root_needs_none(self):
-        typed = []
-        with mock.patch.object(self.console, "keys", side_effect=lambda *steps: typed.extend(steps)), \
-                mock.patch.object(self.console, "run", return_value=("console-ok", 0)):
-            self.console.login()  # no password file is read
-        self.assertEqual([s for s in typed if isinstance(s, str)], ["\x15exit\r", "\r", "root\r"])
+    def test_a_missed_delete_is_retried_then_reported_by_key_alone(self):
+        answers = [OSError("reset"), (500, b""), (204, b"")]
+        with mock.patch.object(vnc.s3, "signed", side_effect=answers):
+            self.console.forget("app/console/bro-app-x/ab.out")
+        with mock.patch.object(vnc.s3, "signed", return_value=(500, b"")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.console.forget("app/console/bro-app-x/ab.out")
+        self.assertIn("app/console/bro-app-x/ab.out", err.getvalue())
+        self.assertNotIn("https://", err.getvalue())
 
-    def test_login_types_the_password_when_the_prompt_asks_and_gives_up_after_that(self):
+    def test_the_console_is_checked_before_anything_is_held(self):
+        with mock.patch("importlib.util.find_spec", return_value=None):
+            with self.assertRaisesRegex(SystemExit, "websocket-client"):
+                vnc.require()
+
+    def login_with(self, asks, proofs):
+        """login() against a fake console: whether the screen asks for a password, what each proof answers;
+        what was typed on the console and how it ended."""
+        typed = []
+        rfb = mock.Mock()
+        rfb.type.side_effect = typed.append
+        answers = list(proofs)
+        with mock.patch.object(self.console, "connect", return_value=rfb), \
+                mock.patch.object(vnc, "asks_password", return_value=asks), \
+                mock.patch.object(self.console, "run", side_effect=lambda c, s: answers.pop(0)), \
+                mock.patch.object(self.console, "save_screen", return_value="the screen is in x.png"):
+            try:
+                self.console.login()
+            except SystemExit as stop:
+                return typed, str(stop)
+        return typed, "in"
+
+    def test_no_password_is_typed_where_the_screen_echoes(self):
+        # Root with no password: a shell at once, which echoes. No password file is read.
+        typed, outcome = self.login_with(False, [("console-ok", 0)])
+        self.assertEqual((typed, outcome), (["\x15exit\r", "\r", "root\r"], "in"))
+        # A shell whose proof lost a key: the second proof, still no password typed.
+        typed, outcome = self.login_with(False, [("", None), ("console-ok", 0)])
+        self.assertEqual((typed, outcome), (["\x15exit\r", "\r", "root\r"], "in"))
+        typed, outcome = self.login_with(False, [("", None), ("", None)])
+        self.assertIn("no root shell", outcome)
+        self.assertEqual(typed, ["\x15exit\r", "\r", "root\r"])
+
+    def test_the_password_goes_in_once_when_the_prompt_does_not_echo(self):
         console = "-_" + os.urandom(6).hex()  # made here: a written-out one reads as a leaked secret to scanners
         (self.state / "bro-app-x.password").write_text(console + "\n")
-        typed = []
-        answers = [("", None), ("Last login: …\nconsole-ok", 0)]
-        with mock.patch.object(self.console, "keys", side_effect=lambda *steps: typed.extend(steps)), \
-                mock.patch.object(self.console, "run", side_effect=lambda c, s: answers.pop(0)):
-            self.console.login()
-        self.assertEqual([s for s in typed if isinstance(s, str)][-2:], ["root\r", console + "\r"])
-        with mock.patch.object(self.console, "keys"), \
-                mock.patch.object(self.console, "run", return_value=("", None)), \
-                mock.patch.object(self.console, "save_screen", return_value="the screen is in x.png"):
-            with self.assertRaisesRegex(SystemExit, "no root shell .*the screen is in x.png"):
-                self.console.login()
+        typed, outcome = self.login_with(True, [("", None), ("Last login: …\nconsole-ok", 0)])
+        self.assertEqual(outcome, "in")
+        self.assertEqual(typed, ["\x15exit\r", "\r", "root\r", console + "\r"])
 
+    def test_a_prompt_is_one_that_does_not_echo(self):
+        blank = bytes(640 * 480 * 3)
+        cursor = bytearray(blank)
+        cursor[:8 * 16 * 3] = b"\xff" * (8 * 16 * 3)  # a block cursor blinked: one cell
+        echoed = bytearray(blank)
+        echoed[:16 * 40 * 3] = b"\xff" * (16 * 40 * 3)  # sixteen glyphs drawn
+        for after, asks in ((blank, True), (bytes(cursor), True), (bytes(echoed), False)):
+            rfb = mock.Mock()
+            rfb.frame.side_effect = [blank, after]
+            self.assertEqual(vnc.asks_password(rfb), asks)
+            self.assertEqual(rfb.type.call_args_list, [mock.call(vnc.ECHO_PROBE), mock.call("\x15")])
 
 if __name__ == "__main__":
     unittest.main()

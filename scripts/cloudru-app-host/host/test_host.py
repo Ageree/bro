@@ -1626,7 +1626,7 @@ class HostCliTest(unittest.TestCase):
 
         class Console:
             def __init__(self, name):
-                pass
+                calls.append("console")
 
             def login(self):
                 calls.append("login")
@@ -1640,6 +1640,7 @@ class HostCliTest(unittest.TestCase):
 
         console = type(sys)("console")
         console.Console = Console
+        console.require = lambda: calls.append("require")
         with mock.patch.dict(sys.modules, {"console": console, "vnc": console}), \
                 mock.patch.object(self.host, "call", side_effect=call), \
                 mock.patch.object(self.host, "deliver_bundle", return_value=("app/host/x.tgz", "ab" * 32)), \
@@ -1660,7 +1661,7 @@ class HostCliTest(unittest.TestCase):
         self.assertEqual(outcome, "done")
         # The restart gave them back; the console's shell is logged out after the install.
         self.assertEqual(self.deployd_calls(calls), [("POST", "host-update"), ("GET", "status")])
-        self.assertEqual([c for c in calls if isinstance(c, str)], ["login", "logout"])
+        self.assertEqual([c for c in calls if c in ("login", "logout")], ["login", "logout"])
         for codes in ([1], [0, 2]):  # the fetch, or the install before the restart, failed
             calls, outcome = self.update_host(held, codes)
             self.assertNotEqual(outcome, "done")
@@ -1670,6 +1671,7 @@ class HostCliTest(unittest.TestCase):
         calls, outcome = self.update_host(held, [0, None])
         self.assertIn("no answer from the console", outcome)
         self.assertIn("status bro-app-1 --stage", outcome)
+        self.assertIn("or 20 with a deployd before 2026-10-13.1", outcome)  # the first run's hold is the old one
         self.assertNotIn("failed", outcome)
         self.assertNotIn(("DELETE", "host-update"), calls)
         # Busy: nothing goes over the console.
@@ -1693,6 +1695,8 @@ class HostCliTest(unittest.TestCase):
                 mock.patch.object(self.host, "root_password_line", return_value="ROOT-LINE"):
             calls, outcome = self.update_host(held, [0, 0])
         self.assertEqual(outcome, "done")
+        # The console's checks and the server's lookup come before deployd holds anything.
+        self.assertEqual(calls[:3], ["require", "console", ("POST", "host-update")])
         runs = [c[1] for c in calls if isinstance(c, tuple) and c[0] == "run"]
         self.assertTrue(runs[0].startswith("ROOT-LINE && curl "), runs[0])
         self.assertEqual(runs[1], self.host.UPDATE_HOST)

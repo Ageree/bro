@@ -496,6 +496,10 @@ UPDATE_HOST = " && ".join((
     "sleep 2", "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health"))
 
 
+# How long a hold lasts is the running deployd's HOST_UPDATE_S, not this checkout's: 20 min before 2026-10-13.1.
+HOLD_LAPSES = f"{deployd.HOST_UPDATE_S // 60} min, or 20 with a deployd before 2026-10-13.1"
+
+
 def hold_jobs(name):
     """deployd's job slot for the update (POST /host-update): a release, env or ops job started during the
     transfer would be cut by the restart of deployd. That restart gives the slot back, free_jobs does on a
@@ -505,7 +509,7 @@ def hold_jobs(name):
         code, body = call(name, "POST", "host-update", {})
     except LostAnswer as error:
         sys.exit(f"{error}: deployd may hold its jobs for an update now (python host.py status {name}); "
-                 f"it gives them back within {deployd.HOST_UPDATE_S // 60} min")
+                 f"it gives them back within {HOLD_LAPSES}")
     if code == 404:
         status = checked(call(name, "GET", "status"), (200,))
         if status.get("job"):
@@ -528,7 +532,7 @@ def free_jobs(name, held):
         code, body = None, {"error": str(error)}
     if code != 200:
         print(f"deployd did not take its jobs back ({code}: {body.get('error', body)}): they come back within "
-              f"{deployd.HOST_UPDATE_S // 60} min", flush=True)
+              f"{HOLD_LAPSES}", flush=True)
 
 
 def console_module():
@@ -538,6 +542,7 @@ def console_module():
     try:
         if SELECTEL:
             import vnc
+            vnc.require()  # websocket-client and the project's key, before anything is held
             return vnc
         import console
         return console
@@ -565,6 +570,9 @@ def cmd_update_host(args):
     it has none (root_password_line)."""
     name = host_name(args.name)
     console = console_module()
+    # Selectel's console finds the server by name through the API here, before deployd's jobs are held; the
+    # serial one connects when it is made, so it is made after the hold, as before.
+    ready = console.Console(name) if SELECTEL else None
     held = hold_jobs(name)
     session = None
     try:
@@ -573,7 +581,7 @@ def cmd_update_host(args):
                  f"echo '{digest}  /root/app-host.tgz' | sha256sum -c --quiet - && echo fetched")
         if SELECTEL:
             fetch = f"{root_password_line(name)} && {fetch}"
-        console_session = console.Console(name)
+        console_session = ready or console.Console(name)
         console_session.login()
         session = console_session
         # Two commands: the serial line takes about a kilobyte per line reliably, and the link is half of that.
@@ -598,7 +606,7 @@ def cmd_update_host(args):
         # its restart (or HOST_UPDATE_S): freeing them now could let a job start just before that restart.
         sys.exit(f"no answer from the console in 600 s: the install may still run or be done. Check before "
                  f"going on: python host.py status {name} --stage (deployd's version and job; a hold ends with "
-                 f"its restart, at most {deployd.HOST_UPDATE_S // 60} min)")
+                 f"its restart, at most {HOLD_LAPSES})")
     if code != 0:
         free_jobs(name, held)
         sys.exit(f"the install failed: python host.py status {name} --stage; the previous code is in "
