@@ -1,3 +1,4 @@
+import { lavkaPageSource } from "./lavka-page";
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 
@@ -49,7 +50,7 @@ export const edaSearchOperation = defineYandexOperation({
     query: z.string().min(1).max(200),
   }),
   id: "food.eda_search",
-  origin: "https://eda.yandex.ru/",
+  origin: "https://eda.yandex.ru/robots.txt",
   result: z.object({
     places: z.array(edaPlace),
     total: z.string().nullable(),
@@ -115,14 +116,17 @@ export const lavkaSearchOperation = defineYandexOperation({
     query: z.string().min(1).max(200),
   }),
   id: "food.lavka_search",
-  origin: "https://lavka.yandex.ru/",
+  origin: "https://lavka.yandex.ru/robots.txt",
   result: z.object({
     found: z.number().int().min(0),
     products: z.array(lavkaProduct),
   }),
   run: `async function (args) {
-  const page = window.__PAGE_PROPS__;
-  const startup = window.__REACT_QUERY_STATE__.queries.find(
+  ${lavkaPageSource}
+  const state = await lavkaPage();
+  if (state === null) return { status: "captcha" };
+  const page = state.page;
+  const startup = state.queries.find(
     (entry) => entry.queryKey[0] === "CommonStartup"
   );
   if (!startup) throw new Error("no address in the page");

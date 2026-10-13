@@ -12,9 +12,10 @@
   `https://market.yandex.ru/` (та же origin, cookies и вход приложит браузер).
   Стартовая страница — сама главная `https://market.yandex.ru/`: её загрузка
   (`cdp.py check`) — **4,2–4,4 с**; `/my/orders`, `/compare`, `/my/wishlist`
-  грузятся за 3,7 с, `robots.txt` — 3,7 с (время почти целиком уходит на открытие
-  вкладки, а не на страницу), поэтому лёгкой страницы выигрыша нет. Берите ту, что
-  открывает keep-alive вкладка. Главная даёт `window.state.user.sk`; со страницы без
+  грузятся за 3,7 с, `robots.txt` — 3,7 с (так мерили при открытии вкладки за
+  секунды). С 12.10 вкладка открывается за 0,1 с, и разница видна: главная
+  грузится 7,8 с (242 ресурса), `robots.txt` — 0,74 с (`docs/yandex-api/speed.md`),
+  поэтому `market.search` стоит на `robots.txt`. Главная даёт `window.state.user.sk`; со страницы без
   `window.state` (например `robots.txt`) `getSk()` из пролога сам достаёт `sk` из
   HTML `/my/wishlist` (+0,9 с).
 - **Вход.** Страница состояния кладёт `window.state.user = {sk, uid, login}`; в HTML

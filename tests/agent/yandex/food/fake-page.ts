@@ -26,6 +26,8 @@ export interface Route {
   readonly body: JsonValue;
   readonly path: string;
   readonly status?: number;
+  /** The body as text, for a route that answers HTML. */
+  readonly text?: string;
 }
 
 /**
@@ -45,6 +47,8 @@ export function page(
       headers: { get: () => "application/json" },
       json: async () => route.body,
       status: route.status ?? 200,
+      text: async () => route.text ?? JSON.stringify(route.body),
+      url: new URL(input, "https://page.test/").href,
     };
   };
   return vm.createContext({

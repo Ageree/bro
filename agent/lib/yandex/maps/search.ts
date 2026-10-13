@@ -43,6 +43,7 @@ export const mapsSearchOperation = defineYandexOperation({
       .default([0.06, 0.03]),
   }),
   id: "maps.search",
+  loaded: "interactive",
   origin: "https://yandex.ru/maps/",
   result: z.union([
     z.object({ places: z.array(place).max(10), total: z.number() }),

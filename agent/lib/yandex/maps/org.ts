@@ -51,6 +51,7 @@ export const mapsOrgOperation = defineYandexOperation({
     id: z.string().regex(/^\d{1,20}$/u),
   }),
   id: "maps.org",
+  loaded: "interactive",
   origin: "https://yandex.ru/maps/",
   result: z.union([card, z.object({ error: z.string() })]),
   run: `async function (args) {

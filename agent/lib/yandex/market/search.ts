@@ -21,7 +21,7 @@ export const marketSearchOperation = defineYandexOperation({
     sort: z.enum(["popular", "price_asc", "price_desc", "rating"]).optional(),
   }),
   id: "market.search",
-  origin: "https://market.yandex.ru/",
+  origin: "https://market.yandex.ru/robots.txt",
   result: z.object({
     count: z.number().int(),
     items: z

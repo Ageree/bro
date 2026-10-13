@@ -1,3 +1,4 @@
+import { lavkaPageSource } from "./lavka-page";
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 
@@ -164,8 +165,11 @@ const lavkaCart = z.object({
 
 /** Lavka's cart requests from its own page, and the cart as the model sees it. */
 const lavkaCartSource = String.raw`
-  const page = window.__PAGE_PROPS__;
-  const startup = window.__REACT_QUERY_STATE__.queries.find(
+  ${lavkaPageSource}
+  const state = await lavkaPage();
+  if (state === null) return { status: "captcha" };
+  const page = state.page;
+  const startup = state.queries.find(
     (entry) => entry.queryKey[0] === "CommonStartup"
   );
   if (!startup) throw new Error("no address in the page");
@@ -221,7 +225,7 @@ export const lavkaCartOperation = defineYandexOperation({
   access: "read",
   args: z.object({}),
   id: "food.lavka_cart",
-  origin: "https://lavka.yandex.ru/",
+  origin: "https://lavka.yandex.ru/robots.txt",
   result: lavkaCart,
   run: `async function () {${lavkaCartSource}
   const read = await post("retrieve", {});

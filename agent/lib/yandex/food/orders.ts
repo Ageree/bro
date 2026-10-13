@@ -1,3 +1,4 @@
+import { lavkaPageSource } from "./lavka-page";
 import { z } from "zod";
 import { defineYandexOperation } from "../operations";
 
@@ -92,10 +93,13 @@ export const lavkaOrdersOperation = defineYandexOperation({
     limit: z.number().int().min(1).max(20).default(10),
   }),
   id: "food.lavka_orders",
-  origin: "https://lavka.yandex.ru/",
+  origin: "https://lavka.yandex.ru/robots.txt",
   result: z.object({ isEnd: z.boolean(), orders: z.array(lavkaOrder) }),
   run: `async function (args) {
-  const page = window.__PAGE_PROPS__;
+  ${lavkaPageSource}
+  const state = await lavkaPage();
+  if (state === null) return { status: "captcha" };
+  const page = state.page;
   const headers = {
     "X-Csrf-Token-Bff": page.csrfToken,
     "X-Lavka-Web-City": String(page.pageEnv.cityId),
@@ -140,10 +144,13 @@ export const lavkaActiveOperation = defineYandexOperation({
   access: "read",
   args: z.object({}),
   id: "food.lavka_active",
-  origin: "https://lavka.yandex.ru/",
+  origin: "https://lavka.yandex.ru/robots.txt",
   result: z.object({ activeCount: z.number().int().min(0) }),
   run: `async function () {
-  const page = window.__PAGE_PROPS__;
+  ${lavkaPageSource}
+  const state = await lavkaPage();
+  if (state === null) return { status: "captcha" };
+  const page = state.page;
   const headers = {
     "X-Csrf-Token-Bff": page.csrfToken,
     "X-Lavka-Web-City": String(page.pageEnv.cityId),
