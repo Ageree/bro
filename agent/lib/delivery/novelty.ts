@@ -377,6 +377,16 @@ const busyWords =
 
 const busyLineLength = 80;
 
+/** Longest line that is a bare status, with no detail of the errand. */
+const bareStatusLength = 30;
+
+/** Whether a message is a few words that only say the work is under way. */
+export function isBareStatus(message: SentMessage) {
+  return (
+    message.text.length <= bareStatusLength && busyWords.test(message.text)
+  );
+}
+
 /**
  * Whether a message announces work instead of reporting it: it says Bro is
  * on it, or that the answer will come later.

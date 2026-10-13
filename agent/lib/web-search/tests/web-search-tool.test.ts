@@ -317,6 +317,47 @@ describe("web_search tool selection", () => {
     );
   });
 
+  it("asks for the source and plain numbers in a weather answer", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content: "Москва: днём +9, ночью +4, дождь.",
+                        title: "Погода в Москве",
+                        url: "https://example.com/weather",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        )
+    );
+    const { directWebSearch } = await loadTool();
+
+    expect(
+      await directWebSearch.execute(
+        { query: "погода в Москве на выходные" },
+        toolContext()
+      )
+    ).toContain("name the source of the forecast");
+    expect(
+      await directWebSearch.execute(
+        { query: "ключевая ставка ЦБ сегодня" },
+        toolContext()
+      )
+    ).not.toContain("Note for weather");
+  });
+
   /**
    * RU d03 (26.09): «Авокадо» named first with «несколько кафе под одной
    * маркой» as its minus under «не сетевое», while restoran.cafe said «сеть

@@ -40,6 +40,7 @@ import {
   tellsBeyond,
   tellsFacts,
   withoutFound,
+  isBareStatus,
 } from "./novelty";
 
 /**
@@ -412,8 +413,10 @@ function restatesHeadsUp(
 ) {
   if (turn.headsUps.length === 0 || turn.delivered.length > 0) return false;
   if (repeatsDelivered(outgoing, turn.headsUps, turn)) return true;
+  // A bare «Уже смотрю…» is the same status after the work has begun too
+  // (prod, 12.10: «Сейчас посмотрю…», 4 s later «Уже смотрю…»).
   return (
-    !turn.worked &&
+    (!turn.worked || isBareStatus(message)) &&
     message.attachments.length === 0 &&
     message.questions.length === 0 &&
     message.requests.length === 0 &&

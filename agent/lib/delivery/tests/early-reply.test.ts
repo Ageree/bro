@@ -226,6 +226,29 @@ describe("(c) the heads-up said again", () => {
     });
   });
 
+  it.each(["Уже смотрю…", "Секунду, смотрю."])(
+    "drops a bare status «%s» after the work began",
+    (text) => {
+      const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
+
+      expect(sendRefusal(message(text), turnSends(searched), true)).toEqual({
+        skipped: "heads-up",
+      });
+    }
+  );
+
+  it("keeps a status that carries a result after the work", () => {
+    const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
+
+    expect(
+      sendRefusal(
+        message("Смотрю: нашла 3 варианта."),
+        turnSends(searched),
+        true
+      )
+    ).toBeUndefined();
+  });
+
   it("tells the model to do the work, not to end the turn", () => {
     const notice = skippedSendNotice("heads-up");
 

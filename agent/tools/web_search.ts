@@ -23,6 +23,9 @@ export const directWebSearch = defineTool({
           ? `${results}\n\n${ticketSearchNote}`
           : results;
       }
+      if (weatherWords.test(input.query)) {
+        return `${results}\n\n${weatherSearchNote}`;
+      }
       return pickWords.test(input.query)
         ? `${results}\n\n${pickSearchNote}`
         : results;
@@ -122,6 +125,17 @@ function ticketSearch(input: WebSearchInput) {
  */
 const ticketSearchNote =
   "Note: these pages show timetables and typical fares, not what is on sale on those dates. When the person wants a train, a flight or a room on given dates — what is on sale, the fare, a lower berth, an aisle seat — start browser_task now without allowSubmit on the seller's site (ticket.rzd.ru or tutu.ru for trains, the airline's site for flights, ostrovok.ru for hotels), with the dates, the route and the saved preferences that bear on this very trip in the task (for example «в поезде только нижняя полка» for a train with berths) — never one the person's own words override (a seat they name wins over a saved one) and no berth for a seated train such as «Сапсан» or «Ласточка». Name two fallback sellers in the task in order («если на ticket.rzd.ru не выходит — tutu.ru, потом …»), and ask the run to return which sites it checked, which did not open and why, and every fee on top of the fare (a seller's service or agent fee) apart from it: «nothing in the budget» or «no seats» holds only after two or three sites. It needs no card and no approval: the run searches, picks the best fit and reports it with its price. Do not hand the person a timetable link instead of that search.";
+
+/** A question about the weather or the temperature. */
+const weatherWords =
+  /(?<!\p{L})(?:погод|температур|градус|дожд|прогноз|(?:weather|forecast|temperature)(?!\p{L}))/iu;
+
+/**
+ * A weather answer built from a vague «по ощущениям на +3–4 градуса» told
+ * the person nothing (prod, 12.10): it needs the source and plain numbers.
+ */
+const weatherSearchNote =
+  "Note for weather: name the source of the forecast («по данным Яндекс Погоды»), and write plainly — the day and night temperature in degrees, precipitation, wind if it matters — never a vague «по ощущениям» or a bare difference.";
 
 /**
  * How a pick of places is put together, in the result the model reads just
