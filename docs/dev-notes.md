@@ -1295,12 +1295,20 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   гипотезы и сравнение моделей — `docs/browser-speed.md`.
 - Lithos AI (12.10, кандидат для браузера и телефонии, в проде нет): API как у
   OpenAI, `https://api.lithosai.cloud/v1`, ключ `LITHOSAI_API_KEY`, в OpenRouter
-  и RouterAI провайдера нет. DeepSeek V4.1 Flash — четыре id
-  `deepseek-ai/DeepSeek-V4.1-Flash[-fast|-ultra|-ultra-chat]`. Замер текстом из
-  облачной сессии (шаг ~8,9k токенов, кэш 8,7k, `json_schema` strict работает):
-  первый токен у `-ultra-chat` 0,38 с, у остальных 0,9–1,1 с. Браузерный прогон
-  на Selectel: конфиги `lith_*` в `scripts/selectel-bench/bu_bench.py`; база —
-  RunInfra, а не Together/DeepInfra (его ключа в env сессии нет).
+  и RouterAI провайдера нет. DeepSeek V4.1 Flash — `deepseek-ai/DeepSeek-V4.1-Flash`
+  с суффиксами `-fast`, `-ultra`, `-ultra-chat`. Первый токен текстом (шаг ~8,9k
+  токенов, кэш работает, strict `json_schema` работает): `-ultra-chat` 0,38 с,
+  остальные 0,9–1,1 с, RunInfra 0,84 с.
+  **Баг:** длинное тире `—` в запросе — `-ultra-chat` отвечает `finish_reason:
+  "abort"` с пустым телом, `-ultra` и без схемы мусором; Бро кладёт `—` в задания
+  и правила worker. Обход: слать `-` (`DashToHyphen` в `scripts/selectel-bench/bu_bench.py`).
+  Без обхода browser-use останавливался после 4 пустых шагов.
+  Телефония (текст через ElevenLabs, custom LLM, 24 реплики): `-ultra-chat` 0,33 с
+  (разброс 0,30–0,50) против 0,43 с (до 0,88) у встроенной `deepseek-v41-flash`;
+  `-fast` 1,04 с, выбросы до 8 с. Браузер на Selectel (5 кейсов, с обходом):
+  вызов LLM `-ultra-chat` ~1,0 с против ~2,0 с у RunInfra, `-ultra` ~3,2 с, но
+  поручение целиком не быстрее (34 с RunInfra против 58 с: больше шагов, пустые
+  ответы остались, `Invalid JSON` ×12). Подробности — в PR.
 
 Файлы без пути — в `agent/lib/browser-use/`.
 
