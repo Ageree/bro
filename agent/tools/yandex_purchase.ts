@@ -61,6 +61,11 @@ const inputSchema = z.union([
 const uncertainReply =
   "The order may already have been placed. Do not repeat the purchase, prepare a replacement order or use browser_task to buy it again. Check existing orders without changing them; ask the person to check Yandex if the outcome cannot be established.";
 
+// 13.10 a blocked Lavka prepare came back bare, and the model asked again
+// twelve times in one turn: the same cart gives the same answer.
+const prepareBlockedReply =
+  "Nothing was ordered or charged. The same cart gives the same answer: do not call prepare again in this turn unless the cart, the address or the card has changed since. Tell the person plainly that the order cannot be placed from here now and what they can fix, if anything.";
+
 /** What the model is told when the Go call itself did not go through. */
 const goRefusals = {
   captcha:
@@ -373,7 +378,9 @@ export default defineDynamic({
                 input.service === "eda"
                   ? await prepareEdaPurchase(scope.workspaceId, input)
                   : await prepareLavkaPurchase(scope.workspaceId);
-              if (prepared.kind !== "ready") return prepared;
+              if (prepared.kind !== "ready") {
+                return { ...prepared, reply: prepareBlockedReply };
+              }
               const expiresAt = new Date(
                 Math.min(
                   new Date(prepared.expiresAt).getTime(),
