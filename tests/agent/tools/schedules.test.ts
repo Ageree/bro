@@ -716,6 +716,8 @@ describe("schedule tools", () => {
       workspaceId: "workspace-1",
     });
     expect(result).toEqual([scheduleListSummary(job)]);
+    // Times are on the person's clock only, never a UTC instant.
+    expect(JSON.stringify(result)).not.toMatch(/\d{4}-\d\d-\d\dT\d\d:/u);
   });
 
   it("lists, pauses and deletes a price watch, and changes nothing else of it", async () => {
@@ -1175,12 +1177,10 @@ function scheduledJob(
 
 function scheduleSummary(job: ReturnType<typeof scheduledJob>) {
   return {
-    createdAt: job.createdAt.toISOString(),
     createdIn: job.conversationChannel === "eve" ? "web chat" : "iMessage",
     id: job.id,
     lastError: job.lastError,
-    lastRunAt: job.lastRunAt?.toISOString() ?? null,
-    nextRunAt: job.nextRunAt?.toISOString() ?? null,
+    lastRunLocal: null,
     // 13:00 UTC is 09:00 in New York, the rule's own zone.
     nextRunLocal: "2026-09-02 09:00, Wednesday (America/New_York)",
     prompt: job.prompt,

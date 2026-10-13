@@ -120,7 +120,7 @@ afterAll(async () => {
 describe("schedules belong to the person, not the chat", () => {
   it("lists and changes a Telegram schedule from the web chat and iMessage", async () => {
     const created = z
-      .object({ id: z.uuid(), nextRunAt: z.string() })
+      .object({ id: z.uuid(), nextRunLocal: z.string() })
       .parse(
         await createSchedule.execute(
           rent,
@@ -128,7 +128,9 @@ describe("schedules belong to the person, not the chat", () => {
         )
       );
     // A calendar rule, not 43 200 minutes: 10:00 in Moscow on 5 October.
-    expect(created.nextRunAt).toBe("2026-10-05T07:00:00.000Z");
+    expect(created.nextRunLocal).toBe(
+      "2026-10-05 10:00, Monday (Europe/Moscow)"
+    );
 
     const fromWeb = await listSchedules.execute(
       {},

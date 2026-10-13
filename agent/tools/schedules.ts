@@ -147,7 +147,7 @@ const shortCreateSchedule = defineTool({
 
 export const listSchedules = defineTool({
   description:
-    "List all of the authenticated user's one-time and recurring jobs, whichever chat or channel each was made in. Use this before changing a schedule when the target is ambiguous. nextRunLocal is each next run on the person's clock.",
+    "List all of the authenticated user's one-time and recurring jobs, whichever chat or channel each was made in. Use this before changing a schedule when the target is ambiguous. nextRunLocal is each next run on the person's clock; name times only from the *Local fields (all on the person's clock), and call two schedules the same only when both their nextRunLocal time and prompt match.",
   inputSchema: z.object({}),
   async execute(_input, context) {
     const scope = scheduleScope(context);
