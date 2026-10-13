@@ -88,6 +88,10 @@
   0,8–1,3 с у luna, gpt-4.1-mini 0,49, haiku-4-5 0,54. Лимит списка моделей —
   `GET /v1/convai/llm/list`. Упоминание слова «секунду» в запрете промпта само
   провоцирует его: запрет сформулирован без слова.
+- Пауза до ответа (13.10, метрики `GET /v1/convai/conversations/<id>`): LLM+TTS ≈ 0,35 с,
+  остальное — `turn_silence_before_initiation` (0,3–1,5 с) и линия. `spelling_patience: "auto"`
+  удлиняло ожидание при диктовке, теперь `off`; `optimize_streaming_latency: 4`
+  (`scripts/phone/setup.ts`). Вернуть `auto`, если Бро начнёт влезать в диктуемый номер.
 - Записная книжка Бро (`CONTACTS_WORKSPACES`, id или `*`; нужна и телефония):
   таблица `phone_contacts`, сервис `db/services/contacts.ts`, инструменты
   `contact-find/save/delete` в `agent/tools/phone-contacts.ts`. Запись — только

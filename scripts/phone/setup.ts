@@ -237,10 +237,14 @@ function configuration(
         similarity_boost: 0.75,
         speed: 1,
         model_id: "eleven_v4_turbo",
+        // Пауза до первого звука (13.10): замер звонка — ~0,35 с LLM+TTS, остальное у конца реплики.
+        optimize_streaming_latency: 4,
       },
       turn: {
         ...turn,
         turn_eagerness: "eager",
+        // `auto` ждёт дольше, когда похоже на диктовку номера или букв: давало паузу до 1,5 с.
+        spelling_patience: "off",
         speculative_turn: true,
         silence_end_call_timeout: phoneSilenceSeconds,
         // -1 выключает филлер: «Секунду…» на медленном шаге LLM звучал не к месту.
