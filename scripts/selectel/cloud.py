@@ -11,7 +11,8 @@ scripts/cloudru-app-host/host.py when BRO_CLOUD=selectel; runnable alone for the
 Region and zone: SELECTEL_REGION (ru-3) and SELECTEL_ZONE (ru-3b: ru-3a had no room on 09.10), env or ~/.bro-selectel/api.env. A server
 reaches the internet through the router; its public address is a floating IP (a port straight on the
 external network is refused, 05.10). The app VM boots Ubuntu 22.04 on a local-disk flavor: it keeps no data
-(the database is the managed cluster, files are in S3), so recreating it is the way to change its host code.
+(the database is the managed cluster, files are in S3). Its host code changes over the VNC console (vnc.py,
+`host.py update-host`: Selectel's cloud has no serial console), or by recreating it.
 """
 
 import argparse

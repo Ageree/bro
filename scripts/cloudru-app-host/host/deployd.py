@@ -75,7 +75,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-VERSION = "2026-10-02.7"
+VERSION = "2026-10-13.1"
 MAX_TOKEN_LIFETIME_S = 900
 LISTEN = ("127.0.0.1", 8095)
 RELEASE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -107,8 +107,8 @@ KEEP_RELEASES = 5
 MAX_RELEASE_BYTES = 2 << 30
 HEALTH_WAIT_S = 120
 # The longest host.py update-host holds the job slot: the fetch (6 min) and the install (10 min) over the
-# serial console, and its logins.
-HOST_UPDATE_S = 20 * 60
+# console, and its login (up to ~4 min over Selectel's VNC console, where every line is typed key by key).
+HOST_UPDATE_S = 30 * 60
 
 
 class Paths:

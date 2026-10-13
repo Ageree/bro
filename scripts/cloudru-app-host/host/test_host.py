@@ -976,6 +976,18 @@ class BootTest(unittest.TestCase):
         self.assertNotIn(KEY.hex(), json.dumps(settings))
         self.assertIn("bro-app-host-boot > /var/log/bro-provision.log", text)
 
+    def test_user_data_sets_the_console_password_for_old_and_new_cloud_init(self):
+        hashed = "$6$" + "s" * 16 + "$" + "h" * 86
+        text = boot.cloud_init(host_id="bro-app-1", key=KEY, bundle_url="u", bundle_sha256="a" * 64,
+                               objects=self.objects(), console_password_hash=hashed)
+        tail = text.split("chpasswd:\n", 1)[1].split("runcmd:", 1)[0]
+        # `users` (cloud-init 22.3+) and `list` (Selectel's 21.3, which ignores `users`): one is enough.
+        self.assertIn(f"  users:\n    - {{name: root, password: '{hashed}', type: hash}}\n", tail)
+        self.assertIn(f"  list:\n    - 'root:{hashed}'\n", tail)
+        self.assertIn("ssh_pwauth: false", text)
+        self.assertNotIn("chpasswd", boot.cloud_init(host_id="bro-app-1", key=KEY, bundle_url="u",
+                                                     bundle_sha256="a" * 64, objects=self.objects()))
+
     def test_user_data_refuses_unpinned_files(self):
         objects = self.objects()
         first = next(iter(objects))
@@ -1617,14 +1629,18 @@ class HostCliTest(unittest.TestCase):
                 pass
 
             def login(self):
-                pass
+                calls.append("login")
 
             def run(self, command, seconds):
+                calls.append(("run", command))
                 return "last line", console_codes.pop(0)
+
+            def close(self):
+                calls.append("logout")
 
         console = type(sys)("console")
         console.Console = Console
-        with mock.patch.dict(sys.modules, {"console": console}), \
+        with mock.patch.dict(sys.modules, {"console": console, "vnc": console}), \
                 mock.patch.object(self.host, "call", side_effect=call), \
                 mock.patch.object(self.host, "deliver_bundle", return_value=("app/host/x.tgz", "ab" * 32)), \
                 mock.patch.object(self.host.s3, "presign", return_value="https://s3.example/x"), \
@@ -1635,15 +1651,21 @@ class HostCliTest(unittest.TestCase):
                 return calls, str(stop)
         return calls, "done"
 
+    def deployd_calls(self, calls):
+        return [c for c in calls if isinstance(c, tuple) and c[0] != "run"]
+
     def test_update_host_holds_deployds_jobs_and_gives_them_back_only_when_it_is_safe(self):
         held = {("POST", "host-update"): (202, {"id": "j1"})}
         calls, outcome = self.update_host(held, [0, 0])
         self.assertEqual(outcome, "done")
-        self.assertEqual(calls, [("POST", "host-update"), ("GET", "status")])  # the restart gave them back
+        # The restart gave them back; the console's shell is logged out after the install.
+        self.assertEqual(self.deployd_calls(calls), [("POST", "host-update"), ("GET", "status")])
+        self.assertEqual([c for c in calls if isinstance(c, str)], ["login", "logout"])
         for codes in ([1], [0, 2]):  # the fetch, or the install before the restart, failed
             calls, outcome = self.update_host(held, codes)
             self.assertNotEqual(outcome, "done")
-            self.assertEqual(calls[-1], ("DELETE", "host-update"), codes)
+            self.assertEqual(self.deployd_calls(calls)[-1], ("DELETE", "host-update"), codes)
+            self.assertEqual(calls.count("logout"), 1, codes)
         # No answer from the console: the install may still run, and a job let in now could be cut.
         calls, outcome = self.update_host(held, [0, None])
         self.assertIn("no answer from the console", outcome)
@@ -1654,7 +1676,7 @@ class HostCliTest(unittest.TestCase):
         busy = {("POST", "host-update"): (400, {"error": "busy with job j0 (release)"})}
         calls, outcome = self.update_host(busy, [])
         self.assertIn("busy with job j0", outcome)
-        self.assertEqual(calls, [("POST", "host-update")])
+        self.assertEqual(calls, [("POST", "host-update")])  # no login either
 
     def test_update_host_on_a_deployd_without_the_hold_checks_for_a_job(self):
         old = {("POST", "host-update"): (404, {"error": "not found"})}
@@ -1664,6 +1686,45 @@ class HostCliTest(unittest.TestCase):
         calls, outcome = self.update_host(old, [0, 1])
         self.assertIn("the install failed", outcome)
         self.assertNotIn(("DELETE", "host-update"), calls)  # nothing held, nothing to give back
+
+    def test_update_host_on_selectel_goes_over_the_vnc_console_and_gives_root_its_password_first(self):
+        held = {("POST", "host-update"): (202, {"id": "j1"})}
+        with mock.patch.object(self.host, "SELECTEL", True), \
+                mock.patch.object(self.host, "root_password_line", return_value="ROOT-LINE"):
+            calls, outcome = self.update_host(held, [0, 0])
+        self.assertEqual(outcome, "done")
+        runs = [c[1] for c in calls if isinstance(c, tuple) and c[0] == "run"]
+        self.assertTrue(runs[0].startswith("ROOT-LINE && curl "), runs[0])
+        self.assertEqual(runs[1], self.host.UPDATE_HOST)
+        calls, _ = self.update_host(held, [0, 0])  # Cloud.ru: the serial console, root has its password
+        self.assertTrue([c for c in calls if isinstance(c, tuple) and c[0] == "run"][0][1].startswith("curl "))
+
+    def test_the_root_password_line_sets_a_hash_only_when_root_has_no_password(self):
+        bin_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, bin_dir)
+        # Names and the password made here: written out next to "password", scanners report a leaked secret.
+        vm, unknown, console = "bro-app-x", "bro-app-y", "-_" + os.urandom(6).hex()
+        (self.host.STATE / f"{vm}.password").write_text(console + "\n")
+        self.addCleanup((self.host.STATE / f"{vm}.password").unlink)
+        line = self.host.root_password_line(vm)
+        self.assertNotIn(console, line)  # only the hash goes to the VM
+        hashed = re.search(r"usermod -p '([^']+)' root", line).group(1)
+        check = subprocess.run(["openssl", "passwd", "-6", "-salt", hashed.split("$")[2], "-stdin"],
+                               input=console, capture_output=True, text=True, check=True)
+        self.assertEqual(check.stdout.strip(), hashed)
+        (bin_dir / "usermod").write_text(f'#!/bin/sh\necho "$@" > {bin_dir}/usermod.args\n')
+        for status, sets in (("NP", True), ("P", False), ("L", False)):
+            (bin_dir / "passwd").write_text(f"#!/bin/sh\necho 'root {status} 10/10/2026 0 99999 7 -1'\n")
+            for tool in ("usermod", "passwd"):
+                (bin_dir / tool).chmod(0o755)
+            (bin_dir / "usermod.args").unlink(missing_ok=True)
+            result = subprocess.run(["bash", "-c", line], env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, status)
+            self.assertEqual((bin_dir / "usermod.args").exists(), sets, status)
+        self.assertEqual((bin_dir / "usermod.args").exists(), False)
+        with self.assertRaisesRegex(SystemExit, f"console password of {unknown}"):
+            self.host.root_password_line(unknown)
 
     def test_update_host_keeps_the_last_good_code_when_an_install_failed(self):
         root = Path(tempfile.mkdtemp())

@@ -169,8 +169,11 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, objects, apt_mirror=A
         script.rstrip("\n"),
     ]
     if console_password_hash:
+        # `users` for cloud-init 22.3 and later; `list` for older ones, which ignore `users`: Selectel's Ubuntu
+        # 22.04 runs its own cloud-init 21.3, and bro-app-sel-2 (10.10) kept the image's empty root password.
         lines += ["ssh_pwauth: false", "chpasswd:", "  expire: false", "  users:",
-                  f"    - {{name: root, password: {quoted(console_password_hash)}, type: hash}}"]
+                  f"    - {{name: root, password: {quoted(console_password_hash)}, type: hash}}",
+                  "  list:", f"    - {quoted('root:' + console_password_hash)}"]
     lines += [
         "runcmd:",
         "  - [bash, -c, \"/usr/local/sbin/bro-app-host-boot > /var/log/bro-provision.log 2>&1\"]",

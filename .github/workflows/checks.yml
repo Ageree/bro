@@ -127,3 +127,8 @@ jobs:
       - name: Telegram bridge (app host)
         working-directory: scripts/cloudru-app-host/tg-bridge
         run: python -m unittest
+
+      # The keys and the shell of the VNC console that host.py update-host uses on Selectel.
+      - name: Selectel console of the app host (VNC)
+        working-directory: scripts/selectel
+        run: python -m unittest

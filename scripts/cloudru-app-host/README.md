@@ -5,8 +5,8 @@
 > `BRO_APP_HOST_DIR=/root/.bro-app-host-selectel`. Аккаунт Cloud.ru
 > приостановлен, `bro-app-1` и Vercel как путь отката — история: текст ниже
 > описывает переезд на Cloud.ru и остаётся справкой по устройству хоста.
-> `host.py update-host` на VM Selectel не работает (`docs/dev-notes.md`,
-> «Прод на VM»).
+> `host.py update-host` на VM Selectel идёт через VNC-консоль
+> (`scripts/selectel/vnc.py`, раздел «VM»).
 
 Этап 4 переезда (`docs/cloudru-migration.md`): Бро целиком на одной VM
 Cloud.ru. Одна и та же VM сначала служила репетиционным стендом
@@ -102,9 +102,20 @@ VM без пересоздания — `host.py update-host bro-app-1`: банд
 Пока deployd выполняет задачу, команда отказывает, а на время обновления он
 сам держит слот задач (`POST /ops/v1/host-update`): релиз, env или ops в это
 время получают «busy», и рестарт deployd их не обрывает. Слот освобождает
-рестарт, обновление, упавшее до него, или 20 минут. `bro-app-1` создан
+рестарт, обновление, упавшее до него, или 30 минут (deployd до 2026-10-13.1 — 20). `bro-app-1` создан
 бандлом без Telegram и без этого слота — перед переключением ему нужен этот
 шаг (первый раз — с проверкой, что задач нет).
+
+На Selectel серийной консоли нет, и `update-host` (с `BRO_CLOUD=selectel`) идёт
+через noVNC (`scripts/selectel/vnc.py`): клавиши RFB входят на tty1 под root и
+набирают на каждую команду одну строку, которая берёт из S3 скрипт команды и
+запускает его, только если sha256 совпал; вывод и код выхода скрипт кладёт
+presigned PUT обратно в S3. Строка набирается ~40 с (быстрее QEMU теряет
+клавиши), вход — 1–3 минуты, поэтому deployd держит слот 30 минут. Перед
+скачиванием бандла root получает хэш пароля из `<VM>.password`, если пароля у
+него нет вовсе (`passwd -S` — NP: cloud-init 21.3 образа Selectel не понял
+`chpasswd: users`). Экран консоли — `python scripts/selectel/vnc.py screen
+<VM> out.png`; нужен `pip install websocket-client`.
 
 `provision.sh`: apt только с `mirror.yandex.ru`, Node в `/opt/node-v<версия>`,
 клиент PostgreSQL 18 (`apt-mark hold`), пользователь `bro` (дом —
