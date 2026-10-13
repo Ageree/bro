@@ -23,12 +23,11 @@ export const directWebSearch = defineTool({
           ? `${results}\n\n${ticketSearchNote}`
           : results;
       }
-      if (weatherWords.test(input.query)) {
-        return `${results}\n\n${weatherSearchNote}`;
-      }
-      return pickWords.test(input.query)
-        ? `${results}\n\n${pickSearchNote}`
-        : results;
+      const notes = [
+        pickWords.test(input.query) ? pickSearchNote : undefined,
+        weatherWords.test(input.query) ? weatherSearchNote : undefined,
+      ].filter((note) => note !== undefined);
+      return notes.length > 0 ? `${results}\n\n${notes.join("\n\n")}` : results;
     } catch (error) {
       if (ctx.abortSignal.aborted) throw error;
       // The backend's name, status and words are for the log: the model
@@ -128,7 +127,7 @@ const ticketSearchNote =
 
 /** A question about the weather or the temperature. */
 const weatherWords =
-  /(?<!\p{L})(?:погод|температур|градус|дожд|прогноз|(?:weather|forecast|temperature)(?!\p{L}))/iu;
+  /(?<!\p{L})(?:погод|температур|(?:weather|forecast|temperature)(?!\p{L}))/iu;
 
 /**
  * A weather answer built from a vague «по ощущениям на +3–4 градуса» told

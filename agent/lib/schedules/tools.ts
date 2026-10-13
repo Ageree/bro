@@ -64,9 +64,10 @@ const createdInLabel = {
 } as const;
 
 /**
- * A schedule as the model sees it. `nextRunLocal` is the next run on the
- * person's clock — the rule's own zone, or their profile zone for a one-off
- * or an interval — so the reply names the right day and hour.
+ * A schedule as the model sees it. Every time is on the person's clock — the
+ * rule's own zone, or their profile zone for a one-off or an interval — and
+ * in one format, never a UTC instant: next to «05:00Z» the model once read
+ * two summaries, at 7:00 and 8:00, as two at 8:00 (prod, 12.10).
  */
 export function scheduleSummary(
   job: Awaited<ReturnType<typeof createScheduledAgentJob>>,
@@ -75,12 +76,10 @@ export function scheduleSummary(
   const timeZone =
     job.timing.kind === "calendar" ? job.timing.timezone : personTimeZone;
   return {
-    createdAt: job.createdAt.toISOString(),
     createdIn: createdInLabel[job.conversationChannel],
     id: job.id,
     lastError: job.lastError,
-    lastRunAt: job.lastRunAt?.toISOString() ?? null,
-    nextRunAt: job.nextRunAt?.toISOString() ?? null,
+    lastRunLocal: job.lastRunAt ? localRunLabel(job.lastRunAt, timeZone) : null,
     nextRunLocal: job.nextRunAt ? localRunLabel(job.nextRunAt, timeZone) : null,
     prompt: job.prompt,
     status: job.status,
@@ -93,17 +92,20 @@ export function scheduleListSummary(
   personTimeZone: string
 ) {
   const latestRun = job.latestRun;
+  const timeZone =
+    job.timing.kind === "calendar" ? job.timing.timezone : personTimeZone;
+  const local = (at: Date | null) => (at ? localRunLabel(at, timeZone) : null);
   return {
     ...scheduleSummary(job, personTimeZone),
     latestRun: latestRun
       ? {
-          completedAt: latestRun.completedAt?.toISOString() ?? null,
+          completedLocal: local(latestRun.completedAt),
           id: latestRun.id,
           lastError: latestRun.lastError,
           reportStatus: latestRun.reportStatus,
-          scheduledFor: latestRun.scheduledFor.toISOString(),
+          scheduledForLocal: local(latestRun.scheduledFor),
           sessionId: latestRun.workerSessionId,
-          startedAt: latestRun.startedAt?.toISOString() ?? null,
+          startedLocal: local(latestRun.startedAt),
           status: latestRun.status,
         }
       : null,

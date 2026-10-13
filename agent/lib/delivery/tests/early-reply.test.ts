@@ -237,6 +237,32 @@ describe("(c) the heads-up said again", () => {
     }
   );
 
+  it.each(["Смотрю — свободно.", "Проверяю: да, есть."])(
+    "keeps a short result «%s» that starts with a status word",
+    (text) => {
+      const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
+
+      expect(
+        sendRefusal(message(text), turnSends(searched), true)
+      ).toBeUndefined();
+    }
+  );
+
+  it("leaves the turn open after a bare status is dropped", () => {
+    const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
+    const dropped = [
+      ...searched,
+      ...sendMessage(
+        "b",
+        "Уже смотрю…",
+        textOutput(skippedSendNotice("heads-up"))
+      ),
+    ];
+
+    expect(turnMustEnd(dropped)).toBe(false);
+    expect(awaitsDelivery(dropped)).toBe(true);
+  });
+
   it("keeps a status that carries a result after the work", () => {
     const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
 

@@ -377,13 +377,23 @@ const busyWords =
 
 const busyLineLength = 80;
 
-/** Longest line that is a bare status, with no detail of the errand. */
-const bareStatusLength = 30;
+/**
+ * Every word a bare status is made of: «Уже смотрю…», «Секунду, ищу». A word
+ * outside this list, such as «свободно» or «да», is a result, however short.
+ */
+const bareStatusWords = new Set(
+  "а все всё еще ещё и я мы уже сейчас пока сразу сам сама секунду секундочку минутку минуточку момент немного чуть подожди подождите смотрю ищу проверяю уточняю выясняю разбираюсь собираю читаю открываю looking checking searching still just on it one moment sec second".split(
+    " "
+  )
+);
 
-/** Whether a message is a few words that only say the work is under way. */
+/** Whether a message is only status words: the work is under way, nothing more. */
 export function isBareStatus(message: SentMessage) {
+  const words = message.text.split(" ");
   return (
-    message.text.length <= bareStatusLength && busyWords.test(message.text)
+    words.length <= 6 &&
+    words.some((word) => busyWords.test(word)) &&
+    words.every((word) => bareStatusWords.has(word))
   );
 }
 

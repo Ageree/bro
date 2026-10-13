@@ -356,6 +356,20 @@ describe("web_search tool selection", () => {
         toolContext()
       )
     ).not.toContain("Note for weather");
+
+    // A rain or a rate forecast is no weather question; a pick of places
+    // about the weather gets both notes.
+    const search = (query: string) =>
+      directWebSearch.execute({ query }, toolContext());
+    const cafe = await search("кафе в центре, если дождь, куда сходить");
+    expect(cafe).toContain("Note for a pick of places");
+    expect(cafe).not.toContain("Note for weather");
+    expect(await search("прогноз курса ЦБ на неделю")).not.toContain(
+      "Note for weather"
+    );
+    const both = await search("кафе в Москве и погода на выходные");
+    expect(both).toContain("Note for a pick of places");
+    expect(both).toContain("Note for weather");
   });
 
   /**
