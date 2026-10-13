@@ -388,12 +388,19 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   `host.py logs` отдаёт лишь хвост в 2000 строк; окно постарше — консолью:
   `journalctl --since … | gzip` и presigned PUT в бакет стенда (`s3.py`).
 
-- `host.py update-host` ходит через серийную консоль Cloud.ru
-  (`scripts/cloudru-sandbox-probe/console.py`) и VM Selectel не находит («no
-  such VM»): код хоста на Selectel им не обновить, нужен свой путь. Бронь
-  `POST /host-update`, которую команда берёт до сбоя, держит слот deployd:
-  снимите её `DELETE host-update` (`scripts/cloudru-app-host/host.py`), иначе
-  релизы, env и ops-задачи не стартуют.
+- Серийной консоли у облака Selectel нет («Unavailable console type serial»), есть
+  noVNC: `host.py update-host` с `BRO_CLOUD=selectel` идёт через `scripts/selectel/vnc.py`
+  — RFB-клавиши на tty1, команда скриптом из S3 со сверкой sha256, вывод — PUT по
+  presigned-ссылке. QEMU теряет клавиши при быстром наборе (залипал Shift): пауза на
+  каждое событие (`KEY_PAUSE_S`), строка ~40 с; картинка экрана — `vnc.py screen`.
+  Без `websocket-client` (`pip install`) консоли нет. Бронь `POST /host-update`
+  при сбое снимите `DELETE host-update`, иначе релизы, env и ops не стартуют.
+- Cloud-init 21.3 образа Selectel не знает `chpasswd: users` (с 22.3): у
+  `bro-app-sel-2` root был без пароля (`passwd -S` — NP), tty1 пускал без него, а
+  `nullok` PAM давал `su` в root любому пользователю. `boot.cloud_init` пишет и
+  `list`, а `update-host` на Selectel ставит хэш пароля из `<VM>.password`, если NP.
+  Пароль `vnc.py` набирает, только если экран не повторил пробные клавиши
+  (`asks_password`): иначе при NP он уходил в shell и его историю.
 - Для `host.py` с Selectel нужен `SELECTEL_PROJECT`: id проекта даёт
   `GET https://api.selectel.ru/vpc/resell/v2/projects` с `X-Token`. Каталог
   `vendor/` не входит в `state restore`, поэтому перед `update-host` —
