@@ -103,37 +103,56 @@ async function request<T extends z.ZodType>(
 ): Promise<z.output<T> | null> {
   const key = env.ELEVENLABS_API_KEY;
   if (!key) throw new Error("ElevenLabs is not configured.");
-  try {
-    const options: RequestInit = {
-      method,
-      headers: { "xi-api-key": key, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(
-        path === "/v1/convai/sip-trunk/outbound-call" && method === "POST"
-          ? outboundTimeoutMs
-          : readTimeoutMs
-      ),
-      redirect: "error",
-      cache: "no-store",
-    };
-    if (body !== undefined) options.body = JSON.stringify(body);
-    const response = await elevenlabsFetch(
-      path,
-      options,
-      env.ELEVENLABS_PROXY_URL
-    );
-    if (response.status === 404 && allowNotFound) return null;
-    if (!response.ok) throw new Error("Request rejected.");
-    if (method === "DELETE") return schema.parse(null);
-    const parsed = schema.safeParse(await response.json());
-    if (!parsed.success) throw new Error("Invalid response.");
-    return parsed.data;
-  } catch {
-    throw new Error(
-      method === "GET"
-        ? "ElevenLabs read failed; no authoritative result available."
-        : "ElevenLabs mutation could not be verified; reconcile before any retry."
-    );
+  // Чтение идемпотентно: короткий сбой ElevenLabs (13.10 — обрывы и ответы
+  // через 15 с) не должен ронять звонок. Запись не повторяется никогда.
+  const attempts = method === "GET" ? 3 : 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const options: RequestInit = {
+        method,
+        headers: { "xi-api-key": key, "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(
+          path === "/v1/convai/sip-trunk/outbound-call" && method === "POST"
+            ? outboundTimeoutMs
+            : readTimeoutMs
+        ),
+        redirect: "error",
+        cache: "no-store",
+      };
+      if (body !== undefined) options.body = JSON.stringify(body);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+      const response = await elevenlabsFetch(
+        path,
+        options,
+        env.ELEVENLABS_PROXY_URL
+      );
+      if (response.status === 404 && allowNotFound) return null;
+      if (!response.ok) throw new Error(`status ${String(response.status)}`);
+      if (method === "DELETE") return schema.parse(null);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+      const parsed = schema.safeParse(await response.json());
+      if (!parsed.success) throw new Error("invalid response");
+      return parsed.data;
+    } catch (error) {
+      console.warn("[phone] ElevenLabs request failed", {
+        method,
+        path: path.replace(/\/[a-z]+_[0-9a-z]+/gu, "/<id>"),
+        attempt,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+      if (attempt < attempts) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+        await new Promise((resolve) => {
+          setTimeout(resolve, 1000);
+        });
+      }
+    }
   }
+  throw new Error(
+    method === "GET"
+      ? "ElevenLabs read failed; no authoritative result available."
+      : "ElevenLabs mutation could not be verified; reconcile before any retry."
+  );
 }
 
 async function readPhone(phoneNumberId: string) {
