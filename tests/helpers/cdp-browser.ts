@@ -105,6 +105,8 @@ export interface CdpBrowserFixture {
   readonly page?: {
     /** What a function called in the page (`Runtime.callFunctionOn`) returns. */
     readonly answer?: z.infer<ReturnType<typeof z.json>>;
+    /** How long the called function runs before it answers. */
+    readonly answerAfterMs?: number;
     readonly password?: boolean;
     /**
      * Documents the page asks for after `Page.navigate` — a redirect, an
@@ -224,8 +226,15 @@ export async function startFakeCdpBrowser(
           socket.end();
           return;
         }
-        for (const reply of handle(frame.payload))
-          socket.write(writeFrame(reply));
+        const replies = handle(frame.payload);
+        const delay = frame.payload.includes('"Runtime.callFunctionOn"')
+          ? (fixture.page?.answerAfterMs ?? 0)
+          : 0;
+        const send = () => {
+          for (const reply of replies) socket.write(writeFrame(reply));
+        };
+        if (delay > 0) setTimeout(send, delay);
+        else send();
       }
     });
     socket.on("error", () => {

@@ -1208,6 +1208,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `totalItemsPrice` отвергала любую скидочную корзину (`money_inconsistent`).
   Отказ корзины виден пробой `yandex-probe.py` с `page` и шагом из
   `pageSource` (`lavka.purchase_*` нет в реестре, режим `op` их не зовёт).
+- `callInPageOverCdp` ждёт функцию в странице до 60 с, а не 15 с команды CDP
+  (`callRunTimeoutMs`, бюджет — у транспорта): 13.10 submit Лавки опрашивал
+  оплату дольше, CDP бросил вызов, и оплаченный заказ стал `unknown`.
 - Оплата Лавки картой: перед `orders/submit` сайт пишет карту в корзину
   (`cart/v1/set-payment`, `meta.card`, новая `cartVersion`); заказ из корзины
   без карты Лавка отменяет за 0,6 с, `payments/v1/status` — `cancel` (так

@@ -356,7 +356,8 @@ interface CdpConnection {
   readonly call: (
     method: string,
     parameters: CdpCommand,
-    sessionId?: string
+    sessionId?: string,
+    timeoutMs?: number
   ) => Promise<CdpResult>;
   readonly close: () => void;
   /** Called with the session id of each embedded frame that attaches. */
@@ -608,6 +609,13 @@ const functionCallSchema = z.object({
 
 /** The load a call from a page waits for; a script's data comes after it. */
 const callLoadWaitMs = 20_000;
+/**
+ * The called function runs longer than one command may: a Lavka order polls
+ * its payment for up to 15 s after the submit (13.10 the order went through
+ * while the call had already given up at 15 s, and Bro reported it unknown).
+ * The caller's own budget bounds the call.
+ */
+const callRunTimeoutMs = 60_000;
 
 /**
  * Open `url` and call `fn`, a function the code fixes, in the page with
@@ -673,13 +681,18 @@ export async function callInPageOverCdp(
       await connection.call("Runtime.evaluate", { expression: "globalThis" })
     );
     const reply = functionCallSchema.parse(
-      await connection.call("Runtime.callFunctionOn", {
-        arguments: [{ value: page.argument }],
-        awaitPromise: true,
-        functionDeclaration: page.fn,
-        objectId: global.result.objectId,
-        returnByValue: true,
-      })
+      await connection.call(
+        "Runtime.callFunctionOn",
+        {
+          arguments: [{ value: page.argument }],
+          awaitPromise: true,
+          functionDeclaration: page.fn,
+          objectId: global.result.objectId,
+          returnByValue: true,
+        },
+        undefined,
+        callRunTimeoutMs
+      )
     );
     // The details of an exception are the page's text: they are not kept.
     if (reply.exceptionDetails) throw new Error("The page's call failed.");
@@ -1020,13 +1033,18 @@ export async function openCdpConnection(
   await opened;
 
   return {
-    call: async (method, parameters, sessionId) => {
+    call: async (
+      method,
+      parameters,
+      sessionId,
+      timeoutMs = commandTimeoutMs
+    ) => {
       const id = nextId;
       nextId += 1;
       return await new Promise<CdpResult>((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`The browser did not answer ${method}.`));
-        }, commandTimeoutMs);
+        }, timeoutMs);
         pending.set(id, (reply) => {
           clearTimeout(timer);
           // A refused command is not an empty answer: whoever sent it has to

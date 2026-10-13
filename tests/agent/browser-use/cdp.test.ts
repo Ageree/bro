@@ -685,6 +685,34 @@ describe("calling a function in a page over CDP", () => {
     expect(blocked?.params.urls).toEqual(expect.arrayContaining(["*.jpg"]));
   }, 15_000);
 
+  it("waits for a function that runs longer than one command", async () => {
+    // 13.10 a Lavka submit polled its payment past 15 s, the call gave up,
+    // and the placed order came back unknown.
+    const fixture = await fake({
+      injections: {},
+      page: {
+        answer: { status: "ok" },
+        answerAfterMs: 16_000,
+        url: "https://lavka.yandex.ru/",
+      },
+      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
+    });
+
+    const called = await callInPageOverCdp(fixture.url, {
+      argument: {},
+      fn: "async function () { return 1; }",
+      loaded: "complete",
+      runOn: () => true,
+      url: "https://lavka.yandex.ru/",
+    });
+
+    expect(called).toEqual({
+      ran: true,
+      url: "https://lavka.yandex.ru/",
+      value: { status: "ok" },
+    });
+  }, 25_000);
+
   it("runs nothing in a page it was not meant to land on", async () => {
     const fixture = await fake({
       injections: {},
