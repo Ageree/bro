@@ -133,6 +133,11 @@ API и браузер используют одну транзакционную
 Начинать с `prepare`, проверяя полный итог и отказ на неподдержанном
 сценарии. Для отключения достаточно убрать `YANDEX_PURCHASE_WORKSPACES`;
 незавершённые записи нельзя удалять или переводить в отказ без проверки сервиса.
+Запись `unknown`, чей заказ нашёлся в самом Яндексе (список заказов и статус
+оплаты), закрывает `host.py ops NAME yandex-purchase-placed.sh WORKSPACE_ID
+PURCHASE_ID ORDER_ID`: она становится `placed` с номером заказа, а оплату потом
+читает `yandex_purchase status`. Пока такая запись висит, новые покупки
+воркспейса не готовятся.
 
 Локальные проверки: `tests/agent/yandex/purchase.test.ts`,
 `tests/agent/yandex/lavka-purchase.test.ts`, `db/tests/yandex-purchases.test.ts`,
