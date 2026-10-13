@@ -1480,7 +1480,7 @@ class WipeSqlTest(unittest.TestCase):
             if root:
                 os.chmod(sock, 0o777)
             run = lambda cmd, **kw: subprocess.run(as_user + [str(c) for c in cmd], capture_output=True, text=True, **kw)
-            self.assertEqual(run([pg / "initdb", "-D", data, "-A", "trust"]).returncode, 0)
+            self.assertEqual(run([pg / "initdb", "-D", data, "-U", "postgres", "-A", "trust"]).returncode, 0)
             self.assertEqual(run([pg / "pg_ctl", "-D", data, "-w", "-o", f"-p 5599 -k {sock} -c listen_addresses=",
                                   "-l", Path(tmp) / "log", "start"]).returncode, 0)
             try:
