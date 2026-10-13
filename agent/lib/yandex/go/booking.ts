@@ -115,10 +115,11 @@ export const goBookOperation = defineYandexOperation({
     return { fullname: r.text, geopoint: r.position, short_text: r.title?.text || r.text, type: "address",
       ...(r.city ? { city: r.city } : {}), ...(r.uri ? { uri: r.uri } : {}) };
   };
-  // Four independent reads go out together: Yandex's own record of a ride
-  // that is on, the two places, and the cards (the cards do not depend on the
-  // point: the same list at two places). Nothing is written until all four are
-  // in, and a ride that is on still answers first, whatever the rest found.
+  // Independent reads go out together: Yandex's own record of a ride that is
+  // on, the place the ride starts from (and, once it is found, the cards at
+  // that point), and the place it goes to. Nothing is written until all are
+  // in. A ride that is on still answers first, whatever the rest found or
+  // however they failed, and the cards are asked at the same point as before.
   const selectedPayment = async () => {
     try {
       const db = await new Promise((done, fault) => {
@@ -138,15 +139,19 @@ export const goBookOperation = defineYandexOperation({
   };
   const selected = args.payment === "cash" ? null : await selectedPayment();
   const needsCards = args.payment === "card" || (args.payment === "current" && selected?.type === "card");
-  const [active, from, to, methods] = await Promise.all([
-    activeRide(),
-    place(args.from, "a"),
-    place(args.to, "b"),
-    needsCards
-      ? session.post("/3.0/paymentmethods", { location: Array.isArray(args.from) ? args.from : args.near, id: session.userId })
-      : null,
-  ]);
-  if (active) return ok({ kind: "already_active", ride: active });
+  const startAndCards = async () => {
+    const start = await place(args.from, "a");
+    if (!start || !needsCards) return { start, methods: null };
+    const methods = await session.post("/3.0/paymentmethods", { location: start.geopoint, id: session.userId });
+    return { start, methods };
+  };
+  const [activeRead, startRead, toRead] = await Promise.allSettled([activeRide(), startAndCards(), place(args.to, "b")]);
+  if (activeRead.status === "rejected") throw activeRead.reason;
+  if (activeRead.value) return ok({ kind: "already_active", ride: activeRead.value });
+  if (startRead.status === "rejected") throw startRead.reason;
+  if (toRead.status === "rejected") throw toRead.reason;
+  const { start: from, methods } = startRead.value;
+  const to = toRead.value;
   if (!from) return fail("from_not_found");
   if (!to) return fail("to_not_found");
   let payment = { type: "cash", label: "наличные" };
