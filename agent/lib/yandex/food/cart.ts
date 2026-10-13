@@ -158,6 +158,7 @@ const lavkaCart = z.object({
       qty: z.number(),
     })
   ),
+  discount: z.number(),
   itemsCount: z.number().int().min(0),
   itemsPrice: z.number(),
   total: z.number(),
@@ -200,15 +201,18 @@ const lavkaCartSource = String.raw`
   };
   const summary = (cart) => ({
     itemsCount: cart.totalItemsCount ?? (cart.items || []).length,
+    // Before the menu discount; the items' own prices carry it.
     itemsPrice: Number(cart.totalItemsPrice),
+    discount: Number(cart.totalDiscountValue ?? 0),
     total: Number(cart.totalPriceValue),
     deliveryCost: Number(cart.orderConditions.deliveryCost),
     canCheckout: cart.availableForCheckout === true,
     blocker: cart.checkoutUnavailableReason || null,
     items: (cart.items || []).slice(0, 20).map((item) => ({
       id: item.id,
-      // Lavka's titles carry soft hyphens for its own line breaks.
-      name: item.title.replaceAll("\u00ad", ""),
+      // Lavka's titles carry soft hyphens for its own line breaks and
+      // <notr> marks for its translations.
+      name: item.title.replaceAll("\u00ad", "").replace(/<\/?notr>/g, ""),
       qty: Number(item.quantity),
       price: Number(item.price),
     })),

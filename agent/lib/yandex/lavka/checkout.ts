@@ -180,17 +180,21 @@ const pageSource = String.raw`
           !Array.isArray(item.restrictions) || item.restrictions.length || !Array.isArray(item.modifiers) || item.modifiers.length ||
           typeof item.quantity !== "string" || !/^[1-9]\d*$/.test(item.quantity) || !Number.isSafeInteger(Number(item.quantity))) block("item_unsupported");
       return { id: text(item.id, "cart_invalid"), positionId: text(item.positionId, "cart_invalid"), quantity: item.quantity,
-        title: text(item.title, "cart_invalid").replaceAll("\u00ad", ""), unitPriceMinor: money(item.price) };
+        title: text(item.title, "cart_invalid").replaceAll("\u00ad", "").replace(/<\/?notr>/g, ""), unitPriceMinor: money(item.price) };
     }).sort((a, b) => a.positionId.localeCompare(b.positionId));
     const amountMinor = money(cart.totalPriceValue);
-    const itemsMinor = money(cart.totalItemsPrice);
     const deliveryMinor = money(cart.orderConditions?.deliveryCost);
     const sum = items.reduce((total, item) => total + BigInt(item.unitPriceMinor) * BigInt(item.quantity), 0n);
+    // An item's price already carries Lavka's menu discount, while
+    // totalItemsPrice is the items before it (389 listed, 291 charged, 13.10):
+    // the discount must close exactly that gap.
+    const fullItemsMinor = money(cart.totalItemsPrice);
+    const discountMinor = cart.totalDiscountValue == null ? 0 : money(cart.totalDiscountValue);
     const serviceFees = money(cart.paidServices?.totalServiceFees?.amount);
     const retailFee = money(cart.paidServices?.retailServiceFee?.amount);
     if (serviceFees !== 0 || retailFee !== 0 || cart.serviceFee && money(cart.serviceFee.amount) !== 0 || cart.bagsFee && money(cart.bagsFee.amount) !== 0) block("fees_unsupported");
-    if (sum !== BigInt(itemsMinor) || BigInt(itemsMinor) + BigInt(deliveryMinor) !== BigInt(amountMinor)) block("money_inconsistent");
-    return { amountMinor, itemsMinor, deliveryMinor, items };
+    if (sum + BigInt(discountMinor) !== BigInt(fullItemsMinor) || sum + BigInt(deliveryMinor) !== BigInt(amountMinor)) block("money_inconsistent");
+    return { amountMinor, itemsMinor: Number(sum), deliveryMinor, items };
   };
   const cardShape = (method) => {
     if (!record(method) || method.type !== "card" || method.currency !== "RUB" || method.availability?.available !== true ||

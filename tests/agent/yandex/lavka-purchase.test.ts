@@ -76,6 +76,24 @@ async function confirm(prepared: Awaited<ReturnType<typeof ready>>) {
   });
 }
 
+// Lavka's own cart, 13.10: rice 389 ₽ on a menu discount to 291 ₽, with
+// totalItemsPrice still the price before the discount.
+const discountedRice = {
+  totalPriceValue: "425",
+  totalItemsPrice: "389",
+  totalDiscountValue: "98",
+  orderConditions: { deliveryCost: "134" },
+  items: [
+    {
+      ...cartFixture.items[0],
+      price: "291",
+      catalogPrice: "291",
+      fullCatalogPrice: "389",
+      title: "Рис бас\u00adма\u00adти отвар\u00adной <notr>Из Лавки</notr>",
+    },
+  ],
+} satisfies Record<string, JsonValue>;
+
 function withCart(change: Record<string, JsonValue>) {
   cart = { ...cartFixture, ...change };
 }
@@ -309,6 +327,38 @@ describe("Lavka purchase fixed page functions", () => {
     }
   );
 
+  it("prices discounted items as charged, not as listed", async () => {
+    withCart(discountedRice);
+    const prepared = await ready();
+    expect(prepared.publicQuote.amountMinor).toBe(42_500);
+    expect(prepared.publicQuote.items).toEqual([
+      { quantity: "1", title: "Рис басмати отварной Из Лавки" },
+    ]);
+    expect(prepared.snapshot).toMatchObject({
+      amountMinor: 42_500,
+      deliveryMinor: 13_400,
+      itemsMinor: 29_100,
+    });
+  });
+
+  it.each<Record<string, JsonValue>>([
+    { totalDiscountValue: "97" },
+    { totalDiscountValue: "98", totalPriceValue: "523" },
+    { totalDiscountValue: null },
+  ])("blocks a discount that does not close the gap: %j", async (change) => {
+    withCart({
+      totalPriceValue: "425",
+      totalItemsPrice: "389",
+      orderConditions: { deliveryCost: "134" },
+      items: [{ ...cartFixture.items[0], price: "291" }],
+      ...change,
+    });
+    expect(await prepareLavkaPurchase("workspace:synthetic")).toEqual({
+      kind: "blocked",
+      reason: "money_inconsistent",
+    });
+  });
+
   it("blocks totals that do not equal the exact supported components", async () => {
     withCart({ totalPriceValue: "385" });
     expect(await prepareLavkaPurchase("workspace:synthetic")).toEqual({
@@ -466,6 +516,32 @@ describe("Lavka purchase fixed page functions", () => {
     });
     expect(transport.run.mock.calls.at(-1)?.[1].access).toBe("purchase");
     expect(submitResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("places a discounted order at the discounted total", async () => {
+    withCart(discountedRice);
+    setPaymentResponse.mockImplementation(() => ({
+      ...cartFixture,
+      ...discountedRice,
+      cartVersion: 3,
+      paymentMethod: { id: "synthetic-card", type: "card" },
+    }));
+    const prepared = await ready();
+    expect(await confirm(prepared)).toEqual({
+      kind: "placed",
+      orderId: "synthetic-order",
+      paymentStatus: "paid",
+    });
+    expect(submitResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("renews an expired discounted quote with the same terms", async () => {
+    withCart(discountedRice);
+    const prepared = await ready();
+    withCart({ ...discountedRice, offerId: "renewed-offer", cartVersion: 3 });
+    expect(
+      await prepareLavkaPurchase("workspace:synthetic", prepared.snapshot)
+    ).toMatchObject({ kind: "ready", snapshot: { amountMinor: 42_500 } });
   });
 
   it("does not submit when writing the card changes the cart's total", async () => {

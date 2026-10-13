@@ -350,6 +350,24 @@ describe("Yandex purchase consent", () => {
     expect(services.submit).not.toHaveBeenCalled();
   });
 
+  it("tells the model not to ask again when the checkout is blocked", async () => {
+    services.prepare.mockResolvedValue({
+      kind: "blocked",
+      reason: "money_inconsistent",
+    });
+    const tool = await resolve();
+    const result = await tool?.execute(
+      { action: "prepare", service: "lavka" },
+      callContext()
+    );
+    expect(result).toMatchObject({
+      kind: "blocked",
+      reason: "money_inconsistent",
+    });
+    expect(JSON.stringify(result)).toContain("do not call prepare again");
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
   it("claims durably before sending the exact stored snapshot", async () => {
     expect(await confirm()).toMatchObject({
       kind: "placed",

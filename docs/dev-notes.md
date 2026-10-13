@@ -1199,6 +1199,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   У уже подтверждённой карты Лавка не присылает `verifyStrategy`: клиент считает
   её `verified`. В снимке отсутствие нормализуется в `null`; смена стратегии
   после вопроса всё равно требует нового предложения и подтверждения.
+- Скидка Лавки (13.10): `price` позиции уже со скидкой, а `totalItemsPrice` —
+  сумма до неё, разницу несёт `totalDiscountValue`. Сверка позиций с
+  `totalItemsPrice` отвергала любую скидочную корзину (`money_inconsistent`).
+  Отказ корзины виден пробой `yandex-probe.py` с `page` и шагом из
+  `pageSource` (`lavka.purchase_*` нет в реестре, режим `op` их не зовёт).
 - Оплата Лавки картой: перед `orders/submit` сайт пишет карту в корзину
   (`cart/v1/set-payment`, `meta.card`, новая `cartVersion`); заказ из корзины
   без карты Лавка отменяет за 0,6 с, `payments/v1/status` — `cancel` (так
