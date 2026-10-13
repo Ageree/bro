@@ -282,6 +282,17 @@ describe("outbound Bro call initiation", () => {
     expect(sentGreeting()).toBe("Здравствуйте!");
   });
 
+  it("never tells Bro to greet again after the greeting played at connection", async () => {
+    for (const repeat of [false, true]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Calls are placed one by one.
+      await placeCall(repeat, true);
+      const prompt = sentPrompt();
+      expect(prompt).toContain("нет слов приветствия");
+      expect(prompt).toContain("не здоровайся снова");
+      expect(prompt).not.toContain("поздоровайся");
+    }
+  });
+
   it("tells Bro not to introduce itself again to a familiar person only on a repeat call", async () => {
     await placeCall(false);
     expect(sentPrompt()).not.toContain("больше не представляйся");
