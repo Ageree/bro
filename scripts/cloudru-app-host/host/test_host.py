@@ -1458,6 +1458,48 @@ def load_host_py():
     return module
 
 
+class WipeSqlTest(unittest.TestCase):
+    """WIPE_SQL against a real PostgreSQL holding every migration of the app (identity sequences, FKs, indexes)."""
+    OPS = HERE.parent / "ops"
+    MIGRATIONS = HERE.parents[2] / "db" / "migrations"
+
+    def pg_bin(self):
+        found = sorted(Path("/usr/lib/postgresql").glob("*/bin/initdb"))
+        if not found or not shutil.which("psql"):
+            self.skipTest("no local PostgreSQL server")
+        return found[-1].parent
+
+    def test_empties_a_database_with_every_migration(self):
+        pg = self.pg_bin()
+        root = os.geteuid() == 0
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o777)
+            data, sock = Path(tmp) / "data", Path(tmp) / "sock"
+            sock.mkdir()
+            as_user = ["setpriv", "--reuid=postgres", "--regid=postgres", "--clear-groups"] if root else []
+            if root:
+                os.chmod(sock, 0o777)
+            run = lambda cmd, **kw: subprocess.run(as_user + [str(c) for c in cmd], capture_output=True, text=True, **kw)
+            self.assertEqual(run([pg / "initdb", "-D", data, "-U", "postgres", "-A", "trust"]).returncode, 0)
+            self.assertEqual(run([pg / "pg_ctl", "-D", data, "-w", "-o", f"-p 5599 -k {sock} -c listen_addresses=",
+                                  "-l", Path(tmp) / "log", "start"]).returncode, 0)
+            try:
+                psql = lambda db, *args, **kw: run(["psql", "-X", "-q", "-A", "-t", "-h", sock, "-p", "5599",
+                                                    "-U", "postgres", db, *args], **kw)
+                self.assertEqual(psql("postgres", "-c", "CREATE DATABASE app").returncode, 0)
+                for migration in sorted(self.MIGRATIONS.glob("*.sql")):
+                    psql("app", "-f", migration)
+                count = "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace"
+                self.assertGreater(int(psql("app", "-c", count).stdout), 100)
+                sql = subprocess.run(["bash", "-c", f'source "{self.OPS}/db-lib.sh"; printf %s "$WIPE_SQL"'],
+                                     capture_output=True, text=True, check=True).stdout
+                wiped = psql("app", "-v", "ON_ERROR_STOP=1", "-c", sql)
+                self.assertEqual(wiped.returncode, 0, wiped.stderr)
+                self.assertEqual(psql("app", "-c", count).stdout.strip(), "0")
+            finally:
+                run([pg / "pg_ctl", "-D", data, "-m", "immediate", "stop"])
+
+
 class HostCliTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

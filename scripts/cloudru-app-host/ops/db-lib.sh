@@ -309,6 +309,9 @@ BEGIN
              AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
              AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_catalog.pg_class'::regclass
                              AND d.objid = c.oid AND d.deptype = 'e')
+             -- An identity or owned sequence goes with its table; dropped alone it is an error.
+             AND NOT (c.relkind = 'S' AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                      WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
   LOOP
     EXECUTE format('DROP %s IF EXISTS public.%I CASCADE',
                    CASE r.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'

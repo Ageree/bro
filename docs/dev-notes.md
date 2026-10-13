@@ -289,6 +289,11 @@
   Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
   Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,
   значения в копейках).
+- `WIPE_SQL` (`ops/db-lib.sh`) не должен трогать последовательности identity: у
+  `GENERATED ALWAYS AS IDENTITY` (миграции с 0065) `DROP SEQUENCE` отдельно — ошибка,
+  она уходит вместе с таблицей. 13.10 из-за этого ночной бэкап падал на
+  «could not empty the scratch database», а в `check` оставалась копия данных.
+  Причина не в замках: воспроизведено на чистом PostgreSQL (`WipeSqlTest`).
 - Личная почта: Mail.ru завышает `RFC822.SIZE` относительно полного
   `BODY.PEEK[]`; сравнение этих длин отвергает настоящее письмо. Читайте
   полное тело с лимитом literal у ImapFlow, а не частичный блок по этой оценке.

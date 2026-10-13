@@ -27,7 +27,9 @@ refuse_world CHECK
 workdir
 leave() {
   local status=$?
-  wipe CHECK > /dev/null 2>&1 || { echo "could not empty the scratch database" >&2; [ "$status" != 0 ] || status=1; }
+  # psql_on is terse (no DETAIL/CONTEXT): first_error shows the error without a row of people's data.
+  wipe CHECK > /dev/null 2> "$WORK/wipe.err" \
+    || { echo "could not empty the scratch database: $(first_error "$WORK/wipe.err")" >&2; [ "$status" != 0 ] || status=1; }
   rm -rf "$WORK"
   exit "$status"
 }
