@@ -285,6 +285,14 @@
   Порядок: сначала `host.py update-host`, потом `host.py env … --with-selectel-balance`
   (берёт ключ из env сессии); `host.py env` без флага ключ снимает, проверка
   тихо выключается. Порог — `SELECTEL_BALANCE_MIN_RUB` (1000).
+  Вместо ключа — сервисный пользователь с единственной ролью «Биллинг»:
+  `SELECTEL_BILLING_USER_ID`, `SELECTEL_BILLING_PASSWORD`,
+  `SELECTEL_BILLING_ACCOUNT` (номер аккаунта), все три в env сессии для того же
+  `--with-selectel-balance`; пользователь главнее ключа. Сторож берёт токен у
+  Keystone (`cloud.api.selcloud.ru/identity/v3/auth/tokens`, 24 ч, заголовок
+  `X-Auth-Token`; статический `X-Token` его не принимает), кладёт в
+  `watchdog.json` (0600) и меняет за час до срока или после 401; сбой Keystone —
+  «не прочитано», а не низкий баланс.
 - Selectel и RouterAI блокируют всё при нуле на балансе: при пустом RouterAI
   Бро молчит всем («Недостаточно средств»), при нуле Selectel пропадает и S3.
   Баланс Selectel — `GET https://api.selectel.ru/v3/balances` (`X-Token`,

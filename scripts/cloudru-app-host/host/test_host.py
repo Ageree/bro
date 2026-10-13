@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 import urllib.error
 import urllib.request
@@ -800,6 +801,94 @@ class WatchdogTest(unittest.TestCase):
             paths.ops_env.unlink()
             self.assertIsNone(watchdog.selectel_ok(paths, now + 5000, state))
             self.assertNotIn("selectelBalance", state)
+
+    def test_the_selectel_balance_reads_with_a_keystone_token_of_the_billing_user(self):
+        def balance(kopecks):
+            body = {"data": {"billings": [{"billing_type": "primary", "balances_values_sum": kopecks}]}}
+            return mock.MagicMock(read=lambda: json.dumps(body).encode(),
+                                  __enter__=lambda self: self, __exit__=lambda *a: None)
+
+        def keystone(token, expires_at):
+            reply = mock.MagicMock(read=lambda: json.dumps({"token": {"expires_at": expires_at}}).encode(),
+                                   headers={"X-Subject-Token": token},
+                                   __enter__=lambda self: self, __exit__=lambda *a: None)
+            return reply
+
+        def unauthorized():
+            return urllib.error.HTTPError(watchdog.SELECTEL_BALANCES, 401, "no", {}, None)
+
+        def urls(call):
+            return [c.args[0].full_url for c in call.call_args_list]
+
+        now = 3_000_000
+        in_a_day = datetime.fromtimestamp(now + 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with tempfile.TemporaryDirectory() as root:
+            paths = deployd.Paths(root)
+            paths.ops_env.parent.mkdir(parents=True)
+            paths.ops_env.write_text("SELECTEL_BILLING_USER_ID=u1\nSELECTEL_BILLING_PASSWORD=pw\n"
+                                     "SELECTEL_BILLING_ACCOUNT=123456\nSELECTEL_BILLING_TOKEN=static\n"
+                                     "SELECTEL_BALANCE_MIN_RUB=500\n")
+            state = {}
+            # The token is taken from Keystone with the three names, goes as X-Auth-Token (not the static
+            # X-Token) and is kept with its expiry; the static key is not used beside the user.
+            with mock.patch.object(watchdog.urllib.request, "urlopen",
+                                   side_effect=[keystone("t1", in_a_day), balance(80_000)]) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, now, state))
+            sent_body = json.loads(call.call_args_list[0].args[0].data)
+            self.assertEqual(sent_body["auth"]["identity"]["password"]["user"], {"id": "u1", "password": "pw"})
+            self.assertEqual(sent_body["auth"]["scope"], {"domain": {"name": "123456"}})
+            self.assertEqual(call.call_args_list[1].args[0].get_header("X-auth-token"), "t1")
+            self.assertIsNone(call.call_args_list[1].args[0].get_header("X-token"))
+            self.assertEqual(state["selectelAuth"]["token"], "t1")
+            self.assertEqual(state["selectelBalance"]["rub"], 800.0)
+            # A later read reuses the token: no Keystone request.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=[balance(70_000)]) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, now + 1000, state))
+            self.assertEqual(urls(call), [watchdog.SELECTEL_BALANCES])
+            # An hour before the end the token is taken again.
+            later = now + 86400 - 1800
+            fresh = datetime.fromtimestamp(later + 86400, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with mock.patch.object(watchdog.urllib.request, "urlopen",
+                                   side_effect=[keystone("t2", fresh), balance(60_000)]) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, later, state))
+            self.assertEqual(urls(call), [watchdog.SELECTEL_KEYSTONE, watchdog.SELECTEL_BALANCES])
+            self.assertEqual(state["selectelAuth"]["token"], "t2")
+            # A 401 gives one new token and one retry.
+            with mock.patch.object(watchdog.urllib.request, "urlopen",
+                                   side_effect=[unauthorized(), keystone("t3", fresh), balance(50_000)]) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, later + 1000, state))
+            self.assertEqual(urls(call), [watchdog.SELECTEL_BALANCES, watchdog.SELECTEL_KEYSTONE,
+                                          watchdog.SELECTEL_BALANCES])
+            self.assertEqual(state["selectelAuth"]["token"], "t3")
+            # A second 401 in the same check is not read, not a low balance (the last verdict stands).
+            with mock.patch.object(watchdog.urllib.request, "urlopen",
+                                   side_effect=[unauthorized(), keystone("t4", fresh), unauthorized()]) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, later + 2000, state))
+            self.assertEqual(len(call.call_args_list), 3)
+            # Keystone down: nothing read, and with no earlier verdict the check stays idle.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", side_effect=urllib.error.URLError("down")):
+                self.assertIsNone(watchdog.selectel_ok(paths, later + 3000, {}))
+                self.assertIsNone(watchdog.selectel_keystone_token("u1", "pw", "123456"))
+            # Keystone answering without a token or an expiry is not a token either.
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=keystone("", in_a_day)):
+                self.assertIsNone(watchdog.selectel_keystone_token("u1", "pw", "123456"))
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=keystone("t", "soon")):
+                self.assertIsNone(watchdog.selectel_keystone_token("u1", "pw", "123456"))
+            # Keystone down in the last hour of a token that still works: that token carries on.
+            state = {"selectelAuth": {"token": "old", "expiresAt": later + 1800}}
+            with mock.patch.object(watchdog.urllib.request, "urlopen",
+                                   side_effect=[urllib.error.URLError("down"), balance(40_000)]) as call:
+                self.assertIs(watchdog.selectel_ok(paths, later, state), False)
+            self.assertEqual(call.call_args_list[1].args[0].get_header("X-auth-token"), "old")
+            # Without the user the static key goes as X-Token and the kept token goes away.
+            paths.ops_env.write_text("SELECTEL_BILLING_TOKEN=static\nSELECTEL_BILLING_USER_ID=u1\nSELECTEL_BALANCE_MIN_RUB=500\n")
+            state = {"selectelAuth": {"token": "old", "expiresAt": later}}
+            with mock.patch.object(watchdog.urllib.request, "urlopen", return_value=balance(90_000)) as call:
+                self.assertTrue(watchdog.selectel_ok(paths, later, state))
+            self.assertEqual(call.call_args.args[0].get_header("X-token"), "static")
+            self.assertNotIn("selectelAuth", state)
+        for name in ("USER_ID", "PASSWORD", "ACCOUNT"):
+            self.assertIn(f"SELECTEL_BILLING_{name}", deployd.OPS_ONLY_ENV)
 
     def test_an_alert_reaches_the_webhook_when_telegram_does_not(self):
         posted = []

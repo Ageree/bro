@@ -52,6 +52,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -68,6 +69,8 @@ BACKUP_FRESH_S = 26 * 3600
 SELECTEL_BALANCES = "https://api.selectel.ru/v3/balances"
 SELECTEL_MIN_RUB = 1000.0
 SELECTEL_CHECK_EVERY_S = 15 * 60
+SELECTEL_KEYSTONE = "https://cloud.api.selcloud.ru/identity/v3/auth/tokens"
+SELECTEL_TOKEN_RENEW_BEFORE_S = 3600
 NAMES = {"web": "Next (сайт и вход)", "eve": "eve (агент, каналы)", "caddy": "Caddy (HTTPS)",
          "backup": "ночной бэкап базы", "selectel": "баланс Selectel", "tg-egress": "путь к api.telegram.org (tg-egress)",
          "tg-bridge": "мост Telegram (входящие сообщения бота)",
@@ -125,15 +128,24 @@ def backup_unit_failed():
     return result.returncode != 0 or unit.get("LoadState") != "loaded" or unit.get("Result") != "success"
 
 
-def selectel_balance_rub(token, timeout=15):
+class Unauthorized(Exception):
+    """Selectel answered 401: the token was refused (expired or revoked), not the balance low."""
+
+
+def selectel_balance_rub(headers, timeout=15):
     """The primary billing's balance in rubles (the API counts kopecks), debt taken off; None when Selectel
-    does not answer or answers something else: a failed read is not a low balance."""
-    request = urllib.request.Request(SELECTEL_BALANCES, headers={"X-Token": token})
+    does not answer or answers something else: a failed read is not a low balance. Raises Unauthorized on a
+    401, so that a Keystone token can be taken afresh."""
+    request = urllib.request.Request(SELECTEL_BALANCES, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read())["data"]["billings"]
         billing = next(b for b in data if b.get("billing_type") == "primary")
         kopecks = billing["balances_values_sum"] - billing.get("debt_sum", 0)
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            raise Unauthorized() from None
+        return None
     except (OSError, urllib.error.URLError, ValueError, KeyError, TypeError, StopIteration):
         return None
     if isinstance(kopecks, bool) or not isinstance(kopecks, (int, float)):
@@ -141,15 +153,76 @@ def selectel_balance_rub(token, timeout=15):
     return kopecks / 100
 
 
+def selectel_keystone_token(user_id, password, account, timeout=15):
+    """(token, expiry in epoch seconds) of the service user with the Billing role, or None when Keystone does not
+    answer as expected. Nothing of the request or the answer is printed: it holds the password and the token."""
+    body = {"auth": {"identity": {"methods": ["password"], "password": {"user": {"id": user_id, "password": password}}},
+                     "scope": {"domain": {"name": account}}}}
+    request = urllib.request.Request(SELECTEL_KEYSTONE, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            token = response.headers.get("X-Subject-Token")
+            expires = json.loads(response.read())["token"]["expires_at"]
+        expires_at = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except (OSError, urllib.error.URLError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not token or not isinstance(token, str):
+        return None
+    return token, expires_at.timestamp()
+
+
+def selectel_read(ops, now, state):
+    """The balance in rubles, or None when it could not be read. With SELECTEL_BILLING_USER_ID, _PASSWORD and
+    _ACCOUNT the token comes from Keystone (valid 24 hours, kept in the state, taken again an hour before it
+    ends or once after a 401); otherwise the static SELECTEL_BILLING_TOKEN goes as X-Token."""
+    user, password, account = (ops.get(f"SELECTEL_BILLING_{name}") for name in ("USER_ID", "PASSWORD", "ACCOUNT"))
+    if not (user and password and account):
+        state.pop("selectelAuth", None)
+        return selectel_balance_rub({"X-Token": ops["SELECTEL_BILLING_TOKEN"]})
+
+    def renew():
+        taken = selectel_keystone_token(user, password, account)
+        if taken is None:
+            print("selectel keystone: token not taken", flush=True)
+            return None
+        auth = state["selectelAuth"] = {"token": taken[0], "expiresAt": taken[1]}
+        return auth
+
+    auth = state.get("selectelAuth")
+    if not (isinstance(auth, dict) and isinstance(auth.get("token"), str)
+            and isinstance(auth.get("expiresAt"), (int, float))):
+        auth = None
+    if auth is None or auth["expiresAt"] - now < SELECTEL_TOKEN_RENEW_BEFORE_S:
+        # Keystone down within the last hour of a token that still works: carry on with the old one.
+        auth = renew() or (auth if auth is not None and auth["expiresAt"] > now else None)
+        if auth is None:
+            return None
+    try:
+        return selectel_balance_rub({"X-Auth-Token": auth["token"]})
+    except Unauthorized:
+        auth = renew()
+        if auth is None:
+            return None
+    try:
+        return selectel_balance_rub({"X-Auth-Token": auth["token"]})
+    except Unauthorized:
+        return None
+
+
 def selectel_ok(paths, now, state):
-    """None when the check is off (no SELECTEL_BILLING_TOKEN in /etc/bro/ops-env: the account's key is
-    root's, never in the app's env that the model's tools run with) or Selectel could not be read this
-    time (the last verdict stands); else whether the balance is at least SELECTEL_BALANCE_MIN_RUB. Read
-    every SELECTEL_CHECK_EVERY_S, not every minute. At zero Selectel takes the VMs and Object Storage."""
+    """None when the check is off (neither SELECTEL_BILLING_TOKEN nor the service user's three names in
+    /etc/bro/ops-env: the account's key is root's, never in the app's env that the model's tools run with) or
+    Selectel could not be read this time (the last verdict stands); else whether the balance is at least
+    SELECTEL_BALANCE_MIN_RUB. Read every SELECTEL_CHECK_EVERY_S, not every minute. At zero Selectel takes the
+    VMs and Object Storage."""
     ops = read_ops_env(paths)
-    token = ops.get("SELECTEL_BILLING_TOKEN")
-    if not token:
+    service_user = all(ops.get(f"SELECTEL_BILLING_{name}") for name in ("USER_ID", "PASSWORD", "ACCOUNT"))
+    if not (service_user or ops.get("SELECTEL_BILLING_TOKEN")):
         state.pop("selectelBalance", None)
+        state.pop("selectelAuth", None)
         return None
     try:
         minimum = float(ops.get("SELECTEL_BALANCE_MIN_RUB") or SELECTEL_MIN_RUB)
@@ -157,7 +230,7 @@ def selectel_ok(paths, now, state):
         minimum = SELECTEL_MIN_RUB
     last = state.get("selectelBalance")
     if not (isinstance(last, dict) and now - last.get("at", 0) < SELECTEL_CHECK_EVERY_S):
-        rub = selectel_balance_rub(token)
+        rub = selectel_read(ops, now, state)
         if rub is None:
             print("selectel balance: not read", flush=True)
             return None if not isinstance(last, dict) else last.get("rub", 0) >= minimum
