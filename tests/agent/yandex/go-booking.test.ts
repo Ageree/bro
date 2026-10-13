@@ -160,6 +160,17 @@ describe("go.book", () => {
     expect(sent("/external/3.0/orderdraft")).toHaveLength(0);
   });
 
+  it("answers the ride that is on even when a lookup beside it fails", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/launch": { body: activeLaunch },
+      "/3.0/taxiontheway": { body: activeOrder },
+      "/4.0/persuggest/v1/suggest": { body: {}, status: 500 },
+    });
+    const data = dataOf(await runInPage(goBookOperation.run, book(), page));
+    expect(data).toMatchObject({ kind: "already_active" });
+    expect(sent("/external/3.0/orderdraft")).toHaveLength(0);
+  });
+
   it("answers the ride that is on instead of booking a second one", async () => {
     const { page, sent } = await goPage({
       "/3.0/launch": { body: activeLaunch },
@@ -258,6 +269,20 @@ describe("go.book with a card Go holds back", () => {
     expect(data).toMatchObject({ kind: "booked", payment: "VISA ****4310" });
     expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
       payment: { type: "card", payment_method_id: "card-x1a" },
+    });
+  });
+});
+
+describe("go.book asks for the cards", () => {
+  it("at the point the place was found at, not at a point the person gave", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/paymentmethods": {
+        body: { card: { available_cards: [visa], unverified_cards: [] } },
+      },
+    });
+    await runInPage(goBookOperation.run, book({ payment: "card" }), page);
+    expect(sent("/3.0/paymentmethods")[0]?.body).toMatchObject({
+      location: [37.5, 55.7],
     });
   });
 });
