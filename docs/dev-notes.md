@@ -1299,9 +1299,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   с суффиксами `-fast`, `-ultra`, `-ultra-chat`. Первый токен текстом (шаг ~8,9k
   токенов, кэш работает, strict `json_schema` работает): `-ultra-chat` 0,38 с,
   остальные 0,9–1,1 с, RunInfra 0,84 с.
-  **Баг:** длинное тире `—` в запросе — `-ultra-chat` отвечает `finish_reason:
-  "abort"` с пустым телом, `-ultra` и без схемы мусором; Бро кладёт `—` в задания
-  и правила worker. Обход: слать `-` (`DashToHyphen` в `scripts/selectel-bench/bu_bench.py`).
+  **Баг:** длинное тире `—` в запросе. `-ultra-chat` отвечает с пустым телом и
+  `finish_reason: "abort"`, `-ultra` и запрос без схемы дают мусор. Бро кладёт `—`
+  в задания и правила worker. Обход: слать `-` (`DashToHyphen` в `scripts/selectel-bench/bu_bench.py`).
   Без обхода browser-use останавливался после 4 пустых шагов.
   Телефония (текст через ElevenLabs, custom LLM, 24 реплики): `-ultra-chat` 0,33 с
   (разброс 0,30–0,50) против 0,43 с (до 0,88) у встроенной `deepseek-v41-flash`;
