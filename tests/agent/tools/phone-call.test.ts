@@ -8,6 +8,7 @@ import {
 import { toolContext } from "@tests/helpers/tool-context";
 
 const services = vi.hoisted(() => ({
+  notSubmitted: vi.fn<() => void>(),
   startCall:
     vi.fn<() => Promise<{ accepted: boolean; conversationId: string }>>(),
 }));
@@ -31,6 +32,7 @@ vi.mock("@db/services/phone", () => ({
   }),
   readPhoneNumberRequest: vi.fn<() => void>(),
   recordCallAccepted: vi.fn<() => void>(),
+  recordCallNotSubmitted: services.notSubmitted,
   recordCallUncertain: vi.fn<() => void>(),
   savePhoneQuote: vi.fn<() => void>(),
 }));
@@ -40,6 +42,7 @@ vi.mock("@db/services/phone/lifecycle", () => ({
 }));
 vi.mock("@shared/phone/exolve", () => ({ quoteNumber: vi.fn<() => void>() }));
 vi.mock("@shared/phone/elevenlabs", () => ({
+  CallNotSubmittedError: class CallNotSubmittedError extends Error {},
   requirePhoneAgentReady: async () => undefined,
   startCall: services.startCall,
 }));
@@ -172,6 +175,22 @@ describe("phone-call on the person's request", () => {
         state: "accepted",
       });
       expect(services.startCall).toHaveBeenCalledTimes(1);
+    })
+  );
+
+  it(
+    "reports a call that failed before dialing as failed and not submitted",
+    inContext(async () => {
+      const { CallNotSubmittedError } =
+        await import("@shared/phone/elevenlabs");
+      services.startCall.mockRejectedValueOnce(new CallNotSubmittedError());
+      const phone = await setUp([person("Набери +7 495 123-45-67")]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "failed",
+      });
+      expect(services.notSubmitted).toHaveBeenCalledWith("local-call");
     })
   );
 

@@ -90,6 +90,9 @@ function configuredAgent() {
   return valid(id, agent);
 }
 
+// Чтения agents/phone-numbers у ElevenLabs 13.10 отвечали за 25–40 с.
+const readTimeoutMs = 60_000;
+
 async function request<T extends z.ZodType>(
   path: string,
   schema: T,
@@ -107,7 +110,7 @@ async function request<T extends z.ZodType>(
       signal: AbortSignal.timeout(
         path === "/v1/convai/sip-trunk/outbound-call" && method === "POST"
           ? outboundTimeoutMs
-          : 20_000
+          : readTimeoutMs
       ),
       redirect: "error",
       cache: "no-store",
@@ -599,23 +602,45 @@ export async function requirePhoneAgentReady() {
   };
 }
 
+export class CallNotSubmittedError extends Error {
+  constructor() {
+    super("The outbound call was not submitted to the provider.");
+    this.name = "CallNotSubmittedError";
+  }
+}
+
 export async function startCall(input: z.input<typeof initiation>) {
   const value = valid(initiation, input);
   if (value.agentId !== configuredAgent())
     throw new Error("Call agent does not match the configured Bro agent.");
-  const credentials = await sipForNumber({
-    number: value.publicNumber,
-    sipId: value.sipId,
-  });
-  if (!credentials)
-    throw new Error("Call Exolve caller identity is not verified.");
-  const outgoing = await readPhone(value.phoneNumberId);
-  if (!outgoing || outgoing.phone_number !== credentials.username)
-    throw new Error(
-      "Call phone must be the dedicated outbound SIP-login identity."
-    );
-  await verifyTrunk(value.phoneNumberId, credentials.username);
-  const provider = await requirePhoneAgentReady();
+  // До POST ничего не отправлено: любой сбой этих проверок — «звонок не
+  // сделан», его можно повторять (в отличие от сбоя самого POST).
+  let provider;
+  try {
+    const credentials = await sipForNumber({
+      number: value.publicNumber,
+      sipId: value.sipId,
+    });
+    if (!credentials)
+      throw new Error("Call Exolve caller identity is not verified.");
+    // Три чтения ElevenLabs идут параллельно: каждое бывает медленным
+    // (13.10 — 25–40 с), и подряд они не укладывались в минуту.
+    const [outgoing, , ready] = await Promise.all([
+      readPhone(value.phoneNumberId),
+      verifyTrunk(value.phoneNumberId, credentials.username),
+      requirePhoneAgentReady(),
+    ]);
+    if (!outgoing || outgoing.phone_number !== credentials.username)
+      throw new Error(
+        "Call phone must be the dedicated outbound SIP-login identity."
+      );
+    provider = ready;
+  } catch (error) {
+    console.warn("[phone] call preflight failed", {
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+    throw new CallNotSubmittedError();
+  }
   const duration = Math.min(
     value.maxDurationSeconds ?? provider.maxDurationSeconds,
     provider.maxDurationSeconds

@@ -13,7 +13,11 @@ import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { domesticPhoneSchema } from "@shared/phone/policy";
 import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
-import { requirePhoneAgentReady, startCall } from "@shared/phone/elevenlabs";
+import {
+  CallNotSubmittedError,
+  requirePhoneAgentReady,
+  startCall,
+} from "@shared/phone/elevenlabs";
 import {
   changePhoneState,
   claimCallStart,
@@ -25,6 +29,7 @@ import {
   readPhoneNumber,
   readPhoneNumberRequest,
   recordCallAccepted,
+  recordCallNotSubmitted,
   recordCallUncertain,
   savePhoneQuote,
 } from "@db/services/phone";
@@ -264,7 +269,6 @@ async function placeCall(
   originatingTurn: string | null
 ) {
   const target = domesticPhoneSchema.parse(input.target);
-  await requirePhoneAgentReady();
   if (!originatingTurn)
     throw new Error("Originating phone authorization is unavailable.");
   const operationId = `${scope.workspaceId}:${context.session.id}:${originatingTurn}:${context.callId}`;
@@ -323,7 +327,16 @@ async function placeCall(
         ? "Provider accepted the request; this does not prove a connection or task success. The result will be reported here."
         : "The provider rejected call initiation but supplied a conversation receipt. No successful start or connection is claimed; the receipt will be reconciled and no redial will occur.",
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof CallNotSubmittedError) {
+      await recordCallNotSubmitted(started.id);
+      return {
+        callId: started.id,
+        state: "failed",
+        note: "The call was not placed: the voice line did not answer the pre-dial checks in time. Nothing was dialed, so tell the person plainly and offer to try again.",
+      };
+    }
+    console.warn("[phone] call start outcome unknown");
     await recordCallUncertain(started.id);
     return {
       callId: started.id,

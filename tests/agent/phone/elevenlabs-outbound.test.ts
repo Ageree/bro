@@ -32,7 +32,8 @@ vi.mock("@shared/phone/elevenlabs-http", () => ({
 }));
 
 const { elevenlabsFetch } = await import("@shared/phone/elevenlabs-http");
-const { startCall } = await import("@shared/phone/elevenlabs");
+const { CallNotSubmittedError, startCall } =
+  await import("@shared/phone/elevenlabs");
 
 const endCall = {
   type: "system",
@@ -215,6 +216,16 @@ function sentPrompt() {
 }
 
 describe("outbound Bro call initiation", () => {
+  it("reports a failed pre-dial read as not submitted, without posting a call", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(elevenlabsFetch).mockImplementation(async () => {
+      throw new Error("timeout");
+    });
+    await expect(placeCall()).rejects.toBeInstanceOf(CallNotSubmittedError);
+    expect(outboundBody).toBeUndefined();
+    warn.mockRestore();
+  });
+
   it("greets without calling itself AI or announcing recording, and keeps the call open until goodbye", async () => {
     await expect(placeCall()).resolves.toEqual({
       conversationId: "conversation-out-1",
