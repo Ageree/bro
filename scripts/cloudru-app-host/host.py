@@ -983,11 +983,25 @@ def cmd_env(args):
         # Neon's URL, never in the app's env. Only a key meant for billing: the account's full key can delete
         # VMs, and ops-env reaches every ops script of a release. Without the flag a later `host.py env`
         # takes it away again.
-        key = os.environ.get("SELECTEL_BILLING_TOKEN", "").strip().strip("\"'“”")
-        if not key:
-            sys.exit("no SELECTEL_BILLING_TOKEN in the environment for --with-selectel-balance (a key that can "
-                     "only read billing; not SELECTEL_TOKEN, which can delete VMs)")
-        ops_env["SELECTEL_BILLING_TOKEN"] = key
+        def given(name):
+            return os.environ.get(name, "").strip().strip("\"'“”")
+
+        # Either the service user with the single Billing role (the watchdog takes a 24-hour Keystone token with
+        # it) or the static key; the user wins on the VM when both are there.
+        service = {name: given(name) for name in
+                   ("SELECTEL_BILLING_USER_ID", "SELECTEL_BILLING_PASSWORD", "SELECTEL_BILLING_ACCOUNT")}
+        if all(service.values()):
+            ops_env.update(service)
+        elif any(service.values()):
+            sys.exit("--with-selectel-balance needs all of SELECTEL_BILLING_USER_ID, SELECTEL_BILLING_PASSWORD and "
+                     "SELECTEL_BILLING_ACCOUNT, or none of them")
+        key = given("SELECTEL_BILLING_TOKEN")
+        if key:
+            ops_env["SELECTEL_BILLING_TOKEN"] = key
+        if not (all(service.values()) or key):
+            sys.exit("no SELECTEL_BILLING_USER_ID, SELECTEL_BILLING_PASSWORD and SELECTEL_BILLING_ACCOUNT, or "
+                     "SELECTEL_BILLING_TOKEN, in the environment for --with-selectel-balance (a user with only the "
+                     "Billing role or a key that can only read billing; not SELECTEL_TOKEN, which can delete VMs)")
         if os.environ.get("SELECTEL_BALANCE_MIN_RUB"):
             ops_env["SELECTEL_BALANCE_MIN_RUB"] = os.environ["SELECTEL_BALANCE_MIN_RUB"].strip()
     by_source = {}
@@ -1491,7 +1505,8 @@ def parser():
                      help="NEON_DATABASE_URL for db-copy.sh (Neon's direct URL from vercel-production.json), "
                           "in /etc/bro/ops-env for the ops scripts only")
     env.add_argument("--with-selectel-balance", action="store_true",
-                     help="SELECTEL_BILLING_TOKEN (a read-only billing key; and SELECTEL_BALANCE_MIN_RUB, default 1000) for the "
+                     help="SELECTEL_BILLING_USER_ID/_PASSWORD/_ACCOUNT (a service user with the Billing role) or SELECTEL_BILLING_TOKEN "
+                          "(a read-only billing key), and SELECTEL_BALANCE_MIN_RUB (default 1000), for the "
                           "watchdog's balance check, in /etc/bro/ops-env")
     env.set_defaults(fn=cmd_env)
     sites = sub.add_parser("sites")
