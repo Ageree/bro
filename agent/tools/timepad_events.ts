@@ -158,7 +158,7 @@ const timepadEvents = defineTool({
         const event = eventSchema.parse(
           await readTimepad(
             `${apiBase}/events/${String(input.eventId)}`,
-            { fields: fullFields },
+            new URLSearchParams({ fields: fullFields }),
             apiKey,
             signal
           )
@@ -197,20 +197,21 @@ function searchParameters(input: TimepadInput, now: Date) {
     input.to === undefined
       ? moscowTime(Date.parse(from) + defaultWindowDays * dayMs)
       : `${input.to}${dayEnd}`;
-  const city = input.city?.trim();
-  const query = input.query?.trim();
-  return {
-    ...(city ? { cities: city } : {}),
+  const parameters = new URLSearchParams({
     fields: listFields,
-    ...(query ? { keywords: query } : {}),
     limit: String(input.limit ?? defaultLimit),
-    ...(input.maxPriceRub === undefined
-      ? {}
-      : { price_max: String(input.maxPriceRub) }),
     sort: "+starts_at",
     starts_at_max: to,
     starts_at_min: from,
-  };
+  });
+  const city = input.city?.trim();
+  if (city) parameters.set("cities", city);
+  const query = input.query?.trim();
+  if (query) parameters.set("keywords", query);
+  if (input.maxPriceRub !== undefined) {
+    parameters.set("price_max", String(input.maxPriceRub));
+  }
+  return parameters;
 }
 
 function moscowTime(ms: number) {
@@ -219,11 +220,11 @@ function moscowTime(ms: number) {
 
 async function readTimepad(
   url: string,
-  parameters: Readonly<Record<string, string>>,
+  parameters: URLSearchParams,
   apiKey: string,
   signal: AbortSignal
 ) {
-  const response = await fetch(`${url}?${new URLSearchParams(parameters)}`, {
+  const response = await fetch(`${url}?${parameters.toString()}`, {
     dispatcher: timepadDispatcher,
     headers: {
       accept: "application/json",

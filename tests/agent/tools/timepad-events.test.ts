@@ -1,6 +1,8 @@
 import type { DynamicResolveContext } from "eve";
 import type { ToolContext } from "eve/tools";
+import type * as Undici from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const fetchMock = vi.hoisted(() =>
   vi.fn<
@@ -12,7 +14,7 @@ const fetchMock = vi.hoisted(() =>
 );
 
 vi.mock("undici", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("undici")>()),
+  ...(await importOriginal<typeof Undici>()),
   fetch: fetchMock,
 }));
 
@@ -147,13 +149,31 @@ async function execute(input: Record<string, number | string>) {
   if (!tool || !("execute" in tool)) {
     throw new Error("timepad_events resolves to a single tool.");
   }
-  const result = await tool.execute(input, {
+  return z.string().parse(await tool.execute(input, toolContext()));
+}
+
+function toolContext() {
+  return {
     abortSignal: new AbortController().signal,
-  } as ToolContext);
-  if (typeof result !== "string") {
-    throw new Error("timepad_events returns text.");
-  }
-  return result;
+    callId: "call-1",
+    async getSandbox() {
+      throw new Error("Sandbox access is outside this focused test.");
+    },
+    getSkill() {
+      throw new Error("Skill access is outside this focused test.");
+    },
+    async getToken() {
+      throw new Error("Token access is outside this focused test.");
+    },
+    requireAuth() {
+      throw new Error("Authorization is outside this focused test.");
+    },
+    session: {
+      ...personContext().session,
+      turn: { id: "turn-1", sequence: 0 },
+    },
+    toolName: "timepad_events",
+  } satisfies ToolContext;
 }
 
 function personContext() {
