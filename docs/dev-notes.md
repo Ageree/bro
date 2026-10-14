@@ -1010,6 +1010,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   модели на ~50k истории. Anthropic кэширует, только если просить:
   `cache_control` верхнего уровня (`extraBody` в `direct.ts`), иначе каждый шаг
   Haiku — полная цена входа.
+- Jev 1.14 (вышел 14.10; `jev-1.14.0` = `jev-preview`): принимает картинки (`assets` и заголовок
+  `TypeSafe-Danger-Zone-Images: true`) и Box (координаты на скриншоте, 1.13 его отвергает); вызов ≈200 мс,
+  скриншот 1120×780 ≈2,5 тыс. токенов. С адреса Selectel `api.typesafe.ai` отвечает 451, а RouterAI 14.10 отдаёт лишь
+  `typesafe/jev-1.13` и роняет `assets` (вход 348 токенов вместо ~2,5 тыс.): 1.14 с картинками в проде недоступен, пока
+  RouterAI не добавит его. Стенд для замера — `scripts/selectel-bench/jev/` (README). jev-ultrafast намеренно не видит поля
+  `password`, `file` и `hidden` (`snapshot.js`): входы по паролю в нём не работают. Лимит user data у Nova — 65 535 байт
+  уже после base64: большой cloud-init сжимайте gzip.
 - Картинки с 14.10 — MAI Image 2.6 Flash: 2,13 ₽ против 3,73 ₽ у Gemini Lite Image,
   16–33 с против 5–10 с; 9 живых проб с русским текстом — у MAI дубль «18:00» в
   2 из 3 приглашений, у Gemini выдуманный адрес в 3 из 3; Seedream 5.0 Flash
