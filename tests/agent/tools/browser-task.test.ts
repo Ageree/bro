@@ -7973,22 +7973,26 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     // and a password made here that no one is told.
     const saved = saveVaultItem.mock.calls[0]?.[1];
     expect(saved?.kind).toBe("login");
-    const payload = JSON.parse(saved?.secret ?? "{}");
-    expect(payload.identifier).toEqual({ type: "username", value: "ivan" });
-    expect(payload.origin).toBe("https://productradar.ru");
-    expect(payload.authentication.password).toHaveLength(18);
+    const payload = parseLoginVaultPayload(saved?.secret ?? "");
+    expect(payload).toMatchObject({
+      identifier: { type: "username", value: "ivan" },
+      origin: "https://productradar.ru",
+    });
+    const password =
+      payload?.authentication.type === "password"
+        ? payload.authentication.password
+        : "";
+    expect(password).toHaveLength(18);
     const created = createBrowserUseRun.mock.calls[0]?.[0];
     expect(created?.task).toContain(
       "https://productradar.ru/wp-login.php?action=rp&key=AbC123&login=ivan"
     );
     expect(created?.task).toContain("ask for the secret login_password");
-    expect(created?.task).not.toContain(payload.authentication.password);
+    expect(created?.task).not.toContain(password);
     expect(continuationNote(result)).toContain(
       "do not ask them for the link, to open it, to choose or send a password"
     );
-    expect(JSON.stringify(result)).not.toContain(
-      payload.authentication.password
-    );
+    expect(JSON.stringify(result)).not.toContain(password);
   });
 
   it("hands the run a confirmation link without making any password", async () => {
