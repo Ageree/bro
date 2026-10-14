@@ -1,6 +1,7 @@
 import { defineHook } from "eve/hooks";
 import { prewarmBrowserSandbox } from "@agent/lib/browser-pool/sandbox";
 import { usesBrowserPool } from "@agent/lib/browser-vm/backend";
+import { warmBrowserVmExit } from "@agent/lib/browser-vm/lifecycle";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
@@ -38,7 +39,11 @@ export default defineHook({
         });
         return;
       }
-      void prewarmBrowserSandbox(workspaceId);
+      // Once the browser is up its exit is checked too, while the model
+      // still writes its first step (`warmBrowserVmExit`).
+      void prewarmBrowserSandbox(workspaceId).then(() =>
+        warmBrowserVmExit(workspaceId)
+      );
     },
   },
 });

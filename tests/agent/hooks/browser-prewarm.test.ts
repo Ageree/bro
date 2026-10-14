@@ -2,6 +2,7 @@ import type { HookContext } from "eve/hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as backend from "@agent/lib/browser-vm/backend";
 import type * as sandbox from "@agent/lib/browser-pool/sandbox";
+import type * as lifecycle from "@agent/lib/browser-vm/lifecycle";
 import browserPrewarmHook from "@agent/hooks/browser-prewarm";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { accessScopeForUser } from "@shared/identity/access-scope";
@@ -9,6 +10,7 @@ import { accessScopeForUser } from "@shared/identity/access-scope";
 const mocks = vi.hoisted(() => ({
   prewarmBrowserSandbox: vi.fn<typeof sandbox.prewarmBrowserSandbox>(),
   usesBrowserPool: vi.fn<typeof backend.usesBrowserPool>(),
+  warmBrowserVmExit: vi.fn<typeof lifecycle.warmBrowserVmExit>(),
 }));
 
 vi.mock("@agent/lib/browser-pool/sandbox", () => ({
@@ -16,6 +18,9 @@ vi.mock("@agent/lib/browser-pool/sandbox", () => ({
 }));
 vi.mock("@agent/lib/browser-vm/backend", () => ({
   usesBrowserPool: mocks.usesBrowserPool,
+}));
+vi.mock("@agent/lib/browser-vm/lifecycle", () => ({
+  warmBrowserVmExit: mocks.warmBrowserVmExit,
 }));
 
 const scope = accessScopeForUser("better-auth:alice");
@@ -91,6 +96,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.prewarmBrowserSandbox.mockResolvedValue(undefined);
   mocks.usesBrowserPool.mockResolvedValue(true);
+  mocks.warmBrowserVmExit.mockResolvedValue(undefined);
 });
 
 describe("the browser warm-up hook", () => {
@@ -101,6 +107,25 @@ describe("the browser warm-up hook", () => {
     expect(mocks.prewarmBrowserSandbox).toHaveBeenCalledExactlyOnceWith(
       scope.workspaceId
     );
+  });
+
+  it("checks the exit once the browser is up", async () => {
+    // 14.10: the errand that followed waited 7–10 s on the exit check.
+    let up = () => undefined as void;
+    mocks.prewarmBrowserSandbox.mockReturnValue(
+      new Promise<void>((resolve) => {
+        up = resolve;
+      })
+    );
+
+    await receive(received("найди крем для рук на вб"));
+    expect(mocks.warmBrowserVmExit).not.toHaveBeenCalled();
+    up();
+    await vi.waitFor(() => {
+      expect(mocks.warmBrowserVmExit).toHaveBeenCalledExactlyOnceWith(
+        scope.workspaceId
+      );
+    });
   });
 
   it("leaves the pool alone for a workspace outside it", async () => {

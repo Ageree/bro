@@ -534,6 +534,64 @@ export async function touchBrowserVm(workspaceId: string, now = new Date()) {
 export async function prepareBrowserVmSession(
   vm: BrowserVm,
   now = new Date(),
+  options: Parameters<typeof prepareAfterWarmUp>[2] = {}
+) {
+  // A warm-up may be checking the exit right now: running a second check
+  // beside it would point the worker at two sessions at once. Wait for it
+  // and go on from what it left.
+  const warming = exitWarmUps.get(vm.workspaceId);
+  if (warming === undefined) return prepareAfterWarmUp(vm, now, options);
+  await warming;
+  return prepareAfterWarmUp(
+    (await readBrowserVm(vm.workspaceId)) ?? vm,
+    now,
+    options
+  );
+}
+
+/**
+ * Exit checks a person's message started (`warmBrowserVmExit`), by
+ * workspace: one eve serves the world's base, so one process sees them all.
+ */
+const exitWarmUps = new Map<string, Promise<void>>();
+
+/**
+ * Check the exit of a person's ready browser as soon as they write, beside
+ * the model's first step, so the errand that may follow finds it fresh
+ * (`exitCheckMs`) instead of waiting 7–10 s on the check itself (owner,
+ * 14.10). The person's own turn rules hold: the first Russian exit is taken
+ * however slow. A browser busy with a run, or holding a kept page, is left
+ * as it is (`prepareAfterWarmUp`). Never throws.
+ */
+export async function warmBrowserVmExit(workspaceId: string, now = new Date()) {
+  if (exitWarmUps.has(workspaceId)) return;
+  const warming = (async () => {
+    try {
+      const vm = await readBrowserVm(workspaceId);
+      if (vm?.state !== "ready") return;
+      const checkedAt =
+        vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
+      if (checkedAt > now.getTime() - exitCheckMs) return;
+      await prepareAfterWarmUp(vm, now, { inTurn: true });
+    } catch (error) {
+      // The errand checks the exit again by itself.
+      console.warn("[browser-vm] the exit could not be warmed up", {
+        error: error instanceof Error ? error.name : null,
+        workspaceId,
+      });
+    }
+  })();
+  exitWarmUps.set(workspaceId, warming);
+  try {
+    await warming;
+  } finally {
+    exitWarmUps.delete(workspaceId);
+  }
+}
+
+async function prepareAfterWarmUp(
+  vm: BrowserVm,
+  now: Date,
   {
     freshExit = false,
     inTurn = false,
