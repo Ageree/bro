@@ -2864,11 +2864,6 @@ async function codeFromMail(
       `Nothing was sent: this run is not waiting for a code the site sent by email (${row.completedAt === null ? "it has not finished yet" : `it stopped with Needs: ${needs ?? "none"}`}), and codeFrom "mail" only continues one that is.`
     );
   }
-  // The page that waited for this code is gone: a new sign-in sends a new
-  // code, and the letter holds the old one.
-  if (row.browserReleasedAt instanceof Date) {
-    throw new Error(closedPageMailCodeRefusal);
-  }
   // The errand's account is Bro's own: the site wrote to its mailbox.
   const agentMailbox = await siteAgentMailbox(scope, row.site);
   // One look in the mail per stop: a run that was itself handed a code from
@@ -2904,6 +2899,12 @@ async function codeFromMail(
     runId: row.id,
   });
   if (found.kind === "found") {
+    // The page that waited for this code is gone: a new sign-in sends a new
+    // code, and the letter holds the old one. A link needs no page (14.10:
+    // the set-password link of productradar.ru was refused this way).
+    if (row.browserReleasedAt instanceof Date) {
+      throw new Error(closedPageMailCodeRefusal);
+    }
     return {
       code: found.code,
       domain: found.domain,
@@ -4583,8 +4584,10 @@ async function runBrowserTask(
       : page.held || walled
         ? undefined
         : closedPage(row.outcome);
-    // The code in the mail belonged to that page.
-    if (mail && !page.held) throw new Error(closedPageMailCodeRefusal);
+    // The code in the mail belonged to that page; a link opens anywhere.
+    if (mail?.kind === "code" && !page.held) {
+      throw new Error(closedPageMailCodeRefusal);
+    }
     const giveBackPage = async () => {
       if (page.claimedAt === undefined) return;
       try {
