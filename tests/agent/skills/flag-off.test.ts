@@ -64,17 +64,17 @@ const deployments = {
     environment: fullDeployment,
     hashes: {
       "browser-result":
-        "b1913828aaeb665a5c62c130cd64b89b02394d0495f08ed5144221eb05b1dde8",
+        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
       interactive:
-        "b1913828aaeb665a5c62c130cd64b89b02394d0495f08ed5144221eb05b1dde8",
+        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
         "938731874072f944e329e0f97a258a97b46d8c0ce648c7700e0905759e427723",
       "scheduled-worker":
-        "243950e5ace0c97aff319479dfbf980343ecb4b6dc476bbdf44cb72a0d9f8d41",
+        "1b79008072bd3a52c95be5498c1f670515dbdfc4a8a6c266e57ea5127c08b1fe",
       telegram:
-        "b1913828aaeb665a5c62c130cd64b89b02394d0495f08ed5144221eb05b1dde8",
+        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
     },
   },
 };
