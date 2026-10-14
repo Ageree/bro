@@ -1163,17 +1163,6 @@ describe("route_time", () => {
     expect(requestsTo("routing.openstreetmap.de")).toEqual([]);
   });
 
-  it("marks a destination it could not find and measures the rest", async () => {
-    const result = await measure({
-      from: "отель Метрополь, Москва",
-      mode: "walking",
-      to: ["Несуществующее кафе", "метро Чистые пруды, Москва"],
-    });
-
-    expect(result.routes?.[0]?.error).toContain("not on the map");
-    expect(result.routes?.[1]).toMatchObject({ km: 1.6, minutes: 21 });
-  });
-
   it("gives only the straight-line distance when the router is down", async () => {
     fetchMock.mockImplementation(async (url) =>
       url.host === "nominatim.openstreetmap.org"

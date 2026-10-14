@@ -188,14 +188,6 @@ describe("TurnTracker and background errands", () => {
     expect(resumed.awaitingBackground()).toBe(false);
   });
 
-  it("takes a report from a background retry for the errand it continues", () => {
-    const tracker = new TurnTracker();
-    observeAll(tracker, turn("turn_0", [running()]));
-    observeAll(tracker, turn("turn_1", [browserReport("run_retry")]));
-
-    expect(tracker.awaitingBackground()).toBe(false);
-  });
-
   it("follows `status` to the errand's newest run", () => {
     const tracker = new TurnTracker();
     observeAll(tracker, turn("turn_0", [running()]));

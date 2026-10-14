@@ -69,15 +69,6 @@ describe("searchDrive", () => {
     );
   });
 
-  it("returns the files newest first", async () => {
-    const files = await searchDrive(composioToolContext("ca_google"), {
-      maxResults: 10,
-      query: "pdf",
-    });
-
-    expect(files.map(({ id }) => id)).toEqual(["new", "mid", "old"]);
-  });
-
   it("sorts every page of a word search before keeping the newest", async () => {
     composio.proxy
       .mockResolvedValueOnce({

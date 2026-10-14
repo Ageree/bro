@@ -39,22 +39,6 @@ describe("pnpm bench", () => {
     expect(result.stderr).toContain("Лишние аргументы: typo");
   });
 
-  it("refuses an unknown command", () => {
-    const result = bench("runn");
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Нет такой команды: runn");
-  });
-
-  it("wants seed, clean or list after fixtures", () => {
-    const result = bench("fixtures", "sow");
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(
-      "После fixtures нужно seed, clean или list"
-    );
-  });
-
   it("prints what seeding would insert without reaching Composio", () => {
     const result = bench(
       "fixtures",

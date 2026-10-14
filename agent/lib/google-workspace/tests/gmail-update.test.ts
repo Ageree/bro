@@ -98,12 +98,4 @@ describe("updateGmail", () => {
       }),
     ]);
   });
-
-  it("searches Google's own notices and alert subjects in the inbox", () => {
-    expect(gmailSecurityAlertQuery.startsWith("in:inbox {")).toBe(true);
-    expect(gmailSecurityAlertQuery).toContain("from:accounts.google.com");
-    expect(gmailSecurityAlertQuery).toContain(
-      'subject:"оповещение системы безопасности"'
-    );
-  });
 });

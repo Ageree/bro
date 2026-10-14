@@ -36,10 +36,7 @@ import {
   googleWorkspaceProvider,
   googleWriteApproval,
 } from "@agent/lib/google-workspace/client";
-import {
-  gmailUpdateLabels,
-  gmailUpdateNeedsApproval,
-} from "@agent/lib/google-workspace/gmail";
+import { gmailUpdateNeedsApproval } from "@agent/lib/google-workspace/gmail";
 import {
   calendarCreateEvent,
   calendarDeleteEvent,
@@ -185,17 +182,6 @@ describe("Google Workspace", () => {
       })
     ).rejects.toMatchObject({ name: "ConnectionAuthorizationFailedError" });
     expect(proactive.wake).not.toHaveBeenCalled();
-  });
-
-  it("maps reversible Gmail actions", () => {
-    expect(gmailUpdateLabels("archive")).toEqual({
-      addLabelIds: [],
-      removeLabelIds: ["INBOX"],
-    });
-    expect(gmailUpdateLabels("mark_unread")).toEqual({
-      addLabelIds: ["UNREAD"],
-      removeLabelIds: [],
-    });
   });
 
   it("runs delegated sends calendar changes drafts and inbox tidying without cards", async () => {

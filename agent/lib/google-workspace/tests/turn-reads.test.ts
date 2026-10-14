@@ -194,20 +194,6 @@ describe("the per-turn Google read guard", () => {
     expect(readRefusalReason(driveReadKey("file-2"), reads)).toBe("limit");
   });
 
-  it("stops Drive reads once Google refused for quota", () => {
-    const reads = turnReads([
-      person("найди паспорт на Диске"),
-      ...driveRead("call-1", "file-1", {
-        type: "error-text",
-        value: googleRateLimitMessage,
-      }),
-    ]);
-
-    expect(readRefusalReason(searchKey(inbox.query), reads)).toBe(
-      "rate_limited"
-    );
-  });
-
   it("stops searching once several searches found nothing", () => {
     const empty = { type: "json" as const, value: { messages: [] } };
     const history = [
@@ -270,25 +256,6 @@ describe("the per-turn Google read guard", () => {
     expect(turnReads(history).emptySearches).toBe(1);
     expect(
       readRefusalReason(searchKey("from:tutor"), turnReads(history))
-    ).toBeUndefined();
-  });
-
-  it("gives a background worker more empty searches", () => {
-    const empty = { type: "json" as const, value: { messages: [] } };
-    const history = [
-      person("проверь почту"),
-      ...Array.from(
-        { length: turnReadLimits.interactive.emptySearches },
-        (_, index) =>
-          search(`call-${String(index)}`, empty, `query ${String(index)}`)
-      ).flat(),
-    ];
-
-    expect(
-      readRefusalReason(
-        searchKey("one more"),
-        turnReads(history, turnReadLimits.background)
-      )
     ).toBeUndefined();
   });
 

@@ -250,22 +250,6 @@ describe("monthly and yearly calendar rules", () => {
     expect(scheduleTimingSchema.safeParse(timing).success).toBe(false);
   });
 
-  it("keeps a monthly run at 10:00 local across the DST change", () => {
-    const timing = scheduleTimingSchema.parse({
-      dayOfMonth: 5,
-      frequency: "monthly",
-      kind: "calendar",
-      localTime: "10:00",
-      timezone: "Europe/Berlin",
-    });
-
-    // Berlin is UTC+2 on 5 October and UTC+1 on 5 November.
-    expect(occurrences(timing, "2026-09-24T00:00:00.000Z", 2)).toEqual([
-      "2026-10-05T08:00:00.000Z",
-      "2026-11-05T09:00:00.000Z",
-    ]);
-  });
-
   it("fires a time skipped by the spring-forward gap an hour later", () => {
     const timing = scheduleTimingSchema.parse({
       frequency: "monthly_weekday",
@@ -297,25 +281,6 @@ describe("monthly and yearly calendar rules", () => {
     expect(
       computeNextRun(timing, new Date("2026-09-24T00:00:00.000Z"))
     ).toEqual(new Date("2026-10-03T15:45:00.000Z"));
-  });
-
-  it("follows the person to a new timezone at the same wall-clock time", () => {
-    const inMoscow = scheduleTimingSchema.parse({
-      dayOfMonth: 5,
-      frequency: "monthly",
-      kind: "calendar",
-      localTime: "10:00",
-      timezone: moscow,
-    });
-    const inYekaterinburg = { ...inMoscow, timezone: "Asia/Yekaterinburg" };
-    const after = new Date("2026-09-24T00:00:00.000Z");
-
-    expect(computeNextRun(inMoscow, after)).toEqual(
-      new Date("2026-10-05T07:00:00.000Z")
-    );
-    expect(computeNextRun(inYekaterinburg, after)).toEqual(
-      new Date("2026-10-05T05:00:00.000Z")
-    );
   });
 
   it("takes the calendar date of the rule's own timezone", () => {

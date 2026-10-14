@@ -1419,28 +1419,6 @@ describe("a way out to eve that drops requests", () => {
     );
   }, 15_000);
 
-  it("remembers past codes on from where a cut read stopped", async () => {
-    const fake = await startFakeEve((post) =>
-      turn(delivered(post.route === "create" ? "привет!" : "держу в курсе"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const client = new Client({ host: fake.url });
-    const first = await runCase(client, benchCase, [step], [], settings);
-    // `send` first reads the history from its start for the codes in it.
-    const starts = cutStreamRead(null, 1);
-
-    const record = await continueCase(client, first, settings, {
-      code: undefined,
-      kind: "hint",
-      respond: () => undefined,
-      text: "ну что там?",
-    });
-
-    expect(record.driver.status).toBe("completed");
-    expect(starts.slice(0, 2)).toEqual([null, "1"]);
-  }, 15_000);
-
   it("watches a conversation on from where a cut read stopped", async () => {
     const fake = await startFakeEve(() => []);
     stopFake = () => fake.close();

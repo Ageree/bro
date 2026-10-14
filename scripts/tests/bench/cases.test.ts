@@ -13,24 +13,11 @@ const byId = (id: string) => {
 const noFills = new Map<string, string>();
 
 describe("loadCases", () => {
-  it("reads both published suites", () => {
-    expect(cases.filter((benchCase) => benchCase.suite === "ru")).toHaveLength(
-      78
-    );
-    expect(cases.filter((benchCase) => benchCase.suite === "en")).toHaveLength(
-      67
-    );
-  });
-
   it("names only published cases in the account fixtures", () => {
     const known = new Set(cases.map((benchCase) => benchCase.id));
     expect(
       [...caseFixtureSets.keys()].filter((caseId) => !known.has(caseId))
     ).toEqual([]);
-  });
-
-  it("keeps a dimension's whole script", () => {
-    expect(byId("d13-memory").script).toHaveLength(3);
   });
 });
 

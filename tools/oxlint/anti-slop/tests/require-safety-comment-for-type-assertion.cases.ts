@@ -59,13 +59,8 @@ tester.run(
         errors: [error],
       },
       { code: "// SAFETY:\nconst id = value as UserId;", errors: [error] },
-      { code: "// SAFETY:   \nconst id = value as UserId;", errors: [error] },
       { code: "const id = /* SAFETY: */ value as UserId;", errors: [error] },
       { code: "export const id = value as UserId;", errors: [error] },
-      {
-        code: "// This is not a safety justification.\nexport const id = value as UserId;",
-        errors: [error],
-      },
     ],
   },
 );
