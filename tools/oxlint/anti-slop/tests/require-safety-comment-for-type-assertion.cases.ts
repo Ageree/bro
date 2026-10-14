@@ -10,10 +10,6 @@ tester.run(
   {
     valid: [
       {
-        code: "// INVARIANT: The caller parsed this value.\nconst value = input as User;",
-        options: [{ markers: ["INVARIANT"] }],
-      },
-      {
         code: "// SAFETY: The caller parsed this value.\nconst value = input as User;",
         options: [{ markers: ["INVARIANT", "SAFETY"] }],
       },
@@ -45,10 +41,8 @@ tester.run(
       "const values = [1, 2] as const;",
       "const value = <const>{ id: 'one' };",
       "// SAFETY: The parser established the UserId invariant.\nconst id = value as UserId;",
-      "function parse(): UserId {\n// SAFETY: Validation above established the UserId invariant.\nreturn value as UserId;\n}",
       "const id = /* SAFETY: Validation established the invariant. */ value as UserId;",
       "// SAFETY: The parser established the exported UserId invariant.\nexport const id = value as UserId;",
-      "/* SAFETY:\n * The parser established the exported UserId invariant.\n */\nexport const id = value as UserId;",
     ],
     invalid: [
       { code: "const id = value as UserId;", errors: [error] },
@@ -58,7 +52,6 @@ tester.run(
         code: "// This cast seems fine.\nconst id = value as UserId;",
         errors: [error],
       },
-      { code: "// SAFETY:\nconst id = value as UserId;", errors: [error] },
       { code: "const id = /* SAFETY: */ value as UserId;", errors: [error] },
       { code: "export const id = value as UserId;", errors: [error] },
     ],

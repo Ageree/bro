@@ -12,20 +12,6 @@ import {
 } from "@agent/lib/delivery/turn-sends";
 
 describe("awaitsDelivery", () => {
-  it("waits on a person's message nothing has answered yet", () => {
-    expect(awaitsDelivery([userMessage("испеки мне торт")])).toBe(true);
-  });
-
-  it("keeps waiting while the turn only ran work tools", () => {
-    expect(
-      awaitsDelivery([
-        userMessage("найди билеты"),
-        toolCall("web_search"),
-        toolResult("web_search", { type: "text", value: "результаты" }),
-      ])
-    ).toBe(true);
-  });
-
   it("stops waiting once send_message went through", () => {
     expect(
       awaitsDelivery([

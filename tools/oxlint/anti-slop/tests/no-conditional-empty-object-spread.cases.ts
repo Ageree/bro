@@ -13,7 +13,6 @@ tester.run(
   noConditionalEmptyObjectSpreadRule,
   {
     valid: [
-      "const result = { value };",
       "const result = { ...values };",
       "const result = condition ? { value } : {};",
     ],

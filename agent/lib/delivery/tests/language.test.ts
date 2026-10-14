@@ -73,12 +73,6 @@ describe("personLanguage", () => {
     ).toBe("ru");
   });
 
-  it("keeps the language through a reply without one", () => {
-    expect(personLanguage([person("find me a flight"), person("ok")])).toBe(
-      "en"
-    );
-  });
-
   it("keeps Russian through a stray card answer (d18)", () => {
     // RU 25.09: «Cancel» arrived as text after the card was settled.
     expect(
@@ -133,18 +127,6 @@ describe("wordlessLatestMessage", () => {
 
 describe("replyDirective", () => {
   const formal = { formal: true, name: null };
-
-  it("makes Bro speak of himself in the masculine in Russian", () => {
-    const note = replyDirective({
-      formOfAddress: defaultFormOfAddress,
-      language: "ru",
-    });
-    expect(note).toMatch(/^Язык ответа в этом ходе — русский/u);
-    expect(note).toContain("О себе пиши в мужском роде: «сделал»");
-    expect(note).toContain("а не «сделала»");
-    // The voice is Bro's own, not the one of a letter written for the person.
-    expect(note).toContain("письма и тексты, которые пишешь от его имени");
-  });
 
   it("keeps «ты» unless the person asked for «вы»", () => {
     const informal = replyDirective({

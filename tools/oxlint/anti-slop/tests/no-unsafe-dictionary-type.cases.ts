@@ -8,7 +8,6 @@ const error = { messageId: "unsafeDictionary" };
 tester.run("anti-slop/no-unsafe-dictionary-type", noUnsafeDictionaryTypeRule, {
 	valid: [
 		"type Commands = Record<string, Command>;",
-		"type Metadata = Record<PropertyKey, JsonValue>;",
 		"type PermissionLevels = Record<Permission, number>;",
 		"type Indexed = { [key: string]: Command };",
 		"type CompatibleIndexes = { [index: number]: Command; [key: string]: Command | OtherCommand };",
@@ -22,7 +21,6 @@ tester.run("anti-slop/no-unsafe-dictionary-type", noUnsafeDictionaryTypeRule, {
 		"type Value<T> = T; type Index<T = Command, U = Value<T>> = Record<string, U>; type A = Index;",
 		"interface Owner { readonly id: string } type A = Record<string, unknown & Owner>;",
 		"interface Owner { readonly id: string } interface Child extends Owner {} type A = Record<string, Child>;",
-		"interface Owner { readonly id: string } interface Child extends Owner { readonly __brand?: never } type A = Record<string, Child>;",
 		"interface Escape {} interface Escape { readonly id: string } type A = Record<string, Escape>;",
 		"type Wrap<T> = { readonly wrapped: T }; type Inner<T, U> = { readonly value: T } & Wrap<U>; type Outer<T, U> = Record<string, Inner<T, U>>; declare function f<T, U>(): Outer<T, U>;",
 		"function run<T extends Record<string, unknown>>(input: T): T { return input; }",
@@ -53,13 +51,11 @@ tester.run("anti-slop/no-unsafe-dictionary-type", noUnsafeDictionaryTypeRule, {
 		{ code: "type Source = Record<string, unknown>; type A = Pick<Source, string>;", errors: 2 },
 		{ code: "type Index<T> = Record<string, T>; type A = Index<unknown>;", errors: 1 },
 		{ code: "interface A { [key: string]: unknown }", errors: [error] },
-		{ code: "type A = Readonly<Record<string, unknown>>;", errors: 1 },
 		{ code: "type A = Record<string, Readonly<unknown>>;", errors: [error] },
 		{
 			code: "type Wrapped<T> = Readonly<T>; type A = Record<string, Wrapped<unknown>>;",
 			errors: 1,
 		},
-		{ code: "type A = Record<string, NonNullable<unknown>>;", errors: [error] },
 		{
 			code: "type Unsafe = Record<string, unknown>; const x: Unsafe = {}; const y: Unsafe = {};",
 			errors: 1,

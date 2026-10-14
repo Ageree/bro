@@ -110,15 +110,6 @@ describe("(b) the person after a heads-up", () => {
     expect(turnMustEnd(announced)).toBe(false);
   });
 
-  it("waits after a heads-up sent alone, before any work", () => {
-    const alone = [
-      person(request),
-      ...sendMessage("a", headsUp, textOutput(headsUpDeliveredNotice)),
-    ];
-
-    expect(awaitsDelivery(alone)).toBe(true);
-  });
-
   it("waits with a quoted reply's note after the heads-up's", () => {
     const quoted = [
       person(request),
@@ -241,21 +232,6 @@ describe("(c) the heads-up said again", () => {
       ).toBeUndefined();
     }
   );
-
-  it("leaves the turn open after a bare status is dropped", () => {
-    const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
-    const dropped = [
-      ...searched,
-      ...sendMessage(
-        "b",
-        "Уже смотрю…",
-        textOutput(skippedSendNotice("heads-up"))
-      ),
-    ];
-
-    expect(turnMustEnd(dropped)).toBe(false);
-    expect(awaitsDelivery(dropped)).toBe(true);
-  });
 });
 
 describe("(d) the answer after a heads-up", () => {

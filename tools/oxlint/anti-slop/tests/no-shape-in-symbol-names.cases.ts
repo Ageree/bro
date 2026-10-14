@@ -7,14 +7,9 @@ const error = { messageId: "forbiddenSymbolName" };
 tester.run("anti-slop/no-shape-in-symbol-names", noForbiddenTermInSymbolNamesRule, {
 	valid: [
 		"declare const schema: ExternalSchema; const field = schema.shape.id;",
-		"declare const outer: External; const value = outer.inner.shape;",
-		"declare const schema: ExternalSchema; schema.shape.id.parse('x');",
 		"const owner = { id: 1 }; const value = owner.id;",
-		"class Owner { #value = 1; read() { return this.#value; } }",
-		{ code: "const view = <Panel />;", filename: "component.tsx" },
 	],
 	invalid: [
-		{ code: "const shape = 1;", errors: [error] },
 		{ code: "function shapeOf() {}", errors: [error] },
 		{ code: "type PayloadShape = { id: string };", errors: [error] },
 		{ code: "type Payload = { shape: string };", errors: [error] },

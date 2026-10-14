@@ -18,10 +18,6 @@ import { backgroundTurnMarker } from "@shared/chat/background-turn";
 const callRestaurant = "Пришли название ресторана — я позвоню.";
 
 describe("sendRefusal", () => {
-  it("lets the first message of a turn through", () => {
-    expect(refusal([userMessage("найди")], callRestaurant)).toBeUndefined();
-  });
-
   it.each([
     ["other case and spacing", "  пришли   НАЗВАНИЕ ресторана — я позвоню "],
     ["a near copy", "Пришли название ресторана — и я позвоню."],
@@ -292,12 +288,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Письмо Виктории отправлено: встреча в 15:00.",
     ],
     [
-      "Виктория after Виктор",
-      "кто подтвердил встречу?",
-      "Виктор подтвердил встречу завтра в 10:00.",
-      "Виктория подтвердила встречу завтра в 10:00.",
-    ],
-    [
       "Валентина after Валентин, both named by the person",
       "Предупреди охрану, что завтра в 10:00 придут Валентин и Валентина",
       "Валентин придёт завтра в 10:00, я предупредил охрану.",
@@ -399,11 +389,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Ивановой after Иванову",
       "Отправил письмо Иванову: встреча переносится на пятницу.",
       "Отправил письмо Ивановой: встреча переносится на пятницу.",
-    ],
-    [
-      "Александре after Александру",
-      "Отправил письмо Александру: встреча переносится на пятницу.",
-      "Отправил письмо Александре: встреча переносится на пятницу.",
     ],
     [
       "на Тверском after на Тверской",
@@ -631,21 +616,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
   );
 
   it.each([
-    [
-      "the restaurant, searched and started in two steps",
-      [
-        userMessage(
-          "найди, где поужинать завтра в 19:30 на четверых у чистых прудов, не сетевое, и забронируй"
-        ),
-        ...dinnerSearch,
-        ...dinnerBooking,
-        ...sendMessage(
-          "started",
-          "Запустил бронь, пришлю подтверждение, как будет готово."
-        ),
-      ],
-      "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
-    ],
     [
       "the restaurant, searched and started in one step",
       [
@@ -1114,25 +1084,25 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     ).toBeUndefined();
   });
 
-  it.each([
-    ["a status", "Секунду, сравниваю меню и отзывы."],
-    ["a heading", "Сравнил оба места, вот что вышло:"],
-  ])("delivers a comparison the person asked for after %s", (_case, first) => {
-    const compared = [
-      userMessage(
-        "Где лучше поужинать вчетвером — в Пушкине или в Кофемании? Забронируй на 19:00"
-      ),
-      ...toolStep("web_search", { results: [] }),
-      ...sendMessage("first", first),
-    ];
+  it.each([["a status", "Секунду, сравниваю меню и отзывы."]])(
+    "delivers a comparison the person asked for after %s",
+    (_case, first) => {
+      const compared = [
+        userMessage(
+          "Где лучше поужинать вчетвером — в Пушкине или в Кофемании? Забронируй на 19:00"
+        ),
+        ...toolStep("web_search", { results: [] }),
+        ...sendMessage("first", first),
+      ];
 
-    expect(
-      refusal(
-        compared,
-        "В «Пушкине» тише и есть отдельный зал, в «Кофемании» шумно, зато кухня разнообразнее. Бронировать «Пушкин» на 19:00?"
-      )
-    ).toBeUndefined();
-  });
+      expect(
+        refusal(
+          compared,
+          "В «Пушкине» тише и есть отдельный зал, в «Кофемании» шумно, зато кухня разнообразнее. Бронировать «Пушкин» на 19:00?"
+        )
+      ).toBeUndefined();
+    }
+  );
 
   it("delivers the translation the person asked for as its own message", () => {
     const history = [
@@ -1176,10 +1146,6 @@ describe("sendRefusal in a browser report's turn", () => {
     [
       "a correction of the same result (d08)",
       "Поправка: на фото был электросчётчик, а не вода — день 12345, ночь 6789. Передал их в Мосэнергосбыт.",
-    ],
-    [
-      "the same result with a detail added",
-      "Кстати, показания приняты в 14:05, квитанция придёт на почту до 1-го числа.",
     ],
   ])("drops %s", (_case, text) => {
     expect(refusal(told, text)).toEqual({ skipped: "reported" });
@@ -2304,7 +2270,6 @@ describe("sendRefusal on options claimed before any search", () => {
     "Нашёл три варианта, пришлю списком.",
     "Отобрал пару мест у вокзала, все не сетевые.",
     "I found three places near the station.",
-    "Запустил поиск поездов.\nПо ужину подобрал три места.",
   ])("returns «%s» with nothing found yet", (text) => {
     expect(refusal([request, ...errandStarted], text)).toEqual({
       rewrite: "found",

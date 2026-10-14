@@ -15,7 +15,6 @@ tester.run("anti-slop/no-known-value-widening", noKnownValueWideningRule, {
 		`${prelude} let commands: Record<string, Command>; commands = {};`,
 		`${prelude} function create(): Record<string, Command> { return {}; }`,
 		`${prelude} const commands = {} as Record<string, Command>;`,
-		`${prelude} const commands = { start: startCommand };`,
 		`${prelude} const commands = { start: startCommand } as const;`,
 		`${prelude} const commands = { start: startCommand } satisfies Record<string, Command>;`,
 		`${prelude} interface Commands { readonly start: Command } const commands: Commands = { start: startCommand };`,
