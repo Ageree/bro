@@ -64,9 +64,9 @@ const deployments = {
     environment: fullDeployment,
     hashes: {
       "browser-result":
-        "1e08153cfa8986d7f9fef221b5d6797d0fd32ddcc6ac8846ee3b1d335ee778a2",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
       interactive:
-        "1e08153cfa8986d7f9fef221b5d6797d0fd32ddcc6ac8846ee3b1d335ee778a2",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
@@ -74,7 +74,7 @@ const deployments = {
       "scheduled-worker":
         "46553ae71574b4671a440ebc540e96a99ebb43f16b0f9d3c5aa3ed6fedf23a8e",
       telegram:
-        "1e08153cfa8986d7f9fef221b5d6797d0fd32ddcc6ac8846ee3b1d335ee778a2",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
     },
   },
 };
