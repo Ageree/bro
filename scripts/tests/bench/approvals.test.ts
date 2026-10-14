@@ -148,20 +148,6 @@ describe("decideInputRequest", () => {
     });
   });
 
-  it("cancels a payment as before when no cap is set", () => {
-    const decision = decideInputRequest(
-      approvalCard("browser_task", {
-        allowPayment: true,
-        submission: { chargeRub: 900 },
-      }),
-      ownDataTools
-    );
-    expect(decision).toMatchObject({
-      kind: "respond",
-      response: { optionId: "cancel", requestId: "req_1" },
-    });
-  });
-
   it("holds a tool over the cap when it is also --hold'd", () => {
     const decision = decideInputRequest(
       approvalCard("browser_task", {

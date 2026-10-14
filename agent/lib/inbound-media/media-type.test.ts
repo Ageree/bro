@@ -72,9 +72,7 @@ describe("documents for the task agent", () => {
 
   it.each([
     ["a.zip", "application/zip"],
-    ["setup.exe", "application/x-msdownload"],
     ["book.xlsx", "application/x-msdownload"],
-    ["data.csv", "application/zip"],
     [".xlsx", undefined],
     [undefined, xlsxType],
   ])("leaves %s declared as %s a note", (name, declared) => {

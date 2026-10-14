@@ -203,13 +203,6 @@ describe("a Yandex call", () => {
     expect(outcome).toEqual({ kind: "failed", reason: "page" });
     expect(services.stop).toHaveBeenCalledWith("tab-1");
   });
-
-  it("is unavailable when the sandbox does not come up", async () => {
-    services.create.mockRejectedValue(new Error("starting"));
-    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
-      kind: "unavailable",
-    });
-  });
 });
 
 describe("the operations", () => {

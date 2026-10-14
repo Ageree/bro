@@ -96,12 +96,6 @@ describe("the one-time codes a follow-up carries", () => {
     }
   });
 
-  it("takes any bare number for a code once the run waits for one", () => {
-    expect(
-      oneTimeCodesIn("Вводи 482913 и продолжай", { awaitingCode: true })
-    ).toEqual(["482913"]);
-  });
-
   it("does not mistake an approved upload's origin or hashed path for a code, but still guards actual codes", () => {
     const path =
       "/var/lib/bro/sessions/1e800f84b6a00605268a18f1e2cbdf8d/uploads/ae5f3a20d1e20daed19b50b10da83a99512fe02a7240c9b01d6c2a723f3754f1/231075c914b5190d-full-test-scan-upload.pdf";

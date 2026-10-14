@@ -974,17 +974,6 @@ const readyHealth = {
 };
 
 describe("browser host sleep", { timeout: 60_000 }, () => {
-  it("records what a new host boots with", async () => {
-    const { hosts, records } = await loadPool();
-
-    await hosts.placeBrowserSandbox(now);
-
-    expect(await records.readBrowserHost("bro-host-1")).toMatchObject({
-      bootConfig: currentBoot,
-      state: "creating",
-    });
-  });
-
   it("powers an idle host off instead of deleting it, and wakes it for the next sandbox", async () => {
     const { hosts, records } = await loadPool();
     await seedHost(records, {

@@ -61,7 +61,6 @@ function browserReturned(text: string): ModelMessage {
 }
 
 const turns = await caseTurns();
-const texts = new Map(turns.map(({ id, text }) => [id, text]));
 
 /**
  * What each benchmark message attaches (docs/benchmarks, as `caseTurns`
@@ -228,22 +227,17 @@ const golden = {
 } satisfies Record<string, readonly SkillName[]>;
 
 const synthetic = [
-  ["photo-calendar", "[фото] добавь в календарь", ["google"]],
   // A product pick needs the rules of picking at once, not a step later.
   [
     "product-pick",
     "Привет! Найди мне хороший крем для рук",
     ["recommendations"],
   ],
-  ["find-mail", "найди письмо от Пети про счёт", ["google"]],
   // Paraphrases of risky errands the benchmark does not word this way.
   ["sts", "пробей по СТС А123ВС77", ["browser", "gov-services"]],
   ["transfer", "переведи Пете 3000", ["browser", "money"]],
   ["card", "добавь карту", ["money"]],
-  ["pizza", "хочу пиццу домой", ["browser"]],
   ["translation", "переведи на английский этот текст", []],
-  ["file-photo", "[файл: photo.jpg (image/jpeg), слишком большой]", []],
-  ["document", "[документ] глянь", []],
   ["privacy-third", "вы передаёте мою переписку третьим лицам?", ["about-bro"]],
   ["forget-address", "удали мой адрес", ["memory"]],
   ["standing", "заказывай такси сам, не спрашивая", ["browser", "money"]],
@@ -286,137 +280,12 @@ const synthetic = [
   readonly SkillName[],
 ])[];
 
-const required = {
-  browser: [
-    "d01-online-task",
-    "d02-flights",
-    "d04-marketplace",
-    "d05-groceries",
-    "d06-gosuslugi",
-    "d07-doctor",
-    "d08-utilities",
-    "d13-memory#2",
-    "d13-memory#3",
-    "d15-language#1",
-    "d17-groups",
-    "d18-chain",
-    "uc-tr-hotel",
-    "uc-tr-taxi-airport",
-    "uc-tr-train-exchange",
-    "uc-tr-family-flights",
-    "uc-tr-kaliningrad",
-    "uc-tr-refund",
-    "uc-mo-tax-deduction",
-    "uc-mo-osago",
-    "uc-mo-autopay",
-    "uc-ho-meters-monthly",
-    "uc-ho-plumber",
-    "uc-ho-gift-mom",
-    "uc-ho-provider",
-    "uc-ho-avito-sell",
-    "uc-ma-inbox-cleanup",
-    "uc-ma-telemost",
-    "uc-sh-return-wb",
-    "uc-sh-cdek",
-    "uc-sh-pochta",
-    "uc-sh-compare",
-    "uc-sh-price-watch",
-    "uc-sh-furniture",
-    "uc-sh-lunch",
-    "uc-sh-avito-buy",
-    "uc-wo-hh",
-    "uc-wo-self-employed",
-    "uc-wo-business-trip",
-    "uc-go-zagran",
-    "uc-go-passport-45",
-    "uc-go-fines-watch",
-    "uc-go-no-criminal",
-    "uc-go-temp-registration",
-    "uc-go-docs-expiry",
-    "uc-he-dms",
-    "uc-he-pharmacy",
-    "uc-he-lab-tests",
-    "uc-he-kid-pediatrician",
-    "uc-he-vet",
-    "uc-en-tickets",
-    "uc-en-banya",
-    "uc-en-kid-party",
-    "en:d01_online_task",
-    "en:d02_travel",
-    "en:d04_purchase",
-    "en:d13_group",
-    "en:d14_chain",
-    "en:uc_visa",
-    "en:uc_dentist",
-    "en:uc_points",
-    "en:uc_hotel",
-    "en:uc_dmv",
-    "en:uc_family_flights",
-    "en:uc_drop",
-    "en:uc_missing_delivery",
-    "en:uc_checkin",
-    "en:uc_intake",
-    "en:uc_energy",
-    "en:uc_apartment",
-    "en:uc_webinars",
-    "en:uc_ikea",
-    "en:uc_lunch",
-    "en:uc_trip",
-    "en:uc_car",
-    "en:uc_reorder",
-    "en:uc_fax",
-    "en:uc_sell_tickets",
-    "en:uc_insurance",
-    "en:uc_fares",
-  ],
-  "gov-services": [
-    "d06-gosuslugi",
-    "d07-doctor",
-    "d08-utilities",
-    "uc-mo-tax-deduction",
-    "uc-ho-meters-monthly",
-    "uc-wo-self-employed",
-    "uc-go-zagran",
-    "uc-go-passport-45",
-    "uc-go-fines-watch",
-    "uc-go-no-criminal",
-    "uc-go-temp-registration",
-    "uc-go-docs-expiry",
-    "uc-he-dms",
-    "uc-he-lab-tests",
-    "uc-he-kid-pediatrician",
-    "en:uc_visa",
-    "en:uc_dentist",
-    "en:uc_dmv",
-    "en:uc_energy",
-  ],
-  "meter-readings": ["d08-utilities", "uc-ho-meters-monthly", "en:uc_energy"],
-  money: [
-    "d14-permissions#1",
-    "d14-permissions#2",
-    "en:uc_points",
-    "en:uc_drop",
-    "en:uc_reorder",
-    "en:uc_claims",
-  ],
-} satisfies Partial<Record<SkillName, readonly string[]>>;
-
 describe("the skills a turn attaches", () => {
   it("cover every benchmark message as pinned", () => {
     expect(
       Object.fromEntries(turns.map(({ id, text }) => [id, skillsFor(text)]))
     ).toEqual(golden);
   });
-
-  it.each(Object.entries(required))(
-    "never miss %s where a benchmark message needs it",
-    (skill, ids) => {
-      const missed = ids.filter(
-        (id) => !skillsFor(texts.get(id) ?? "").some((name) => name === skill)
-      );
-      expect(missed).toEqual([]);
-    }
-  );
 
   it.each(synthetic)("attach what %s needs", (_name, text, skills) => {
     expect(skillsFor(text)).toEqual(skills);

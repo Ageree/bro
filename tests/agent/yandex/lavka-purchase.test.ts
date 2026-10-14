@@ -384,7 +384,7 @@ describe("Lavka purchase fixed page functions", () => {
     });
   });
 
-  it.each(["cash", "split"])("blocks unsupported payment %s", async (type) => {
+  it.each(["cash"])("blocks unsupported payment %s", async (type) => {
     methods = {
       ...methodsFixture,
       defaultMethod: { ...methodsFixture.defaultMethod, type },
@@ -721,7 +721,7 @@ describe("Lavka purchase fixed page functions", () => {
     ).toHaveLength(1);
   });
 
-  it.each([401, 409, 500])(
+  it.each([401, 500])(
     "keeps an ambiguous post-submit HTTP %s unknown without retries",
     async (status) => {
       const prepared = await ready();

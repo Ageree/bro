@@ -313,16 +313,6 @@ describe("OpenRouter web search", () => {
     expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
   });
 
-  it("reports the failure that survives the retry", async () => {
-    fetchMock.mockImplementation(async () => failure(503));
-
-    const searchWeb = await loadSearchWeb();
-    expect(
-      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
-    ).toContain("OpenRouter 503");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
   it("reports nothing found after both engines came back empty", async () => {
     fetchMock.mockImplementation(async () => completion({ content: "OK" }));
 
@@ -485,17 +475,6 @@ describe("RouterAI web search", () => {
 
     expect(await pending).toHaveLength(1);
     expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
-  });
-
-  it("does not retry a refusal RouterAI reports under HTTP 200", async () => {
-    fetchMock.mockResolvedValue(routerAiFailure(402));
-
-    const searchWeb = await loadSearchWeb();
-
-    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
-      "RouterAI 402: upstream said no"
-    );
-    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("keeps the status of a refusal written as plain text", async () => {

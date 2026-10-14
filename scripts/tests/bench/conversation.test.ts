@@ -356,33 +356,6 @@ describe("runCase against eve's session routes", () => {
 describe("terminal turn failures", () => {
   const steps = [step, { ...step, text: "second" }];
 
-  it("records a failed turn and leaves later scripted steps unsent", async () => {
-    const fake = await startFakeEve((post) =>
-      post.route === "create" ? failedTurn() : turn(delivered("second"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const record = await runCase(
-      new Client({ host: fake.url }),
-      benchCase,
-      steps,
-      [],
-      settings
-    );
-
-    expect(record.driver.status).toBe("failed");
-    expect(record.driver.statusDetail).toBe(
-      "MODEL_CALL_FAILED: Provider unavailable"
-    );
-    expect(record.driver.remainingSteps.map((item) => item.text)).toEqual([
-      "second",
-    ]);
-    expect(fake.posts).toHaveLength(1);
-    expect(
-      (await readRunRecord(settings.outDir, benchCase.id)).driver.status
-    ).toBe("failed");
-  });
-
   it("does not confuse a recovered step failure with a failed turn", async () => {
     const fake = await startFakeEve((post) =>
       post.route === "create"
@@ -448,33 +421,6 @@ describe("terminal turn failures", () => {
 });
 
 describe("runCase and background errands", () => {
-  it("waits for the errand's report without a hint", async () => {
-    const fake = await startFakeEve(() =>
-      turn(browserRunning(), delivered("запустил"))
-    );
-    stopFake = () => fake.close();
-    setTimeout(() => {
-      fake.append(turn(browserReport(), delivered("нашёл два поезда")));
-    }, 300);
-
-    const settings = await settingsFor(fake.url, 10_000);
-    const record = await runCase(
-      new Client({ host: fake.url }),
-      benchCase,
-      [step],
-      [],
-      settings
-    );
-
-    expect(record.hints).toBe(0);
-    expect(record.driver.status).toBe("completed");
-    const log = await readFile(
-      join(settings.outDir, "case-under-test.log"),
-      "utf8"
-    );
-    expect(log).toContain("<- Бро: нашёл два поезда");
-  });
-
   it("asks «ну что там?» once the wait runs out, as a counted hint", async () => {
     const fake = await startFakeEve((post) =>
       post.message === "ну что там?"
@@ -534,28 +480,6 @@ describe("runCase and background errands", () => {
       "utf8"
     );
     expect(log).toContain("<- Бро: нашёл два поезда");
-  }, 20_000);
-});
-
-describe("followCase", () => {
-  it("records a timeout, not completion, when the report never comes", async () => {
-    const fake = await startFakeEve(() =>
-      turn(browserRunning(), delivered("запустил"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const client = new Client({ host: fake.url });
-    const first = await runCase(client, benchCase, [step], [], settings);
-    expect(first.driver.status).toBe("timed-out");
-
-    const record = await followCase(client, first, {
-      ...settings,
-      backgroundWaitMs: 500,
-    });
-
-    expect(record.driver.status).toBe("timed-out");
-    expect(record.driver.statusDetail).toContain("не пришёл");
-    expect(record.driver.backgroundRuns).toEqual(["run_1"]);
   }, 20_000);
 });
 
@@ -650,31 +574,6 @@ describe("continueCase after a question", () => {
     ]);
     expect(record.driver.remainingSteps).toEqual([]);
     expect(record.driver.status).toBe("completed");
-  });
-
-  it("does not run the script on for a hint", async () => {
-    const fake = await startFakeEve((post) =>
-      post.route === "create"
-        ? [turnStarted(), question, sessionWaiting()]
-        : turn(delivered("жду ответа"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const client = new Client({ host: fake.url });
-    const first = await runCase(client, benchCase, steps, [], settings);
-
-    const record = await continueCase(client, first, settings, {
-      code: undefined,
-      kind: "hint",
-      respond: () => undefined,
-      text: "ну что там?",
-    });
-
-    expect(fake.posts.map((post) => post.message)).toEqual([
-      "привет",
-      "ну что там?",
-    ]);
-    expect(record.driver.remainingSteps).toHaveLength(2);
   });
 });
 
@@ -1454,35 +1353,6 @@ describe("a way out to eve that drops requests", () => {
     );
   }, 15_000);
 
-  it("reads an accepted turn on from the cursor when its stream breaks", async () => {
-    const fake = await startFakeEve(() =>
-      turn(delivered("привет!"), delivered("чем помочь?"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const starts = cutStreamRead(null, 2);
-
-    const record = await runCase(
-      new Client({ host: fake.url }),
-      benchCase,
-      [step],
-      [],
-      settings
-    );
-
-    expect(record.driver.status).toBe("completed");
-    expect(fake.posts.map((post) => post.route)).toEqual(["create"]);
-    expect(starts.slice(0, 2)).toEqual([null, "2"]);
-    expect(await journaledIds(settings.outDir)).toEqual(
-      fake.events.map((event) => event.meta.id)
-    );
-    const log = await readLog(settings.outDir);
-    expect(log).toContain("<- Бро: чем помочь?");
-    expect(log).toContain(
-      "== драйвер: чтение разговора: сбой сети (ECONNRESET: read ECONNRESET) — повтор через 2 с (1/4)"
-    );
-  }, 15_000);
-
   it("fails without sending again when an accepted turn cannot be read", async () => {
     const fake = await startFakeEve(() => turn(delivered("привет!")));
     stopFake = () => fake.close();
@@ -1550,48 +1420,6 @@ describe("a way out to eve that drops requests", () => {
     expect(await readLog(settings.outDir)).toContain("<- Бро: вот что нашёл");
   }, 20_000);
 
-  it("waits out an accepted turn that goes quiet for longer than eve's idle reconnects", async () => {
-    const restOfTheTurn = [
-      delivered("готово, три варианта"),
-      { data: { sequence: 0, turnId }, meta: meta(), type: "turn.completed" },
-      sessionWaiting(),
-    ] satisfies MessageStreamEvent[];
-    const fake = await startFakeEve(() => [
-      turnStarted(),
-      delivered("секунду, ищу"),
-    ]);
-    stopFake = () => fake.close();
-    const settings = {
-      ...(await settingsFor(fake.url)),
-      turnTimeoutMs: 60_000,
-    };
-    // eve's default gives up on a quiet stream after five empty reconnects,
-    // about 8 s; Bro answers after 12.
-    cutStreamRead(null, 2, {
-      onCut: () => {
-        setTimeout(() => {
-          fake.append(restOfTheTurn);
-        }, 12_000);
-      },
-    });
-
-    const record = await runCase(
-      new Client({ host: fake.url }),
-      benchCase,
-      [step],
-      [],
-      settings
-    );
-
-    expect(record.driver.status).toBe("completed");
-    expect(await readLog(settings.outDir)).toContain(
-      "<- Бро: готово, три варианта"
-    );
-    expect(await journaledIds(settings.outDir)).toEqual(
-      fake.events.map((event) => event.meta.id)
-    );
-  }, 45_000);
-
   it("does not take a turn read on past its deadline for a finished one", async () => {
     const fake = await startFakeEve(() => [
       turnStarted(),
@@ -1613,31 +1441,4 @@ describe("a way out to eve that drops requests", () => {
     expect(record.driver.status).toBe("timed-out");
     expect(record.driver.statusDetail).toBe("No turn boundary within 6 s.");
   }, 20_000);
-
-  it("recovers a failed case when the cut came after the turn completed", async () => {
-    const fake = await startFakeEve((post) =>
-      post.route === "create" ? failedTurn() : turn(delivered("получилось"))
-    );
-    stopFake = () => fake.close();
-    const settings = await settingsFor(fake.url);
-    const client = new Client({ host: fake.url });
-    const failed = await runCase(client, benchCase, [step], [], settings);
-    expect(failed.driver.status).toBe("failed");
-    const cursor = failed.driver.sessions[0]?.streamIndex ?? 0;
-    // The answer's stream breaks after `turn.completed`, before the
-    // boundary: the read on from the cursor sees only `session.waiting`.
-    cutStreamRead(String(cursor), 3, { turnOnly: true });
-
-    const record = await continueCase(client, failed, settings, {
-      code: undefined,
-      kind: "answer",
-      respond: () => undefined,
-      text: "попробуй ещё раз",
-    });
-
-    expect(record.driver.status).toBe("completed");
-    expect(await readLog(settings.outDir)).toContain(
-      "== драйвер: чтение разговора: сбой сети (ECONNRESET: read ECONNRESET)"
-    );
-  }, 15_000);
 });

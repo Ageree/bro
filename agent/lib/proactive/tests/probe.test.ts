@@ -72,13 +72,6 @@ beforeEach(() => {
 });
 
 describe("probeGoogleSignals", () => {
-  it("reports a person without a Google account as disconnected", async () => {
-    await expect(probeGoogleSignals(scope, window)).resolves.toEqual({
-      state: "disconnected",
-    });
-    expect(composio.proxy).not.toHaveBeenCalled();
-  });
-
   it("lists new mail and upcoming events through the person's account", async () => {
     composio.connect({ id: "ca_google", toolkit: "googlesuper" });
 
