@@ -470,10 +470,9 @@ describe("the turn log hook", () => {
 
     await handler(events, "message.received")(received("Привет"), context());
 
-    expect(info).toHaveBeenCalledWith(
-      "[message]",
-      expect.objectContaining({ text: expect.stringContaining("Привет") })
-    );
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0]?.[0]).toBe("[message]");
+    expect(JSON.stringify(info.mock.calls[0]?.[1])).toContain("Привет");
     expect(mocks.appendTurnEntries).not.toHaveBeenCalled();
   });
 
