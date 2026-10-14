@@ -1136,6 +1136,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   текст его ошибки («RouterAI 402 Insufficient balance») в результат не кладите.
   Модели достаётся нейтральная причина, подробности — в `console.warn`
   (`WebSearchError.reason` в `agent/lib/web-search/search.ts`, `generate_image`).
+- Timepad (`timepad_events`, 14.10): есть, только когда задан `TIMEPAD_API_KEY`
+  (prod.json), и лишь в интерактивных ходах; только чтение. Cloudflare API Timepad
+  отвечает «403 forbidden» на HTTP/1.1 (`fetch` Node, `curl --http1.1`) при любых
+  заголовках и пускает HTTP/2: инструмент ходит через undici `allowH2`. Прокси
+  облачной сессии HTTP/2 из undici не пропускает — живую проверку делайте curl.
+  Границы дат Timepad читает как московское время, зону игнорирует (`…Z` давал
+  события на 3 ч раньше): границы — с `+03:00`.
 - `web_fetch` помнит отказ хоста лишь в разговоре: память инстанса закрывала
   сайт всем. Ограничитель Nominatim и OSRM — на инстанс, общего нет
   (`agent/lib/routes/openstreetmap.ts`).

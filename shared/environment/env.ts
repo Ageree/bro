@@ -1094,6 +1094,10 @@ export const env = createEnv({
     // (`agent/tools/generate_video.ts`): unset or `*`, every workspace; `off`,
     // nobody (the rollback); otherwise workspace ids or owners' emails.
     VIDEO_WORKSPACES: workspaceListSchema.optional(),
+    // Timepad's API key (dev.timepad.ru): with it, interactive turns get
+    // `timepad_events`, a read-only search of its events
+    // (`agent/tools/timepad_events.ts`). Unset, the tool is absent.
+    TIMEPAD_API_KEY: pastedKeySchema.optional(),
     // The pilot of the model router: workspace ids or owners' emails, or `*`
     // for every workspace, whose task agent works on the model its job's kind
     // is routed to (`agent/lib/model/router/task.ts`). Unset, it works on
