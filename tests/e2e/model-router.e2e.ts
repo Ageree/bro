@@ -1,6 +1,7 @@
 /**
  * The model router, pictures and clips against the real RouterAI: Bro's own
- * code makes every call — the decision model reads real jobs, Claude Haiku
+ * code makes every call — the decision model reads real jobs and sends them
+ * along the routes this run sets, Claude Haiku
  * answers through `directModelSelection` and caches its prompt, and
  * `generate_image` and `generate_video` draw a card and make clips, one of
  * them from that card as its first frame. Only the database rows and the
@@ -111,6 +112,9 @@ beforeAll(() => {
     ROUTERAI_API_KEY: session.ROUTERAI_API_KEY,
     RUNINFRA_API_KEY: "",
     SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+    // The router has no routes of its own: the run gives it some to follow.
+    TASK_AGENT_ROUTES:
+      "code=anthropic/claude-haiku-5.5,design=anthropic/claude-haiku-5.5",
     VIDEO_WORKSPACES: "*",
   })) {
     vi.stubEnv(name, value);

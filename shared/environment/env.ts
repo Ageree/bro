@@ -1059,9 +1059,10 @@ export const env = createEnv({
     // The decision model that reads the job's kind, on the System One API of
     // RouterAI (`/systemone`).
     MODEL_ROUTER_MODEL: trimmedValue.default("typesafe/jev-1.13"),
-    // The router's models by kind of job, as `design=<model>,code=<model>`;
-    // a kind with an empty model keeps the default. Unset, the routes of
-    // `agent/lib/model/router/task.ts`.
+    // The router's models by kind of job (code, design, research, writing,
+    // other), as `design=<model>,code=<model>`; a kind left out or with an
+    // empty model keeps the default. Unset, every job keeps it and the
+    // decision model is not asked (`agent/lib/model/router/task.ts`).
     TASK_AGENT_ROUTES: z
       .string()
       .transform((value) => {

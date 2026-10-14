@@ -14,6 +14,8 @@ const requiredEnvironment = {
 
 const scope = { userId: "user-1", workspaceId: "workspace-1" };
 const fallback = "deepseek/deepseek-v4.1-flash";
+const routes =
+  "code=anthropic/claude-haiku-5.5,design=anthropic/claude-haiku-5.5";
 
 /** The task agent's first message as eve wraps Bro's job. */
 function jobMessages(job: string): ModelMessage[] {
@@ -75,8 +77,19 @@ describe("task agent model", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("sends a deck to Haiku, asking once per session", async () => {
+  it("keeps the default model without routes, without asking", async () => {
     vi.stubEnv("MODEL_ROUTER_WORKSPACES", "*");
+    const { taskAgentModel } = await load();
+
+    await expect(
+      taskAgentModel(scope, "s1", jobMessages("Сделай презентацию"), fallback)
+    ).resolves.toBe(fallback);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a deck along its route, asking once per session", async () => {
+    vi.stubEnv("MODEL_ROUTER_WORKSPACES", "*");
+    vi.stubEnv("TASK_AGENT_ROUTES", "design=anthropic/claude-haiku-5.5");
     fetchMock.mockResolvedValue(decision("design", 0.98));
     const { taskAgentModel } = await load();
     const messages = jobMessages("Сделай презентацию на 10 слайдов про кофе");
@@ -101,6 +114,7 @@ describe("task agent model", () => {
 
   it("keeps the default model for a web research", async () => {
     vi.stubEnv("MODEL_ROUTER_WORKSPACES", "workspace-1");
+    vi.stubEnv("TASK_AGENT_ROUTES", routes);
     fetchMock.mockResolvedValue(decision("research", 0.95));
     const { taskAgentModel } = await load();
 
@@ -111,6 +125,7 @@ describe("task agent model", () => {
 
   it("keeps the default model when the decision is unsure", async () => {
     vi.stubEnv("MODEL_ROUTER_WORKSPACES", "*");
+    vi.stubEnv("TASK_AGENT_ROUTES", routes);
     fetchMock.mockResolvedValue(decision("code", 0.45));
     const { taskAgentModel } = await load();
 
@@ -121,6 +136,7 @@ describe("task agent model", () => {
 
   it("keeps the default model when the decision fails", async () => {
     vi.stubEnv("MODEL_ROUTER_WORKSPACES", "*");
+    vi.stubEnv("TASK_AGENT_ROUTES", routes);
     fetchMock.mockResolvedValueOnce(
       Response.json({ error: "internal error" }, { status: 500 })
     );
@@ -140,7 +156,7 @@ describe("task agent model", () => {
     );
   });
 
-  it("takes the routes of TASK_AGENT_ROUTES over its own", async () => {
+  it("keeps the default model for a kind left out or empty", async () => {
     vi.stubEnv("MODEL_ROUTER_WORKSPACES", "*");
     vi.stubEnv("TASK_AGENT_ROUTES", "design=, research = qwen/qwen3.7-plus");
     fetchMock
@@ -157,6 +173,6 @@ describe("task agent model", () => {
     ).resolves.toBe("qwen/qwen3.7-plus");
     await expect(
       taskAgentModel(scope, "s3", jobMessages("Скрипт"), fallback)
-    ).resolves.toBe("anthropic/claude-haiku-5.5");
+    ).resolves.toBe(fallback);
   });
 });

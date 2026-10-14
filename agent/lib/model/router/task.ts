@@ -20,21 +20,6 @@ const jobKinds = {
 
 type JobKind = keyof typeof jobKinds;
 
-/**
- * The model each kind of job goes to; a kind left out keeps the task
- * agent's default (DeepSeek through RunInfra). Claude Haiku 5.5 costs as
- * much input as DeepSeek V4.1 Flash on RouterAI (10.9 ₽ per million tokens
- * on 14.10, cached 1.1 ₽ against 2.2 ₽) at 2.5× the output, and builds
- * decks, documents and code the owner found DeepSeek poor at. A long web
- * research stays on DeepSeek: it reads many pages, and its output is short.
- * TASK_AGENT_ROUTES overrides any of them.
- */
-const defaultRoutes: Partial<Record<JobKind, string>> = {
-  code: "anthropic/claude-haiku-5.5",
-  design: "anthropic/claude-haiku-5.5",
-  writing: "anthropic/claude-haiku-5.5",
-};
-
 /** Below this the decision model is unsure, and the default model works. */
 const minConfidence = 0.6;
 
@@ -45,11 +30,23 @@ const callerMessageHeading = "\nCaller message:\n";
 const maxRemembered = 1000;
 const verdicts = new Map<string, Promise<string>>();
 
-/** The model a kind of job goes to, or `undefined` for the default. */
+/**
+ * The model each kind of job goes to, from TASK_AGENT_ROUTES; a kind left
+ * out, or with an empty model, keeps the task agent's default (DeepSeek
+ * through RunInfra). There are no routes of its own: on 14.10 Claude Haiku
+ * 5.5 built decks, documents and code no better than DeepSeek in three live
+ * jobs (`docs/dev-notes.md`), and the owner kept DeepSeek for everything.
+ */
 function routeOf(kind: JobKind) {
-  const routes = { ...defaultRoutes, ...env.TASK_AGENT_ROUTES };
-  const model = routes[kind]?.trim();
+  const model = env.TASK_AGENT_ROUTES?.[kind]?.trim();
   return model === undefined || model.length === 0 ? undefined : model;
+}
+
+/** Whether any kind has a model of its own: without one, nothing to decide. */
+function anyRoute() {
+  return Object.keys(jobKinds).some(
+    (kind) => (env.TASK_AGENT_ROUTES?.[kind]?.trim() ?? "").length > 0
+  );
 }
 
 /**
@@ -101,8 +98,9 @@ async function routedModel(
  * continuations included: a switch would read the whole history again
  * uncached, and a short «поправь третий слайд» reads as no kind at all. It
  * runs in the background, so the second it takes holds up no reply of
- * Bro's. Outside the pilot, or when the decision fails, is unsure or names
- * a kind without a route, the session works on `fallback`. A restart
+ * Bro's. Outside the pilot, without any route, or when the decision fails,
+ * is unsure or names a kind without a route, the session works on
+ * `fallback`; without routes the decision model is not asked at all. A restart
  * forgets the verdict, and the same first message decides it again.
  */
 export async function taskAgentModel(
@@ -112,7 +110,7 @@ export async function taskAgentModel(
   fallback: string
 ) {
   const pilot = env.MODEL_ROUTER_WORKSPACES ?? [];
-  if (pilot.length === 0) return fallback;
+  if (pilot.length === 0 || !anyRoute()) return fallback;
   const known = verdicts.get(sessionId);
   if (known !== undefined) return known;
   try {
