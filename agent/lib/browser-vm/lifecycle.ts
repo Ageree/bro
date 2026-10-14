@@ -123,12 +123,12 @@ const liveRunWindowMs = 30 * 60_000;
 const exitCheckMs = 30 * 60_000;
 /** Sticky sessions tried after the first, for an exit inside Russia. */
 const exitRotations = 3;
-// A residential exit this slow made the same Wildberries page take a minute
-// instead of three seconds: it is moved while a better one may be had.
-const slowExitMbps = 2;
-const slowExitLatencyMs = 3_000;
-/** Every errand waits on the same exit, so it is tried again in a few minutes. */
-const noExitRetryMs = 5 * 60_000;
+/**
+ * Every errand waits on the same exit, so it is tried again after this. Five
+ * minutes held the owner's errand 14.10 while the proxy's 500s were gone a
+ * minute later.
+ */
+const noExitRetryMs = 60_000;
 /**
  * How long a person's turn waits for the search for an exit to go on from
  * one rotation to the next. Each check takes up to 45 s through the exit and
@@ -1603,17 +1603,11 @@ async function routeThroughRussia(
   // An exit address means the proxy took the login: its next refusal is a
   // new incident, and the owner hears of it at once.
   if (exit.ip) await proxyAccepted(now);
-  const slow =
-    (exit.mbps ?? Number.POSITIVE_INFINITY) < slowExitMbps ||
-    (exit.latencyMs ?? 0) > slowExitLatencyMs;
-  // A slow Russian exit is still taken when no rotation is left to try, and
-  // at once while a person's turn waits: 14.10 every exit measured 3–5 s, so
-  // the search ran past the turn's budget each time and the errand queued
-  // for a minute; the poller still looks for a faster one.
+  // Any Russian exit is taken, however slow: 14.10 every exit measured 3–5 s,
+  // and passing one over for a faster ran the search into the proxy's 500s
+  // and a wait of minutes, the errand standing still meanwhile.
   const taken =
-    exit.country === "RU" &&
-    exit.ip &&
-    (!slow || rotationsLeft === 0 || searchUntil !== undefined)
+    exit.country === "RU" && exit.ip
       ? { country: exit.country, ip: exit.ip }
       : undefined;
   // One line per check, before the errand starts: the worker asks ipinfo.io

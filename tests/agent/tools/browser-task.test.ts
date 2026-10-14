@@ -9670,6 +9670,12 @@ describe("browser_task keeps sign-ins", () => {
   });
 
   it("does not take a mailed code for a page that was already closed", async () => {
+    mailCodeFromSite.mockResolvedValue({
+      code: "482913",
+      domain: "ozon.ru",
+      kind: "found",
+      receivedAt: new Date(),
+    });
     readBrowserRunForScope.mockResolvedValue({
       ...browserRunRow(
         new Date(),
@@ -9692,8 +9698,42 @@ describe("browser_task keeps sign-ins", () => {
     ).rejects.toThrow(
       "the page that waited for this code sat idle and was closed"
     );
-    expect(mailCodeFromSite).not.toHaveBeenCalled();
     expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("hands a mailed link on even after the page was closed", async () => {
+    // 14.10: productradar.ru's set-password link was refused as a stale code,
+    // and Bro went round in circles for a minute.
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(
+        new Date(),
+        "Result: остановлено на проверке по email\nNeeds: email_code"
+      ),
+      browserReleasedAt: new Date(),
+      liveViewUrl: null,
+      site: "https://www.ozon.ru",
+    });
+    mailCodeFromSite.mockResolvedValue({
+      domain: "ozon.ru",
+      kind: "link",
+      purpose: "confirm",
+      receivedAt: new Date(),
+      recipient: "ivan@gmail.com",
+      url: "https://www.ozon.ru/confirm?t=1",
+    });
+    const tool = await resolvedBrowserTask(
+      [],
+      `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+    );
+
+    await tool.execute(
+      { action: "continue", personWants: "look", codeFrom: "mail", runId },
+      toolContext("better-auth:alice", "browser-result")
+    );
+
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "https://www.ozon.ru/confirm?t=1"
+    );
   });
 
   it("moves a follow-up to the new profile once the person had Bro forget its sign-ins", async () => {
