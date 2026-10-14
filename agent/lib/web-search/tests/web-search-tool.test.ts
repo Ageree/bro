@@ -6,6 +6,8 @@ const requiredEnvironment = {
   BETTER_AUTH_URL: "https://openinstinct.example",
   DATABASE_URL: "postgresql://user:password@example.com/database",
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+  // These cases feed RouterAI's and OpenRouter's answers.
+  WEB_SEARCH_INSTANT: "off",
 };
 
 const fetchMock = vi.fn<() => Promise<Response>>();
