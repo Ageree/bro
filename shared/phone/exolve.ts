@@ -58,29 +58,47 @@ async function request<T extends z.ZodType>(
 ): Promise<z.output<T>> {
   const key = env.MTS_EXOLVE_API_KEY;
   if (!key) throw new Error("Exolve is not configured.");
-  try {
-    const response = await fetch(`https://api.exolve.ru${path}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
-      redirect: "error",
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("Request rejected.");
-    const parsed = schema.safeParse(await response.json());
-    if (!parsed.success) throw new Error("Invalid response.");
-    return parsed.data;
-  } catch {
-    throw new Error(
-      mutation
-        ? "Exolve mutation could not be verified; reconcile before any retry."
-        : "Exolve read failed; no authoritative result available."
-    );
+  // Чтение идемпотентно: короткий сбой Exolve (как у ElevenLabs 13.10) не
+  // должен ронять звонок до набора. Изменение не повторяется никогда.
+  const attempts = mutation ? 1 : 3;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+      const response = await fetch(`https://api.exolve.ru${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20_000),
+        redirect: "error",
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(`status ${String(response.status)}`);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+      const parsed = schema.safeParse(await response.json());
+      if (!parsed.success) throw new Error("invalid response");
+      return parsed.data;
+    } catch (error) {
+      console.warn("[phone] Exolve request failed", {
+        path,
+        attempt,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
+      if (attempt < attempts) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Attempts are sequential by design.
+        await new Promise((resolve) => {
+          setTimeout(resolve, 1000);
+        });
+      }
+    }
   }
+  throw new Error(
+    mutation
+      ? "Exolve mutation could not be verified; reconcile before any retry."
+      : "Exolve read failed; no authoritative result available."
+  );
 }
 
 function valid<T extends z.ZodType>(schema: T, value: z.input<T>): z.output<T> {
