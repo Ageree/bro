@@ -2813,6 +2813,98 @@ describe("moving the browser to the second proxy", () => {
     );
   });
 
+  // Ozon turned away every Geonode exit of an errand (14.10): its retry goes
+  // out through the fallback, and the next errand comes back home.
+  it("sends a walled errand's retry through the fallback and the next errand back to the first proxy", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}r3` }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.40" })
+    );
+
+    const detoured = await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([second(`bro${digest}r3w0`)]);
+    expect(detoured.proxySession).toBe(`bro${digest}r3w0`);
+    expect(info).toHaveBeenCalledWith(
+      "[browser-vm] the proxy exit checked",
+      expect.objectContaining({
+        detour: true,
+        proxy: "BROWSER_VM_PROXY_FALLBACK",
+      })
+    );
+
+    // A follow-up of that errand stays on its detour.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    await lifecycle.prepareBrowserVmSession(stored(), now, { rotate: false });
+    expect(sent()).toEqual([second(`bro${digest}r3w0`)]);
+
+    // Walled again: the next detour session, still on the fallback.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+    expect(sent()).toEqual([second(`bro${digest}r3w1`)]);
+
+    // A new errand, however fresh the detour's exit, goes home.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(health());
+    const home = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([first(`bro${digest}r3`)]);
+    expect(home.proxySession).toBe(`bro${digest}r3`);
+  });
+
+  it("goes home at the next rotation when the fallback has no Russian exit for the detour", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}r3` }));
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.41" }));
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([
+      second(`bro${digest}r3w0`),
+      second(`bro${digest}r3w1`),
+      second(`bro${digest}r3w2`),
+      second(`bro${digest}r3w3`),
+      first(`bro${digest}r4`),
+    ]);
+    expect(prepared.proxySession).toBe(`bro${digest}r4`);
+  });
+
+  it("rotates a workspace that moved to the fallback for good there, with no detour", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}s1` }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.42" })
+    );
+
+    await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([second(`bro${digest}s2`)]);
+  });
+
   it("brings a workspace back to the first proxy once the fallback is gone", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(
