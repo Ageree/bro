@@ -1,10 +1,25 @@
 import type { Metadata } from "next";
+import { Geist, Source_Serif_4 } from "next/font/google";
 import Link from "next/link";
-import { Masthead, OfferLink } from "@web/components/paper/masthead";
+import { Button } from "@web/components/ui/button";
+import { cn } from "@web/components/class-names";
 import { env } from "@shared/environment";
-import { HeroVideo } from "./_components/hero-video";
+import { PortraitWallpaper } from "./_components/portrait-wallpaper";
+import { LandingStory } from "./_components/landing-story";
 import { WriteBro } from "./_components/write-bro";
+import styles from "./landing.module.css";
 
+const display = Source_Serif_4({
+  display: "swap",
+  subsets: ["cyrillic", "latin"],
+  variable: "--font-landing-display",
+  weight: "400",
+});
+const body = Geist({
+  display: "swap",
+  subsets: ["cyrillic", "latin"],
+  variable: "--font-landing-body",
+});
 const title = "bro — твой личный ИИ-агент";
 
 export const metadata: Metadata = {
@@ -21,40 +36,96 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image" },
 };
 
-/**
- * Stage — a white page with one figure standing in it. A flex column of
- * three: the masthead and the call to action take their own height, the
- * film takes everything else. Nothing else stands under it — the tariffs
- * live in the offer now — so the figure gets the whole page between them.
- */
 export default function Page() {
   return (
-    <main className="flex h-svh min-h-[30rem] flex-col overflow-x-hidden overflow-y-auto">
-      <h1 className="sr-only">{title}</h1>
-      <Masthead
-        end={
-          <nav aria-label="Служебные страницы" className="flex gap-[0.9rem]">
-            <Link className="type-nav bro-link" href="/sign-in">
-              Кабинет
+    <div className={cn(display.variable, body.variable, styles.landing)}>
+      <main>
+        <div className={styles.hero}>
+          <PortraitWallpaper />
+          <nav aria-label="Главная навигация" className={styles.navigation}>
+            <Link className={styles.wordmark} href="/">
+              bro.
             </Link>
-            <Link className="type-nav bro-link" href="/vault">
+            <Link className={styles.navVault} href="/vault">
               Сейф
             </Link>
+            <Button
+              className={styles.navAction}
+              nativeButton={false}
+              render={<Link href="/sign-in" />}
+            >
+              Кабинет
+            </Button>
           </nav>
-        }
-        start={<OfferLink />}
-      />
-
-      <div className="relative min-h-0 flex-1">
-        <HeroVideo />
-      </div>
-
-      <section
-        aria-label="Написать бро"
-        className="px-bro-pad pt-[0.6rem] pb-bro-pad text-center"
-      >
-        <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
-      </section>
-    </main>
+          <section aria-labelledby="bro-title" className={styles.plate}>
+            <h1 className="type-product-title" id="bro-title">
+              {title}
+            </h1>
+            <p className={cn("type-supporting-body", styles.description)}>
+              {env.IMESSAGE_PHONE_NUMBER
+                ? "Написать бро в iMessage"
+                : "iMessage пока недоступен"}
+            </p>
+            <div className={styles.actions}>
+              <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
+              <Button
+                className={styles.secondaryAction}
+                nativeButton={false}
+                render={<Link href="/vault" />}
+                variant="outline"
+              >
+                Сейф
+              </Button>
+            </div>
+            <Link className={styles.offer} href="/oferta">
+              Оферта
+            </Link>
+          </section>
+          <Link className={styles.learnMore} href="#meet-bro">
+            Узнать bro <span aria-hidden="true">↓</span>
+          </Link>
+        </div>
+        <LandingStory
+          fontClassName={cn(display.variable, body.variable)}
+          phoneNumber={env.IMESSAGE_PHONE_NUMBER}
+        />
+      </main>
+      <footer className={styles.footer}>
+        <div className={styles.footerInner}>
+          <div className={styles.footerTop}>
+            <p className={styles.footerStatement}>
+              Свои планы. Свой ритм.
+              <br />
+              Свой bro.
+            </p>
+            <nav aria-label="О bro">
+              <span>Знакомство</span>
+              <Link href="#how-it-works">Как это работает</Link>
+              <Link href="#features">Возможности</Link>
+              <Link href="#questions">Вопросы</Link>
+            </nav>
+            <nav aria-label="Документы">
+              <span>Документы</span>
+              <Link href="/oferta">Оферта</Link>
+              <Link href="/privacy">Конфиденциальность</Link>
+            </nav>
+            <nav aria-label="Ваш bro">
+              <span>Ваш bro</span>
+              <Link href="/sign-in">Кабинет</Link>
+              <Link href="/vault">Сейф</Link>
+            </nav>
+          </div>
+          <p aria-hidden="true" className={styles.footerWordmark}>
+            bro.
+          </p>
+          <div className={styles.footerBaseline}>
+            <Link className={styles.footerHome} href="/">
+              bro.
+            </Link>
+            <span>Личный ИИ-агент. В твоём ритме.</span>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }
