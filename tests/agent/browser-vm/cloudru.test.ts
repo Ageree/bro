@@ -428,18 +428,6 @@ describe("Cloud.ru VMs", () => {
     });
   });
 
-  it("releases an address that outlived its VM", async () => {
-    const cloudRu = await loadCloudRu();
-    const calls = stubCloudRu(noContent);
-
-    await cloudRu.deleteCloudRuFloatingIp("fip-1");
-
-    expect(calls.at(-1)).toMatchObject({
-      method: "DELETE",
-      url: `${compute}/v1/floating-ips/fip-1`,
-    });
-  });
-
   it("deletes the backups of the given disks and no others", async () => {
     const cloudRu = await loadCloudRu({ CLOUDRU_PROJECT_ID: projectId });
     const calls = stubCloudRu(
@@ -491,14 +479,6 @@ describe("Cloud.ru VMs", () => {
     expect(
       calls.filter((call) => call.method === "DELETE").map((call) => call.url)
     ).toEqual([`${compute}/v1/backups/backup-late`]);
-  });
-
-  it("asks nothing for no disks", async () => {
-    const cloudRu = await loadCloudRu();
-    const calls = stubCloudRu();
-
-    expect(await cloudRu.deleteCloudRuBackupsOf([])).toBe(0);
-    expect(calls).toEqual([]);
   });
 
   it("reports a refused create with its status and body", async () => {

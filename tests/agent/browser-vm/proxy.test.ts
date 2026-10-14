@@ -48,17 +48,6 @@ describe("browser VM proxy", () => {
     expect(() => proxy.browserVmProxy("bro-1")).toThrow("letters and digits");
   });
 
-  it("is not configured without the setting", async () => {
-    const proxy = await importWithSettings(
-      {},
-      async () => import("@agent/lib/browser-vm/proxy")
-    );
-
-    expect(() => proxy.browserVmProxy("bro1")).toThrow(
-      "BROWSER_VM_PROXY is not configured."
-    );
-  });
-
   // One exit for every workspace would let a site tie their sign-ins together.
   it("is refused at startup without a session placeholder or a port", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);

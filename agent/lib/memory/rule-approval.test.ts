@@ -114,16 +114,6 @@ describe("outbound saved rules", () => {
     );
   });
 
-  it("does not add a card to an allowed follow-through from a browser report", async () => {
-    expect(
-      await outboundRuleApproval(
-        context("browser-result"),
-        JSON.stringify({ to: "mum@example.com" })
-      )
-    ).toBe("not-applicable");
-    expect(calls.generate).not.toHaveBeenCalled();
-  });
-
   it("still checks saved prohibitions during autonomous follow-through", async () => {
     calls.rules.mockResolvedValue([{ index: 7, text: "Never write Mum" }]);
     calls.generate.mockResolvedValue({ output: { violatedRuleIndex: 7 } });

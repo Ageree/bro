@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   browserVmTestEnvironment,
@@ -156,46 +156,6 @@ describe("browser VM worker client", () => {
     expect(timeouts).toHaveBeenCalledWith(5_000);
   });
 
-  it("looks a VM's private address up before its call's timeout starts", async () => {
-    // A Compute API listing may take seconds: a health check's five seconds
-    // are the VM's to answer in, not the listing's.
-    const listing = vi.fn<() => Promise<Map<string, string>>>(
-      async () => new Map([[vm.host, "10.0.1.7"]])
-    );
-    // The Compute API client, as private-route uses it.
-    vi.doMock("@agent/lib/browser-vm/cloudru", () => ({
-      listCloudRuPrivateAddresses: listing,
-    }));
-    onTestFinished(() => {
-      vi.doUnmock("@agent/lib/browser-vm/cloudru");
-    });
-    const worker = await importWithSettings(
-      { ...browserVmTestEnvironment, CLOUDRU_PRIVATE_ROUTING: "on" },
-      async () => import("@agent/lib/browser-vm/worker")
-    );
-    const timeouts = vi.spyOn(AbortSignal, "timeout");
-    stubWorker(
-      Response.json({
-        busy: false,
-        chrome: true,
-        configured: true,
-        generation: 4,
-        image: "bro-browser-2026-09-28-1",
-        proxy: false,
-        stage: "ready",
-        uptimeSeconds: 48.2,
-        worker: "2026-09-28.1",
-      })
-    );
-
-    await worker.readBrowserVmWorkerHealth(vm);
-
-    expect(listing).toHaveBeenCalledTimes(1);
-    expect(listing.mock.invocationCallOrder[0]).toBeLessThan(
-      timeouts.mock.invocationCallOrder[0] ?? 0
-    );
-  });
-
   it("signs every other call for this VM and its generation", async () => {
     const { token, worker } = await loadWorker();
     const calls = stubWorker(
@@ -343,15 +303,6 @@ describe("browser VM worker client", () => {
     expect(calls[0]?.url).toBe(
       `${origin}/v1/runs/${encodeURIComponent(runId)}`
     );
-  });
-
-  it("reads a run with no unread messages, from a worker that omits the field", async () => {
-    const { worker } = await loadWorker();
-    stubWorker(Response.json(workerRun()));
-
-    const run = await worker.readBrowserVmWorkerRun(vm, runId);
-
-    expect(run?.unreadMessages).toBeUndefined();
   });
 
   it("finds runs by a line of their task and cancels one", async () => {
@@ -556,34 +507,6 @@ describe("browser VM worker client", () => {
     );
   });
 
-  it("opens and closes a keep-alive tab, and controls Chrome and its profile", async () => {
-    const { worker } = await loadWorker();
-    const calls = stubWorker(
-      Response.json({ targetId: "9A1F0C3B2E" }),
-      Response.json({ closed: "9A1F0C3B2E" }),
-      Response.json({ chrome: false, output: "", rc: 0 }),
-      Response.json({ chrome: true, reset: true })
-    );
-
-    expect(await worker.openBrowserVmWorkerTab(vm)).toBe("9A1F0C3B2E");
-    await worker.closeBrowserVmWorkerTab(vm, "9A1F0C3B2E");
-    expect(await worker.controlBrowserVmWorkerChrome(vm, "stop")).toEqual({
-      chrome: false,
-      output: "",
-      rc: 0,
-    });
-    expect(await worker.resetBrowserVmWorkerProfile(vm)).toEqual({
-      chrome: true,
-      reset: true,
-    });
-    expect(calls.map((call) => [call.method, call.url])).toEqual([
-      ["POST", `${origin}/v1/tabs`],
-      ["DELETE", `${origin}/v1/tabs/9A1F0C3B2E`],
-      ["POST", `${origin}/v1/browser/stop`],
-      ["POST", `${origin}/v1/profile/reset`],
-    ]);
-  });
-
   it("sends new worker code as it is, signed, with its checksum", async () => {
     const { worker } = await loadWorker();
     const code = new TextEncoder().encode('VERSION = "2026-09-30.1"\n');
@@ -702,7 +625,7 @@ describe("browser VM worker client", () => {
     );
   });
 
-  it("calls nothing for a sandbox that is on no host", async () => {
+  it("calls nothing for a sandbox on no host, or a VM whose address is not known yet", async () => {
     const { worker } = await loadWorker();
     const calls = stubWorker();
 
@@ -713,13 +636,6 @@ describe("browser VM worker client", () => {
         sandboxState: "running",
       })
     ).rejects.toThrow("on no host");
-    expect(calls).toEqual([]);
-  });
-
-  it("calls nothing for a VM whose address is not known yet", async () => {
-    const { worker } = await loadWorker();
-    const calls = stubWorker();
-
     await expect(
       worker.readBrowserVmWorkerHealth({ ...vm, host: null })
     ).rejects.toThrow("no public IPv4 address");

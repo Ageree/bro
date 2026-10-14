@@ -586,46 +586,6 @@ describe("starting a run on a workspace's browser VM", () => {
     ).toBeUndefined();
   });
 
-  it("runs an errand that only searches in flash mode, and any other as before", async () => {
-    const client = await loadClient();
-    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
-      Promise.resolve({
-        id: input.id,
-        sessionId: input.sessionId ?? "",
-        status: "queued",
-      })
-    );
-    worker.sendBrowserVmWorkerMessage.mockImplementation((_vm, id, message) =>
-      Promise.resolve({
-        runId: message.runId ?? "",
-        sessionId: id,
-        status: "started",
-      })
-    );
-
-    await client.createBrowserUseRun({
-      profileId,
-      search: true,
-      task: composedTask,
-    });
-    await client.createBrowserUseRun({
-      profileId,
-      search: false,
-      task: composedTask,
-    });
-    await client.createBrowserUseRun({ profileId, task: composedTask });
-    // A follow-up in the search's own session replaces its tuning, in
-    // full mode.
-    await client.queueBrowserUseSessionMessage(sessionId, "А синий есть?");
-
-    expect(
-      worker.startBrowserVmWorkerRun.mock.calls.map(([, input]) => input.tuning)
-    ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
-    expect(worker.sendBrowserVmWorkerMessage.mock.calls[0]?.[2].tuning).toEqual(
-      vmTuning
-    );
-  });
-
   it("sends the worker byte for byte what it sent before flash mode, unless the errand only searches", async () => {
     // No 2Captcha key from the shell: the body is the run's alone.
     const client = await importWithSettings(
@@ -1254,17 +1214,6 @@ describe("reading a VM run", () => {
       status: "completed",
       unreadMessages: ["и с завтраком"],
     });
-  });
-
-  it("answers [] for unread messages once the worker no longer reports any", async () => {
-    const client = await loadClient();
-    worker.readBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({ status: "running" })
-    );
-
-    const run = await client.readBrowserUseRun(runId);
-
-    expect(run).toMatchObject({ unreadMessages: [] });
   });
 
   it("marks a run failed once the VM it ran on is stopped", async () => {

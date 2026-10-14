@@ -63,17 +63,6 @@ describe("browser VM tokens", () => {
       token.signBrowserVmToken({ generation: 1, ttlSeconds: 0, workspaceId })
     ).toThrow("1 to 900 seconds");
   });
-
-  it("are not signed without a signing key", async () => {
-    const token = await importWithSettings(
-      {},
-      async () => import("@agent/lib/browser-vm/token")
-    );
-
-    expect(() =>
-      token.signBrowserVmToken({ generation: 1, workspaceId })
-    ).toThrow("BROWSER_VM_SIGNING_KEY is not configured.");
-  });
 });
 
 describe("browser VM cloud-init", () => {

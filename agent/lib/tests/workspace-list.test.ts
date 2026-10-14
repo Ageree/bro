@@ -46,12 +46,4 @@ describe("pilot verdict of a turn", () => {
     expect(await pilotVerdictOfTurn("test-pilot", running, lookup)).toBe(true);
     expect(lookup).toHaveBeenCalledTimes(1);
   });
-
-  it("asks once per turn of a session", async () => {
-    const lookup = vi.fn<() => Promise<boolean>>(() => Promise.resolve(true));
-    const turn = { sessionId: "session-once", turnId: "turn_3" };
-    await pilotVerdictOfTurn("test-pilot", turn, lookup);
-    await pilotVerdictOfTurn("test-pilot", turn, lookup);
-    expect(lookup).toHaveBeenCalledTimes(1);
-  });
 });

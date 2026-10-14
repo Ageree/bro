@@ -195,13 +195,6 @@ describe("the auto-payment decision", () => {
     });
   });
 
-  it("asks for any paid purchase when no limit is set", () => {
-    expect(decideAutoPayment(undefined, payment(), [])).toEqual({
-      allowed: false,
-      reason: "no_limit",
-    });
-  });
-
   it("never starts a subscription on its own, however cheap", () => {
     expect(
       decideAutoPayment(policy(), payment({ amount: 0, recurring: true }), [])

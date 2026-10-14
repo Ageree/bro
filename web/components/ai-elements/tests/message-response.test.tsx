@@ -7,23 +7,17 @@ import {
 } from "@web/components/ai-elements/message";
 
 describe("message response rendering", () => {
-  it("uses the synchronous renderer for settled text", () => {
-    const response = MessageResponse({ children: "Current response" });
-
-    expect(response.props).toMatchObject({
+  it("renders settled text synchronously and streaming text incrementally", () => {
+    expect(
+      MessageResponse({ children: "Current response" }).props
+    ).toMatchObject({
       children: "Current response",
       isAnimating: false,
       mode: "static",
     });
-  });
-
-  it("keeps incremental rendering while text is streaming", () => {
-    const response = MessageResponse({
-      children: "Partial response",
-      isAnimating: true,
-    });
-
-    expect(response.props).toMatchObject({
+    expect(
+      MessageResponse({ children: "Partial response", isAnimating: true }).props
+    ).toMatchObject({
       children: "Partial response",
       isAnimating: true,
       mode: "streaming",

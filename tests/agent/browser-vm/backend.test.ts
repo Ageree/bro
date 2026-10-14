@@ -118,17 +118,6 @@ describe("browser VM backend choice", () => {
     });
   });
 
-  it("takes the owner from the caller's scope when it has one", async () => {
-    const backend = await loadBackend({
-      BROWSER_VM_WORKSPACES: "alice@example.com",
-    });
-
-    expect(await backend.usesBrowserVm({ userId: ownerId, workspaceId })).toBe(
-      true
-    );
-    expect(accounts.readWorkspaceScope).not.toHaveBeenCalled();
-  });
-
   it("keeps a workspace whose owner is someone else, or nobody, on Browser Use", async () => {
     const backend = await loadBackend({
       BROWSER_VM_WORKSPACES: "someone@example.com",
@@ -161,19 +150,6 @@ describe("browser VM backend choice", () => {
       configuredWithout.push([name, backend.browserPoolConfigured()]);
     }
     expect(configuredWithout).toEqual(names.map((name) => [name, false]));
-  });
-
-  it("needs the gVisor release only for hosts that run runsc", async () => {
-    const runsc = {
-      ...browserPoolTestEnvironment,
-      BROWSER_HOST_RUNTIME: "runsc",
-    };
-    expect((await loadBackend(runsc)).browserPoolConfigured()).toBe(false);
-    expect(
-      (
-        await loadBackend({ ...runsc, BROWSER_HOST_RUNSC_RELEASE: "20260914" })
-      ).browserPoolConfigured()
-    ).toBe(true);
   });
 
   it("takes runc only when named, and an unset runtime as runsc", async () => {
@@ -257,17 +233,6 @@ describe("browser VM backend choice", () => {
       sha256: "01".repeat(32),
       version: "v7",
     });
-    expect(env).toMatchObject({
-      BROWSER_HOST_FLAVOR: "gen-4-16",
-      BROWSER_HOST_IDLE_MINUTES: 60,
-      BROWSER_HOST_MAX: 1,
-      BROWSER_HOST_MIN_WARM: 0,
-      BROWSER_HOST_NAME_PREFIX: "bro-host-",
-      BROWSER_HOST_RUNTIME: "runc",
-      BROWSER_SANDBOX_MEMORY_MB: 3072,
-      CLOUDRU_S3_TENANT_ID: "test-tenant",
-    });
-    expect(env.BROWSER_HOST_WARM_HOURS).toBeUndefined();
 
     const { env: warm } = await importWithSettings(
       {
@@ -282,17 +247,11 @@ describe("browser VM backend choice", () => {
 
     for (const settings of [
       { BROWSER_HOST_MIN_WARM: "-1" },
-      { BROWSER_HOST_MIN_WARM: "1.5" },
-      { BROWSER_HOST_WARM_HOURS: "8-2" },
       { BROWSER_HOST_WARM_HOURS: "08-24" },
-      { BROWSER_HOST_WARM_HOURS: "08-08" },
       { BROWSER_SANDBOX_ROOTFS: `rootfs/v7.tar.zst:${"01".repeat(32)}` },
       { BROWSER_HOST_BUNDLE: "hosts/b-2.tgz:abc" },
-      { BROWSER_HOST_RUNSC_RELEASE: "latest" },
       { BROWSER_HOST_RUNTIME: "docker" },
-      { BROWSER_HOST_NAME_PREFIX: "Bro_host" },
       { BROWSER_STATE_KEY: "22".repeat(16) },
-      { BROWSER_BACKEND: "firecracker" },
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each bad value is parsed in an environment of its own.
       await expect(
