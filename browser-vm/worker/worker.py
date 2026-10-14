@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-10.3"
+VERSION = "2026-10-14.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -228,6 +228,12 @@ def verify_token(token, config, generation, now=None):
 # --- Residential proxy forwarder -------------------------------------------------------------------
 
 
+# Asks for one tunnel this many times when the residential proxy fails to open it (5xx or a hang-up), with a
+# pause growing by this much between tries: its 500s pass in a second or two.
+TUNNEL_ATTEMPTS = 3
+TUNNEL_RETRY_PAUSE_S = 0.5
+
+
 class Forwarder:
     """127.0.0.1:3128 → the workspace's residential proxy, adding its login (Chrome cannot send one
     from the command line). Until Bro sets the upstream every request gets 502, so Chrome never
@@ -285,18 +291,57 @@ class Forwarder:
         if auth:
             kept.append(f"Proxy-Authorization: Basic {auth}")
         request = "\r\n".join([lines[0], *kept, "", ""]).encode("latin-1")
-        try:
-            up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection(host, port), 20)
-        except (OSError, asyncio.TimeoutError):
-            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-            client_writer.close()
-            return
-        self.totals["connections"] += 1
-        self.totals["up"] += len(request)
+        tunnel = lines[0].startswith("CONNECT")
+        attempts = TUNNEL_ATTEMPTS if tunnel else 1
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            try:
+                up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection(host, port), 20)
+            except (OSError, asyncio.TimeoutError):
+                if not last:
+                    await asyncio.sleep(TUNNEL_RETRY_PAUSE_S * (attempt + 1))
+                    continue
+                client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                client_writer.close()
+                return
+            self.totals["connections"] += 1
+            self.totals["up"] += len(request)
+            if not tunnel:
+                break
+            # The proxy answers a CONNECT before any byte of the site: a 5xx or a hang-up there is the
+            # residential network failing, not the site, and Chrome would show ERR_TUNNEL_CONNECTION_FAILED
+            # and reload the page (14.10: productradar.ru's form lost its fields twice, while the proxy
+            # failed about every other exit check). The same sticky session is asked again, so the exit
+            # address stays; 402/403/407 are the login refused and go to Chrome at once.
+            try:
+                up_writer.write(request)
+                await up_writer.drain()
+                answer = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), 30)
+            except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, ConnectionError,
+                    OSError):
+                answer = b""
+            status = answer.split(b" ", 2)[1:2]
+            failed = not answer or (status and status[0][:1] == b"5")
+            if failed and not last:
+                with contextlib.suppress(Exception):
+                    up_writer.close()
+                await asyncio.sleep(TUNNEL_RETRY_PAUSE_S * (attempt + 1))
+                continue
+            if not answer:
+                client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                client_writer.close()
+                with contextlib.suppress(Exception):
+                    up_writer.close()
+                return
+            self.totals["down"] += len(answer)
+            client_writer.write(answer)
+            break
         self.open.update((client_writer, up_writer))
         try:
-            up_writer.write(request)
+            if not tunnel:
+                up_writer.write(request)
             await up_writer.drain()
+            await client_writer.drain()
             await asyncio.gather(self.pipe(client_reader, up_writer, "up"), self.pipe(up_reader, client_writer, "down"))
         except (ConnectionError, OSError):
             pass
