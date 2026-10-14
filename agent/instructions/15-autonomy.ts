@@ -3,7 +3,7 @@ import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { instructionText } from "@agent/lib/skills/catalog";
-import { skillsLayout } from "@agent/lib/skills/pilot";
+import { autonomyPilot, skillsLayout } from "@agent/lib/skills/pilot";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { localMonthKey } from "@shared/calendar/local-period";
@@ -139,7 +139,7 @@ export default defineDynamic({
       });
       return defineInstructions({
         content: [
-          instructionText("autonomy", layout),
+          instructionText("autonomy", layout, autonomyPilot(context)),
           followThroughRules,
           limit,
         ]

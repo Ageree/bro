@@ -14,6 +14,7 @@ import recommendations from "@agent/instructions/content/recommendations.md?raw"
 import roleInteractive from "@agent/instructions/content/role/interactive.md?raw";
 import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
 import taskFilesText from "@agent/instructions/content/task-files.md?raw";
+import { autonomyEdits } from "./autonomy";
 
 /**
  * Bro's instructions, and the skills cut from them (docs/roadmap.md, item
@@ -161,6 +162,11 @@ export interface SkillSetup {
    * is no, so a setup written before the flag reads as it did.
    */
   readonly taskFiles?: boolean;
+  /**
+   * The workspace is in the autonomy pilot (`autonomyEdits`); absent is no,
+   * as for `taskFiles`.
+   */
+  readonly autonomy?: boolean;
 }
 
 /** Who reads a run of lines: every layout, one layout, or one skill. */
@@ -264,8 +270,32 @@ const parsedSources = new Map<InstructionSource, readonly Segment[]>(
   sourceTexts.map(([source, text]) => [source, checkedSegments(source, text)])
 );
 
-function sourceSegments(source: InstructionSource) {
-  return parsedSources.get(source) ?? [];
+/**
+ * A file as the autonomy pilot reads it, each of its edits made where its
+ * text stands once (`tests/agent/skills/autonomy.test.ts` holds every edit
+ * to that).
+ */
+function editedText(source: InstructionSource, text: string) {
+  return autonomyEdits
+    .filter((edit) => edit.source === source)
+    .reduce(
+      (edited, edit) =>
+        edited.split(edit.from).length === 2
+          ? edited.replace(edit.from, () => edit.to)
+          : edited,
+      text
+    );
+}
+
+const parsedAutonomySources = new Map<InstructionSource, readonly Segment[]>(
+  sourceTexts.map(([source, text]) => [
+    source,
+    checkedSegments(source, editedText(source, text)),
+  ])
+);
+
+function sourceSegments(source: InstructionSource, autonomy = false) {
+  return (autonomy ? parsedAutonomySources : parsedSources).get(source) ?? [];
 }
 
 function readBy(region: Region, layout: InstructionLayout) {
@@ -282,12 +312,16 @@ function readBy(region: Region, layout: InstructionLayout) {
   }
 }
 
-/** One instruction file as a turn of this layout reads it. */
+/**
+ * One instruction file as a turn of this layout reads it, in the autonomy
+ * pilot's edit (`autonomy`) or as it is.
+ */
 export function instructionText(
   source: InstructionSource,
-  layout: InstructionLayout
+  layout: InstructionLayout,
+  autonomy = false
 ) {
-  const text = sourceSegments(source)
+  const text = sourceSegments(source, autonomy)
     .filter(({ region }) => readBy(region, layout))
     .map(({ text: lines }) => lines)
     .join("");
@@ -331,11 +365,12 @@ export function skillBody(name: SkillName, setup: SkillSetup) {
   if (name === "browser" && !setup.browser) return undefined;
   const regions = interactiveSources(setup)
     .flatMap((source) =>
-      sourceSegments(source).flatMap(({ region, text }) =>
-        (region.kind === "skill" || region.kind === "body-only") &&
-        region.skill === name
-          ? [{ rank: region.rank, text: text.replace(/^\n+|\s+$/gu, "") }]
-          : []
+      sourceSegments(source, setup.autonomy === true).flatMap(
+        ({ region, text }) =>
+          (region.kind === "skill" || region.kind === "body-only") &&
+          region.skill === name
+            ? [{ rank: region.rank, text: text.replace(/^\n+|\s+$/gu, "") }]
+            : []
       )
     )
     .toSorted((first, second) => first.rank - second.rank)
