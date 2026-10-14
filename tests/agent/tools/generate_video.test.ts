@@ -119,7 +119,7 @@ afterEach(() => {
 });
 
 describe("generate_video", () => {
-  it("is offered only when the person asks for a clip, inside the pilot", async () => {
+  it("is offered only when the person asks for a clip, to everyone but off", async () => {
     expect(
       await resolve(dynamicContext([personText("нарисуй открытку")]))
     ).toBeNull();
@@ -127,12 +127,23 @@ describe("generate_video", () => {
       await resolve(dynamicContext([personText("сделай видео с котом")]))
     ).not.toBeNull();
 
-    vi.stubEnv("VIDEO_WORKSPACES", "");
-    vi.resetModules();
-    expect(
-      await resolve(dynamicContext([personText("сделай видео с котом")]))
-    ).toBeNull();
-  });
+    // Unset is everyone, a list only those named, `off` nobody.
+    for (const [setting, offered] of [
+      ["", true],
+      ["other-workspace", false],
+      [scope.workspaceId, true],
+      ["off", false],
+    ] as const) {
+      vi.stubEnv("VIDEO_WORKSPACES", setting);
+      vi.resetModules();
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each setting is read on a fresh module.
+      const tool = await resolve(
+        dynamicContext([personText("сделай видео с котом")])
+      );
+      expect(tool !== null).toBe(offered);
+    }
+    // Every setting loads the tool and the settings anew.
+  }, 30_000);
 
   it("queues a clip, waits for it and keeps it as a video artifact", async () => {
     const tool = await resolveTool(

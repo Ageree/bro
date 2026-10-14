@@ -1,9 +1,9 @@
 /**
  * Makes short clips through the direct model provider's Video API
  * (RouterAI's `/videos`): a scene from words, or the person's photo or a
- * picture Bro drew brought to life as the first frame. Only in the pilot
- * VIDEO_WORKSPACES, and only in a turn where the person asked for a clip:
- * one costs about ten roubles.
+ * picture Bro drew brought to life as the first frame. For every workspace
+ * unless VIDEO_WORKSPACES says otherwise, and only in a turn where the
+ * person asked for a clip: one costs about ten roubles.
  *
  * The API is asynchronous: the call is queued, polled until done, and the
  * clip is read back with the key. It is kept in private object storage as
@@ -140,11 +140,15 @@ export default defineDynamic({
   },
 });
 
-/** Whether the workspace is in VIDEO_WORKSPACES, by id or owner's email or `*`. */
+/**
+ * Whether the workspace makes clips: VIDEO_WORKSPACES unset or empty is
+ * everyone (the owner, 14.10), `off` nobody, a list of workspace ids or
+ * owners' emails only them.
+ */
 async function videoPilot(scope: AccessScope) {
   const list = env.VIDEO_WORKSPACES ?? [];
-  if (list.length === 0) return false;
-  if (list.includes("*")) return true;
+  if (list.length === 0 || list.includes("*")) return true;
+  if (list.includes("off")) return false;
   try {
     return await listsWorkspaceRemembered(list, scope);
   } catch (error) {

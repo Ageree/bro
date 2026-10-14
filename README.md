@@ -299,7 +299,7 @@ halving, and re-arms once the balance recovers; its state lives in
 
 ### Pictures, clips and chat games
 
-In the pilot `VIDEO_WORKSPACES` (workspace ids, owners' emails or `*`), a
+Unless `VIDEO_WORKSPACES` is `off` (or names only some workspaces), a
 person who asks for a clip gets `generate_video`: a few seconds with sound
 from words, or their photo or an earlier picture brought to life, through
 RouterAI's `/videos` (`ROUTERAI_VIDEO_MODEL`, default `heygen/heygen-video-1`).

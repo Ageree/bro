@@ -1063,9 +1063,9 @@ export const env = createEnv({
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),
-    // The pilot of making clips: workspace ids or owners' emails, or `*` for
-    // every workspace, whose Bro gets `generate_video` when a person asks
-    // for a clip (`agent/tools/generate_video.ts`). Unset, nobody.
+    // Who gets `generate_video` when a person asks for a clip
+    // (`agent/tools/generate_video.ts`): unset or `*`, every workspace; `off`,
+    // nobody (the rollback); otherwise workspace ids or owners' emails.
     VIDEO_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the model router: workspace ids or owners' emails, or `*`
     // for every workspace, whose task agent works on the model its job's kind

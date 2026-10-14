@@ -1004,7 +1004,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   16–33 с против 5–10 с; 9 живых проб с русским текстом — у MAI дубль «18:00» в
   2 из 3 приглашений, у Gemini выдуманный адрес в 3 из 3; Seedream 5.0 Flash
   писал «раждения» 3 из 3. Модель с русским текстом проверяйте несколькими
-  пробами, одна удачная ничего не доказывает. Видео — пилот `VIDEO_WORKSPACES`, `generate_video`: RouterAI
+  пробами, одна удачная ничего не доказывает. Видео (`generate_video`, с 14.10 всем; `VIDEO_WORKSPACES=off` — откат, список id — только им): RouterAI
   `POST /videos` → опрос `polling_url` → `content`, ключ — только на хост API;
   HeyGen Video 1 — 1,96 ₽/с, 5 с за 18–29 с, фото первым кадром (`frame_images`).
   Клип лежит в `generated_image_artifacts` как `video/mp4`, Telegram шлёт его
