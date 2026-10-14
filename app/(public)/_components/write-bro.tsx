@@ -18,7 +18,7 @@ export function WriteBro({ phoneNumber }: { readonly phoneNumber?: string }) {
         disabled
         title="iMessage-номер этого деплоя не настроен."
       >
-        Пока закрыто
+        Написать bro
       </Button>
     );
   }
@@ -33,7 +33,7 @@ export function WriteBro({ phoneNumber }: { readonly phoneNumber?: string }) {
         />
       }
     >
-      Написать бро
+      Написать bro
     </Button>
   );
 }

@@ -44,9 +44,6 @@ export default function Page() {
           <Link className={styles.wordmark} href="/">
             bro.
           </Link>
-          <Link className={styles.navVault} href="/vault">
-            Сейф
-          </Link>
           <Button
             className={styles.navAction}
             nativeButton={false}
@@ -57,24 +54,14 @@ export default function Page() {
         </nav>
         <section aria-labelledby="bro-title" className={styles.plate}>
           <h1 className="type-product-title" id="bro-title">
-            {title}
+            bro — твой последний ИИ-агент
           </h1>
           <p className={cn("type-supporting-body", styles.description)}>
             {env.IMESSAGE_PHONE_NUMBER
               ? "Написать бро в iMessage"
               : "iMessage пока недоступен"}
           </p>
-          <div className={styles.actions}>
-            <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
-            <Button
-              className={styles.secondaryAction}
-              nativeButton={false}
-              render={<Link href="/vault" />}
-              variant="outline"
-            >
-              Сейф
-            </Button>
-          </div>
+          <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
           <Link className={styles.offer} href="/oferta">
             Оферта
           </Link>

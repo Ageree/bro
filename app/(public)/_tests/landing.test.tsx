@@ -32,16 +32,16 @@ describe("landing page", () => {
     expect(html).toContain(">bro.<");
     expect(html).toContain("Оферта");
     expect(html).toContain("Кабинет");
-    expect(html).toContain("Сейф");
+    expect(html).not.toContain("Сейф");
     expect(html).toContain('data-portrait-wallpaper=""');
     expect(html).toContain('aria-hidden="true"');
     expect(html.match(/href="\/brand\/portraits\//g)).toHaveLength(12);
     expect(html).not.toContain("<video");
     expect(html).not.toContain("hero-portrait.mp4");
     expect(html).not.toContain("film-edge");
-    expect(html).toContain("Написать бро");
+    expect(html).toContain("Написать bro");
     expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(html).toContain("bro — твой личный ИИ-агент</h1>");
+    expect(html).toContain("bro — твой последний ИИ-агент</h1>");
   });
   it("keeps only the hero without lower sections, a footer or scroll cues", async () => {
     const html = await landingMarkup();
@@ -54,6 +54,9 @@ describe("landing page", () => {
     expect(document.querySelectorAll('a[href^="#"]')).toHaveLength(0);
     expect(html).not.toContain('data-slot="dialog-trigger"');
     expect(html).not.toContain('data-slot="collapsible-trigger"');
+    expect(
+      document.querySelectorAll("section button, section [role=button]")
+    ).toHaveLength(1);
   });
   it("opens the iMessage thread without asking for a number", async () => {
     const html = await landingMarkup();
@@ -74,12 +77,15 @@ describe("landing page", () => {
       parseHTML(html).document.querySelectorAll("button[disabled]")
     ).toHaveLength(1);
     expect(html).not.toContain("sms:");
+    expect(
+      parseHTML(html).document.querySelector("button[disabled]")?.textContent
+    ).toBe("Написать bro");
   });
   it("links this app's routes", async () => {
     const html = await landingMarkup();
     expect(html).toContain('href="/oferta"');
     expect(html).toContain('href="/sign-in"');
-    expect(html).toContain('href="/vault"');
+    expect(html).not.toContain('href="/vault"');
     expect(html).not.toContain('href="/workspace"');
   });
   it("opens Messages with a greeting on the separator iOS accepts", () => {
