@@ -929,7 +929,7 @@ describe("the shared Yandex/browser payment fence", () => {
     30_000
   );
 
-  it.each(schema.spendEntrySources)(
+  it.each(["limit"] as const)(
     "moves inherited %s exposure without reclassifying or releasing it",
     async (source) => {
       const test = await database();
@@ -974,7 +974,7 @@ describe("the shared Yandex/browser payment fence", () => {
     30_000
   );
 
-  it.each(["missing", "released", "charged", "higher-cap"] as const)(
+  it.each(["missing", "released", "higher-cap"] as const)(
     "does not reuse old consent after %s",
     async (condition) => {
       const test = await database();

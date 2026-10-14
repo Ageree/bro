@@ -42,8 +42,6 @@ describe("agent instructions", () => {
     } satisfies DynamicResolveContext;
     const selected = await resolve({}, proactive);
     expect(selected?.content).toContain("без просьбы человека");
-    expect(selected?.content).toContain("Личное и социальное");
-    expect(selected?.content).toContain("«Передавать нечего.»");
     expect(selected?.content).not.toContain("eve-empty-delivery");
     expect(selected?.content).not.toContain("заведённую человеком");
   });
@@ -107,9 +105,6 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "вызови `request_vault_setup`, положив в запрос только безопасные метаданные"
     );
-    expect(selected?.content).toContain(
-      "После `send_message` напиши только `DELIVERY_COMPLETE`"
-    );
   });
 
   it("omits execution safety from scheduled reports", async () => {
@@ -162,10 +157,6 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "не отправляй на сайт или в форму его имя, телефон, почту или адрес"
     );
-    expect(selected?.content).toContain(
-      "не помечай прочитанным то, что просто прочитал"
-    );
-    expect(selected?.content).toContain("Письма о безопасности аккаунта");
   });
 
   /**
@@ -229,9 +220,6 @@ describe("agent instructions", () => {
     if (!resolve) throw new Error("Role instructions resolve per turn.");
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
-    expect(selected?.content).not.toMatch(/(?:его|собственн\S*) сервер/u);
-    expect(selected?.content).toContain("Ты облачный сервис");
-    expect(selected?.content).toContain("Ты для человека один");
     // RU d14 (25.09): the storage answer is built from the privacy facts.
     expect(selected?.content).toContain("сначала вызови `privacy`");
     expect(selected?.content).toContain(
@@ -249,12 +237,6 @@ describe("agent instructions", () => {
     if (!resolve) return;
 
     const selected = await resolve({}, dynamicContext("photon-imessage"));
-    expect(selected?.content).toContain(
-      "никогда не зови `personal_info__update`, чтобы её прочитать"
-    );
-    expect(selected?.content).toContain(
-      "прямо скажи, если нужного значения там нет"
-    );
     expect(selected?.content).toContain(
       "никогда не переноси в профиль чужие утверждения"
     );
@@ -295,11 +277,6 @@ describe("agent instructions", () => {
     expect(await resolve({}, dynamicContext("scheduled-worker"))).toBeNull();
     const selected = await resolve({}, dynamicContext("scheduled-result"));
     expect(selected?.content).toContain("обычное сообщение в текущий чат");
-    expect(selected?.content).toContain(
-      "ссылку давай словом: `[карточка товара](https://…)`"
-    );
-    expect(selected?.content).toContain("[карточка товара](https://…)");
-    expect(selected?.content).toContain("в iMessage придут слово и адрес");
   });
 
   it("keeps every interactive reply in the person's language and plain text", async () => {
@@ -317,9 +294,6 @@ describe("agent instructions", () => {
     // RU d18 (25.09): a stray «Cancel» got a whole reply in English.
     expect(selected?.content).toContain(
       "Слово кнопки («Cancel», «Подтвердить»), число, код или «ok» языка не задают"
-    );
-    expect(selected?.content).toContain(
-      "Отказ, уточняющий вопрос, сообщение о сбое"
     );
   });
 

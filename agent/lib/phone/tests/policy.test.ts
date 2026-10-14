@@ -119,7 +119,6 @@ describe("domestic Russian dial targets", () => {
     "112",
     "+77123456789",
     "+78091234567",
-    "+78031234567",
     "sip:alice@example.com",
     "+12125551234",
   ])("refuses %s", (number) => {

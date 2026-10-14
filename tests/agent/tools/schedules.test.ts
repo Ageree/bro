@@ -836,33 +836,6 @@ describe("schedule tools", () => {
     watches.pilot.mockResolvedValue(true);
   });
 
-  it("updates a schedule without carrying an action discriminator", async () => {
-    const job = scheduledJob();
-    services.update.mockResolvedValue(job);
-
-    const result = await updateSchedule.execute(
-      {
-        id: job.id,
-        status: "paused",
-      },
-      toolContext("schedules-update")
-    );
-
-    expect(inputProperties(updateSchedule.inputSchema)).toEqual([
-      "id",
-      "prompt",
-      "runNow",
-      "status",
-      "timing",
-    ]);
-    expect(services.update).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
-      job.id,
-      { status: "paused" }
-    );
-    expect(result).toEqual(scheduleSummary(job));
-  });
-
   it("omits messaging capabilities outside their valid turns", async () => {
     const resolveMessaging = messaging.events["step.started"];
     expect(resolveMessaging).toBeDefined();

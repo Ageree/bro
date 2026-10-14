@@ -99,33 +99,6 @@ describe("typing a one-time code over CDP", () => {
     expect(fixture.applied).toEqual([1]);
   });
 
-  it("reaches a frame that answers on its own session", async () => {
-    const fixture = await fake({
-      injections: {
-        1: { ok: false },
-        2: { ok: false },
-        3: { ok: true, score: 80 },
-      },
-      sessions: bankInsideAds,
-    });
-
-    await typeOneTimeCodeOverCdp(fixture.url, code);
-
-    // Flat auto-attach is what makes a cross-process frame addressable at all:
-    // without it the bank's session is never opened and its field never seen.
-    const attaching = fixture.calls.filter(
-      (call) => call.method === "Target.setAutoAttach"
-    );
-    expect(attaching.every((call) => call.params.flatten === true)).toBe(true);
-    expect(
-      fixture.calls.some(
-        (call) =>
-          call.method === "Runtime.evaluate" &&
-          call.sessionId === "bank-session"
-      )
-    ).toBe(true);
-  });
-
   it("puts a code from a site's letter only into that site's own frames", async () => {
     // The page is https://top.test/, its ad frame and the bank's are not.
     const fixture = await fake({

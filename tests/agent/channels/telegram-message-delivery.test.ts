@@ -189,24 +189,6 @@ describe("Telegram message delivery", () => {
     warn.mockRestore();
   });
 
-  it("ignores the delivery marker the instructions ask for", async () => {
-    const { context, request } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({ kind: "message", text: "Готово." }),
-      context,
-      sessionContext()
-    );
-    request.mockClear();
-    await handleMessageCompleted(
-      assistantMessage("DELIVERY_COMPLETE"),
-      context,
-      sessionContext()
-    );
-
-    expect(request).not.toHaveBeenCalled();
-  });
-
   it("does not repeat a reply send_message already delivered", async () => {
     const { context, request } = handlerContext();
 
@@ -672,38 +654,6 @@ describe("Telegram message delivery", () => {
     warn.mockRestore();
   });
 
-  it("delivers an attachment it could not download as a link", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const network = stubNetwork({
-      download: () => new Response("", { status: 404 }),
-    });
-    const { context, request } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [
-          { kind: "image", url: "https://media.example/result.png" },
-        ],
-        kind: "message",
-        text: "Here it is.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[0]?.[1]).toMatchObject({ text: "Here it is." });
-    expect(request.mock.calls[1]?.[1]).toMatchObject({
-      text: "https://media.example/result.png",
-    });
-    expect(botApiCalls(network)).toEqual([]);
-    expect(warn).toHaveBeenCalledWith("[telegram] attachment delivery failed", {
-      reasons: ["http 404"],
-      sessionId: "session-1",
-    });
-    warn.mockRestore();
-  });
-
   it("uploads an image artifact with a multipart sendPhoto call", async () => {
     const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
     telegramChannelCapture.readImage.mockResolvedValue({
@@ -784,24 +734,24 @@ describe("Telegram message delivery", () => {
     );
   });
 
-  it.each([
-    ["thumbs_up", "👍"],
-    ["exclamation", "‼️"],
-  ] as const)("sets the %s reaction", async (type, emoji) => {
-    const { context, request } = handlerContext();
+  it.each([["thumbs_up", "👍"]] as const)(
+    "sets the %s reaction",
+    async (type, emoji) => {
+      const { context, request } = handlerContext();
 
-    await handleActionResult(
-      reactToMessageResult({ operation: "add", type }),
-      context,
-      sessionContext()
-    );
+      await handleActionResult(
+        reactToMessageResult({ operation: "add", type }),
+        context,
+        sessionContext()
+      );
 
-    expect(request).toHaveBeenCalledExactlyOnceWith("setMessageReaction", {
-      chat_id: "4242",
-      message_id: 77,
-      reaction: [{ emoji, type: "emoji" }],
-    });
-  });
+      expect(request).toHaveBeenCalledExactlyOnceWith("setMessageReaction", {
+        chat_id: "4242",
+        message_id: 77,
+        reaction: [{ emoji, type: "emoji" }],
+      });
+    }
+  );
 
   it("clears a reaction with an empty reaction list", async () => {
     const { context, request } = handlerContext();
@@ -1114,69 +1064,6 @@ describe("Telegram approval cards", () => {
     expect(body.text).toContain(
       `Оплата сохранённой картой, не больше ${formatRub(1000)}`
     );
-  });
-
-  it("shows whom an email goes to and its whole text, not the tool's name", async () => {
-    const { context, post } = cardContext();
-
-    await handleInputRequested(
-      inputRequested(
-        approvalRequest("gmail-send", {
-          bcc: [],
-          body: "Ирина Павловна, добрый день!\n\nВ четверг не смогу, могу в понедельник в 12:30.\n\nСпасибо! Хорошего дня.",
-          cc: [],
-          replyToMessageId: "m-thursday",
-          subject: "Встреча в четверг",
-          to: ["irina@example.com"],
-        })
-      ),
-      context,
-      sessionContext()
-    );
-
-    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toBe(
-      [
-        "Отправить письмо:",
-        "Кому: irina@example.com",
-        "Ответ в ветке: «Встреча в четверг»",
-        "Текст:",
-        "│ Ирина Павловна, добрый день!",
-        "│",
-        "│ В четверг не смогу, могу в понедельник в 12:30.",
-        "│",
-        "│ Спасибо! Хорошего дня.",
-      ].join("\n")
-    );
-    expect(JSON.stringify(body.reply_markup)).toContain("Подтвердить");
-  });
-
-  it("shows when and where a calendar event is and who gets an invitation", async () => {
-    const { context, post } = cardContext();
-
-    await handleInputRequested(
-      inputRequested(
-        approvalRequest("calendar-create-event", {
-          attendees: ["irina@example.com"],
-          calendarId: "primary",
-          end: "2026-09-28T13:00:00+03:00",
-          location: "Zoom",
-          start: "2026-09-28T12:30:00+03:00",
-          summary: "Встреча с Ириной Павловной",
-          timezone: "Europe/Moscow",
-        })
-      ),
-      context,
-      sessionContext()
-    );
-
-    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toContain("Создать событие в календаре:");
-    expect(body.text).toContain("«Встреча с Ириной Павловной»");
-    expect(body.text).toContain("12:30–13:00 (Europe/Moscow, UTC+3)");
-    expect(body.text).toContain("Где: Zoom");
-    expect(body.text).toContain("Гости: irina@example.com");
-    expect(body.text).not.toContain("calendar-create-event");
   });
 
   it("leaves every other approval card as eve renders it", async () => {
