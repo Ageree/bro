@@ -490,6 +490,7 @@
       no-repeat,
     url("/brand/portraits/s11-bro-portrait.webp") right 24px bottom / 200px auto
       no-repeat;
+  background-color: #f4e9d7;
   cursor: pointer;
   text-align: center;
 }
