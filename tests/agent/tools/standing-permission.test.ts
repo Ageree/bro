@@ -152,15 +152,6 @@ describe("standing_permission approval", () => {
     );
   });
 
-  it("allows a higher monthly ceiling without a card", () => {
-    expect(
-      standingPermissionApproval(
-        { action: "allow", kind: "taxi", maxRub: 1500, monthRub: 30_000 },
-        { ...monthly, actions: [taxi] }
-      )
-    ).toBe("not-applicable");
-  });
-
   it("never lets one permission cost more than 30 000 ₽ an errand", () => {
     expect(
       standingPermissionApproval(

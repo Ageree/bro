@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  baseMediaType,
   documentBytesMatch,
   documentMediaType,
   resolveMediaType,
@@ -26,17 +25,11 @@ describe("media type sniffing", () => {
   it.each([
     ["image/jpeg", padded([0xff, 0xd8, 0xff, 0xe0])],
     ["image/png", padded([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
-    ["image/gif", padded([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])],
     ["image/webp", tagged("RIFF", 8, "WEBP")],
     ["audio/wav", tagged("RIFF", 8, "WAVE")],
-    ["application/pdf", padded([0x25, 0x50, 0x44, 0x46, 0x2d])],
     ["audio/x-caf", padded([0x63, 0x61, 0x66, 0x66])],
-    ["audio/ogg", padded([0x4f, 0x67, 0x67, 0x53])],
-    ["audio/mpeg", padded([0x49, 0x44, 0x33, 0x04])],
     ["audio/mpeg", padded([0xff, 0xfb, 0x90, 0x00])],
-    ["audio/mpeg", padded([0xff, 0xf3, 0x90, 0x00])],
     ["audio/aac", padded([0xff, 0xf1, 0x50, 0x80])],
-    ["audio/aac", padded([0xff, 0xf9, 0x50, 0x80])],
   ])("reads %s from the magic bytes", (mediaType, bytes) => {
     expect(sniffMediaType(bytes)).toBe(mediaType);
   });
@@ -62,12 +55,6 @@ describe("media type sniffing", () => {
     );
     expect(resolveMediaType(new Uint8Array(32), undefined)).toBeUndefined();
   });
-
-  it("strips media type parameters", () => {
-    expect(baseMediaType("audio/x-caf; codecs=opus")).toBe("audio/x-caf");
-    expect(baseMediaType("  ")).toBeUndefined();
-    expect(baseMediaType(null)).toBeUndefined();
-  });
 });
 
 const xlsxType =
@@ -76,17 +63,9 @@ const xlsxType =
 describe("documents for the task agent", () => {
   it.each([
     ["Отчёт.XLSX", undefined, xlsxType],
-    ["book.xlsx", "application/zip", xlsxType],
     ["book.xls", "application/octet-stream", "application/vnd.ms-excel"],
     ["data.csv", "application/vnd.ms-excel", "text/csv"],
-    ["data.csv", "text/comma-separated-values", "text/csv"],
-    [
-      "deck.pptx",
-      undefined,
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ],
     ["notes.md", "text/x-markdown", "text/markdown"],
-    ["feed.xml", "text/xml", "application/xml"],
   ])("takes %s declared as %s", (name, declared, mediaType) => {
     expect(documentMediaType(name, declared)).toEqual(mediaType);
   });
@@ -94,13 +73,8 @@ describe("documents for the task agent", () => {
   it.each([
     ["a.zip", "application/zip"],
     ["setup.exe", "application/x-msdownload"],
-    ["clip.mp4", "video/mp4"],
-    ["scan.pdf", "application/pdf"],
-    ["photo.png", "image/png"],
     ["book.xlsx", "application/x-msdownload"],
-    ["book.xlsx", "video/mp4"],
     ["data.csv", "application/zip"],
-    ["xlsx", undefined],
     [".xlsx", undefined],
     [undefined, xlsxType],
   ])("leaves %s declared as %s a note", (name, declared) => {

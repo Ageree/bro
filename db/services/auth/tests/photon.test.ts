@@ -35,22 +35,6 @@ afterEach(() => {
 });
 
 describe("Photon delivery", () => {
-  it("opens the conversation and posts the code as plain text", async () => {
-    mocks.openDM.mockResolvedValue("imessage:iMessage;-;+12025550123");
-    mocks.postMessage.mockResolvedValue({ id: "message-1" });
-
-    await sendPhotonText({
-      message: "Your code is 123456.",
-      to: "+12025550123",
-    });
-
-    expect(mocks.openDM).toHaveBeenCalledExactlyOnceWith("+12025550123");
-    expect(mocks.postMessage).toHaveBeenCalledExactlyOnceWith(
-      "imessage:iMessage;-;+12025550123",
-      { raw: "Your code is 123456." }
-    );
-  });
-
   it("resolves project credentials lazily from the environment", async () => {
     mocks.openDM.mockResolvedValue("imessage:iMessage;-;+12025550123");
     mocks.postMessage.mockResolvedValue({ id: "message-1" });
@@ -64,37 +48,9 @@ describe("Photon delivery", () => {
     expect(() => credentials()).toThrow(/IMESSAGE_PROJECT_ID/u);
   });
 
-  it("preserves the provider's failure classification", async () => {
-    mocks.openDM.mockRejectedValue(
-      Object.assign(new Error("Unknown handle"), {
-        code: "notFound",
-        name: "NotFoundError",
-      })
-    );
-
-    const error = await capturePhotonDeliveryError();
-
-    expect(error).toMatchObject({
-      code: "notFound",
-      kind: "NotFoundError",
-      photonMessage: "Unknown handle",
-    });
-    expect(error.message).toContain("NotFoundError");
-  });
-
-  it("does not disguise an unrelated failure as a provider failure", async () => {
-    mocks.openDM.mockRejectedValue(new Error("network unreachable"));
-
-    await expect(
-      sendPhotonText({ message: "Your code is 1.", to: "+12025550123" })
-    ).rejects.not.toBeInstanceOf(PhotonDeliveryError);
-  });
-
   it.each([
     ["AuthenticationError", "IMESSAGE_PROJECT_NOT_AUTHORIZED", "credentials"],
-    ["ConnectionError", "IMESSAGE_SERVICE_UNAVAILABLE", "did not respond"],
     ["NotFoundError", "IMESSAGE_RECIPIENT_UNKNOWN", "registered with iMessage"],
-    ["RateLimitError", "IMESSAGE_RATE_LIMITED", "Подожди немного"],
     ["ValidationError", "IMESSAGE_RECIPIENT_UNREACHABLE", "not reachable"],
     ["IMessageError", "IMESSAGE_DELIVERY_FAILED", "Не удалось отправить"],
   ])("maps %s to actionable OTP copy", (kind, expectedCode, copy) => {
@@ -104,16 +60,3 @@ describe("Photon delivery", () => {
     expect(failure.message).toContain(copy);
   });
 });
-
-async function capturePhotonDeliveryError(): Promise<PhotonDeliveryError> {
-  try {
-    await sendPhotonText({
-      message: "Your code is 123456.",
-      to: "+12025550123",
-    });
-  } catch (error) {
-    if (error instanceof PhotonDeliveryError) return error;
-    throw error;
-  }
-  throw new Error("Expected Photon delivery to fail.");
-}

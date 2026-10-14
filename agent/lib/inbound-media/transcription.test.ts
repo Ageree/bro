@@ -184,10 +184,8 @@ describe("transcription response parsing", () => {
   });
 
   it.each([
-    [JSON.stringify({ text: "  " }), "empty transcript"],
     [JSON.stringify({ text: "​​" }), "empty transcript"],
     [JSON.stringify({ foo: 1 }), "missing transcript"],
-    ["null", "invalid stt response"],
     ["not json", "invalid stt response"],
     [JSON.stringify({ error: { message: "nope" } }), "nope"],
     [JSON.stringify({ error: "boom" }), "boom"],

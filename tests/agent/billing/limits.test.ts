@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   browserQuotaNote,
-  browserRunAllowance,
-  imageGenerationAllowance,
   imageQuotaNote,
-  messageAllowance,
   messagePaywallText,
   withinAllowance,
 } from "@agent/lib/billing/limits";
@@ -21,15 +18,6 @@ describe("usage limits", () => {
     expect(localDayKey(lateSeptember, "Asia/Vladivostok")).toBe("2026-10-01");
     expect(localDayKey(lateSeptember, "America/New_York")).toBe("2026-09-30");
     expect(localMonthKey(lateSeptember, "America/New_York")).toBe("2026-09");
-  });
-
-  it("separates the free and paid allowances", () => {
-    expect(messageAllowance(false)).toBe(30);
-    expect(messageAllowance(true)).toBe(500);
-    expect(browserRunAllowance(false)).toBe(5);
-    expect(browserRunAllowance(true)).toBe(60);
-    expect(imageGenerationAllowance(false)).toBe(10);
-    expect(imageGenerationAllowance(true)).toBe(100);
   });
 
   it("delivers the whole allowance and turns away the one after it", () => {

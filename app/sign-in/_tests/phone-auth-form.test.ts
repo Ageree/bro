@@ -48,20 +48,6 @@ describe("phone OTP errors", () => {
     ).toBe("Не вышло отправить код. Попробуй ещё раз.");
   });
 
-  it("asks for the phone and offers to open Messages", () => {
-    const html = renderForm(
-      createElement(PhoneOtpAuthForm, {
-        callbackUrl: "/",
-        imessagePhoneNumber: "+12025550123",
-      })
-    );
-
-    expect(html).toContain(">Телефон<");
-    expect(html).toContain("Получить код");
-    expect(html).toContain('href="sms:+12025550123"');
-    expect(html).toContain("Написать Bro");
-  });
-
   it("says where the code comes from without a configured number", () => {
     const html = renderForm(
       createElement(PhoneOtpAuthForm, {

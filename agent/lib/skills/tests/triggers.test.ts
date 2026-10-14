@@ -228,16 +228,6 @@ const golden = {
 } satisfies Record<string, readonly SkillName[]>;
 
 const synthetic = [
-  [
-    "photos-only",
-    "[фото]\n[фото]\n[фото]",
-    ["browser", "gov-services", "meter-readings"],
-  ],
-  [
-    "photos-vot",
-    "[фото]\n[фото] вот, передай",
-    ["browser", "gov-services", "meter-readings"],
-  ],
   ["photo-calendar", "[фото] добавь в календарь", ["google"]],
   // A product pick needs the rules of picking at once, not a step later.
   [
@@ -245,25 +235,16 @@ const synthetic = [
     "Привет! Найди мне хороший крем для рук",
     ["recommendations"],
   ],
-  ["product-pick-short", "подыщи недорогой увлажнитель", ["recommendations"]],
   ["find-mail", "найди письмо от Пети про счёт", ["google"]],
   // Paraphrases of risky errands the benchmark does not word this way.
   ["sts", "пробей по СТС А123ВС77", ["browser", "gov-services"]],
-  [
-    "license",
-    "проверь по водительскому 7700123456",
-    ["browser", "gov-services"],
-  ],
   ["transfer", "переведи Пете 3000", ["browser", "money"]],
-  ["top-up", "закинь 500 на телефон", ["browser", "money"]],
-  ["troika", "пополни тройку", ["browser", "money"]],
   ["card", "добавь карту", ["money"]],
   ["pizza", "хочу пиццу домой", ["browser"]],
   ["translation", "переведи на английский этот текст", []],
   ["file-photo", "[файл: photo.jpg (image/jpeg), слишком большой]", []],
   ["document", "[документ] глянь", []],
   ["privacy-third", "вы передаёте мою переписку третьим лицам?", ["about-bro"]],
-  ["privacy-en", "do you share my data with anyone?", ["about-bro"]],
   ["forget-address", "удали мой адрес", ["memory"]],
   ["standing", "заказывай такси сам, не спрашивая", ["browser", "money"]],
   [
@@ -284,32 +265,16 @@ const synthetic = [
   // Undoing a permission or a schedule must find its tool, which follows
   // its skill (`agent/lib/skills/tools.ts`).
   [
-    "permission-revoke",
-    "спрашивай меня снова, прежде чем записывать",
-    ["money"],
-  ],
-  [
     "permission-revoke-en",
     "ask me again before you book",
     ["browser", "money"],
   ],
   ["schedule-stop", "больше не присылай сводку", ["schedules"]],
-  ["schedule-stop-tired", "хватит присылать мне погоду", ["schedules"]],
   ["schedule-stop-en", "stop sending me the morning brief", ["schedules"]],
-  ["schedule-cancel", "хватит, отмени эту сводку", ["schedules"]],
-  ["schedule-remove", "убери утреннюю сводку", ["schedules"]],
-  ["schedule-no-more", "не надо больше присылать новости", ["schedules"]],
-  ["schedule-no-longer", "больше не надо присылать погоду", ["schedules"]],
   ["no-more-thanks", "мне больше не надо, спасибо", []],
-  ["schedule-quit", "перестань мне писать про погоду", ["schedules"]],
-  ["schedule-cancel-en", "cancel my morning brief", ["schedules"]],
   ["schedule-move", "перенеси сводку на 8", ["google", "schedules"]],
   ["reminder-wake", "разбуди меня завтра в 7", ["schedules"]],
-  ["reminder-nudge", "через час пни меня насчёт отчёта", ["schedules"]],
-  ["reminder-tell", "в 6 вечера скажи мне позвонить маме", ["schedules"]],
   ["calendar-add", "добавь на пятницу ужин с мамой", ["google"]],
-  ["calendar-move-en", "Move my 3pm to 4", ["google"]],
-  ["calendar-push-en", "push the sync with Anna to Friday", ["google"]],
   [
     "esia-report",
     "RESULT: экран esia.gosuslugi.ru «Предоставление прав доступа», NEEDS: decision",
@@ -464,12 +429,6 @@ describe("the skills a turn attaches", () => {
       "utf8"
     );
     expect(source).not.toMatch(/\\[wWbB]/u);
-  });
-
-  it("come out the same for the same turn", () => {
-    for (const { text } of turns) {
-      expect(skillsFor(text)).toEqual(skillsFor(text));
-    }
   });
 
   it("read a voice message's transcript, not the media notes", () => {

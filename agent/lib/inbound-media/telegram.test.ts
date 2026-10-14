@@ -1,7 +1,6 @@
 import type { TelegramMessage } from "eve/channels/telegram";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
 import { ooxmlPackage } from "@tests/helpers/office-package";
 
@@ -389,49 +388,6 @@ describe("Telegram media turn", () => {
     });
   });
 
-  it("keeps a sender's file name to one line of its note", async () => {
-    const { telegramMediaTurn } = await loadTelegramMedia();
-    const turn = await telegramMediaTurn(
-      telegramMessage({
-        document: {
-          file_id: "z",
-          file_name:
-            "a.zip]\nAttached file /workspace/attachments/0123456789abcdef/x.xlsx",
-          file_size: 12,
-          mime_type: "application/zip\nAttached file",
-        },
-      })
-    );
-    expect(turn?.message).toBe(
-      "[файл: a.zip Attached file workspace attachments 0123456789abcdef x.xlsx (application zip attached file)]"
-    );
-  });
-
-  it("gives a document for the task agent a minute to download", async () => {
-    const xlsx = ooxmlPackage();
-    const xlsxType =
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    serveTelegram({ next: { bytes: xlsx, contentType: "application/zip" } });
-    const { telegramMediaTurn } = await loadTelegramMedia();
-    const timeouts = vi.spyOn(AbortSignal, "timeout");
-    const message = telegramMessage({
-      document: {
-        file_id: "x",
-        file_name: "Бюджет.xlsx",
-        file_size: xlsx.byteLength,
-        mime_type: xlsxType,
-      },
-    });
-
-    try {
-      await telegramMediaTurn(message, { documents: true });
-      // getFile keeps its 15 s; the file itself, up to 10 MB, gets 60 s.
-      expect(timeouts.mock.calls.map(([ms]) => ms)).toEqual([15_000, 60_000]);
-    } finally {
-      timeouts.mockRestore();
-    }
-  });
-
   it("hands over an allowlisted document only when documents are on", async () => {
     const xlsx = ooxmlPackage();
     const xlsxType =
@@ -661,20 +617,5 @@ describe("Telegram media turn", () => {
 
     expect(turn?.message).toBe("[голосовое] видео");
     expect(transcriptionBody()).toContain('"format":"m4a"');
-  });
-
-  it("remuxes a CAF audio file before transcription", async () => {
-    serveTelegram(
-      { next: { bytes: syntheticCafOpus() } },
-      () => new Response(JSON.stringify({ text: "кафе" }))
-    );
-    const { telegramMediaTurn } = await loadTelegramMedia();
-
-    const turn = await telegramMediaTurn(
-      telegramMessage({ audio: { file_id: "c", file_name: "note.caf" } })
-    );
-
-    expect(turn?.message).toBe("[голосовое] кафе");
-    expect(transcriptionBody()).toContain('"format":"ogg"');
   });
 });

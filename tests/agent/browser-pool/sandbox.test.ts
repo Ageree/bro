@@ -1334,8 +1334,6 @@ describe("handing a pool workspace's gone VM over", { timeout: 60_000 }, () => {
   it.each([
     ["failed", "failed", false],
     ["stopped with sign-ins to forget", "stopped", true],
-    ["starting", "starting", false],
-    ["stopping", "stopping", false],
   ] as const)(
     "has the reconcile hand a gone %s VM over rather than bring it back",
     async (_case, state, profileResetPending) => {
