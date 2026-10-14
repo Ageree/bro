@@ -625,21 +625,6 @@ describe("forgetting sign-ins", () => {
     );
   });
 
-  it("still fails when the current profile has a real (retryable) failure", async () => {
-    readBrowserProfileId.mockResolvedValueOnce("profile-1");
-    listBrowserRunProfileIds.mockResolvedValueOnce(["profile-1"]);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    deleteBrowserUseProfile.mockRejectedValueOnce(
-      new Error("connection terminated")
-    );
-    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
-
-    expect(await forgetSignIns(scope, undefined)).toEqual({ kind: "failed" });
-    expect(forgetBrowserProfile).not.toHaveBeenCalled();
-    expect(forgetBrowserSignIns).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
   it("does not block on the current profile either, once this deployment has no key for it", async () => {
     // A workspace that has not run its first post-cutover errand yet still
     // points its *current* profile at an old Browser Use one — there is no

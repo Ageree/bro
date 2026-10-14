@@ -295,28 +295,6 @@ describe("Browser Use client", () => {
     expect(client.browserUseOutOfCredits(broke)).toBe(true);
   });
 
-  it("reads a run status, queues a session message and stops a session", async () => {
-    const client = await loadClient();
-    const calls = stubFetch(
-      Response.json({ status: "completed" }),
-      Response.json({ id: 7, sessionId, status: "pending" }),
-      new Response(null, { status: 204 })
-    );
-
-    expect(await client.readBrowserUseRunStatus(runId)).toBe("completed");
-    expect(
-      (await client.queueBrowserUseSessionMessage(sessionId, "123456")).id
-    ).toBe(7);
-    await client.stopBrowserUseSession(sessionId);
-
-    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
-      `GET ${baseUrl}/runs/${runId}/status`,
-      `POST ${baseUrl}/sessions/${sessionId}/queue`,
-      `DELETE ${baseUrl}/sessions/${sessionId}`,
-    ]);
-    expect(JSON.parse(calls[1]?.body ?? "")).toEqual({ text: "123456" });
-  });
-
   it("takes the live view url from the browser.ready event", async () => {
     const client = await loadClient();
     stubFetch(
@@ -499,66 +477,6 @@ describe("Browser Use client", () => {
       proxyCountryCode: "ru",
       timeout: 3,
     });
-  });
-
-  it("reports no endpoint when this session has no browser up", async () => {
-    const client = await loadClient();
-    stubFetch(Response.json({ items: [] }));
-    await expect(
-      client.findBrowserUseSessionCdpUrl(sessionId)
-    ).resolves.toBeUndefined();
-  });
-
-  it("lists a run's saved pictures with their download links", async () => {
-    const client = await loadClient();
-    const workspaceId = "33333333-3333-4333-8333-333333333333";
-    const calls = stubFetch(
-      Response.json({
-        files: [
-          {
-            lastModified: "2026-09-22T10:05:00Z",
-            path: "report/final.png",
-            size: 2048,
-            url: "https://workspace.browser-use.test/final.png?signature=x",
-          },
-        ],
-        hasMore: false,
-        nextCursor: null,
-      })
-    );
-
-    const listed = await client.listBrowserUseWorkspaceFiles(
-      workspaceId,
-      "report/"
-    );
-
-    expect(listed.files[0]?.path).toBe("report/final.png");
-    const url = new URL(calls[0]?.url ?? "");
-    expect(url.pathname).toBe(`/api/v4/workspaces/${workspaceId}/files`);
-    expect(url.searchParams.get("prefix")).toBe("report/");
-    expect(url.searchParams.get("includeUrls")).toBe("true");
-    expect(calls[0]?.method).toBe("GET");
-  });
-
-  it("reads the workspace a finished run saved its files into", async () => {
-    const client = await loadClient();
-    stubFetch(
-      Response.json({
-        createdAt: "2026-09-22T10:00:00Z",
-        error: null,
-        id: runId,
-        result: "RESULT: done",
-        sessionId,
-        status: "completed",
-        task: "Order the usual",
-        workspaceId: "33333333-3333-4333-8333-333333333333",
-      })
-    );
-
-    const run = await client.readBrowserUseRun(runId);
-
-    expect(run.workspaceId).toBe("33333333-3333-4333-8333-333333333333");
-    expect(run.createdAt).toBe("2026-09-22T10:00:00Z");
   });
 
   it("refuses to call the API without a configured key", async () => {

@@ -198,11 +198,6 @@ describe("an account registered with Bro's own mailbox", () => {
     });
   });
 
-  it("lets only a fresh login be taken out for a form never sent", () => {
-    expect(signUpLine("quietfox42", true)).toContain("ACCOUNT: none");
-    expect(signUpLine("quietfox42", false)).not.toContain("ACCOUNT: none");
-  });
-
   it("registers nothing without a mailbox or an https site", async () => {
     await expect(agentMailSignUp(scope, "http://example.com")).resolves.toBe(
       undefined

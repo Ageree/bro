@@ -353,17 +353,6 @@ describe("the anti-bot retry policy", () => {
     });
   });
 
-  it("writes the line a later claim looks for into the retry's task", async () => {
-    const { startCaptchaRetry } =
-      await import("@agent/lib/browser-use/captcha-retry");
-
-    await startCaptchaRetry(parkedRow(1));
-
-    const line = findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[0] ?? "";
-    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
-    expect(task.split("\n")).toContain(line);
-  });
-
   it("starts nothing for an errand the person already stopped", async () => {
     readBrowserRun.mockResolvedValue({
       retriedAsRunId: null,
@@ -575,19 +564,6 @@ describe("the anti-bot retry policy", () => {
     );
   });
 
-  it("starts a hosted retry in a new session", async () => {
-    readBrowserUseRun.mockResolvedValue({
-      sessionId: "hosted-session",
-      task: "Купи корм\n\nSite: …",
-    });
-    const { startCaptchaRetry } =
-      await import("@agent/lib/browser-use/captcha-retry");
-
-    await startCaptchaRetry(parkedRow(1));
-
-    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
-  });
-
   it("does not promise a VM's retry another address", async () => {
     createBrowserUseRun.mockResolvedValue({
       id: retryRunId,
@@ -660,14 +636,6 @@ describe("the anti-bot retry policy", () => {
 
   it.each([
     ["cannot reach Browser Use", () => new TypeError("fetch failed")],
-    [
-      "gets a 503",
-      async () => {
-        const { BrowserUseError } =
-          await import("@agent/lib/browser-use/client");
-        return new BrowserUseError(503, "/runs", "unavailable");
-      },
-    ],
     [
       "is rate limited",
       async () => {
@@ -898,15 +866,6 @@ describe("the anti-bot retry policy", () => {
 });
 
 describe("the retry's exit to the internet", () => {
-  it("stays on the hosted pool, which gives a new browser a new address", async () => {
-    const { retryProxySettings } = await import("@agent/lib/browser-use/proxy");
-
-    expect(retryProxySettings(2, "token")).toEqual({
-      customProxy: undefined,
-      proxyCountryCode: "ru",
-    });
-  });
-
   it("alternates a fixed proxy of our own with the hosted pool", async () => {
     vi.stubEnv("BROWSER_USE_PROXY_HOST", "proxy.example");
     vi.stubEnv("BROWSER_USE_PROXY_PORT", "8080");

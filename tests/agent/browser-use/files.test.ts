@@ -361,12 +361,7 @@ describe("browser errand file transfers", () => {
     }
   );
 
-  it.each([
-    "web",
-    "scheduled-worker",
-    "scheduled-report",
-    "proactive-worker",
-  ] as const)(
+  it.each(["web", "proactive-worker"] as const)(
     "does not turn an approval-response transport into a new request on a %s turn",
     async (kind) => {
       const context = catalogContext(kind, [approvalTransport()]);

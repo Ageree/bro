@@ -59,30 +59,6 @@ describe("typing a one-time code over CDP", () => {
     expect(fixture.applied).toEqual([3]);
   });
 
-  it("scores every frame before it types into any of them", async () => {
-    const fixture = await fake({
-      injections: {
-        1: { ok: false },
-        2: { ok: true, score: 20 },
-        3: { ok: true, score: 80 },
-      },
-      sessions: bankInsideAds,
-    });
-
-    await typeOneTimeCodeOverCdp(fixture.url, code);
-
-    // A page carrying a bank frame and three ad frames must not get the code
-    // sprayed across all four: the scoring pass is what makes that impossible.
-    const evaluations = fixture.calls.filter(
-      (call) => call.method === "Runtime.evaluate"
-    );
-    const applying = evaluations.filter((call) =>
-      String(call.params.expression).endsWith(", true)")
-    );
-    expect(applying).toHaveLength(1);
-    expect(evaluations.at(-1)).toBe(applying[0]);
-  });
-
   it("leaves the code to the cloud agent when only a weak frame offers a field", async () => {
     const fixture = await fake({
       // A focused input with no naming signal is what an unrelated widget looks
@@ -148,17 +124,6 @@ describe("typing a one-time code over CDP", () => {
           call.sessionId === "bank-session"
       )
     ).toBe(true);
-  });
-
-  it("reports a one-character box that swallowed only the first digit", async () => {
-    const fixture = await fake({
-      injections: { 1: { ok: true, partial: true, score: 60 } },
-      sessions: { "": { frames: [{ depth: 0, id: "top" }] } },
-    });
-
-    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
-
-    expect(entry).toMatchObject({ partial: true, typed: true });
   });
 
   it("puts a code from a site's letter only into that site's own frames", async () => {

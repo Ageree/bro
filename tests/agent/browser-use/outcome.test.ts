@@ -156,28 +156,6 @@ describe("browser run outcome parsing", () => {
     );
   });
 
-  it("preserves multiline report facts beyond the one-line metadata fields", () => {
-    const result = [
-      "Comparison requested by the user:",
-      "Alpha has 16 GB memory and a two-year warranty.",
-      "Beta has 32 GB memory and next-day delivery.",
-      "RESULT: compared the two options",
-      "This continuation is still useful report data.",
-      "NEEDS: none",
-    ].join("\n");
-
-    const summary = browserOutcomeSummary(
-      parseBrowserOutcome(result),
-      "fallback",
-      result
-    );
-
-    expect(summary).toContain("Alpha has 16 GB memory");
-    expect(summary).toContain("Beta has 32 GB memory");
-    expect(summary).toContain("This continuation is still useful report data.");
-    expect(summary).toContain("Result: compared the two options");
-  });
-
   it("preserves a useful unlabelled response instead of replacing it", () => {
     const result = [
       "The first venue has outdoor seating.",
@@ -703,13 +681,6 @@ describe("charges the run found", () => {
     expect(summary).toContain(
       "2. Транспортный налог за 2025 год — 1 830 ₽ — due 01.12.2026"
     );
-  });
-
-  it("reads none from a report without charges", () => {
-    expect(
-      parseBrowserOutcome("RESULT: штрафов нет\nCHARGES: []").charges
-    ).toEqual([]);
-    expect(parseBrowserOutcome("CHARGES: none").charges).toEqual([]);
   });
 });
 

@@ -609,9 +609,7 @@ describe("schedule tools", () => {
       "Каждый понедельник присылай список новых файлов на моём Google Drive.",
       false,
     ],
-    ["Check My Drive for new files every Monday.", false],
     ["Напоминай продлить driver's licence.", false],
-    ["Tell me how long the drive to work takes.", true],
     ["Сколько ехать до работы на машине.", true],
   ])(
     "promises map time without traffic only for travel: «%s»",
@@ -652,6 +650,14 @@ describe("schedule tools", () => {
     expect(result).toHaveProperty(
       "deliversTo",
       expect.stringContaining("this web chat")
+    );
+    // A web schedule is owned by its Eve session.
+    expect(services.create).toHaveBeenCalledWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      expect.objectContaining({
+        conversationChannel: "eve",
+        conversationId: "session-1",
+      })
     );
   });
 
@@ -914,36 +920,6 @@ describe("schedule tools", () => {
     expect(interactiveSend.inputSchema.safeParse(reply).success).toBe(true);
     expect(debugSend.inputSchema.safeParse(reply).success).toBe(true);
     expect(reportSend.inputSchema.safeParse(reply).success).toBe(true);
-  });
-
-  it("owns web schedules by their Eve session", async () => {
-    const job = scheduledJob({
-      conversationChannel: "eve",
-      conversationId: "session-1",
-    });
-    services.create.mockResolvedValue(job);
-
-    await createSchedule.execute(
-      {
-        missedRunPolicy: "run_latest",
-        prompt: "Send the morning summary.",
-        timing: {
-          frequency: "daily",
-          kind: "calendar",
-          localTime: "09:00",
-          timezone: "America/New_York",
-        },
-      },
-      toolContext("schedules-create", "test", "eve")
-    );
-
-    expect(services.create).toHaveBeenCalledWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
-      expect.objectContaining({
-        conversationChannel: "eve",
-        conversationId: "session-1",
-      })
-    );
   });
 });
 

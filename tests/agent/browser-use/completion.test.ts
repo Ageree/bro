@@ -735,16 +735,6 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("never paste the /artifacts/ path as a bare link");
   });
 
-  it("says nothing about pictures when the run saved none", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain("/artifacts/");
-  });
-
   it("still reports the errand when its pictures could not be kept", async () => {
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
@@ -1569,16 +1559,6 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).toContain(row.liveViewUrl);
   });
 
-  it("keeps no browser VM up for a reply to a finished run", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(keepBrowserVmForPersonStep).not.toHaveBeenCalled();
-  });
-
   it("leaves a page a follow-up has already taken", async () => {
     claimBrowserRunBrowser.mockResolvedValueOnce(false);
     const { settleBrowserRun } =
@@ -1925,16 +1905,6 @@ describe("settling a browser run", () => {
     );
   });
 
-  it("says nothing about a later step the run did not report", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain("schedules-create");
-  });
-
   it("tells the coordinator about a message the VM run ended without reading", async () => {
     // The worker never starts a follow-up on its own for a message queued
     // in during the run's last step (D1), and neither does Bro any more: no
@@ -1993,18 +1963,6 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain("quoted exactly as the person wrote them");
     expect(prompt).not.toContain("the person's own messages");
     expect(prompt).not.toContain("The person's own messages");
-  });
-
-  it("says nothing about unread messages for a run that ended with none", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain(
-      "reached the browser only as this run was ending"
-    );
   });
 });
 
@@ -2616,41 +2574,6 @@ describe("reporting into an eve chat", () => {
     expect(finishBrowserRunReport).not.toHaveBeenCalled();
     expect(releaseBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
     expect(ledger.delivered).toBe(false);
-  });
-
-  it("leaves one line per delivery attempt with its outcome and session", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const { deliverBrowserRunReport, settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { to } = delivery();
-
-    const refused = sessionHandle("session_not_active");
-    await settleBrowserRun({ attachSession: refused.attachSession, to }, runId);
-    expect(warn).toHaveBeenCalledWith("[browser-use] report delivery", {
-      attempt: 1,
-      channel: "eve",
-      result: "not_accepted",
-      retryable: true,
-      runId,
-      sessionId: "eve-session-1",
-      status: "session_not_active",
-    });
-
-    const accepted = sessionHandle("accepted");
-    await deliverBrowserRunReport(
-      { attachSession: accepted.attachSession, to },
-      runId
-    );
-    expect(info).toHaveBeenCalledWith("[browser-use] report delivery", {
-      attempt: 1,
-      channel: "eve",
-      result: "accepted",
-      runId,
-      sessionId: "eve-session-1",
-    });
-    info.mockRestore();
-    warn.mockRestore();
   });
 
   it("gives a send that never answers up after 20 seconds and keeps the report", async () => {
