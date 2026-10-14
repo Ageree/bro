@@ -2,7 +2,7 @@ import { defineDynamic } from "eve/instructions";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { resolveModeInstructions } from "@agent/lib/mode";
 import { instructionText } from "@agent/lib/skills/catalog";
-import { skillsLayout } from "@agent/lib/skills/pilot";
+import { autonomyPilot, skillsLayout } from "@agent/lib/skills/pilot";
 
 export default defineDynamic({
   events: {
@@ -16,7 +16,7 @@ export default defineDynamic({
         interactive: [
           instructionText("meter-readings", layout),
           browserUseConfigured()
-            ? instructionText("public-services", layout)
+            ? instructionText("public-services", layout, autonomyPilot(context))
             : undefined,
         ]
           .filter((part) => part !== undefined && part.trim().length > 0)

@@ -4,7 +4,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { instructionText } from "@agent/lib/skills/catalog";
-import { skillsLayout } from "@agent/lib/skills/pilot";
+import { autonomyPilot, skillsLayout } from "@agent/lib/skills/pilot";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { localMonthKey } from "@shared/calendar/local-period";
@@ -137,11 +137,11 @@ export default defineDynamic({
       const layout = skillsLayout(context);
       const acting = backgroundActionsOfCaller(context);
       const followThroughRules = resolveModeValue(context, {
-        interactive: instructionText("follow-through", layout, acting),
+        interactive: instructionText("follow-through", layout, false, acting),
       });
       return defineInstructions({
         content: [
-          instructionText("autonomy", layout, acting),
+          instructionText("autonomy", layout, autonomyPilot(context), acting),
           followThroughRules,
           limit,
         ]

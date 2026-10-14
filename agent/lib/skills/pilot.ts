@@ -1,5 +1,6 @@
 import type { DynamicResolveContext } from "eve";
 import { z } from "zod";
+import { errandAutonomyPilot } from "@agent/lib/browser-use/autonomy";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
@@ -58,21 +59,34 @@ export function skillsLayout(context: SkillsContext): InstructionLayout {
 }
 
 /**
+ * Whether the turn's workspace is in the autonomy pilot
+ * (ERRAND_AUTONOMY_WORKSPACES), whose instructions and skill bodies read
+ * with its edits (`autonomyEdits`) in every kind of turn.
+ */
+export function autonomyPilot(context: SkillsContext) {
+  return errandAutonomyPilot(callerWorkspace(context));
+}
+
+/**
  * What this turn can do, and so which skills exist for it: the browser,
  * drawing and the person's files as the instructions check them
- * (`40-browser.ts`, `60-creative.ts`, `66-task-files.ts`). Without the files
- * the setup has no `taskFiles` at all, so it reads as before them.
+ * (`40-browser.ts`, `60-creative.ts`, `66-task-files.ts`), and how the
+ * autonomy pilot reads them. Without the files or the pilot the setup has
+ * no `taskFiles` or `autonomy` at all, so it reads as before them.
  */
 export function skillSetup(context: SkillsContext): SkillSetup {
-  const setup = {
+  const setup: SkillSetup = {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
   };
-  const withFiles = taskFilesOfCaller(context)
+  const withFiles: SkillSetup = taskFilesOfCaller(context)
     ? { ...setup, taskFiles: true }
     : setup;
+  const withAutonomy: SkillSetup = autonomyPilot(context)
+    ? { ...withFiles, autonomy: true }
+    : withFiles;
   // Without the pilot of schedules that act the setup reads as before it.
   return backgroundActionsOfCaller(context)
-    ? { ...withFiles, backgroundActions: true }
-    : withFiles;
+    ? { ...withAutonomy, backgroundActions: true }
+    : withAutonomy;
 }

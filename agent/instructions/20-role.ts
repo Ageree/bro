@@ -19,6 +19,7 @@ export default defineDynamic({
         interactive: instructionText(
           "role/interactive",
           skillsLayout(context),
+          false,
           acting
         ),
         "agentic-worker": agenticWorkerInstructions,

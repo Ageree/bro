@@ -65,6 +65,7 @@ import {
   laterStepInstruction,
   placedOrderInstruction,
 } from "./guidance";
+import { errandAutonomyPilot } from "./autonomy";
 import { gosuslugiFallback } from "./public-services";
 import { siteHostMissing, siteHostname } from "./host";
 import {
@@ -884,7 +885,11 @@ function browserRunReport(
     row.submission === null &&
     !row.paymentAllowed &&
     (options.failed === true || needs === "captcha" || needs === "password")
-      ? gosuslugiFallback(row.site, row.task)
+      ? gosuslugiFallback(
+          row.site,
+          row.task,
+          errandAutonomyPilot(row.workspaceId)
+        )
       : undefined;
   return [
     // The web chat shows every user message of its session, and this one is

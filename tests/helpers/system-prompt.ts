@@ -93,6 +93,7 @@ export function stubDeployment(environment: Record<string, string>) {
     ...Object.keys(fullDeployment),
     ...Object.keys(taskAgentDeployment),
     "BACKGROUND_ACTIONS_WORKSPACES",
+    "ERRAND_AUTONOMY_WORKSPACES",
     "SKILLS_WORKSPACES",
     "SUBSCRIPTIONS_WORKSPACES",
     "TASK_FILES_WORKSPACES",
