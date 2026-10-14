@@ -185,7 +185,10 @@ describe("privacy", () => {
     expect(processors).toContain(
       "языковая модель deepseek/deepseek-v4.1-flash: запрос идёт через RouterAI"
     );
-    expect(processors).toContain("веб-поиска RouterAI передаёт поисковикам");
+    // Composio is configured in tests, so search goes to Instant first.
+    expect(processors).toContain(
+      "через Composio к поисковикам TinyFish и Tavily, а если те не ответили — через RouterAI к поисковикам Exa и Perplexity"
+    );
     expect(processors).not.toContain("OpenRouter");
     expect(processors).not.toContain("Vercel AI Gateway");
   });

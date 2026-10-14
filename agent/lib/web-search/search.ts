@@ -6,6 +6,14 @@ import {
   reportedErrorSchema,
 } from "@agent/lib/model/routerai/errors";
 import { routerAiFetchOnce } from "@agent/lib/model/routerai/fetch";
+import {
+  type InstantEngine,
+  instantEngines,
+  InstantSearchError,
+  instantSearchEnabled,
+  searchInstant,
+} from "@agent/lib/web-search/instant";
+import { ComposioError } from "@shared/composio/api";
 import { env } from "@shared/environment";
 
 /**
@@ -21,6 +29,8 @@ const retryDelayMs = 500;
  * about 1.08 ₽ each on 01.10, so it asks for ROUTERAI_SEARCH_MAX_RESULTS.
  */
 const openRouterMaxResults = 8;
+/** Instant's engines bill by the search, not the page. */
+const instantMaxResults = 8;
 /** Enough of a page excerpt to carry a price, an average bill, hours or an address. */
 const maxSnippetCharacters = 500;
 const maxSites = 5;
@@ -131,23 +141,86 @@ export class WebSearchError extends Error {
 type SearchEndpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
 
 /**
- * Runs one web search through the `web` plugin of the direct model backend
- * (RouterAI or OpenRouter) and returns the pages it found. A timeout, a
- * throttle, a gateway failure or an empty answer hands the query to the
- * fallback engine after a short pause, and its failure is the one thrown.
- * Nothing is retried once `signal` aborts the turn.
+ * Runs one web search and returns the pages it found: on Composio Instant's
+ * engines first (`instant.ts`), each failure or empty answer handing the
+ * query to the next, then through the `web` plugin of the direct model
+ * backend (RouterAI or OpenRouter). Nothing is retried once `signal` aborts
+ * the turn.
  */
 export async function searchWeb(
   input: WebSearchInput,
   signal: AbortSignal
 ): Promise<readonly WebSearchResult[]> {
   const endpoint = modelEndpoint();
+  if (instantSearchEnabled()) {
+    for (const engine of instantEngines) {
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The next engine only when this one failed.
+        return await searchOnInstant(input, engine, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // The engine's limit or outage, for the log; the query stays out.
+        console.warn("[web_search] Instant engine failed", {
+          engine,
+          reason: instantFailure(error),
+        });
+      }
+    }
+  }
   if (!endpoint) {
     throw new Error(
       "Web search needs a direct model backend: set ROUTERAI_API_KEY or OPENROUTER_API_KEY."
     );
   }
+  return await searchOnModelBackend(input, endpoint, signal);
+}
 
+async function searchOnInstant(
+  input: WebSearchInput,
+  engine: InstantEngine,
+  signal: AbortSignal
+) {
+  // Instant's engines take domains; a path such as `yandex.ru/maps` widens
+  // to its site.
+  const domains = [
+    ...new Set(
+      siteFilter(input.sites).flatMap((site) => {
+        const domain = site.split("/")[0];
+        return domain ? [domain] : [];
+      })
+    ),
+  ];
+  const pages = await searchInstant(
+    engine,
+    input.query,
+    domains,
+    instantMaxResults,
+    signal
+  );
+  const results = pagesToResults(pages, instantMaxResults);
+  if (results.length === 0) {
+    throw new InstantSearchError(`${engine} returned no usable page`);
+  }
+  return results;
+}
+
+function instantFailure(cause: unknown) {
+  if (cause instanceof ComposioError) {
+    return `Composio ${String(cause.status)} ${cause.slug ?? ""}`.trim();
+  }
+  return cause instanceof Error ? `${cause.name}: ${cause.message}` : "unknown";
+}
+
+/**
+ * Through the `web` plugin of the direct model backend: a timeout, a
+ * throttle, a gateway failure or an empty answer hands the query to the
+ * fallback engine after a short pause, and its failure is the one thrown.
+ */
+async function searchOnModelBackend(
+  input: WebSearchInput,
+  endpoint: SearchEndpoint,
+  signal: AbortSignal
+) {
   try {
     return await searchOnce(input, primaryEngine, endpoint, signal);
   } catch (error) {
@@ -287,18 +360,32 @@ function readResults(
   limit: number
 ): readonly WebSearchResult[] {
   const message = completion.choices?.[0]?.message;
+  const citations = (message?.annotations ?? []).flatMap((annotation) =>
+    annotation.type === "url_citation" && annotation.url_citation
+      ? [annotation.url_citation]
+      : []
+  );
+  return pagesToResults(citations, limit);
+}
+
+/** Pages with a valid URL, each once, their excerpts cleaned. */
+function pagesToResults(
+  pages: readonly {
+    readonly content?: string | undefined;
+    readonly title?: string | undefined;
+    readonly url: string;
+  }[],
+  limit: number
+): readonly WebSearchResult[] {
   const seen = new Set<string>();
   const results: WebSearchResult[] = [];
-  for (const annotation of message?.annotations ?? []) {
-    const citation =
-      annotation.type === "url_citation" ? annotation.url_citation : undefined;
-    if (!citation) continue;
-    const url = z.url().safeParse(citation.url.trim());
+  for (const page of pages) {
+    const url = z.url().safeParse(page.url.trim());
     if (!url.success || seen.has(url.data)) continue;
     seen.add(url.data);
     results.push({
-      snippet: excerpt(citation.content ?? ""),
-      title: oneLine(citation.title ?? "") || url.data,
+      snippet: excerpt(page.content ?? ""),
+      title: oneLine(page.title ?? "") || url.data,
       url: url.data,
     });
     if (results.length === limit) break;

@@ -82,11 +82,13 @@ export default function Page() {
           <li>
             RouterAI — языковые модели, которые отвечают на ваши сообщения; для
             моделей DeepSeek запросы обрабатывают хосты DeepInfra и RunInfra.
-            Через RouterAI идёт и веб-поиск (поисковики Exa и Perplexity).
+            Через RouterAI идёт и запасной веб-поиск (поисковики Exa и
+            Perplexity).
           </li>
           <li>
             Composio — подключение Google и других приложений, хранение ключей
-            доступа к ним.
+            доступа к ним, а также веб-поиск: текст запроса уходит поисковикам
+            TinyFish и Tavily.
           </li>
           <li>
             МТС Exolve и ElevenLabs — звонки Бро, если вы их включили; записи и

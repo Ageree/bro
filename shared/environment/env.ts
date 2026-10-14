@@ -879,6 +879,10 @@ export const env = createEnv({
       .max(10, "ROUTERAI_SEARCH_MAX_RESULTS must be at most 10")
       .default(5),
     ROUTERAI_SEARCH_MODEL: trimmedValue.optional(),
+    // With COMPOSIO_API_KEY, `web_search` asks Composio Instant's engines
+    // (TinyFish, then Tavily) before RouterAI's; "off" goes straight to
+    // RouterAI (`agent/lib/web-search/instant.ts`).
+    WEB_SEARCH_INSTANT: z.enum(["on", "off"]).default("on"),
     // Voice notes go to RouterAI's `/audio/transcriptions`; the fallback
     // model takes over when the first one rejects the clip, and the language
     // is an ISO 639-1 hint, `auto` lets the model guess.

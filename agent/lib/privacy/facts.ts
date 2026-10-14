@@ -4,6 +4,7 @@ import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
 import { memoryDigestModelId } from "@agent/lib/memory/digest/classifier";
 import { supermemoryConfigured } from "@agent/lib/memory/supermemory";
 import { taskFilesDeployed } from "@agent/lib/sandbox/pilot";
+import { instantSearchEnabled } from "@agent/lib/web-search/instant";
 import { yooKassaConfigured } from "@db/services/yookassa";
 import { composioConfigured } from "@shared/composio/api";
 import { env } from "@shared/environment";
@@ -86,7 +87,7 @@ export function dataProcessors(
         ]
       : []),
     direct !== undefined
-      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает${direct === "RouterAI" && modelId.startsWith("deepseek/") ? " (для моделей DeepSeek — хост DeepInfra)" : ""}. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${direct} передаёт поисковикам Exa и Perplexity.`
+      ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает${direct === "RouterAI" && modelId.startsWith("deepseek/") ? " (для моделей DeepSeek — хост DeepInfra)" : ""}. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${instantSearchEnabled() ? `идут через Composio к поисковикам TinyFish и Tavily, а если те не ответили — через ${direct} к поисковикам Exa и Perplexity` : `${direct} передаёт поисковикам Exa и Perplexity`}.`
       : `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через Vercel AI Gateway к её провайдеру.`,
     ...(direct === "RouterAI" && env.RUNINFRA_API_KEY !== undefined
       ? [

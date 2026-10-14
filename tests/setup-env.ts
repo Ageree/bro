@@ -127,6 +127,7 @@ const unsetEnvironment = [
   "TASK_AGENT_MODEL",
   "TASK_FILES_WORKSPACES",
   "TELEGRAM_OWNER_CHAT_ID",
+  "WEB_SEARCH_INSTANT",
 ];
 
 for (const [name, value] of Object.entries(testEnvironment)) {

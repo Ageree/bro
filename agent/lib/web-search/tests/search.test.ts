@@ -7,6 +7,8 @@ const requiredEnvironment = {
   DATABASE_URL: "postgresql://user:password@example.com/database",
   OPENROUTER_API_KEY: "openrouter-test-key",
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+  // The model backend's own search; Composio Instant has its own cases.
+  WEB_SEARCH_INSTANT: "off",
 };
 
 /** The request shape this client is expected to send to either backend. */
@@ -502,5 +504,155 @@ describe("RouterAI web search", () => {
       await failureOf(searchWeb({ query: "rates" }, turnSignal()))
     ).toContain("RouterAI 502: upstream went away");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+const instantRequestSchema = z.object({
+  arguments: z.record(z.string(), z.json()),
+  user_id: z.string(),
+});
+
+function instantRequestAt(index: number) {
+  const call = fetchMock.mock.calls[index];
+  if (!call) throw new Error("The search did not reach Composio.");
+  const [url, init] = call;
+  return {
+    body: instantRequestSchema.parse(JSON.parse(init.body)),
+    // composioRequest passes a URL, not the string the mock is typed with.
+    url: new URL(url).href,
+  };
+}
+
+function walletEmpty() {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: "Wallet balance exhausted",
+        slug: "Metering_WalletBalanceExhausted",
+      },
+    }),
+    { status: 402 }
+  );
+}
+
+function instantAnswer(results: readonly object[]) {
+  return new Response(
+    JSON.stringify({ data: { results }, error: null, successful: true })
+  );
+}
+
+describe("Composio Instant web search", () => {
+  beforeEach(() => {
+    // `unstubAllEnvs` above drops the setup's key too.
+    vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
+    vi.stubEnv("WEB_SEARCH_INSTANT", "on");
+  });
+
+  it("searches on TinyFish in Russian, held to the sites' domains", async () => {
+    fetchMock.mockResolvedValue(
+      instantAnswer([
+        {
+          snippet:
+            "Курс доллара на 14 октября 2026 ЦБ РФ установил 83.8675 руб.",
+          title: "Курс доллара ЦБ РФ",
+          url: "https://ru.myfin.by/currency/cb-rf/usd/14-10-2026",
+        },
+      ])
+    );
+
+    const searchWeb = await loadSearchWeb();
+    const results = await searchWeb(
+      { query: "курс доллара ЦБ", sites: ["myfin.by", "yandex.ru/maps"] },
+      turnSignal()
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const request = instantRequestAt(0);
+    expect(request.url).toBe(
+      "https://backend.composio.dev/api/v3.1/tools/execute/TINYFISH_SEARCH_WEB"
+    );
+    expect(request.body).toEqual({
+      arguments: {
+        include_domains: ["myfin.by", "yandex.ru"],
+        language: "ru",
+        location: "RU",
+        query: "курс доллара ЦБ",
+      },
+      user_id: "bro-web-search",
+    });
+    expect(results).toEqual([
+      {
+        snippet: "Курс доллара на 14 октября 2026 ЦБ РФ установил 83.8675 руб.",
+        title: "Курс доллара ЦБ РФ",
+        url: "https://ru.myfin.by/currency/cb-rf/usd/14-10-2026",
+      },
+    ]);
+  });
+
+  it("hands the query to Tavily when TinyFish refuses it", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {},
+            error: "Rate limit exceeded",
+            successful: false,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        instantAnswer([
+          {
+            content: "Средний чек 1500 ₽",
+            title: "Чичико",
+            url: "https://a.example/c",
+          },
+        ])
+      );
+
+    const searchWeb = await loadSearchWeb();
+    const results = await searchWeb({ query: "Chichiko bill" }, turnSignal());
+
+    const fallback = instantRequestAt(1);
+    expect(fallback.url).toMatch(/\/tools\/execute\/TAVILY_SEARCH$/u);
+    expect(fallback.body.arguments).toEqual({
+      max_results: 8,
+      query: "Chichiko bill",
+      search_depth: "basic",
+    });
+    expect(results.map((result) => result.snippet)).toEqual([
+      "Средний чек 1500 ₽",
+    ]);
+  });
+
+  it("falls back to the model backend's engines when Composio's balance is empty", async () => {
+    fetchMock
+      .mockResolvedValueOnce(walletEmpty())
+      .mockResolvedValueOnce(walletEmpty())
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    expect(await searchWeb({ query: "rates" }, turnSignal())).toHaveLength(1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(requestAt(2).url).toBe(
+      "https://openrouter.ai/api/v1/chat/completions"
+    );
+    expect(requestAt(2).body.plugins[0]?.engine).toBe("exa");
+  });
+
+  it("asks no other engine once the turn itself was aborted", async () => {
+    const turn = new AbortController();
+    fetchMock.mockImplementation(async () => {
+      turn.abort();
+      throw namedError("AbortError");
+    });
+
+    const searchWeb = await loadSearchWeb();
+
+    await expect(searchWeb({ query: "rates" }, turn.signal)).rejects.toThrow(
+      "AbortError from fetch"
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

@@ -212,6 +212,10 @@
   константы, умолчания env и аргументы мока без проверки результата. Дубль ли тест, видно по покрытию
   до и после удаления (`@vitest/coverage-v8` в зависимостях нет — ставьте во временный каталог), но
   SQL в PGlite, код eve и функции страницы покрытие V8 не видит.
+- `vi.unstubAllEnvs()` в `afterEach` снимает и подмены `tests/setup-env.ts`
+  (тестовый `COMPOSIO_API_KEY`): ручной `vitest run` тогда видит ключ из env
+  сессии и проходит, а `pnpm check` (turbo) и CI env не передают — тест
+  падает. Нужный ключ подменяйте в `beforeEach` самого теста.
 - `drizzle-kit generate` пишет `db/migrations/meta/*.json` не в формате
   `oxfmt`: после генерации — `pnpm exec oxfmt db/migrations/meta`.
 - oxlint `anti-slop` запрещает `typeof`-ветвления, параметры `unknown` и
@@ -1662,9 +1666,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   запуск с Cloud.ru) и `total_cost` не отдаёт. Трафик прокси по запуску
   (`traffic`) отдаёт только обновлённый worker; хуки родителя шаги субагентов
   не видят — task-агент пишется сам, реэкспортом хука (`task`).
-- Веб-поиск (`web_search`, плагин `exa`) в `usage_costs` не пишется: по
-  балансу RouterAI локального прогона d13 03.10 — порядка 2 ₽ за поиск,
-  дороже шага; в сводках расходов его нет.
+- Веб-поиск (`web_search`) с 14.10 идёт через Composio Instant: TinyFish (в
+  замере $0), при отказе, лимите или пустой выдаче — Tavily ($0,008), потом
+  прежний плагин RouterAI `exa`/`perplexity` (2,22 ₽ за поиск). Прямой
+  `POST /tools/execute/<slug>` с `user_id` без подключений: ~1 с против 2–6 с
+  через сессию. Managed Exa в Instant не отдаёт выдержек — не берите. Откат —
+  `WEB_SEARCH_INSTANT=off`; пустой баланс Composio — 402
+  `Metering_WalletBalanceExhausted`, поиск уходит в RouterAI. Замер —
+  `docs/benchmarks/web-search.md`. В `usage_costs` поиск не пишется.
 - Откат на релиз до источника `task` (PR #290): старый `summarizeUsageCosts`
   не знает `source='task'`: у такого воркспейса `bySource.task`,
   `recordedRub` и `totalRub` (и общий `totalRub`) — `NaN`, в JSON
