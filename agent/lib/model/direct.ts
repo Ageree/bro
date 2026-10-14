@@ -432,6 +432,7 @@ type StepTools = NonNullable<
  */
 const volatileTools = [
   "generate_image",
+  "generate_video",
   "schedules-answer",
   replyToolName,
   "ask_question",
@@ -1337,9 +1338,17 @@ export function directModelSelection(
     fetch: routerAi ? routerAiModelFetch : watchedModelFetch,
     headers: endpoint.headers,
   });
-  const model = provider.chat(modelId, {
+  const settings: Parameters<typeof provider.chat>[1] = {
     provider: providerRouting(modelId, endpoint),
-  });
+  };
+  // Anthropic caches a prompt only when asked: the top-level mark caches
+  // the whole prefix, a tenth of the input price on a repeated step
+  // (Claude Haiku 5.5 on RouterAI, 14.10: 0.24 ₽ for 22k tokens uncached,
+  // 0.024 ₽ cached). Other models cache on their own.
+  if (modelId.startsWith("anthropic/")) {
+    settings.extraBody = { cache_control: { type: "ephemeral" } };
+  }
+  const model = provider.chat(modelId, settings);
   // OpenRouter sends `required` to Anthropic as a forced tool call, which
   // Anthropic rejects while extended thinking is on. `none` is accepted.
   const forcedToolAllowed =

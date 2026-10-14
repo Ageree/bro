@@ -30,6 +30,10 @@ import {
   type ScheduledRunOutcome,
 } from "@shared/schedules/outcome";
 import {
+  type ScheduleDelegation,
+  storedDelegationSchema,
+} from "@shared/schedules/delegation";
+import {
   db,
   proactiveSignals,
   scheduledAgentJobs,
@@ -53,6 +57,8 @@ const abandonedInputOutcome = {
 export interface CreateScheduledAgentJob {
   readonly conversationChannel: "eve" | "photon" | "telegram";
   readonly conversationId: string;
+  /** The free action each run does for the person, if they delegated one. */
+  readonly delegation?: ScheduleDelegation;
   readonly missedRunPolicy: "catch_up" | "run_latest";
   readonly prompt: string;
   readonly replyAnchorMessageId?: string;
@@ -76,7 +82,11 @@ function exhaustedReportStatus(
 }
 
 function parseJob<T extends typeof scheduledAgentJobs.$inferSelect>(job: T) {
-  return { ...job, timing: storedScheduleTimingSchema.parse(job.timing) };
+  return {
+    ...job,
+    delegation: storedDelegationSchema.parse(job.delegation),
+    timing: storedScheduleTimingSchema.parse(job.timing),
+  };
 }
 
 function parseRun<T extends typeof scheduledAgentRuns.$inferSelect>(run: T) {
@@ -106,6 +116,7 @@ export async function createScheduledAgentJob(
       createdByUserId: scope.userId,
       conversationChannel: input.conversationChannel,
       conversationId: input.conversationId,
+      delegation: input.delegation ?? null,
       missedRunPolicy: input.missedRunPolicy,
       nextRunAt,
       prompt: input.prompt,

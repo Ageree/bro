@@ -993,6 +993,29 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   может оставить ответ пустым. Явный `reasoning.enabled=false` только в его
   прямом вызове (`agent/lib/memory/rule-approval.ts`) сохраняет fail-closed
   проверку правил, а не обходит её.
+- Роутер моделей (14.10, пилот `MODEL_ROUTER_WORKSPACES`, `agent/lib/model/router/`):
+  вид задания task-агента читает Jev (`typesafe/jev-1.13`, `POST /systemone`
+  RouterAI; `questions` — объект, не массив) раз на сессию, 0,7–1,7 с и ≈0,004 ₽,
+  и шлёт задание по маршруту `TASK_AGENT_ROUTES`. Своих маршрутов нет, без них
+  Jev не зовётся: 14.10 Haiku 5.5 делал слайды не лучше DeepSeek (3 живых
+  задания, 0,7–0,9 ₽ против 0,45–0,83 ₽), а Sonnet 5.5, Gemini 4 Argon и GPT-6.1
+  Sol решили задачи с ловушкой (ипотека, встреча через часовой пояс, договор с
+  допсоглашением) так же верно, как DeepSeek, в 10–30 раз дороже за ответ.
+  Флагман окупается разве что повтором провалившегося многошагового задания.
+  Ход самого Бро не переключается: +1 с к каждому ответу и холодный кэш чужой
+  модели на ~50k истории. Anthropic кэширует, только если просить:
+  `cache_control` верхнего уровня (`extraBody` в `direct.ts`), иначе каждый шаг
+  Haiku — полная цена входа.
+- Картинки с 14.10 — MAI Image 2.6 Flash: 2,13 ₽ против 3,73 ₽ у Gemini Lite Image,
+  16–33 с против 5–10 с; 9 живых проб с русским текстом — у MAI дубль «18:00» в
+  2 из 3 приглашений, у Gemini выдуманный адрес в 3 из 3; Seedream 5.0 Flash
+  писал «раждения» 3 из 3. Модель с русским текстом проверяйте несколькими
+  пробами, одна удачная ничего не доказывает. Видео (`generate_video`, с 14.10 всем; `VIDEO_WORKSPACES=off` — откат, список id — только им): RouterAI
+  `POST /videos` → опрос `polling_url` → `content`, ключ — только на хост API;
+  HeyGen Video 1 — 1,96 ₽/с, 5 с за 18–29 с, фото первым кадром (`frame_images`).
+  Клип лежит в `generated_image_artifacts` как `video/mp4`, Telegram шлёт его
+  `sendVideo`; веб-чат показывает ссылку-файл. Повтор шага посреди ожидания
+  платит второй раз: задание пишется лишь готовым.
 - Слабые модели заполняют каждый необязательный параметр: пустое и `*` там —
   пропуск (`givenScope`). gpt-6-luna после доставки отвечает пустым шагом, и eve
   валит ход — `quietEndMiddleware` меняет его на `<eve-empty-delivery/>`.
@@ -1699,6 +1722,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `nothing_to_report` (`agent/lib/schedules/outcome.ts`).
 - У воркера и хода-отчёта нет сетевых `web_fetch`/`find_images`/`web_search`:
   письмо не должно увести на чужой адрес (`tests/agent/capabilities.test.ts`).
+- Расписания, которые действуют (`BACKGROUND_ACTIONS_WORKSPACES`, id или `*`, 14.10): ход
+  человека кладёт в расписание `delegate` (`scheduled_agent_jobs.delegation`): одно бесплатное
+  действие на сайте (`submission` с `chargeRub: 0`, сайт) или письмо точным адресатам. Запуск
+  читает его из строки расписания на каждом вызове (`agent/lib/schedules/delegation/run.ts`),
+  `browser_task` стартует только этот `submission` на этом сайте, `gmail-send`/`mail-send` — только
+  этим адресам; оплата, `withinSpendLimit`, другой сайт и `continue` — отказ. Строки промпта меняет
+  `delegation/text.ts` только в пилоте: без флага промпт байт в байт прежний.
 - Агентный работник (`AGENCY_WORKSPACES`): вид запуска решает `proactiveRunKind`
   (`agent/lib/schedules/identity.ts`), режим читает пилот на каждом шаге.
   Гварды, журнал `agency_actions` и бюджет — `agent/lib/agency/`; повтор того же

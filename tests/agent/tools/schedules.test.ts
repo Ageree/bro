@@ -1100,6 +1100,7 @@ function scheduledJob(
 ): Awaited<ReturnType<typeof listScheduledAgentJobs>>[number] {
   return {
     createdAt: new Date("2026-09-01T12:00:00.000Z"),
+    delegation: null,
     createdByUserId: "user-1",
     id: "00000000-0000-4000-8000-000000000001",
     kind: "task",
@@ -1141,3 +1142,143 @@ function scheduleSummary(job: ReturnType<typeof scheduledJob>) {
 function scheduleListSummary(job: ReturnType<typeof scheduledJob>) {
   return { ...scheduleSummary(job), latestRun: null };
 }
+
+describe("schedules that act (BACKGROUND_ACTIONS_WORKSPACES)", () => {
+  const haircut = {
+    kind: "browser" as const,
+    site: "https://boroda.example",
+    submission: {
+      chargeRub: 0,
+      forWhom: "Алиса",
+      kind: "appointment" as const,
+      personalData: ["имя", "телефон"],
+      what: "запись на стрижку к Артуру",
+      when: "ближайший свободный слот после 18:00",
+      where: "барбершоп «Борода» (boroda.example)",
+    },
+  };
+  const timing = {
+    frequency: "daily" as const,
+    kind: "calendar" as const,
+    localTime: "09:00",
+    timezone: "Europe/Moscow",
+  };
+
+  /** The person's own turn in the chat, in a workspace of the pilot. */
+  function personTurn(): DynamicResolveContext {
+    const context = dynamicContext("photon-imessage", "channel:photon");
+    return {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          current: {
+            ...context.session.auth.current,
+            attributes: { workspaceId: "workspace-1" },
+          },
+          initiator: null,
+        },
+      },
+    };
+  }
+
+  async function createTool(pilot: string) {
+    vi.resetModules();
+    vi.stubEnv("BACKGROUND_ACTIONS_WORKSPACES", pilot);
+    const { default: tools } = await import("@agent/tools/schedules");
+    const resolve = tools.events["turn.started"];
+    const resolved = resolve ? await resolve({}, personTurn()) : null;
+    const create =
+      resolved && "schedules-create" in resolved
+        ? resolved["schedules-create"]
+        : undefined;
+    if (!create) throw new Error("Expected the schedules-create tool.");
+    return create;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    services.timeZone.mockResolvedValue("Europe/Moscow");
+    services.report.mockImplementation((job) =>
+      Promise.resolve({
+        delivery: {
+          conversationChannel: job.conversationChannel,
+          conversationId: job.conversationId,
+          replyAnchorMessageId: null,
+        },
+        fallbacks: [],
+      })
+    );
+    services.create.mockImplementation((_scope, input) =>
+      Promise.resolve({
+        ...scheduledJob(),
+        delegation: input.delegation ?? null,
+      })
+    );
+  });
+
+  it("keeps the free action the person delegated in their own message", async () => {
+    const create = await createTool("workspace-1");
+    expect(inputProperties(create.inputSchema)).toContain("delegate");
+
+    const result = await create.execute(
+      {
+        delegate: haircut,
+        missedRunPolicy: "run_latest",
+        prompt: "Проверяй свободные слоты к Артуру и запиши на первый.",
+        timing,
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.create.mock.calls[0]?.[1]).toMatchObject({
+      delegation: haircut,
+    });
+    expect(JSON.stringify(result)).toContain(
+      "each run does «запись на стрижку к Артуру» on https://boroda.example itself"
+    );
+  });
+
+  it("keeps nothing from a turn the person did not start", async () => {
+    const create = await createTool("workspace-1");
+
+    await expect(
+      create.execute(
+        {
+          delegate: haircut,
+          missedRunPolicy: "run_latest",
+          prompt: "Запиши на первый свободный слот.",
+          timing,
+        },
+        toolContext("schedules-create", "browser-result")
+      )
+    ).rejects.toThrow("only from their own message in this turn");
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("takes no paid action", async () => {
+    const create = await createTool("workspace-1");
+    if (!(create.inputSchema instanceof z.ZodType)) {
+      throw new TypeError("Expected an authored Zod input schema.");
+    }
+    const paid = {
+      ...haircut,
+      submission: { ...haircut.submission, chargeRub: 1500 },
+    };
+
+    expect(
+      create.inputSchema.safeParse({
+        delegate: paid,
+        prompt: "Запиши к Артуру.",
+        timing,
+      }).success
+    ).toBe(false);
+  });
+
+  it("offers no delegate outside the pilot", async () => {
+    const create = await createTool("");
+
+    expect(inputProperties(create.inputSchema)).not.toContain("delegate");
+    expect(create.description).toBe(createSchedule.description);
+  });
+});

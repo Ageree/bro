@@ -427,7 +427,11 @@ function toolSkills(toolName: string): readonly SkillName[] {
   }
   // A job of the task agent's is followed by its edits («добавь слайд»).
   if (toolName === "task") return ["files"];
-  if (toolName === "generate_image" || toolName === "find_images") {
+  if (
+    toolName === "generate_image" ||
+    toolName === "generate_video" ||
+    toolName === "find_images"
+  ) {
     return ["images"];
   }
   if (toolName === "spend_limit" || toolName === "standing_permission") {

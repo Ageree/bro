@@ -4,6 +4,7 @@ import { defineSchedule, type ScheduleHandlerArgs } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { checkModelCredits, creditCheckDue } from "@agent/lib/model/credits";
 import { proactiveReportTiming } from "@agent/lib/proactive/delivery";
+import { delegationTaskLine } from "@agent/lib/schedules/delegation/run";
 import { proactiveRunKind } from "@agent/lib/schedules/identity";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import { subscriptionReportDue } from "@agent/lib/subscriptions/delivery";
@@ -267,7 +268,10 @@ function scheduledRunPrompt(
     "Complete this user-owned scheduled task in an isolated background session.",
     `Scheduled for: ${claim.run.scheduledFor.toISOString()}${local}`,
     `Task: ${claim.job.prompt}`,
-  ].join("\n\n");
+    delegationTaskLine(claim.job),
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
 }
 
 function scheduledWorkerAuth(

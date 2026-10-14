@@ -14,6 +14,7 @@ import recommendations from "@agent/instructions/content/recommendations.md?raw"
 import roleInteractive from "@agent/instructions/content/role/interactive.md?raw";
 import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
 import taskFilesText from "@agent/instructions/content/task-files.md?raw";
+import { withBackgroundActions } from "@agent/lib/schedules/delegation/text";
 import { autonomyEdits } from "./autonomy";
 
 /**
@@ -167,6 +168,11 @@ export interface SkillSetup {
    * as for `taskFiles`.
    */
   readonly autonomy?: boolean;
+  /**
+   * The workspace's schedules may act on what the person delegated
+   * (`withBackgroundActions`); absent is no, as before the pilot.
+   */
+  readonly backgroundActions?: boolean;
 }
 
 /** Who reads a run of lines: every layout, one layout, or one skill. */
@@ -314,19 +320,22 @@ function readBy(region: Region, layout: InstructionLayout) {
 
 /**
  * One instruction file as a turn of this layout reads it, in the autonomy
- * pilot's edit (`edited`) or as it is.
+ * pilot's edit (`edited`) or as it is, and in the pilot of schedules that
+ * act with its lines about them reworded.
  */
 export function instructionText(
   source: InstructionSource,
   layout: InstructionLayout,
-  edited = false
+  edited = false,
+  backgroundActions = false
 ) {
   const text = sourceSegments(source, edited)
     .filter(({ region }) => readBy(region, layout))
     .map(({ text: lines }) => lines)
     .join("");
   // What the cut leaves between sections is one blank line, as in `full`.
-  return layout === "core" ? text.replace(/\n{3,}/gu, "\n\n") : text;
+  const cut = layout === "core" ? text.replace(/\n{3,}/gu, "\n\n") : text;
+  return backgroundActions ? withBackgroundActions(cut) : cut;
 }
 
 /**
@@ -381,7 +390,9 @@ export function skillBody(name: SkillName, setup: SkillSetup) {
     title !== undefined && !(regions[0] ?? "").startsWith("#")
       ? [title, ...regions]
       : regions;
-  return regions.length > 0 ? titled.join("\n\n") : undefined;
+  if (regions.length === 0) return undefined;
+  const body = titled.join("\n\n");
+  return setup.backgroundActions === true ? withBackgroundActions(body) : body;
 }
 
 /** The skills this setup has a body for, in the index's order. */
@@ -393,10 +404,13 @@ export function availableSkills(setup: SkillSetup) {
 export const skillSetups: readonly SkillSetup[] = [false, true].flatMap(
   (browser) =>
     [false, true].flatMap((drawing) =>
-      [false, true].map((taskFiles) => ({
-        browser,
-        images: drawing,
-        taskFiles,
-      }))
+      [false, true].flatMap((taskFiles) =>
+        [false, true].map((backgroundActions) => ({
+          backgroundActions,
+          browser,
+          images: drawing,
+          taskFiles,
+        }))
+      )
     )
 );
