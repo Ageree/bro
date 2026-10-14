@@ -20,7 +20,9 @@ import { imageGenerationQuotaGate } from "@agent/lib/billing/quota";
 import {
   artifactIdPattern,
   drawnPictures,
+  errandOpensTurn,
   imageGenerationScope,
+  personOpensTurn,
   pictureRequested,
 } from "@agent/lib/image-artifact/generation";
 import {
@@ -76,16 +78,20 @@ export default defineDynamic({
   events: {
     async "turn.started"(_event, context) {
       const scope = imageGenerationScope(context);
-      // Only the person's own request for a picture, or a photo they sent to
-      // work with, puts the paid tool within reach: never a browser report,
-      // a code or a question.
+      // Only a turn the person started sees the paid tool, never a browser
+      // report. It stays in every such turn, so the tool block before the
+      // history keeps its cache from one message to the next.
       if (
         !scope ||
         !startedByPerson(context) ||
-        !pictureRequested(context.messages)
+        !personOpensTurn(context.messages)
       ) {
         return null;
       }
+      // A request for a picture, a photo to work with, or an errand that may
+      // need one lets it draw; a code or a bare reply does not.
+      const drawingAsked =
+        pictureRequested(context.messages) || errandOpensTurn(context.messages);
       const photos = await collectPersonPhotos(scope, context.messages);
       return defineTool({
         description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describeDrawnPictures(context.messages)}${describePhotos(photos)}`,
@@ -120,6 +126,12 @@ export default defineDynamic({
             ),
         }),
         async execute(input, ctx) {
+          if (!drawingAsked) {
+            return {
+              note: "Nothing drawn: this message asks for no picture. Draw when the person asks for one or an errand needs it.",
+              status: "not_asked" as const,
+            };
+          }
           return generateImage(input, ctx, photos);
         },
       });
