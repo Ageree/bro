@@ -317,7 +317,8 @@ describe("(d) the answer after a heads-up", () => {
     });
   });
 
-  it("is not dropped as a second message about the browser errand", () => {
+  // Owner, 14.10: after the heads-up, nothing more until the result.
+  it("is dropped as a second message about the browser errand", () => {
     const run = { runId: "run-1", status: "running" };
     const errand = { site: "ozon.ru", task: request };
     const errandMessage =
@@ -347,16 +348,11 @@ describe("(d) the answer after a heads-up", () => {
     });
     expect(
       sendRefusal(message(errandMessage), turnSends(announced), true)
-    ).toBeUndefined();
+    ).toEqual({ skipped: "started" });
     expect(sendRefusal(message(errandMessage), turnSends(plain))).toEqual({
       skipped: "stale",
     });
-    const told = [
-      ...announced,
-      ...sendMessage("b", errandMessage, textOutput("submitted")),
-    ];
-    expect(awaitsDelivery(told)).toBe(false);
-    expect(turnSends(told).errandTold).toBe(true);
+    expect(awaitsDelivery(announced)).toBe(false);
   });
 
   it("is judged as the turn's first message, claims and all", () => {
@@ -394,10 +390,11 @@ describe("(e) a status said again after the browser errand started", () => {
     ),
   ];
 
-  it("lets the errand be told once", () => {
-    expect(
-      sendRefusal(message(status2), turnSends(started), true)
-    ).toBeUndefined();
+  // Owner, 14.10: the heads-up is all, the errand is not told again.
+  it("drops the errand's own status after the heads-up", () => {
+    expect(sendRefusal(message(status2), turnSends(started), true)).toEqual({
+      skipped: "started",
+    });
   });
 
   it("drops a third status that tells nothing the errand's message did not", () => {
@@ -469,6 +466,35 @@ describe("(f) a heads-up before an errand a browser run took", () => {
       expect(headsUpCoversErrand(handed)).toBe(true);
       expect(awaitsDelivery(handed)).toBe(false);
     }
+  });
+
+  it("drops a second line that only says the run started", () => {
+    const handed = [
+      person(ask),
+      ...sendMessage(
+        "a",
+        "Сейчас посмотрю на сайте.",
+        textOutput(headsUpDeliveredNotice)
+      ),
+      ...browserStep("start", { runId: "run-1", status: "running" }, errand),
+    ];
+
+    expect(
+      sendRefusal(
+        message(
+          "Запустил поиск: смотрю Product Radar, как найду — пришлю итог."
+        ),
+        turnSends(handed),
+        true
+      )
+    ).toEqual({ skipped: "started" });
+    expect(
+      sendRefusal(
+        message("Запустил. Какой тариф выбрать — бесплатный или платный?"),
+        turnSends(handed),
+        true
+      )
+    ).toBeUndefined();
   });
 
   it("still owes the answer when the run did not take the errand", () => {
