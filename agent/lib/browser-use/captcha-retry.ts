@@ -23,6 +23,7 @@ import {
 import { storedErrandSearches } from "./flash";
 import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { retryProxySettings } from "./proxy";
+import { recoveryTask } from "./recovery";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 
 type BrowserRunRow = NonNullable<Awaited<ReturnType<typeof readBrowserRun>>>;
@@ -231,7 +232,9 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
         }
         const previous = await readBrowserUseRun(row.id);
         const secrets = await resolveBrowserSecretBindings(scope, {
-          allowPayment: row.paymentAllowed,
+          // A check of what a broken-off run did only reads: it is never
+          // handed the saved card, whatever the errand allows.
+          allowPayment: row.paymentAllowed && row.recoveryPhase !== "verify",
           // The phone goes again only where the errand was composed with it.
           phoneSignIn: signsInByPhone(previous.task),
           site: row.site ?? undefined,
@@ -267,7 +270,15 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           // an address, and an attempt that started over spent its new one
           // on the pages the last one had already read.
           sessionId: onVm ? previous.sessionId : undefined,
-          task: captchaRetryTask(previous.task, attempt, reference, onVm),
+          task:
+            row.recoveryPhase === null
+              ? captchaRetryTask(previous.task, attempt, reference, onVm)
+              : recoveryTask(previous.task, {
+                  attempt: row.recoveryAttempt,
+                  onVm,
+                  phase: row.recoveryPhase,
+                  reference,
+                }),
         });
       }
     } catch (error) {
@@ -339,6 +350,9 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           id: run.id,
           paymentAllowed: row.paymentAllowed,
           profileId: row.profileId,
+          // The step the recovery is in goes on in the run that takes over.
+          recoveryAttempt: row.recoveryAttempt,
+          recoveryPhase: row.recoveryPhase,
           replyAnchorMessageId: row.replyAnchorMessageId,
           rootSessionId: row.rootSessionId,
           sessionId: run.sessionId,

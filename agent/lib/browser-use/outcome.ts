@@ -397,11 +397,28 @@ function browserReport(report: string | null | undefined) {
   return { hasLinks, text: retained };
 }
 
+/**
+ * What a read-only check after a broken-off run found: the action it was
+ * allowed to take is there on the site (`done`), clearly is not (`not_done`)
+ * or the check could not tell. Written as `ACTION: done — <where>`; anything
+ * else after the label is no verdict.
+ */
+function actionVerdict(text: string) {
+  const value = rawLabelledValue(text, "ACTION")?.toLowerCase();
+  const word = /^(not[\s_-]*done|done|unknown)(?![\p{L}\p{N}])/u.exec(
+    value ?? ""
+  )?.[1];
+  if (word === undefined) return undefined;
+  if (word === "done" || word === "unknown") return word;
+  return "not_done" as const;
+}
+
 export function parseBrowserOutcome(result: string | null | undefined) {
   const text = (result ?? "").trim();
   const rawNeeds = rawLabelledValue(text, "NEEDS");
   const candidate = rawNeeds?.toLowerCase().replaceAll(/\s+/gu, "_");
   return {
+    action: actionVerdict(text),
     booking: browserResultBooking(text),
     charges: browserResultCharges(text),
     details: labelledValue(text, "DETAILS"),
@@ -499,6 +516,7 @@ export function browserOutcomeSummary(
   const lines = [
     outcome.result ? `Result: ${outcome.result}` : fallback,
     outcome.order ? `Order: ${outcome.order}` : undefined,
+    outcome.action ? `Action: ${outcome.action}` : undefined,
     outcome.total ? `Total: ${outcome.total}` : undefined,
     outcome.needs === "none" ? undefined : `Needs: ${outcome.needs}`,
     outcome.details ? `Details: ${outcome.details}` : undefined,

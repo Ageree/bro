@@ -139,6 +139,15 @@ export const browserRuns = pgTable(
     // Which attempt of its errand this run is against an anti-bot wall: the
     // run the person started is 1, each background retry adds one.
     captchaAttempt: integer("captcha_attempt").notNull().default(1),
+    // What an errand that may have acted does after a run of it broke off
+    // (`agent/lib/browser-use/recovery.ts`): on a run, the step it is doing;
+    // on a parked row, the step its retry starts with. `verify` only reads
+    // whether the action already happened, `continue` finishes the errand
+    // once it is known not to have. Null is an errand's ordinary run.
+    recoveryPhase: text("recovery_phase").$type<"continue" | "verify">(),
+    // How many times the errand broke off and was checked by itself; the
+    // retries carry it, and it ends the self-recovery at its cap.
+    recoveryAttempt: integer("recovery_attempt").notNull().default(0),
     // A run parked on an anti-bot check, or an errand queued while Browser
     // Use had no free browser, waits here for the poller to start it.
     retryAt: timestamp("retry_at", {
@@ -217,6 +226,10 @@ export const browserRuns = pgTable(
     check(
       "browser_runs_captcha_attempt_check",
       sql`${table.captchaAttempt} >= 1`
+    ),
+    check(
+      "browser_runs_recovery_check",
+      sql`${table.recoveryAttempt} >= 0 AND (${table.recoveryPhase} IS NULL OR ${table.recoveryPhase} IN ('verify', 'continue'))`
     ),
   ]
 );

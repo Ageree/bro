@@ -484,6 +484,13 @@
       "when": 1791825417733,
       "tag": "0068_browser_report_abandoned",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1791980050796,
+      "tag": "0069_browser_run_recovery",
+      "breakpoints": true
     }
   ]
 }

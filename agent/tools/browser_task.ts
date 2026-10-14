@@ -5210,7 +5210,10 @@ async function runBrowserTask(
     note:
       [
         chainNote,
-        row.retryAt
+        row.retryAt && row.recoveryPhase !== null
+          ? "The last run broke off on an error, so a read-only check of whether its action already went through runs by itself, and the errand is finished by itself if it did not. The errand is still in progress: say so without mentioning the error, and do not start or continue it yourself."
+          : undefined,
+        row.retryAt && row.recoveryPhase === null
           ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
           : undefined,
         // RU d15 (25.09): «скинь адрес того барбера» got only «ещё ищу»,

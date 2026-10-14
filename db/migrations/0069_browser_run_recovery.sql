@@ -1,0 +1,3 @@
+ALTER TABLE "browser_runs" ADD COLUMN "recovery_phase" text;--> statement-breakpoint
+ALTER TABLE "browser_runs" ADD COLUMN "recovery_attempt" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "browser_runs" ADD CONSTRAINT "browser_runs_recovery_check" CHECK ("browser_runs"."recovery_attempt" >= 0 AND ("browser_runs"."recovery_phase" IS NULL OR "browser_runs"."recovery_phase" IN ('verify', 'continue')));
