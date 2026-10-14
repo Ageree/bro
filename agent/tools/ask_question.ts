@@ -6,10 +6,10 @@ import { z } from "zod";
  * («use this when you need clarification or a choice») had a model
  * (`openai/gpt-6-luna` on 24.09) confirm what the person had just asked for:
  * «Сохранить их?» after «запомни», «Какие действия выполнить?» after three
- * explicit requests. The approval card of an action is its one confirmation.
+ * explicit requests. The request is the consent; a payment asks once.
  */
 const askQuestionDescription =
-  "Ask the person one question and wait for the answer. Use it only when the request cannot be carried out without their answer: a detail that has no sensible default, that you cannot find in the conversation, memory, profile or tools, and where a wrong guess would cost money or reach another person. Never use it to confirm what the person already asked for in so many words («запомни», «напомни», «поставь в календарь», «запиши меня», «забронируй»): do it, and an action that needs consent shows its own approval card, which is the only confirmation. Never ask which of several requested things to do: do all of them. Never ask what a date like «завтра» or «в пятницу» means or what a card will show. At most one question per request, together with what you already found.";
+  "Ask the person one question and wait for the answer. Use it only when the request cannot be carried out without their answer: a detail that has no sensible default, that you cannot find in the conversation, memory, profile or tools, and where a wrong guess would cost money or reach another person. Never use it to confirm what the person already asked for in so many words («запомни», «напомни», «поставь в календарь», «запиши меня», «забронируй»): do it: the request is the consent, and only a payment gets its one «Оплачиваю?» question. Never ask which of several requested things to do: do all of them. Never ask what a date like «завтра» or «в пятницу» means or what a card will show. At most one question per request, together with what you already found.";
 
 /**
  * eve's input with a prompt that is a question. The person got an empty
