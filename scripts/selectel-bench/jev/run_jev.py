@@ -18,7 +18,12 @@ from chrome import Chrome, probe_pages
 from tasks import TASKS
 
 arm, task_id, rep, out = sys.argv[1:5]
-MODELS = {"ju_113": "jev-1.13.0", "ju_114": "jev-1.14.0", "ju_114_img": "jev-1.14.0"}
+# TYPESAFE_URL / TYPESAFE_MODEL_PREFIX move the calls to RouterAI (https://routerai.ru/api/v1/systemone, "typesafe/jev-1.14"):
+# from Russia api.typesafe.ai answers 451.
+PREFIX = os.environ.get("TYPESAFE_MODEL_PREFIX", "")
+URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
+MODELS = {"ju_113": PREFIX + ("jev-1.13" if PREFIX else "jev-1.13.0"), "ju_114": PREFIX + ("jev-1.14" if PREFIX else "jev-1.14.0"),
+          "ju_114_img": PREFIX + ("jev-1.14" if PREFIX else "jev-1.14.0")}
 IMG = arm.endswith("_img")
 os.environ["TYPESAFE_MODEL"] = MODELS[arm]
 os.environ["TYPESAFE_API_KEY"] = open("/etc/bench/typesafe").read().strip()
@@ -35,6 +40,7 @@ calls, shot = [], {}
 
 
 def post_json(url, key, body):
+    url = URL if url.endswith("/systemone") else url
     headers = {"Authorization": f"Bearer {key}"}
     if IMG and url.endswith("/systemone") and shot.get("data"):
         ref = str(uuid.uuid4())

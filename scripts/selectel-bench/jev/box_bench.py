@@ -25,6 +25,7 @@ from browser_harness.helpers import cdp  # noqa: E402
 KEY = open("/etc/bench/typesafe").read().strip()
 OUT = sys.argv[1]
 PER_PAGE = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 MODEL = os.environ.get("BOX_MODEL", "jev-1.14.0")
 PAGES = os.environ["BOX_PAGES"].split(",") if os.environ.get("BOX_PAGES") else [
     "https://ru.wikipedia.org/", "https://en.wikipedia.org/wiki/Moscow", "https://www.saucedemo.com/",
@@ -54,7 +55,7 @@ def ask(shot_b64, label, role):
     body = {"model": MODEL, "state": {"screen": ref}, "assets": {ref: {"type": "image", "format": "png", "data_base64": shot_b64}},
             "questions": {"where": {"type": "box", "instructions": f'Where is the {role} labelled "{label}" in `screen`?'}}}
     t0 = time.perf_counter()
-    r = httpx.post("https://api.typesafe.ai/v1/systemone", json=body, timeout=40,
+    r = httpx.post(URL, json=body, timeout=40,
                    headers={"Authorization": f"Bearer {KEY}", "TypeSafe-Danger-Zone-Images": "true"})
     ms = round((time.perf_counter() - t0) * 1000)
     r.raise_for_status()
