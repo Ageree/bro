@@ -1,3 +1,4 @@
+import type * as ai from "ai";
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,7 @@ const services = vi.hoisted(() => ({
   create: vi.fn<typeof purchases.createYandexPurchase>(),
   edaPrepare: vi.fn<typeof eda.prepareEdaPurchase>(),
   edaSubmit: vi.fn<typeof eda.submitEdaPurchase>(),
+  judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
   run: vi.fn<typeof runYandexOperation>(),
@@ -27,6 +29,13 @@ vi.mock("@db/services/yandex-purchases", () => ({
   createYandexPurchase: services.create,
   readYandexPurchase: services.read,
   settleYandexPurchase: services.settle,
+}));
+vi.mock("ai", async (original) => ({
+  ...(await original<typeof ai>()),
+  generateText: services.judge,
+}));
+vi.mock("@db/services/settings", () => ({
+  getWorkspaceModelId: async () => "synthetic/model",
 }));
 vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
@@ -226,6 +235,7 @@ async function confirm(messages = answered(), context = callContext()) {
 beforeEach(() => {
   vi.resetAllMocks();
   services.pilot.mockReturnValue(true);
+  services.judge.mockResolvedValue({ output: { matches: false } });
   services.read.mockResolvedValue(row());
   services.claim.mockResolvedValue({
     kind: "claimed",
@@ -402,6 +412,40 @@ describe("Yandex purchase consent", () => {
       )
     ).toMatchObject({ kind: "confirmation_required" });
     expect(services.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes one yes to Bro's own question about this order, not a second question", async () => {
+    const own =
+      "Нашёл воду, беру одну бутылку. Итого с доставкой 249,50 ₽. Оплачиваю?";
+    services.judge.mockResolvedValue({ output: { matches: true } });
+    expect(await confirm(answered("Да", own))).toMatchObject({
+      kind: "placed",
+    });
+    expect(services.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["another total", "Вода, итого 199 ₽. Оплачиваю?", true],
+    ["other items", "Вода и хлеб, итого 249,50 ₽. Оплачиваю?", false],
+  ])("refuses a yes to Bro's own question with %s", async (_, own, judged) => {
+    expect(await confirm(answered("да", own))).toMatchObject({
+      kind: "confirmation_required",
+    });
+    expect(services.judge).toHaveBeenCalledTimes(judged ? 0 : 1);
+    expect(services.submit).not.toHaveBeenCalled();
+  });
+
+  it("tells the model to confirm when the person already said yes to this total", async () => {
+    const tool = await resolve(
+      answered("да", "Вода, итого 249,50 ₽ с доставкой. Оплачиваю?")
+    );
+    const result = await tool?.execute(
+      { action: "prepare", service: "lavka" },
+      callContext()
+    );
+    expect(result).toMatchObject({ kind: "quoted" });
+    expect(JSON.stringify(result)).toContain("Call confirm");
+    expect(services.submit).not.toHaveBeenCalled();
   });
 
   it("renews an expired unchanged Lavka quote under the same explicit yes and one claim", async () => {
