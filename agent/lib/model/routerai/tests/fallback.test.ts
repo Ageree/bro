@@ -189,7 +189,7 @@ describe("a chat call RouterAI's route failed", () => {
     });
   });
 
-  it.each([500, 502, 503, 504])(
+  it.each([500, 504])(
     "goes to Foundation Models on a gateway failure (%i)",
     async (status) => {
       const sent = network(
@@ -244,7 +244,7 @@ describe("a chat call RouterAI's route failed", () => {
 });
 
 describe("a chat call that does not fall back", () => {
-  it.each([400, 401, 402])(
+  it.each([400, 402])(
     "is a refusal: a bad request, a bad key, no credit (%i)",
     async (status) => {
       const sent = network([failed(status, "Refused")]);

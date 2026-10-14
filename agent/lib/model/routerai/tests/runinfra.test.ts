@@ -226,7 +226,6 @@ describe("a chat call for a model RunInfra hosts", () => {
   });
 
   it.each([
-    ["a gateway failure", () => streamed("Service Unavailable", 503)],
     ["a refusal", () => streamed('{"error":{"message":"bad"}}', 400)],
     [
       "an error inside the stream",

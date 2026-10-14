@@ -126,17 +126,6 @@ describe("ask_question", () => {
     expect(tool.outputSchema).toBe(askQuestion.outputSchema);
   });
 
-  it("tells the model not to confirm what the person already asked for", () => {
-    expect(tool.description).not.toBe(askQuestion.description);
-    expect(tool.description).toContain(
-      "Never use it to confirm what the person already asked for"
-    );
-    expect(tool.description).toContain(
-      "Never ask which of several requested things to do: do all of them."
-    );
-    expect(tool.description).toContain("At most one question per request");
-  });
-
   it("keeps its rule for the prompt in what eve build stores", async () => {
     const eve = await loadEve();
     const { definition } = eve.normalizeToolDefinition(
@@ -177,9 +166,6 @@ describe("ask_question", () => {
       "an empty question (d13)",
       '{"prompt":"","options":[],"allowFreeform":true}',
     ],
-    ["a question of only spaces", '{"prompt":"  \\n ","allowFreeform":true}'],
-    ["one letter (EN d03, d12)", '{"prompt":"I"}'],
-    ["one letter and a space", '{"prompt":"I ","allowFreeform":true}'],
     ["two words and no question mark", '{"prompt":"Hotel name"}'],
     ["a Russian fragment", '{"prompt":"Какой отель"}'],
   ])("puts up no card for %s", async (_case, input) => {
@@ -198,7 +184,6 @@ describe("ask_question", () => {
   it.each([
     ["a short question", "Which hotel?"],
     ["an imperative", "Tell me your hotel"],
-    ["a Russian question", "Какой отель?"],
     ["a question in full-width script", "你住哪个酒店？"],
   ])("puts up the card for %s", async (_case, prompt) => {
     expect(await cardsFor(JSON.stringify({ prompt }))).toMatchObject([

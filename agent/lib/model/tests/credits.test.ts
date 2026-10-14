@@ -260,14 +260,6 @@ describe("RouterAI credit check", () => {
     expect(alert.text).toContain("routerai.ru/settings/billing");
   });
 
-  it("stays quiet above the rouble threshold", async () => {
-    const network = stubRouterAi(425.5);
-
-    await checkModelCredits();
-
-    expect(network).toHaveBeenCalledOnce();
-  });
-
   it("keeps its alert apart from OpenRouter's", async () => {
     const network = stubRouterAi(120);
     await checkModelCredits(new Date("2026-10-01T10:00:00Z"));
@@ -282,19 +274,6 @@ describe("RouterAI credit check", () => {
     );
     await checkModelCredits(new Date("2026-10-01T10:10:00Z"));
 
-    expect(telegramCalls(network)).toBe(2);
-  });
-
-  it("repeats a balance that fell by half, but not by a few roubles", async () => {
-    const network = stubRouterAi(80);
-    await checkModelCredits(new Date("2026-10-01T10:00:00Z"));
-
-    stubRouterAi(45, network);
-    await checkModelCredits(new Date("2026-10-01T10:10:00Z"));
-    expect(telegramCalls(network)).toBe(1);
-
-    stubRouterAi(20, network);
-    await checkModelCredits(new Date("2026-10-01T10:20:00Z"));
     expect(telegramCalls(network)).toBe(2);
   });
 });

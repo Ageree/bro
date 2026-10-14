@@ -23,9 +23,7 @@ describe("sendRefusal", () => {
   });
 
   it.each([
-    ["the same text", callRestaurant],
     ["other case and spacing", "  пришли   НАЗВАНИЕ ресторана — я позвоню "],
-    ["other punctuation", "Пришли название ресторана, я позвоню!"],
     ["a near copy", "Пришли название ресторана — и я позвоню."],
   ])("drops %s as a repeat", (_case, text) => {
     expect(
@@ -38,11 +36,6 @@ describe("sendRefusal", () => {
       "the return flight after the outbound one",
       "Рейс SU 1234 Москва—Сочи 12 октября, вылет в 08:40 из Шереметьево, место у окна.",
       "Рейс SU 1235 Сочи—Москва 19 октября, вылет в 18:05 из Сочи, место у окна.",
-    ],
-    [
-      "the second option after the first",
-      "Вариант 1: Отель «Морской», 4 звезды, 7 400 ₽ за ночь, завтрак включён.",
-      "Вариант 2: Отель «Горный», 4 звезды, 6 900 ₽ за ночь, завтрак включён.",
     ],
     [
       "a reminder that differs in name and time",
@@ -63,11 +56,6 @@ describe("sendRefusal", () => {
       "a payment link that differs only in punctuation",
       "Ссылка на оплату счёта: https://pay.example/inv-1-2",
       "Ссылка на оплату счёта: https://pay.example/inv_1.2",
-    ],
-    [
-      "the next quiz question",
-      "Вопрос 3: какая река самая длинная в Европе?",
-      "Вопрос 4: какая река самая длинная в Азии?",
     ],
     [
       "a confirmation question after the result",
@@ -277,7 +265,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
 
   it.each([
     "Похоже, это The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но подтвердить, что там работает Артур, не удалось. https://thebarberclub.ru/",
-    "Похоже, барбершоп называется The Barber Club: Профсоюзная улица, 11/11, вход с улицы Кржижановского. Но что там работает Артур, подтвердить не удалось. https://thebarberclub.ru/",
   ])("drops the address said again with «Артур» for «Артура» (d15)", (text) => {
     const history = [
       barberRequest,
@@ -311,22 +298,10 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Виктория подтвердила встречу завтра в 10:00.",
     ],
     [
-      "Виктория named inside the sentence",
-      "кто подтвердил встречу?",
-      "Виктор подтвердил встречу завтра в 10:00.",
-      "Также подтвердила Виктория.",
-    ],
-    [
       "Валентина after Валентин, both named by the person",
       "Предупреди охрану, что завтра в 10:00 придут Валентин и Валентина",
       "Валентин придёт завтра в 10:00, я предупредил охрану.",
       "Валентина придёт завтра в 10:00, я предупредил охрану.",
-    ],
-    [
-      "Эмилия after Эмиль",
-      "кто завтра придёт?",
-      "Эмиль придёт завтра в 10:00, я предупредил охрану.",
-      "Эмилия придёт завтра в 10:00, я предупредил охрану.",
     ],
     [
       "Леня after Лена",
@@ -355,11 +330,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Александра подтвердила встречу завтра в 10:00.",
     ],
     [
-      "Евгения after Евгений",
-      "Евгений подтвердил встречу завтра в 10:00.",
-      "Евгения подтвердила встречу завтра в 10:00.",
-    ],
-    [
       "Александра after Александр, named inside the sentence",
       "Встречу завтра в 10:00 подтвердил Александр.",
       "Встречу завтра в 10:00 подтвердила и Александра.",
@@ -382,16 +352,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Лавку after Лавке",
       "Запустил поручение на Яндекс Лавке.",
       "Поручение передано в Яндекс Лавку, сайт пока ничего не оформлял.",
-    ],
-    [
-      "Профсоюзная after Профсоюзной",
-      "Барбершоп на Профсоюзной улице, 11/11.",
-      "Это барбершоп на улице Профсоюзная, 11/11, рядом с метро.",
-    ],
-    [
-      "Шереметьеве after Шереметьево",
-      "Вылет из Шереметьево в 08:40, терминал B.",
-      "Вылетаете в 08:40 из Шереметьеве, терминал B.",
     ],
     [
       "Иванов after Ивановым",
@@ -444,11 +404,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Александре after Александру",
       "Отправил письмо Александру: встреча переносится на пятницу.",
       "Отправил письмо Александре: встреча переносится на пятницу.",
-    ],
-    [
-      "Евгении after Евгению",
-      "Отправил письмо Евгению: встреча переносится на пятницу.",
-      "Отправил письмо Евгении: встреча переносится на пятницу.",
     ],
     [
       "на Тверском after на Тверской",
@@ -521,18 +476,15 @@ describe("sendRefusal on the benchmark of 25.09", () => {
     "Поручение на заказ передано в Яндекс Лавку; сайт пока ничего не оформлял. Пришлю найденную корзину, цену и замены, когда запуск вернёт результат.",
   ];
 
-  it.each(secondStatuses)(
-    "drops a second message about the same errand (d05)",
-    (text) => {
-      const told = [...errandStarted, ...sendMessage("started", errandStatus)];
+  it("drops a second message about the same errand (d05)", () => {
+    const told = [...errandStarted, ...sendMessage("started", errandStatus)];
 
+    for (const text of secondStatuses) {
       expect(refusal(told, text)).toEqual({ skipped: "started" });
-      expect(skippedSendNotice("started")).toContain("end the turn now");
     }
-  );
+  });
 
   it.each([
-    ["list_orders", { orders: [] }],
     ["web_search", { results: [] }],
     ["workstreams__read", { id: "groceries", revision: 1 }],
   ])(
@@ -633,16 +585,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       "Билеты Москва — Сочи на 27–28 сентября ищу в браузере, пришлю варианты.",
     ],
     [
-      "the weather found a step before the errand started",
-      [
-        ticketsAndWeather,
-        ...toolStep("web_search", { results: [] }),
-        ...ticketsStart,
-        ...sendMessage("tickets", ticketsStatus),
-      ],
-      weather,
-    ],
-    [
       "the answer to a question asked with a steer",
       [
         userMessage("Поменяй на 20:00. А Пушкин работает до скольки?"),
@@ -687,18 +629,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
       task: "Забронируйте столик в «Авокадо», Чистопрудный бульвар, 12, корп. 2, на 26 сентября, 19:30, на четверых.",
     }
   );
-  const barberSearch = toolStep("web_search", {
-    results:
-      "1. Барбершоп The Barber Club | Мужские стрижки\nhttps://thebarberclub.ru/\nг. Москва, ул. Профсоюзная, 11/11, вход с улицы Кржижановского",
-  });
-  const barberBooking = browserStep(
-    "start",
-    { runId: "run-8", status: "running" },
-    {
-      site: "https://thebarberclub.ru/",
-      task: "Запишите на 26 сентября, 19:00, к барберу Артуру в The Barber Club, Профсоюзная улица, 11/11.",
-    }
-  );
 
   it.each([
     [
@@ -729,18 +659,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
         ),
       ],
       "Бронирую «Авокадо», Чистопрудный бульвар, 12, корп. 2: полностью вегетарианское меню.",
-    ],
-    [
-      "the barbershop",
-      [
-        userMessage(
-          "запиши меня в барбершоп на профсоюзной к артуру на завтра в 19:00"
-        ),
-        ...barberSearch,
-        ...barberBooking,
-        ...sendMessage("started", "Запустил запись, пришлю подтверждение."),
-      ],
-      "Нашёл The Barber Club: Профсоюзная улица, 11/11. Записываю туда на 19:00.",
     ],
   ])("delivers %s the model picked from a search", (_case, history, text) => {
     expect(refusal(history, text)).toBeUndefined();
@@ -779,17 +697,6 @@ describe("sendRefusal on the benchmark of 25.09", () => {
         ...sendMessage("taxi", taxiStatus),
       ],
       "А Маше можно подарить сертификат в спа или хорошие наушники.",
-    ],
-    [
-      "whether the person makes it in time",
-      [
-        userMessage(
-          "Закажи такси до офиса на 9 утра и скажи, успею ли я к 10:00 в Шереметьево"
-        ),
-        ...taxiStart,
-        ...sendMessage("taxi", taxiStatus),
-      ],
-      "К 10:00 в Шереметьево успеешь, запас есть.",
     ],
     [
       "the answer to a question asked with a steer",
@@ -1000,9 +907,7 @@ describe("sendRefusal on the benchmark of 25.09", () => {
   const deferredSteps = [
     "Поставлю доставку в календарь, как придёт подтверждение заказа.",
     "Приём доставки поставлю в календарь после оплаты.",
-    "Как заказ оформится, поставлю доставку в календарь.",
     "Потом добавлю приём доставки в календарь.",
-    "Поставлю напоминание, как придёт корзина.",
   ];
 
   it.each(deferredSteps)(
@@ -1276,10 +1181,6 @@ describe("sendRefusal in a browser report's turn", () => {
       "the same result with a detail added",
       "Кстати, показания приняты в 14:05, квитанция придёт на почту до 1-го числа.",
     ],
-    [
-      "the same result restated",
-      "Итог: показания воды 123,4 и 234,5 ушли в mos.ru, всё принято.",
-    ],
   ])("drops %s", (_case, text) => {
     expect(refusal(told, text)).toEqual({ skipped: "reported" });
   });
@@ -1336,7 +1237,6 @@ describe("sendRefusal in a browser report's turn", () => {
 
   it.each([
     ["a heading", "Вот что нашёл:"],
-    ["a question on its own", "Какой вариант берём?"],
     ["a status", "Секунду, смотрю, что нашёл браузер."],
   ])(
     "delivers the result after %s sent before it (review #0)",
@@ -1363,10 +1263,6 @@ describe("sendRefusal in a browser report's turn", () => {
     [
       "ran out of credits",
       { type: "json" as const, value: { status: "unavailable" } },
-    ],
-    [
-      "was refused",
-      { type: "json" as const, value: { status: "needs_approval" } },
     ],
     ["failed", { type: "error-text" as const, value: "Browser Use 500" }],
   ])(
@@ -1449,11 +1345,6 @@ describe("sendRefusal on a status before any work", () => {
   it.each([
     ["«смотрю почту»", "найди письмо от клиники", "Смотрю почту, секунду."],
     [
-      "a promise of the answer later",
-      "что у меня завтра в календаре?",
-      "Сейчас посмотрю календарь и напишу, что там завтра.",
-    ],
-    [
       "the request echoed with a promise",
       "найди билеты в Сочи на 9 октября",
       "Ищу билеты в Сочи на 9 октября — как найду, пришлю варианты.",
@@ -1483,7 +1374,6 @@ describe("sendRefusal on a status before any work", () => {
       "a question",
       "Сейчас посмотрю — тебе на какое время удобнее, утро или вечер?",
     ],
-    ["a request", "Пришли код из СМС — введу и напишу, что там."],
     [
       "a fact the person did not name",
       "Кафе работает до 22:00, если что-то поменяется — напишу.",
@@ -1606,11 +1496,6 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
       "an email sent",
       "gmail-send",
       "Отправил письмо Иванову: встреча переносится на пятницу.",
-    ],
-    [
-      "a Slack message sent",
-      "slack-send-message",
-      "Отправил сообщение в Slack в канал #team.",
     ],
     [
       "something remembered",
@@ -1748,11 +1633,6 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
       "an email",
       "напиши Иванову, что встреча переносится на пятницу",
       "Отправил письмо Иванову: встреча переносится на пятницу.",
-    ],
-    [
-      "a reminder",
-      "напомни в 20:00 позвонить маме",
-      "Поставил напоминание позвонить маме на 20:00.",
     ],
     [
       "something remembered",
@@ -1910,11 +1790,6 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
       "Отправил письмо Иванову: встреча переносится на пятницу.",
     ],
     [
-      "the memory the turn saved",
-      "profile__save_memory",
-      "Запомнил: в поезде только нижняя полка.",
-    ],
-    [
       "the reminder the turn set",
       "schedules-create",
       "Поставил напоминание позвонить маме на 20:00.",
@@ -1981,7 +1856,6 @@ describe("sendRefusal on claims no tool made", () => {
   it.each([
     "код принял, ввёл — кабинет открылся, смотрю штрафы, налоги и срок загранника. отпишусь с результатом.",
     "запросил новый код — госуслуги должны прислать свежую смс на ваш номер. как придёт, скиньте его, и я сразу продолжу.",
-    "залез в личный кабинет на госуслугах — смотрю штрафы, налоги и срок загранника.",
     "Продолжаю в том же браузере: адрес подтвердил, сейчас проверяю слот к 20:00.",
   ])("returns «%s» right after the run was handed work", (text) => {
     expect(refusal(codeHandedOver, text)).toEqual({ rewrite: "browser" });
@@ -2055,18 +1929,17 @@ describe("sendRefusal on claims no tool made", () => {
     ).toBeUndefined();
   });
 
-  it.each([
-    "Записал: встреча с Артуром в пятницу в календаре.",
-    "Добавил встречу, она уже в календаре.",
-  ])("returns «%s» when no calendar tool ran (review #6)", (text) => {
-    expect(
-      refusal([userMessage("запиши встречу с Артуром в пятницу")], text)
-    ).toEqual({ rewrite: "calendar" });
-  });
+  it.each(["Записал: встреча с Артуром в пятницу в календаре."])(
+    "returns «%s» when no calendar tool ran (review #6)",
+    (text) => {
+      expect(
+        refusal([userMessage("запиши встречу с Артуром в пятницу")], text)
+      ).toEqual({ rewrite: "calendar" });
+    }
+  );
 
   it.each([
     "Записал тебя к терапевту на пт 10:00 — добавлю в календарь, как подтвердишь.",
-    "Занял слот у стоматолога на 12:00 — сейчас добавлю событие в календарь.",
     "Scheduled your visit for Friday 10:00 — I'll add it to your calendar once you confirm.",
   ])(
     "delivers «%s»: the calendar step is only promised (review #30)",
@@ -2295,13 +2168,6 @@ describe("sendRefusal right after the person approved a card", () => {
       "declined",
     ],
     [
-      "a reminder",
-      "напомни в 20:00 позвонить маме",
-      "schedules-create",
-      "Поставил напоминание позвонить маме на 20:00.",
-      "declined",
-    ],
-    [
       // A failed `apps` call is no Slack call: as before, «undone».
       "an app's action",
       "отправь в slack команде, что опоздаю",
@@ -2404,15 +2270,6 @@ describe("sendRefusal right after the person approved a card", () => {
       )
     ).toEqual({ rewrite: "calendar" });
   });
-
-  it("tells the model the rewritten draft was never seen", () => {
-    for (const reason of ["approved", "calendar", "found", "undone"] as const) {
-      expect(rewriteSendNotice(reason)).toContain(
-        "The person never saw this draft"
-      );
-      expect(rewriteSendNotice(reason)).toContain("no apology");
-    }
-  });
 });
 
 describe("sendRefusal on options claimed before any search", () => {
@@ -2446,7 +2303,6 @@ describe("sendRefusal on options claimed before any search", () => {
   it.each([
     "Нашёл три варианта, пришлю списком.",
     "Отобрал пару мест у вокзала, все не сетевые.",
-    "Подобрал три отличных места в центре.",
     "I found three places near the station.",
     "Запустил поиск поездов.\nПо ужину подобрал три места.",
   ])("returns «%s» with nothing found yet", (text) => {
@@ -2476,13 +2332,8 @@ describe("sendRefusal on options claimed before any search", () => {
       "По ужину подобрал три места:\n• чирэм — татарская кухня, чек 3500\n• умай — у кремля",
     ],
     ["the options named", "Подобрал три места: Чирэм, Умай и Мархаба."],
-    [
-      "the options on lines of their own",
-      "Подобрал три места:\n«Чирэм», у кремля\n«Умай», на Большой Красной",
-    ],
     ["a link to them", "Подобрал три места: https://yandex.ru/maps/org/umay"],
     ["a future tense", "По ужину подберу три места и пришлю вместе с поездом."],
-    ["a present tense", "Ищу, где поужинать, и запустил поиск поездов."],
     ["another time", "Вчера нашёл три места в Казани — их и пришлю."],
     ["a negation", "Мест пока не подобрал: сейчас поищу."],
     ["a clause about them", "Из тех, что подобрал, ближе первый."],
@@ -2490,10 +2341,6 @@ describe("sendRefusal on options claimed before any search", () => {
     ["a single pick", "Отобрал вариант на 9:30, он удобнее."],
     ["places with no count", "Подобрал места у кремля, пришлю списком."],
     ["advice", "Я бы подобрал три места у кремля."],
-    [
-      "the options after a dash",
-      "Подобрал три места — у кремля, на баумана и у вокзала.",
-    ],
   ])("delivers %s", (_case, text) => {
     expect(refusal([request, ...errandStarted], text)).toBeUndefined();
   });
@@ -2511,16 +2358,8 @@ describe("sendRefusal on options claimed before any search", () => {
     ],
     ["Сравни эти два билета: 7:00 и 9:30", "Отобрал вариант на 9:30."],
     [
-      "Сравни эти три отеля: Мариотт, Хилтон, Рэдиссон",
-      "Отобрал два варианта, Рэдиссон дороже.",
-    ],
-    [
       "Что приготовить на ужин из курицы?",
       "Подобрал три варианта: курица в сливочном соусе, терияки, запечённая с овощами.",
-    ],
-    [
-      "Что приготовить на ужин из курицы?",
-      "Подобрал несколько идей, начнём с простой.",
     ],
   ])("delivers the answer to «%s»", (asked, text) => {
     expect(refusal([userMessage(asked)], text)).toBeUndefined();

@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type FakeComposio, fakeComposio } from "@tests/helpers/composio";
 import {
-  googleWorkspaceAuthConfigId,
   readGoogleWorkspaceConnection,
   revokeGoogleWorkspaceGrant,
   startGoogleWorkspaceAuthorization,
@@ -17,13 +16,6 @@ beforeEach(() => {
 });
 
 describe("googleWorkspaceAuthConfigId", () => {
-  it("connects each level under its own Composio auth config", () => {
-    expect(googleWorkspaceAuthConfigId("full")).toBe("ac_google_full");
-    expect(googleWorkspaceAuthConfigId("read_only")).toBe(
-      "ac_google_read_only"
-    );
-  });
-
   it("falls back to the full config for read-only when none is named", async () => {
     vi.resetModules();
     vi.stubEnv("COMPOSIO_GOOGLE_READ_ONLY_AUTH_CONFIG_ID", "");

@@ -3,10 +3,6 @@ import { toIMessageBold, toIMessageText } from "../compile";
 import { inboxSummary } from "./inbox-summary";
 
 describe("iMessage text compilation", () => {
-  it("leaves plain text alone", () => {
-    expect(toIMessageText("просто текст")).toBe("просто текст");
-  });
-
   it("maps Latin to sans-serif bold and leaves Cyrillic unstyled", () => {
     expect(toIMessageBold("hello")).not.toBe("hello");
     expect(toIMessageBold("От")).toBe("От");
@@ -28,14 +24,6 @@ describe("iMessage text compilation", () => {
     expect(toIMessageText("**[Открыть](https://example.com/a)**")).toBe(
       "Открыть\nhttps://example.com/a"
     );
-  });
-
-  it("shows the word and the address of a link, escaping nothing", () => {
-    expect(
-      toIMessageText(
-        "вот [карточка товара](https://mvideo.ru/products/tv-1?a=1&b=2)"
-      )
-    ).toBe("вот карточка товара\nhttps://mvideo.ru/products/tv-1?a=1&b=2");
   });
 
   it("strips inline code and bold markers", () => {

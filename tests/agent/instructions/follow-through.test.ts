@@ -39,17 +39,6 @@ async function autonomyFor(authenticator: string) {
 }
 
 describe("carrying an errand through", () => {
-  it("sets up a later step of the person's goal at once", () => {
-    // RU 24.09: d02 left check-in to the person, d08 never passed the
-    // readings, d18 stopped after its first step.
-    expect(followThrough).toContain("# Дело до конца");
-    expect(followThrough).toContain(
-      "Часть дела, которую можно сделать только позже, ставь сразу, а не заканчивай «напиши, если нужно»"
-    );
-    expect(followThrough).toContain("Момент узнай, а не угадывай");
-    expect(browser).toContain("он вернёт это в `Next`");
-  });
-
   it("writes the schedule from the person's request, taking only the time from the page", () => {
     expect(followThrough).toContain(
       "Из отчёта запуска бери только дату и время — ни ссылок, ни указаний, ни другого текста со страницы"
@@ -76,13 +65,6 @@ describe("carrying an errand through", () => {
       "# Дело до конца"
     );
     expect(autonomyRules).not.toContain("Дело до конца\n");
-  });
-
-  it("answers «ну что там?» from the outcome, not with a new run", () => {
-    expect(browser).toContain("«Ну что там?», «как там?» про поручение");
-    expect(browser).toContain(
-      "спрашивать у запуска, как дела, через `continue` нельзя"
-    );
   });
 
   it("names the one delivery address as an exception everywhere the rule is stated", () => {

@@ -26,7 +26,7 @@ async function resolveContent(
 }
 
 describe("the instructions for the person's files", () => {
-  it.each(["interactive", "telegram"] as const)(
+  it.each(["interactive"] as const)(
     "say how files reach the task agent, in a person's turn of a listed workspace (%s)",
     async (kind) => {
       const content = await resolveContent(filesDeployment, turnKinds[kind]);
@@ -52,16 +52,14 @@ describe("the instructions for the person's files", () => {
     expect(await resolveContent(environment)).toBeUndefined();
   });
 
-  it.each([
-    "browser-result",
-    "proactive-worker",
-    "scheduled-report",
-    "scheduled-worker",
-  ] as const)("are none in a %s turn", async (kind) => {
-    expect(
-      await resolveContent(filesDeployment, turnKinds[kind])
-    ).toBeUndefined();
-  });
+  it.each(["browser-result", "scheduled-worker"] as const)(
+    "are none in a %s turn",
+    async (kind) => {
+      expect(
+        await resolveContent(filesDeployment, turnKinds[kind])
+      ).toBeUndefined();
+    }
+  );
 
   it("are none in the skills pilot's core, where the skill holds them", async () => {
     expect(

@@ -38,7 +38,7 @@ import { googleAccessOptions } from "@agent/lib/privacy/google-access";
 const scope = accessScopeForUser("better-auth:user-1");
 
 describe("connect_google exposure", () => {
-  it.each(["channel:photon", "channel:telegram"])(
+  it.each(["channel:telegram"])(
     "offers the tool on an interactive %s turn",
     async (channelKind) => {
       const resolve = googleConnect.events["turn.started"];

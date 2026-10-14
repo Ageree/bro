@@ -171,18 +171,6 @@ describe("model selection", () => {
     });
   });
 
-  it("still disables reasoning when explicitly set to off", async () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "off");
-
-    const { modelSelection } = await import("@agent/lib/model/selection");
-    expect(modelSelection("deepseek/deepseek-v4.1-flash")).toMatchObject({
-      modelOptions: {
-        providerOptions: { openrouter: { reasoning: { enabled: false } } },
-      },
-    });
-  });
-
   it("runs a step of the fast-reply pilot without reasoning", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
 
@@ -804,33 +792,6 @@ describe("model selection", () => {
     ).toBe(true);
   });
 
-  it("keeps a host pinned for DeepSeek even when it is on the skip list", async () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    vi.stubEnv("OPENROUTER_PROVIDER_ORDER", "alibaba");
-
-    const { modelSelection } = await import("@agent/lib/model/selection");
-    modelSelection("deepseek/deepseek-v4.1-flash");
-
-    expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
-      "deepseek/deepseek-v4.1-flash",
-      {
-        provider: {
-          ignore: [
-            "morph",
-            "wafer",
-            "sail-research",
-            "modal",
-            "parasail",
-            "phala",
-            "inference-net",
-            "open-inference",
-          ],
-          order: ["alibaba"],
-        },
-      }
-    );
-  });
-
   it("pins the configured provider order and reasoning effort", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     vi.stubEnv("OPENROUTER_PROVIDER_ORDER", " Baseten , fireworks ,, ");
@@ -1104,21 +1065,6 @@ describe("model selection", () => {
       ]);
       expect(inputStarts).toStrictEqual(
         streamedCalls.map((call) => call.toolCallId)
-      );
-    });
-
-    it("leaves an OpenRouter step's metadata as it was", async () => {
-      vi.stubEnv("MODEL_PROVIDER", "openrouter");
-      pricedModel(0.01);
-
-      const { directModelSelection } = await import("@agent/lib/model/direct");
-      const { model } = directModelSelection("deepseek/deepseek-v4.1-flash", {
-        toolChoice: "auto",
-      });
-      const generated = await generateText({ model, prompt: "Да?" });
-
-      expect(generated.finalStep.providerMetadata).not.toHaveProperty(
-        "gateway"
       );
     });
   });

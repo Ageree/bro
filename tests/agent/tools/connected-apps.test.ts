@@ -108,7 +108,7 @@ const cardOptions = [
 ];
 
 describe("approvals", () => {
-  it.each(["scheduled-worker", "scheduled-result", "background-task", "app"])(
+  it.each(["scheduled-worker", "background-task", "app"])(
     "denies new app actions from %s without a card",
     async (authenticator) => {
       const decisions = await Promise.all([

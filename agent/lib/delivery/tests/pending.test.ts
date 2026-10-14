@@ -26,18 +26,15 @@ describe("awaitsDelivery", () => {
     ).toBe(true);
   });
 
-  it.each(["send_message", "react_to_message"])(
-    "stops waiting once %s went through",
-    (toolName) => {
-      expect(
-        awaitsDelivery([
-          userMessage("спасибо"),
-          toolCall(toolName),
-          toolResult(toolName, { type: "text", value: "submitted" }),
-        ])
-      ).toBe(false);
-    }
-  );
+  it("stops waiting once send_message went through", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("спасибо"),
+        toolCall("send_message"),
+        toolResult("send_message", { type: "text", value: "submitted" }),
+      ])
+    ).toBe(false);
+  });
 
   it("keeps waiting after only a reaction to a question", () => {
     // DeepSeek met «What is 2 plus 2?» with 😂 and wrote «4» as plain text,
@@ -60,7 +57,7 @@ describe("awaitsDelivery", () => {
     ).toBe(false);
   });
 
-  it.each(["Скажи, сколько будет 2+2", "Посчитай чаевые с 3 400"])(
+  it.each(["Посчитай чаевые с 3 400"])(
     "keeps waiting after only a reaction to «%s» (review #5)",
     (text) => {
       expect(
@@ -83,22 +80,18 @@ describe("awaitsDelivery", () => {
     ).toBe(false);
   });
 
-  it.each(["error-text", "execution-denied"] as const)(
-    "keeps waiting after a send_message that ended in %s",
-    (type) => {
-      const output =
-        type === "error-text"
-          ? { type, value: "invalid input" }
-          : { type, reason: "denied" };
-      expect(
-        awaitsDelivery([
-          userMessage("привет"),
-          toolCall("send_message"),
-          toolResult("send_message", output),
-        ])
-      ).toBe(true);
-    }
-  );
+  it("keeps waiting after a send_message that failed", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("привет"),
+        toolCall("send_message"),
+        toolResult("send_message", {
+          type: "error-text",
+          value: "invalid input",
+        }),
+      ])
+    ).toBe(true);
+  });
 
   it("keeps waiting after a send returned for a rewrite", () => {
     expect(

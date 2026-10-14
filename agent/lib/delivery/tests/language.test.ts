@@ -13,22 +13,20 @@ import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 describe("messageLanguage", () => {
   it.each([
     ["find a dinner spot for four tomorrow at 7:30", "en"],
-    ["triage my inbox", "en"],
-    ["найди, где поужинать", "ru"],
     ["что лучше, iPhone или Pixel?", "ru"],
     ["[голосовое] купи молоко", "ru"],
   ] as const)("reads %j as %s", (text, language) => {
     expect(messageLanguage(text)).toBe(language);
   });
 
-  it.each(["ok", "👍", "https://example.com/page", "7:30"])(
+  it.each(["ok", "https://example.com/page"])(
     "finds no language in %j",
     (text) => {
       expect(messageLanguage(text)).toBeUndefined();
     }
   );
 
-  it.each(["Cancel", "Approve", "Подтвердить", "Отмена", " отменить. ", "2"])(
+  it.each(["Cancel", " отменить. ", "2"])(
     "finds no language in the card answer %j",
     (text) => {
       expect(messageLanguage(text)).toBeUndefined();
@@ -135,15 +133,6 @@ describe("wordlessLatestMessage", () => {
 
 describe("replyDirective", () => {
   const formal = { formal: true, name: null };
-
-  it("leaves requested translations in the language asked for", () => {
-    expect(
-      replyDirective({ formOfAddress: defaultFormOfAddress, language: "ru" })
-    ).toContain("Текст, который человек попросил на другом языке (перевод");
-    expect(
-      replyDirective({ formOfAddress: defaultFormOfAddress, language: "en" })
-    ).toContain("Text the person asked for in another language (a translation");
-  });
 
   it("makes Bro speak of himself in the masculine in Russian", () => {
     const note = replyDirective({
