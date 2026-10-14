@@ -279,17 +279,6 @@ describe("reading a price", () => {
     ).toEqual({ kind: "several-products" });
   });
 
-  it("refuses a catalogue of several products", () => {
-    expect(
-      readPrice(
-        jsonLd([
-          { "@type": "Product", name: "A", offers: { price: 100 } },
-          { "@type": "Product", name: "B", offers: { price: 200 } },
-        ])
-      )
-    ).toEqual({ kind: "several-products" });
-  });
-
   it("falls back to the price meta tags and itemprop", () => {
     expect(
       readPrice(

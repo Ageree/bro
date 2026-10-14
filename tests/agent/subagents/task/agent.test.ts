@@ -60,19 +60,14 @@ describe("the task agent's model", () => {
     expect(await resolveStep()).toBe("deepseek/deepseek-v4.1");
   });
 
-  it("refuses every step while its sandbox owes the off-the-web mark", async () => {
-    // The tool router would still let this sandbox reach the web.
-    services.offlineRefusal.mockReturnValue("owed");
-
-    await expect(resolveStep()).rejects.toThrow(/taken off the web/u);
-    expect(services.modelSelection).not.toHaveBeenCalled();
-  });
-
-  it("refuses the steps of a message whose checks could not be read", async () => {
-    // Whether the person sent it is unknown: no mark yet, no web either.
-    services.offlineRefusal.mockReturnValue("unchecked");
-
-    await expect(resolveStep()).rejects.toThrow(/taken off the web/u);
+  it("refuses every step while its sandbox owes the mark or its checks could not be read", async () => {
+    // Owed: the tool router would still let this sandbox reach the web.
+    // Unchecked: whether the person sent it is unknown, so no web either.
+    for (const refusal of ["owed", "unchecked"] as const) {
+      services.offlineRefusal.mockReturnValue(refusal);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each refusal is checked in turn.
+      await expect(resolveStep()).rejects.toThrow(/taken off the web/u);
+    }
     expect(services.modelSelection).not.toHaveBeenCalled();
   });
 });

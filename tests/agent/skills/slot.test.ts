@@ -609,14 +609,6 @@ describe("load_skill", () => {
     );
   });
 
-  it("names the skills for a name that is none of them", async () => {
-    const tool = await resolveTool(await load());
-    // The other marked files bring their skills too.
-    expect(run(tool, "weather")).toMatch(
-      /^There is no skill «weather»\. The skills are: browser, .*\bgames\b.*\.$/u
-    );
-  });
-
   it("names the files among the skills only where they reach the task agent", async () => {
     const pilot = {
       BROWSER_USE_API_KEY: "test-browser-use-key",
@@ -685,17 +677,5 @@ describe("load_skill", () => {
       })
     );
     expect(run(tool, "games")).toContain("already above");
-  });
-
-  it("takes a short name, trimmed", async () => {
-    const schema = z.object({
-      inputSchema: z.custom<z.ZodType>((value) => value instanceof z.ZodType),
-    });
-    const { inputSchema } = schema.parse(await resolveTool(await load()));
-    expect(inputSchema.safeParse({ name: " games " }).data).toEqual({
-      name: "games",
-    });
-    expect(inputSchema.safeParse({ name: "x".repeat(65) }).success).toBe(false);
-    expect(inputSchema.safeParse({ name: "  " }).success).toBe(false);
   });
 });

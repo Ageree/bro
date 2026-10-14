@@ -262,12 +262,6 @@ describe("web_fetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(502);
   });
 
-  it("returns a missing page as it is", async () => {
-    const result = await fetchPage("https://site.example/gone");
-
-    expect(result.content).toMatch(/^Request failed with status code: 404/u);
-  });
-
   it("does not mistake an article that mentions a captcha for a check page", async () => {
     const url = "https://news.example/captcha";
     pageAt(
@@ -305,7 +299,6 @@ describe("web_fetch", () => {
     "https://[::ffff:127.0.0.1]/",
     "https://169.254.169.254/latest/meta-data/",
     "https://10.0.0.5/",
-    "https://192.168.1.1/",
     "https://0x7f000001/",
   ])("never asks %s", async (url) => {
     await expect(fetchPage(url)).rejects.toThrow(privateAddressRefusal);

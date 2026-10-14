@@ -255,19 +255,6 @@ describe("proactive schedule", () => {
     });
   });
 
-  it("does not rank mail that fits one run", async () => {
-    probe.mockResolvedValue({
-      calendarSeenUntil: seenUntil,
-      flights: [],
-      signals: [flight],
-      state: "connected",
-    });
-
-    await runSchedule(vi.fn<ScheduleToFn>());
-
-    expect(rank).not.toHaveBeenCalled();
-  });
-
   it("queues a flight reminder that is due even when nothing else is new", async () => {
     // 19:00 in Moscow the evening before a 07:05 flight the checks saw at noon.
     const evening = new Date("2026-09-23T16:00:00.000Z");
@@ -743,6 +730,9 @@ describe("proactive schedule", () => {
       "count a leave-by time from here): ул. Профсоюзная, 12, Москва"
     );
     expect(send.mock.calls[0]?.[0]).not.toContain("quiet hours");
+    // Outside the agency pilot the worker keeps the proactive prompt.
+    expect(send.mock.calls[0]?.[0]).toContain("worth writing first about");
+    expect(send.mock.calls[0]?.[0]).not.toContain("report it.");
     expect(send.mock.calls[0]?.[1].auth).toMatchObject({
       attributes: {
         conversationChannel: "telegram",
@@ -791,28 +781,6 @@ describe("proactive schedule", () => {
         workspaceId: "workspace:alice",
       },
       authenticator: "scheduled-worker",
-    });
-  });
-
-  it("keeps a run outside the agency pilot a proactive one, with the prompt it had", async () => {
-    probe.mockResolvedValue({
-      calendarSeenUntil: seenUntil,
-      flights: [],
-      signals: [],
-      state: "connected",
-    });
-    proactive.listSignals.mockResolvedValue([flight]);
-    jobs.claimRuns.mockResolvedValue([proactiveClaim()]);
-    const send = vi
-      .fn<ReturnType<ScheduleToFn>["send"]>()
-      .mockResolvedValue(workerSession());
-
-    await runSchedule(vi.fn<ScheduleToFn>(() => ({ send })));
-
-    expect(send.mock.calls[0]?.[0]).toContain("worth writing first about");
-    expect(send.mock.calls[0]?.[0]).not.toContain("report it.");
-    expect(send.mock.calls[0]?.[1].auth).toMatchObject({
-      attributes: { scheduledRunKind: "proactive" },
     });
   });
 

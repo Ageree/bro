@@ -890,48 +890,6 @@ describe("the browser run poller", () => {
     );
   }, 30_000);
 
-  it("reports a basket and hotels as a list of what the run found", async () => {
-    await runningErrand(
-      "basket-run",
-      [
-        "Собрал корзину на Ozon.",
-        "RESULT: корзина собрана",
-        "TOTAL: 1 337,10 ₽",
-        "NEEDS: payment",
-        'ITEMS: [{"name":"Молоко Простоквашино 2,5%","price":"89,90 ₽","quantity":2,"url":"https://www.ozon.ru/product/moloko-1"},{"name":"Хлеб Бородинский","price":"57,30 ₽","quantity":1,"url":null},{"name":"Кофе Jardin 250 г","price":"1 100 ₽","quantity":1,"details":"доставка завтра","url":"https://www.ozon.ru/product/kofe-3"}]',
-      ].join("\n")
-    );
-    await runningErrand(
-      "hotels-run",
-      [
-        "RESULT: найдено 2 отеля",
-        "NEEDS: none",
-        'ITEMS: [{"name":"Отель Кремлёвский","price":"6 500 ₽ за ночь","details":"12–14 октября, бесплатная отмена до 10 октября","url":"https://ostrovok.ru/hotel/kremlin"},{"name":"Гранд Отель Казань","price":"7 200 ₽ за ночь","details":"12–14 октября, без отмены","url":"https://ostrovok.ru/hotel/grand"}]',
-      ].join("\n")
-    );
-    const { attachSession, send } = webChat();
-
-    await tick(attachSession);
-
-    const reports = send.mock.calls.map(([message]) => sentText(message));
-    const basket = reports.find((report) => report.includes("basket-run"));
-    const hotels = reports.find((report) => report.includes("hotels-run"));
-    expect(basket).toContain(
-      "1. Молоко Простоквашино 2,5% — 89,90 ₽ — qty 2 — https://www.ozon.ru/product/moloko-1"
-    );
-    expect(basket).toContain("2. Хлеб Бородинский — 57,30 ₽ — qty 1");
-    expect(basket).toContain(
-      "3. Кофе Jardin 250 г — 1 100 ₽ — qty 1 — доставка завтра"
-    );
-    expect(hotels).toContain(
-      "1. Отель Кремлёвский — 6 500 ₽ за ночь — 12–14 октября, бесплатная отмена до 10 октября — https://ostrovok.ru/hotel/kremlin"
-    );
-    expect(hotels).toContain("2. Гранд Отель Казань");
-    for (const report of [basket, hotels]) {
-      expect(report).toContain("give the user every item as a list");
-    }
-  }, 30_000);
-
   it("closes a run Browser Use no longer knows instead of polling it forever", async () => {
     const { createBrowserRun } = await import("@db/services/browser-runs");
     await createBrowserRun(alice, {

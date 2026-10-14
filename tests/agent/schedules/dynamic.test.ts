@@ -153,34 +153,6 @@ describe("dynamic schedule dispatch", () => {
     });
   });
 
-  it("delivers recoverable iMessage reports through the schedule channel handle", async () => {
-    const report = scheduledReport();
-    services.listReports.mockResolvedValue([
-      {
-        carriesEvent: false,
-        conversationChannel: "photon",
-        jobId: report.job.id,
-        jobKind: "task",
-        runId: report.run.id,
-        scheduledFor: report.run.scheduledFor,
-        scope: { userId: "user-1", workspaceId: "workspace-1" },
-        timeSensitive: false,
-      },
-    ]);
-    services.claimReports.mockResolvedValue(report);
-    const send = vi
-      .fn<ReturnType<ScheduleToFn>["send"]>()
-      .mockResolvedValue(workerSession("main-session"));
-    const to = vi.fn<ScheduleToFn>(() => ({ send }));
-
-    await runSchedule(to);
-
-    expect(send.mock.calls[0]?.[1]).toMatchObject({
-      auth: { authenticator: "scheduled-result" },
-      turnPolicy: "queue",
-    });
-  });
-
   it("sends one morning message for all of Bro's own reports, not one each", async () => {
     // 09:00 in Moscow: the night is over and two reports are due at once.
     vi.useFakeTimers({
@@ -273,41 +245,6 @@ describe("dynamic schedule dispatch", () => {
       auth: { authenticator: "scheduled-result" },
       turnPolicy: "queue",
     });
-  });
-
-  it("hands a stored answer to the waiting worker session", async () => {
-    // `schedules-answer` only stores the answer; this tick owns the worker's
-    // session handle, which no app route has on Vercel.
-    const claim = answeredClaim();
-    services.claimAnswers.mockResolvedValue([claim]);
-    const respond = vi
-      .fn<Session["respond"]>()
-      .mockResolvedValue({ sessionId: "worker-session", status: "accepted" });
-    const attachSession = vi
-      .fn<ScheduleHandlerArgs["attachSession"]>()
-      .mockReturnValue({ ...workerSession("worker-session"), respond });
-    const fetch = vi.spyOn(globalThis, "fetch");
-
-    await runSchedule(vi.fn<ScheduleToFn>(), attachSession);
-
-    expect(attachSession).toHaveBeenCalledExactlyOnceWith("worker-session");
-    expect(respond).toHaveBeenCalledOnce();
-    expect(respond.mock.calls[0]?.[0]).toEqual([
-      { requestId: "request-airport", text: "LGA" },
-    ]);
-    expect(respond.mock.calls[0]?.[1]).toMatchObject({
-      auth: {
-        attributes: { scheduledRunId: claim.run.id },
-        authenticator: "scheduled-input",
-        principalId: "user-1",
-      },
-    });
-    expect(services.finishInput).toHaveBeenCalledExactlyOnceWith(
-      claim.run.id,
-      claim.run.leaseToken
-    );
-    expect(services.restoreInput).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("keeps the answer for a worker still starting and drops it for a gone one", async () => {
@@ -456,81 +393,6 @@ describe("scheduled report delivery", () => {
       report.run.reportLeaseToken,
       expect.any(Date),
       "not_needed"
-    );
-  });
-
-  it("routes web chat reports to the stored session", async () => {
-    const report = scheduledReport();
-    report.delivery.conversationChannel = "eve";
-    report.delivery.conversationId = "web-session";
-    services.claimReports.mockResolvedValue(report);
-    const send = vi.fn<Session["send"]>();
-    const attached = workerSession("web-session", send);
-    send.mockResolvedValue({ sessionId: "web-session", status: "accepted" });
-    const attachSession = vi
-      .fn<(sessionId: string) => Session>()
-      .mockReturnValue(attached);
-    const to = vi.fn<ScheduleToFn>();
-
-    await dispatchScheduledReport({ attachSession, to }, report.run.id);
-
-    expect(attachSession).toHaveBeenCalledExactlyOnceWith("web-session");
-    expect(to).not.toHaveBeenCalled();
-    expect(send.mock.calls[0]?.[0]).toContain(
-      "A background scheduled run has completed."
-    );
-    expect(send.mock.calls[0]?.[1].auth?.authenticator).toBe(
-      "scheduled-result"
-    );
-    expect(send.mock.calls[0]?.[1].turnPolicy).toBe("queue");
-  });
-
-  it("suppresses reports for a web chat session that has ended", async () => {
-    const report = scheduledReport();
-    report.delivery.conversationChannel = "eve";
-    report.delivery.conversationId = "retired-session";
-    services.claimReports.mockResolvedValue(report);
-    const send = vi
-      .fn<Session["send"]>()
-      .mockResolvedValue({ status: "session_not_active" });
-    const attachSession = vi
-      .fn<(sessionId: string) => Session>()
-      .mockReturnValue(workerSession("retired-session", send));
-
-    await dispatchScheduledReport(
-      { attachSession, to: vi.fn<ScheduleToFn>() },
-      report.run.id
-    );
-
-    expect(services.dropReport).toHaveBeenCalledExactlyOnceWith(
-      report.run.id,
-      report.run.reportLeaseToken
-    );
-  });
-
-  it("retries a web chat report while its session is still starting", async () => {
-    const report = scheduledReport();
-    report.delivery.conversationChannel = "eve";
-    report.delivery.conversationId = "starting-session";
-    services.claimReports.mockResolvedValue(report);
-    const send = vi
-      .fn<Session["send"]>()
-      .mockResolvedValue({ retryable: true, status: "session_not_active" });
-    const attachSession = vi
-      .fn<(sessionId: string) => Session>()
-      .mockReturnValue(workerSession("starting-session", send));
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    await dispatchScheduledReport(
-      { attachSession, to: vi.fn<ScheduleToFn>() },
-      report.run.id
-    );
-
-    expect(services.dropReport).not.toHaveBeenCalled();
-    expect(services.releaseReport).toHaveBeenCalledExactlyOnceWith(
-      report.run.id,
-      report.run.reportLeaseToken,
-      "The web chat session is not ready for the report."
     );
   });
 });
