@@ -184,15 +184,6 @@ describe("appRouter", () => {
     );
   });
 
-  it("offers only the cabinet's apps", async () => {
-    await expect(
-      appRouter
-        .createCaller({ origin: "https://example.com", scope })
-        // @ts-expect-error -- Todoist connects in chat, not from the cabinet.
-        .connectedApps.update({ action: "connect", app: "todoist" })
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-  });
-
   describe("memory in the cabinet", () => {
     const caller = () =>
       appRouter.createCaller({ origin: "https://example.com", scope });

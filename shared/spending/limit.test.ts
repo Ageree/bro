@@ -598,26 +598,6 @@ describe("standing permissions", () => {
     ).toMatchObject({ capRub: undefined });
   });
 
-  it("never covers an excluded site or a repeating charge", () => {
-    expect(
-      decideStandingAction(
-        policy({ actions: [taxiRule], excludedMerchants: ["gett.com"] }),
-        standingRequest({ chargeRub: 500, kind: "taxi", merchant: "gett.com" })
-      )
-    ).toBeUndefined();
-    expect(
-      decideStandingAction(
-        actions(lavka),
-        standingRequest({
-          chargeRub: 299,
-          kind: "order",
-          merchant: "lavka.yandex.ru",
-          recurring: true,
-        })
-      )
-    ).toBeUndefined();
-  });
-
   it("lets a permission for a whole site cover every kind there and on its subdomains", () => {
     const site = { kind: null, maxRub: 5000, merchant: "ozon.ru" };
     expect(

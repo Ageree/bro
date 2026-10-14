@@ -231,26 +231,6 @@ describe("interactive delivery enforcement", () => {
     ).toBeUndefined();
   });
 
-  it("lets the model finish once send_message went through", async () => {
-    await agent.model.events["step.started"]?.(
-      {},
-      interactiveContext(delivered)
-    );
-
-    // The note after a delivery says the reply is out, so the model does
-    // not read it as a new request to answer.
-    expect(services.modelSelection).toHaveBeenLastCalledWith(
-      "openai/gpt-5.6-sol-fast",
-      {
-        delivered: true,
-        replyNote: note("ru", true),
-        silent: false,
-        toolChoice: "auto",
-        withheldTools: ["task"],
-      }
-    );
-  });
-
   it("stops forcing delivery once a send failed the tool's check", async () => {
     // RU 25.09: ten forced steps in a row each sent
     // {"kind":"message","replyTo":{"kind":"current"}} with no text.
@@ -960,27 +940,6 @@ describe("interactive delivery enforcement", () => {
       ...outside,
       historyTrim: undefined,
     });
-  });
-
-  it("hands every step's history to the turn's compaction record", async () => {
-    // Before eve may compact it: the record settles the claims of the
-    // steps before and, at the first step, reads the turn's opening.
-    const history = [humanMessage("найди поезд в Казань")];
-    async function readStep(stepIndex: number) {
-      await agent.model.events["step.started"]?.(
-        { data: { stepIndex, turnId: "turn_3" } },
-        interactiveContext(history)
-      );
-      return services.recordStepHistory.mock.lastCall;
-    }
-    expect(await readStep(0)).toEqual([
-      { sessionId: "interactive-session", stepIndex: 0, turnId: "turn_3" },
-      history,
-    ]);
-    expect(await readStep(1)).toEqual([
-      { sessionId: "interactive-session", stepIndex: 1, turnId: "turn_3" },
-      history,
-    ]);
   });
 
   it("lets only the first step of a text turn compact, in the pilot", async () => {

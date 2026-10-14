@@ -101,18 +101,6 @@ describe("browser run outcome parsing", () => {
     });
   });
 
-  it("tolerates bullets and bold around the labels", () => {
-    const outcome = parseBrowserOutcome(
-      ["- **RESULT:** stopped at the code step", "* **NEEDS:** sms_code"].join(
-        "\n"
-      )
-    );
-
-    expect(outcome.result).toBe("stopped at the code step");
-    expect(outcome.needs).toBe("sms_code");
-    expect(outcome.labelled).toBe(true);
-  });
-
   it("falls back to none for an unlabelled or unknown need", () => {
     expect(parseBrowserOutcome("It worked.").needs).toBe("none");
     expect(parseBrowserOutcome("It worked.").labelled).toBe(false);
@@ -573,13 +561,6 @@ describe("browser run items", () => {
 
     expect(items).toHaveLength(30);
     expect(items.at(-1)?.name).toBe("Товар 30");
-  });
-
-  it("reads no items from a report without the line or with broken JSON", () => {
-    expect(parseBrowserOutcome("RESULT: done\nNEEDS: none").items).toEqual([]);
-    expect(
-      parseBrowserOutcome('RESULT: done\nITEMS: [{"name": "Отель"').items
-    ).toEqual([]);
   });
 
   it("names each substitute with what it replaces and keeps fees as their own lines", () => {

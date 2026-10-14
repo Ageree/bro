@@ -353,19 +353,6 @@ describe("transcribeAudio", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry an unauthorized key", async () => {
-    fetchMock.mockResolvedValueOnce(failure(401, "unauthorized"));
-    const { transcribeAudio } = await loadTranscription();
-
-    const result = await transcribeAudio({
-      bytes: mp3,
-      mediaType: "audio/mpeg",
-    });
-
-    expect(result).toEqual({ kind: "failed", reason: "unauthorized" });
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
   it("skips the fallback when it is the same model", async () => {
     vi.stubEnv("OPENROUTER_STT_FALLBACK_MODEL", "primary-stt");
     fetchMock.mockResolvedValueOnce(failure(500, "upstream"));

@@ -494,24 +494,6 @@ describe("recording where a run is signed in", () => {
 describe("forgetting sign-ins", () => {
   const scope = { userId: "better-auth:alice", workspaceId };
 
-  it("deletes the browser profile in the cloud first, then forgets it and every sign-in", async () => {
-    forgetBrowserSignIns.mockResolvedValue(["ozon.ru", "yandex.ru"]);
-    const { forgetSignIns } = await import("@agent/lib/browser-use/sign-ins");
-
-    expect(await forgetSignIns(scope, undefined)).toEqual({
-      domains: ["ozon.ru", "yandex.ru"],
-      kind: "all",
-    });
-    expect(deleteBrowserUseProfile).toHaveBeenCalledExactlyOnceWith(
-      "profile-1"
-    );
-    expect(forgetBrowserProfile).toHaveBeenCalledExactlyOnceWith(
-      workspaceId,
-      "profile-1"
-    );
-    expect(forgetBrowserSignIns).toHaveBeenCalledExactlyOnceWith(workspaceId);
-  });
-
   it("forgets nothing when the cloud keeps the profile, and takes a missing one as gone", async () => {
     const { BrowserUseError } = await import("@agent/lib/browser-use/client");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

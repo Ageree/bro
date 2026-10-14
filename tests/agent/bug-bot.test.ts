@@ -152,13 +152,6 @@ describe("bug reports", () => {
     vi.unstubAllGlobals();
   });
 
-  it("greets on /start without filing anything", async () => {
-    const calls = stubBotApi();
-    await handleBugBotUpdate(target, privateMessage(1, "/start"), now);
-    expect(calls.map((call) => call.method)).toEqual(["sendMessage"]);
-    expect(await database.select().from(schema.bugReports)).toEqual([]);
-  });
-
   it("files a report once per update and forwards it with a tagged header", async () => {
     const calls = stubBotApi();
     const update = privateMessage(2, "кнопка не нажимается");

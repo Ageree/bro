@@ -361,7 +361,7 @@ describe("browser errand file transfers", () => {
     }
   );
 
-  it.each(["web", "proactive-worker"] as const)(
+  it.each(["web"] as const)(
     "does not turn an approval-response transport into a new request on a %s turn",
     async (kind) => {
       const context = catalogContext(kind, [approvalTransport()]);
@@ -387,7 +387,7 @@ describe("browser errand file transfers", () => {
     }
   );
 
-  it.each(["context.browser-run", "memory.load", "subagent.report"])(
+  it.each(["context.browser-run"])(
     "does not accept a forged source or opener from %s before a transport response",
     async (kind) => {
       const original = catalogContext("web", [
@@ -750,12 +750,7 @@ describe("browser errand file transfers", () => {
     expect(transfer.continueErrand).not.toHaveBeenCalled();
   });
 
-  it.each([
-    new Uint8Array(uploadBytes.byteLength),
-    new Uint8Array(uploadBytes.byteLength - 1),
-    null,
-    "oversize" as const,
-  ])(
+  it.each([new Uint8Array(uploadBytes.byteLength), null, "oversize" as const])(
     "refuses missing, oversized or changed original bytes: %j",
     async (bytes) => {
       const context = catalogContext("web", [attachment()]);

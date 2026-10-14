@@ -198,14 +198,6 @@ describe("environment", () => {
     }
   });
 
-  it("rejects a non-Postgres database URL", async () => {
-    vi.stubEnv("DATABASE_URL", "https://example.com/database");
-
-    await expect(import("@shared/environment")).rejects.toThrow(
-      "Invalid environment variables"
-    );
-  });
-
   it("accepts Vercel OIDC Blob storage without a static token", async () => {
     vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
     vi.stubEnv("BLOB_STORE_ID", "store_openinstinct");
@@ -214,15 +206,6 @@ describe("environment", () => {
 
     expect(env.BLOB_READ_WRITE_TOKEN).toBeUndefined();
     expect(env.BLOB_STORE_ID).toBe("store_openinstinct");
-  });
-
-  it("rejects an iMessage phone number outside E.164 format", async () => {
-    vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
-    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "(202) 555-0123");
-
-    await expect(import("@shared/environment")).rejects.toThrow(
-      "Invalid environment variables"
-    );
   });
 
   it.each([

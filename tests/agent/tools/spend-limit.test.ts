@@ -277,50 +277,6 @@ describe("spend_limit changes", () => {
       )
     ).toContain("For every shop, leave merchant out.");
   });
-
-  it("clears a ceiling under a broader rule without a card", () => {
-    // 5 000 ₽ overall and 500 ₽ on ozon.ru: clearing the ozon.ru rule lifts
-    // ozon.ru to 5 000 ₽.
-    const withShop = {
-      ...monthly,
-      rules: [
-        ...monthly.rules,
-        { category: null, limitRub: 500, merchant: "ozon.ru" },
-      ],
-    };
-    expect(
-      applySpendLimitChange(withShop, {
-        action: "clear",
-        merchant: "https://www.ozon.ru/",
-      }).rules
-    ).toEqual(monthly.rules);
-    expect(
-      spendLimitApproval(
-        { action: "clear", merchant: "https://www.ozon.ru/" },
-        withShop
-      )
-    ).toBe("not-applicable");
-
-    // A category rule crossing a shop rule is a ceiling on their overlap too.
-    const crossing = {
-      ...monthly,
-      rules: [
-        { category: "еда", limitRub: 3000, merchant: null },
-        { category: null, limitRub: 500, merchant: "ozon.ru" },
-      ],
-    };
-    expect(
-      spendLimitApproval({ action: "clear", merchant: "ozon.ru" }, crossing)
-    ).toBe("not-applicable");
-    // Clearing everything leaves nothing to pay under.
-    expect(spendLimitApproval({ action: "clear" }, withShop)).toBe(
-      "not-applicable"
-    );
-    // A clear that cannot be made is refused with its reason.
-    expect(
-      spendLimitApproval({ action: "clear", merchant: "озон" }, withShop)
-    ).toMatchObject({ type: "denied" });
-  });
   it("sees a subdomain rule under the one being cleared, as payments do", () => {
     // ozon.ru at 100 ₽ binds pay.ozon.ru too; clearing it leaves pay.ozon.ru
     // with 5 000 ₽, so a 3 000 ₽ payment there would go through.

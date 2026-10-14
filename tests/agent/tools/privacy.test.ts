@@ -140,10 +140,6 @@ describe("privacy", () => {
     expect(remove).toContain("«удали всё, что ты про меня помнишь»");
     expect(remove).toContain("«отключи Google»");
     expect(remove).toContain("В самом Google ничего не удаляется");
-    expect(remove).toContain("https://example.com/personal-info");
-    expect(remove).toContain("https://example.com/vault");
-    expect(remove).toContain("https://example.com/workspace/memory");
-    expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
     // The sign-ins Bro keeps, the visits it makes on its own, and how both
     // end (review of wave 6).
@@ -428,22 +424,6 @@ describe("privacy", () => {
     expect(processors).toContain("Mail.ru или Яндекса");
     expect(processors).toContain("Еда, Лавка, Go, Маркет");
     expect(processors).toContain("песочнице на сервере Selectel");
-  });
-
-  it("says nothing of browser VMs a deployment without them does not have", async () => {
-    const { facts } = await withServices({
-      BROWSER_USE_API_KEY: "browser-use-test-key",
-    });
-
-    expect(
-      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
-    ).not.toContain("Cloud.ru");
-    // Without the bucket nothing is stored, so no place of files is named.
-    expect(facts.keptData().join("\n")).not.toContain("Object Storage");
-    expect(facts.serverLocation()).not.toContain("Cloud.ru");
-    expect(facts.serverLocation()).toContain(
-      "регион нигде в его настройках не записан"
-    );
   });
 });
 

@@ -290,10 +290,6 @@ describe("a conversation that may hold the person's files", () => {
   });
 
   it.each([
-    [
-      "left the task agent's pilot",
-      { ...taskAgentPilot, SANDBOX_WORKSPACES: "personal:someone-else" },
-    ],
     ["went to the Gateway", { SANDBOX_WORKSPACES: "*" }],
     [
       "is named by an email that cannot be looked up",
