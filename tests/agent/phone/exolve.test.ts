@@ -6,7 +6,8 @@ vi.mock("@shared/environment", () => ({
   env: { MTS_EXOLVE_API_KEY: "exolve-test-key" },
 }));
 
-const { purchaseNumber, quoteNumber } = await import("@shared/phone/exolve");
+const { findOwnedNumber, purchaseNumber, quoteNumber } =
+  await import("@shared/phone/exolve");
 
 const purchase = {
   candidate: "+74950000001",
@@ -105,5 +106,23 @@ describe("Exolve quote", () => {
     await expect(
       quoteNumber(new Set(["+74950000001", "+74950000002"]))
     ).rejects.toMatchObject({ code: "CANDIDATE_UNAVAILABLE" });
+  });
+});
+
+describe("Exolve reads", () => {
+  it("retries a read that failed once, so a short provider hiccup does not cancel the call", async () => {
+    let lists = 0;
+    exolveFetch({
+      "/number/customer/v1/GetList": () => {
+        lists += 1;
+        return lists === 1
+          ? { status: 500, body: {} }
+          : ownedList(["74950000001"])();
+      },
+    });
+    await expect(findOwnedNumber("+74950000001")).resolves.toMatchObject({
+      number: "+74950000001",
+    });
+    expect(lists).toBe(2);
   });
 });

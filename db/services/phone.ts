@@ -839,6 +839,9 @@ export async function recordCallNotSubmitted(id: string) {
       task: null,
       durationSeconds: 0,
       completedAt: new Date(),
+      // The tool result already told the person in the turn that placed the
+      // call; a report turn on top only produced "nothing new" chatter.
+      reportDeliveredAt: new Date(),
       checkedAt: new Date(),
     })
     .where(and(eq(phoneCalls.id, id), eq(phoneCalls.state, "starting")));

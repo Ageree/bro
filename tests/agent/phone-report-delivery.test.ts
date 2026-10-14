@@ -107,6 +107,8 @@ describe("handing a phone report to its conversation", () => {
     const message = send.mock.calls[0]?.[0] ?? "";
     expect(message).toContain("Speak in the first person");
     expect(message).toContain("never «агент»");
+    expect(message).toContain("second person");
+    expect(message).toContain("only <eve-empty-delivery/>");
     expect(message).toContain(
       "Do not mention the cost of the call unless the owner asks"
     );
