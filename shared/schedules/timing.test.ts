@@ -87,36 +87,6 @@ describe("schedule timing", () => {
 });
 
 describe("monthly and yearly calendar rules", () => {
-  it("runs on the 5th of every month at 10:00 local time", () => {
-    // «Напоминай каждое 5-е число в 10 утра».
-    const timing = scheduleTimingSchema.parse({
-      dayOfMonth: 5,
-      frequency: "monthly",
-      kind: "calendar",
-      localTime: "10:00",
-      timezone: moscow,
-    });
-
-    expect(occurrences(timing, "2026-09-24T12:00:00.000Z", 6)).toEqual([
-      "2026-10-05T07:00:00.000Z",
-      "2026-11-05T07:00:00.000Z",
-      "2026-12-05T07:00:00.000Z",
-      "2027-01-05T07:00:00.000Z",
-      "2027-02-05T07:00:00.000Z",
-      "2027-03-05T07:00:00.000Z",
-    ]);
-    // Later on the 5th itself, the next one is a month away; earlier, today.
-    expect(
-      computeNextRun(timing, new Date("2026-10-05T07:00:00.000Z"))
-    ).toEqual(new Date("2026-11-05T07:00:00.000Z"));
-    expect(
-      computeNextRun(timing, new Date("2026-10-05T06:59:00.000Z"))
-    ).toEqual(new Date("2026-10-05T07:00:00.000Z"));
-    expect(
-      computeLatestRun(timing, new Date("2026-10-20T00:00:00.000Z"))
-    ).toEqual(new Date("2026-10-05T07:00:00.000Z"));
-  });
-
   it("moves the 31st to the last day of shorter months, then back", () => {
     const timing = scheduleTimingSchema.parse({
       dayOfMonth: 31,

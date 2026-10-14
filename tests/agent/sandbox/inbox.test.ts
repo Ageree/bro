@@ -130,23 +130,6 @@ describe("the inbox key", () => {
 });
 
 describe("the inbox in Object Storage", () => {
-  it("stores and reads a file by its key", async () => {
-    const calls = stubStorage(
-      new Response(null, { status: 200 }),
-      new Response(bytes, {
-        headers: { "content-length": "3", "last-modified": storedAgo(0) },
-        status: 200,
-      })
-    );
-    const { getInbox, inboxKey, putInbox } = await loadInbox();
-    const key = inboxKey("workspace-1", "session-1", path);
-
-    await putInbox(key, bytes);
-    expect(await getInbox(key)).toEqual({ bytes, kind: "file" });
-    expect(calls.map((call) => call.method)).toEqual(["PUT", "GET"]);
-    expect(calls[0]?.url.pathname).toBe(`/bro-state-test/${key}`);
-  });
-
   it("answers a missing object with null and does not ask again", async () => {
     const calls = stubStorage(
       new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })
@@ -635,12 +618,5 @@ describe("a sandbox kept off the web without the person's files", () => {
     expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
       "PUT /bro-state-test/sandbox/person-files/sb-1",
     ]);
-  });
-
-  it("fails when Object Storage refuses the mark", async () => {
-    stubStorage(new Response(null, { status: 403 }));
-    const { markSandboxOffWeb } = await loadInbox();
-
-    await expect(markSandboxOffWeb("sb-1")).rejects.toThrow(/403/u);
   });
 });

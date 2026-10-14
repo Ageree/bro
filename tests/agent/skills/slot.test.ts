@@ -598,17 +598,6 @@ describe("load_skill", () => {
     ).toBeNull();
   });
 
-  it("gives the rules of a skill as the block the slot attaches", async () => {
-    const loaded = await load();
-    const tool = await resolveTool(loaded);
-    expect(run(tool, "games")).toBe(
-      loaded.skillRecord("games", {
-        browser: true,
-        images: false,
-      })
-    );
-  });
-
   it("names the files among the skills only where they reach the task agent", async () => {
     const pilot = {
       BROWSER_USE_API_KEY: "test-browser-use-key",

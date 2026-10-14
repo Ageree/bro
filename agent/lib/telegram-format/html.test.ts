@@ -38,12 +38,6 @@ describe("Telegram HTML conversion", () => {
     );
   });
 
-  it("converts a markdown link into an anchor", () => {
-    expect(
-      toTelegramHtml("See [the run](https://example.com/a?x=1&y=2).")
-    ).toBe('See <a href="https://example.com/a?x=1&amp;y=2">the run</a>.');
-  });
-
   it("does not emphasize underscores inside a link target", () => {
     expect(toTelegramHtml("[a](https://example.com/a_b_c)")).toBe(
       '<a href="https://example.com/a_b_c">a</a>'

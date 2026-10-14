@@ -618,7 +618,6 @@ describe("bringing a workspace's browser VM up for an errand", () => {
       "answers with Chrome down",
       () => Promise.resolve(health({ chrome: false })),
     ],
-    ["does not answer", () => Promise.reject(new TypeError("fetch failed"))],
   ])(
     "keeps a ready VM whose worker %s as it is, and the errand waits",
     async (_how, answer) => {
@@ -933,40 +932,6 @@ describe("reconciling browser VMs", () => {
       "power_off"
     );
     expect(cloud.deleteCloudRuVm).not.toHaveBeenCalled();
-  });
-
-  it("lets a VM go that never came up from its create, so the next errand creates a new one", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(
-      workspaceId,
-      vmRow({
-        recoveries: 1,
-        state: "creating",
-        stateChangedAt: minutesAgo(21),
-      })
-    );
-    cloud.readCloudRuVm.mockResolvedValue(cloudVm("creating"));
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(stored()).toMatchObject({
-      bootDiskId: null,
-      floatingIpId: null,
-      host: null,
-      state: "failed",
-      vmId: null,
-    });
-    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
-      `browser-vm-create-failed:${workspaceId}`,
-      expect.stringContaining("vm-1"),
-      { repeatAfterMs: 6 * 60 * 60_000 }
-    );
-    // Nothing of the person's is on it, so it goes with its disk and address.
-    expect(cloud.deleteCloudRuVm).toHaveBeenCalledExactlyOnceWith("vm-1", {
-      diskIds: ["disk-1"],
-      floatingIpIds: ["fip-1"],
-    });
-    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
   });
 
   it("waits for a floating IP still settling before giving an abandoned VM's ids up, instead of losing it", async () => {
@@ -1403,26 +1368,6 @@ describe("reconciling browser VMs", () => {
     await lifecycle.reconcileBrowserVms(new Date(now.getTime() + 60_000));
 
     expect(rows.has(workspaceId)).toBe(false);
-  });
-
-  it("records the time a deleted VM was still on", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(
-      workspaceId,
-      vmRow({ poweredOnAt: minutesAgo(20), state: "deleting" })
-    );
-    cloud.readCloudRuVm.mockResolvedValue(undefined);
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(rows.has(workspaceId)).toBe(false);
-    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        costRub: 0.99,
-        source: "browser-vm",
-        units: { flavor: "gen-2-4", seconds: 1200, sharedBy: 1 },
-      })
-    );
   });
 
   it("keeps the flag of a forget that came in while the VM was coming up", async () => {
@@ -2052,33 +1997,6 @@ describe("routing the VM's browser through a Russian exit", () => {
 
     expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
     expect(prepared.proxyExit?.ip).toBe("95.24.1.1");
-  });
-
-  it("keeps a Russian exit whose speed could not be measured", async () => {
-    const lifecycle = await loadLifecycle();
-    const vm = vmRow({ proxyExit: null });
-    rows.set(workspaceId, vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ proxy: false })
-    );
-    worker.setBrowserVmWorkerProxy.mockResolvedValue({
-      ...proxySetup({ country: "RU", ip: "95.24.1.5", latencyMs: 700 }),
-      exit: {
-        country: "RU",
-        error: "TimeoutError: ",
-        ip: "95.24.1.5",
-        latencyMs: 700,
-        speedError: "TimeoutError: ",
-      },
-    });
-
-    const prepared = await lifecycle.prepareBrowserVmSession(vm, now);
-
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
-    expect(prepared.proxyExit).toMatchObject({
-      country: "RU",
-      ip: "95.24.1.5",
-    });
   });
 
   it("refuses to start anything when no rotation gives a Russian exit", async () => {

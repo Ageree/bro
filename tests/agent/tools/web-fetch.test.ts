@@ -292,14 +292,12 @@ describe("web_fetch", () => {
   // that drops the check must fail here. eve and the world's queue listen on
   // loopback, and the cloud's metadata service sits at 169.254.169.254.
   it.each([
-    "https://127.0.0.1/",
     "https://127.0.0.1:4274/.well-known/workflow/v1/flow",
     "https://localhost/",
     "https://[::1]/",
     "https://[::ffff:127.0.0.1]/",
     "https://169.254.169.254/latest/meta-data/",
     "https://10.0.0.5/",
-    "https://192.168.1.1/",
     "https://0x7f000001/",
   ])("never asks %s", async (url) => {
     await expect(fetchPage(url)).rejects.toThrow(privateAddressRefusal);

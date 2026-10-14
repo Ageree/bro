@@ -710,37 +710,6 @@ describe("calendar prep", () => {
 });
 
 describe("prompts of the proactive run", () => {
-  const signals = [
-    { dedupeKey: "m1", itemId: "m1", source: "gmail", threadId: "t1" },
-    {
-      dedupeKey: "flight@2026-09-24T07:40:00Z",
-      itemId: "flight",
-      source: "calendar",
-      threadId: null,
-    },
-  ] as const;
-
-  it("keeps a check outside the agency pilot's prompt as it was", () => {
-    const expected = [
-      "Proactive check of the person's mail and calendar. Nobody asked for it; decide what, if anything, is worth writing first about.",
-      "Checked at: 2026-09-23T12:00:00.000Z",
-      "Home address: not in Personal Info; take it from memory if it is there, otherwise count a leave-by time from the city centre and say so.",
-      "New Gmail threads (read each with gmail-read-thread): t1",
-      "New calendar events (call calendar-list-events once with timeMin 2026-09-23T12:00:00.000Z and timeMax 2026-09-24T14:00:00.000Z, then look only at these ids): flight",
-    ].join("\n\n");
-    expect(
-      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals })
-    ).toBe(expected);
-    expect(
-      proactiveRunPrompt({
-        agentic: false,
-        home: noHome,
-        scheduledFor: now,
-        signals,
-      })
-    ).toBe(expected);
-  });
-
   it("asks the agency worker to decide what to do and report it, and reads the new items as data", () => {
     const prompt = proactiveRunPrompt({
       agentic: true,

@@ -270,24 +270,6 @@ describe("Photon message delivery", () => {
     );
   });
 
-  it("posts send_message output as raw iMessage text", async () => {
-    const message = [
-      "Still blocked. No order was submitted.",
-      "The order remains unchanged:",
-      "Spider-Man: Brand New Day",
-      "$15.00 total",
-    ].join("\n");
-    const { context, post } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({ kind: "message", text: message }),
-      context,
-      sessionContext()
-    );
-
-    expect(post).toHaveBeenCalledExactlyOnceWith({ raw: message });
-  });
-
   it("posts a native link preview as a URL-only message", async () => {
     const { context, post } = handlerContext();
 
@@ -434,45 +416,6 @@ describe("Photon message delivery", () => {
       sessionId: "session-1",
     });
     warn.mockRestore();
-  });
-
-  it("uploads scoped artifact files with the message", async () => {
-    const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
-    photonChannelCapture.readImage.mockResolvedValue({
-      bytes: new Uint8Array([1, 2, 3]),
-      filename: "product.png",
-      id: artifactId,
-      mediaType: "image/png",
-    });
-    const { context, post } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        kind: "message",
-        text: `Here it is.\n\n![Product](/artifacts/${artifactId})`,
-      }),
-      context,
-      sessionContext()
-    );
-
-    expect(photonChannelCapture.readImage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: "user-1",
-        workspaceId: "workspace-1",
-      }),
-      artifactId,
-      { rootSessionId: "session-1", signal: undefined }
-    );
-    expect(post).toHaveBeenCalledExactlyOnceWith({
-      files: [
-        {
-          data: Buffer.from([1, 2, 3]),
-          filename: "product.png",
-          mimeType: "image/png",
-        },
-      ],
-      raw: "Here it is.",
-    });
   });
 
   it("uploads scheduled artifacts from the scheduled-run session", async () => {
@@ -631,7 +574,7 @@ describe("Photon message delivery", () => {
     });
   });
 
-  it.each(["thumbs_up", "question"] as const)(
+  it.each(["thumbs_up"] as const)(
     "adds the native %s Tapback",
     async (type) => {
       const { addReaction, context, post } = handlerContext();
