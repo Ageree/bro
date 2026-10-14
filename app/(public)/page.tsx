@@ -56,11 +56,6 @@ export default function Page() {
           <h1 className="type-product-title" id="bro-title">
             bro — твой последний ИИ-агент
           </h1>
-          <p className={cn("type-supporting-body", styles.description)}>
-            {env.IMESSAGE_PHONE_NUMBER
-              ? "Написать бро в iMessage"
-              : "iMessage пока недоступен"}
-          </p>
           <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
           <Link className={styles.offer} href="/oferta">
             Оферта

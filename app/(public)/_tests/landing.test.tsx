@@ -57,6 +57,7 @@ describe("landing page", () => {
     expect(
       document.querySelectorAll("section button, section [role=button]")
     ).toHaveLength(1);
+    expect(document.querySelectorAll("section p")).toHaveLength(0);
   });
   it("opens the iMessage thread without asking for a number", async () => {
     const html = await landingMarkup();
@@ -77,6 +78,7 @@ describe("landing page", () => {
       parseHTML(html).document.querySelectorAll("button[disabled]")
     ).toHaveLength(1);
     expect(html).not.toContain("sms:");
+    expect(html).not.toContain("iMessage пока недоступен");
     expect(
       parseHTML(html).document.querySelector("button[disabled]")?.textContent
     ).toBe("Написать bro");

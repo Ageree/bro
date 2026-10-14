@@ -14,11 +14,6 @@
   --merit-recipe-product-title-font-weight: 400;
   --merit-recipe-product-title-letter-spacing: -0.01em;
   --merit-recipe-product-title-line-height: 1.05;
-  --merit-recipe-supporting-body-font-family: var(--merit-family-text);
-  --merit-recipe-supporting-body-font-size: 0.875rem;
-  --merit-recipe-supporting-body-font-weight: 400;
-  --merit-recipe-supporting-body-letter-spacing: 0;
-  --merit-recipe-supporting-body-line-height: 1.6;
   --merit-recipe-label-font-family: var(--merit-family-text);
   --merit-recipe-label-font-size: 0.875rem;
   --merit-recipe-label-font-weight: 600;
@@ -121,23 +116,17 @@
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
-.description {
-  margin: 16px 0 24px;
-  color: var(--muted-foreground);
-}
 .primaryAction {
   height: auto;
   min-height: 48px;
   min-width: 208px;
+  margin-top: 24px;
   padding: 12px 24px;
   border: 2px solid var(--foreground);
   border-radius: 999px;
   white-space: normal;
 }
 .primaryAction:disabled {
-  border-color: var(--muted-foreground);
-  background: var(--muted);
-  color: var(--muted-foreground);
   opacity: 1;
 }
 .offer {
@@ -158,8 +147,6 @@
 @media (width <= 600px) {
   .landing {
     --merit-recipe-product-title-font-size: 1.9rem;
-    --merit-recipe-supporting-body-font-size: 1rem;
-    --merit-recipe-supporting-body-line-height: 1.375;
   }
   .wallpaperFill {
     fill: url(#bro-crowd-mobile);
