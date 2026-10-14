@@ -604,24 +604,14 @@ function writesAnotherLanguage(
 }
 
 /**
- * Whether a message tells the person nothing the turn has not already told
- * them: no new attachment, number, date, code or link, no new name in any
- * of its forms, no question not asked yet, it is not the next item of a
- * list sent one message at a time («Анна придёт…», then «Мария придёт…»),
- * and it is no translation into another language. A message that follows
- * other work since the last delivery may report what that work found in
- * words alone, so it counts as nothing new only when it is status.
+ * Whether a message brings no picture, number, code or name that `delivered`
+ * did not: what a line that only says the work is under way may carry.
  */
-export function addsNothingNew(
+export function namesNothingNew(
   message: SentMessage,
   delivered: readonly SentMessage[],
-  options: NameMatching & {
-    readonly afterWork: boolean;
-    /** The person's own message that opened the turn, if they opened it. */
-    readonly request?: SentMessage;
-  }
+  options: NameMatching
 ) {
-  if (delivered.length === 0) return false;
   const attachments = new Set(delivered.flatMap((sent) => sent.attachments));
   if (message.attachments.some((attachment) => !attachments.has(attachment))) {
     return false;
@@ -641,6 +631,29 @@ export function addsNothingNew(
   if (message.properNames.some((name) => !knownWord(name, words, distinct))) {
     return false;
   }
+  return true;
+}
+
+/**
+ * Whether a message tells the person nothing the turn has not already told
+ * them: no new attachment, number, date, code or link, no new name in any
+ * of its forms, no question not asked yet, it is not the next item of a
+ * list sent one message at a time («Анна придёт…», then «Мария придёт…»),
+ * and it is no translation into another language. A message that follows
+ * other work since the last delivery may report what that work found in
+ * words alone, so it counts as nothing new only when it is status.
+ */
+export function addsNothingNew(
+  message: SentMessage,
+  delivered: readonly SentMessage[],
+  options: NameMatching & {
+    readonly afterWork: boolean;
+    /** The person's own message that opened the turn, if they opened it. */
+    readonly request?: SentMessage;
+  }
+) {
+  if (delivered.length === 0) return false;
+  if (!namesNothingNew(message, delivered, options)) return false;
   const questions = delivered.flatMap((sent) => sent.questions);
   if (
     message.questions.some(
