@@ -9,6 +9,8 @@
  */
 export class BrowserUseError extends Error {
   readonly status: number;
+  /** What answered: an API path, or `proxy` for the VM's exit search. */
+  readonly path: string;
   /** How long Browser Use asked the caller to wait, when it said. */
   readonly retryAfterMs: number | undefined;
 
@@ -21,6 +23,16 @@ export class BrowserUseError extends Error {
     super(`Browser Use ${String(status)} on ${path}: ${body.slice(0, 300)}`);
     this.name = "BrowserUseError";
     this.status = status;
+    this.path = path;
     this.retryAfterMs = retryAfterMs;
   }
+}
+
+/**
+ * The workspace's own browser is still looking for a working proxy exit
+ * (`routeThroughRussia`): the errand queues while the search goes on, and
+ * nothing else of the person's holds the browser.
+ */
+export function browserExitSearch(error: BrowserUseError) {
+  return error.status === 429 && error.path === "proxy";
 }

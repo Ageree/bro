@@ -1548,9 +1548,14 @@ async function routeThroughRussia(
   const slow =
     (exit.mbps ?? Number.POSITIVE_INFINITY) < slowExitMbps ||
     (exit.latencyMs ?? 0) > slowExitLatencyMs;
-  // A slow Russian exit is still taken when no rotation is left to try.
+  // A slow Russian exit is still taken when no rotation is left to try, and
+  // at once while a person's turn waits: 14.10 every exit measured 3–5 s, so
+  // the search ran past the turn's budget each time and the errand queued
+  // for a minute; the poller still looks for a faster one.
   const taken =
-    exit.country === "RU" && exit.ip && (!slow || rotationsLeft === 0)
+    exit.country === "RU" &&
+    exit.ip &&
+    (!slow || rotationsLeft === 0 || searchUntil !== undefined)
       ? { country: exit.country, ip: exit.ip }
       : undefined;
   // One line per check, before the errand starts: the worker asks ipinfo.io

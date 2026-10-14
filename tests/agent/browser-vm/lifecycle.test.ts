@@ -2243,6 +2243,26 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(stored()).toMatchObject({ proxyExit: { ip: "95.24.1.9" } });
   });
 
+  it("takes a slow Russian exit at once while a person's turn waits", async () => {
+    // 14.10: every exit measured 3–5 s, the turn's share ran out on the
+    // search, and each errand queued for a minute.
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({ proxyExit: null });
+    rows.set(workspaceId, vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.7", latencyMs: 4600, mbps: 1.5 })
+    );
+
+    await lifecycle.prepareBrowserVmSession(vm, now, { inTurn: true });
+
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    expect(stored()).toMatchObject({ proxyExit: { ip: "95.24.1.7" } });
+  });
+
   it("stops at the proxy's refusal of its login and tells the owner", async () => {
     // RU 01.10–02.10: every rotation failed within a second for a day, and
     // the reason was never logged.

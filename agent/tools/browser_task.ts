@@ -38,6 +38,7 @@ import {
   typeOneTimeCodeOverCdp,
   type OneTimeCodeEntry,
 } from "@agent/lib/browser-use/cdp";
+import { browserExitSearch } from "@agent/lib/browser-use/errors";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
@@ -4160,6 +4161,7 @@ async function runBrowserTask(
                 profileId,
                 retryAfterMs: error.retryAfterMs,
                 task,
+                waitsForExit: browserExitSearch(error),
               };
             }
             if (browserUseOutOfCredits(error)) {
@@ -4214,6 +4216,7 @@ async function runBrowserTask(
           submission: confirmedSubmission(consent),
           task: sent,
           waitsForAccount: started.waitsForAccount ?? null,
+          waitsForExit: started.waitsForExit,
         })
       );
       if (placeholder) await moveSpendReservation(placeholder, queued.runId);
@@ -4825,6 +4828,7 @@ async function runBrowserTask(
               retryAfterMs: error.retryAfterMs,
               sessionId,
               waitsForAccount: undefined,
+              waitsForExit: browserExitSearch(error),
             };
           }
           if (browserUseOutOfCredits(error)) {
@@ -4964,6 +4968,7 @@ async function runBrowserTask(
             submission: confirmedSubmission(consent),
             task: message,
             waitsForAccount: continued.waitsForAccount ?? null,
+            waitsForExit: continued.waitsForExit,
           }),
         restoreRunId
       );

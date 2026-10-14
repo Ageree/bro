@@ -4313,6 +4313,17 @@ describe("browser_task on a workspace's own browser VM", () => {
       )
     );
     const busyVm = await startVmErrand();
+    // A free browser whose exit search ran past the turn's budget is not
+    // busy: Bro told a person «браузер занят другим делом» on 14.10.
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        429,
+        "proxy",
+        "the search for an exit goes on in the queue",
+        10_000
+      )
+    );
+    const slowExit = await startVmErrand();
 
     expect(poweringOn).toMatchObject({ startsInMinutes: 1, status: "queued" });
     expect(continuationNote(poweringOn)).toContain(
@@ -4348,12 +4359,20 @@ describe("browser_task on a workspace's own browser VM", () => {
     expect(continuationNote(busyVm)).toContain(
       "runs one errand at a time and another errand of theirs is using it"
     );
+    expect(slowExit).toMatchObject({ startsInMinutes: 1, status: "queued" });
+    expect(continuationNote(slowExit)).toContain(
+      "giving no reason for the wait"
+    );
+    expect(continuationNote(slowExit)).not.toContain(
+      "another errand of theirs is using it"
+    );
     for (const result of [
       poweringOn,
       firstStart,
       sleepingHost,
       newHost,
       busyVm,
+      slowExit,
     ]) {
       expect(continuationNote(result)).not.toContain("cloud browser service");
       expect(continuationNote(result)).toContain(
