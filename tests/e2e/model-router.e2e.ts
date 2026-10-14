@@ -36,7 +36,7 @@ const scope = { userId: "e2e-user", workspaceId: "personal:e2e" };
 /** The private bucket, in memory: what was put comes back the same way. */
 const bucket = new Map<
   string,
-  { readonly bytes: Uint8Array; readonly mediaType: string }
+  { readonly bytes: Uint8Array<ArrayBuffer>; readonly mediaType: string }
 >();
 /** The rows of `generated_image_artifacts`, in memory. */
 const rows = new Map<
@@ -70,7 +70,10 @@ vi.mock("@shared/object-storage/artifacts", () => ({
     readonly mediaType: string;
     readonly pathname: string;
   }) => {
-    bucket.set(object.pathname, object);
+    bucket.set(object.pathname, {
+      bytes: new Uint8Array(object.bytes),
+      mediaType: object.mediaType,
+    });
     await Promise.resolve();
   },
 }));
@@ -204,18 +207,17 @@ describe("pictures and clips", () => {
   let card: string | undefined;
 
   it("draws a card with Russian lettering", async () => {
-    const tool = await resolveTool(
-      "generate_image",
+    const draw = await imageTool(
       "нарисуй открытку на день рождения Маше с рыжим котом"
     );
 
-    const artifact = await tool.execute(
+    const artifact = await draw(
       {
         aspectRatio: "1:1",
         prompt:
           'Поздравительная открытка: рыжий кот в праздничном колпаке среди шариков, тёплые цвета, сверху крупная надпись "С днём рождения, Маша!"',
       },
-      toolContext("generate_image", "call-image")
+      "call-image"
     );
 
     const { bytes, mediaType } = artifactBytes(artifact);
@@ -226,18 +228,17 @@ describe("pictures and clips", () => {
   });
 
   it("makes a five-second clip from words", async () => {
-    const tool = await resolveTool(
-      "generate_video",
+    const make = await videoTool(
       "сделай видео: рыжий кот в очках идёт по пляжу"
     );
 
-    const clip = await tool.execute(
+    const clip = await make(
       {
         aspectRatio: "16:9",
         prompt:
           "Рыжий кот в чёрных солнечных очках неспешно идёт по песчаному пляжу на закате, камера едет рядом",
       },
-      toolContext("generate_video", "call-video")
+      "call-video"
     );
 
     const { bytes, mediaType } = artifactBytes(clip);
@@ -249,15 +250,15 @@ describe("pictures and clips", () => {
 
   it("brings the card to life as a clip's first frame", async () => {
     if (card === undefined) throw new Error("The card was not drawn.");
-    const tool = await resolveTool("generate_video", "оживи эту открытку");
+    const make = await videoTool("оживи эту открытку");
 
-    const clip = await tool.execute(
+    const clip = await make(
       {
         aspectRatio: "1:1",
         image: card,
         prompt: "Кот улыбается и машет лапой, шарики покачиваются",
       },
-      toolContext("generate_video", "call-card-video")
+      "call-card-video"
     );
 
     const { bytes } = artifactBytes(clip);
@@ -271,30 +272,34 @@ const readySchema = z.object({
   status: z.literal("ready"),
 });
 
-async function resolveTool(
-  name: "generate_image" | "generate_video",
-  request: string
-) {
-  const definition = (
-    name === "generate_image"
-      ? await import("@agent/tools/generate_image")
-      : await import("@agent/tools/generate_video")
-  ).default;
+async function imageTool(request: string) {
+  const definition = (await import("@agent/tools/generate_image")).default;
   const tool = await definition.events["turn.started"]?.(
     {},
     dynamicContext(request)
   );
   if (!tool || !("execute" in tool)) {
-    throw new Error(`${name} was not offered for «${request}».`);
+    throw new Error(`generate_image was not offered for «${request}».`);
   }
-  return {
-    async execute(
-      input: Parameters<typeof tool.execute>[0],
-      context: ToolContext
-    ) {
-      return readySchema.parse(await tool.execute(input, context)).artifact;
-    },
-  };
+  return async (input: Parameters<typeof tool.execute>[0], callId: string) =>
+    readySchema.parse(
+      await tool.execute(input, toolContext("generate_image", callId))
+    ).artifact;
+}
+
+async function videoTool(request: string) {
+  const definition = (await import("@agent/tools/generate_video")).default;
+  const tool = await definition.events["turn.started"]?.(
+    {},
+    dynamicContext(request)
+  );
+  if (!tool || !("execute" in tool)) {
+    throw new Error(`generate_video was not offered for «${request}».`);
+  }
+  return async (input: Parameters<typeof tool.execute>[0], callId: string) =>
+    readySchema.parse(
+      await tool.execute(input, toolContext("generate_video", callId))
+    ).artifact;
 }
 
 const caller = {
