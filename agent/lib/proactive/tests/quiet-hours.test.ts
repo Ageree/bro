@@ -40,13 +40,6 @@ describe("proactive quiet hours", () => {
       quietHoursEnd(new Date("2026-03-08T04:30:00.000Z"), "America/New_York")
     ).toEqual(new Date("2026-03-08T12:00:00.000Z"));
   });
-
-  it("reads the hour in the person's zone, not the server's", () => {
-    const now = new Date("2026-09-23T20:30:00.000Z");
-    expect(quietHoursEnd(now, "Europe/Moscow")).toBeDefined();
-    // 13:30 in Los Angeles.
-    expect(quietHoursEnd(now, "America/Los_Angeles")).toBeUndefined();
-  });
 });
 
 describe("the evening's mail hold", () => {

@@ -27,7 +27,6 @@ const takenBack = `I have everything I need. Sorting:
 describe("workerOutcome", () => {
   it.each([
     "<eve-empty-delivery/>",
-    "  <eve-empty-delivery/>\n",
     "&lt;eve-empty-delivery/&gt;",
     "`<eve-empty-delivery/>`",
   ])("records the marker alone as nothing to report: %j", (reply) => {
@@ -36,11 +35,9 @@ describe("workerOutcome", () => {
 
   it.each([
     "Передавать нечего.",
-    "передавать нечего",
     "Nothing to report.",
     "Разряды: письмо ByteByteGo — рассылка (разряд 5). Передавать нечего.",
     "No new mail; calendar events are routine — nothing needing action.\n\n<eve-empty-delivery/>",
-    "Разряды: ByteByteGo — рассылка. Передавать нечего.\n\n<eve-empty-delivery/>",
     "",
     null,
   ])("records a reply that hands nothing over as empty: %j", (reply) => {

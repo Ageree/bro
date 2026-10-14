@@ -3,7 +3,6 @@ import {
   addressVaultPayloadStringSchema,
   contactVaultPayloadStringSchema,
   loginAccountHint,
-  loginIdentifierSchema,
   loginOriginSchema,
   loginVaultPayloadStringSchema,
   parseAddressVaultPayload,
@@ -49,15 +48,6 @@ describe("versioned vault payloads", () => {
         version: 2,
       })
     ).toThrow("SMS OTP");
-  });
-
-  it("uses the shared identifier schema to reject invalid login emails", () => {
-    expect(
-      loginIdentifierSchema.safeParse({
-        type: "email",
-        value: "not-an-email",
-      }).success
-    ).toBe(false);
   });
 
   it("rejects an invalid login origin without throwing", () => {

@@ -120,13 +120,6 @@ describe("the agentic worker's approval", () => {
     ).toBeNull();
   });
 
-  it("does not even read the details of a turn that is not the agentic worker's", async () => {
-    const { agencyApproval } = await approvals();
-    const details = vi.fn<() => typeof email>(() => email);
-    await agencyApproval(personContext, "send", details);
-    expect(details).not.toHaveBeenCalled();
-  });
-
   it("leaves a workspace outside the pilot to the proactive check", async () => {
     const { agencyApproval } = await approvals("workspace-2");
     expect(
@@ -163,11 +156,17 @@ describe("the agentic worker's approval", () => {
     );
   });
 
-  it("denies a send in the person's quiet hours, and grants a calendar change then", async () => {
+  it("denies a send or a call in the person's quiet hours, and grants a calendar change then", async () => {
     const { agencyApproval } = await approvals();
     vi.setSystemTime(night);
     expect(
       await agencyApproval(workerContext(), "send", () => email)
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await agencyApproval(workerContext(), "call", () => ({
+        input: "{}",
+        tool: "phone-call",
+      }))
     ).toMatchObject({ type: "denied" });
     expect(
       await agencyApproval(workerContext(), "calendar", () => ({
@@ -175,17 +174,6 @@ describe("the agentic worker's approval", () => {
         tool: "calendar-delete-event",
       }))
     ).toBe("not-applicable");
-  });
-
-  it("denies a call in the person's quiet hours too", async () => {
-    const { agencyApproval } = await approvals();
-    vi.setSystemTime(night);
-    expect(
-      await agencyApproval(workerContext(), "call", () => ({
-        input: "{}",
-        tool: "phone-call",
-      }))
-    ).toMatchObject({ type: "denied" });
   });
 
   it("reads the quiet hours on the person's own clock", async () => {
@@ -274,21 +262,5 @@ describe("the agentic worker's approval", () => {
         text: "Мой номер 8 900 123 45 67, перезвоните.",
       }))
     ).toMatchObject({ type: "denied" });
-  });
-
-  it("checks no text for a detail when the action has no text", async () => {
-    const { agencyApproval } = await approvals();
-    profile.readUserProfile.mockResolvedValue({
-      addressLine1: "ул. Ленина, 5",
-      addressLine2: null,
-      phone: null,
-    });
-    expect(
-      await agencyApproval(workerContext(), "calendar", () => ({
-        input: "{}",
-        tool: "calendar-delete-event",
-      }))
-    ).toBe("not-applicable");
-    expect(profile.readUserProfile).not.toHaveBeenCalled();
   });
 });

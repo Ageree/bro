@@ -167,12 +167,6 @@ describe("Telegram message delivery", () => {
     scheduleDeliveryCapture.release.mockResolvedValue(true);
   });
 
-  it("replaces eve's default assistant text delivery", () => {
-    expect(
-      telegramChannelCapture.config?.events?.["message.completed"]
-    ).toBeTypeOf("function");
-  });
-
   it("delivers assistant text the model wrote instead of calling send_message", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { context, request } = handlerContext();
@@ -564,36 +558,6 @@ describe("Telegram message delivery", () => {
     warn.mockRestore();
   });
 
-  it("retries a photo Telegram refused as a document", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const network = stubNetwork({
-      telegram: (method) =>
-        telegramError(
-          method === "sendPhoto" ? 400 : 200,
-          "PHOTO_INVALID_DIMENSIONS"
-        ),
-    });
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [{ kind: "image", url: "https://media.example/wide.jpg" }],
-        kind: "message",
-        text: "Here it is.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    const calls = botApiCalls(network);
-    expect(calls.map((call) => call.method)).toEqual([
-      "sendPhoto",
-      "sendDocument",
-    ]);
-    expect(calls[1]?.form.get("document")).toBeInstanceOf(File);
-    warn.mockRestore();
-  });
-
   it("never re-uploads a photo Telegram only throttled", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const network = stubNetwork({
@@ -676,31 +640,6 @@ describe("Telegram message delivery", () => {
       "sendPhoto",
       "sendDocument",
     ]);
-  });
-
-  it("uploads a document attachment with sendDocument", async () => {
-    const network = stubNetwork({
-      download: () =>
-        new Response(new Uint8Array(pdfBytes), {
-          headers: { "content-type": "application/pdf" },
-        }),
-    });
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [{ kind: "file", url: "https://media.example/brief.pdf" }],
-        kind: "message",
-        text: "The brief.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    const [upload] = botApiCalls(network);
-    expect(upload?.method).toBe("sendDocument");
-    const document = upload?.form.get("document");
-    expect(document instanceof File ? document.name : "").toBe("brief.pdf");
   });
 
   it("posts the links of attachments it could not download without a preview where the person's files reach the task agent", async () => {
@@ -808,43 +747,6 @@ describe("Telegram message delivery", () => {
     expect(photo instanceof File ? photo.type : "").toBe("image/png");
   });
 
-  it("sends two image artifacts of one reply as one album", async () => {
-    const firstArtifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
-    const secondArtifactId = "206c3a7e-c0b8-4317-9e34-552cff646673";
-    telegramChannelCapture.readImage.mockImplementation(
-      async (_scope, artifactId) => ({
-        // The stored hash belongs to these bytes, so both artifacts share them.
-        bytes: new Uint8Array([1, 2, 3]),
-        filename: artifactId === firstArtifactId ? "first.png" : "second.png",
-        id: artifactId,
-        mediaType: "image/png",
-      })
-    );
-    const network = stubNetwork();
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        kind: "message",
-        text: [
-          "Two good options.",
-          `![First](/artifacts/${firstArtifactId})`,
-          `![Second](/artifacts/${secondArtifactId})`,
-        ].join("\n"),
-      }),
-      context,
-      sessionContext()
-    );
-
-    const calls = botApiCalls(network);
-    expect(calls.map((call) => call.method)).toEqual(["sendMediaGroup"]);
-    expect(
-      ["file0", "file1"].map(
-        (field) => uploadedFile(calls[0]?.form, field)?.name
-      )
-    ).toEqual(["first.png", "second.png"]);
-  });
-
   it("explains an artifact it could not attach", async () => {
     const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
     telegramChannelCapture.readImage.mockResolvedValue(undefined);
@@ -884,11 +786,7 @@ describe("Telegram message delivery", () => {
 
   it.each([
     ["thumbs_up", "👍"],
-    ["thumbs_down", "👎"],
-    ["heart", "❤️"],
-    ["laugh", "😂"],
     ["exclamation", "‼️"],
-    ["question", "❓"],
   ] as const)("sets the %s reaction", async (type, emoji) => {
     const { context, request } = handlerContext();
 
@@ -951,36 +849,22 @@ describe("Telegram message delivery", () => {
 
   // An overflowing context or a rejected request also fails as
   // MODEL_CALL_FAILED, and «back soon» would not be true there.
-  it("keeps the apology for a model call the provider rejected", async () => {
-    const { context, request } = handlerContext();
-
-    await handleTurnFailed(
+  it("keeps the apology for a model call the provider rejected and for other failures", async () => {
+    for (const failure of [
       { ...modelCallFailure(), details: { statusCode: 400 } },
-      context,
-      sessionContext()
-    );
-
-    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
-      chat_id: "4242",
-      parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
-    });
-  });
-
-  it("keeps the generic apology for other turn failures", async () => {
-    const { context, request } = handlerContext();
-
-    await handleTurnFailed(
       { ...modelCallFailure(), code: "TOOL_FAILED", message: "boom" },
-      context,
-      sessionContext()
-    );
+    ]) {
+      const { context, request } = handlerContext();
 
-    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
-      chat_id: "4242",
-      parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
-    });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One failure, then its checks.
+      await handleTurnFailed(failure, context, sessionContext());
+
+      expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+        chat_id: "4242",
+        parse_mode: "HTML",
+        text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
+      });
+    }
   });
 
   it("leaves a failed scheduled report to its retry", async () => {

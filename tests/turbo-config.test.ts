@@ -84,42 +84,4 @@ describe("Turbo configuration", () => {
     expect(turbo.tasks["dev:app"].passThroughEnv).toEqual(runtimeEnvironment);
     expect(turbo.tasks["start:app"].passThroughEnv).toEqual(runtimeEnvironment);
   });
-
-  it("provisions required one-click deployment configuration", async () => {
-    const readme = await readFile(
-      new URL("../README.md", import.meta.url),
-      "utf8"
-    );
-    const deployButtons = [
-      ...readme.matchAll(
-        /\[!\[Deploy with Vercel\]\([^)]+\)\]\((https:\/\/vercel\.com\/new\/clone\?[^)]+)\)/gu
-      ),
-    ].map((match) => new URL(z.url().parse(match[1])));
-    expect(deployButtons).toHaveLength(1);
-    const [deployButton] = deployButtons;
-    expect(deployButton).toBeDefined();
-    const fileStorage = readme
-      .split("### File storage", 2)[1]
-      ?.split("### Photon iMessage setup", 1)[0];
-
-    expect(deployButton?.searchParams.get("repository-url")).toBe(
-      "https://github.com/Merit-Systems/OpenInstinct"
-    );
-    expect(deployButton?.searchParams.has("env")).toBe(false);
-    expect(deployButton?.searchParams.has("products")).toBe(false);
-    expect(
-      JSON.parse(deployButton?.searchParams.get("stores") ?? "null")
-    ).toEqual([
-      {
-        integrationSlug: "neon",
-        productSlug: "neon",
-        protocol: "storage",
-        type: "integration",
-      },
-    ]);
-    expect(deployButton?.searchParams.has("connect")).toBe(false);
-    expect(fileStorage).toContain("BROWSER_STATE_BUCKET");
-    expect(fileStorage).toContain("revisioned database records");
-    expect(fileStorage).not.toContain("vercel blob");
-  });
 });

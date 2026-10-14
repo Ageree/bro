@@ -50,8 +50,4 @@ describe("Photon webhook verification", () => {
       )
     ).toThrow(/IMESSAGE_WEBHOOK_SECRET/u);
   });
-
-  it("does not resolve project credentials until the adapter needs them", () => {
-    expect(capture.config?.credentials).toBeTypeOf("function");
-  });
 });

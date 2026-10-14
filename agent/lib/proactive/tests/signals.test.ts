@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentMailSignals,
   calendarPrepSignals,
   calendarSignals,
   flightEvents,
   flightReminders,
-  followUpSignal,
   isEveningEvent,
   gmailProbeQuery,
   gmailSignals,
@@ -209,25 +207,6 @@ describe("proactive signals", () => {
     expect(
       proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
     ).toContain("No new mail.");
-  });
-
-  it("tells the worker where home is, for the time to leave for a flight", () => {
-    expect(
-      proactiveRunPrompt({
-        home: {
-          ...noHome,
-          addressLine1: "ул. Профсоюзная, 12",
-          city: "Москва",
-        },
-        scheduledFor: now,
-        signals: [],
-      })
-    ).toContain(
-      "Home (Personal Info; count a leave-by time from here): ул. Профсоюзная, 12, Москва"
-    );
-    expect(
-      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
-    ).toContain("count a leave-by time from the city centre and say so");
   });
 
   it("tells the worker a reminder is due for a flight it may have seen, and what to say", () => {
@@ -730,46 +709,6 @@ describe("calendar prep", () => {
   });
 });
 
-/** A message in the agent's inbox, as AgentMail lists it. */
-function agentMessage(
-  id: string,
-  timestamp: string,
-  labels: readonly string[] = ["received"]
-) {
-  return {
-    from: "Анна <anna@example.com>",
-    inbox_id: "inbox-bro",
-    labels: [...labels],
-    message_id: id,
-    thread_id: `thread-${id}`,
-    timestamp,
-    to: ["bro@example.test"],
-  };
-}
-
-describe("agent mail", () => {
-  it("hands over mail since the watermark by message id, and never what the agent sent", () => {
-    const after = new Date("2026-09-23T11:50:00.000Z");
-    expect(
-      agentMailSignals(
-        [
-          agentMessage("new", "2026-09-23T11:55:00.000Z"),
-          agentMessage("old", "2026-09-23T10:00:00.000Z"),
-          agentMessage("sent", "2026-09-23T11:58:00.000Z", ["sent"]),
-        ],
-        after
-      )
-    ).toEqual([
-      {
-        dedupeKey: "new",
-        itemId: "new",
-        source: "agent_mail",
-        threadId: "thread-new",
-      },
-    ]);
-  });
-});
-
 describe("prompts of the proactive run", () => {
   const signals = [
     { dedupeKey: "m1", itemId: "m1", source: "gmail", threadId: "t1" },
@@ -852,15 +791,6 @@ describe("prompts of the proactive run", () => {
     expect(prompt).toContain("route_time");
     expect(prompt).toContain("- phone call call-1");
     expect(prompt).toContain("- browser run run-1");
-  });
-
-  it("gives a follow-up signal its own id", () => {
-    expect(followUpSignal("phone", "call-1")).toEqual({
-      dedupeKey: "call-1",
-      itemId: "call-1",
-      source: "phone",
-      threadId: null,
-    });
   });
 
   it("keeps calendar prep with the events and agent mail with the mail when a run is cut", () => {

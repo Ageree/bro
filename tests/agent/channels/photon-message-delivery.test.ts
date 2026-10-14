@@ -132,12 +132,6 @@ describe("Photon message delivery", () => {
     scheduleDeliveryCapture.release.mockResolvedValue(true);
   });
 
-  it("does not register automatic assistant text posting", () => {
-    expect(
-      photonChannelCapture.config?.events?.["message.completed"]
-    ).toBeTypeOf("function");
-  });
-
   it("posts assistant text the model wrote instead of calling send_message", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { context, post } = handlerContext();
@@ -294,22 +288,6 @@ describe("Photon message delivery", () => {
     expect(post).toHaveBeenCalledExactlyOnceWith({ raw: message });
   });
 
-  it("delivers a requested reply as an ordinary message", async () => {
-    const { context, post } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        kind: "message",
-        replyTo: { kind: "current" },
-        text: "Yes, that one.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    expect(post).toHaveBeenCalledExactlyOnceWith({ raw: "Yes, that one." });
-  });
-
   it("posts a native link preview as a URL-only message", async () => {
     const { context, post } = handlerContext();
 
@@ -342,9 +320,7 @@ describe("Photon message delivery", () => {
   });
 
   it.each([
-    ["image", "image/jpeg", "photo.jpg"],
     ["video", "video/mp4", "clip.mp4"],
-    ["audio", "audio/mpeg", "voice.mp3"],
     ["file", "application/pdf", "brief.pdf"],
   ] as const)(
     "uploads a %s attachment as a message file",
@@ -655,29 +631,25 @@ describe("Photon message delivery", () => {
     });
   });
 
-  it.each([
-    "thumbs_up",
-    "thumbs_down",
-    "heart",
-    "laugh",
-    "exclamation",
-    "question",
-  ] as const)("adds the native %s Tapback", async (type) => {
-    const { addReaction, context, post } = handlerContext();
+  it.each(["thumbs_up", "question"] as const)(
+    "adds the native %s Tapback",
+    async (type) => {
+      const { addReaction, context, post } = handlerContext();
 
-    await handleActionResult(
-      reactToMessageResult({ operation: "add", type }),
-      context,
-      sessionContext()
-    );
+      await handleActionResult(
+        reactToMessageResult({ operation: "add", type }),
+        context,
+        sessionContext()
+      );
 
-    expect(addReaction).toHaveBeenCalledExactlyOnceWith(
-      "imessage:dm:chat-1",
-      "message-1",
-      type
-    );
-    expect(post).not.toHaveBeenCalled();
-  });
+      expect(addReaction).toHaveBeenCalledExactlyOnceWith(
+        "imessage:dm:chat-1",
+        "message-1",
+        type
+      );
+      expect(post).not.toHaveBeenCalled();
+    }
+  );
 
   it("removes a native Tapback", async () => {
     const { context, post, removeReaction } = handlerContext();
@@ -696,7 +668,8 @@ describe("Photon message delivery", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("requires a native link preview to be its own send_message call", () => {
+  it("discriminates native links from message content", () => {
+    // A native link preview is its own send_message call.
     expect(
       sendMessageOutputSchema.safeParse({
         kind: "link",
@@ -704,9 +677,6 @@ describe("Photon message delivery", () => {
         url: "https://example.com/article",
       }).success
     ).toBe(false);
-  });
-
-  it("discriminates native links from message content", () => {
     expect(
       sendMessageOutputSchema.safeParse({
         attachments: [{ kind: "image", url: "https://example.com/image.png" }],

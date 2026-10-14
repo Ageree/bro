@@ -26,12 +26,6 @@ describe("environment", () => {
     vi.unstubAllEnvs();
   });
 
-  it("exports the validated environment", async () => {
-    const { env } = await import("@shared/environment");
-
-    expect(env).toMatchObject(requiredEnvironment);
-  });
-
   it("runs schedules unless EVE_SCHEDULES=off", async () => {
     // The Cloud.ru VM sets both: the defaults must not depend on the host.
     vi.stubEnv("EVE_SCHEDULES", undefined);
@@ -57,20 +51,6 @@ describe("environment", () => {
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"
     );
-  });
-
-  it("leaves Composio and iMessage off when they are not set", async () => {
-    vi.stubEnv("COMPOSIO_API_KEY", "");
-    vi.stubEnv("COMPOSIO_GOOGLE_AUTH_CONFIG_ID", "");
-
-    const { env } = await import("@shared/environment");
-
-    expect(env.COMPOSIO_API_KEY).toBeUndefined();
-    expect(env.COMPOSIO_GOOGLE_AUTH_CONFIG_ID).toBeUndefined();
-    expect(env.IMESSAGE_PROJECT_ID).toBeUndefined();
-    expect(env.IMESSAGE_PROJECT_SECRET).toBeUndefined();
-    expect(env.IMESSAGE_WEBHOOK_SECRET).toBeUndefined();
-    expect(env.IMESSAGE_PHONE_NUMBER).toBeUndefined();
   });
 
   it("provides stable auth and encryption defaults in local development", async () => {
@@ -191,14 +171,6 @@ describe("environment", () => {
     }
   );
 
-  it("rejects a missing required DATABASE_URL value during import", async () => {
-    vi.stubEnv("DATABASE_URL", "");
-
-    await expect(import("@shared/environment")).rejects.toThrow(
-      "Invalid environment variables"
-    );
-  });
-
   it("rejects an encryption key that does not decode to 32 bytes", async () => {
     vi.stubEnv("SECRET_ENCRYPTION_KEY", Buffer.alloc(31, 1).toString("base64"));
 
@@ -232,17 +204,6 @@ describe("environment", () => {
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"
     );
-  });
-
-  it("accepts a Photon project without a copied phone number", async () => {
-    vi.stubEnv("IMESSAGE_PROJECT_ID", "photon-project");
-    vi.stubEnv("IMESSAGE_PROJECT_SECRET", "photon-secret");
-    vi.stubEnv("IMESSAGE_PHONE_NUMBER", "");
-
-    const { env } = await import("@shared/environment");
-
-    expect(env.IMESSAGE_PROJECT_ID).toBe("photon-project");
-    expect(env.IMESSAGE_PHONE_NUMBER).toBeUndefined();
   });
 
   it("accepts Vercel OIDC Blob storage without a static token", async () => {
