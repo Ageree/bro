@@ -1994,7 +1994,7 @@ describe("routing the VM's browser through a Russian exit", () => {
         vi.advanceTimersByTime(4_300);
         return Promise.resolve(
           proxySetup({
-            country: "RU",
+            country: "DE",
             ip: "95.24.1.1",
             latencyMs: 900,
             mbps: 0.8,
@@ -2017,11 +2017,11 @@ describe("routing the VM's browser through a Russian exit", () => {
 
     await lifecycle.prepareBrowserVmSession(vm, now);
 
-    // The slow exit, moved on from: one line.
+    // The foreign exit, moved on from: one line.
     expect(warn).toHaveBeenCalledExactlyOnceWith(
       "[browser-vm] the proxy exit checked",
       {
-        country: "RU",
+        country: "DE",
         durationMs: 4_300,
         error: null,
         kept: false,
@@ -2091,42 +2091,28 @@ describe("routing the VM's browser through a Russian exit", () => {
     );
   });
 
-  it("moves a slow Russian exit to the next rotation, and takes a slow one when none is left", async () => {
+  it("takes a slow Russian exit rather than searching on", async () => {
+    // 14.10: a 5 s exit passed over ran the search into the proxy's 500s,
+    // and the errand waited five minutes.
     const lifecycle = await loadLifecycle();
     const vm = vmRow({ proxyExit: null });
     rows.set(workspaceId, vm);
     worker.readBrowserVmWorkerHealth.mockResolvedValue(
       health({ proxy: false })
     );
-    worker.setBrowserVmWorkerProxy
-      .mockResolvedValueOnce(
-        proxySetup({ country: "RU", ip: "95.24.1.1", mbps: 0.8 })
-      )
-      .mockResolvedValueOnce(
-        proxySetup({ country: "RU", ip: "95.24.1.2", latencyMs: 4_000 })
-      )
-      .mockResolvedValueOnce(
-        proxySetup({ country: "RU", ip: "95.24.1.3", latencyMs: 700, mbps: 6 })
-      );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({
+        country: "RU",
+        ip: "95.24.1.1",
+        latencyMs: 5_200,
+        mbps: 0.8,
+      })
+    );
 
     const prepared = await lifecycle.prepareBrowserVmSession(vm, now);
 
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(3);
-    expect(prepared.proxyExit?.ip).toBe("95.24.1.3");
-
-    // Every rotation slow: the last one is still better than no browser.
-    worker.setBrowserVmWorkerProxy.mockClear();
-    worker.setBrowserVmWorkerProxy.mockResolvedValue(
-      proxySetup({ country: "RU", ip: "95.24.1.4", mbps: 1 })
-    );
-    rows.set(workspaceId, vmRow({ proxyExit: null }));
-    const slow = await lifecycle.prepareBrowserVmSession(
-      vmRow({ proxyExit: null }),
-      now
-    );
-
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(4);
-    expect(slow.proxyExit?.ip).toBe("95.24.1.4");
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    expect(prepared.proxyExit?.ip).toBe("95.24.1.1");
   });
 
   it("keeps a Russian exit whose speed could not be measured", async () => {
@@ -2178,7 +2164,7 @@ describe("routing the VM's browser through a Russian exit", () => {
 
     expect(refused).toMatchObject({
       name: "BrowserUseError",
-      retryAfterMs: 5 * 60_000,
+      retryAfterMs: 60_000,
       status: 429,
     });
     expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(4);
@@ -2330,7 +2316,7 @@ describe("routing the VM's browser through a Russian exit", () => {
 
     expect(refused).toMatchObject({
       name: "BrowserUseError",
-      retryAfterMs: 5 * 60_000,
+      retryAfterMs: 60_000,
       status: 429,
     });
     expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
@@ -2495,7 +2481,7 @@ describe("routing the VM's browser through a Russian exit", () => {
 
     expect(refused).toMatchObject({
       name: "BrowserUseError",
-      retryAfterMs: 5 * 60_000,
+      retryAfterMs: 60_000,
       status: 429,
     });
     expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
