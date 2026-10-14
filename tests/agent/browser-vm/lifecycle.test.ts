@@ -2263,6 +2263,50 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(stored()).toMatchObject({ proxyExit: { ip: "95.24.1.7" } });
   });
 
+  it("checks a stale exit when the person writes, and the errand then waits for that check", async () => {
+    // 14.10: each errand waited 7–10 s on its own exit check.
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({
+      proxyExit: {
+        at: minutesAgo(31).toISOString(),
+        city: "Moscow",
+        country: "RU",
+        ip: "95.24.1.2",
+        org: "AS8402 Beeline",
+      },
+    });
+    rows.set(workspaceId, vm);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const answer = Promise.withResolvers<ReturnType<typeof proxySetup>>();
+    worker.setBrowserVmWorkerProxy.mockReturnValue(answer.promise);
+
+    const warming = lifecycle.warmBrowserVmExit(workspaceId, now);
+    const errand = lifecycle.prepareBrowserVmSession(vm, now, {
+      inTurn: true,
+    });
+    await vi.waitFor(() => {
+      expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    });
+    answer.resolve(
+      proxySetup({ country: "RU", ip: "95.24.1.8", latencyMs: 4600, mbps: 1.5 })
+    );
+    await warming;
+    const prepared = await errand;
+
+    // One check: the errand took the exit the warm-up left.
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    expect(prepared.proxyExit?.ip).toBe("95.24.1.8");
+  });
+
+  it("leaves a fresh exit alone when the person writes", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow());
+
+    await lifecycle.warmBrowserVmExit(workspaceId, now);
+
+    expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
+  });
+
   it("stops at the proxy's refusal of its login and tells the owner", async () => {
     // RU 01.10–02.10: every rotation failed within a second for a day, and
     // the reason was never logged.
