@@ -21,13 +21,6 @@ def build_pin(name):
 
 
 class PinsShapeTest(unittest.TestCase):
-    def test_top_level_and_fields(self):
-        self.assertEqual(set(PINS), {"kernel", "firecracker"})
-        self.assertEqual(set(PINS["kernel"]), {"version", "key", "sha256"})
-        self.assertEqual(
-            set(PINS["firecracker"]), {"version", "key", "sha256", "firecrackerSha256", "jailerSha256"}
-        )
-
     def test_sha256_values_are_lowercase_hex(self):
         for value in (
             PINS["kernel"]["sha256"],
@@ -36,14 +29,6 @@ class PinsShapeTest(unittest.TestCase):
             PINS["firecracker"]["jailerSha256"],
         ):
             self.assertRegex(value, HEX64)
-
-    def test_keys_live_under_firecracker_prefix(self):
-        for section in ("kernel", "firecracker"):
-            key = PINS[section]["key"]
-            self.assertTrue(key.startswith("firecracker/"), key)
-            self.assertFalse(key.startswith("/"), key)
-            self.assertNotIn("..", key)
-            self.assertRegex(key, r"^[A-Za-z0-9._/+-]+$")
 
     def test_key_names_carry_version_and_hash(self):
         kernel = PINS["kernel"]

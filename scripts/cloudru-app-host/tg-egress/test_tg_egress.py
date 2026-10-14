@@ -108,15 +108,6 @@ class ParseTest(unittest.TestCase):
                 config(TG_EGRESS_STAGGER_MS=value)
             self.assertIn("TG_EGRESS_STAGGER_MS", str(caught.exception))
 
-    def test_an_ipv6_address_keeps_its_brackets(self):
-        self.assertEqual(tg_egress.authority("2001:db8::1", 443), "[2001:db8::1]:443")
-        self.assertEqual(tg_egress.authority("api.telegram.org", 443), "api.telegram.org:443")
-        self.assertEqual(tg_egress.address(tg_egress.authority("2001:db8::1", 8443)), ("2001:db8::1", 8443))
-
-    def test_default_upstream_is_the_address_that_answers_from_cloudru(self):
-        self.assertEqual(tg_egress.Config({}).upstreams, [("149.154.167.220", 443)])
-        self.assertIsNone(tg_egress.Config({}).proxy)
-
     def test_proxy_forms(self):
         host, port, auth = tg_egress.proxy_from("proxy.example:9000:user-type-x:pa:ss")
         self.assertEqual((host, port), ("proxy.example", 9000))

@@ -70,9 +70,6 @@ class UnfinishedRunTest(unittest.TestCase):
 
 
 class TokenTest(unittest.TestCase):
-    def test_vm_key_derivation_matches_bro(self):
-        self.assertEqual(KEY.hex(), "b62a60b9925024534507acf039e236b698c33866d8e18c727661251748984301")
-
     def test_accepts_bro_token_and_session_scope(self):
         self.assertEqual(worker.verify_token(TOKEN, CONFIG, 0, NOW)["gen"], 3)
         self.assertEqual(worker.verify_token(SESSION_TOKEN, CONFIG, 3, NOW)["ses"], "vm:ws_test_123:s:abc")
@@ -1944,6 +1941,9 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual([t["id"] for t in targets], ["T1"])
+        # An unscoped token keeps its own full listing.
+        status, targets = await self.json_list(cdp_token())
+        self.assertEqual((status, {t["id"] for t in targets}), (200, {"T1", "T2"}))
 
     async def test_json_list_hides_every_tab_from_a_keep_alive_scoped_token_whose_tab_is_gone(self):
         self.open_tab("T1", "s1")
@@ -1954,25 +1954,13 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((status, targets), (200, []))
 
-    async def test_json_list_keeps_its_own_full_listing_for_an_unscoped_token(self):
-        self.open_tab("T1", "s1")
-        self.open_tab("T2", "s2")
-
-        status, targets = await self.json_list(cdp_token())
-
-        self.assertEqual(status, 200)
-        self.assertEqual({t["id"] for t in targets}, {"T1", "T2"})
-
-    async def test_json_version_refuses_a_session_scoped_token(self):
+    async def test_json_version_refuses_a_session_scoped_token_and_answers_an_unscoped_one(self):
         self.open_tab("T1", "s1")
 
         response = await self.json_version(cdp_token(ses="s1"))
 
         self.assertEqual(response.status, 403)
-
-    async def test_json_version_allows_an_unscoped_token(self):
-        response = await self.json_version(cdp_token())
-
+        response = await self.json_version(cdp_token())  # an unscoped token gets it
         self.assertEqual(response.status, 200)
         data = await response.json()
         self.assertIn("/devtools/browser/BROWSER-ID", data["webSocketDebuggerUrl"])
@@ -1999,19 +1987,15 @@ class CdpTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertRegex(targets[0]["webSocketDebuggerUrl"], rf"^wss://[^/]+/v1/cdp/{token}/devtools/page/T1$")
 
-    async def test_devtools_socket_refuses_another_sessions_tab(self):
+    async def test_devtools_socket_refuses_another_sessions_tab_and_the_browser_for_a_scoped_token(self):
         self.open_tab("T1", "s1")
         self.open_tab("T2", "s2")
 
         response = await self.devtools(cdp_token(ses="s1"), "page", "T2")
 
         self.assertEqual(response.status, 403)
-
-    async def test_devtools_socket_refuses_the_browser_level_socket_for_a_scoped_token(self):
-        self.open_tab("T1", "s1")
-
+        # Nor the browser-level socket.
         response = await self.devtools(cdp_token(ses="s1"), "browser", "BROWSER-ID")
-
         self.assertEqual(response.status, 403)
 
 

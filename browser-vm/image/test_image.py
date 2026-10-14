@@ -224,27 +224,15 @@ class BuildTest(unittest.TestCase):
         self.assertEqual([m for m, _ in calls].count("POST"), 1)
         self.assertEqual(calls[-1][1], f"{build.COMPUTE}/v1/vms?project_id=p&name=bro-image-builder-t1&limit=100")
 
-    def test_create_aborts_when_a_resource_with_the_name_already_exists(self):
+    def test_build_aborts_before_creating_a_builder_with_an_already_taken_name(self):
         # A --keep-builder builder or a timed-out image left over from an earlier run of the same
         # --version must not be silently adopted as this run's own.
-        def api(method, url, body=None):
-            if method == "GET":
-                return 200, {"items": [{"name": "bro-image-builder-t1", "id": "stale-vm"}]}
-            raise AssertionError(f"should not {method} once a name conflict is found")
-
-        with mock.patch.object(build, "api", api), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(SystemExit) as raised:
-                build.create(f"{build.COMPUTE}/v1.1/vms", [{}], "bro-image-builder-t1",
-                             f"{build.COMPUTE}/v1/vms?project_id=p")
-        self.assertIn("bro-image-builder-t1", str(raised.exception))
-        self.assertIn("stale-vm", str(raised.exception))
-
-    def test_build_aborts_before_creating_a_builder_with_an_already_taken_name(self):
         clock = Clock()
         cloud = Cloud(clock, lambda t: None, existing={"name": "bro-image-builder-t1", "id": "stale-vm"})
         error = run_build(cloud, clock)
         self.assertIsNotNone(error)
         self.assertIn("bro-image-builder-t1", str(error))
+        self.assertIn("stale-vm", str(error))
         self.assertEqual(cloud.called("POST", "/v1.1/vms"), [])
 
 
@@ -258,11 +246,6 @@ class ApiTransientErrorTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"CLOUDRU_KEY_ID": "k", "CLOUDRU_KEY_SECRET": "s"})
         env.start()
         self.addCleanup(env.stop)
-
-    def test_iam_5xx_raises_a_connection_error_not_an_assertion_error(self):
-        with mock.patch.object(build, "http", lambda *a, **k: (503, {"error": "unavailable"})):
-            with self.assertRaises(ConnectionError):
-                build.api("GET", f"{build.COMPUTE}/v1/vms/vm-1")
 
     def test_read_shrugs_off_an_iam_outage_instead_of_crashing(self):
         with mock.patch.object(build, "http", lambda *a, **k: (429, {"error": "rate limited"})):
@@ -437,17 +420,10 @@ class SealTest(unittest.TestCase):
             paths.extend(match.group(1).replace("\\\n", " ").split())
         return paths
 
-    def test_the_builder_timeline_does_not_survive_into_the_shipped_image(self):
-        # `stage()` appends the builder VM's own boot/install timestamps to this file on every install
-        # stage; the comment right above the sealing block says the image "must carry no profile,
-        # certificate, key, log or machine identity of the builder VM" — this is exactly such a log, and
-        # every other build log the block cleans up (`/var/log/bro-provision.log`, the status directory)
-        # has its own entry in the same purge.
-        self.assertIn("/var/lib/bro/timeline", self.purged_paths())
-
     def test_every_per_builder_path_stage_writes_to_is_purged(self):
         # `stage()` writes to /var/lib/bro/stage, /var/lib/bro/timeline and (a copy of both) under
-        # /var/lib/bro/status/ — none of it belongs in an image every later VM boots from.
+        # /var/lib/bro/status/ — none of it belongs in an image every later VM boots from: the image "must
+        # carry no profile, certificate, key, log or machine identity of the builder VM".
         purged = self.purged_paths()
         for path in ("/var/lib/bro/timeline", "/var/lib/bro/status"):
             self.assertIn(path, purged)

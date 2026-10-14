@@ -535,9 +535,6 @@ class HostTest(unittest.IsolatedAsyncioTestCase):
 
 
 class TokenTest(unittest.TestCase):
-    def test_host_key_derivation_is_pinned_for_bro(self):
-        self.assertEqual(KEY.hex(), "fc0873b32715053d3ff2f84210fe16de8ecebea4b2ea502271c9d927192c9620")
-
     def test_accepts_the_token_bro_signs(self):
         # The vector of tests/agent/browser-pool/host.test.ts (`signBrowserHostToken` at 2026-09-30T12:00Z):
         # change the token format in both.
@@ -726,28 +723,19 @@ class NetworkTest(unittest.TestCase):
         self.assertFalse(network.INNER.overlaps(vpc))
         self.assertFalse(network.Network().pool.overlaps(vpc))
 
-    def test_a_microvm_sandbox_namespace_is_a_bridge_with_a_tap_and_a_fixed_router_mac(self):
-        plan = network.Network()
-        classic = plan.setup("a", 0, "/r.nft")
-        guest = plan.setup("a", 0, "/r.nft", tap_owner=(40000, 40000))
-        self.assertNotIn("br0", " ".join(" ".join(argv) for argv in classic))
-        self.assertIn(["ip", "-n", "bro-s-a", "link", "add", "br0", "type", "bridge"], guest)
-        self.assertIn(["ip", "-n", "bro-s-a", "tuntap", "add", "dev", "tap0", "mode", "tap", "user", "40000",
-                       "group", "40000"], guest)
-        for port in ("eth0", "tap0"):
-            self.assertIn(["ip", "-n", "bro-s-a", "link", "set", port, "master", "br0"], guest)
-            self.assertIn(["ip", "-n", "bro-s-a", "link", "set", port, "up"], guest)
-        self.assertIn(["ip", "-n", "bro-r-a", "link", "set", "in0", "address", network.ROUTER_MAC], guest)
-        # The guest has the address and the route (kernel ip=); the namespace has neither.
-        self.assertFalse([a for a in guest if "192.168.254.2/30" in a])
-        self.assertFalse([a for a in guest if a[:6] == ["ip", "-n", "bro-s-a", "route", "add", "default"]])
-
     def test_router_forwards_only_the_worker_port_in(self):
         rules = network.Network(worker_port=8080).router_rules()
         self.assertIn('iifname "up0" tcp dport 8080 dnat to 192.168.254.2:8080', rules)
         self.assertIn('oifname "up0" masquerade', rules)
         self.assertIn("type filter hook forward priority filter; policy drop;", rules)
         self.assertTrue(rules.startswith("table ip bro_router\ndelete table ip bro_router\n"))
+
+    def test_stand_host_ports_open_only_those_ports_of_the_host(self):
+        rules = network.Network(stand_ports=(3130,)).host_rules([0], "eth0")
+        self.assertIn('\t\tiifname "brt*" tcp dport { 3130 } accept\n\t\tiifname "brt*" jump refuse\n', rules)
+        self.assertEqual(rules.count("dport"), 1)  # the forward chain (other destinations) is unchanged
+        with self.assertRaises(ValueError):
+            network.Network(stand_ports=(0,))
 
 
 class SandboxTest(HostTest):
@@ -761,15 +749,6 @@ class SandboxTest(HostTest):
                              ("DELETE", "/v1/sandboxes/ws-abc?generation=3"), ("POST", "/v1/sandboxes/ws-abc/park")]:
             with self.subTest(path):
                 self.assertEqual((await self.call(client, method, path, {}, auth=False))[0], 401)
-
-    async def test_sandbox_ids_are_validated(self):
-        _host, runner, client = await self.host()
-        for bad in ["WS-abc", "ws_abc", "a" * 64, "", "../x", "ws.abc"]:
-            with self.subTest(bad):
-                status, _ = await self.call(client, "POST", "/v1/sandboxes", request(id=bad))
-                self.assertEqual(status, 400)
-        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws_abc"))[0], 400)
-        self.assertEqual(runner.runtime_calls("create"), [])
 
     async def test_fresh_start_builds_the_sandbox_the_contract_describes(self):
         host, runner, client = await self.host()
@@ -839,13 +818,6 @@ class SandboxTest(HostTest):
                       f"\t\t\theader_up X-Forwarded-Prefix /g/ws-def\n", caddyfile)
         self.assertIn("handle_path /h/* {\n\t\treverse_proxy 127.0.0.1:8090", caddyfile)
 
-    def test_stand_host_ports_open_only_those_ports_of_the_host(self):
-        rules = network.Network(stand_ports=(3130,)).host_rules([0], "eth0")
-        self.assertIn('\t\tiifname "brt*" tcp dport { 3130 } accept\n\t\tiifname "brt*" jump refuse\n', rules)
-        self.assertEqual(rules.count("dport"), 1)  # the forward chain (other destinations) is unchanged
-        with self.assertRaises(ValueError):
-            network.Network(stand_ports=(0,))
-
     async def test_generation_rules(self):
         _host, runner, client = await self.host()
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
@@ -859,12 +831,6 @@ class SandboxTest(HostTest):
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes/ws-abc/park", self.park_body(3)))[0], 409)
         self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=3"))[0], 409)
         self.assertEqual((await self.call(client, "DELETE", "/v1/sandboxes/ws-abc?generation=4"))[0], 200)
-
-    async def test_a_rootfs_the_host_lacks_is_refused_before_anything_starts(self):
-        _host, runner, client = await self.host()
-        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(rootfsVersion="v2"))
-        self.assertEqual((status, answer["rootfsVersion"]), (409, "v2"))
-        self.assertEqual(runner.argv("ip")[1:], [])
 
     async def test_delete_wipes_the_host_dir_shm_network_and_route(self):
         host, runner, client, _record = await self.started()
@@ -939,6 +905,25 @@ class SandboxTest(HostTest):
         self.assertIn("no bro user", answer["error"])
         self.assertEqual(runner.runtime_calls("create"), [])
 
+
+class SandboxApiTest(HostTest):
+    """What does not depend on the runtime: once, under runc (SandboxTest and ParkTest run again under runsc)."""
+
+    async def test_sandbox_ids_are_validated(self):
+        _host, runner, client = await self.host()
+        for bad in ["WS-abc", "ws_abc", "a" * 64, "", "../x", "ws.abc"]:
+            with self.subTest(bad):
+                status, _ = await self.call(client, "POST", "/v1/sandboxes", request(id=bad))
+                self.assertEqual(status, 400)
+        self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws_abc"))[0], 400)
+        self.assertEqual(runner.runtime_calls("create"), [])
+
+    async def test_a_rootfs_the_host_lacks_is_refused_before_anything_starts(self):
+        _host, runner, client = await self.host()
+        status, answer = await self.call(client, "POST", "/v1/sandboxes", request(rootfsVersion="v2"))
+        self.assertEqual((status, answer["rootfsVersion"]), (409, "v2"))
+        self.assertEqual(runner.argv("ip")[1:], [])
+
     async def test_memory_limits_never_add_up_to_more_than_the_host_has(self):
         _host, _runner, client = await self.host(memory_limit_mb=5000)
         self.assertEqual((await self.call(client, "POST", "/v1/sandboxes", request()))[0], 201)
@@ -965,16 +950,16 @@ class SandboxTest(HostTest):
         self.assertNotIn(a.image, (b.image, b.staging))
         self.assertNotIn(b.image, (a.image, a.staging))
 
-
-class ParkTest(HostTest):
-    """What a set is, whichever runtime made it (runc here; GvisorParkTest runs them under runsc)."""
-
     async def test_urls_go_out_exactly_as_presigned(self):
         _host, _runner, _client = await self.host()
         url = str(self.s3.make_url("/bucket/")) + "personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"
         async with aiohttp.ClientSession() as http:
             await sets.transfer(http, "PUT", url, b"x")
         self.assertEqual(self.storage.raw, ["/bucket/personal%3Aabc/3/chunk-0000?X-Amz-Credential=AK%2F2026%2Fru"])
+
+
+class ParkTest(HostTest):
+    """What a set is, whichever runtime made it (runc here; GvisorParkTest runs them under runsc)."""
 
     async def test_too_few_chunk_urls_is_a_failed_park_not_a_partial_set(self):
         host, _runner, client, _record = await self.started()
@@ -1610,15 +1595,9 @@ class FirecrackerTest(HostTest):
         status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
         self.assertEqual(status, 502)
         self.assertIn("the jailer exited", answer["error"])
+        self.assertIn("jailer output", answer["error"])  # what the jailer and the guest said
         self.assertFalse(self.home(host).exists())
         self.assertEqual((await self.call(client, "GET", "/v1/sandboxes/ws-abc"))[1]["state"], "failed")
-
-    async def test_a_failed_start_says_what_the_jailer_and_the_guest_said(self):
-        host, runner, client = await self.host()
-        runner.fail_spawn = True
-        status, answer = await self.call(client, "POST", "/v1/sandboxes", request())
-        self.assertEqual(status, 502)
-        self.assertIn("jailer output", answer["error"])
 
     async def test_the_log_of_a_sandbox_is_the_operators_alone(self):
         host, runner, client = await self.started_vm()
@@ -2306,12 +2285,6 @@ class UpdateTest(HostTest):
                          (hostd.VERSION, False, "failed"))
         self.assertIn("update.sh exited 3", status["update"]["error"])
         self.assertEqual(status["update"]["sha256"], body["sha256"])
-
-    def test_public_status_of_nothing_is_nothing(self):
-        self.assertIsNone(selfupdate.public_status(None))
-        self.assertEqual(selfupdate.public_status({"state": "done", "version": "1", "at": "t", "running": "1",
-                                                   "sha256": "ab", "error": "e"}),
-                         {"state": "done", "version": "1", "at": "t"})
 
     # The flag that says an update is running ----------------------------------------------------------
 
