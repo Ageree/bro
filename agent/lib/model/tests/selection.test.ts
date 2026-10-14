@@ -843,7 +843,10 @@ describe("model selection", () => {
     // served by one of them alone.
     expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
       "anthropic/claude-sonnet-4.5",
-      { provider: { order: ["baseten", "fireworks"] } }
+      {
+        extraBody: { cache_control: { type: "ephemeral" } },
+        provider: { order: ["baseten", "fireworks"] },
+      }
     );
     expect(selection).toMatchObject({
       modelOptions: {
@@ -957,6 +960,20 @@ describe("model selection", () => {
           providerOptions: { openrouter: { reasoning: { enabled: false } } },
         },
       });
+    });
+
+    // Without the mark, Haiku read a 22k prompt at full price on every step.
+    it("asks an Anthropic model to cache the prompt", async () => {
+      const { modelSelection } = await import("@agent/lib/model/selection");
+      modelSelection("anthropic/claude-haiku-5.5");
+
+      expect(openRouter.chat).toHaveBeenCalledExactlyOnceWith(
+        "anthropic/claude-haiku-5.5",
+        {
+          extraBody: { cache_control: { type: "ephemeral" } },
+          provider: undefined,
+        }
+      );
     });
 
     it("pins the configured order and skips the configured hosts for every model", async () => {

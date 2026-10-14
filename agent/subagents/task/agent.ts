@@ -1,4 +1,5 @@
 import { defineAgent, defineDynamic } from "eve";
+import { taskAgentModel } from "@agent/lib/model/router/task";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { offlineRefusal } from "@agent/lib/sandbox/offline";
@@ -40,8 +41,15 @@ export default defineAgent({
             "The task agent's sandbox could not be taken off the web; it does not work until it is. Tell the person the helper is unavailable for now."
           );
         }
+        // The router's pilot picks the model by the job's kind, once per
+        // session (`taskAgentModel`).
         return modelSelection(
-          env.TASK_AGENT_MODEL ?? (await getWorkspaceModelId(scope))
+          await taskAgentModel(
+            scope,
+            ctx.session.id,
+            ctx.messages,
+            env.TASK_AGENT_MODEL ?? (await getWorkspaceModelId(scope))
+          )
         );
       },
     },

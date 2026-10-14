@@ -764,6 +764,9 @@ export const env = createEnv({
     OPENROUTER_IMAGE_MODEL: trimmedValue.default(
       "google/gemini-3.1-flash-lite-image"
     ),
+    // The video model on OpenRouter; unset, `generate_video` is not offered
+    // there.
+    OPENROUTER_VIDEO_MODEL: trimmedValue.optional(),
     OPENROUTER_MANAGEMENT_KEY: openRouterApiKeySchema.optional(),
     // Caps what one model step may write, reasoning included. Left unset it
     // is 16,384 tokens, or 32,768 with reasoning on.
@@ -834,9 +837,19 @@ export const env = createEnv({
       .number()
       .positive("ROUTERAI_CREDITS_ALERT_RUB must be greater than zero")
       .default(300),
-    ROUTERAI_IMAGE_MODEL: trimmedValue.default(
-      "google/gemini-3.1-flash-lite-image"
-    ),
+    // `generate_video` makes clips through RouterAI's `/videos`. HeyGen
+    // Video 1 made five seconds at 1344×768 with sound in 18–29 s for
+    // 9.81 ₽ (1.96 ₽ a second) on 14.10, and brought a photo to life with
+    // its lettering intact; Grok Imagine Video 1.5 Lite cost 10.9 ₽ at 480p,
+    // Wan 2.6 43.6 ₽ in 190 s.
+    ROUTERAI_VIDEO_MODEL: trimmedValue.default("heygen/heygen-video-1"),
+    // MAI Image 2.6 Flash, in 9 cards, invitations and posters with Russian
+    // lettering on 14.10: 2.13 ₽ a picture against Gemini 3.1 Flash Lite
+    // Image's 3.73 ₽, «С днём рождения» right 3 of 3, a doubled «18:00» in 2
+    // of 3 invitations (Gemini: no typos, but an invented address on every
+    // invitation), and an edit kept the person's cat; 16–33 s against
+    // 5–10 s. Seedream 5.0 Flash (1.96 ₽) wrote «раждения» 3 of 3.
+    ROUTERAI_IMAGE_MODEL: trimmedValue.default("microsoft/mai-image-2.6-flash"),
     // Caps what one model step may write, reasoning included. Left unset it
     // is 16,384 tokens, or 32,768 with reasoning on.
     ROUTERAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().optional(),
@@ -1073,6 +1086,35 @@ export const env = createEnv({
     // The model of the task agent (`agent/subagents/task`); unset, the
     // workspace's own model.
     TASK_AGENT_MODEL: trimmedValue.optional(),
+    // Who gets `generate_video` when a person asks for a clip
+    // (`agent/tools/generate_video.ts`): unset or `*`, every workspace; `off`,
+    // nobody (the rollback); otherwise workspace ids or owners' emails.
+    VIDEO_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot of the model router: workspace ids or owners' emails, or `*`
+    // for every workspace, whose task agent works on the model its job's kind
+    // is routed to (`agent/lib/model/router/task.ts`). Unset, it works on
+    // TASK_AGENT_MODEL or the workspace's model as before.
+    MODEL_ROUTER_WORKSPACES: workspaceListSchema.optional(),
+    // The decision model that reads the job's kind, on the System One API of
+    // RouterAI (`/systemone`).
+    MODEL_ROUTER_MODEL: trimmedValue.default("typesafe/jev-1.13"),
+    // The router's models by kind of job (code, design, research, writing,
+    // other), as `design=<model>,code=<model>`; a kind left out or with an
+    // empty model keeps the default. Unset, every job keeps it and the
+    // decision model is not asked (`agent/lib/model/router/task.ts`).
+    TASK_AGENT_ROUTES: z
+      .string()
+      .transform((value) => {
+        const routes: Record<string, string> = {};
+        for (const entry of value.split(",")) {
+          const [kind = "", model = ""] = entry
+            .split("=")
+            .map((part) => part.trim());
+          if (kind.length > 0) routes[kind] = model;
+        }
+        return routes;
+      })
+      .optional(),
     TELEGRAM_BOT_TOKEN: requiredValue.optional(),
     TELEGRAM_BOT_USERNAME: requiredValue
       .refine(
