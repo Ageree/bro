@@ -12,7 +12,11 @@ import {
   serializeLoginVaultPayload,
 } from "@shared/vault/schema";
 import { siteUrl } from "./host";
-import { browserSecretAliases, selectBrowserVaultItems } from "./secrets";
+import {
+  browserSecretAliases,
+  savedLoginIdsOf,
+  selectBrowserVaultItems,
+} from "./secrets";
 
 /**
  * An account Bro registers on a site with its own AgentMail address, when
@@ -255,6 +259,65 @@ export function saveAgentMailLogin(
       version: 2,
     }),
   });
+}
+
+/**
+ * The account a set-password link is for: the user name in its address
+ * (`login=` as WordPress writes it, `user_login`, `username`), else the
+ * address the letter came to.
+ */
+export function passwordAccount(link: string, recipient: string | undefined) {
+  const params = URL.parse(link)?.searchParams;
+  const username = ["login", "user_login", "username"]
+    .map((name) => params?.get(name)?.trim())
+    .find((value) => value !== undefined && value !== "");
+  return username === undefined
+    ? { identifier: recipient, isEmail: true }
+    : { identifier: username, isEmail: false };
+}
+
+/**
+ * Saves a login with a password Bro makes for an account on `site` whose
+ * letter sends the person to choose one (a set-password or reset link), and
+ * takes the site's older saved logins out: they hold a password the page is
+ * about to replace. The run types the new one by alias and no model sees it
+ * (owner, 14.10: Bro sets the password itself, never asks for one). Undefined
+ * when the site cannot hold a login or the letter names no account.
+ */
+export async function savePasswordSetupLogin(
+  scope: AccessScope,
+  site: string | null | undefined,
+  account: {
+    readonly identifier: string | undefined;
+    readonly isEmail: boolean;
+  }
+) {
+  if (site === null || site === undefined || account.identifier === undefined) {
+    return undefined;
+  }
+  const origin = loginOrigin(site);
+  if (origin === undefined) return undefined;
+  const older = savedLoginIdsOf(await readVaultItems(scope), site);
+  const id = await saveVaultItem(scope, {
+    account: "",
+    kind: "login",
+    label: signUpLoginLabel(new URL(origin).hostname),
+    secret: serializeLoginVaultPayload({
+      authentication: { password: generatedPassword(), type: "password" },
+      identifier: {
+        type: account.isEmail ? "email" : "username",
+        value: account.identifier,
+      },
+      kind: "login",
+      origin,
+      version: 2,
+    }),
+  });
+  for (const olderId of older) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- A handful of logins, one after the other.
+    await forgetAgentMailLogin(scope, olderId);
+  }
+  return id;
 }
 
 /** Takes a saved sign-up login out again: its run never started. */

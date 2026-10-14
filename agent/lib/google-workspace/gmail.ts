@@ -1003,6 +1003,19 @@ function plainText(part: GmailPart | undefined): string {
   return "";
 }
 
+/** The HTML part of a message as sent: a link keeps its anchor there. */
+function htmlOf(part: GmailPart | undefined): string {
+  if (!part) return "";
+  if (part.mimeType === "text/html" && part.body?.data) {
+    return decodeBase64Url(part.body.data);
+  }
+  for (const child of part.parts ?? []) {
+    const html = htmlOf(child);
+    if (html) return html;
+  }
+  return "";
+}
+
 function minimizeMessage(message: GmailMessage) {
   return {
     cc: header(message.payload, "Cc"),
@@ -1175,10 +1188,12 @@ export async function readGmailLetters(
           )
           .map((item) => item.value),
         from: header(message.payload, "From"),
+        html: htmlOf(message.payload),
         id: message.id ?? null,
         receivedAt: Number(message.internalDate ?? Number.NaN),
         subject: header(message.payload, "Subject"),
         text: plainText(message.payload),
+        to: header(message.payload, "To"),
       }))
     );
   }

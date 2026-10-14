@@ -7950,6 +7950,68 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     );
   });
 
+  // 14.10, productradar.ru (WordPress): the site mailed a set-password link
+  // and no code; Bro told the person to open it themselves and to send it.
+  it("hands the run a set-password link and a password Bro made and keeps", async () => {
+    stoppedFor(emailed);
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), emailed),
+      site: "https://productradar.ru",
+    });
+    mailCodeFromSite.mockResolvedValue({
+      domain: "productradar.ru",
+      kind: "link",
+      purpose: "password",
+      receivedAt: new Date(),
+      recipient: "ivan@gmail.com",
+      url: "https://productradar.ru/wp-login.php?action=rp&key=AbC123&login=ivan",
+    });
+
+    const result = await fromMail();
+
+    // The login is saved before the run starts: the user name of the link,
+    // and a password made here that no one is told.
+    const saved = saveVaultItem.mock.calls[0]?.[1];
+    expect(saved?.kind).toBe("login");
+    const payload = JSON.parse(saved?.secret ?? "{}");
+    expect(payload.identifier).toEqual({ type: "username", value: "ivan" });
+    expect(payload.origin).toBe("https://productradar.ru");
+    expect(payload.authentication.password).toHaveLength(18);
+    const created = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(created?.task).toContain(
+      "https://productradar.ru/wp-login.php?action=rp&key=AbC123&login=ivan"
+    );
+    expect(created?.task).toContain("ask for the secret login_password");
+    expect(created?.task).not.toContain(payload.authentication.password);
+    expect(continuationNote(result)).toContain(
+      "do not ask them for the link, to open it, to choose or send a password"
+    );
+    expect(JSON.stringify(result)).not.toContain(
+      payload.authentication.password
+    );
+  });
+
+  it("hands the run a confirmation link without making any password", async () => {
+    stoppedFor(emailed);
+    mailCodeFromSite.mockResolvedValue({
+      domain: "ozon.ru",
+      kind: "link",
+      purpose: "confirm",
+      receivedAt: new Date(),
+      recipient: "ivan@gmail.com",
+      url: "https://www.ozon.ru/confirm?t=1",
+    });
+
+    await fromMail();
+
+    expect(saveVaultItem).not.toHaveBeenCalled();
+    const created = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(created?.task).toContain(
+      "Bro took the confirmation link that ozon.ru sent to the person's email from their own mailbox"
+    );
+    expect(created?.task).not.toContain("login_password");
+  });
+
   it("looks in the mail once per stop, then asks the person", async () => {
     // RU review: a code that did not take was fetched again every report.
     const { mailCodeInstruction } =
@@ -7987,17 +8049,20 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     );
   });
 
-  it("asks the person when no letter from the site came", async () => {
+  it("has the site send a new letter, and bothers the person with nothing, when none came", async () => {
     stoppedFor();
 
     // An error, so a report turn that only heard it still owes the report.
     const sent = fromMail();
 
     await expect(sent).rejects.toThrow(
-      "Nothing was sent: no letter with a code from ozon.ru reached the user's Gmail since the run asked for it"
+      "Nothing was sent: no letter with a code or a link from ozon.ru reached the user's Gmail since the run asked for it"
     );
     await expect(sent).rejects.toThrow(
-      "Ask the user for the code the site emailed instead"
+      "Continue this run once without codeFrom, telling it to have the site send a new letter"
+    );
+    await expect(sent).rejects.toThrow(
+      "Do not ask the user to look in their mail or spam"
     );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
@@ -10265,6 +10330,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
       mailCodeFromSite.mockResolvedValue({
         domain: "inaturalist.org",
         kind: "link",
+        purpose: "confirm",
         receivedAt: new Date(),
         url: link,
       });
@@ -10410,7 +10476,9 @@ describe("browser_task registers with Bro's own mailbox", () => {
     it("looks in the person's Gmail when the site's login is theirs", async () => {
       savedLogin("alice@example.com");
 
-      await expect(fromMail()).rejects.toThrow("Ask the user for the code");
+      await expect(fromMail()).rejects.toThrow(
+        "Continue this run once without codeFrom"
+      );
       expect(mailCodeFromSite.mock.calls[0]?.[1]).toMatchObject({
         agentMailbox: undefined,
       });
