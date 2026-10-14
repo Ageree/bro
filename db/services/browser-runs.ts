@@ -264,11 +264,20 @@ export async function claimBrowserRunCompletion(
  * attempt is never dropped by a later attempt's park. Omitted on a park that
  * has nothing new to add (a retry that could not even start), which leaves
  * whatever the row already carries.
+ *
+ * `recovery`, when given, names the step the retry starts with and how many
+ * recoveries the errand has used (`recovery.ts`); omitted, a park for an
+ * anti-bot wall leaves them as they are, so a wall met during a recovery goes
+ * on with that recovery's step.
  */
 export async function parkBrowserRunForRetry(
   runId: string,
   input: {
     readonly captchaAttempt: number;
+    readonly recovery?: {
+      readonly attempt: number;
+      readonly phase: "continue" | "verify";
+    };
     readonly retryAt: Date;
     readonly unreadMessages?: readonly string[];
   }
@@ -279,6 +288,8 @@ export async function parkBrowserRunForRetry(
     .update(browserRuns)
     .set({
       captchaAttempt: input.captchaAttempt,
+      recoveryAttempt: input.recovery?.attempt,
+      recoveryPhase: input.recovery?.phase,
       retryAt: input.retryAt,
       status: "waiting",
       unreadMessages:

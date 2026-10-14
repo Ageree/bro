@@ -701,6 +701,10 @@ function noRetryAt(): Date | null {
   return null;
 }
 
+function noRecovery(): "continue" | "verify" | null {
+  return null;
+}
+
 /** The instruction a queued errand starts with, typed as the column is. */
 function noPendingTask(): string | null {
   return null;
@@ -772,6 +776,8 @@ function browserRunRow(
     paymentAllowed: submission?.paymentCapRub !== undefined,
     pendingTask: noPendingTask(),
     profileId: "profile-1",
+    recoveryAttempt: 0,
+    recoveryPhase: noRecovery(),
     replyAnchorMessageId: null,
     retryAt: noRetryAt(),
     rootSessionId: "session-1",
@@ -2269,6 +2275,28 @@ describe("browser_task scoping", () => {
       accessScopeForUser("better-auth:bob"),
       runId
     );
+  });
+
+  it("tells a status check that a broken-off errand is checking itself, not walled", async () => {
+    readBrowserRunForScope.mockResolvedValue({
+      ...browserRunRow(new Date(), "Needs: info"),
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+      retryAt: new Date(Date.now() + 60_000),
+      status: "waiting",
+    });
+    readBrowserUseRunStatus.mockResolvedValue("completed");
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      { action: "status", personWants: "look", runId },
+      toolContext("better-auth:alice")
+    );
+
+    expect(JSON.stringify(result)).toContain(
+      "a read-only check of whether its action already went through runs by itself"
+    );
+    expect(JSON.stringify(result)).not.toContain("anti-bot");
   });
 
   it("says in the logs when the person finds an ended run the poller left open", async () => {

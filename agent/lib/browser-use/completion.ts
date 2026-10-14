@@ -71,6 +71,7 @@ import {
   persistProfileCookies,
   releaseEndedRunBrowser,
 } from "./release";
+import { nextRecovery, recoverableErrand, recoveryRetryAt } from "./recovery";
 import { recordRunSignIns } from "./sign-ins";
 import { settleSignUpLogin, signUpSettlement } from "./sign-up";
 
@@ -145,7 +146,8 @@ export async function settleBrowserRun(
   const { interrupted, missingSite, parsed } = await networkVerdict(
     row,
     run,
-    parseBrowserOutcome(run.result)
+    parseBrowserOutcome(run.result),
+    status
   );
   const outcome = browserOutcomeSummary(
     parsed,
@@ -159,14 +161,31 @@ export async function settleBrowserRun(
   // An anti-bot wall is retried in the background, in a fresh browser on
   // another address, and the person hears nothing until the errand is done
   // or the attempts have run out.
+  const now = new Date();
+  // A run that broke off while it could act is not reported or run again
+  // blindly: a read-only check of the site comes first, then the errand is
+  // finished or handed to the person (`recovery.ts`).
+  const recovery =
+    missingSite === undefined && recoverableErrand(row)
+      ? nextRecovery({
+          action: parsed.action,
+          attempt: row.recoveryAttempt,
+          canStart: row.captchaAttempt < maximumCaptchaAttempts,
+          interrupted: interrupted !== undefined,
+          needs: parsed.needs,
+          phase: row.recoveryPhase,
+        })
+      : ({ kind: "none" } as const);
   const retryAt =
-    parsed.needs === "captcha"
-      ? captchaRetryAt(
-          row.captchaAttempt,
-          new Date(),
-          isBrowserVmId(row.profileId ?? "")
-        )
-      : undefined;
+    recovery.kind === "retry"
+      ? recoveryRetryAt(recovery.phase, recovery.attempt, now)
+      : parsed.needs === "captcha"
+        ? captchaRetryAt(
+            row.captchaAttempt,
+            now,
+            isBrowserVmId(row.profileId ?? "")
+          )
+        : undefined;
   // Only a finished run has an order to record; one still waiting on the
   // person has bought nothing yet.
   const order =
@@ -191,6 +210,7 @@ export async function settleBrowserRun(
   const reportFacts = {
     approvedRub: approvedPaymentRub(row, parsed.total),
     booking: bookingState(row, parsed),
+    checked: row.recoveryAttempt > 0,
     confirmed: row.submission !== null,
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
@@ -206,6 +226,8 @@ export async function settleBrowserRun(
       parsed.needs === "captcha"
         ? unreachableCause(parsed, run.error)
         : undefined,
+    unclear: recovery.kind === "unclear",
+    verified: recovery.kind === "verified",
     // Lines queued into this VM run only as it was ending, which its agent
     // never read (`unreadMessages`): neither the worker nor Bro starts
     // anything for them on its own any more, so the coordinator hears about
@@ -225,27 +247,31 @@ export async function settleBrowserRun(
   console.info("[browser-use] run settled", {
     channel: claimed.conversationChannel,
     needs: parsed.needs,
+    recovery: recovery.kind === "none" ? undefined : recovery.kind,
     retryAt: retryAt?.toISOString(),
     runId,
     sessionId: eveSessionOf(claimed),
     status,
     summaryStatus: status === run.status ? undefined : run.status,
   });
-  if (parsed.needs === "captcha") {
-    if (retryAt) {
-      // A park that does not land means the person stopped the errand in
-      // the moment since the claim: there is nothing to retry or to report.
-      // The merged unread messages go with it, so the next attempt's row
-      // (`captcha-retry.ts`'s hand-off) inherits them rather than losing
-      // them to a park with nothing to report.
-      await parkBrowserRunForRetry(claimed.id, {
-        captchaAttempt: claimed.captchaAttempt,
-        retryAt,
-        unreadMessages,
-      });
-      await persistProfileCookies(claimed.id, run.sessionId);
-      return { kind: "settled" as const };
-    }
+  if (retryAt) {
+    // A park that does not land means the person stopped the errand in
+    // the moment since the claim: there is nothing to retry or to report.
+    // The merged unread messages go with it, so the next attempt's row
+    // (`captcha-retry.ts`'s hand-off) inherits them rather than losing
+    // them to a park with nothing to report. The spend reservation stays
+    // where it is: the retry moves it before it calls out.
+    await parkBrowserRunForRetry(claimed.id, {
+      captchaAttempt: claimed.captchaAttempt,
+      recovery:
+        recovery.kind === "retry"
+          ? { attempt: recovery.attempt, phase: recovery.phase }
+          : undefined,
+      retryAt,
+      unreadMessages,
+    });
+    await persistProfileCookies(claimed.id, run.sessionId);
+    return { kind: "settled" as const };
   }
   // Neither needs the other, and both come before the report: the order row
   // so «где мой заказ» finds it, the images so the report can attach them. A
@@ -338,17 +364,21 @@ function bookingState(
  * is walled off as surely as by an anti-bot check and gets the same retry
  * when it stopped on the error with NEEDS: captcha, as it is told to, or
  * failed on it with no report at all (RU 25.09, d06: «ERR_TUNNEL_CONNECTION_
- * FAILED» on Госуслуги). One that may have acted is never retried on a
- * network error, whatever it reported: it may have clicked «Заказать» or
- * «Оплатить» before the page failed, and a retry would do it again. It
- * reaches the person as cut off (`interrupted`, the error), to be checked
- * before anything is repeated. A report that names no network error — an
- * anti-bot wall among them — stands as the run gave it.
+ * FAILED» on Госуслуги). One that may have acted is never run again as it
+ * was after a network error, whatever it reported: it may have clicked
+ * «Заказать» or «Оплатить» before the page failed, and a retry would do it
+ * again. It is `interrupted` (the error): the settle checks the site
+ * read-only first (`recovery.ts`), and the person hears of it only when that
+ * cannot settle it. So is a run that failed with no report at all — no
+ * footer — for any reason, a crashed worker among them (productradar.ru,
+ * 14.10). A report that names no network error — an anti-bot wall among
+ * them — stands as the run gave it.
  */
 async function networkVerdict(
   row: BrowserRunRow,
   run: { readonly error?: string | null; readonly result?: string | null },
-  reported: ReturnType<typeof parseBrowserOutcome>
+  reported: ReturnType<typeof parseBrowserOutcome>,
+  status: BrowserUseRunStatus
 ): Promise<{
   readonly interrupted?: string;
   /** The host of the errand's site, when its name does not exist. */
@@ -368,11 +398,29 @@ async function networkVerdict(
       parsed: { ...reported, needs: "none" },
     };
   }
-  if (error === undefined || !walled) return { parsed: reported };
+  if (error === undefined || !walled) {
+    // Failed with nothing to go by: a site that errored out leaves a report,
+    // a run that crashed or lost its browser does not.
+    return status === "failed" &&
+      !reported.labelled &&
+      recoverableErrand(row) &&
+      (await couldHaveActed(row, true))
+      ? {
+          interrupted: brokeOffCause(run.error),
+          parsed: { ...reported, needs: "info" },
+        }
+      : { parsed: reported };
+  }
   if (await couldHaveActed(row, true)) {
     return { interrupted: error, parsed: { ...reported, needs: "info" } };
   }
   return { parsed: { ...reported, needs: "captcha" } };
+}
+
+/** Why a run with no report broke off, short enough for a report line. */
+function brokeOffCause(error: string | null | undefined) {
+  const text = (error ?? "").replaceAll(/\s+/gu, " ").trim().slice(0, 200);
+  return text === "" ? "the run ended without a report" : text;
 }
 
 /**
@@ -513,8 +561,28 @@ export async function reportWalledBrowserRun(
 ) {
   const row = await readBrowserRun(runId);
   if (!row) return;
-  await releaseBrowserRunSpend(row.id);
   await finishWalledBrowserRun(row.id);
+  // The attempts ran out in the middle of a recovery: the errand is not
+  // walled, it broke off while it could act, and that is what is told. Its
+  // reservation stays: the money may have gone, and the poller's
+  // `reconcileSpendReservations` closes it from what the errand reported.
+  if (row.recoveryPhase !== null) {
+    await reportBrowserRun(
+      delivery,
+      row.id,
+      browserRunReport(row, {
+        checked: true,
+        interrupted:
+          summaryUnreachableCause(row.outcome) ??
+          "the run ended without a report",
+        needs: "info",
+        outcome: row.outcome ?? "The run broke off.",
+        unreadMessages: row.unreadMessages ?? [],
+      })
+    );
+    return;
+  }
+  await releaseBrowserRunSpend(row.id);
   await reportBrowserRun(
     delivery,
     row.id,
@@ -587,9 +655,27 @@ function missingSiteInstruction(host: string) {
  * clicked may have gone through, so nothing is repeated before the person
  * has checked.
  */
-function interruptedInstruction(error: string) {
-  return `The connection to the site failed (${error}) while this run was allowed to act in the user's name, so a submission, order, booking or payment it clicked may have gone through before the page failed. Tell the user plainly what the run reports it did last and what the page showed, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.`;
+function interruptedInstruction(error: string, checked: boolean) {
+  const cause =
+    networkErrorIn(error) === undefined
+      ? `The run broke off (${error})`
+      : `The connection to the site failed (${error})`;
+  const tried = checked
+    ? " Read-only checks of the site were already tried by themselves and could not settle it."
+    : "";
+  return `${cause} while this run was allowed to act in the user's name, so a submission, order, booking or payment it clicked may have gone through before the page failed.${tried} Tell the user plainly what the run reports it did last and what the page showed, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.`;
 }
+
+/**
+ * A run of the errand broke off while it could act, and the read-only check
+ * that followed could not say whether the action happened.
+ */
+const unclearInstruction =
+  "A run of this errand broke off while it was allowed to act in the user's name, and a read-only check of the site afterwards could not tell whether the submission, order, booking or payment went through. Tell the user plainly that it is unclear whether it went through and what the check could not see, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.";
+
+/** The check found what an earlier, broken-off run had already done. */
+const verifiedInstruction =
+  "An earlier run of this errand broke off on an error, and a read-only check of the site afterwards found that its action had already gone through, so nothing was repeated. Tell the user the errand is done, with the number, title or date the check found, and do not make the error the story. Do not start or continue it to submit, order, book or pay again.";
 
 /**
  * A stop at payment that did not say what is being paid for. On 26.09 a
@@ -613,6 +699,8 @@ function deliveryInstruction(
     readonly booking?: "booked" | "reported";
     /** What the person's yes on this errand lets it pay, in roubles. */
     readonly approvedRub?: number;
+    /** The errand was already checked read-only by itself, to no avail. */
+    readonly checked: boolean;
     readonly confirmed: boolean;
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
@@ -625,8 +713,12 @@ function deliveryInstruction(
     readonly ordered: boolean;
     /** What to do without a public-service site that would not let it in. */
     readonly stuck?: string;
+    /** A read-only check after a broken-off run could not tell. */
+    readonly unclear: boolean;
     /** The network error that kept the site from loading, when that did. */
     readonly unreachable?: string;
+    /** A read-only check found the broken-off run's action already done. */
+    readonly verified: boolean;
   }
 ) {
   const { hasItems, hasLinks } = facts;
@@ -663,7 +755,9 @@ function deliveryInstruction(
     facts.stuck,
     facts.interrupted === undefined
       ? undefined
-      : interruptedInstruction(facts.interrupted),
+      : interruptedInstruction(facts.interrupted, facts.checked),
+    facts.unclear ? unclearInstruction : undefined,
+    facts.verified ? verifiedInstruction : undefined,
     stillBuying ? confirmedErrandInstruction : undefined,
     // RU 25.09: «такие рейсы от 15 225 ₽» for a price the report gave other
     // trains (d01); «Артура нет ни в одном» after two of five were checked
@@ -737,6 +831,7 @@ function browserRunReport(
   options: {
     readonly approvedRub?: number;
     readonly booking?: "booked" | "reported";
+    readonly checked?: boolean;
     readonly confirmed?: boolean;
     readonly hasCharges?: boolean;
     readonly hasItems?: boolean;
@@ -755,8 +850,12 @@ function browserRunReport(
     /** What became of the login saved for a sign-up with Bro's mailbox. */
     readonly signUp?: string;
     readonly spend?: string;
+    /** A read-only check after a broken-off run could not tell. */
+    readonly unclear?: boolean;
     /** The network error a walled run named as its own outcome. */
     readonly unreachable?: string;
+    /** A read-only check found the broken-off run's action already done. */
+    readonly verified?: boolean;
     /** The person's own messages a VM run ended without reading. */
     readonly unreadMessages?: readonly string[];
   }
@@ -794,6 +893,7 @@ function browserRunReport(
     deliveryInstruction(needs, {
       approvedRub: options.approvedRub,
       booking: options.booking,
+      checked: options.checked === true,
       confirmed: options.confirmed === true,
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
@@ -803,7 +903,9 @@ function browserRunReport(
       next: options.next !== undefined,
       ordered: options.ordered === true,
       stuck,
+      unclear: options.unclear === true,
       unreachable: needs === "captcha" ? options.unreachable : undefined,
+      verified: options.verified === true,
     }),
   ]
     .filter((line) => line !== undefined)
