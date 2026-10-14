@@ -76,6 +76,13 @@ export default defineHook({
           calls.map((call) => call.name)
         )
       );
+      for (const { action, name } of calls) {
+        const reply =
+          name === "send_message"
+            ? replySchema.safeParse(action.input).data?.text
+            : undefined;
+        if (reply !== undefined) logMessage("bro", ctx, turnId, reply);
+      }
       if (!transcriptsEnabled()) return;
       await transcribe(ctx, turnId, () =>
         calls.map(({ action, name }) => {
@@ -117,11 +124,17 @@ export default defineHook({
       ]);
     },
     async "message.received"(event, ctx) {
-      if (!transcriptsEnabled()) return;
       const person =
         event.data.kind === undefined &&
         !ctx.session.parent &&
         startedByPerson(ctx);
+      logMessage(
+        person ? "person" : "input",
+        ctx,
+        event.data.turnId,
+        event.data.message
+      );
+      if (!transcriptsEnabled()) return;
       await transcribe(ctx, event.data.turnId, () => [
         {
           at: event.meta.at,
@@ -135,7 +148,9 @@ export default defineHook({
     },
     async "message.completed"(event, ctx) {
       const { message, turnId } = event.data;
-      if (message === null || !transcriptsEnabled()) return;
+      if (message === null) return;
+      logMessage("bro", ctx, turnId, message);
+      if (!transcriptsEnabled()) return;
       await transcribe(ctx, turnId, () => [
         {
           at: event.meta.at,
@@ -193,6 +208,32 @@ export default defineHook({
     },
   },
 });
+
+/**
+ * A message's text into the server log (journald), cut and filtered like a
+ * transcript line. Always on, whatever OWNER_TRANSCRIPTS says; a filter that
+ * throws costs the line, not the turn.
+ */
+function logMessage(
+  role: string,
+  ctx: HookContext,
+  turnId: string,
+  text: string
+) {
+  try {
+    console.info("[message]", {
+      channel: turnChannel(ctx),
+      role,
+      sessionId: ctx.session.id,
+      text: transcriptText(text),
+      turnId,
+    });
+  } catch {
+    console.warn("[message] a line was not logged", {
+      sessionId: ctx.session.id,
+    });
+  }
+}
 
 /** What `send_message` says to the person. */
 const replySchema = z.object({ text: z.string() });
