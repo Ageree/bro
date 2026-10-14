@@ -20,6 +20,7 @@ import {
 import {
   awaitsDelivery,
   failedSendNote,
+  headsUpCoversErrand,
   outcomeToldEarlier,
   reportOwedSteps,
   turnActed,
@@ -174,8 +175,10 @@ export default defineAgent({
         // Telegram and iMessage would post whatever text it ends with; DeepSeek
         // writes a line («Отчёт уже доставлен») where gpt-6-luna stayed empty.
         // So does one that handed the errand on in a quiet `continue`.
+        // So does a person's turn whose heads-up handed the errand to a run.
         const silent =
           staleReport ||
+          headsUpCoversErrand(ctx.messages) ||
           (reportRunId !== undefined &&
             !turnDelivered(ctx.messages) &&
             turnHandedErrandOn(ctx.messages));
@@ -371,6 +374,7 @@ export default defineAgent({
           delivered:
             staleReport ||
             turnDelivered(ctx.messages) ||
+            headsUpCoversErrand(ctx.messages) ||
             (reportRunId !== undefined && turnActed(ctx.messages)),
           // The pilot of trimming old history: results, long errands and
           // browser reports from before the last few turns reach the model as

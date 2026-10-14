@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as agentMailApi from "@shared/agent-mail/api";
 import type * as publicFetch from "@agent/lib/sandbox/public-fetch";
 import {
+  actionLinkInLetter,
   authenticatedFrom,
   codeInLetter,
   codeSentEarlier,
@@ -65,10 +66,12 @@ function passed(domain: string) {
 interface Letter {
   readonly authenticationResults?: readonly string[];
   readonly from: string;
+  readonly html?: string;
   readonly id: string;
   readonly receivedAt: Date;
   readonly subject: string;
   readonly text: string;
+  readonly to?: string;
 }
 
 /** A mailbox behind the Composio proxy, as Gmail's REST API answers it. */
@@ -95,8 +98,27 @@ function mailbox(composio: FakeComposio, letters: readonly Letter[]) {
             })),
             { name: "From", value: letter.from },
             { name: "Subject", value: letter.subject },
+            { name: "To", value: letter.to ?? "person@gmail.com" },
           ],
-          mimeType: "text/plain",
+          mimeType:
+            letter.html === undefined ? "text/plain" : "multipart/alternative",
+          parts:
+            letter.html === undefined
+              ? undefined
+              : [
+                  {
+                    body: {
+                      data: Buffer.from(letter.text).toString("base64url"),
+                    },
+                    mimeType: "text/plain",
+                  },
+                  {
+                    body: {
+                      data: Buffer.from(letter.html).toString("base64url"),
+                    },
+                    mimeType: "text/html",
+                  },
+                ],
         },
       },
     };
@@ -431,6 +453,171 @@ describe("taking the code from the person's mailbox", () => {
 
     await expect(look(null)).resolves.toEqual({ kind: "no_site" });
     expect(composio.proxy).not.toHaveBeenCalled();
+  });
+});
+
+describe("taking a link from the person's mailbox", () => {
+  let composio: FakeComposio;
+  const signal = new AbortController().signal;
+
+  beforeEach(() => {
+    composio = fakeComposio();
+    composio.connect({ toolkit: "googlesuper" });
+  });
+
+  function lookAt(
+    site: string,
+    options: { waitMs?: number; pauseMs?: number } = {}
+  ) {
+    return mailCodeFromSite(scope, {
+      signal,
+      since: new Date(Date.now() - 60_000),
+      site,
+      waitMs: 0,
+      ...options,
+    });
+  }
+
+  // 14.10: a WordPress site mailed a set-password link and no code, and the
+  // look, which only knew codes, found nothing for a minute, every time.
+  it("takes a set-password link a site mailed instead of a code", async () => {
+    mailbox(composio, [
+      {
+        authenticationResults: [passed("productradar.ru")],
+        from: "Product Radar <no-reply@productradar.ru>",
+        id: "wp",
+        receivedAt: new Date(),
+        subject: "[Product Radar] Данные для входа на сайт",
+        text: "Имя пользователя: ivan\n\nЧтобы задать пароль, перейдите по адресу:\n\n<https://productradar.ru/wp-login.php?action=rp&key=AbC123&login=ivan>\n",
+        to: "Ivan <ivan@gmail.com>",
+      },
+    ]);
+
+    await expect(lookAt("https://productradar.ru")).resolves.toMatchObject({
+      domain: "productradar.ru",
+      kind: "link",
+      purpose: "password",
+      recipient: "ivan@gmail.com",
+      url: "https://productradar.ru/wp-login.php?action=rp&key=AbC123&login=ivan",
+    });
+  });
+
+  it("takes the confirmation link of an HTML letter from another site", async () => {
+    mailbox(composio, [
+      {
+        authenticationResults: [passed("inaturalist.org")],
+        from: "iNaturalist <help@inaturalist.org>",
+        html: '<p>Welcome!</p><a href="https://www.inaturalist.org/users/confirmation?confirmation_token=abc">Confirm my account</a><a href="https://www.inaturalist.org/pages/terms">Terms</a>',
+        id: "confirm",
+        receivedAt: new Date(),
+        subject: "Confirm your account",
+        text: "Welcome! Confirm: see the HTML version",
+      },
+    ]);
+
+    await expect(lookAt("https://www.inaturalist.org")).resolves.toMatchObject({
+      kind: "link",
+      purpose: "confirm",
+      url: "https://www.inaturalist.org/users/confirmation?confirmation_token=abc",
+    });
+  });
+
+  it("takes the reset link of a recovery letter, in Russian too", async () => {
+    mailbox(composio, [
+      {
+        authenticationResults: [passed("example-shop.ru")],
+        from: "Магазин <info@example-shop.ru>",
+        html: '<a href="https://example-shop.ru/account/reset?token=zz9">Сбросить пароль</a> <a href="https://example-shop.ru/unsubscribe?u=1">Отписаться</a>',
+        id: "reset",
+        receivedAt: new Date(),
+        subject: "Восстановление доступа",
+        text: "",
+      },
+    ]);
+
+    await expect(lookAt("https://example-shop.ru")).resolves.toMatchObject({
+      kind: "link",
+      purpose: "password",
+      url: "https://example-shop.ru/account/reset?token=zz9",
+    });
+  });
+
+  it("still prefers a code, and a confirmation link over a password link", async () => {
+    mailbox(composio, [
+      {
+        authenticationResults: [passed("ozon.ru")],
+        from: "Ozon <noreply@ozon.ru>",
+        html: '<a href="https://www.ozon.ru/confirm?t=1">Confirm</a>',
+        id: "both",
+        receivedAt: new Date(),
+        subject: "Код для входа",
+        text: "Ваш код: 482913",
+      },
+    ]);
+    await expect(lookAt("https://www.ozon.ru")).resolves.toMatchObject({
+      code: "482913",
+      kind: "found",
+    });
+
+    expect(
+      actionLinkInLetter(
+        {
+          html: '<a href="https://shop.example/verify?t=1">Verify email</a><a href="https://shop.example/forgot-password">Forgot your password?</a>',
+          text: "",
+        },
+        "shop.example"
+      )
+    ).toMatchObject({
+      purpose: "confirm",
+      url: "https://shop.example/verify?t=1",
+    });
+  });
+
+  it("never takes a link that is not the site's own, authenticated and plain https", async () => {
+    mailbox(composio, [
+      {
+        authenticationResults: [
+          "mx.google.com; dkim=fail header.i=@productradar.ru; dmarc=fail header.from=productradar.ru",
+        ],
+        from: "Product Radar <no-reply@productradar.ru>",
+        id: "spoofed",
+        receivedAt: new Date(),
+        subject: "Данные для входа",
+        text: "Чтобы задать пароль: https://productradar.ru/wp-login.php?action=rp&key=a&login=x",
+      },
+      {
+        authenticationResults: [passed("productradar.ru")],
+        from: "Product Radar <no-reply@productradar.ru>",
+        id: "elsewhere",
+        receivedAt: new Date(),
+        subject: "Данные для входа",
+        text: "Чтобы задать пароль: https://evil.example/wp-login.php?action=rp&key=a&login=x and http://productradar.ru/wp-login.php?action=rp&key=b",
+      },
+    ]);
+
+    await expect(lookAt("https://productradar.ru")).resolves.toEqual({
+      domain: "productradar.ru",
+      kind: "not_found",
+    });
+  });
+
+  it("waits for a letter that comes late", async () => {
+    const late: Letter = {
+      authenticationResults: [passed("productradar.ru")],
+      from: "Product Radar <no-reply@productradar.ru>",
+      id: "late",
+      receivedAt: new Date(),
+      subject: "Данные для входа",
+      text: "Чтобы задать пароль: https://productradar.ru/wp-login.php?action=rp&key=a&login=x",
+    };
+    mailbox(composio, []);
+    setTimeout(() => {
+      mailbox(composio, [late]);
+    }, 30);
+
+    await expect(
+      lookAt("https://productradar.ru", { pauseMs: 20, waitMs: 2_000 })
+    ).resolves.toMatchObject({ kind: "link", purpose: "password" });
   });
 });
 

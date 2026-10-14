@@ -97,6 +97,7 @@ function messageText(message: ModelMessage) {
  * stay forced until the answer goes out.
  */
 export function awaitsDelivery(messages: readonly ModelMessage[]) {
+  if (headsUpCoversErrand(messages)) return false;
   let steps = 0;
   let reaction = false;
   for (const message of messages.toReversed()) {
@@ -186,6 +187,31 @@ export function turnHandedErrandOn(messages: readonly ModelMessage[]) {
           part.toolName === "browser_task" &&
           leavesRunAtWork(part.output)
       )
+  );
+}
+
+/**
+ * Whether the turn's heads-up («Понял, приступаю») is all the person needs
+ * for now: a browser run took the errand and reports by itself, and nothing
+ * else went out. The owner asked 14.10 that Bro say nothing more then — not
+ * «встало в очередь», not «браузер занят», not «вернусь со ссылкой».
+ */
+export function headsUpCoversErrand(messages: readonly ModelMessage[]) {
+  const turn = currentTurnMessages(messages);
+  const results = turn.flatMap((message) =>
+    message.role === "tool"
+      ? message.content.filter((part) => part.type === "tool-result")
+      : []
+  );
+  return (
+    !turn.some(deliveredByTool) &&
+    results.some(
+      (part) =>
+        part.toolName === "send_message" && headsUpDelivered(part.output)
+    ) &&
+    results.some(
+      (part) => part.toolName === "browser_task" && leavesRunAtWork(part.output)
+    )
   );
 }
 

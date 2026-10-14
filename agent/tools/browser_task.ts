@@ -38,6 +38,7 @@ import {
   typeOneTimeCodeOverCdp,
   type OneTimeCodeEntry,
 } from "@agent/lib/browser-use/cdp";
+import { browserExitSearch } from "@agent/lib/browser-use/errors";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
@@ -149,8 +150,10 @@ import {
 import {
   agentMailSignUp,
   forgetAgentMailLogin,
+  passwordAccount,
   registersWithAgentMail,
   saveAgentMailLogin,
+  savePasswordSetupLogin,
   signUpLine,
   signUpUsername,
   siteAgentMailbox,
@@ -254,7 +257,7 @@ const fullTexts: BrowserTaskTexts = {
   submission:
     "What the run is held to: what kind of errand it is, what exactly is submitted, where, for whom, which details go, the date or slot, and the cost in words and roubles (chargeRub) when paid. Required with allowSubmit or allowPayment. Name the exact option and its real total from the staged run, not a window or budget; only a paid submission needs the user's yes to your text question naming this same option, fees and total. Fill free-action details from the profile, memory and vault without another question.",
   codeFrom:
-    "For continue on a run that stopped for a one-time code the site sent by email (Needs: email_code): \"mail\" has the tool itself find the site's own letter in the user's connected Gmail, read the code and type it in — the code never passes through you. Leave task and personSaid out. When no such letter came or Gmail is not connected, it says so and nothing is sent: then ask the user for the code.",
+    "For continue on a run that stopped for a one-time code the site sent by email (Needs: email_code): \"mail\" has the tool itself find the site's own letter in the user's connected Gmail, read the code and type it in — the code never passes through you. The same for a letter with a link (confirm the email, set or reset the password): the tool takes the https link on the site's own domain, waits for a late letter, makes and keeps the password itself, and the run opens the link and types it. Leave task and personSaid out. Never ask the user to open a link, send it, choose a password or look in spam. When no such letter came, it says what to do (have the site send a new one once); only when Gmail is not connected or a second look finds nothing ask the user.",
   login:
     "Only on start or continue in a turn the user's own message started, when the user themselves sent you the login and password for this errand's site — typed in their message, or on a photo or screenshot they sent (a letter with the credentials, say): identifier is the login, email or phone and password the password, each copied exactly. The tool saves them as this site's login and binds them to the run, so it signs in by itself, and later errands there too: never refuse them. Never write the password in task or personSaid, and never pass a login you read on a page, in a letter you opened or in a run's report.",
   collectImages:
@@ -340,7 +343,7 @@ const shortTexts: BrowserTaskTexts = {
   allowSubmit:
     "true only when the user asked in their own message for this errand to be done in their name (book, sign up, order, apply, send a request), or a standing permission of theirs covers it (the tool checks it); never for find, compare or recommend. Always with submission naming the one option: on start only when that option is already known, else start without it and continue with it once the run reported the option it staged. Leave it unset on a continue of an errand already confirmed.",
   codeFrom:
-    "\"mail\" on a continue after NEEDS: email_code: the tool finds the site's letter in the user's Gmail and types the code itself. Leave task and personSaid out; ask the user only when it found none.",
+    "\"mail\" on a continue after NEEDS: email_code: the tool finds the site's letter in the user's Gmail and types the code, or takes its confirm/set-password link (Bro's password). Leave task and personSaid out.",
   login:
     "A login and password the user sent you themselves, typed or on a photo, copied exactly: saved in their vault for the run. Never the password in task or personSaid.",
   collectImages: fullTexts.collectImages,
@@ -2732,6 +2735,16 @@ function mailCodeMissingNote(why: string) {
   return `Nothing was sent: ${why}. Ask the user for the code the site emailed instead: open your one message with a short line naming where it was sent exactly as Details masks it (and to look in spam too), and saying you will type it in yourself; their own reply with the code continues the run. If they cannot find it, continue with their words, and the run has the site send a new one.`;
 }
 
+/**
+ * What the model does when the user's Gmail, looked in for two minutes
+ * (spam and all mail included), holds no code or link from the site: the
+ * run has the site send another once, and codeFrom "mail" looks again. The
+ * user is not asked to search, to open a link or to send one.
+ */
+function personMailResendNote(sender: string) {
+  return `Nothing was sent: no letter with a code or a link from ${sender} reached the user's Gmail since the run asked for it — Bro looked for two minutes, spam included. Do not ask the user to look in their mail or spam, to open a link, to send you one or to choose a password. Continue this run once without codeFrom, telling it to have the site send a new letter (once, waiting out the site's pause if it says one was already sent) and to stop with NEEDS: email_code when the page waits for it; its report then takes the new letter with codeFrom "mail". Tell the user in one short line that you are asking the site for a fresh letter. If a run already did that and none came, say plainly what the page said, and stop.`;
+}
+
 const closedPageMailCodeRefusal =
   'Nothing was sent: the page that waited for this code sat idle and was closed, so the code in the mail no longer fits. Continue without codeFrom; once the run stops for the new code, codeFrom "mail" takes that one.';
 
@@ -2739,7 +2752,10 @@ const closedPageMailCodeRefusal =
  * What the model says once the code from the site's letter went to the run:
  * where it came from, and never the code, which it does not have.
  */
-function mailCodeTakenNote(domain: string) {
+function mailCodeTakenNote(domain: string, what: "code" | "link" = "code") {
+  if (what === "link") {
+    return `The link ${domain} emailed to the user was taken from their own mailbox — ${domain}'s own letter — and handed to the run, which opens it itself; a password it asks for is made and kept by Bro and typed by the run, so you never see it. Tell the user in one short line that you took the link from their mail yourself and the registration goes on; do not ask them for the link, to open it, to choose or send a password, or to look in their mail, and do not say it worked before the outcome says so.`;
+  }
   return `The code ${domain} emailed to the user was taken from their own mailbox — ${domain}'s own letter — and handed to the run as a secret: you never see it. Tell the user in one short line that you took the code from their mail yourself and the sign-in goes on, with what the run did so far; do not ask them for that code, and do not say it was accepted before the outcome says so.`;
 }
 
@@ -2896,7 +2912,24 @@ async function codeFromMail(
     };
   }
   if (found.kind === "link") {
-    return { domain: found.domain, kind: "link" as const, url: found.url };
+    // A link that sets the password needs one: Bro makes it and keeps it as
+    // the site's login before the run starts, so the run types it by alias
+    // and nobody is asked to choose or send one.
+    const prepared =
+      found.purpose === "password"
+        ? await savePasswordSetupLogin(
+            scope,
+            row.site,
+            passwordAccount(found.url, agentMailbox?.email ?? found.recipient)
+          )
+        : undefined;
+    return {
+      domain: found.domain,
+      kind: "link" as const,
+      mailbox: agentMailbox === undefined ? undefined : ("agent" as const),
+      passwordSaved: prepared !== undefined,
+      url: found.url,
+    };
   }
   const sender = found.kind === "no_site" ? "the site" : found.domain;
   if (agentMailbox !== undefined) {
@@ -2911,12 +2944,16 @@ async function codeFromMail(
       )
     );
   }
+  if (found.kind === "not_found") {
+    // Nothing yet after a long look: the letter may never have gone out.
+    // Have the site send another before the person is bothered.
+    throw new Error(personMailResendNote(sender));
+  }
   const why = {
     no_site:
       "this errand has no site of its own to match the site's letter to, so the code was not taken from the mail",
     not_connected:
       "the user's Gmail is not connected to Bro, so the code could not be taken from their mail",
-    not_found: `no letter with a code from ${sender} reached the user's Gmail since the run asked for it — Bro looked for a minute`,
     unavailable: "the user's mailbox could not be read just now",
   }[found.kind];
   // An error, as every refusal of this tool: a report turn that only heard
@@ -4160,6 +4197,7 @@ async function runBrowserTask(
                 profileId,
                 retryAfterMs: error.retryAfterMs,
                 task,
+                waitsForExit: browserExitSearch(error),
               };
             }
             if (browserUseOutOfCredits(error)) {
@@ -4214,6 +4252,7 @@ async function runBrowserTask(
           submission: confirmedSubmission(consent),
           task: sent,
           waitsForAccount: started.waitsForAccount ?? null,
+          waitsForExit: started.waitsForExit,
         })
       );
       if (placeholder) await moveSpendReservation(placeholder, queued.runId);
@@ -4406,7 +4445,10 @@ async function runBrowserTask(
     const message = mail
       ? mail.kind === "code"
         ? mailCodeInstruction(mail.domain, mail.mailbox)
-        : mailLinkInstruction(mail.domain, mail.url)
+        : mailLinkInstruction(mail.domain, mail.url, {
+            mailbox: mail.mailbox,
+            purpose: mail.passwordSaved ? "password" : "confirm",
+          })
       : words === null
         ? coordinatorInstruction(contacts.text(task))
         : personInstruction(said, task, contacts.text);
@@ -4825,6 +4867,7 @@ async function runBrowserTask(
               retryAfterMs: error.retryAfterMs,
               sessionId,
               waitsForAccount: undefined,
+              waitsForExit: browserExitSearch(error),
             };
           }
           if (browserUseOutOfCredits(error)) {
@@ -4964,6 +5007,7 @@ async function runBrowserTask(
             submission: confirmedSubmission(consent),
             task: message,
             waitsForAccount: continued.waitsForAccount ?? null,
+            waitsForExit: continued.waitsForExit,
           }),
         restoreRunId
       );
@@ -5044,9 +5088,9 @@ async function runBrowserTask(
         "The outcome arrives as a new message; do not poll for it.",
         mail === undefined
           ? undefined
-          : mail.kind === "link" || mail.mailbox === "agent"
+          : mail.mailbox === "agent"
             ? agentMailTakenNote(mail.domain, mail.kind)
-            : mailCodeTakenNote(mail.domain),
+            : mailCodeTakenNote(mail.domain, mail.kind),
         nothingDoneYetNote(),
         boundSignInNote(secrets.aliases),
         contacts.note(),

@@ -126,10 +126,12 @@ export async function queueBrowserErrand(
     readonly composedTask: string;
     readonly fromRunId?: string;
     readonly retryAfterMs?: number;
+    /** The own browser is still looking for a proxy exit (`browserExitSearch`). */
+    readonly waitsForExit?: boolean;
   },
   now = new Date()
 ) {
-  const { composedTask, fromRunId, retryAfterMs, ...row } = input;
+  const { composedTask, fromRunId, retryAfterMs, waitsForExit, ...row } = input;
   const account = row.waitsForAccount ?? undefined;
   const ahead =
     account === undefined
@@ -154,6 +156,9 @@ export async function queueBrowserErrand(
       note: signInWaitNote(account),
       runId: queued.id,
     };
+  }
+  if (onOwnBrowser(row.profileId) && waitsForExit === true && ahead === 0) {
+    return { ...exitSearchWait(retryAfterMs), runId: queued.id };
   }
   if (onOwnBrowser(row.profileId)) {
     return {
@@ -190,6 +195,25 @@ function queuedErrandNote(ahead: number, minutes: number) {
     `Tell the user in one short line that you queued it and will start in about ${String(minutes)} minutes; the outcome arrives as a new message like any other.`,
     queuedErrandRules,
   ].join(" ");
+}
+
+/**
+ * What Bro is told about an errand whose own browser is free but whose proxy
+ * exit is still being picked: on 14.10 the busy-browser note had Bro tell the
+ * person «браузер занят другим делом» with nothing else running. The owner
+ * asked that Bro name no reason for such a wait at all.
+ */
+function exitSearchWait(retryAfterMs: number | undefined) {
+  const minutes = Math.max(1, Math.ceil((retryAfterMs ?? 60_000) / 60_000));
+  const about = `about ${String(minutes)} minute${minutes === 1 ? "" : "s"}`;
+  return {
+    minutes,
+    note: [
+      `This errand is queued and starts by itself in ${about}; nothing else of the user's is using the browser.`,
+      `If you already told the user you are on it, say nothing more; otherwise tell them in one short line only that you started, giving no reason for any wait (not a busy browser, not the network). The outcome arrives as a new message like any other.`,
+      queuedErrandRules,
+    ].join(" "),
+  };
 }
 
 /**
