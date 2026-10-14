@@ -1,6 +1,7 @@
 import { defineDynamic } from "eve/instructions";
 import { resolveModeInstructions } from "@agent/lib/mode";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
+import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { instructionText } from "@agent/lib/skills/catalog";
 import { autonomyPilot, skillsLayout } from "@agent/lib/skills/pilot";
 
@@ -13,7 +14,8 @@ export default defineDynamic({
       const content = instructionText(
         browserUseConfigured() ? "browser/available" : "browser/unavailable",
         skillsLayout(context),
-        autonomyPilot(context)
+        autonomyPilot(context),
+        backgroundActionsOfCaller(context)
       );
       return resolveModeInstructions(context, {
         interactive: content,

@@ -1013,6 +1013,17 @@ export const env = createEnv({
         "AGENCY_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of schedules that act (`agent/lib/schedules/delegation/`):
+    // workspace ids, or `*` for every workspace, whose schedule may keep a
+    // free action the person delegated in their own message — a submission
+    // on one site, or an email to named addresses — and whose runs do it.
+    // Paying stays the person's. Unset, nobody: runs only check and stage.
+    BACKGROUND_ACTIONS_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BACKGROUND_ACTIONS_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,

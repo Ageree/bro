@@ -23,7 +23,10 @@ import type * as browserVmBackend from "@agent/lib/browser-vm/backend";
 import type * as browserRunsService from "@db/services/browser-runs";
 import type * as browserVmsService from "@db/services/browser-vms";
 import type { listCurrentRules } from "@db/services/memory/records";
+import type * as scheduledJobsService from "@db/services/scheduled-agent-jobs";
+import type { browserTask as browserTaskTool } from "@agent/tools/browser_task";
 import type * as scopeService from "@db/services/scope";
+import type { ScheduleDelegation } from "@shared/schedules/delegation";
 import {
   BrowserUseError,
   type BrowserUseCreateRunInput,
@@ -505,6 +508,20 @@ const deleteVaultItem = vi.hoisted(() =>
 );
 
 type Unused = () => never;
+
+/** The schedule a scheduled run reads its delegated action from. */
+const getScheduledAgentJob = vi.hoisted(() =>
+  vi.fn<
+    (
+      scope: AccessScope,
+      id: string
+    ) => Promise<{ readonly delegation: ScheduleDelegation | null } | undefined>
+  >(() => Promise.resolve(undefined))
+);
+vi.mock("@db/services/scheduled-agent-jobs", async (importOriginal) => ({
+  ...(await importOriginal<typeof scheduledJobsService>()),
+  getScheduledAgentJob,
+}));
 
 vi.mock("@db/services/agent-mail", () => ({ agentMailboxEnabled }));
 vi.mock("@agent/lib/agent-mail/client", () => ({ ensureAgentMailbox }));
@@ -2210,6 +2227,149 @@ describe("browser_task one question per errand", () => {
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
       submission: { ...taxi, paymentCapRub: 900 },
+    });
+  });
+
+  describe("in the pilot of schedules that act", () => {
+    const scheduleId = "00000000-0000-4000-8000-0000000000aa";
+    const haircut: BrowserSubmission = {
+      chargeRub: 0,
+      forWhom: "Алиса",
+      kind: "appointment",
+      personalData: ["имя", "телефон"],
+      what: "запись на стрижку к Артуру",
+      when: "ближайший свободный слот на этой неделе после 18:00",
+      where: "барбершоп «Борода» (boroda.example)",
+    };
+    const delegated = {
+      kind: "browser" as const,
+      site: "https://boroda.example",
+      submission: { ...haircut, chargeRub: 0 },
+    };
+
+    /** The scheduled task's own run, whose schedule is `scheduleId`. */
+    function scheduledRun() {
+      const context = toolContext("better-auth:alice", "scheduled-worker");
+      const current = context.session.auth.current;
+      return {
+        ...context,
+        session: {
+          ...context.session,
+          auth: {
+            current: {
+              ...current,
+              attributes: { ...current.attributes, scheduleId },
+            },
+            initiator: null,
+          },
+        },
+      } satisfies ToolContext;
+    }
+
+    async function startFromSchedule(
+      input: Partial<Parameters<typeof browserTaskTool.execute>[0]> = {}
+    ) {
+      vi.resetModules();
+      vi.stubEnv(
+        "BACKGROUND_ACTIONS_WORKSPACES",
+        accessScopeForUser("better-auth:alice").workspaceId
+      );
+      createBrowserUseRun.mockResolvedValue({
+        id: runId,
+        model: "hosted-agent",
+        sessionId,
+        status: "running",
+      });
+      const { browserTask: tool } = await import("@agent/tools/browser_task");
+      return tool.execute(
+        {
+          action: "start",
+          allowSubmit: true,
+          personWants: "done",
+          site: "https://boroda.example",
+          task: "Запиши меня к Артуру на ближайший свободный слот",
+          ...input,
+        },
+        scheduledRun()
+      );
+    }
+
+    afterEach(() => {
+      vi.stubEnv("BACKGROUND_ACTIONS_WORKSPACES", "");
+    });
+
+    it("does the free action the schedule keeps, held to its site", async () => {
+      getScheduledAgentJob.mockResolvedValue({ delegation: delegated });
+
+      await startFromSchedule();
+
+      expect(getScheduledAgentJob.mock.calls[0]?.[1]).toBe(scheduleId);
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(task).toContain(
+        "When they set up this schedule, the person asked in their own message for this one free submission in their name"
+      );
+      expect(task).toContain("Submit only on boroda.example");
+      expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+        paymentAllowed: false,
+        startedByPerson: false,
+        submission: { ...haircut, boundHost: "boroda.example" },
+      });
+    });
+
+    it("refuses a schedule that keeps no action", async () => {
+      getScheduledAgentJob.mockResolvedValue({ delegation: null });
+
+      await expect(startFromSchedule()).rejects.toThrow(
+        "this schedule keeps no action on a site"
+      );
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    });
+
+    it("refuses another site, another submission and any payment", async () => {
+      getScheduledAgentJob.mockResolvedValue({ delegation: delegated });
+
+      await expect(
+        startFromSchedule({ site: "https://other.example" })
+      ).rejects.toThrow("is on https://boroda.example and nowhere else");
+      await expect(
+        startFromSchedule({
+          submission: { ...haircut, where: "салон «Чужой» (other.example)" },
+        })
+      ).rejects.toThrow("not the one this schedule keeps");
+      await expect(
+        startFromSchedule({ submission: { ...haircut, chargeRub: 1500 } })
+      ).rejects.toThrow("not the one this schedule keeps");
+      await expect(startFromSchedule({ allowPayment: true })).rejects.toThrow(
+        "never pays"
+      );
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    });
+
+    it("acts on nothing once the workspace leaves the pilot", async () => {
+      getScheduledAgentJob.mockResolvedValue({ delegation: delegated });
+      vi.resetModules();
+      createBrowserUseRun.mockResolvedValue({
+        id: runId,
+        model: "hosted-agent",
+        sessionId,
+        status: "running",
+      });
+      const { browserTask: tool } = await import("@agent/tools/browser_task");
+
+      await expect(
+        tool.execute(
+          {
+            action: "start",
+            allowSubmit: true,
+            personWants: "done",
+            site: "https://boroda.example",
+            submission: haircut,
+            task: "Запиши меня к Артуру",
+          },
+          scheduledRun()
+        )
+      ).rejects.toThrow("cannot act in the user's name");
+      expect(getScheduledAgentJob).not.toHaveBeenCalled();
     });
   });
 

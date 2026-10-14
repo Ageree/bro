@@ -1,0 +1,1 @@
+ALTER TABLE "scheduled_agent_jobs" ADD COLUMN "delegation" jsonb;

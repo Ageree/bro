@@ -4,6 +4,7 @@ import { errandAutonomyPilot } from "@agent/lib/browser-use/autonomy";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
+import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
@@ -81,5 +82,11 @@ export function skillSetup(context: SkillsContext): SkillSetup {
   const withFiles: SkillSetup = taskFilesOfCaller(context)
     ? { ...setup, taskFiles: true }
     : setup;
-  return autonomyPilot(context) ? { ...withFiles, autonomy: true } : withFiles;
+  const withAutonomy: SkillSetup = autonomyPilot(context)
+    ? { ...withFiles, autonomy: true }
+    : withFiles;
+  // Without the pilot of schedules that act the setup reads as before it.
+  return backgroundActionsOfCaller(context)
+    ? { ...withAutonomy, backgroundActions: true }
+    : withAutonomy;
 }

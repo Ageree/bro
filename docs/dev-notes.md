@@ -1716,6 +1716,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `nothing_to_report` (`agent/lib/schedules/outcome.ts`).
 - У воркера и хода-отчёта нет сетевых `web_fetch`/`find_images`/`web_search`:
   письмо не должно увести на чужой адрес (`tests/agent/capabilities.test.ts`).
+- Расписания, которые действуют (`BACKGROUND_ACTIONS_WORKSPACES`, id или `*`, 14.10): ход
+  человека кладёт в расписание `delegate` (`scheduled_agent_jobs.delegation`): одно бесплатное
+  действие на сайте (`submission` с `chargeRub: 0`, сайт) или письмо точным адресатам. Запуск
+  читает его из строки расписания на каждом вызове (`agent/lib/schedules/delegation/run.ts`),
+  `browser_task` стартует только этот `submission` на этом сайте, `gmail-send`/`mail-send` — только
+  этим адресам; оплата, `withinSpendLimit`, другой сайт и `continue` — отказ. Строки промпта меняет
+  `delegation/text.ts` только в пилоте: без флага промпт байт в байт прежний.
 - Агентный работник (`AGENCY_WORKSPACES`): вид запуска решает `proactiveRunKind`
   (`agent/lib/schedules/identity.ts`), режим читает пилот на каждом шаге.
   Гварды, журнал `agency_actions` и бюджет — `agent/lib/agency/`; повтор того же

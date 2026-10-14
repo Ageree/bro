@@ -36,6 +36,11 @@ export const scheduledAgentJobs = pgTable(
     conversationId: text("conversation_id").notNull(),
     replyAnchorMessageId: text("reply_anchor_message_id"),
     timing: jsonb("timing").notNull(),
+    // The free action the person delegated to this schedule in their own
+    // message (`shared/schedules/delegation.ts`): a run in the pilot
+    // (BACKGROUND_ACTIONS_WORKSPACES) does exactly this. Null: runs only
+    // check and stage.
+    delegation: jsonb("delegation"),
     missedRunPolicy: text("missed_run_policy", {
       enum: ["skip", "run_latest", "catch_up"],
     })
