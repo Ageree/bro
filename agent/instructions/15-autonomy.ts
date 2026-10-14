@@ -2,6 +2,7 @@ import { defineDynamic, defineInstructions } from "eve/instructions";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { instructionText } from "@agent/lib/skills/catalog";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
@@ -134,12 +135,13 @@ export default defineDynamic({
       // Setting up the later step of an errand is the conversation's: a
       // scheduled worker has no schedule tools and must not say it set one.
       const layout = skillsLayout(context);
+      const acting = backgroundActionsOfCaller(context);
       const followThroughRules = resolveModeValue(context, {
-        interactive: instructionText("follow-through", layout),
+        interactive: instructionText("follow-through", layout, acting),
       });
       return defineInstructions({
         content: [
-          instructionText("autonomy", layout),
+          instructionText("autonomy", layout, acting),
           followThroughRules,
           limit,
         ]

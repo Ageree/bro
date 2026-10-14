@@ -95,7 +95,7 @@ export function scheduleListSummary(
   const timeZone =
     job.timing.kind === "calendar" ? job.timing.timezone : personTimeZone;
   const local = (at: Date | null) => (at ? localRunLabel(at, timeZone) : null);
-  return {
+  const summary = {
     ...scheduleSummary(job, personTimeZone),
     latestRun: latestRun
       ? {
@@ -110,6 +110,10 @@ export function scheduleListSummary(
         }
       : null,
   };
+  // What the schedule does by itself, which the person delegated to it.
+  return job.delegation === null
+    ? summary
+    : { ...summary, delegation: job.delegation };
 }
 
 type ScheduledJob = Awaited<ReturnType<typeof createScheduledAgentJob>>;

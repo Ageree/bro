@@ -7,6 +7,8 @@ import { skillsLayout } from "@agent/lib/skills/pilot";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { agencyApproval } from "@agent/lib/agency/approval";
 import { journaledAgencyCall } from "@agent/lib/agency/journal";
+import { delegatingRun } from "@agent/lib/schedules/delegation/pilot";
+import { runDelegation } from "@agent/lib/schedules/delegation/run";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -91,6 +93,7 @@ import {
   type ConfirmedSubmission,
   paymentCeilingRub,
 } from "@shared/browser/submission";
+import type { ScheduleDelegation } from "@shared/schedules/delegation";
 import { localMonthKey } from "@shared/calendar/local-period";
 import {
   type AutoPaymentDecision,
@@ -385,6 +388,26 @@ const signUpInputSchema = withSignUp(inputSchema, signUpTexts.full);
 const shortSignUpInputSchema = withSignUp(shortInputSchema, signUpTexts.short);
 
 /**
+ * What a scheduled run reads in the pilot of schedules that act
+ * (`delegatingRun`): it acts on the one free action its schedule keeps.
+ * Workers read the full texts, so only they change.
+ */
+const scheduledAllowSubmitRule =
+  "A scheduled or background run can never act in the user's name, and a new errand never inherits another's confirmation.";
+
+const delegatingInputSchema = browserTaskSchema({
+  ...fullTexts,
+  allowSubmit: fullTexts.allowSubmit.replace(
+    scheduledAllowSubmitRule,
+    "A scheduled run never pays, and acts in the user's name only on the start of the one free action its schedule keeps, with that site and its submission unchanged; a new errand never inherits another's confirmation."
+  ),
+});
+const delegatingSignUpInputSchema = withSignUp(
+  delegatingInputSchema,
+  signUpTexts.full
+);
+
+/**
  * `running` only means the run was handed the errand. A second after
  * `continue` with a code, Bro told the person «код ввёл — кабинет открылся»
  * and «запросил новый код», and nothing had happened on the site yet.
@@ -607,7 +630,13 @@ function searchLine() {
  */
 type SubmissionConsent =
   | {
-      readonly by: "agency" | "card" | "delegated" | "errand" | "person";
+      readonly by:
+        | "agency"
+        | "card"
+        | "delegated"
+        | "errand"
+        | "person"
+        | "schedule";
       readonly kind: "confirmed";
       readonly submission: ConfirmedSubmission;
     }
@@ -718,6 +747,8 @@ function commitmentLine(
       agency:
         "Bro's own agency rule started this one submission in the person's name: it is free, and it was not put to the person on a card. You may fill it in and press its final button, with the known details below:",
       card: "The person confirmed on an approval card this one submission in their name. You may fill it in and press its final button, with the known details below:",
+      schedule:
+        "When they set up this schedule, the person asked in their own message for this one free submission in their name on each of its runs. You may fill it in and press its final button, with the known details below:",
       person:
         cap === undefined
           ? "The person asked in their own message for this one submission in their name. You may fill it in and press its final button, with the known details below:"
@@ -1993,6 +2024,67 @@ function agencyErrandRefusal(input: BrowserTaskInput) {
 const backgroundConsentRefusal =
   "A scheduled or background run cannot act in the user's name or pay: nobody is there to confirm it. Start or continue the errand without allowSubmit and allowPayment to search, check and stage it up to the final step, and hand the result over so the user can confirm it in the conversation.";
 
+const delegatedPaymentRefusal =
+  "Nothing was started: a scheduled run never pays and never binds a card, whatever its schedule holds. Start the errand without allowPayment and withinSpendLimit, with allowSubmit only for the free action the schedule keeps: anything paid is staged up to its payment step and handed over for the person to confirm in the conversation.";
+
+const undelegatedRefusal =
+  "Nothing was started: this schedule keeps no action on a site in the person's name, so its run cannot act for them. Start the errand without allowSubmit and allowPayment to search, check and stage it up to the final step, and hand the result over so the person can confirm it in the conversation.";
+
+const delegatedStartRefusal =
+  "Nothing was sent: a scheduled run acts in the person's name only on the start of the one errand its schedule keeps. Continuing a run, or any new decision, belongs to the person's own chat: hand it over.";
+
+function delegatedSiteRefusal(site: string) {
+  return `Nothing was started: the action this schedule keeps is on ${site} and nowhere else. Start it there, with that site, or start this errand without allowSubmit to only look.`;
+}
+
+const delegatedSubmissionRefusal =
+  "Nothing was started: the submission is not the one this schedule keeps. A run may do only what the person delegated when they set it up, never another kind, place, person, slot or a cost: pass the schedule's submission unchanged, or leave submission out and the schedule's own is used. Anything else goes to the person in the hand-off.";
+
+/**
+ * What a scheduled run in the pilot may not do in the person's name,
+ * undefined when the call is the start of exactly the free submission its
+ * schedule keeps (`runDelegation`). Nothing here reads a page or a message:
+ * the schedule row is the person's word, given in their own turn.
+ */
+function delegatedErrandRefusal(
+  input: BrowserTaskInput,
+  delegation: ScheduleDelegation | undefined
+) {
+  if (input.allowPayment === true || input.withinSpendLimit !== undefined)
+    return delegatedPaymentRefusal;
+  if (delegation?.kind !== "browser") return undelegatedRefusal;
+  if (input.action !== "start") return delegatedStartRefusal;
+  const host = siteHostname(delegation.site);
+  if (host === undefined || siteHostname(input.site ?? "") !== host)
+    return delegatedSiteRefusal(delegation.site);
+  const requested = input.submission;
+  if (
+    requested !== undefined &&
+    ((requested.chargeRub ?? 0) !== 0 ||
+      !sameSubmission(delegation.submission, requested))
+  )
+    return delegatedSubmissionRefusal;
+  return undefined;
+}
+
+/**
+ * The consent of a scheduled run's start: the submission its schedule keeps,
+ * free, and held to the schedule's site.
+ */
+function delegatedConsent(
+  delegation: Extract<ScheduleDelegation, { kind: "browser" }>
+): ConfirmedConsent {
+  const host = siteHostname(delegation.site);
+  return {
+    by: "schedule",
+    kind: "confirmed",
+    submission:
+      host === undefined
+        ? delegation.submission
+        : { ...delegation.submission, boundHost: host },
+  };
+}
+
 const missingSubmissionRefusal =
   "Nothing was started: acting in the user's name or paying needs submission — the kind of errand, what exactly, where, for whom, which of their details the site receives, the date or slot, and the cost (chargeRub in roubles when it is paid) — so the run is held to it. Call again with submission filled in.";
 
@@ -2332,7 +2424,13 @@ function unchosenOption(
   errand: ErrandRow | undefined
 ): string | undefined {
   if (input.allowSubmit !== true) return undefined;
-  if (consent.by === "errand" || consent.by === "standing") return undefined;
+  // The person named the window themselves when they set up the schedule.
+  if (
+    consent.by === "errand" ||
+    consent.by === "standing" ||
+    consent.by === "schedule"
+  )
+    return undefined;
   if (input.submission === undefined) return undefined;
   const searching =
     input.action === "continue" &&
@@ -3278,8 +3376,10 @@ async function consentFor(
   scope: AccessScope,
   errand: ErrandRow | undefined,
   said: ReturnType<typeof turnWords>,
-  context: ModeContext
+  context: ModeContext,
+  delegation?: ScheduleDelegation
 ): Promise<ConfirmedConsent | undefined> {
+  if (delegation?.kind === "browser") return delegatedConsent(delegation);
   const byPerson = said.personTurn;
   const delegated = continuesDelegatedErrand(input, context, errand);
   const confirmed =
@@ -3436,6 +3536,13 @@ export async function browserTaskApproval(
     return { reason: signUpWithConsentRefusal, type: "denied" };
   }
   if (agencyWorkerTurn(context)) return agencyStartApproval(input, context);
+  if (delegatingRun(context)) {
+    const delegation = await runDelegation(context);
+    const refused = delegatedErrandRefusal(input, delegation);
+    return refused === undefined
+      ? "not-applicable"
+      : { reason: refused, type: "denied" };
+  }
   if (!inConversation(context)) {
     return { reason: backgroundConsentRefusal, type: "denied" };
   }
@@ -3502,15 +3609,27 @@ async function consentFromInput(
   errand?: ErrandRow
 ): Promise<SubmissionConsent | undefined> {
   if (!actsForPerson(input)) return undefined;
+  let delegation: ScheduleDelegation | undefined;
   if (agencyWorkerTurn(context)) {
     const refused = agencyErrandRefusal(input);
+    if (refused) throw new Error(refused);
+  } else if (delegatingRun(context)) {
+    delegation = await runDelegation(context);
+    const refused = delegatedErrandRefusal(input, delegation);
     if (refused) throw new Error(refused);
   } else if (!inConversation(context)) {
     throw new Error(backgroundConsentRefusal);
   }
   if (paysOnSpendLimit(input))
     throw new Error(paymentQuestionRefusal(undefined));
-  const consent = await consentFor(input, scope, errand, said, context);
+  const consent = await consentFor(
+    input,
+    scope,
+    errand,
+    said,
+    context,
+    delegation
+  );
   if (!consent) throw new Error(missingSubmissionRefusal);
   const unchosen =
     unchosenOption(input, consent, errand) ??
@@ -5250,6 +5369,14 @@ const browserTaskDescription =
  * when the browser's block is missing, with the rules of every call that
  * acts or pays, and the way to the rest.
  */
+const scheduledRunRule =
+  "A scheduled or background run is refused allowSubmit and allowPayment, standing permission or not, and cannot steer an errand that acts in the user's name: there it only searches and stages.";
+
+const delegatingBrowserTaskDescription = browserTaskDescription.replace(
+  scheduledRunRule,
+  "A scheduled run never pays: allowPayment and withinSpendLimit are refused, standing permission or not. It acts in the user's name only on the start of the one free action its schedule keeps, named in its task: allowSubmit with that site and that submission unchanged; everything else it only searches and stages for the user to confirm."
+);
+
 const shortBrowserTaskDescription =
   "Run one errand on a website in a hosted cloud browser that signs in, fills forms and checks out; web_search and web_fetch read public pages. Its rules are in the browser block: if it is not above, call load_skill browser before the first start. Start exactly one run per errand with the site's origin; every follow-up (the user's answer, a code they typed, a changed constraint) is continue with the same runId, quoting their words in personSaid, and a continue on a finished run returns a NEW runId to use from then on. status answers «ну что там?» when the outcome has not been told; cancel stops a run. Acting in the user's name (booking, an appointment, an order, an application, a message, typing their details into a form) needs allowSubmit with a submission naming the one option, only when they asked for exactly that; a request to find or recommend ends at the options. Paying: the run stages it; ask once in text with the exact total ending «Оплачиваю?», end the turn, and only after their plain yes continue with allowPayment or submission.chargeRub, never above that total. Never ask the user for a password; one they sent goes in login. On NEEDS: sms_code ask them for the code; on NEEDS: email_code continue with codeFrom \"mail\" first. CAPTCHAs are the run's, never the user's. Scheduled and background runs never act or pay. The result arrives later as a new message: do not wait for it.";
 
@@ -5303,6 +5430,9 @@ export default defineDynamic({
       // Only a workspace with its own AgentMail mailbox registers with it.
       const scope = approvalScope(context);
       const signUp = scope !== undefined && agentMailboxEnabled(scope);
+      // A scheduled task's run in the pilot reads that it may act on what
+      // its schedule keeps.
+      const delegating = delegatingRun(context);
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);
@@ -5320,14 +5450,20 @@ export default defineDynamic({
         },
         description: short
           ? shortBrowserTaskDescription
-          : browserTaskDescription,
+          : delegating
+            ? delegatingBrowserTaskDescription
+            : browserTaskDescription,
         inputSchema: short
           ? signUp
             ? shortSignUpInputSchema
             : shortInputSchema
-          : signUp
-            ? signUpInputSchema
-            : inputSchema,
+          : delegating
+            ? signUp
+              ? delegatingSignUpInputSchema
+              : delegatingInputSchema
+            : signUp
+              ? signUpInputSchema
+              : inputSchema,
         execute: (input, toolContext) => {
           if (startsUsed && input.action === "start")
             return Promise.resolve({

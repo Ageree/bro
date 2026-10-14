@@ -3,6 +3,7 @@ import { z } from "zod";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
+import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
@@ -67,5 +68,11 @@ export function skillSetup(context: SkillsContext): SkillSetup {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
   };
-  return taskFilesOfCaller(context) ? { ...setup, taskFiles: true } : setup;
+  const withFiles = taskFilesOfCaller(context)
+    ? { ...setup, taskFiles: true }
+    : setup;
+  // Without the pilot of schedules that act the setup reads as before it.
+  return backgroundActionsOfCaller(context)
+    ? { ...withFiles, backgroundActions: true }
+    : withFiles;
 }

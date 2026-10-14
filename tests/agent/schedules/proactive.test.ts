@@ -1016,6 +1016,7 @@ function proactiveClaim(): Awaited<
       conversationChannel: "telegram",
       conversationId: "100::",
       createdAt: afternoon,
+      delegation: null,
       createdByUserId: "better-auth:alice",
       id: "00000000-0000-4000-8000-000000000001",
       kind: "proactive",
