@@ -73,6 +73,24 @@ describe("a site the network never loaded", () => {
 });
 
 describe("browser run outcome parsing", () => {
+  // Ozon turned away every exit of a comparison of three shops (14.10).
+  it("reads the sites a run could not get into from BLOCKED, by host", () => {
+    expect(
+      parseBrowserOutcome(
+        [
+          "RESULT: сравнил ВБ и Маркет, Ozon не открылся",
+          "NEEDS: none",
+          "BLOCKED: https://www.ozon.ru/search/?text=пылесос, «avito.ru», госуслуги.рф, Ozon",
+        ].join("\n")
+      ).blocked
+    ).toEqual(["ozon.ru", "avito.ru", "xn--c1aapkosapc.xn--p1ai"]);
+    expect(
+      parseBrowserOutcome("RESULT: всё нашёл\nNEEDS: none\nBLOCKED: none")
+        .blocked
+    ).toEqual([]);
+    expect(parseBrowserOutcome("RESULT: всё нашёл").blocked).toEqual([]);
+  });
+
   it("reads the labelled block whatever language its values are in", () => {
     const outcome = parseBrowserOutcome(
       [
@@ -86,6 +104,7 @@ describe("browser run outcome parsing", () => {
     );
 
     expect(outcome).toEqual({
+      blocked: [],
       booking: undefined,
       charges: [],
       details: undefined,

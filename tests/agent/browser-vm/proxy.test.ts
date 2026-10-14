@@ -43,6 +43,31 @@ describe("browser VM proxy", () => {
     expect(proxy.browserVmProxySession("ws_test_123")).toBe("bro251826550eba");
   });
 
+  it("marks one errand's detour to the fallback with the rotation it goes back to", async () => {
+    const proxy = await loadProxy();
+    const lines = ["BROWSER_VM_PROXY", "BROWSER_VM_PROXY_FALLBACK"] as const;
+
+    expect(proxy.browserVmProxySession(workspaceId, 1, true, 3)).toBe(
+      "bro1e09f74980c7r3w1"
+    );
+    expect(proxy.browserVmProxySession(workspaceId, 0, true, 0)).toBe(
+      "bro1e09f74980c7r0w0"
+    );
+    expect(proxy.browserVmProxyPlace("bro1e09f74980c7r3w1", lines)).toEqual({
+      home: 3,
+      line: "BROWSER_VM_PROXY_FALLBACK",
+      rotation: 1,
+    });
+    // Without a fallback any more, the detour is back home.
+    expect(
+      proxy.browserVmProxyPlace("bro1e09f74980c7r3w1", ["BROWSER_VM_PROXY"])
+    ).toEqual({ line: "BROWSER_VM_PROXY", rotation: 3 });
+    expect(proxy.browserVmProxyPlace("bro1e09f74980c7r2", lines)).toEqual({
+      line: "BROWSER_VM_PROXY",
+      rotation: 2,
+    });
+  });
+
   it("puts the session into the username and keeps a password with colons whole", async () => {
     const proxy = await loadProxy();
 

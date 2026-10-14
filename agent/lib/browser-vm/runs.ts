@@ -28,6 +28,7 @@ import {
   touchBrowserVm,
 } from "./lifecycle";
 import { fastBrowserPilot } from "./pilot";
+import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
 import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
   BrowserVmWorkerError,
@@ -392,7 +393,11 @@ export async function readBrowserVmRun(runId: string) {
   ]);
   const live = await askWorker(vm, runId);
   if (live.kind === "found") {
+    const settling =
+      settledStatuses.has(live.run.status) &&
+      !(record !== undefined && settledStatuses.has(record.status));
     await mirror(record, live.run, now);
+    if (settling) await logDetourRun(live.vm, live.run);
     await keepAwake(live.vm, now);
     return fromWorker(live.run, record);
   }
@@ -884,6 +889,43 @@ async function mirror(
     },
     now
   );
+}
+
+/**
+ * One line for a run that settled on a walled errand's detour to the
+ * fallback proxy (`routeThroughRussia` in `lifecycle.ts`): that proxy's
+ * traffic is paid by the megabyte and short (746 MB left on 14.10), so the
+ * owner sees what each detour cost and on which site. The VM's stored
+ * session says where it went out: nothing moves a busy VM's exit. Never
+ * throws; never the proxy login or the exit address.
+ */
+async function logDetourRun(vm: BrowserVm, run: WorkerRun) {
+  try {
+    const place = browserVmProxyPlace(
+      vm.proxySession,
+      await browserVmProxyLines(vm)
+    );
+    if (place.home === undefined) return;
+    console.info("[browser-vm] a walled errand's run on the fallback proxy", {
+      proxy: place.line,
+      runId: run.id,
+      site:
+        run.finalUrl === null
+          ? null
+          : (URL.parse(run.finalUrl)?.hostname ?? null),
+      status: run.status,
+      trafficBytes:
+        run.traffic === null || run.traffic === undefined
+          ? null
+          : run.traffic.up + run.traffic.down,
+      workspaceId: vm.workspaceId,
+    });
+  } catch (error) {
+    console.warn("[browser-vm] the detour run could not be logged", {
+      error: error instanceof Error ? error.name : null,
+      runId: run.id,
+    });
+  }
 }
 
 /**
