@@ -1241,6 +1241,7 @@ describe("reconciling browser VMs", () => {
 
   it.each([
     ["a person's errand, unused for the idle window", null, 21, true],
+    ["an errand nobody waits for, past its stop time", -1, 3, true],
     ["a code wait, before its deadline", 5, 30, false],
   ] as const)(
     "decides the idle stop by who woke the VM: %s",

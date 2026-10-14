@@ -99,6 +99,11 @@ describe("yandex account.ready", () => {
     expect(dataOf(answer)).toEqual({ error: "no_user_id" });
     expect(paths).toEqual([]);
   });
+
+  it("answers signed_out when Go says nobody is signed in", async () => {
+    const { answer } = await ready({ body: {}, status: 401 });
+    expect(answer).toEqual({ status: "signed_out" });
+  });
 });
 
 const card = (verified: boolean) => ({
@@ -148,6 +153,12 @@ describe("what account.ready tells the model to do next", () => {
     );
     expect(reply).toContain("no bank card is linked");
     expect(reply).toContain("Never ask for the card number");
+  });
+
+  it("does not guess when the cards could not be read", () => {
+    expect(
+      readinessReply({ error: "http_500" }, { canVerify: true })
+    ).toContain("Say nothing about the cards");
   });
 
   it("does not call Yandex ready when Go was never opened", () => {

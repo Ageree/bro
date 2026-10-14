@@ -7031,6 +7031,7 @@ describe("browser_task passes on only what the person sent", () => {
 
   it.each([
     ["a live run", null, "попробуй ещё раз", "Введи 739204 ещё раз"],
+    ["a live run", null, "739204", "739204"],
     ["a run stopped for the code", new Date(), "739204", "739204"],
   ] as const)(
     "gives no earlier turn's code to «попробуй ещё раз» on %s («%s», «%s»)",
