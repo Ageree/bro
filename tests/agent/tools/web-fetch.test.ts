@@ -298,6 +298,7 @@ describe("web_fetch", () => {
     "https://[::ffff:127.0.0.1]/",
     "https://169.254.169.254/latest/meta-data/",
     "https://10.0.0.5/",
+    "https://192.168.1.1/",
     "https://0x7f000001/",
   ])("never asks %s", async (url) => {
     await expect(fetchPage(url)).rejects.toThrow(privateAddressRefusal);
