@@ -71,6 +71,15 @@ describe("memory documents in Postgres", () => {
       version: replaced.version,
     });
     expect(await documents.read({ key: "scope-b", signal })).toBeNull();
+    // A version it never issued is a conflict too.
+    await expect(
+      documents.write({
+        content: "x",
+        expectedVersion: "etag-from-blob",
+        key: "scope-b",
+        signal,
+      })
+    ).rejects.toBeInstanceOf(MemoryDocumentConflictError);
   }, 30_000);
 
   it("reads and saves nothing once the turn is aborted", async () => {
@@ -89,19 +98,6 @@ describe("memory documents in Postgres", () => {
       documents.read({ key: "scope-a", signal: aborted })
     ).rejects.toThrow("The turn was cancelled.");
     expect(await documents.read({ key: "scope-a", signal })).toBeNull();
-  }, 30_000);
-
-  it("treats a version it never issued as a conflict", async () => {
-    const documents = await loadDocuments();
-
-    await expect(
-      documents.write({
-        content: "x",
-        expectedVersion: "etag-from-blob",
-        key: "scope-a",
-        signal,
-      })
-    ).rejects.toBeInstanceOf(MemoryDocumentConflictError);
   }, 30_000);
 });
 

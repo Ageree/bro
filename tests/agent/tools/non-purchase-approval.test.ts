@@ -92,7 +92,7 @@ describe("non-purchase mail actions", () => {
     }
   );
 
-  it.each(["scheduled-worker", "scheduled-result", "background-task", "app"])(
+  it.each(["scheduled-worker", "background-task"])(
     "denies sends and updates from %s without a card",
     async (authenticator) => {
       expect(

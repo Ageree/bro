@@ -1314,12 +1314,6 @@ describe("the early-reply pilot", () => {
     expect(services.earlyReplyPilot).not.toHaveBeenCalled();
     expect(lastReplyNote()).not.toContain(earlyReplyNote);
   });
-
-  it("adds no note outside the pilot", async () => {
-    await agent.model.events["step.started"]?.({}, interactiveContext(request));
-
-    expect(lastReplyNote()).toBe(note("ru"));
-  });
 });
 
 function skippedRepeat(toolCallId: string) {

@@ -120,11 +120,6 @@ describe("when the bug bot is on", () => {
     expect(bugBotTarget()).toEqual(target);
   });
 
-  it("stays off with Bro's own token, which tg-bridge reads", () => {
-    capture.env.OPS_ALERT_BOT_TOKEN = "bro-token";
-    expect(bugBotTarget()).toBeUndefined();
-  });
-
   it("stays off without a token, a chat or the flag", () => {
     capture.env.OPS_ALERT_BOT_TOKEN = undefined;
     expect(bugBotTarget()).toBeUndefined();
@@ -136,8 +131,9 @@ describe("when the bug bot is on", () => {
     expect(bugBotTarget()).toBeUndefined();
   });
 
-  it("never reads updates with Bro's token", async () => {
+  it("stays off and never reads updates with Bro's token, which tg-bridge reads", async () => {
     capture.env.OPS_ALERT_BOT_TOKEN = "bro-token";
+    expect(bugBotTarget()).toBeUndefined();
     const calls = stubBotApi();
     await runBugBotTick();
     expect(calls).toEqual([]);
