@@ -73,6 +73,24 @@ describe("a site the network never loaded", () => {
 });
 
 describe("browser run outcome parsing", () => {
+  // Ozon turned away every exit of a comparison of three shops (14.10).
+  it("reads the sites a run could not get into from BLOCKED, by host", () => {
+    expect(
+      parseBrowserOutcome(
+        [
+          "RESULT: сравнил ВБ и Маркет, Ozon не открылся",
+          "NEEDS: none",
+          "BLOCKED: https://www.ozon.ru/search/?text=пылесос, «avito.ru», госуслуги.рф, Ozon",
+        ].join("\n")
+      ).blocked
+    ).toEqual(["ozon.ru", "avito.ru", "xn--c1aapkosapc.xn--p1ai"]);
+    expect(
+      parseBrowserOutcome("RESULT: всё нашёл\nNEEDS: none\nBLOCKED: none")
+        .blocked
+    ).toEqual([]);
+    expect(parseBrowserOutcome("RESULT: всё нашёл").blocked).toEqual([]);
+  });
+
   it("reads the labelled block whatever language its values are in", () => {
     const outcome = parseBrowserOutcome(
       [
@@ -86,6 +104,7 @@ describe("browser run outcome parsing", () => {
     );
 
     expect(outcome).toEqual({
+      blocked: [],
       booking: undefined,
       charges: [],
       details: undefined,
@@ -771,5 +790,37 @@ describe("the booking the run made or staged", () => {
     expect(browserOutcomeSummary(outcome, "fallback")).toContain(
       "from 2026-10-03T08:00 (Asia/Yekaterinburg) to 2026-10-03T11:40 (Europe/Moscow)"
     );
+  });
+});
+
+describe("the ACTION verdict of a recovery check", () => {
+  it.each([
+    ["ACTION: done — мои заявки", "done"],
+    ["ACTION: not_done", "not_done"],
+    ["**ACTION:** Not done — nothing in orders", "not_done"],
+    ["- ACTION: not-done", "not_done"],
+    ["ACTION: unknown", "unknown"],
+    ["ACTION: donee", undefined],
+    ["ACTION: I clicked submit", undefined],
+    ["RESULT: done", undefined],
+  ])("reads %s", (line, expected) => {
+    expect(
+      parseBrowserOutcome(`RESULT: проверено\n${line}\nNEEDS: none`).action
+    ).toBe(expected);
+  });
+
+  it("names the verdict in the kept summary only when there is one", () => {
+    expect(
+      browserOutcomeSummary(
+        parseBrowserOutcome("RESULT: есть\nACTION: done\nNEEDS: none"),
+        ""
+      )
+    ).toContain("Action: done");
+    expect(
+      browserOutcomeSummary(
+        parseBrowserOutcome("RESULT: есть\nNEEDS: none"),
+        ""
+      )
+    ).not.toContain("Action:");
   });
 });

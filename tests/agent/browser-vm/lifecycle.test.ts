@@ -2387,3 +2387,359 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
   });
 });
+
+/** The request to go out through BROWSER_VM_PROXY with this session. */
+function first(session: string) {
+  return {
+    host: "proxy.example.test",
+    password: "pa:ss",
+    port: 9000,
+    username: `user-session-${session}`,
+  };
+}
+
+/** The same through the fallback of the next tests. */
+function second(session: string) {
+  return {
+    host: "gate.example.test",
+    password: "fb:pw",
+    port: 8080,
+    username: `login-country-ru-sid-${session}-ttl-24h`,
+  };
+}
+
+describe("moving the browser to the second proxy", () => {
+  const digest = "1e09f74980c7";
+  const fallback =
+    "gate.example.test:8080:login-country-ru-sid-{session}-ttl-24h:fb:pw";
+  /** What the worker was asked to go out through, request by request. */
+  const sent = () =>
+    worker.setBrowserVmWorkerProxy.mock.calls.map(([, proxy]) => proxy);
+  /** A check older than half an hour: a new errand rotates from it. */
+  const stale = {
+    at: minutesAgo(31).toISOString(),
+    city: "Moscow",
+    country: "RU",
+    ip: "95.24.1.2",
+    org: "AS8402 Beeline",
+  };
+  const abroad = proxySetup({ country: "NL", ip: "5.2.2.2" });
+  // Geonode's answer to a CONNECT from a Selectel address (06.10).
+  const refused = {
+    ...proxySetup({ country: "RU", ip: "95.24.1.6" }),
+    exit: {
+      error:
+        "ClientHttpProxyError: 403, message='Invalid Request', url='http://127.0.0.1:3128'",
+    },
+  };
+
+  it("sends every request as before without the fallback, whatever the pilot says", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES: "*",
+    });
+    rows.set(workspaceId, vmRow({ proxyExit: stale }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(abroad);
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now)
+    ).rejects.toMatchObject({ name: "BrowserUseError", status: 429 });
+
+    expect(sent()).toEqual([
+      first(`bro${digest}`),
+      first(`bro${digest}r1`),
+      first(`bro${digest}r2`),
+      first(`bro${digest}r3`),
+    ]);
+    expect(stored().proxySession).toBe(`bro${digest}r3`);
+
+    // A refusal stops at once, and the owner hears it in the same words.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(refused);
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now)
+    ).rejects.toMatchObject({ name: "BrowserUseError", status: 429 });
+
+    expect(sent()).toEqual([first(`bro${digest}r3`)]);
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      "browser-vm-proxy",
+      [
+        "Резидентный прокси (BROWSER_VM_PROXY) отказывает Бро: ClientHttpProxyError: 403, message='Invalid Request'.",
+        "Поручения в браузере ждут в очереди. Проверь баланс, тариф и пароль аккаунта прокси; если выдан новый логин — обнови BROWSER_VM_PROXY (порт sticky-сессий).",
+      ].join("\n"),
+      { repeatAfterMs: 6 * 60 * 60_000 }
+    );
+  });
+
+  it("moves a workspace whose proxy gives no Russian exit to the fallback, and keeps it there", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxyExit: stale }));
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.30" }));
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([
+      first(`bro${digest}`),
+      first(`bro${digest}r1`),
+      first(`bro${digest}r2`),
+      first(`bro${digest}r3`),
+      second(`bro${digest}s0`),
+    ]);
+    expect(prepared).toMatchObject({
+      proxyExit: { at: now.toISOString(), ip: "95.24.1.30" },
+      proxySession: `bro${digest}s0`,
+    });
+    // Each proxy's alert is its own: the one that answered is re-armed.
+    expect(clearOwnerAlert).toHaveBeenLastCalledWith(
+      "browser-vm-proxy-fallback",
+      now
+    );
+
+    // Its next errands check the same session there, and rotate there.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.31" })
+    );
+    rows.set(workspaceId, { ...stored(), proxyExit: stale });
+    await lifecycle.prepareBrowserVmSession(stored(), now);
+    await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([
+      second(`bro${digest}s0`),
+      second(`bro${digest}s1`),
+    ]);
+    expect(stored().proxySession).toBe(`bro${digest}s1`);
+  });
+
+  it("moves at once when the proxy refuses Bro's login, and tells the owner which one", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxyExit: stale }));
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.32" }));
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([first(`bro${digest}`), second(`bro${digest}s0`)]);
+    expect(prepared.proxySession).toBe(`bro${digest}s0`);
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      "browser-vm-proxy",
+      expect.stringContaining(
+        "Бро пробует BROWSER_VM_PROXY_FALLBACK. Проверь баланс"
+      ),
+      { repeatAfterMs: 6 * 60 * 60_000 }
+    );
+  });
+
+  it("starts a workspace of the pilot on the fallback, and moves it to the first proxy after it", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_PROXY_FALLBACK_FIRST_WORKSPACES: workspaceId,
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    // The session it had on the first proxy before it joined the pilot.
+    rows.set(
+      workspaceId,
+      vmRow({ proxyExit: stale, proxySession: `bro${digest}r2` })
+    );
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.33" }));
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([
+      second(`bro${digest}r2`),
+      second(`bro${digest}r3`),
+      second(`bro${digest}r4`),
+      second(`bro${digest}r5`),
+      first(`bro${digest}s0`),
+    ]);
+    expect(prepared.proxySession).toBe(`bro${digest}s0`);
+  });
+
+  it("tries both proxies before it turns the errand away", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxyExit: stale }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(abroad);
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now)
+    ).rejects.toMatchObject({
+      name: "BrowserUseError",
+      retryAfterMs: 60_000,
+      status: 429,
+    });
+
+    expect(sent()).toHaveLength(8);
+    expect(sent().slice(4)).toEqual([
+      second(`bro${digest}s0`),
+      second(`bro${digest}s1`),
+      second(`bro${digest}s2`),
+      second(`bro${digest}s3`),
+    ]);
+    expect(stored()).toMatchObject({
+      proxyExit: null,
+      proxySession: `bro${digest}s3`,
+    });
+  });
+
+  it("never moves a follow-up to the other proxy", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(
+      workspaceId,
+      vmRow({ proxyExit: null, proxySession: `bro${digest}s1` })
+    );
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(abroad);
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now, { rotate: false })
+    ).rejects.toMatchObject({ name: "BrowserUseError", status: 429 });
+
+    expect(sent()).toEqual([second(`bro${digest}s1`)]);
+    expect(stored().proxySession).toBe(`bro${digest}s1`);
+
+    // Nor when its proxy refuses the login: the owner hears errands wait.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(refused);
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now, { rotate: false })
+    ).rejects.toMatchObject({ name: "BrowserUseError", status: 429 });
+
+    expect(sent()).toEqual([second(`bro${digest}s1`)]);
+    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
+      "browser-vm-proxy-fallback",
+      expect.stringContaining("Поручения в браузере ждут в очереди."),
+      { repeatAfterMs: 6 * 60 * 60_000 }
+    );
+  });
+
+  // Ozon turned away every Geonode exit of an errand (14.10): its retry goes
+  // out through the fallback, and the next errand comes back home.
+  it("sends a walled errand's retry through the fallback and the next errand back to the first proxy", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}r3` }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.40" })
+    );
+
+    const detoured = await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([second(`bro${digest}r3w0`)]);
+    expect(detoured.proxySession).toBe(`bro${digest}r3w0`);
+    expect(info).toHaveBeenCalledWith(
+      "[browser-vm] the proxy exit checked",
+      expect.objectContaining({
+        detour: true,
+        proxy: "BROWSER_VM_PROXY_FALLBACK",
+      })
+    );
+
+    // A follow-up of that errand stays on its detour.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ proxy: false })
+    );
+    await lifecycle.prepareBrowserVmSession(stored(), now, { rotate: false });
+    expect(sent()).toEqual([second(`bro${digest}r3w0`)]);
+
+    // Walled again: the next detour session, still on the fallback.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+    expect(sent()).toEqual([second(`bro${digest}r3w1`)]);
+
+    // A new errand, however fresh the detour's exit, goes home.
+    worker.setBrowserVmWorkerProxy.mockClear();
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(health());
+    const home = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([first(`bro${digest}r3`)]);
+    expect(home.proxySession).toBe(`bro${digest}r3`);
+  });
+
+  it("goes home at the next rotation when the fallback has no Russian exit for the detour", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}r3` }));
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(abroad)
+      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.41" }));
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([
+      second(`bro${digest}r3w0`),
+      second(`bro${digest}r3w1`),
+      second(`bro${digest}r3w2`),
+      second(`bro${digest}r3w3`),
+      first(`bro${digest}r4`),
+    ]);
+    expect(prepared.proxySession).toBe(`bro${digest}r4`);
+  });
+
+  it("rotates a workspace that moved to the fallback for good there, with no detour", async () => {
+    const lifecycle = await loadLifecycle({
+      BROWSER_VM_PROXY_FALLBACK: fallback,
+    });
+    rows.set(workspaceId, vmRow({ proxySession: `bro${digest}s1` }));
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.42" })
+    );
+
+    await lifecycle.prepareBrowserVmSession(stored(), now, {
+      freshExit: true,
+    });
+
+    expect(sent()).toEqual([second(`bro${digest}s2`)]);
+  });
+
+  it("brings a workspace back to the first proxy once the fallback is gone", async () => {
+    const lifecycle = await loadLifecycle();
+    rows.set(
+      workspaceId,
+      vmRow({ proxyExit: stale, proxySession: `bro${digest}s2` })
+    );
+    worker.setBrowserVmWorkerProxy.mockResolvedValue(
+      proxySetup({ country: "RU", ip: "95.24.1.34" })
+    );
+
+    const prepared = await lifecycle.prepareBrowserVmSession(stored(), now);
+
+    expect(sent()).toEqual([first(`bro${digest}`)]);
+    expect(prepared.proxySession).toBe(`bro${digest}`);
+  });
+});

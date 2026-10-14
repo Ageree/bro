@@ -164,6 +164,49 @@ describe("browser run persistence", () => {
     expect(await browserRuns.claimDueBrowserRunRetries(lease, 10)).toEqual([]);
   }, 20_000);
 
+  it("parks a broken-off errand for its next recovery step and carries the step to the run that takes over", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const retryId = "55555555-5555-4555-8555-555555555555";
+    const now = new Date("2026-10-14T12:00:00.000Z");
+    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
+    await browserRuns.claimBrowserRunCompletion(runId, {
+      outcome: "Result: connection reset",
+      status: "failed",
+    });
+    expect((await browserRuns.readBrowserRun(runId))?.recoveryAttempt).toBe(0);
+
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      recovery: { attempt: 1, phase: "verify" },
+      retryAt: now,
+    });
+    const [due] = await browserRuns.claimDueBrowserRunRetries(now, 10);
+    expect(due).toMatchObject({ recoveryAttempt: 1, recoveryPhase: "verify" });
+
+    // A wall met meanwhile parks again without touching the step.
+    await browserRuns.parkBrowserRunForRetry(runId, {
+      captchaAttempt: 1,
+      retryAt: now,
+    });
+    expect(await browserRuns.readBrowserRun(runId)).toMatchObject({
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+    });
+
+    await browserRuns.handOffBrowserRunRetry(runId, {
+      ...conversation(),
+      captchaAttempt: 2,
+      id: retryId,
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+      sessionId: "browser-session-2",
+    });
+    expect(await browserRuns.readBrowserRun(retryId)).toMatchObject({
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+    });
+  }, 20_000);
+
   it("knows whether a run's task was written by a follow-up or by the errand's start", async () => {
     const browserRuns = await browserRunsDatabase();
     const [startRetry, followUp, followUpRetry] = [

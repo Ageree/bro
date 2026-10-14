@@ -47,6 +47,56 @@ export function isGosuslugi(host: string) {
   return under(host, [gosuslugiDomain]);
 }
 
+/**
+ * The official check of traffic fines: ГИБДД's own site (гибдд.рф, which a
+ * URL names by its punycode, and gibdd.ru) and Госуслуги. The list is closed
+ * on purpose: the numbers of a car's СТС and a driving licence go to these
+ * and to no other site (ERRAND_AUTONOMY_WORKSPACES; RU d06 typed them into
+ * whichever fines site the search reached).
+ */
+const finesCheckDomains = ["xn--90adear.xn--p1ai", "gibdd.ru", gosuslugiDomain];
+
+/** Whether an errand's site is an official check of traffic fines. */
+export function checksFinesOfficially(site: string | null | undefined) {
+  const host = siteHost(site ?? undefined);
+  return host !== undefined && under(host, finesCheckDomains);
+}
+
+/** A word that says a number is a car's СТС or a driving licence. */
+const vehicleDocumentWord =
+  /(?<!\p{L})(?:стс|ву|sts|свидетельств\p{L}*|водительск\p{L}*|удостоверени\p{L}*|прав(?:а|ам|ами|ах)?|licen[cs]es?)(?!\p{L})/iu;
+
+/**
+ * The number of a СТС or a driving licence: four characters of its series
+ * (two digits, then two digits or letters) and six digits, as «77 УО 123456»,
+ * «9912 345678».
+ */
+const vehicleDocumentNumber =
+  /(?<![\p{L}\d])\d{2}[\s-]?[\dа-яёa-z]{2}[\s-]?\d{6}(?![\p{L}\d])/iu;
+
+/**
+ * Whether what a call hands the run carries the number of a car's СТС or a
+ * driving licence: such a number, and a word that names the document.
+ */
+export function carriesVehicleDocumentNumbers(
+  texts: readonly (string | null | undefined)[]
+) {
+  const text = texts.filter((part) => part != null).join("\n");
+  return vehicleDocumentWord.test(text) && vehicleDocumentNumber.test(text);
+}
+
+/**
+ * What the run hears in place of «never type a document number» on an
+ * official fines check: the numbers the errand gives go into that form
+ * alone.
+ */
+export const finesNumbersLine =
+  "This is a check of traffic fines on an official site. The numbers of the car's registration certificate (СТС) and of the driving licence that the errand gives go only into the fines check of гибдд.рф (xn--90adear.xn--p1ai) or of Госуслуги: never type them into any other site, a fallback site included, and never type the number of any other document — a passport, СНИЛС, the OMS policy. If the official check does not open, stop with NEEDS: captcha and do not look for the fines anywhere else.";
+
+/** Why a call that would hand those numbers to another site starts nothing. */
+export const finesNumbersRefusal =
+  "Nothing was sent to a browser: the numbers of a car's СТС or of a driving licence go only to the official fines check. Start the check on the ГИБДД site with site https://xn--90adear.xn--p1ai (its form is at /check/fines), or on https://www.gosuslugi.ru, or leave the numbers out of the errand.";
+
 /** The bare lower-case host of a site origin, without `www.`. */
 function siteHost(site: string | undefined) {
   const host = site === undefined ? undefined : URL.parse(site)?.hostname;
@@ -179,7 +229,11 @@ export function publicServiceLine(errand: string) {
  * neither the passport date nor a way to check the fines. Only for the
  * topics the errand names, and nothing here types a document number.
  */
-export function gosuslugiFallback(site: string | null, errand: string) {
+export function gosuslugiFallback(
+  site: string | null,
+  errand: string,
+  officialFines = false
+) {
   const host = siteHost(site ?? undefined);
   if (host === undefined || !isGosuslugi(host)) return undefined;
   const steps = [
@@ -187,14 +241,18 @@ export function gosuslugiFallback(site: string | null, errand: string) {
       ? "search the user's mail and Drive yourself, before your message, for the document's expiry date (gmail-search and drive-search: «загранпаспорт», «паспорт», «срок действия») and give the date with where it came from, or say that nothing turned up — do not only offer to look"
       : undefined,
     finesPattern.test(errand)
-      ? "for fines, give the check by the car's СТС and the driving licence on the ГИБДД site, https://xn--90adear.xn--p1ai/check/fines, where the user types the numbers themselves, and say it shows fines only"
+      ? officialFines
+        ? "for fines, start the check on the ГИБДД site (site https://xn--90adear.xn--p1ai) with the car's СТС and the driving licence numbers when the user gave them, and otherwise ask for them; say it shows fines only"
+        : "for fines, give the check by the car's СТС and the driving licence on the ГИБДД site, https://xn--90adear.xn--p1ai/check/fines, where the user types the numbers themselves, and say it shows fines only"
       : undefined,
     taxesPattern.test(errand)
       ? "for taxes, say they are also in the tax service's personal account, https://lkfl2.nalog.ru, which the user can open with its own login (ИНН and password) — its «Войти через Госуслуги» button meets the same Госуслуги sign-in, so do not offer to check there through Госуслуги now"
       : undefined,
   ].filter((step) => step !== undefined);
   return [
-    "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else.",
+    officialFines && finesPattern.test(errand)
+      ? "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else but the fines check below."
+      : "Госуслуги did not let this errand in, and no other site stands in for them: do not start it anywhere else.",
     steps.length > 0
       ? `Do now, in this same turn, what can be done without them: ${steps.join("; ")}.`
       : undefined,

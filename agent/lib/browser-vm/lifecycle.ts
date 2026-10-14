@@ -38,7 +38,14 @@ import {
   setCloudRuVmPower,
 } from "./cloudru";
 import { browserVmIdleStopDue, browserVmUnusedBefore } from "./idle";
-import { browserVmProxy, browserVmProxySession } from "./proxy";
+import {
+  type BrowserVmProxyLine,
+  type BrowserVmProxyPlace,
+  browserVmProxy,
+  browserVmProxyLines,
+  browserVmProxyPlace,
+  browserVmProxySession,
+} from "./proxy";
 import {
   browserVmIdleForWorker,
   browserVmWorkerDue,
@@ -121,7 +128,7 @@ const missedChecksToDemote = 3;
 const liveRunWindowMs = 30 * 60_000;
 /** The proxy exit is checked again when the last check is older than this. */
 const exitCheckMs = 30 * 60_000;
-/** Sticky sessions tried after the first, for an exit inside Russia. */
+/** Sticky sessions tried after the first on a proxy, for an exit inside Russia. */
 const exitRotations = 3;
 /**
  * Every errand waits on the same exit, so it is tried again after this. Five
@@ -148,8 +155,6 @@ const reconcileLimit = 20;
  */
 const openRunWindowMs = 60 * 60_000;
 const ownerAlertRepeatMs = 6 * 60 * 60_000;
-/** The owner's alert that the residential proxy refuses Bro's login. */
-const proxyAlertKey = "browser-vm-proxy";
 /**
  * A deletion waits this long for an errand's or the reconcile's step on the
  * VM to end: each holds the lease for one step, seconds as a rule.
@@ -529,7 +534,8 @@ export async function touchBrowserVm(workspaceId: string, now = new Date()) {
  * A fresh start moves to the next rotation when its check is stale, and
  * `freshExit` (an anti-bot retry) moves to the next one outright, even when
  * the current exit is fresh and Russian: the site turning the errand away is
- * itself a reason to try another address.
+ * itself a reason to try another address. Only these two may move the
+ * workspace to its other proxy (`browserVmProxyLines`).
  */
 export async function prepareBrowserVmSession(
   vm: BrowserVm,
@@ -610,7 +616,7 @@ async function prepareAfterWarmUp(
   const searchUntil = inTurn ? Date.now() + turnExitBudgetMs : undefined;
   const health = await readBrowserVmWorkerHealth(vm);
   if (health.busy) {
-    return health.proxy ? vm : routeThroughRussia(vm, now, rotationOf(vm), 0);
+    return health.proxy ? vm : routeThroughRussia(vm, now, { rotations: 0 });
   }
   const movable =
     (rotate || freshExit) &&
@@ -618,27 +624,35 @@ async function prepareAfterWarmUp(
   if (!movable) {
     return health.proxy && vm.proxyExit !== null
       ? vm
-      : routeThroughRussia(vm, now, rotationOf(vm), 0);
+      : routeThroughRussia(vm, now, { rotations: 0 });
   }
   if (freshExit) {
-    return routeThroughRussia(
-      vm,
-      now,
-      rotationOf(vm) + 1,
-      exitRotations,
-      searchUntil
-    );
+    return routeThroughRussia(vm, now, {
+      detour: true,
+      next: true,
+      rotations: exitRotations,
+      searchUntil,
+    });
+  }
+  // The detour served the walled errand alone: a new one goes home.
+  const stored = browserVmProxyPlace(
+    vm.proxySession,
+    await browserVmProxyLines(vm)
+  );
+  if (stored.home !== undefined) {
+    return routeThroughRussia(vm, now, {
+      home: true,
+      rotations: exitRotations,
+      searchUntil,
+    });
   }
   const checkedAt =
     vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
   if (health.proxy && checkedAt > now.getTime() - exitCheckMs) return vm;
-  return routeThroughRussia(
-    vm,
-    now,
-    rotationOf(vm),
-    exitRotations,
-    searchUntil
-  );
+  return routeThroughRussia(vm, now, {
+    rotations: exitRotations,
+    searchUntil,
+  });
 }
 
 /**
@@ -1566,27 +1580,144 @@ function present(ids: readonly (string | null | undefined)[]) {
 }
 
 /**
- * Point the worker at the proxy with this rotation of the workspace's sticky
- * session, and keep it when the exit is in Russia and not slow. An exit is
- * judged by its address alone: one whose speed could not be measured is not
- * slow, and a probe that failed next to a known address does not lose it.
- * Recursion rather than a loop keeps each attempt one awaited step. With
- * `searchUntil` (a person's turn is waiting) no further rotation is tried
- * once that time has passed: the next one is left for the queued errand.
+ * Point the worker at the proxy with the workspace's stored sticky session,
+ * or the rotation after it (`next`), and try up to `rotations` more for an
+ * exit in Russia. When none of them gives a usable one, or the proxy refuses
+ * Bro's login, a deployment with a second proxy moves the workspace to the
+ * other one (`browserVmProxyLines`) and tries as many there; the stored
+ * session then says where the workspace stays. A call that may not rotate
+ * never moves it to the other proxy either. With `searchUntil` (a person's
+ * turn is waiting) no further exit is tried once that time has passed: the
+ * next one is left for the queued errand.
+ *
+ * `detour` (an anti-bot retry, owner 14.10): a site walled off the first
+ * proxy's exit, and Ozon turned away every Geonode exit it was shown, so
+ * the retry goes out through the second proxy — the next detour session
+ * there when it is on one already — and the stored session remembers the
+ * first proxy's rotation to come back to. `home` brings a workspace on a
+ * detour back to that rotation: the detour served one errand, not the
+ * workspace. A workspace that already moved to the second proxy for good
+ * rotates there as before.
  */
 async function routeThroughRussia(
   vm: BrowserVm,
   now: Date,
-  rotation: number,
+  {
+    detour = false,
+    home = false,
+    next = false,
+    rotations,
+    searchUntil,
+  }: {
+    readonly detour?: boolean;
+    readonly home?: boolean;
+    readonly next?: boolean;
+    readonly rotations: number;
+    readonly searchUntil?: number;
+  }
+) {
+  const lines = await browserVmProxyLines(vm);
+  const stored = browserVmProxyPlace(vm.proxySession, lines);
+  const [first, second] = lines;
+  if (
+    detour &&
+    rotations > 0 &&
+    second !== undefined &&
+    (stored.home !== undefined || stored.line === first)
+  ) {
+    const back = stored.home ?? stored.rotation;
+    return tryExit(
+      vm,
+      now,
+      lines,
+      {
+        home: back,
+        line: second,
+        rotation: stored.home === undefined ? 0 : stored.rotation + 1,
+      },
+      rotations,
+      { line: first, rotation: back + 1 },
+      searchUntil
+    );
+  }
+  if (home && stored.home !== undefined) {
+    return tryExit(
+      vm,
+      now,
+      lines,
+      { line: first, rotation: stored.home },
+      rotations,
+      rotations > 0 && second !== undefined
+        ? { line: second, rotation: 0 }
+        : undefined,
+      searchUntil
+    );
+  }
+  const other =
+    rotations > 0 ? lines.find((line) => line !== stored.line) : undefined;
+  return tryExit(
+    vm,
+    now,
+    lines,
+    {
+      home: stored.home,
+      line: stored.line,
+      rotation: stored.rotation + (next ? 1 : 0),
+    },
+    rotations,
+    other === undefined ? undefined : { line: other, rotation: 0 },
+    searchUntil
+  );
+}
+
+/** The sticky-session token of a place on the workspace's proxies. */
+function sessionAt(
+  workspaceId: string,
+  lines: Awaited<ReturnType<typeof browserVmProxyLines>>,
+  place: BrowserVmProxyPlace
+) {
+  return browserVmProxySession(
+    workspaceId,
+    place.rotation,
+    place.line !== lines[0],
+    place.home
+  );
+}
+
+/**
+ * Point the worker at the proxy with this place of the workspace's sticky
+ * session, and keep it when the exit is in Russia. An exit is judged by its
+ * address alone: a probe that failed next to a known address does not lose
+ * it. `other` is the place to move to once this one has nothing to give.
+ * Recursion rather than a loop keeps each attempt one awaited step.
+ */
+async function tryExit(
+  vm: BrowserVm,
+  now: Date,
+  lines: Awaited<ReturnType<typeof browserVmProxyLines>>,
+  place: BrowserVmProxyPlace,
   rotationsLeft: number,
-  searchUntil?: number
+  other: BrowserVmProxyPlace | undefined,
+  searchUntil: number | undefined
 ): Promise<BrowserVm> {
-  const session = browserVmProxySession(vm.workspaceId, rotation);
+  const { line, rotation } = place;
+  const session = sessionAt(vm.workspaceId, lines, place);
   const checkStarted = Date.now();
-  const rotated = rotation !== rotationOf(vm);
+  const stored = browserVmProxyPlace(vm.proxySession, lines);
+  const rotated =
+    line !== stored.line ||
+    rotation !== stored.rotation ||
+    place.home !== stored.home;
+  // Which proxy, once there are two to tell apart, and whether this is one
+  // errand's detour to the second. Never the proxy login.
+  const proxy =
+    lines.length > 1 ? { detour: place.home !== undefined, proxy: line } : {};
   let exit: Awaited<ReturnType<typeof setBrowserVmWorkerProxy>>["exit"];
   try {
-    ({ exit } = await setBrowserVmWorkerProxy(vm, browserVmProxy(session)));
+    ({ exit } = await setBrowserVmWorkerProxy(
+      vm,
+      browserVmProxy(session, line)
+    ));
   } catch (error) {
     // The worker did not answer the check: how long the errand waited for
     // that, and the error's name only, since the request carried the login.
@@ -1594,6 +1725,7 @@ async function routeThroughRussia(
       durationMs: Date.now() - checkStarted,
       error: error instanceof Error ? error.name : null,
       kept: false,
+      ...proxy,
       rotated,
       rotation,
       workspaceId: vm.workspaceId,
@@ -1602,7 +1734,7 @@ async function routeThroughRussia(
   }
   // An exit address means the proxy took the login: its next refusal is a
   // new incident, and the owner hears of it at once.
-  if (exit.ip) await proxyAccepted(now);
+  if (exit.ip) await proxyAccepted(line, now);
   // Any Russian exit is taken, however slow: 14.10 every exit measured 3–5 s,
   // and passing one over for a faster ran the search into the proxy's 500s
   // and a wait of minutes, the errand standing still meanwhile.
@@ -1612,7 +1744,8 @@ async function routeThroughRussia(
       : undefined;
   // One line per check, before the errand starts: the worker asks ipinfo.io
   // (up to 20 s) and pulls a megabyte (up to 25 s) through the exit, and up
-  // to four rotations may be tried. Never the proxy login or the address.
+  // to four rotations may be tried on each proxy. Never the proxy login or
+  // the address.
   const check = {
     country: exit.country ?? null,
     durationMs: Date.now() - checkStarted,
@@ -1620,6 +1753,7 @@ async function routeThroughRussia(
     kept: taken !== undefined,
     latencyMs: exit.latencyMs ?? null,
     mbps: exit.mbps ?? null,
+    ...proxy,
     rotated,
     rotation,
     speedError: exit.speedError ?? null,
@@ -1644,16 +1778,32 @@ async function routeThroughRussia(
   }
   console.warn("[browser-vm] the proxy exit checked", check);
   // The proxy turned the login away: every sticky session of that login
-  // meets the same answer, so only the owner's account can change it.
+  // meets the same answer, so only the owner's account can change it, and
+  // only the other proxy may serve the errand meanwhile.
   const refusal = proxyRefusal(exit.error);
   if (refusal !== undefined) {
+    const waiting =
+      other === undefined
+        ? "Поручения в браузере ждут в очереди."
+        : `Бро пробует ${other.line}.`;
     await alert(
-      proxyAlertKey,
+      proxyAlertKey(line),
       [
-        `Резидентный прокси (BROWSER_VM_PROXY) отказывает Бро: ${refusal}.`,
-        "Поручения в браузере ждут в очереди. Проверь баланс, тариф и пароль аккаунта прокси; если выдан новый логин — обнови BROWSER_VM_PROXY (порт sticky-сессий).",
+        `Резидентный прокси (${line}) отказывает Бро: ${refusal}.`,
+        `${waiting} Проверь баланс, тариф и пароль аккаунта прокси; если выдан новый логин — обнови ${line} (порт sticky-сессий).`,
       ].join("\n")
     );
+    if (other !== undefined) {
+      return tryExit(
+        vm,
+        now,
+        lines,
+        other,
+        exitRotations,
+        undefined,
+        searchUntil
+      );
+    }
     await updateBrowserVm(
       vm.workspaceId,
       { proxyExit: null, proxySession: session },
@@ -1662,28 +1812,28 @@ async function routeThroughRussia(
     throw new BrowserUseError(429, "proxy", "proxy refused", noExitRetryMs);
   }
   if (rotationsLeft > 0) {
-    if (searchUntil !== undefined && Date.now() >= searchUntil) {
-      // The poller starts from the rotation not tried yet.
-      await updateBrowserVm(
-        vm.workspaceId,
-        {
-          proxyExit: null,
-          proxySession: browserVmProxySession(vm.workspaceId, rotation + 1),
-        },
-        now
-      );
-      throw new BrowserUseError(
-        429,
-        "proxy",
-        "the search for an exit goes on in the queue",
-        turnExitResumeMs
-      );
-    }
-    return routeThroughRussia(
+    const nextPlace = { home: place.home, line, rotation: rotation + 1 };
+    await outOfTurnBudget(vm, now, lines, nextPlace, searchUntil);
+    return tryExit(
       vm,
       now,
-      rotation + 1,
+      lines,
+      nextPlace,
       rotationsLeft - 1,
+      other,
+      searchUntil
+    );
+  }
+  // No rotation of this proxy gave a usable exit: the other one gets as many.
+  if (other !== undefined) {
+    await outOfTurnBudget(vm, now, lines, other, searchUntil);
+    return tryExit(
+      vm,
+      now,
+      lines,
+      other,
+      exitRotations,
+      undefined,
       searchUntil
     );
   }
@@ -1695,6 +1845,34 @@ async function routeThroughRussia(
     now
   );
   throw new BrowserUseError(429, "proxy", "no Russian exit", noExitRetryMs);
+}
+
+/**
+ * A person's turn waited its budget for an exit: the place not tried yet is
+ * stored, and the poller goes on from it while the errand queues.
+ */
+async function outOfTurnBudget(
+  vm: BrowserVm,
+  now: Date,
+  lines: Awaited<ReturnType<typeof browserVmProxyLines>>,
+  place: BrowserVmProxyPlace,
+  searchUntil: number | undefined
+) {
+  if (searchUntil === undefined || Date.now() < searchUntil) return;
+  await updateBrowserVm(
+    vm.workspaceId,
+    {
+      proxyExit: null,
+      proxySession: sessionAt(vm.workspaceId, lines, place),
+    },
+    now
+  );
+  throw new BrowserUseError(
+    429,
+    "proxy",
+    "the search for an exit goes on in the queue",
+    turnExitResumeMs
+  );
 }
 
 /**
@@ -1710,23 +1888,22 @@ function proxyRefusal(error: string | null | undefined) {
   )?.[0];
 }
 
+/** The owner's alert that a residential proxy refuses Bro's login. */
+function proxyAlertKey(line: BrowserVmProxyLine) {
+  return line === "BROWSER_VM_PROXY"
+    ? "browser-vm-proxy"
+    : "browser-vm-proxy-fallback";
+}
+
 /** Never throws: an errand must not fail because an alert was not re-armed. */
-async function proxyAccepted(now: Date) {
+async function proxyAccepted(line: BrowserVmProxyLine, now: Date) {
   try {
-    await clearOwnerAlert(proxyAlertKey, now);
+    await clearOwnerAlert(proxyAlertKey(line), now);
   } catch (error) {
     console.warn("[browser-vm] the proxy alert could not be re-armed", {
       cause: error,
     });
   }
-}
-
-/** The rotation the workspace's stored sticky session is on. */
-function rotationOf(vm: BrowserVm) {
-  const rotation = /^bro[\da-f]{12}r(?<rotation>\d+)$/u.exec(
-    vm.proxySession ?? ""
-  )?.groups?.rotation;
-  return rotation === undefined ? 0 : Number(rotation);
 }
 
 /**

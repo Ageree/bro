@@ -48,6 +48,7 @@ import {
   browserSecretAliases,
   phoneSignInDomains,
   phoneSignInSentence,
+  registrableDomain,
   resolveBrowserSecretBindings,
   signsInByPhone,
 } from "@agent/lib/browser-use/secrets";
@@ -131,7 +132,13 @@ import {
   paymentAnswer,
   personWordsThisTurn,
   quotedFromPerson,
+  recentPersonMessages,
 } from "@agent/lib/browser-use/said";
+import {
+  errandAutonomyPilot,
+  namesSite,
+  personSiteWords,
+} from "@agent/lib/browser-use/autonomy";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import {
   siteHostMissing,
@@ -170,9 +177,15 @@ import {
 } from "@agent/lib/browser-use/given-login";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
 import {
+  carriesVehicleDocumentNumbers,
+  checksFinesOfficially,
+  finesNumbersLine,
+  finesNumbersRefusal,
   gosuslugiCodeNote,
   gosuslugiSignInRule,
+  isGosuslugi,
   publicServiceLine,
+  signsInWithGosuslugi,
 } from "@agent/lib/browser-use/public-services";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
@@ -480,6 +493,7 @@ function outcomeContract() {
     "For a basket, a cart or an order, ITEMS lists every line in it with its price and quantity, each substitute with what it replaces, and every fee as a line of its own, not only the TOTAL; for a search, every option you report.",
     'CHARGES: a JSON array with one object per fine, tax, duty, bill or other charge you found — {"what":"what it is for: for a fine the offence and the article, for a tax its kind, object and period, for a bill the service and the month","amount":"…","date":"the date of the decree or the accrual","due":"the date it has to be paid by","discount":"the reduced amount and the date it lasts until, or null","reference":"the decree, bill or payment number (УИН), or null"} — or []',
     'BOOKING: for an appointment, a table, a stay or a ticket this run booked or took up to its final step, one JSON object — {"what":"…","who":"the doctor, specialist or carrier, or null","start":"its date and time on the place\'s own clock (for a ticket, the departure point\'s) as YYYY-MM-DDTHH:MM","zone":"the IANA time zone of that place, such as Europe/Moscow or Asia/Yekaterinburg","end":"the same for its end (for a ticket, the arrival on the arrival point\'s clock), or null","endZone":"the IANA time zone of the arrival point when it differs, or null","place":"the address","room":"the room, cabinet, hall or seat, or null","bring":"what to bring or have ready, as the site says, or null","cancel":"how and until when it can be cancelled or moved, or null","reference":"the booking or ticket number, or null","confirmed":true only once the site confirmed the booking} — or none',
+    "BLOCKED: every site this errand needed that never let this browser in at all — a page about the network address, a VPN or a lost connection («Похоже, нет соединения… выключите VPN», «Доступ ограничен»), or an anti-bot wall you could not get past — as its https:// address, comma-separated; or none. A site that opened but had nothing to offer is not one of them.",
     "SIGNED_IN: for every site where this browser is signed in to the person's account when you finish — whether you signed in on this run or it already was — the https:// address of a page there that only a signed-in person sees (the profile, «Мои заказы», the personal account), comma-separated; or none",
     "For every concrete option you recommend or report — product, article, hotel, ticket, restaurant, listing, or anything similar — include its actual observed destination URL in LINKS. Open the option's detail page or extract its actual anchor href from the page. Never guess or construct an ID or URL, and never substitute a live-view URL or a generic search, results, or category URL for an option link.",
   ].join("\n");
@@ -1372,6 +1386,12 @@ export function composeBrowserTask(options: {
   readonly deliveryAddress: string | undefined;
   readonly errand: string;
   readonly facts: string | undefined;
+  /**
+   * A check of traffic fines on an official site that carries the numbers
+   * of the car's СТС and the driving licence (`checksFinesOfficially`): the
+   * run types them there, and only there.
+   */
+  readonly finesCheck?: boolean;
   readonly home: string | undefined;
   readonly site: string | undefined;
   /**
@@ -1395,7 +1415,7 @@ export function composeBrowserTask(options: {
   const phoneSignIn = options.aliases.includes(
     browserSecretAliases.signinPhone
   );
-  return [
+  const task = [
     goAheadLine(options.consent, options.aliases),
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
@@ -1443,6 +1463,9 @@ export function composeBrowserTask(options: {
   ]
     .filter((part) => part !== undefined)
     .join("\n\n");
+  return options.finesCheck === true
+    ? task.replaceAll(documentNumbersLine, finesNumbersLine)
+    : task;
 }
 
 type ClosedPage = "asked" | "done" | "forgotten" | "staged" | "step";
@@ -2361,6 +2384,99 @@ type ErrandRow = NonNullable<
   Awaited<ReturnType<typeof readLatestBrowserRunForScope>>
 >;
 
+/**
+ * What a step tells the tool of the person's words: what they wrote this
+ * turn and, in the autonomy pilot, the words of their recent messages
+ * (`personSiteWords`), which a turn they did not open has no other way to.
+ */
+type PersonTurn = ReturnType<typeof personWordsThisTurn> & {
+  readonly siteWords?: readonly string[];
+};
+
+/**
+ * The errand a start takes on to a fallback site with no new word from the
+ * person (ERRAND_AUTONOMY_WORKSPACES, owner 14.10): the one whose report
+ * opened this turn, which the person asked to be done in this conversation
+ * and whose site never let its run past the anti-bot check (`NEEDS:
+ * captcha`, after the background retries). They want the thing, the slot or
+ * the appointment, not that shop. Undefined — and the start is a new errand
+ * that needs their word, as before — when they named that site themselves
+ * (`namesSite`), when it was a public-service site, which nothing stands in
+ * for, when a standing permission or an earlier fallback held it to its
+ * site (`boundHost`), or for a start on the same site.
+ */
+async function walledErrandFor(
+  input: BrowserTaskInput,
+  context: ModeContext,
+  scope: AccessScope,
+  siteWords: readonly string[] | undefined
+) {
+  if (
+    input.action !== "start" ||
+    input.site === undefined ||
+    siteWords === undefined ||
+    !errandAutonomyPilot(scope.workspaceId) ||
+    !inConversation(context) ||
+    agencyWorkerTurn(context)
+  ) {
+    return undefined;
+  }
+  const reported = reportedBrowserRunId(context.session.auth.current);
+  if (reported === undefined) return undefined;
+  const row = await readLatestBrowserRunForScope(scope, reported);
+  const walled = row?.site == null ? undefined : siteHostname(row.site);
+  const next = siteHostname(input.site);
+  if (row === undefined || walled === undefined || next === undefined) {
+    return undefined;
+  }
+  const publicService =
+    isGosuslugi(walled) ||
+    signsInWithGosuslugi(walled) ||
+    checksFinesOfficially(row.site);
+  return row.completedAt !== null &&
+    row.retryAt === null &&
+    row.status !== "stopped" &&
+    endedNeeding(row.outcome) === "captcha" &&
+    row.rootSessionId === context.session.id &&
+    row.startedByPerson !== false &&
+    row.delegatedByPerson &&
+    row.submission?.boundHost === undefined &&
+    !publicService &&
+    registrableDomain(walled) !== registrableDomain(next) &&
+    !namesSite(siteWords, registrableDomain(walled) ?? walled)
+    ? row
+    : undefined;
+}
+
+/**
+ * The consent a start on a fallback site carries over from the errand its
+ * site walled off: the same free submission, with only where it is made
+ * changed, held to the fallback's own host — the person's details go to the
+ * site that does the errand and nowhere else. A payment is never carried:
+ * it waits for the person's yes to its exact total, as any other.
+ */
+function movedSubmission(
+  walled: ErrandRow,
+  input: BrowserTaskInput
+): ConfirmedSubmission | undefined {
+  const confirmed = walled.submission;
+  const { submission } = input;
+  const host = input.site === undefined ? undefined : siteHostname(input.site);
+  if (
+    confirmed === null ||
+    submission === undefined ||
+    host === undefined ||
+    walled.paymentAllowed ||
+    confirmed.paymentCapRub !== undefined ||
+    input.allowPayment === true ||
+    (submission.chargeRub ?? 0) !== 0 ||
+    !sameSubmission({ ...confirmed, where: submission.where }, submission)
+  ) {
+    return undefined;
+  }
+  return { ...withPaymentCap(submission, undefined), boundHost: host };
+}
+
 function normalizedTerm(value: string | undefined) {
   return value?.trim().toLowerCase().replaceAll(/\s+/gu, " ");
 }
@@ -2655,11 +2771,11 @@ function unsentWordsRefusal(
  * `typed`: those of them they typed themselves, which are theirs to pass on
  * uncut (`contactsNotIn`). The label of an option they chose is Bro's
  * wording, and a phone in it is not one they gave.
+ *
+ * `siteWords`: the words of their recent messages, which tell whether they
+ * named a site (`namesSite`); undefined outside the autonomy pilot.
  */
-function turnWords(
-  context: ModeContext,
-  turn: ReturnType<typeof personWordsThisTurn>
-) {
+function turnWords(context: ModeContext, turn: PersonTurn) {
   const personTurn = startedByPerson(context) && turn.said !== null;
   const answers =
     resolveModeValue(context, { interactive: true }) === true
@@ -2671,6 +2787,7 @@ function turnWords(
   return {
     paymentAsked: personTurn ? turn.paymentAsked : null,
     personTurn,
+    siteWords: turn.siteWords,
     typed: [...opened, ...answers.filter((answer) => !picked.has(answer))],
     words: words.length > 0 ? words : null,
   };
@@ -3278,7 +3395,8 @@ async function consentFor(
   scope: AccessScope,
   errand: ErrandRow | undefined,
   said: ReturnType<typeof turnWords>,
-  context: ModeContext
+  context: ModeContext,
+  walled?: ErrandRow
 ): Promise<ConfirmedConsent | undefined> {
   const byPerson = said.personTurn;
   const delegated = continuesDelegatedErrand(input, context, errand);
@@ -3292,6 +3410,13 @@ async function consentFor(
   if (confirmed && errandCovers(confirmed, input)) {
     return { by: "errand", kind: "confirmed", submission: confirmed };
   }
+  // A fallback site after an anti-bot wall carries the walled errand's
+  // free submission on; in the person's own turn their words decide below.
+  const moved =
+    walled === undefined || byPerson
+      ? undefined
+      : movedSubmission(walled, input);
+  if (moved) return { by: "delegated", kind: "confirmed", submission: moved };
   const { submission } = input;
   if (submission === undefined) return undefined;
   if (agencyWorkerTurn(context)) {
@@ -3424,7 +3549,7 @@ async function agencyStartApproval(
 export async function browserTaskApproval(
   input: BrowserTaskInput | undefined,
   context: ModeContext,
-  turn?: ReturnType<typeof personWordsThisTurn>
+  turn?: PersonTurn
 ): Promise<ApprovalStatus> {
   if (input?.action !== "start" && input?.action !== "continue") {
     return "not-applicable";
@@ -3474,10 +3599,12 @@ export async function browserTaskApproval(
   const said = words ?? {
     paymentAsked: null,
     personTurn: startedByPerson(context),
+    siteWords: undefined,
     typed: [],
     words: null,
   };
-  const consent = await consentFor(input, scope, errand, said, context);
+  const walled = await walledErrandFor(input, context, scope, said.siteWords);
+  const consent = await consentFor(input, scope, errand, said, context, walled);
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
   const unchosen =
     unchosenOption(input, consent, errand) ??
@@ -3499,7 +3626,8 @@ async function consentFromInput(
   context: ToolContext,
   scope: AccessScope,
   said: ReturnType<typeof turnWords>,
-  errand?: ErrandRow
+  errand?: ErrandRow,
+  walled?: ErrandRow
 ): Promise<SubmissionConsent | undefined> {
   if (!actsForPerson(input)) return undefined;
   if (agencyWorkerTurn(context)) {
@@ -3510,7 +3638,7 @@ async function consentFromInput(
   }
   if (paysOnSpendLimit(input))
     throw new Error(paymentQuestionRefusal(undefined));
-  const consent = await consentFor(input, scope, errand, said, context);
+  const consent = await consentFor(input, scope, errand, said, context, walled);
   if (!consent) throw new Error(missingSubmissionRefusal);
   const unchosen =
     unchosenOption(input, consent, errand) ??
@@ -3929,7 +4057,7 @@ async function runWithGivenLogin(
   input: z.infer<typeof signUpInputSchema>,
   context: ToolContext,
   heard: readonly string[],
-  turn: ReturnType<typeof personWordsThisTurn>,
+  turn: PersonTurn,
   sources: PersonLoginSources
 ) {
   const login = input.login;
@@ -3995,7 +4123,7 @@ async function runBrowserTask(
   input: z.infer<typeof signUpInputSchema>,
   context: ToolContext,
   heard: readonly string[],
-  turn: ReturnType<typeof personWordsThisTurn>,
+  turn: PersonTurn,
   loginSaved = false
 ) {
   const { conversation, scope } = conversationTarget(context);
@@ -4009,6 +4137,19 @@ async function runBrowserTask(
       .parse(input.task);
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
+    // In the autonomy pilot the numbers of a car's СТС and of a driving
+    // licence go to the official fines check alone, whatever the call says.
+    const finesCheck =
+      errandAutonomyPilot(scope.workspaceId) &&
+      carriesVehicleDocumentNumbers([
+        errand,
+        input.site,
+        input.personSaid,
+        JSON.stringify(input.submission ?? null),
+      ]);
+    if (finesCheck && !checksFinesOfficially(input.site)) {
+      throw new Error(finesNumbersRefusal);
+    }
     // A deployment may run its errands on browser VMs alone: a workspace
     // that is not on one has no browser at all, and hears so before
     // anything is reserved or counted.
@@ -4018,14 +4159,33 @@ async function runBrowserTask(
     }
     // An account registered with Bro's own mailbox acts in nobody's name.
     const signUp = await signUpFor(input, scope, byPerson);
+    // The person's errand on a fallback site after an anti-bot wall goes on
+    // as theirs, as it would have on the site that walled it off.
+    const walled = await walledErrandFor(
+      input,
+      context,
+      scope,
+      spoken.siteWords
+    );
+    const forPerson = byPerson || walled !== undefined;
     // Paying for an errand is asking for it to be done in one's name.
-    const consent = await consentFromInput(input, context, scope, spoken);
+    const consent = await consentFromInput(
+      input,
+      context,
+      scope,
+      spoken,
+      undefined,
+      walled
+    );
     // What the person meant decides it, not the errand the model wrote,
     // which on 25.09 said «ничего не бронировать» to «забронируй». A
     // sign-up with Bro's own mailbox stages nothing of the person's.
     const staging =
       signUp === undefined
-        ? stagingFor(input.personWants, byPerson)
+        ? stagingFor(
+            walled === undefined ? input.personWants : "done",
+            forPerson
+          )
         : undefined;
     // Their phone and email reach the run only with their details: without
     // them, the errand and the site the model wrote lose them too, here and
@@ -4108,7 +4268,7 @@ async function runBrowserTask(
               allowPayment,
               // Only an errand the person asked for signs in with their phone:
               // a scheduled or background run never sends them a code.
-              phoneSignIn: byPerson,
+              phoneSignIn: forPerson,
               site: input.site,
             }),
             browserRunFacts(scope),
@@ -4131,6 +4291,7 @@ async function runBrowserTask(
                 ? `${sent}\n\n${spendCapLine(input.withinSpendLimit, spend.decision)}`
                 : sent,
             facts: facts.details,
+            finesCheck,
             home: facts.home,
             signUp:
               signUp === undefined || signUp.kind === "saved"
@@ -4244,12 +4405,14 @@ async function runBrowserTask(
           ...conversation,
           composedTask: started.task,
           delegatedByPerson:
-            byPerson && (input.personWants === "done" || actsForPerson(input)),
+            walled !== undefined ||
+            (byPerson &&
+              (input.personWants === "done" || actsForPerson(input))),
           paymentAllowed: allowPayment,
           profileId: started.profileId,
           retryAfterMs: started.retryAfterMs,
           site: site ?? null,
-          startedByPerson: byPerson,
+          startedByPerson: forPerson,
           submission: confirmedSubmission(consent),
           task: sent,
           waitsForAccount: started.waitsForAccount ?? null,
@@ -4282,12 +4445,14 @@ async function runBrowserTask(
           ...conversation,
           id: run.id,
           delegatedByPerson:
-            byPerson && (input.personWants === "done" || actsForPerson(input)),
+            walled !== undefined ||
+            (byPerson &&
+              (input.personWants === "done" || actsForPerson(input))),
           paymentAllowed: allowPayment,
           profileId,
           sessionId: run.sessionId,
           site: site ?? null,
-          startedByPerson: byPerson,
+          startedByPerson: forPerson,
           status: "running",
           submission: confirmedSubmission(consent),
           task: sent,
@@ -4349,6 +4514,19 @@ async function runBrowserTask(
       (fromMail ? undefined : waitingOnPersonRefusal(row, words)) ??
       inventedCodeRefusal([task, input.personSaid], codeAwaited(row), words);
     if (refusal) throw new Error(refusal);
+    // A follow-up goes to its errand's site: the СТС and licence numbers
+    // reach it only when that is the official fines check.
+    if (
+      errandAutonomyPilot(scope.workspaceId) &&
+      carriesVehicleDocumentNumbers([
+        task,
+        input.personSaid,
+        JSON.stringify(input.submission ?? null),
+      ]) &&
+      !checksFinesOfficially(row.site)
+    ) {
+      throw new Error(finesNumbersRefusal);
+    }
     const mail = fromMail
       ? await codeFromMail(row, input, context, scope, byPerson)
       : undefined;
@@ -5210,7 +5388,10 @@ async function runBrowserTask(
     note:
       [
         chainNote,
-        row.retryAt
+        row.retryAt && row.recoveryPhase !== null
+          ? "The last run broke off on an error, so a read-only check of whether its action already went through runs by itself, and the errand is finished by itself if it did not. The errand is still in progress: say so without mentioning the error, and do not start or continue it yourself."
+          : undefined,
+        row.retryAt && row.recoveryPhase === null
           ? "The site stopped this attempt at an anti-bot check, and the next attempt starts by itself in a fresh browser shortly. The errand is still in progress: say so without mentioning the check."
           : undefined,
         // RU d15 (25.09): «скинь адрес того барбера» got only «ещё ищу»,
@@ -5292,7 +5473,7 @@ export default defineDynamic({
       const heard = outcomesHeardThisTurn(context.messages, step);
       // The person's own words this turn, which the tool cannot read: the
       // one source of a code, a quote or a consent it passes on as theirs.
-      const turn = personWordsThisTurn(context.messages, step);
+      const said = personWordsThisTurn(context.messages, step);
       // What a login the person sent is checked against: digests only.
       const loginSources = personLoginSources(context.messages);
       // The skills pilot's turns read the short description and schema.
@@ -5300,6 +5481,20 @@ export default defineDynamic({
       // Only a workspace with its own AgentMail mailbox registers with it.
       const scope = approvalScope(context);
       const signUp = scope !== undefined && agentMailboxEnabled(scope);
+      // In the autonomy pilot, whether the person named a site, for a
+      // report's turn that takes their errand on to a fallback site: the
+      // words of their last messages, not their text.
+      const turn: PersonTurn =
+        scope !== undefined && errandAutonomyPilot(scope.workspaceId)
+          ? {
+              ...said,
+              siteWords: personSiteWords(
+                recentPersonMessages(context.messages, 10).map(
+                  (message) => message.text
+                )
+              ),
+            }
+          : said;
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);

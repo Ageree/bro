@@ -51,6 +51,7 @@ const optionalServices = [
   "BROWSER_USE_SIGN_IN_REFRESH_DAYS",
   "BROWSER_VM_LLM_API_KEY",
   "BROWSER_VM_PROXY",
+  "BROWSER_VM_PROXY_FALLBACK",
   "BROWSER_VM_SIGNING_KEY",
   "CLOUDRU_BROWSER_IMAGE",
   "CLOUDRU_KEY_ID",
@@ -424,6 +425,38 @@ describe("privacy", () => {
     expect(processors).toContain("Mail.ru или Яндекса");
     expect(processors).toContain("Еда, Лавка, Go, Маркет");
     expect(processors).toContain("песочнице на сервере Selectel");
+  });
+
+  it("names the browser's second proxy too, when there is one", async () => {
+    const { facts } = await withServices({
+      ...browserVmTestEnvironment,
+      BROWSER_VM_PROXY:
+        "premium-residential.geonode.com:9000:geonode_bro-session-{session}:secret",
+      BROWSER_VM_PROXY_FALLBACK:
+        "gate.nodemaven.com:8080:bro-country-ru-sid-{session}-ttl-24h:secret",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).toContain(
+      "через резидентный прокси Geonode или NodeMaven: прокси видит, на какие сайты он заходит"
+    );
+  });
+
+  it("says nothing of browser VMs a deployment without them does not have", async () => {
+    const { facts } = await withServices({
+      BROWSER_USE_API_KEY: "browser-use-test-key",
+    });
+
+    expect(
+      facts.dataProcessors("deepseek/deepseek-v4.1-flash").join("\n")
+    ).not.toContain("Cloud.ru");
+    // Without the bucket nothing is stored, so no place of files is named.
+    expect(facts.keptData().join("\n")).not.toContain("Object Storage");
+    expect(facts.serverLocation()).not.toContain("Cloud.ru");
+    expect(facts.serverLocation()).toContain(
+      "регион нигде в его настройках не записан"
+    );
   });
 });
 

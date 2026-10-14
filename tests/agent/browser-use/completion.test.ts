@@ -20,6 +20,8 @@ interface BrowserRunRow {
   // Whether the run could buy anything: left out, the row is taken as one
   // that could, as every row did before orders were held to it.
   paymentAllowed?: boolean;
+  recoveryAttempt: number;
+  recoveryPhase: "continue" | "verify" | null;
   sessionId?: string | null;
   site?: string | null;
   submission?: {
@@ -41,6 +43,8 @@ const row: BrowserRunRow = {
   createdByUserId: "better-auth:user-1",
   id: runId,
   liveViewUrl: "https://live.browser-use.test/abc",
+  recoveryAttempt: 0,
+  recoveryPhase: null,
   task: "Order the usual",
   workspaceId: "workspace:user-1",
 };
@@ -118,6 +122,7 @@ const parkBrowserRunForRetry = vi.hoisted(() =>
       runId: string,
       input: {
         captchaAttempt: number;
+        recovery?: { attempt: number; phase: "continue" | "verify" };
         retryAt: Date;
         unreadMessages?: readonly string[];
       }
@@ -752,6 +757,61 @@ describe("settling a browser run", () => {
     );
   });
 
+  // Ozon turned away every exit of a comparison of three shops (14.10), and
+  // the run finished on the other two.
+  it("parks a finished run once more for the sites it reported blocked, through the fallback proxy", async () => {
+    const vmRow = {
+      ...row,
+      paymentAllowed: false,
+      profileId: "vm:workspace:user-1:p1",
+      submission: null,
+    };
+    readBrowserRun.mockResolvedValue(vmRow);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: сравнил ВБ и Маркет, Ozon не открылся\nNEEDS: none\nBLOCKED: https://www.ozon.ru",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Сравни пылесосы",
+    });
+    const { send, to } = delivery();
+
+    // The environment is read once per import of the module.
+    const settle = async () => {
+      vi.resetModules();
+      const { settleBrowserRun } =
+        await import("@agent/lib/browser-use/completion");
+      await settleBrowserRun({ to }, runId);
+    };
+
+    // Without the fallback proxy the report goes out as it is.
+    vi.stubEnv("BROWSER_VM_PROXY_FALLBACK", undefined);
+    await settle();
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+
+    send.mockClear();
+    ledger.claimed = false;
+    ledger.delivered = false;
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    vi.stubEnv(
+      "BROWSER_VM_PROXY_FALLBACK",
+      "gate.example.test:8080:login-country-ru-sid-{session}-ttl-24h:fb:pw"
+    );
+    await settle();
+    vi.unstubAllEnvs();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  }, 60_000);
+
   it("carries a message the person sent while the run was walled into the park, instead of dropping it", async () => {
     // The row already carries a message an earlier attempt parked without
     // reporting; this attempt's own run ends walled too, with one more.
@@ -841,6 +901,30 @@ describe("settling a browser run", () => {
     const prompt = send.mock.calls[0]?.[0] ?? "";
     expect(prompt).toContain("«Actually make it two of those.»");
     expect(prompt).toContain("«And no onions this time.»");
+  });
+
+  it("reports an errand whose attempts ran out mid-recovery as broken off, not walled, and keeps its reservation", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      captchaAttempt: 5,
+      outcome: "Result: connection reset",
+      paymentAllowed: true,
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+      submission: { what: "заказ корма" },
+    });
+    const { reportWalledBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await reportWalledBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0] ?? "";
+    expect(prompt).toContain("has to be checked");
+    expect(prompt).toContain("Never start or continue this errand to submit");
+    expect(prompt).not.toContain("kept this errand behind");
+    // The money may have gone: the reconciler settles it, not this report.
+    expect(settleSpendReservation).not.toHaveBeenCalled();
   });
 
   it("retries a site the network never loaded like a walled one", async () => {
@@ -975,12 +1059,205 @@ describe("settling a browser run", () => {
     expect(send.mock.calls[0]?.[0]).not.toContain("could not be reached");
   });
 
-  it("never retries a run that may have acted, whatever the network did", async () => {
+  describe("recovering a run that may have acted", () => {
+    const acting = {
+      ...row,
+      paymentAllowed: true,
+      submission: { what: "заказ корма" },
+    };
+
+    async function settleWith(runRow: BrowserRunRow, run: Partial<RunSummary>) {
+      readBrowserRun.mockResolvedValue(runRow);
+      claimBrowserRunCompletion.mockReset();
+      claimBrowserRunCompletion
+        .mockResolvedValueOnce({ ...runRow, completedAt: new Date() })
+        .mockResolvedValue(undefined);
+      readBrowserUseRun.mockResolvedValue({
+        error: null,
+        id: runId,
+        result: null,
+        sessionId: "session-1",
+        status: "completed",
+        task: "Закажи корм",
+        ...run,
+      });
+      const { settleBrowserRun } =
+        await import("@agent/lib/browser-use/completion");
+      const { send, to } = delivery();
+      await settleBrowserRun({ to }, runId);
+      return send;
+    }
+
+    it("checks the site read-only first, without a word to the person, after a network error", async () => {
+      const send = await settleWith(acting, {
+        error: "net::ERR_CONNECTION_RESET at https://shop.example/",
+        status: "failed",
+      });
+
+      expect(send).not.toHaveBeenCalled();
+      expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+      expect(parkBrowserRunForRetry.mock.calls[0]?.[1]).toMatchObject({
+        recovery: { attempt: 1, phase: "verify" },
+      });
+      // The report is not even kept: nothing is told until the errand ends.
+      expect(
+        claimBrowserRunCompletion.mock.calls[0]?.[1].report
+      ).toBeUndefined();
+    });
+
+    it("checks after a run that failed with no report at all, as on productradar.ru", async () => {
+      const send = await settleWith(acting, {
+        error: "The worker crashed.",
+        status: "failed",
+      });
+
+      expect(send).not.toHaveBeenCalled();
+      expect(parkBrowserRunForRetry.mock.calls[0]?.[1]).toMatchObject({
+        recovery: { attempt: 1, phase: "verify" },
+      });
+    });
+
+    it("leaves a failed run that did report alone", async () => {
+      const send = await settleWith(acting, {
+        result: "RESULT: форма не приняла телефон\nNEEDS: info",
+        status: "failed",
+      });
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+    });
+
+    it("leaves a failed run that only looked to the person, as before", async () => {
+      const send = await settleWith(
+        { ...row, paymentAllowed: false, submission: null },
+        { error: "The worker crashed.", status: "failed" }
+      );
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+    });
+
+    it("leaves a run that holds only a reservation to the person after a network error", async () => {
+      readSpendEntryForRun.mockResolvedValue({
+        amountRub: 500,
+        category: null,
+        feeRub: 0,
+        merchant: null,
+        periodKey: "2026-10",
+        source: "limit",
+        status: "reserved",
+      });
+      const send = await settleWith(
+        { ...row, paymentAllowed: false, submission: null },
+        { error: "net::ERR_CONNECTION_RESET", status: "failed" }
+      );
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+    });
+
+    it("closes the errand on what the check found, with no second submission", async () => {
+      const send = await settleWith(
+        { ...acting, recoveryAttempt: 1, recoveryPhase: "verify" },
+        {
+          result: [
+            "RESULT: заявка есть в «мои заявки»",
+            "ORDER: 5521",
+            "ACTION: done — мои заявки",
+            "NEEDS: none",
+          ].join("\n"),
+        }
+      );
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+      const prompt = send.mock.calls[0]?.[0] ?? "";
+      expect(prompt).toContain(
+        "had already gone through, so nothing was repeated"
+      );
+      expect(prompt).not.toContain("has to be checked");
+      expect(
+        String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
+      ).toContain("Action: done");
+    });
+
+    it("finishes the errand under its own permission once the check found it not done", async () => {
+      const send = await settleWith(
+        { ...acting, recoveryAttempt: 1, recoveryPhase: "verify" },
+        {
+          result: [
+            "RESULT: в заявках ничего нет",
+            "ACTION: not_done — мои заявки, письма",
+            "NEEDS: none",
+          ].join("\n"),
+        }
+      );
+
+      expect(send).not.toHaveBeenCalled();
+      expect(parkBrowserRunForRetry.mock.calls[0]?.[1]).toMatchObject({
+        recovery: { attempt: 1, phase: "continue" },
+      });
+    });
+
+    it.each([["ACTION: unknown — история не открылась"], ["RESULT: не знаю"]])(
+      "hands an unclear check (%s) to the person, saying so",
+      async (line) => {
+        const send = await settleWith(
+          { ...acting, recoveryAttempt: 1, recoveryPhase: "verify" },
+          { result: `${line}\nNEEDS: none` }
+        );
+
+        expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledOnce();
+        const prompt = send.mock.calls[0]?.[0] ?? "";
+        expect(prompt).toContain("could not tell whether");
+        expect(prompt).toContain(
+          "Never start or continue this errand to submit"
+        );
+      }
+    );
+
+    it("checks again when the check itself broke off, up to the cap", async () => {
+      await settleWith(
+        { ...acting, recoveryAttempt: 1, recoveryPhase: "verify" },
+        { error: "net::ERR_TUNNEL_CONNECTION_FAILED", status: "failed" }
+      );
+
+      expect(parkBrowserRunForRetry.mock.calls[0]?.[1]).toMatchObject({
+        recovery: { attempt: 2, phase: "verify" },
+      });
+
+      parkBrowserRunForRetry.mockClear();
+      const send = await settleWith(
+        { ...acting, recoveryAttempt: 2, recoveryPhase: "verify" },
+        { error: "net::ERR_TUNNEL_CONNECTION_FAILED", status: "failed" }
+      );
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+      expect(send.mock.calls[0]?.[0]).toContain(
+        "Read-only checks of the site were already tried by themselves"
+      );
+    });
+
+    it("does not start another background run when the attempts are spent", async () => {
+      const send = await settleWith(
+        { ...acting, captchaAttempt: 5 },
+        { error: "net::ERR_CONNECTION_RESET", status: "failed" }
+      );
+
+      expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("hands a run that may have acted to the person once its own checks are spent", async () => {
     // A paid taxi whose connection dropped after the order: a retry would
-    // order a second one.
+    // order a second one. Two read-only checks have been tried already.
     readBrowserRun.mockResolvedValue({
       ...row,
       paymentAllowed: true,
+      recoveryAttempt: 2,
       submission: null,
     });
     const { settleBrowserRun } =
@@ -1006,12 +1283,13 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain("start it there now with browser_task start");
   });
 
-  it("never retries a run that stopped as walled after it may have ordered", async () => {
+  it("hands a run that stopped as walled after it may have ordered to the person once its checks are spent", async () => {
     // It clicked «Заказать», the next page failed, and it stopped with
     // NEEDS: captcha: a retry would start over with the same submission.
     readBrowserRun.mockResolvedValue({
       ...row,
       paymentAllowed: true,
+      recoveryAttempt: 2,
       submission: { what: "заказ корма" },
     });
     readBrowserUseRun.mockResolvedValue({
@@ -1040,7 +1318,7 @@ describe("settling a browser run", () => {
     ).toContain("Needs: info");
     const prompt = send.mock.calls[0]?.[0] ?? "";
     expect(prompt).toContain(
-      "may have gone through before the page failed. Tell the user plainly what the run reports it did last"
+      "Tell the user plainly what the run reports it did last"
     );
     expect(prompt).toContain(
       "Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking."

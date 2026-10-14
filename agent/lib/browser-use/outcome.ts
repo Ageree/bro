@@ -397,11 +397,51 @@ function browserReport(report: string | null | undefined) {
   return { hasLinks, text: retained };
 }
 
+/**
+ * What a read-only check after a broken-off run found: the action it was
+ * allowed to take is there on the site (`done`), clearly is not (`not_done`)
+ * or the check could not tell. Written as `ACTION: done — <where>`; anything
+ * else after the label is no verdict.
+ */
+function actionVerdict(text: string) {
+  const value = rawLabelledValue(text, "ACTION")?.toLowerCase();
+  const word = /^(not[\s_-]*done|done|unknown)(?![\p{L}\p{N}])/u.exec(
+    value ?? ""
+  )?.[1];
+  if (word === undefined) return undefined;
+  if (word === "done" || word === "unknown") return word;
+  return "not_done" as const;
+}
+
+/**
+ * The sites a run reported in `BLOCKED:` as not letting its browser in at all
+ * (an address block, «выключите VPN», an anti-bot wall it could not pass),
+ * by host name: a comparison of three shops that finished on two of them
+ * (Ozon, 14.10) is retried on the third alone (`captcha-retry.ts`). Only an
+ * address or a bare host name counts; anything else in the line is no site.
+ */
+function blockedSites(text: string) {
+  const value = labelledValue(text, "BLOCKED");
+  if (value === undefined) return [];
+  const hosts = value.split(/[\s,;]+/u).flatMap((token) => {
+    const bare = token.replace(/^[«"'(<]+|[»"').>]+$/gu, "");
+    const host = URL.parse(
+      /^https?:\/\//iu.test(bare) ? bare : `https://${bare}`
+    )?.hostname.replace(/^www\./u, "");
+    return host !== undefined && /^(?:[\da-z-]+\.)+[\da-z-]{2,}$/u.test(host)
+      ? [host]
+      : [];
+  });
+  return [...new Set(hosts)];
+}
+
 export function parseBrowserOutcome(result: string | null | undefined) {
   const text = (result ?? "").trim();
   const rawNeeds = rawLabelledValue(text, "NEEDS");
   const candidate = rawNeeds?.toLowerCase().replaceAll(/\s+/gu, "_");
   return {
+    action: actionVerdict(text),
+    blocked: blockedSites(text),
     booking: browserResultBooking(text),
     charges: browserResultCharges(text),
     details: labelledValue(text, "DETAILS"),
@@ -499,6 +539,7 @@ export function browserOutcomeSummary(
   const lines = [
     outcome.result ? `Result: ${outcome.result}` : fallback,
     outcome.order ? `Order: ${outcome.order}` : undefined,
+    outcome.action ? `Action: ${outcome.action}` : undefined,
     outcome.total ? `Total: ${outcome.total}` : undefined,
     outcome.needs === "none" ? undefined : `Needs: ${outcome.needs}`,
     outcome.details ? `Details: ${outcome.details}` : undefined,

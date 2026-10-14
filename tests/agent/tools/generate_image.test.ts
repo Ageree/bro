@@ -75,6 +75,7 @@ const earlierPicture = image(
 const drawnId = "5b0c7f84-6b6b-4f2c-9d53-0d5ad4b7f001";
 const earlierId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const scope = { userId: "user-1", workspaceId: "personal:workspace" };
+const notAskedSchema = z.object({ status: z.literal("not_asked") });
 const request = Object.assign(
   { content: "нарисуй открытку на день рождения", role: "user" as const },
   { kind: "user" }
@@ -128,11 +129,39 @@ describe("generate_image", () => {
     expect(await resolve(dynamicContext([request]))).not.toBeNull();
   });
 
-  it("is offered only when the person asked for a picture or sent a photo", async () => {
+  it("is offered in every turn the person started, and draws for a picture, a photo or an errand only", async () => {
+    // Whether it draws for this message, without a paid call.
+    const draws = async (messages: Parameters<typeof dynamicContext>[0]) => {
+      const tool = await resolveTool(dynamicContext(messages));
+      const result = await execute(tool, { prompt: "A cute robot waiting" });
+      return !notAskedSchema.safeParse(result).success;
+    };
+    // Each drawing reads its own answer.
+    fetchMock.mockImplementation(async () =>
+      Response.json({
+        data: [{ b64_json: Buffer.from(drawnPicture).toString("base64") }],
+      })
+    );
     // After an SMS code a model drew «a cute robot waiting» nobody asked for.
+    expect(await draws([personText("код от госуслуг: 123456")])).toBe(false);
     expect(
-      await resolve(dynamicContext([personText("код от госуслуг: 123456")]))
-    ).toBeNull();
+      await draws([personText("вот код 4821, продолжай запись к врачу")])
+    ).toBe(false);
+    expect(await draws([personText("да, давай")])).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // An errand may need a picture it does not name: slides for a card.
+    expect(
+      await draws([
+        personText(
+          "хочу выложить Бро в каталог стартапов, подготовь всё для карточки"
+        ),
+      ])
+    ).toBe(true);
+    expect(await draws([request])).toBe(true);
+    expect(
+      await draws([photoMessage("", Buffer.from(dogPhoto).toString("base64"))])
+    ).toBe(true);
+
     // A browser report mentions the images a run saved; it is not a request.
     expect(
       await resolve(
@@ -150,18 +179,9 @@ describe("generate_image", () => {
         ])
       )
     ).toBeNull();
-
-    expect(await resolve(dynamicContext([request]))).not.toBeNull();
-    expect(
-      await resolve(
-        dynamicContext([
-          photoMessage("", Buffer.from(dogPhoto).toString("base64")),
-        ])
-      )
-    ).not.toBeNull();
   });
 
-  it("stays offered for an edit right after a picture, and only then", async () => {
+  it("draws for an edit right after a picture, and only then", async () => {
     const drawn = [
       request,
       {
@@ -176,20 +196,20 @@ describe("generate_image", () => {
         role: "assistant" as const,
       },
     ];
+    const { errandOpensTurn, pictureRequested } =
+      await import("@agent/lib/image-artifact/generation");
+    const asked = (messages: Parameters<typeof pictureRequested>[0]) =>
+      pictureRequested(messages) || errandOpensTurn(messages);
 
+    expect(asked([...drawn, personText("а можно ярче?")])).toBe(true);
     expect(
-      await resolve(dynamicContext([...drawn, personText("а можно ярче?")]))
-    ).not.toBeNull();
-    expect(
-      await resolve(
-        dynamicContext([
-          ...drawn,
-          personText("спасибо"),
-          personText("что у меня завтра?"),
-          personText("а погода?"),
-        ])
-      )
-    ).toBeNull();
+      asked([
+        ...drawn,
+        personText("спасибо"),
+        personText("что у меня завтра?"),
+        personText("а погода?"),
+      ])
+    ).toBe(false);
   });
 
   it("reaches a picture drawn before a quiz when the message names the change", async () => {

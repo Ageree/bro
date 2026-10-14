@@ -76,6 +76,11 @@ describe("autonomy defaults", () => {
       "Расписание и фоновая работа от имени человека не действуют и не платят"
     );
     expect(content).toContain(
+      "Лимит — бюджет и учёт на месяц, а не согласие на конкретную покупку"
+    );
+    expect(content).toContain("без внешних участников");
+    expect(content).toContain("`withinSpendLimit`");
+    expect(content).toContain(
       "Без отдельного согласия на точный платёж никогда не оплачивай подписку или автопродление"
     );
     expect(content).toContain("даже +1 ₽ требует нового вопроса и «да»");
