@@ -89,6 +89,7 @@ const toolGroupEntries = {
   find_images: "core",
   form_of_address: "core",
   generate_image: "core",
+  generate_video: "core",
   "gmail-attachment": "google",
   "gmail-draft": "google",
   "gmail-read-thread": "google",

@@ -204,3 +204,46 @@ export function pictureRequested(messages: readonly ModelMessage[]) {
   }
   return false;
 }
+
+/**
+ * What a person writes when they want a clip made or a photo brought to
+ * life, in Russian or English.
+ */
+const videoWordPattern = new RegExp(
+  [
+    String.raw`(?<!\p{L})(?:видео|ролик|клип|анимац|анимир|оживи|оживл|мультик)`,
+    String.raw`(?<!\p{L})(?:videos?|clips?|animat\p{L}*)(?!\p{L})`,
+  ].join("|"),
+  "iu"
+);
+
+function madeVideo(message: ModelMessage) {
+  return (
+    message.role === "assistant" &&
+    Array.isArray(message.content) &&
+    message.content.some(
+      (part) => part.type === "tool-call" && part.toolName === "generate_video"
+    )
+  );
+}
+
+/**
+ * Whether the person's message that started this turn asks for a clip: it
+ * says so in words, or follows closely on a clip Bro made, so «а теперь
+ * подлиннее» still reaches it. A clip costs about ten roubles, so a turn
+ * without such a request gets no `generate_video` at all.
+ */
+export function videoRequested(messages: readonly ModelMessage[]) {
+  const start = messages.findLastIndex(startsTurn);
+  const incoming = messages[start];
+  if (!incoming || !isPersonMessage(incoming)) return false;
+  if (videoWordPattern.test(textOf(incoming))) return true;
+  let personTurns = 0;
+  for (const message of messages.slice(0, start).toReversed()) {
+    if (madeVideo(message)) return true;
+    if (!isPersonMessage(message)) continue;
+    personTurns += 1;
+    if (personTurns >= recentPictureTurns) return false;
+  }
+  return false;
+}

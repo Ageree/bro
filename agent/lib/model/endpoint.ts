@@ -64,6 +64,7 @@ export function modelEndpoint() {
       sttFallbackModel: env.ROUTERAI_STT_FALLBACK_MODEL,
       sttLanguage: env.ROUTERAI_STT_LANGUAGE,
       sttModel: env.ROUTERAI_STT_MODEL,
+      videoModel: env.ROUTERAI_VIDEO_MODEL,
     };
   }
   if (env.OPENROUTER_API_KEY === undefined) {
@@ -87,5 +88,6 @@ export function modelEndpoint() {
     sttFallbackModel: env.OPENROUTER_STT_FALLBACK_MODEL,
     sttLanguage: env.OPENROUTER_STT_LANGUAGE,
     sttModel: env.OPENROUTER_STT_MODEL,
+    videoModel: env.OPENROUTER_VIDEO_MODEL,
   };
 }

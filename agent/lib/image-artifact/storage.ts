@@ -102,6 +102,43 @@ export async function storePrivateImage(
 }
 
 /**
+ * A clip `generate_video` made, under the same budget one message's
+ * attachments get (`maximumAttachmentBatchBytes`): Telegram takes a bot's
+ * video up to 50 MB, and five seconds came to 1–5 MB on 14.10.
+ */
+const maximumVideoBytes = 30 * 1024 * 1024;
+
+/**
+ * Puts a made clip into the private store under its content hash. Only an
+ * MP4 (an ISO media file, `ftyp` at byte 4) is kept: the channels upload it
+ * as a video, and anything else would not play.
+ */
+export async function storeGeneratedVideo(
+  scope: AccessScope,
+  bytes: Uint8Array
+) {
+  if (bytes.byteLength === 0 || bytes.byteLength > maximumVideoBytes) {
+    throw new Error("The video is empty or larger than an artifact may be.");
+  }
+  if (Buffer.from(bytes.subarray(4, 8)).toString("latin1") !== "ftyp") {
+    throw new Error("The file is not a video an artifact may hold.");
+  }
+  const contentHash = createHash("sha256").update(bytes).digest("hex");
+  const stored = {
+    byteSize: bytes.byteLength,
+    contentHash,
+    mediaType: "video/mp4",
+    storagePathname: `generated-videos/${storageSegment(scope.userId)}/${contentHash}`,
+  };
+  await putArtifactObject({
+    bytes,
+    mediaType: stored.mediaType,
+    pathname: stored.storagePathname,
+  });
+  return stored;
+}
+
+/**
  * Reads an `/artifacts/<id>` image of this user and session back, checked
  * against the size, type and hash its row recorded.
  */

@@ -297,13 +297,20 @@ The alert repeats once a day while the balance stays low, sooner if it keeps
 halving, and re-arms once the balance recovers; its state lives in
 `operational_alerts`.
 
-### Pictures and chat games
+### Pictures, clips and chat games
+
+In the pilot `VIDEO_WORKSPACES` (workspace ids, owners' emails or `*`), a
+person who asks for a clip gets `generate_video`: a few seconds with sound
+from words, or their photo or an earlier picture brought to life, through
+RouterAI's `/videos` (`ROUTERAI_VIDEO_MODEL`, default `heygen/heygen-video-1`).
+The clip is kept as a private artifact like a picture and reaches Telegram as
+a video.
 
 With a direct model provider and the private Object Storage bucket on Cloud.ru
 (see File storage), the agent gets a `generate_image` tool that draws through
 the provider's image API (OpenRouter's `/images`, RouterAI's `/images/generations`). The model is
-`OPENROUTER_IMAGE_MODEL` or `ROUTERAI_IMAGE_MODEL` (default
-`google/gemini-3.1-flash-lite-image`) and must accept
+`OPENROUTER_IMAGE_MODEL` (default `google/gemini-3.1-flash-lite-image`) or
+`ROUTERAI_IMAGE_MODEL` (default `microsoft/mai-image-2.6-flash`) and must accept
 reference images: the person's photos from the conversation (up to the four
 newest) and earlier pictures travel as references, so a card can show the
 person's own dog and "make it brighter" edits the last version instead of
