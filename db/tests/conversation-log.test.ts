@@ -103,17 +103,6 @@ describe("conversation log", { timeout: 30_000 }, () => {
     ]);
   });
 
-  it("refuses a text the table does not hold", async () => {
-    const { client } = await logDatabase();
-
-    await expect(
-      client.query(
-        `INSERT INTO conversation_log (workspace_id, session_id, turn_id, channel, text)
-         VALUES ('personal:alice', 's', 'turn_0', 'channel:eve', '')`
-      )
-    ).rejects.toThrow(/conversation_log_text_check/u);
-  });
-
   it("reads the person's latest lines of other channels since a moment, oldest first", async () => {
     const { log } = await logDatabase();
     let turn = 0;

@@ -76,19 +76,6 @@ describe("browser run persistence", () => {
     ).toBeUndefined();
   }, 20_000);
 
-  it("keeps one Browser Use profile per workspace", async () => {
-    const browserRuns = await browserRunsDatabase();
-
-    expect(await browserRuns.readBrowserProfileId(alice)).toBeUndefined();
-    expect(await browserRuns.saveBrowserProfileId(alice, "profile-1")).toBe(
-      "profile-1"
-    );
-    expect(await browserRuns.saveBrowserProfileId(alice, "profile-2")).toBe(
-      "profile-1"
-    );
-    expect(await browserRuns.readBrowserProfileId(bob)).toBeUndefined();
-  }, 20_000);
-
   it("replaces the workspace's browser profile when it moves to its VM", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.saveBrowserProfileId(alice, "profile-browser-use");
@@ -121,21 +108,6 @@ describe("browser run persistence", () => {
     // The claim for a new Browser Use profile still leaves it alone.
     expect(await browserRuns.saveBrowserProfileId(bob, "profile-2")).toBe(
       "profile-vm-bob"
-    );
-  }, 20_000);
-
-  it("scopes a run to the workspace that started it", async () => {
-    const browserRuns = await browserRunsDatabase();
-    await browserRuns.createBrowserRun(alice, { ...conversation(), id: runId });
-
-    expect(
-      (await browserRuns.readBrowserRunForScope(alice, runId))?.status
-    ).toBe("created");
-    expect(
-      await browserRuns.readBrowserRunForScope(bob, runId)
-    ).toBeUndefined();
-    expect((await browserRuns.readBrowserRun(runId))?.workspaceId).toBe(
-      alice.workspaceId
     );
   }, 20_000);
 

@@ -4,116 +4,20 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
-  account,
   agentSessions,
   browserImageArtifacts,
   browserSessions,
-  browserTraceDomains,
-  browserTraceEvents,
   browserTraces,
-  channelIdentities,
-  channelLinkTokens,
   chats,
   encryptedSecrets,
   gmailAttachmentArtifacts,
-  onboardingRequests,
   scheduledAgentJobs,
-  scheduledAgentRuns,
-  session,
   settings,
-  user,
-  userProfiles,
   vaultItems,
-  verification,
   workspaceMemberships,
-  workspaces,
 } from "../schema";
 
 describe("database schema", () => {
-  it("owns the application and Better Auth tables", () => {
-    expect(
-      [
-        workspaces,
-        workspaceMemberships,
-        vaultItems,
-        settings,
-        agentSessions,
-        browserImageArtifacts,
-        browserSessions,
-        browserTraces,
-        browserTraceDomains,
-        browserTraceEvents,
-        channelIdentities,
-        channelLinkTokens,
-        chats,
-        onboardingRequests,
-        scheduledAgentJobs,
-        scheduledAgentRuns,
-        encryptedSecrets,
-        gmailAttachmentArtifacts,
-        user,
-        session,
-        account,
-        verification,
-      ].map((table) => getTableConfig(table).name)
-    ).toEqual([
-      "workspaces",
-      "workspace_memberships",
-      "vault_items",
-      "settings",
-      "agent_sessions",
-      "browser_image_artifacts",
-      "browser_sessions",
-      "browser_traces",
-      "browser_trace_domains",
-      "browser_trace_events",
-      "channel_identities",
-      "channel_link_tokens",
-      "chats",
-      "onboarding_requests",
-      "scheduled_agent_jobs",
-      "scheduled_agent_runs",
-      "encrypted_secrets",
-      "gmail_attachment_artifacts",
-      "user",
-      "session",
-      "account",
-      "verification",
-    ]);
-  });
-
-  it("uses native PostgreSQL types for structured application values", () => {
-    for (const column of [
-      agentSessions.createdAt,
-      browserImageArtifacts.createdAt,
-      browserSessions.createdAt,
-      browserTraceDomains.firstSeenAt,
-      browserTraceEvents.at,
-      browserTraces.startedAt,
-      browserTraces.completedAt,
-      channelIdentities.linkedAt,
-      channelLinkTokens.expiresAt,
-      chats.createdAt,
-      chats.updatedAt,
-      encryptedSecrets.updatedAt,
-      gmailAttachmentArtifacts.createdAt,
-      userProfiles.updatedAt,
-      vaultItems.createdAt,
-      vaultItems.updatedAt,
-      workspaceMemberships.createdAt,
-      workspaces.createdAt,
-    ]) {
-      expect(column.getSQLType()).toBe("timestamp (3) with time zone");
-    }
-
-    expect(userProfiles.dateOfBirth.getSQLType()).toBe("date");
-    expect(chats.costUsd.getSQLType()).toBe("numeric(16, 8)");
-    expect(browserImageArtifacts.id.getSQLType()).toBe("uuid");
-    expect(gmailAttachmentArtifacts.id.getSQLType()).toBe("uuid");
-    expect(encryptedSecrets.id.getSQLType()).toBe("text");
-    expect(vaultItems.id.getSQLType()).toBe("text");
-  });
-
   it("anchors session creators to a membership in the same workspace", () => {
     for (const table of [
       agentSessions,

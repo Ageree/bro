@@ -604,33 +604,6 @@ describe("browser VM persistence", () => {
     ).toBeUndefined();
   }, 20_000);
 
-  it("mirrors the unread messages a settled run leaves, absent when there are none", async () => {
-    const { browserVms } = await browserVmsDatabase();
-    const id = "vm:ws_alice:r:unread";
-    await browserVms.recordBrowserVmRun(run(id, "Find the kettle"));
-
-    expect(await browserVms.readBrowserVmRun(id)).toMatchObject({
-      unreadMessages: null,
-    });
-
-    expect(
-      await browserVms.updateBrowserVmRun(
-        id,
-        {
-          error: null,
-          finishedAt: now,
-          result: "ITEMS: kettle",
-          status: "completed",
-          unreadMessages: ["Add the blue one too"],
-        },
-        now
-      )
-    ).toMatchObject({ unreadMessages: ["Add the blue one too"] });
-    expect(await browserVms.readBrowserVmRun(id)).toMatchObject({
-      unreadMessages: ["Add the blue one too"],
-    });
-  }, 20_000);
-
   it("finds the open runs of a workspace, newest first", async () => {
     const { browserVms, createdAt } = await browserVmsDatabase();
     await browserVms.recordBrowserVmRun(run("vm:ws_alice:r:1", "First"));

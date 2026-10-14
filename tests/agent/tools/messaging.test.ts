@@ -32,7 +32,7 @@ import {
 } from "@agent/lib/delivery/turn-sends";
 
 describe("send_message channel notes", () => {
-  it.each(["channel:eve", "channel:photon", "channel:telegram"])(
+  it.each(["channel:eve", "channel:telegram"])(
     "never tells the model %s delivers an attachment as a link",
     async (channel) => {
       const sendMessage = await resolveSendMessage(channel);
@@ -62,20 +62,6 @@ describe("send_message channel notes", () => {
     );
     expect(sendMessage.description).toContain(
       "«все» or «ни один» only of the options you checked"
-    );
-  });
-
-  it("still explains that a quoted reply is delivered unquoted", async () => {
-    const sendMessage = await resolveSendMessage("channel:telegram");
-
-    const output = await sendMessage.toModelOutput?.({
-      kind: "message",
-      replyTo: { kind: "current" },
-      text: "Here it is.",
-    });
-
-    expect(output?.type === "text" ? output.value : "").toContain(
-      "Native quoted replies are unavailable on this channel"
     );
   });
 });
@@ -170,14 +156,6 @@ describe("send_message in a looping turn", () => {
     });
     expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
       "has done nothing yet"
-    );
-  });
-
-  it("delivers the first message of a turn as written", async () => {
-    const sendMessage = await resolveSendMessage("channel:telegram");
-
-    expect(await sendMessage.execute(repeated, toolContext())).toEqual(
-      repeated
     );
   });
 

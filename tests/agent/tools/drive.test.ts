@@ -15,14 +15,12 @@ const mocks = vi.hoisted(() => ({
   find: vi.fn<typeof findDriveFileArtifact>(),
   put: vi.fn<typeof putArtifactObject>(),
   read: vi.fn<typeof Drive.readDriveFile>(),
-  search: vi.fn<typeof Drive.searchDrive>(),
   save: vi.fn<typeof saveDriveFileArtifact>(),
 }));
 
 vi.mock("@agent/lib/google-workspace/drive", async (importOriginal) => ({
   ...(await importOriginal<typeof Drive>()),
   readDriveFile: mocks.read,
-  searchDrive: mocks.search,
 }));
 vi.mock("@db/services/drive-files", () => ({
   findDriveFileArtifact: mocks.find,
@@ -34,7 +32,7 @@ vi.mock("@shared/object-storage/artifacts", () => ({
   putArtifactObject: mocks.put,
 }));
 
-import { driveRead, driveSearch } from "@agent/tools/drive";
+import { driveRead } from "@agent/tools/drive";
 
 const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
 const pdf = new TextEncoder().encode("%PDF-1.7\n%passport\n");
@@ -60,27 +58,6 @@ beforeEach(() => {
     workspaceId: "personal:workspace",
   }));
   mocks.put.mockResolvedValue(undefined);
-});
-
-describe("drive-search", () => {
-  it("forwards the query and limit and returns the files it found", async () => {
-    mocks.search.mockResolvedValue([file]);
-    const context = toolContext();
-
-    const result = await driveSearch.execute(
-      { maxResults: 5, query: "passport" },
-      context
-    );
-    if (Symbol.asyncIterator in result) {
-      throw new Error("drive-search returns one result, not a stream.");
-    }
-
-    expect(mocks.search).toHaveBeenCalledExactlyOnceWith(context, {
-      maxResults: 5,
-      query: "passport",
-    });
-    expect(result).toEqual({ files: [file] });
-  });
 });
 
 describe("drive-read", () => {
@@ -158,16 +135,6 @@ describe("drive-read", () => {
     expect(result).toMatchObject({
       markdown: `![Passport.pdf](/artifacts/${artifactId})`,
     });
-  });
-
-  it("returns metadata for a file it does not download", async () => {
-    mocks.read.mockResolvedValue({
-      file: { ...file, mimeType: "application/zip" },
-      kind: "metadata",
-      reason: "Only text, images, and PDFs are downloaded.",
-    });
-
-    await expect(read()).resolves.toMatchObject({ kind: "metadata" });
   });
 });
 

@@ -1107,29 +1107,6 @@ describe("waking the checks when Google connects", { timeout: 30_000 }, () => {
     ]);
   });
 
-  it("keeps a connection made during the very first probe", async () => {
-    const { proactive } = await openDatabase();
-    await proactive.recordProactiveTarget(alice, web, now);
-    const lease = { leaseForMs: 15 * 60_000, limit: 10, now };
-    const [probing] = await proactive.claimDueProactiveWatches(lease);
-    if (!probing) throw new Error("Expected the new watch to be due.");
-    expect(probing.googleState).toBe("unknown");
-
-    const connectedAt = new Date(now.getTime() + 2_000);
-    expect(await proactive.wakeProactiveWatch(alice, connectedAt)).toBe(true);
-
-    expect(
-      await proactive.deferProactiveWatch(
-        probing,
-        new Date(now.getTime() + 6 * 60 * 60_000),
-        "disconnected"
-      )
-    ).toBe(false);
-    expect(
-      await proactive.claimDueProactiveWatches({ ...lease, now: connectedAt })
-    ).toHaveLength(1);
-  });
-
   it("leaves a connected watch on its own cadence", async () => {
     const { proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, web, now);

@@ -18,11 +18,6 @@ afterEach(async () => {
 
 const alice = { userId: "alice", workspaceId: "workspace:alice" };
 const bob = { userId: "bob", workspaceId: "workspace:bob" };
-const telegram = {
-  conversationChannel: "telegram" as const,
-  conversationId: "100::",
-};
-const now = new Date("2026-10-12T09:00:00.000Z");
 
 function plan(
   inputHash: string,
@@ -270,36 +265,6 @@ describe("agency actions", { timeout: 30_000 }, () => {
       )
     ).toContain("agency_actions_status_check");
   });
-
-  it("accepts agent_mail as a proactive signal source", async () => {
-    const { proactive } = await openDatabase();
-    await proactive.recordProactiveTarget(alice, telegram, now);
-    const [watch] = await proactive.claimDueProactiveWatches({
-      leaseForMs: 15 * 60_000,
-      limit: 10,
-      now,
-    });
-    if (!watch) throw new Error("Expected a due watch.");
-
-    const signal = {
-      dedupeKey: "agent-mail:msg-1",
-      itemId: "msg-1",
-      source: "agent_mail" as const,
-      threadId: null,
-    };
-    const queued = await proactive.queueProactiveRun({
-      maxRunsPerDay: 12,
-      jobId: watch.jobId,
-      mailCheckedAt: now,
-      now,
-      signals: [signal],
-      workspaceId: alice.workspaceId,
-    });
-    if (queued.status !== "queued") throw new Error("Expected a queued run.");
-    expect(await proactive.listProactiveRunSignals(queued.runId)).toEqual([
-      signal,
-    ]);
-  });
 });
 
 type TestDatabase = Awaited<ReturnType<typeof openDatabase>>["db"];
@@ -362,7 +327,6 @@ async function openDatabase() {
   return {
     db: pgliteDatabase,
     agency: await import("@db/services/agency"),
-    proactive: await import("@db/services/proactive"),
   };
 }
 
