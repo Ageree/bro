@@ -821,3 +821,35 @@ describe("the booking the run made or staged", () => {
     );
   });
 });
+
+describe("the ACTION verdict of a recovery check", () => {
+  it.each([
+    ["ACTION: done — мои заявки", "done"],
+    ["ACTION: not_done", "not_done"],
+    ["**ACTION:** Not done — nothing in orders", "not_done"],
+    ["- ACTION: not-done", "not_done"],
+    ["ACTION: unknown", "unknown"],
+    ["ACTION: donee", undefined],
+    ["ACTION: I clicked submit", undefined],
+    ["RESULT: done", undefined],
+  ])("reads %s", (line, expected) => {
+    expect(
+      parseBrowserOutcome(`RESULT: проверено\n${line}\nNEEDS: none`).action
+    ).toBe(expected);
+  });
+
+  it("names the verdict in the kept summary only when there is one", () => {
+    expect(
+      browserOutcomeSummary(
+        parseBrowserOutcome("RESULT: есть\nACTION: done\nNEEDS: none"),
+        ""
+      )
+    ).toContain("Action: done");
+    expect(
+      browserOutcomeSummary(
+        parseBrowserOutcome("RESULT: есть\nNEEDS: none"),
+        ""
+      )
+    ).not.toContain("Action:");
+  });
+});

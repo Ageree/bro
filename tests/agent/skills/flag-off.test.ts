@@ -47,34 +47,34 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-result":
-        "819e06357a082c31470e05308dd0a2b47f546e1b31ef59a4219f10fd4432ee79",
+        "2c6048258d2b11ab873a0e940d8247a7bf54360d0270c12683e2018298198cf9",
       interactive:
-        "819e06357a082c31470e05308dd0a2b47f546e1b31ef59a4219f10fd4432ee79",
+        "2c6048258d2b11ab873a0e940d8247a7bf54360d0270c12683e2018298198cf9",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
         "938731874072f944e329e0f97a258a97b46d8c0ce648c7700e0905759e427723",
       "scheduled-worker":
-        "496190b4a60895f9d11467731830230ab015677d7f09cd0756f0ddef6b9443ff",
+        "ec3fbb6efb8de8105e789b23ea9d5e5e913711b9273e1954fe2acd2083c56b6a",
       telegram:
-        "819e06357a082c31470e05308dd0a2b47f546e1b31ef59a4219f10fd4432ee79",
+        "2c6048258d2b11ab873a0e940d8247a7bf54360d0270c12683e2018298198cf9",
     },
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-result":
-        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
       interactive:
-        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
         "938731874072f944e329e0f97a258a97b46d8c0ce648c7700e0905759e427723",
       "scheduled-worker":
-        "1b79008072bd3a52c95be5498c1f670515dbdfc4a8a6c266e57ea5127c08b1fe",
+        "46553ae71574b4671a440ebc540e96a99ebb43f16b0f9d3c5aa3ed6fedf23a8e",
       telegram:
-        "5edb2234e31be4e19b5e46da80df5177b61d61276d4a65d9ab77a0bed5f18b9f",
+        "4e192ee870da42663ff1080f4a556c0dbfbbf09612e59d707e980ead0f196cb6",
     },
   },
 };

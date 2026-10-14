@@ -158,7 +158,7 @@ const browserPhrases = [
 
 /** And for drawing, where the turn can draw. */
 const drawingPhrase =
-  "Рисуй (`generate_image`) только то, что человек попросил сам; по своей инициативе не рисуй никогда";
+  "Рисуй сам (`generate_image` или `task`), когда картинка нужна просьбе человека или порученному делу.";
 
 function occurrences(text: string, phrase: string) {
   return text.split(phrase).length - 1;

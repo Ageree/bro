@@ -137,6 +137,8 @@ function parkedRow(captchaAttempt: number) {
     pendingTask: null,
     profileId: "profile-1",
     queueRevision: 0,
+    recoveryAttempt: 0,
+    recoveryPhase: null,
     replyAnchorMessageId: "message-1",
     report: null,
     reportAbandonedAt: null,
@@ -323,6 +325,70 @@ describe("the anti-bot retry policy", () => {
       unreadMessages: ["Actually make it two of those."],
     });
     expect(cancelBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("starts the check of a broken-off errand without the card, in the same session on the VM", async () => {
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    readBrowserUseRun.mockResolvedValue({
+      sessionId: "vm-session",
+      task: "Добавь продукт\n\nSite: …",
+    });
+
+    const result = await startCaptchaRetry({
+      ...parkedRow(1),
+      profileId: "vm:workspace-1",
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+    });
+
+    expect(result).toEqual({ runId: retryRunId, status: "started" });
+    // Read-only: the saved card is not bound whatever the errand allows.
+    expect(resolveBrowserSecretBindings.mock.calls[0]?.[1]).toMatchObject({
+      allowPayment: false,
+    });
+    const input = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(input?.sessionId).toBe("vm-session");
+    expect(input?.task).toContain("[Recovery after a run that broke off]");
+    expect(input?.task).toContain("READ-ONLY");
+    expect(input?.task).toContain("ACTION: done");
+    expect(input?.task).not.toContain("anti-bot");
+    // The step goes on in the run that takes the errand over.
+    expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
+      captchaAttempt: 2,
+      paymentAllowed: true,
+      recoveryAttempt: 1,
+      recoveryPhase: "verify",
+      submission: parkedRow(1).submission,
+    });
+  });
+
+  it("finishes the errand with the card once the check found it not done", async () => {
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    readBrowserUseRun.mockResolvedValue({
+      task: "Добавь продукт\n\n[Recovery after a run that broke off] check one\n\n(ref)",
+    });
+
+    await startCaptchaRetry({
+      ...parkedRow(2),
+      recoveryAttempt: 1,
+      recoveryPhase: "continue",
+    });
+
+    expect(resolveBrowserSecretBindings.mock.calls[0]?.[1]).toMatchObject({
+      allowPayment: true,
+    });
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task.startsWith("Добавь продукт\n\n[Recovery")).toBe(true);
+    expect(task).toContain("was not done");
+    expect(task).not.toContain("READ-ONLY");
+    // One note, never a pile.
+    expect(task.match(/\[Recovery after/gu)).toHaveLength(1);
+    expect(handOffBrowserRunRetry.mock.calls[0]?.[1]).toMatchObject({
+      recoveryAttempt: 1,
+      recoveryPhase: "continue",
+    });
   });
 
   it("adopts the run an earlier claim started before it died", async () => {

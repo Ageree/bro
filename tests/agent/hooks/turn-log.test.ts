@@ -460,7 +460,20 @@ describe("the turn log hook", () => {
 
     expect(mocks.appendTurnEntries).not.toHaveBeenCalled();
     expect(mocks.recordTurnTools).toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(3);
+    // Three failed transcript writes, and the message log's two lines.
+    expect(warn).toHaveBeenCalledTimes(5);
+  });
+
+  it("logs message text whatever the flag says", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const events = await loadHook("off");
+
+    await handler(events, "message.received")(received("Привет"), context());
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0]?.[0]).toBe("[message]");
+    expect(JSON.stringify(info.mock.calls[0]?.[1])).toContain("Привет");
+    expect(mocks.appendTurnEntries).not.toHaveBeenCalled();
   });
 
   // Review of U3a: a sign-in window and a shared file open to whoever

@@ -509,6 +509,20 @@ export function sendRefusal(
   ) {
     return { skipped: "started" };
   }
+  // A browser run took the errand after the heads-up: the person was told
+  // Bro is on it, and the owner wants nothing more until the result
+  // (14.10: «Сейчас посмотрю…», then «Запустил поиск… пришлю сравнение»).
+  if (
+    turn.headsUps.length > 0 &&
+    delivered.length === 0 &&
+    turn.errandRunning &&
+    message.attachments.length === 0 &&
+    message.questions.length === 0 &&
+    message.requests.length === 0 &&
+    announcesWork(message)
+  ) {
+    return { skipped: "started" };
+  }
   const yields =
     turn.rewrites >= rewritesBeforeYield || outgoing.kind !== "message";
   const held = heldBack(message, turn);
