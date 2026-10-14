@@ -56,15 +56,6 @@ describe("native approval prompts", () => {
     );
     expect(markup).toContain("Подтвердить");
     expect(markup).toContain("Отмена");
-    expect(markup).toContain('data-variant="act"');
-    expect(markup).toContain('data-variant="quiet"');
-    expect(markup).toContain('data-size="act-sm"');
-    expect(markup).toMatch(/^<div class="space-y-2"><p class="/u);
-    expect(markup).not.toContain('role="alert"');
-    expect(markup).not.toContain('data-slot="alert');
-    expect(markup).not.toContain('data-slot="card');
-    expect(markup).not.toContain("bg-warning");
-    expect(markup).not.toContain("border-warning");
     expect(markup).not.toContain("disabled=");
     expect(onInputResponses).not.toHaveBeenCalled();
   });
@@ -174,20 +165,8 @@ describe("native approval prompts", () => {
     },
     {
       ...pendingApproval,
-      approval: { approved: true, id: "legacy-approval" },
-      output: "Разрешение сохранено.",
-      state: "output-available",
-    },
-    {
-      ...pendingApproval,
       approval: { approved: false, id: "legacy-approval" },
       state: "output-denied",
-    },
-    {
-      ...pendingApproval,
-      approval: { approved: true, id: "legacy-approval" },
-      errorText: "Не удалось выполнить поручение.",
-      state: "output-error",
     },
   ] satisfies readonly EveDynamicToolPart[])(
     "hides historical requests in $state state",

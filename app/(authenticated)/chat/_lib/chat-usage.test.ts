@@ -3,16 +3,14 @@ import { describe, expect, it } from "vitest";
 import { combineChatUsage, summarizeChatUsage } from "./chat-usage";
 
 describe("chat usage", () => {
-  it("sums token and complete cost usage across model steps", () => {
+  it("sums usage across model steps, and no cost unless every step has one", () => {
     expect(
       summarizeChatUsage([
         completedStep("event-1", 1200, 300, 0.012),
         completedStep("event-2", 800, 200, 0.008),
       ])
     ).toEqual({ costUsd: 0.02, inputTokens: 2000, outputTokens: 500 });
-  });
-
-  it("does not present a partial model cost as the chat total", () => {
+    // A partial model cost is not the chat total.
     expect(
       summarizeChatUsage([
         completedStep("event-1", 1200, 300, 0.012),
@@ -21,16 +19,13 @@ describe("chat usage", () => {
     ).toEqual({ costUsd: null, inputTokens: 2000, outputTokens: 500 });
   });
 
-  it("combines persisted chat summaries for the global view", () => {
+  it("combines chat summaries for the global view, without a partial cost", () => {
     expect(
       combineChatUsage([
         { costUsd: 0.012, inputTokens: 1200, outputTokens: 300 },
         { costUsd: 0.008, inputTokens: 800, outputTokens: 200 },
       ])
     ).toEqual({ costUsd: 0.02, inputTokens: 2000, outputTokens: 500 });
-  });
-
-  it("does not present a partial cost as the global total", () => {
     expect(
       combineChatUsage([
         { costUsd: 0.012, inputTokens: 1200, outputTokens: 300 },

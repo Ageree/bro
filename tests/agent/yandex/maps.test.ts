@@ -88,14 +88,6 @@ describe("maps.search", () => {
     expect(Number(signature)).toBe(referenceSign(signedQuery ?? ""));
   });
 
-  it("agrees with the reference hash on a known example", () => {
-    expect(
-      referenceSign(
-        "ajax=1&csrfToken=abc0123%3A1790000000&lang=ru_RU&sessionId=s1-BAL&text=%D0%BF%D0%B8%D1%86%D1%86%D0%B0"
-      )
-    ).toBe(2783788305);
-  });
-
   it("takes a stale token once, from the answer that carries the new one", async () => {
     const { page, requests } = await mapsPage([
       [

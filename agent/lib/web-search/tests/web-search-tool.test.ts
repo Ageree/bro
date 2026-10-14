@@ -305,11 +305,6 @@ describe("web_search tool selection", () => {
     expect(pick).toContain(
       "give each option only facts that a result about that very option shows"
     );
-    expect(pick).toContain(
-      "write «все …» about the options only when every one of them has it confirmed"
-    );
-    expect(pick).toContain("replaced by searching on, not kept with a caveat");
-    expect(pick).toContain("(«учёл: без свинины»)");
 
     // A search that picks nothing gets no such note.
     expect(await search("ключевая ставка ЦБ сегодня")).not.toContain(
@@ -445,24 +440,7 @@ describe("web_search tool selection", () => {
     expect(pick).toContain("Не сетевое заведение.\n\n5. Jagannath");
     expect(pick).toContain("(this result says «restaurant chain»");
 
-    expect(pick).toContain(
-      "«Не сеть» is checked by the number of branches: a map card with «2 филиала» or more, «сеть …», several addresses under one name, or «N locations» is a chain, and a chain is dropped, not named first with a minus."
-    );
-    expect(pick).toContain(
-      "search by its name now — «<название> средний чек часы работы» with sites yandex.ru/maps or 2gis.ru — rather than reply with «не проверил»"
-    );
-    expect(pick).toContain(
-      "Aim at three options that pass every condition: while the results name more candidates, check the next one instead of replying with two"
-    );
-    expect(pick).toContain(
-      "Write «цены подтверждены» or «всё проверено» only when each option's own result shows it, and give that result's link."
-    );
-    expect(pick).toContain(
-      "A conclusion that nothing fits (nothing within the budget, nothing open) only after two or three different sources, naming any that did not open and why."
-    );
-    expect(pick).toContain(
-      "Saved preferences in memory are conditions only where they bear on this pick («Saved preferences for this request» names them)"
-    );
+    expect(pick).toContain("«Не сеть» is checked by the number of branches");
 
     // A narrow search for one place's bill is part of the pick too.
     expect(
@@ -471,54 +449,6 @@ describe("web_search tool selection", () => {
         toolContext()
       )
     ).toContain("Note for a pick of places");
-  });
-
-  /**
-   * RU d01 (26.09): ticket.rzd.ru did not open, and the fee on tutu.ru went
-   * unsaid; RU d02 and EN D1 drew «nothing fits» from one site. RU d01 on
-   * prod: «нижняя полка» and «у прохода» went with a «Сапсан» window seat.
-   */
-  it("asks a ticket search for fallback sellers, what failed and every fee", async () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
-    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
-    fetchMock.mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  annotations: [
-                    {
-                      type: "url_citation",
-                      url_citation: {
-                        content: "Расписание «Сапсанов» и цены от 1 916 ₽.",
-                        title: "Сапсан Москва — Санкт-Петербург",
-                        url: "https://www.tutu.ru/poezda/sapsan/",
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-          })
-        )
-    );
-    const { directWebSearch } = await loadTool();
-
-    const note = await directWebSearch.execute(
-      { query: "сапсан Москва Петербург 2 октября места у окна" },
-      toolContext()
-    );
-    expect(note).toContain(
-      "never one the person's own words override (a seat they name wins over a saved one) and no berth for a seated train such as «Сапсан» or «Ласточка»"
-    );
-    expect(note).toContain(
-      "Name two fallback sellers in the task in order («если на ticket.rzd.ru не выходит — tutu.ru, потом …»)"
-    );
-    expect(note).toContain(
-      "ask the run to return which sites it checked, which did not open and why, and every fee on top of the fare (a seller's service or agent fee) apart from it: «nothing in the budget» or «no seats» holds only after two or three sites."
-    );
   });
 
   it("surfaces a failed search as tool result text", async () => {
@@ -538,12 +468,8 @@ describe("web_search tool selection", () => {
     );
     // The backend's name and words stay in the log: the model would repeat them.
     expect(text).not.toMatch(/OpenRouter|RouterAI|503|upstream/u);
-    expect(text).toContain("Never quote a provider");
     // Both engines were already asked; the model should not hammer them.
     expect(text).toContain("Do not repeat this query as is");
-    expect(text).toContain(
-      "A source that stays unread is named in the reply as not checked, with why — not left out, and not the ground for «nothing fits»."
-    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

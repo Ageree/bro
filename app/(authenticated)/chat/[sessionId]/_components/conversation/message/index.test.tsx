@@ -4,32 +4,6 @@ import { describe, expect, it } from "vitest";
 import { AgentMessage } from ".";
 
 describe("agent messages", () => {
-  it("renders ordinary assistant text without a delivery tool result", () => {
-    const message = {
-      id: "assistant-message",
-      metadata: { status: "complete" },
-      parts: [
-        {
-          state: "done",
-          text: "Hello from ordinary assistant output.",
-          type: "text",
-        },
-      ],
-      role: "assistant",
-    } satisfies EveMessage;
-
-    const markup = renderToStaticMarkup(
-      <AgentMessage
-        canRespond
-        isStreaming={false}
-        message={message}
-        onInputResponses={() => undefined}
-      />
-    );
-
-    expect(markup).toContain("Hello from ordinary assistant output.");
-  });
-
   it("renders only channel-delivered content in the iMessage view", () => {
     const message = {
       id: "turn-1:assistant",

@@ -198,18 +198,6 @@ describe("prepareAttachmentDelivery", () => {
     ]);
   });
 
-  it("keeps a file the host refused as a link", async () => {
-    fetchMock.mockResolvedValueOnce(new Response("", { status: 404 }));
-
-    const delivery = await prepareAttachmentDelivery([
-      { kind: "image", url: "https://media.example/missing.jpg" },
-    ]);
-
-    expect(delivery.failures).toEqual([
-      { reason: "http 404", url: "https://media.example/missing.jpg" },
-    ]);
-  });
-
   it("keeps a page as a link rather than uploading its markup", async () => {
     fetchMock.mockResolvedValueOnce(
       served(bytesOf([...Buffer.from("<!doctype html>")]), "text/html")

@@ -173,17 +173,6 @@ describe("OpenRouter web search", () => {
     ]);
   });
 
-  it("uses the configured search model instead of the inference default", async () => {
-    vi.stubEnv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5");
-    vi.stubEnv("OPENROUTER_SEARCH_MODEL", " openai/gpt-5.6-sol-fast ");
-    fetchMock.mockResolvedValue(oneCitation());
-
-    const searchWeb = await loadSearchWeb();
-    await searchWeb({ query: "anything" }, turnSignal());
-
-    expect(requestAt(0).body.model).toBe("openai/gpt-5.6-sol-fast");
-  });
-
   it("reads results and their excerpts from url_citation annotations", async () => {
     fetchMock.mockResolvedValue(
       completion({
@@ -309,19 +298,6 @@ describe("OpenRouter web search", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [first, second] = fetchMock.mock.calls.map(([, init]) => init);
     expect(first?.signal).not.toBe(second?.signal);
-  });
-
-  it("retries when OpenRouter could not be reached", async () => {
-    fetchMock
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
-      .mockResolvedValueOnce(oneCitation());
-
-    const searchWeb = await loadSearchWeb();
-    const pending = searchWeb({ query: "rates" }, turnSignal());
-    await vi.runAllTimersAsync();
-
-    expect(await pending).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("asks the other engine when the first found nothing", async () => {

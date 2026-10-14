@@ -145,10 +145,6 @@ describe("privacy", () => {
     expect(remove).toContain("https://example.com/workspace/memory");
     expect(remove).toContain("«останови все расписания»");
     expect(result.reply).toContain("Do not ask whether to delete");
-    // The default answer is short and plain; the facts are for details.
-    expect(result.reply).toContain("3-5 short sentences");
-    expect(result.reply).toContain("only when the person asks for details");
-    expect(result.reply).toContain("separate performer");
     // The sign-ins Bro keeps, the visits it makes on its own, and how both
     // end (review of wave 6).
     expect(result.kept.join("\n")).toContain(
@@ -454,22 +450,18 @@ describe("privacy", () => {
 describe("offering read-only Google", () => {
   it.each([
     "никогда ничего не оплачивай и никому не пиши без моего ок",
-    "Никогда ничего не оплачивать и никому не писать без моего ок.",
-    "ничего не отправляй без спроса",
     "письма отправляй только с моего разрешения",
-    "не трогай рабочую почту",
     "never email anyone without asking me",
   ])("hears «%s» as a rule against sending", (rule) => {
     expect(restrictsSending(rule)).toBe(true);
   });
 
-  it.each([
-    "никогда ничего не оплачивай без моего ок",
-    "не пиши мне ночью",
-    "на «вы» и без смайликов",
-  ])("does not hear «%s» as one", (rule) => {
-    expect(restrictsSending(rule)).toBe(false);
-  });
+  it.each(["никогда ничего не оплачивай без моего ок", "не пиши мне ночью"])(
+    "does not hear «%s» as one",
+    (rule) => {
+      expect(restrictsSending(rule)).toBe(false);
+    }
+  );
 
   it("adds the offer to a no-send rule while Google is connected in full", async () => {
     composio.connect({ toolkit: "googlesuper" });

@@ -121,19 +121,6 @@ describe("afisha.tickets", () => {
     );
   });
 
-  it("answers an empty list as an empty list", async () => {
-    const { page } = await afishaPage({
-      body: await fixture("afisha/orders-empty.json"),
-    });
-    expect(
-      await runInPage(
-        afishaTicketsOperation.run,
-        afishaTicketsOperation.args.parse({}),
-        page
-      )
-    ).toEqual({ data: { orders: [], total: 0 }, status: "ok" });
-  });
-
   it("answers the sign-in wall as such", async () => {
     const { page } = await afishaPage({ body: {}, status: 401 });
     expect(

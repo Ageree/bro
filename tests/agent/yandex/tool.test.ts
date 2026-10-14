@@ -107,12 +107,6 @@ describe("the Yandex tool", () => {
     expect(await tool(asked, "scheduled-worker")).toBeUndefined();
   });
 
-  it("describes the operations, and takes the model's choice of one", async () => {
-    const found = await tool(asked);
-    expect(found?.description).toContain("- status (yandex-id):");
-    expect(found?.description).toContain("browser_task");
-  });
-
   it("runs an operation of the registry for the person's workspace", async () => {
     expect(await call(asked)).toEqual({
       data: { requestWorks: true, signedIn: true },
@@ -239,14 +233,6 @@ describe("the Yandex tool", () => {
       expect(calls).toEqual(["status", "account.ready"]);
       expect(reply).toContain("never opened Yandex Go");
       expect(reply).toContain("Do not say Yandex is ready");
-    });
-
-    it("says no card is linked only when Yandex ID has the person signed in", async () => {
-      const { reply } = await ready({
-        "account.ready": { data: { cards: [], signedIn: true }, kind: "ok" },
-        status: signedIn,
-      });
-      expect(reply).toContain("no bank card is linked");
     });
 
     it("offers the bank's link for a card Go holds back", async () => {

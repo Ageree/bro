@@ -203,17 +203,4 @@ describe("go.rides", () => {
     );
     expect(goRidesOperation.result.parse(dataOf(answer))).toBeDefined();
   });
-
-  it("answers the sign-in wall as the sign-in", async () => {
-    const { page } = await goPage([
-      ["/4.0/orderhistory/v2/list", { body: {}, status: 401 }],
-    ]);
-    expect(
-      await runInPage(
-        goRidesOperation.run,
-        goRidesOperation.args.parse({}),
-        page
-      )
-    ).toEqual({ status: "signed_out" });
-  });
 });

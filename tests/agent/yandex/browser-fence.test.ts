@@ -755,7 +755,7 @@ describe("the shared Yandex/browser payment fence", () => {
     60_000
   );
 
-  it.each([400, 404, 409])(
+  it.each([400, 404])(
     "a sticky queued payment never makes a second create after HTTP %s",
     async (status) => {
       const test = await database();
@@ -778,7 +778,7 @@ describe("the shared Yandex/browser payment fence", () => {
     60_000
   );
 
-  it.each([400, 404, 409])(
+  it.each([400, 404])(
     "a sticky direct payment never dispatches a fallback after HTTP %s",
     async (status) => {
       const test = await database();

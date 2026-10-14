@@ -30,9 +30,7 @@ describe("the separate Yandex purchase pilot", () => {
     expect(await enabled("*", "workspace:alice")).toBe(true);
     expect(await enabled("workspace:alice", "*")).toBe(true);
     expect(await enabled("*", "workspace:alice", "workspace:bob")).toBe(false);
-  });
-
-  it("includes newly created workspaces without copying another user's allowlist", async () => {
+    // A newly created workspace is in only when both switches are on.
     expect(await enabled("*", "*", "workspace:new-person")).toBe(true);
     expect(await enabled("*", "", "workspace:new-person")).toBe(false);
   });

@@ -22,7 +22,7 @@ vi.mock("@web/trpc/client", () => ({
 }));
 
 describe("Google Workspace action", () => {
-  it("offers full and read-only OAuth to a person without a grant", () => {
+  it("offers full and read-only OAuth without a grant, only disconnecting with one", () => {
     const html = renderToStaticMarkup(
       createElement(GoogleWorkspaceAction, { state: "disconnected" })
     );
@@ -30,16 +30,13 @@ describe("Google Workspace action", () => {
     expect(html.match(/<button/gu)).toHaveLength(2);
     expect(html).toContain("Подключить");
     expect(html).toContain("Только чтение");
-  });
 
-  it("offers only disconnecting to a connected person", () => {
-    const html = renderToStaticMarkup(
+    const connected = renderToStaticMarkup(
       createElement(GoogleWorkspaceAction, { state: "connected" })
     );
-
-    expect(html.match(/<button/gu)).toHaveLength(1);
-    expect(html).toContain("Отключить");
-    expect(html).not.toContain("Только чтение");
+    expect(connected.match(/<button/gu)).toHaveLength(1);
+    expect(connected).toContain("Отключить");
+    expect(connected).not.toContain("Только чтение");
   });
 
   it("does not start OAuth while the connection read is failing", () => {

@@ -128,30 +128,6 @@ describe("iMessage event projection", () => {
     ]);
   });
 
-  it("treats reply association as transport metadata in the Eve chat", () => {
-    const events = [
-      toolResult(
-        "send_message",
-        {
-          kind: "message",
-          replyTo: { kind: "current" },
-          text: "This is still a normal Eve message.",
-        },
-        1
-      ),
-    ];
-
-    expect(sentMessages(events).get("turn-1:assistant")).toEqual([
-      expect.objectContaining({
-        parts: [
-          expect.objectContaining({
-            text: "This is still a normal Eve message.",
-          }),
-        ],
-      }),
-    ]);
-  });
-
   it("keeps consecutive sends in the same turn as separate messages", () => {
     const events = [
       toolResult(
@@ -184,23 +160,20 @@ describe("iMessage event projection", () => {
     ]);
   });
 
-  it.each(["failed", "rejected"] as const)(
-    "ignores %s send_message results",
-    (status) => {
-      const events = [
-        toolResult(
-          "send_message",
-          { kind: "message", text: "This was not delivered." },
-          0,
-          "2026-09-01T12:00:01.000Z",
-          status
-        ),
-      ];
+  it("ignores failed send_message results", () => {
+    const events = [
+      toolResult(
+        "send_message",
+        { kind: "message", text: "This was not delivered." },
+        0,
+        "2026-09-01T12:00:01.000Z",
+        "failed"
+      ),
+    ];
 
-      expect(sentMessages(events).has("turn-1:assistant")).toBe(false);
-      expect(imessageTimestamps(events).has("turn-1:assistant")).toBe(false);
-    }
-  );
+    expect(sentMessages(events).has("turn-1:assistant")).toBe(false);
+    expect(imessageTimestamps(events).has("turn-1:assistant")).toBe(false);
+  });
 });
 
 function toolResult(

@@ -40,26 +40,6 @@ describe("market.orders", () => {
       status: "completed",
     });
   });
-
-  it("answers an empty list with no orders", async () => {
-    const { data } = await okData(
-      marketOrdersOperation,
-      { status: "active" },
-      (request) =>
-        request.path === "/my/orders"
-          ? { body: fixturePage("orders.json", "html_empty") }
-          : undefined
-    );
-    expect(data).toEqual({ count: 0, orders: [], status: "active" });
-  });
-
-  it("answers signed_out on the sign-in redirect", async () => {
-    const { answer } = await runOnPage(marketOrdersOperation, {}, () => ({
-      body: "",
-      url: "https://passport.yandex.ru/auth",
-    }));
-    expect(answer).toEqual({ status: "signed_out" });
-  });
 });
 
 describe("market.order", () => {

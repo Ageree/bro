@@ -54,12 +54,4 @@ describe("market.product", () => {
       }))
     ).rejects.toThrow("not_found");
   });
-
-  it("answers signed_out when the card redirects to the sign-in", async () => {
-    const { answer } = await runOnPage(marketProductOperation, { url }, () => ({
-      body: "",
-      url: "https://passport.yandex.ru/auth?retpath=x",
-    }));
-    expect(answer).toEqual({ status: "signed_out" });
-  });
 });

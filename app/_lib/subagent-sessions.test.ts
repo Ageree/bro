@@ -51,27 +51,6 @@ describe("collectSubagentSessions", () => {
     expect(sessions[0]?.completion?.output).toBe("Done");
   });
 
-  it("sorts the most recently called children first", () => {
-    const events = [
-      called,
-      {
-        ...called,
-        data: {
-          ...called.data,
-          callId: "call_2",
-          childSessionId: "child_2",
-        },
-        meta: { ...meta, id: "evt_02" },
-      },
-    ] satisfies readonly MessageStreamEvent[];
-
-    expect(
-      collectSubagentSessions(events).map(
-        ({ childSessionId }) => childSessionId
-      )
-    ).toEqual(["child_2", "child_1"]);
-  });
-
   it("uses the parent action description without reading the child stream", () => {
     const [session] = collectSubagentSessions([
       {

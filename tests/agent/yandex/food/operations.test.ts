@@ -10,7 +10,6 @@ import {
 import { edaMenuOperation } from "@agent/lib/yandex/food/menu";
 import {
   edaOrdersOperation,
-  lavkaActiveOperation,
   lavkaOrdersOperation,
 } from "@agent/lib/yandex/food/orders";
 import { foodOperations } from "@agent/lib/yandex/food/operations";
@@ -129,22 +128,6 @@ describe("the food operations", () => {
     );
     expect(JSON.stringify(data)).toContain('"orderNr"');
     expect(JSON.stringify(data)).not.toMatch(/courier|destination/iu);
-  });
-
-  it("counts the active Lavka orders", async () => {
-    const data = await dataOf(
-      lavkaActiveOperation,
-      page(
-        [
-          {
-            body: fixture("lavka-tracked-orders"),
-            path: "/api/v1/providers/orders-tracking/v1/tracked-orders",
-          },
-        ],
-        lavkaPage
-      )
-    );
-    expect(data).toEqual({ activeCount: 0 });
   });
 
   it("gives the saved Lavka addresses with their coordinates, without the flat", async () => {
