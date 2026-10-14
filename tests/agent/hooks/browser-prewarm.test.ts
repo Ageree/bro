@@ -111,16 +111,12 @@ describe("the browser warm-up hook", () => {
 
   it("checks the exit once the browser is up", async () => {
     // 14.10: the errand that followed waited 7–10 s on the exit check.
-    let up = () => undefined as void;
-    mocks.prewarmBrowserSandbox.mockReturnValue(
-      new Promise<void>((resolve) => {
-        up = resolve;
-      })
-    );
+    const up = Promise.withResolvers<undefined>();
+    mocks.prewarmBrowserSandbox.mockReturnValue(up.promise);
 
     await receive(received("найди крем для рук на вб"));
     expect(mocks.warmBrowserVmExit).not.toHaveBeenCalled();
-    up();
+    up.resolve(undefined);
     await vi.waitFor(() => {
       expect(mocks.warmBrowserVmExit).toHaveBeenCalledExactlyOnceWith(
         scope.workspaceId

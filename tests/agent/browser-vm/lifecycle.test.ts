@@ -2277,22 +2277,8 @@ describe("routing the VM's browser through a Russian exit", () => {
     });
     rows.set(workspaceId, vm);
     vi.spyOn(console, "info").mockImplementation(() => undefined);
-    let answer = () => undefined as void;
-    worker.setBrowserVmWorkerProxy.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          answer = () => {
-            resolve(
-              proxySetup({
-                country: "RU",
-                ip: "95.24.1.8",
-                latencyMs: 4600,
-                mbps: 1.5,
-              })
-            );
-          };
-        })
-    );
+    const answer = Promise.withResolvers<ReturnType<typeof proxySetup>>();
+    worker.setBrowserVmWorkerProxy.mockReturnValue(answer.promise);
 
     const warming = lifecycle.warmBrowserVmExit(workspaceId, now);
     const errand = lifecycle.prepareBrowserVmSession(vm, now, {
@@ -2301,7 +2287,9 @@ describe("routing the VM's browser through a Russian exit", () => {
     await vi.waitFor(() => {
       expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
     });
-    answer();
+    answer.resolve(
+      proxySetup({ country: "RU", ip: "95.24.1.8", latencyMs: 4600, mbps: 1.5 })
+    );
     await warming;
     const prepared = await errand;
 
