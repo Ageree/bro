@@ -19,6 +19,7 @@ import {
 import { deliveryCompleteSentinel } from "./fallback";
 import {
   addsNothingNew,
+  namesNothingNew,
   announcesErrand,
   announcesWork,
   asksOrShowsNew,
@@ -512,6 +513,8 @@ export function sendRefusal(
   // A browser run took the errand after the heads-up: the person was told
   // Bro is on it, and the owner wants nothing more until the result
   // (14.10: «Сейчас посмотрю…», then «Запустил поиск… пришлю сравнение»).
+  // Only a line that names nothing beyond the person's message, the errand
+  // and the heads-up: an answer to something else they asked goes out.
   if (
     turn.headsUps.length > 0 &&
     delivered.length === 0 &&
@@ -519,7 +522,11 @@ export function sendRefusal(
     message.attachments.length === 0 &&
     message.questions.length === 0 &&
     message.requests.length === 0 &&
-    announcesWork(message)
+    announcesWork(message) &&
+    namesNothingNew(message, [turn.given, ...turn.headsUps], {
+      distinct: turn.distinct,
+      foldable: turn.foldable,
+    })
   ) {
     return { skipped: "started" };
   }

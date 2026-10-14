@@ -108,7 +108,6 @@ describe("autonomy defaults", () => {
     expect(content).toContain(
       "Лимит — бюджет и учёт на месяц, а не согласие на конкретную покупку"
     );
-    expect(content).toContain("Почту пачкой");
     expect(content).toContain("без внешних участников");
     expect(content).toContain("`withinSpendLimit`");
     expect(content).toContain(

@@ -372,32 +372,32 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-report":
-        "1b6faaee253f35396c7356ac4c70625b98ffd7d3530a64a8b2329f795c349751",
+        "f45c77b560bc9296ada53f4bdbbbb64da47990a6031988c9264ed3bd9e6e0c28",
       "proactive-worker":
-        "b09b9cdafbd7f1eb1b80a1d070038207742f0119de28cb9b7bb4455ca582ff9e",
+        "f64785ae8b046077b0c14e9ebea087c4202c6fa4c1c1835b9133d91c3d6500e7",
       "scheduled-report":
-        "6fb11a6b19ddcd7d9f442ef1a4c3b4751d8ba12b3b7648d402d2a4385152cb45",
+        "7c6be34e4ffd8b7ba4bff987b7c9705f52f97bc949b0cd3ab07b7780d4013386",
       "scheduled-worker":
-        "d0919a9fe12e9d5e76c06b2a4821430a724926cc8b48a94741fabecf0ffa2509",
+        "346c07d34b6b912dbf8e1b278992c3b17dd62e84a9a78acbd7822c573a1c0e89",
       telegram:
-        "ab7857e06bbca919059dad5c7702f9a57830e7a5a98640b6cedc9d135cfb0312",
-      web: "1d2e14e631b53b0e63560a24abf1e4148ca0a2d666bbe1e426630ab492143f58",
+        "7e3f764f12c3f70028dd52f0cf1521d1d58656a1dc1532c466f0bd11dd58f219",
+      web: "300ca3af81b3f689e73e346b9ef44074bda848e3072d534998eba65c8e950359",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "a8853e4bb6508bc33d21fa22c55ea0f448a802bbbaeafd35d4babfd64410e988",
+        "b4e4afd8e9a8fd3bf577c32edd7c11d108bd64ef9862f9d9f950b207bc06c445",
       "proactive-worker":
-        "44390f9721a3895cd947c51ee393d4a1fda462f7f82528cfe2cf12c11a9436db",
+        "7fb5aed27a8d42f68ff09907efb2fb4a3a6ebd9d4189162cc57e27c9cc9f7b41",
       "scheduled-report":
-        "15bc2e1d24be6681525ac381a71117c30b3282238752f151ee8cc68213ee853e",
+        "109492b831042316b18975869eb310a692dcb9f5a2dd643b3588c3c4d9fb366a",
       "scheduled-worker":
-        "ef9ee74c2fb8472b5a45b0c0abedb1ba5fc946c401c595086949519ad1008e91",
+        "7902364a2836434346255031a24563f1dfa484e36f53e1d241fc1ac829cb9c61",
       telegram:
-        "abd06185866cfbdf0e9bd1fdf46167ae43b65d5315cf37060ffeb6abfe258c42",
-      web: "44889943873b843e6ae7cebc459127ae2df4fca5a0fb716893adfa46aa7ce925",
+        "a9c32066c04bd9ce0c70ed15f41c23026d3cb332bcdd0313280a27d07e177b71",
+      web: "a561b63d0f4249cea5c8b38629fa3b988fd601902474a196e935b5641043310e",
     } satisfies Record<Kind, string>,
   },
 };

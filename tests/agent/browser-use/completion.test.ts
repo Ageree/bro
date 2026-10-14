@@ -791,6 +791,61 @@ describe("settling a browser run", () => {
     );
   });
 
+  // Ozon turned away every exit of a comparison of three shops (14.10), and
+  // the run finished on the other two.
+  it("parks a finished run once more for the sites it reported blocked, through the fallback proxy", async () => {
+    const vmRow = {
+      ...row,
+      paymentAllowed: false,
+      profileId: "vm:workspace:user-1:p1",
+      submission: null,
+    };
+    readBrowserRun.mockResolvedValue(vmRow);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result:
+        "RESULT: сравнил ВБ и Маркет, Ozon не открылся\nNEEDS: none\nBLOCKED: https://www.ozon.ru",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Сравни пылесосы",
+    });
+    const { send, to } = delivery();
+
+    // The environment is read once per import of the module.
+    const settle = async () => {
+      vi.resetModules();
+      const { settleBrowserRun } =
+        await import("@agent/lib/browser-use/completion");
+      await settleBrowserRun({ to }, runId);
+    };
+
+    // Without the fallback proxy the report goes out as it is.
+    vi.stubEnv("BROWSER_VM_PROXY_FALLBACK", undefined);
+    await settle();
+    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledOnce();
+
+    send.mockClear();
+    ledger.claimed = false;
+    ledger.delivered = false;
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    vi.stubEnv(
+      "BROWSER_VM_PROXY_FALLBACK",
+      "gate.example.test:8080:login-country-ru-sid-{session}-ttl-24h:fb:pw"
+    );
+    await settle();
+    vi.unstubAllEnvs();
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  }, 60_000);
+
   it("carries a message the person sent while the run was walled into the park, instead of dropping it", async () => {
     // The row already carries a message an earlier attempt parked without
     // reporting; this attempt's own run ends walled too, with one more.

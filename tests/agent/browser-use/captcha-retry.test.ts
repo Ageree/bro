@@ -30,7 +30,14 @@ const createBrowserUseRun = vi.hoisted(() =>
   >()
 );
 const readBrowserUseRun = vi.hoisted(() =>
-  vi.fn<(runId: string) => Promise<{ sessionId?: string; task: string }>>()
+  vi.fn<
+    (runId: string) => Promise<{
+      result?: string | null;
+      sessionId?: string;
+      status?: string;
+      task: string;
+    }>
+  >()
 );
 const findRecentBrowserUseRunByTaskLine = vi.hoisted(() =>
   vi.fn<
@@ -638,6 +645,76 @@ describe("the anti-bot retry policy", () => {
     expect(input?.freshExit).toBe(true);
     expect(input?.task).toContain(
       "carry on from where the previous attempt stopped"
+    );
+  });
+
+  // Ozon turned away every Geonode exit of a comparison of three shops
+  // (14.10), and the run finished on the other two.
+  it("retries a finished run on the sites it reported blocked alone, carrying its report", async () => {
+    const report = [
+      "WB: Dreame D10 — 19 990 ₽; Маркет: Roborock Q7 — 23 500 ₽.",
+      "RESULT: сравнил ВБ и Маркет, Ozon не открылся",
+      "NEEDS: none",
+      "BLOCKED: https://www.ozon.ru",
+    ].join("\n");
+    readBrowserUseRun.mockResolvedValue({
+      result: report,
+      sessionId: "vm:workspace:alice:s:1",
+      status: "completed",
+      task: "Сравни пылесосы\n\nSite: …",
+    });
+    const { startCaptchaRetry } =
+      await import("@agent/lib/browser-use/captcha-retry");
+
+    await startCaptchaRetry({
+      ...parkedRow(1),
+      profileId: "vm:workspace:alice:p1",
+    });
+
+    const input = createBrowserUseRun.mock.calls[0]?.[0];
+    expect(input?.freshExit).toBe(true);
+    expect(input?.sessionId).toBe("vm:workspace:alice:s:1");
+    expect(input?.task).toContain("open only ozon.ru");
+    expect(input?.task).toContain("do not end with NEEDS: captcha");
+    expect(input?.task).toContain("Dreame D10 — 19 990 ₽");
+    expect(input?.task).not.toContain("attempt 2 of 5");
+    expect(input?.task.startsWith("Сравни пылесосы\n\nSite: …\n\n")).toBe(true);
+  });
+
+  it("retries blocked sites only on the person's own browser with the fallback proxy, once per errand", async () => {
+    vi.stubEnv("BROWSER_VM_PROXY_FALLBACK", undefined);
+    const { blockedSitesRetry, blockedSitesRetryTask } =
+      await import("@agent/lib/browser-use/captcha-retry");
+    const vm = { captchaAttempt: 1, profileId: "vm:workspace:alice:p1" };
+    const run = { task: "Сравни пылесосы" };
+
+    // No fallback: the report goes out as it is.
+    expect(blockedSitesRetry(vm, run, ["ozon.ru"])).toBe(false);
+
+    vi.stubEnv(
+      "BROWSER_VM_PROXY_FALLBACK",
+      "gate.example.test:8080:login-country-ru-sid-{session}-ttl-24h:fb:pw"
+    );
+    vi.resetModules();
+    const fresh = await import("@agent/lib/browser-use/captcha-retry");
+
+    expect(fresh.blockedSitesRetry(vm, run, ["ozon.ru"])).toBe(true);
+    expect(fresh.blockedSitesRetry(vm, run, [])).toBe(false);
+    expect(
+      fresh.blockedSitesRetry({ ...vm, profileId: "profile-1" }, run, [
+        "ozon.ru",
+      ])
+    ).toBe(false);
+    expect(
+      fresh.blockedSitesRetry({ ...vm, captchaAttempt: 5 }, run, ["ozon.ru"])
+    ).toBe(false);
+    const retried = blockedSitesRetryTask(
+      "Сравни пылесосы",
+      { blocked: ["ozon.ru"], report: "RESULT: …" },
+      "(ref 2)"
+    );
+    expect(fresh.blockedSitesRetry(vm, { task: retried }, ["ozon.ru"])).toBe(
+      false
     );
   });
 

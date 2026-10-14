@@ -204,3 +204,34 @@ export function pictureRequested(messages: readonly ModelMessage[]) {
   }
   return false;
 }
+
+/**
+ * Whether a message of the person opened this turn: a background task's
+ * report carries the person's auth and is still no request of theirs.
+ */
+export function personOpensTurn(messages: readonly ModelMessage[]) {
+  const incoming = messages[messages.findLastIndex(startsTurn)];
+  return incoming !== undefined && isPersonMessage(incoming);
+}
+
+/** Words below which a message reads as a reply («да», «ок», «а погода?»). */
+const errandWords = 5;
+/** A one-time code, as people paste it: «код от госуслуг: 123456». */
+const oneTimeCodePattern = /(?<!\d)\d{4,8}(?!\d)/u;
+
+/**
+ * Whether the person's message that started this turn is an errand of its
+ * own rather than a reply: an errand may need a picture without naming one
+ * (slides for a catalogue card), so it puts `generate_image` within reach.
+ * A code, a «да» or a few words keep to `pictureRequested`: after an SMS code
+ * a model drew «a cute robot waiting» nobody asked for.
+ */
+export function errandOpensTurn(messages: readonly ModelMessage[]) {
+  const incoming = messages[messages.findLastIndex(startsTurn)];
+  if (!incoming || !isPersonMessage(incoming)) return false;
+  const text = textOf(incoming);
+  return (
+    text.split(/\s+/u).filter(Boolean).length >= errandWords &&
+    !oneTimeCodePattern.test(text)
+  );
+}

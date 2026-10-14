@@ -29,6 +29,7 @@ import { wakeAgencyForOutcome } from "@agent/lib/proactive/follow-up";
 import { keepBrowserVmForPersonStep } from "@agent/lib/browser-vm/idle";
 import { recordBrowserUseRunCost } from "@agent/lib/costs/browser";
 import {
+  blockedSitesRetry,
   captchaRetryAt,
   captchaRetryWindowMinutes,
   maximumCaptchaAttempts,
@@ -176,10 +177,21 @@ export async function settleBrowserRun(
           phase: row.recoveryPhase,
         })
       : ({ kind: "none" } as const);
+  // A run that finished the errand everywhere but on sites that never let
+  // it in (`BLOCKED:`) goes once more, on those sites alone, through the
+  // fallback proxy (`blockedSitesRetry`); the person hears the whole report
+  // after it. One that could have acted is never run again for it.
+  const partial =
+    recovery.kind === "none" &&
+    missingSite === undefined &&
+    status === "completed" &&
+    parsed.needs === "none" &&
+    blockedSitesRetry(row, run, parsed.blocked) &&
+    !(await couldHaveActed(row, true));
   const retryAt =
     recovery.kind === "retry"
       ? recoveryRetryAt(recovery.phase, recovery.attempt, now)
-      : parsed.needs === "captcha"
+      : parsed.needs === "captcha" || partial
         ? captchaRetryAt(
             row.captchaAttempt,
             now,
@@ -245,6 +257,7 @@ export async function settleBrowserRun(
   // Every settle leaves a line: on 25.09 three finished runs never reached
   // their chats and nothing in the logs said whether they had even settled.
   console.info("[browser-use] run settled", {
+    blocked: partial ? parsed.blocked : undefined,
     channel: claimed.conversationChannel,
     needs: parsed.needs,
     recovery: recovery.kind === "none" ? undefined : recovery.kind,

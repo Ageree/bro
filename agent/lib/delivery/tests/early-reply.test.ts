@@ -495,6 +495,16 @@ describe("(f) a heads-up before an errand a browser run took", () => {
         true
       )
     ).toBeUndefined();
+    // An answer to something else the person asked still goes out.
+    expect(
+      sendRefusal(
+        message(
+          "Запустил. А публикация на Радаре бесплатная, модерация до 3 дней — пришлю итог."
+        ),
+        turnSends(handed),
+        true
+      )
+    ).toBeUndefined();
   });
 
   it("still owes the answer when the run did not take the errand", () => {
