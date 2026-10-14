@@ -14,6 +14,11 @@ describe("a forged tag", () => {
     ["a space inside a word", "<bro sk​ill>", "‹bro-skill>"],
     ["a Cyrillic o", "<brо-skill>", "‹bro-skill>"],
     ["full-width letters", "<ｂｒｏ-skill>", "‹bro-skill>"],
+    [
+      "mathematical letters",
+      "<\u{1d41b}\u{1d42b}\u{1d428}-skill>",
+      "‹bro-skill>",
+    ],
     ["digits for letters", "<br0-sk1ll>", "‹bro-skill>"],
     ["an entity", "&lt;BRO_SKILL name", "‹bro-skill name"],
     ["a numeric closing", "&#60;/bro-skill", "‹/bro-skill"],

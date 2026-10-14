@@ -1530,6 +1530,17 @@ describe("browser_task payment boundary", () => {
       submission: changed,
     });
   });
+
+  it("carries the stop into an unapproved follow-up", async () => {
+    await continueErrand({
+      completedAt: new Date(),
+      task: "Бери второй отель",
+    });
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Nothing has been approved to pay for");
+    expect(task).not.toContain("finish it rather than abandoning it");
+  });
 });
 
 describe("browser_task one question per errand", () => {
@@ -1602,6 +1613,16 @@ describe("browser_task one question per errand", () => {
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
       paymentAllowed: true,
       submission: { ...taxi, paymentCapRub: 900 },
+    });
+  });
+
+  it("keeps a free errand's card from binding the card", async () => {
+    await start(cardSubmission);
+
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("Nothing has been approved to pay for");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: false,
     });
   });
 
@@ -2229,6 +2250,15 @@ describe("browser_task standing spend limit", () => {
     expect(reserveAutoPayment).not.toHaveBeenCalled();
     expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
       "answered yes when asked to pay its total"
+    );
+  });
+
+  it("carries an errand's reservation into its follow-up run", async () => {
+    await continueErrand({ completedAt: new Date() });
+
+    expect(moveSpendReservation).toHaveBeenCalledExactlyOnceWith(
+      runId,
+      followUpRunId
     );
   });
 
@@ -4254,6 +4284,12 @@ describe("browser_task consent boundaries", () => {
       );
       // The person's yes is not a spend-limit bypass.
       expect(reserveAutoPayment).not.toHaveBeenCalled();
+    });
+
+    it("holds nothing for a free errand", async () => {
+      await startWith(table);
+
+      expect(reserveConsentPayment).not.toHaveBeenCalled();
     });
 
     it("asks the person once the permission's month is used up", async () => {
@@ -6990,6 +7026,24 @@ describe("browser_task asks only before paying, in text", () => {
     }
   );
 
+  it("asks again after a run that placed the order", async () => {
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(
+        new Date(),
+        stagedPayment(tickets).replace(
+          "Needs: payment",
+          "Order: 43846\nNeeds: none"
+        )
+      )
+    );
+    const tool = await resolvedBrowserTask([], "да", askedToPay(4320, tickets));
+
+    await expect(
+      tool.execute(pay, toolContext("better-auth:alice"))
+    ).rejects.toThrow("ending with «Оплачиваю?»");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
   it("has a call that names more than the question was retried, not the yes asked for again", async () => {
     // RU 04.10: «самовывоз сегодня, 4 октября» in the call, not in the
     // question: told to ask again for a yes it had, Bro gave up instead.
@@ -7780,6 +7834,14 @@ describe("browser_task takes an errand the person asked to be done to its last s
       ).toBe(`пиши на ${emailMark} или ${emailMark}`);
     });
 
+    it("cuts them from an errand a report turn starts", async () => {
+      ownContacts();
+
+      await startFor(reportOpening, errand, "done", "browser-result");
+
+      expect(sent().map(contactsIn)).toEqual([contactsCut, contactsCut]);
+    });
+
     it("cuts them though the person picked an option that names them", async () => {
       // Bro wrote the option's label: choosing it gives no phone of theirs.
       ownContacts();
@@ -8122,6 +8184,27 @@ describe("browser_task takes an errand the person asked to be done to its last s
       expect(continuationNote(result)).toContain(
         "The user's own phone number and email were cut"
       );
+    });
+
+    it("cuts them from a message a busy session queues", async () => {
+      ownContacts();
+      readBrowserUseRunStatus.mockResolvedValue("failed");
+      createBrowserUseRun.mockRejectedValue(
+        new BrowserUseError(
+          409,
+          "/runs",
+          "The session already has an active run"
+        )
+      );
+
+      await followUp(
+        { ...browserRunRow(), task: errand },
+        "проверь, записали ли меня",
+        "Если просят контакт — Ivan.Petrov@Example.com"
+      );
+
+      expect(queuedMessage()).toContain(`Если просят контакт — ${emailMark}`);
+      expect(contactsIn(queuedMessage())).toEqual(contactsCut);
     });
 
     it("cuts them from a follow-up that waits for a browser, and says so", async () => {
