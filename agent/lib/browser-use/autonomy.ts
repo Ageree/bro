@@ -17,41 +17,41 @@ export function errandAutonomyPilot(workspaceId: string | undefined) {
   );
 }
 
-const latinOf: Readonly<Record<string, string>> = {
-  а: "a",
-  б: "b",
-  в: "v",
-  г: "g",
-  д: "d",
-  е: "e",
-  ё: "e",
-  ж: "zh",
-  з: "z",
-  и: "i",
-  й: "i",
-  к: "k",
-  л: "l",
-  м: "m",
-  н: "n",
-  о: "o",
-  п: "p",
-  р: "r",
-  с: "s",
-  т: "t",
-  у: "u",
-  ф: "f",
-  х: "h",
-  ц: "c",
-  ч: "ch",
-  ш: "sh",
-  щ: "sch",
-  ъ: "",
-  ы: "i",
-  ь: "",
-  э: "e",
-  ю: "yu",
-  я: "ya",
-};
+const latinOf = new Map([
+  ["а", "a"],
+  ["б", "b"],
+  ["в", "v"],
+  ["г", "g"],
+  ["д", "d"],
+  ["е", "e"],
+  ["ё", "e"],
+  ["ж", "zh"],
+  ["з", "z"],
+  ["и", "i"],
+  ["й", "i"],
+  ["к", "k"],
+  ["л", "l"],
+  ["м", "m"],
+  ["н", "n"],
+  ["о", "o"],
+  ["п", "p"],
+  ["р", "r"],
+  ["с", "s"],
+  ["т", "t"],
+  ["у", "u"],
+  ["ф", "f"],
+  ["х", "h"],
+  ["ц", "c"],
+  ["ч", "ch"],
+  ["ш", "sh"],
+  ["щ", "sch"],
+  ["ъ", ""],
+  ["ы", "i"],
+  ["ь", ""],
+  ["э", "e"],
+  ["ю", "yu"],
+  ["я", "ya"],
+]);
 
 /**
  * A word as its Latin letters, loosely: «Озон» and "ozon", «Авито» and
@@ -59,9 +59,9 @@ const latinOf: Readonly<Record<string, string>> = {
  * the two spellings of a brand rarely agree on them.
  */
 function skeleton(word: string) {
-  return [...word.toLowerCase()]
-    .map((letter) => latinOf[letter] ?? letter)
-    .join("")
+  return word
+    .toLowerCase()
+    .replaceAll(/[а-яё]/gu, (letter) => latinOf.get(letter) ?? letter)
     .replaceAll("ks", "x")
     .replaceAll("w", "v")
     .replaceAll(/[jy]/gu, "i")

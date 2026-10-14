@@ -74,10 +74,12 @@ export function autonomyPilot(context: SkillsContext) {
  * no `taskFiles` or `autonomy` at all, so it reads as before them.
  */
 export function skillSetup(context: SkillsContext): SkillSetup {
-  const setup = {
+  const setup: SkillSetup = {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
-    ...(taskFilesOfCaller(context) ? { taskFiles: true } : {}),
   };
-  return autonomyPilot(context) ? { ...setup, autonomy: true } : setup;
+  const withFiles: SkillSetup = taskFilesOfCaller(context)
+    ? { ...setup, taskFiles: true }
+    : setup;
+  return autonomyPilot(context) ? { ...withFiles, autonomy: true } : withFiles;
 }

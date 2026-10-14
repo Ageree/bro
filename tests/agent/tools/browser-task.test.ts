@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import type * as ai from "ai";
 import type * as settingsService from "@db/services/settings";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
+import type { browserTaskApproval as browserTaskApprovalOf } from "@agent/tools/browser_task";
 import {
   afterEach,
   beforeAll,
@@ -3159,6 +3160,12 @@ describe("browser_task autonomous delegated continuation", () => {
   });
 });
 
+/** Puts the workspaces of `list` in the autonomy pilot, modules afresh. */
+function autonomyPilot(list = "*") {
+  vi.stubEnv("ERRAND_AUTONOMY_WORKSPACES", list);
+  vi.resetModules();
+}
+
 describe("browser_task in the autonomy pilot", () => {
   const walledSite = "https://barber-one.ru";
   const fallbackSite = "https://barber-two.ru";
@@ -3182,11 +3189,6 @@ describe("browser_task in the autonomy pilot", () => {
     vi.stubEnv("ERRAND_AUTONOMY_WORKSPACES", "");
     vi.resetModules();
   });
-
-  function pilot(list = "*") {
-    vi.stubEnv("ERRAND_AUTONOMY_WORKSPACES", list);
-    vi.resetModules();
-  }
 
   function reportContext() {
     const context = toolContext("better-auth:alice", "browser-result");
@@ -3245,11 +3247,7 @@ describe("browser_task in the autonomy pilot", () => {
   }
 
   async function approval(
-    input: NonNullable<
-      Parameters<
-        (typeof import("@agent/tools/browser_task"))["browserTaskApproval"]
-      >[0]
-    >,
+    input: NonNullable<Parameters<typeof browserTaskApprovalOf>[0]>,
     said = asked
   ) {
     const { browserTaskApproval } = await import("@agent/tools/browser_task");
@@ -3272,7 +3270,7 @@ describe("browser_task in the autonomy pilot", () => {
   } as const;
 
   it("takes the free errand to a fallback site after an anti-bot wall, held to that site", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue(walledRow());
 
     expect(await approval(freeStart)).toBe("not-applicable");
@@ -3294,7 +3292,7 @@ describe("browser_task in the autonomy pilot", () => {
   });
 
   it("stages a search for the person on the fallback site, so its free follow-up needs no word", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue(walledRow(null));
     const { context, tool } = await reportTool();
 
@@ -3320,7 +3318,7 @@ describe("browser_task in the autonomy pilot", () => {
   });
 
   it("asks for the person's word when they named the site that walled it", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue(walledRow());
 
     expect(
@@ -3332,7 +3330,7 @@ describe("browser_task in the autonomy pilot", () => {
   });
 
   it("never carries a payment: it waits for the person's yes to «Оплачиваю?»", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue(walledRow());
 
     const decision = await approval({
@@ -3357,10 +3355,10 @@ describe("browser_task in the autonomy pilot", () => {
 
   it("keeps the old rule outside the pilot, on the same site and for another submission", async () => {
     readBrowserRunForScope.mockResolvedValue(walledRow());
-    pilot("another-workspace");
+    autonomyPilot("another-workspace");
     expect(await approval(freeStart)).toMatchObject({ type: "denied" });
 
-    pilot();
+    autonomyPilot();
     expect(
       await approval({ ...freeStart, site: "https://www.barber-one.ru" })
     ).toMatchObject({ type: "denied" });
@@ -3373,7 +3371,7 @@ describe("browser_task in the autonomy pilot", () => {
   });
 
   it("takes nothing on from an errand whose site let it in", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue({
       ...walledRow(),
       outcome: "Needs: decision",
@@ -3385,19 +3383,29 @@ describe("browser_task in the autonomy pilot", () => {
   const fines = "Проверь штрафы ГИБДД: СТС 77 УО 123456, ВУ 9912 345678";
 
   it("sends the СТС and licence numbers only to the official fines check", async () => {
-    pilot();
+    autonomyPilot();
     const { browserTask } = await import("@agent/tools/browser_task");
 
     await expect(
       browserTask.execute(
-        { action: "start", site: "https://shtrafy-online.ru", task: fines },
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://shtrafy-online.ru",
+          task: fines,
+        },
         toolContext("better-auth:alice")
       )
     ).rejects.toThrow("go only to the official fines check");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
 
     const result = await browserTask.execute(
-      { action: "start", site: "https://xn--90adear.xn--p1ai", task: fines },
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://xn--90adear.xn--p1ai",
+        task: fines,
+      },
       toolContext("better-auth:alice")
     );
     expect(result).toMatchObject({ status: "running" });
@@ -3411,7 +3419,7 @@ describe("browser_task in the autonomy pilot", () => {
   });
 
   it("refuses a follow-up that would take the numbers to another site", async () => {
-    pilot();
+    autonomyPilot();
     readBrowserRunForScope.mockResolvedValue(
       browserRunRow(new Date(), "Needs: decision")
     );
@@ -3419,7 +3427,13 @@ describe("browser_task in the autonomy pilot", () => {
 
     await expect(
       browserTask.execute(
-        { action: "continue", personSaid: fines, runId, task: fines },
+        {
+          action: "continue",
+          personSaid: fines,
+          personWants: "look",
+          runId,
+          task: fines,
+        },
         toolContext("better-auth:alice")
       )
     ).rejects.toThrow("go only to the official fines check");
@@ -3429,7 +3443,12 @@ describe("browser_task in the autonomy pilot", () => {
     const { browserTask } = await import("@agent/tools/browser_task");
 
     const result = await browserTask.execute(
-      { action: "start", site: "https://shtrafy-online.ru", task: fines },
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://shtrafy-online.ru",
+        task: fines,
+      },
       toolContext("better-auth:alice")
     );
 

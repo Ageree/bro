@@ -294,8 +294,8 @@ const parsedAutonomySources = new Map<InstructionSource, readonly Segment[]>(
   ])
 );
 
-function sourceSegments(source: InstructionSource, autonomy = false) {
-  return (autonomy ? parsedAutonomySources : parsedSources).get(source) ?? [];
+function sourceSegments(source: InstructionSource, edited = false) {
+  return (edited ? parsedAutonomySources : parsedSources).get(source) ?? [];
 }
 
 function readBy(region: Region, layout: InstructionLayout) {
@@ -314,14 +314,14 @@ function readBy(region: Region, layout: InstructionLayout) {
 
 /**
  * One instruction file as a turn of this layout reads it, in the autonomy
- * pilot's edit (`autonomy`) or as it is.
+ * pilot's edit (`edited`) or as it is.
  */
 export function instructionText(
   source: InstructionSource,
   layout: InstructionLayout,
-  autonomy = false
+  edited = false
 ) {
-  const text = sourceSegments(source, autonomy)
+  const text = sourceSegments(source, edited)
     .filter(({ region }) => readBy(region, layout))
     .map(({ text: lines }) => lines)
     .join("");

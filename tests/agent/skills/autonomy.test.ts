@@ -49,7 +49,7 @@ describe("the autonomy pilot's instructions", () => {
   it("replace text that stands in its file exactly once", async () => {
     for (const edit of await edits()) {
       const text = readFileSync(new URL(`${edit.source}.md`, content), "utf8");
-      expect(text.split(edit.from).length - 1, edit.from).toBe(1);
+      expect(text.split(edit.from)).toHaveLength(2);
       expect(edit.to).not.toBe(edit.from);
     }
   });
