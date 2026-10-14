@@ -223,7 +223,7 @@ const headsUpPrefix = "The heads-up was submitted to the active channel.";
  * the turn still owes the answer, and the history tells the two apart by
  * this text (`headsUpDelivered`): it never appears outside the pilot.
  */
-export const headsUpDeliveredNotice = `${headsUpPrefix} The person now waits for the answer itself: this heads-up does not end your reply. If you did not call the work's tool in this same step, call it now, without writing; once its result is in, send the answer in one message — what it found, or, for an errand you handed a browser run, where it stands, as its result says. Do not send another heads-up or status.`;
+export const headsUpDeliveredNotice = `${headsUpPrefix} The person now waits for the answer itself: this heads-up does not end your reply. If you did not call the work's tool in this same step, call it now, without writing; once its result is in, send the answer in one message — what it found. An errand a browser run took needs nothing more: the run reports by itself, so end the turn without writing anything. Do not send another heads-up or status.`;
 
 /**
  * Whether a `send_message` result is the early-reply pilot's heads-up: it

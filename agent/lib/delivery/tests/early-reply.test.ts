@@ -1,6 +1,10 @@
 import type { JSONValue, ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
-import { awaitsDelivery, turnDelivered } from "@agent/lib/delivery/pending";
+import {
+  awaitsDelivery,
+  headsUpCoversErrand,
+  turnDelivered,
+} from "@agent/lib/delivery/pending";
 import {
   headsUpDelivered,
   headsUpDeliveredNotice,
@@ -441,6 +445,50 @@ describe("(e) a status said again after the browser errand started", () => {
     expect(sendRefusal(message(status3), turnSends(plain))).not.toEqual({
       skipped: "started",
     });
+  });
+});
+
+describe("(f) a heads-up before an errand a browser run took", () => {
+  // 14.10: after «Понял — собираю и запускаю» the owner wanted silence, and
+  // got «Браузер сейчас занят… встала в очередь… Вернусь со ссылкой».
+  const ask = "Запусти мой продукт на Product Radar";
+  const errand = { site: "productradar.ru", task: ask };
+
+  it("needs nothing more once the run is at work or queued", () => {
+    for (const status of ["running", "queued"]) {
+      const handed = [
+        person(ask),
+        ...sendMessage(
+          "a",
+          "Понял, приступаю.",
+          textOutput(headsUpDeliveredNotice)
+        ),
+        ...browserStep("start", { runId: "run-1", status }, errand),
+      ];
+
+      expect(headsUpCoversErrand(handed)).toBe(true);
+      expect(awaitsDelivery(handed)).toBe(false);
+    }
+  });
+
+  it("still owes the answer when the run did not take the errand", () => {
+    const refused = [
+      person(ask),
+      ...sendMessage(
+        "a",
+        "Понял, приступаю.",
+        textOutput(headsUpDeliveredNotice)
+      ),
+      ...browserStep("start", { note: "…", status: "unavailable" }, errand),
+    ];
+    const noHeadsUp = [
+      person(ask),
+      ...browserStep("start", { runId: "run-1", status: "queued" }, errand),
+    ];
+
+    expect(awaitsDelivery(refused)).toBe(true);
+    expect(headsUpCoversErrand(noHeadsUp)).toBe(false);
+    expect(awaitsDelivery(noHeadsUp)).toBe(true);
   });
 });
 

@@ -210,7 +210,7 @@ function exitSearchWait(retryAfterMs: number | undefined) {
     minutes,
     note: [
       `This errand is queued and starts by itself in ${about}; nothing else of the user's is using the browser.`,
-      `Tell the user in one short line only that it starts in ${about}, giving no reason for the wait (not a busy browser, not the network); the outcome arrives as a new message like any other.`,
+      `If you already told the user you are on it, say nothing more; otherwise tell them in one short line only that you started, giving no reason for any wait (not a busy browser, not the network). The outcome arrives as a new message like any other.`,
       queuedErrandRules,
     ].join(" "),
   };

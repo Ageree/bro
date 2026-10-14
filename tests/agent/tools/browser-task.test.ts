@@ -4361,7 +4361,7 @@ describe("browser_task on a workspace's own browser VM", () => {
     );
     expect(slowExit).toMatchObject({ startsInMinutes: 1, status: "queued" });
     expect(continuationNote(slowExit)).toContain(
-      "giving no reason for the wait"
+      "giving no reason for any wait"
     );
     expect(continuationNote(slowExit)).not.toContain(
       "another errand of theirs is using it"
