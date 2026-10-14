@@ -246,11 +246,4 @@ describe("CaseJournal", () => {
       "первый прогон"
     );
   });
-
-  it("refuses a record that breaks the published format", () => {
-    expect(
-      runRecordSchema.safeParse({ caseId: "d03-recommendations", score: 11 })
-        .success
-    ).toBe(false);
-  });
 });

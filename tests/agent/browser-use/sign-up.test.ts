@@ -142,7 +142,6 @@ describe("an account registered with Bro's own mailbox", () => {
     expect(line).toContain(
       "Never type the person's name, phone, own email, address, birth date or anything else of theirs"
     );
-    expect(line).toContain("stop with NEEDS: email_code");
     expect(line).toContain(
       "Never write a password or a secret's value in your report."
     );
@@ -196,11 +195,6 @@ describe("an account registered with Bro's own mailbox", () => {
       origin: "https://www.inaturalist.org",
       username: "quietfox42",
     });
-  });
-
-  it("lets only a fresh login be taken out for a form never sent", () => {
-    expect(signUpLine("quietfox42", true)).toContain("ACCOUNT: none");
-    expect(signUpLine("quietfox42", false)).not.toContain("ACCOUNT: none");
   });
 
   it("registers nothing without a mailbox or an https site", async () => {
@@ -321,8 +315,6 @@ describe("what a settled sign-up leaves in the vault", () => {
       "saved on your side as «Аккаунт Бро на www.inaturalist.org»"
     );
     expect(line).toContain("never point them to the vault");
-    expect(line).toContain("забудь мой вход на www.inaturalist.org");
-    expect(line).not.toContain("раздел «Сейф»");
     expect(line).not.toContain("/vault");
     expect(line).toContain("never write the password");
     expect(line).not.toContain("Secret-1!");

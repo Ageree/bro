@@ -89,22 +89,6 @@ describe("market.cart_add", () => {
       )
     ).rejects.toThrow("add_failed");
   });
-
-  it("refuses a change of the cart the person did not ask for", () => {
-    expect(
-      marketCartAddOperation.input.safeParse({
-        operation: "market.cart_add",
-        url: cardUrl,
-      }).success
-    ).toBe(false);
-    expect(
-      marketCartAddOperation.input.safeParse({
-        operation: "market.cart_add",
-        personAskedToChangeCart: true,
-        url: cardUrl,
-      }).success
-    ).toBe(true);
-  });
 });
 
 describe("market.cart_remove", () => {

@@ -18,18 +18,12 @@ beforeEach(() => {
 });
 
 describe("auth proxy matcher", () => {
-  it("does not match public fonts", () => {
-    expect(
-      unstable_doesMiddlewareMatch({
-        config,
-        nextConfig: {},
-        url: "/fonts/vault-variable.woff2",
-      })
-    ).toBe(false);
-  });
-
-  it("does not match the brand assets the landing shows", () => {
-    for (const url of ["/brand/hero-portrait.mp4", "/brand/bro-og.png"]) {
+  it("does not match the public fonts and brand assets the landing shows", () => {
+    for (const url of [
+      "/fonts/vault-variable.woff2",
+      "/brand/hero-portrait.mp4",
+      "/brand/bro-og.png",
+    ]) {
       expect(
         unstable_doesMiddlewareMatch({ config, nextConfig: {}, url })
       ).toBe(false);

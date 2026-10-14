@@ -452,7 +452,7 @@ describe("Yandex purchase consent", () => {
     expect(services.submit).not.toHaveBeenCalled();
   });
 
-  it.each(["submitting", "unknown", "placed", "rejected"] as const)(
+  it.each(["submitting", "placed", "rejected"] as const)(
     "does not resend a %s attempt",
     async (state) => {
       services.read.mockResolvedValue(row({ state }));

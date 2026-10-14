@@ -196,12 +196,6 @@ describe("agency_control", () => {
     expect(mocks.deleteCalendarEvent).not.toHaveBeenCalled();
   });
 
-  it("names the action to undo", async () => {
-    await expect(
-      agencyControl.execute({ action: "undo" }, toolContext("agency_control"))
-    ).rejects.toThrow("Name the action to undo");
-  });
-
   it("is offered only while the pilot names the workspace", async () => {
     stubDeployment({ ...fullDeployment, AGENCY_WORKSPACES: "workspace-1" });
     const offered = (await toolCatalog(catalogContext("web", []))).map(

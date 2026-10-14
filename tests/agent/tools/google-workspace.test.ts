@@ -424,35 +424,31 @@ describe("an email the person declined on its card", () => {
     );
   });
 
-  it("is not a policy's own refusal, which showed no card", async () => {
-    const draft = await resolveGmailTool(
-      "gmail-draft",
-      declinedSendTurn(false, true)
-    );
-    expect(draft.description).not.toContain("just declined");
-  });
-
-  it("changes nothing once sent", async () => {
-    const draft = await resolveGmailTool("gmail-draft", declinedSendTurn(true));
-    expect(draft.description).not.toContain("just declined");
-  });
-
-  it("is not saved twice", async () => {
-    const draft = await resolveGmailTool("gmail-draft", [
-      ...declinedSendTurn(false),
-      {
-        content: [
+  it("is not saved after a policy's own refusal, once sent, or twice", async () => {
+    const drafts = await Promise.all(
+      [
+        // A policy's own refusal showed no card.
+        declinedSendTurn(false, true),
+        declinedSendTurn(true),
+        [
+          ...declinedSendTurn(false),
           {
-            input: { body: "…", to: ["irina@example.com"] },
-            toolCallId: "call-draft",
-            toolName: "gmail-draft",
-            type: "tool-call" as const,
+            content: [
+              {
+                input: { body: "…", to: ["irina@example.com"] },
+                toolCallId: "call-draft",
+                toolName: "gmail-draft",
+                type: "tool-call" as const,
+              },
+            ],
+            role: "assistant" as const,
           },
         ],
-        role: "assistant" as const,
-      },
-    ]);
-    expect(draft.description).not.toContain("just declined");
+      ].map(async (messages) => resolveGmailTool("gmail-draft", messages))
+    );
+    for (const draft of drafts) {
+      expect(draft.description).not.toContain("just declined");
+    }
   });
 });
 

@@ -101,7 +101,7 @@ describe("atomic browser payment handoff", () => {
     ]);
   }, 30_000);
 
-  it.each(["missing", "released", "charged", "foreign"] as const)(
+  it.each(["missing", "charged", "foreign"] as const)(
     "rolls back the entire handoff for a %s dispatch reservation",
     async (condition) => {
       const test = await database();

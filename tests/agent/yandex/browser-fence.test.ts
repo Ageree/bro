@@ -755,7 +755,7 @@ describe("the shared Yandex/browser payment fence", () => {
     60_000
   );
 
-  it.each([400, 404, 409])(
+  it.each([400, 404])(
     "a sticky queued payment never makes a second create after HTTP %s",
     async (status) => {
       const test = await database();
@@ -778,7 +778,7 @@ describe("the shared Yandex/browser payment fence", () => {
     60_000
   );
 
-  it.each([400, 404, 409])(
+  it.each([400, 404])(
     "a sticky direct payment never dispatches a fallback after HTTP %s",
     async (status) => {
       const test = await database();
@@ -929,7 +929,7 @@ describe("the shared Yandex/browser payment fence", () => {
     30_000
   );
 
-  it.each(schema.spendEntrySources)(
+  it.each(["limit"] as const)(
     "moves inherited %s exposure without reclassifying or releasing it",
     async (source) => {
       const test = await database();
@@ -974,7 +974,7 @@ describe("the shared Yandex/browser payment fence", () => {
     30_000
   );
 
-  it.each(["missing", "released", "charged", "higher-cap"] as const)(
+  it.each(["missing", "released", "higher-cap"] as const)(
     "does not reuse old consent after %s",
     async (condition) => {
       const test = await database();

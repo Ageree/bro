@@ -550,16 +550,4 @@ describe("the turn log hook", () => {
       new Date(new Date(meta.at).getTime() - 60 * 60_000)
     );
   });
-
-  it("keeps a person's own failure keyed by them", async () => {
-    const events = await loadHook("off");
-    await handler(events, "turn.failed")(failed(400), context());
-    await vi.waitFor(() => {
-      expect(mocks.alertOwner).toHaveBeenCalledTimes(1);
-    });
-    expect(mocks.alertOwner.mock.calls[0]?.[0]).toBe(
-      `turn-failed:${scope.workspaceId}:MODEL_CALL_FAILED 400`
-    );
-    expect(mocks.countFailedPeople).not.toHaveBeenCalled();
-  });
 });

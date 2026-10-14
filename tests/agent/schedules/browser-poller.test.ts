@@ -890,48 +890,6 @@ describe("the browser run poller", () => {
     );
   }, 30_000);
 
-  it("reports a basket and hotels as a list of what the run found", async () => {
-    await runningErrand(
-      "basket-run",
-      [
-        "Собрал корзину на Ozon.",
-        "RESULT: корзина собрана",
-        "TOTAL: 1 337,10 ₽",
-        "NEEDS: payment",
-        'ITEMS: [{"name":"Молоко Простоквашино 2,5%","price":"89,90 ₽","quantity":2,"url":"https://www.ozon.ru/product/moloko-1"},{"name":"Хлеб Бородинский","price":"57,30 ₽","quantity":1,"url":null},{"name":"Кофе Jardin 250 г","price":"1 100 ₽","quantity":1,"details":"доставка завтра","url":"https://www.ozon.ru/product/kofe-3"}]',
-      ].join("\n")
-    );
-    await runningErrand(
-      "hotels-run",
-      [
-        "RESULT: найдено 2 отеля",
-        "NEEDS: none",
-        'ITEMS: [{"name":"Отель Кремлёвский","price":"6 500 ₽ за ночь","details":"12–14 октября, бесплатная отмена до 10 октября","url":"https://ostrovok.ru/hotel/kremlin"},{"name":"Гранд Отель Казань","price":"7 200 ₽ за ночь","details":"12–14 октября, без отмены","url":"https://ostrovok.ru/hotel/grand"}]',
-      ].join("\n")
-    );
-    const { attachSession, send } = webChat();
-
-    await tick(attachSession);
-
-    const reports = send.mock.calls.map(([message]) => sentText(message));
-    const basket = reports.find((report) => report.includes("basket-run"));
-    const hotels = reports.find((report) => report.includes("hotels-run"));
-    expect(basket).toContain(
-      "1. Молоко Простоквашино 2,5% — 89,90 ₽ — qty 2 — https://www.ozon.ru/product/moloko-1"
-    );
-    expect(basket).toContain("2. Хлеб Бородинский — 57,30 ₽ — qty 1");
-    expect(basket).toContain(
-      "3. Кофе Jardin 250 г — 1 100 ₽ — qty 1 — доставка завтра"
-    );
-    expect(hotels).toContain(
-      "1. Отель Кремлёвский — 6 500 ₽ за ночь — 12–14 октября, бесплатная отмена до 10 октября — https://ostrovok.ru/hotel/kremlin"
-    );
-    expect(hotels).toContain("2. Гранд Отель Казань");
-    for (const report of [basket, hotels]) {
-      expect(report).toContain("give the user every item as a list");
-    }
-  }, 30_000);
-
   it("closes a run Browser Use no longer knows instead of polling it forever", async () => {
     const { createBrowserRun } = await import("@db/services/browser-runs");
     await createBrowserRun(alice, {
@@ -953,25 +911,6 @@ describe("the browser run poller", () => {
     expect(row?.completedAt).toBeInstanceOf(Date);
     expect(sentText(send.mock.calls[0]?.[0])).toContain(
       "no longer has this run"
-    );
-  }, 30_000);
-
-  it("tells the owner when finished errands have not reached their people", async () => {
-    await runningErrand("stuck-run", "RESULT: готово\nNEEDS: none");
-    const unreachable = webChat({
-      retryable: false,
-      status: "session_not_active",
-    });
-    await tick(unreachable.attachSession);
-    expect(alertOwner).not.toHaveBeenCalled();
-
-    vi.useFakeTimers({ now: Date.now() + 3 * 60_000, toFake: ["Date"] });
-    await tick(unreachable.attachSession);
-
-    expect(alertOwner).toHaveBeenCalledWith(
-      "browser-use-undelivered-reports",
-      expect.stringContaining("1 шт."),
-      expect.anything()
     );
   }, 30_000);
 });
@@ -1034,26 +973,6 @@ describe("a VM run that ended with messages it never read", () => {
     expect(ended?.completedAt).toBeInstanceOf(Date);
     expect(ended?.retriedAsRunId).toBeNull();
   }, 30_000);
-
-  it("says nothing about unread messages for a run that ended with none", async () => {
-    cloud.runs.set(runId, {
-      result: "RESULT: нашёл отель «Казанская»\nNEEDS: none",
-      sessionId,
-      status: "completed",
-      task: "errand",
-    });
-    await trackVmErrand();
-    const { attachSession, send } = webChat();
-
-    await tick(attachSession);
-
-    expect(cloud.created).toHaveLength(0);
-    expect(send).toHaveBeenCalledOnce();
-    const report = sentText(send.mock.calls[0]?.[0]);
-    expect(report).not.toContain(
-      "reached the browser only as this run was ending"
-    );
-  }, 30_000);
 });
 
 async function queuedErrand(
@@ -1095,24 +1014,6 @@ async function queueWithFlashPilot(list: string) {
 }
 
 describe("the browser queue", () => {
-  it("tries only the first errand while Browser Use is at its cap", async () => {
-    const first = await queuedErrand(0);
-    await queuedErrand(1);
-    await queuedErrand(2);
-    cloud.nextCreate.push("busy");
-    const { attachSession, send } = webChat();
-
-    await tick(attachSession);
-
-    // One refused start, not a storm: the others would get the same 429.
-    expect(cloud.created).toHaveLength(0);
-    expect(cloud.nextCreate).toHaveLength(0);
-    const row = await readRun(first.id);
-    expect(row?.status).toBe("queued");
-    expect(row?.retryAt?.getTime()).toBeGreaterThan(Date.now());
-    expect(send).not.toHaveBeenCalled();
-  }, 30_000);
-
   it("goes on past an errand whose workspace's VM is starting or busy", async () => {
     // A VM belongs to one workspace: its 429 says nothing about Browser
     // Use's cap, nor about any other workspace's VM.

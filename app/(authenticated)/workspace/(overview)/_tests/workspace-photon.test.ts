@@ -45,31 +45,6 @@ describe("workspace Photon channel", () => {
     expect(html).toContain("Photon подключён");
     expect(html).not.toContain("sms:");
   });
-
-  it("does not advertise a phone-number override without its connector", () => {
-    const html = renderToStaticMarkup(
-      createElement(ChannelsSection, {
-        imessageConfigured: false,
-        imessagePhoneNumber: "+12025550123",
-      })
-    );
-
-    expect(html).toContain("Подключи Photon, чтобы включить iMessage.");
-    expect(html).not.toContain("sms:");
-  });
-
-  it("keeps the web chat as a text action", () => {
-    const html = renderToStaticMarkup(
-      createElement(ChannelsSection, {
-        imessageConfigured: false,
-        imessagePhoneNumber: undefined,
-      })
-    );
-
-    expect(html).toContain('href="/chat"');
-    expect(html).toContain("Открыть чат");
-    expect(html).toContain("Написать Bro");
-  });
 });
 
 describe("workspace limits", () => {

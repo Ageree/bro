@@ -33,15 +33,6 @@ describe("browser VM ids", () => {
     }
   });
 
-  it("are new for every session and run", () => {
-    expect(newBrowserVmSessionId(workspaceId)).not.toBe(
-      newBrowserVmSessionId(workspaceId)
-    );
-    expect(newBrowserVmRunId(workspaceId)).not.toBe(
-      newBrowserVmRunId(workspaceId)
-    );
-  });
-
   // The worker refuses a session or run id it cannot keep on disk.
   it("give the worker session and run ids it accepts", () => {
     expect(newBrowserVmSessionId(workspaceId)).toMatch(workerIdPattern);

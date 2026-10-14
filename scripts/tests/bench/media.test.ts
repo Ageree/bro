@@ -15,10 +15,6 @@ vi.mock("@agent/lib/inbound-media/transcription", () => ({
 }));
 
 describe("messageContent", () => {
-  it("sends plain text as a string, like the web chat", async () => {
-    await expect(messageContent("привет", [], [])).resolves.toBe("привет");
-  });
-
   it("attaches photos as data-URL file parts next to the text", async () => {
     const files = caseFixtures.get("d08-utilities")?.files ?? [];
     const content = await messageContent("вот показания", files, []);

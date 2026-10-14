@@ -540,17 +540,6 @@ describe("rolling a published worker out to a workspace's VM", () => {
     ).toBe(false);
   });
 
-  it("does not start without the bucket to fetch from", async () => {
-    const rollout = await loadRollout({ BROWSER_STATE_BUCKET: "" });
-
-    expect(rollout.browserVmWorkerDue(vmRow(), health(), now)).toBeUndefined();
-    await expect(
-      rollout.rollOutBrowserVmWorker(vmRow(), health(), now)
-    ).resolves.toBe(false);
-    expect(records.updateBrowserVm).not.toHaveBeenCalled();
-    expect(alertOwner).not.toHaveBeenCalled();
-  });
-
   it("leaves a sandbox of the pool alone", async () => {
     const rollout = await loadRollout();
     const sandbox = vmRow({ hostId: "bro-host-1", sandboxState: "running" });

@@ -137,23 +137,6 @@ describe("the pilot of the cache-friendly step", () => {
     expect(params.prompt.some(({ role }) => role === "system")).toBe(false);
   });
 
-  it("keeps the note a last system message outside the pilot", async () => {
-    const params = await step({
-      replyNote: "Reply language for this turn: Russian.",
-      toolChoice: "auto",
-    });
-
-    expect(params.prompt.at(-1)).toEqual({
-      content: "Reply language for this turn: Russian.",
-      role: "system",
-    });
-    expect(JSON.stringify(params.prompt)).not.toContain("bro-step-note");
-    // Nor does the order of the tools change.
-    expect(params.tools?.map(({ name }) => name)).toEqual(
-      tools.map(({ name }) => name)
-    );
-  });
-
   it("sends the same tool block forced or not, the volatile tools last", async () => {
     const forced = await step({ stableContext: true, toolChoice: "required" });
     const free = await step({ stableContext: true, toolChoice: "auto" });

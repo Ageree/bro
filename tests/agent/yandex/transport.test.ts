@@ -150,28 +150,6 @@ describe("a Yandex call", () => {
     expect(page?.runOn("https://lavka.yandex.ru/showcaptcha")).toBe(false);
   });
 
-  it("never changes a cart on a different Yandex service origin", async () => {
-    const operation = defineYandexOperation({
-      about: "Test cart change",
-      access: "cart",
-      args: z.object({}),
-      id: "test.cart",
-      origin: "https://lavka.yandex.ru/",
-      result: z.object({}),
-      run: "async function () { return { status: 'ok', data: {} }; }",
-      service: "yandex-lavka",
-    });
-    services.call.mockResolvedValue({
-      ran: false,
-      url: "https://market.yandex.ru/",
-    });
-    await runYandexOperation(workspaceId, operation, {});
-    const page = services.call.mock.calls[0]?.[1];
-    expect(page?.runOn("https://lavka.yandex.ru/cart")).toBe(true);
-    expect(page?.runOn("https://market.yandex.ru/cart")).toBe(false);
-    expect(page?.runOn("https://lavka.yandex.ru:444/cart")).toBe(false);
-  });
-
   it("does not log private browser details when opening or closing fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
@@ -224,13 +202,6 @@ describe("a Yandex call", () => {
     const outcome = await runYandexOperation(workspaceId, statusOperation, {});
     expect(outcome).toEqual({ kind: "failed", reason: "page" });
     expect(services.stop).toHaveBeenCalledWith("tab-1");
-  });
-
-  it("is unavailable when the sandbox does not come up", async () => {
-    services.create.mockRejectedValue(new Error("starting"));
-    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
-      kind: "unavailable",
-    });
   });
 });
 

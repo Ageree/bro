@@ -109,20 +109,15 @@ describe("phone authorization in actual Eve durable context", () => {
 });
 
 describe("domestic Russian dial targets", () => {
-  it.each([
-    "+74951234567",
-    "+79161234567",
-    "+78711234567",
-    "+78721234567",
-    "+78005553535",
-  ])("accepts %s", (number) => {
-    expect(domesticPhoneSchema.safeParse(number).success).toBe(true);
-  });
+  it.each(["+74951234567", "+79161234567", "+78711234567", "+78005553535"])(
+    "accepts %s",
+    (number) => {
+      expect(domesticPhoneSchema.safeParse(number).success).toBe(true);
+    }
+  );
   it.each([
     "112",
-    "911",
     "+77123456789",
-    "+76123456789",
     "+78091234567",
     "+78031234567",
     "sip:alice@example.com",

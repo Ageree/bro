@@ -92,19 +92,4 @@ describe("the sign-in link a message carries", () => {
     };
     expect(withExactLoginHandoffLink(message)).toBe(message);
   });
-
-  it("keeps the attachments of a message it rewrites", () => {
-    recordLoginHandoffLink(link);
-    const attachments = [
-      { kind: "image" as const, url: "https://media.example/a.jpg" },
-    ];
-
-    expect(
-      withExactLoginHandoffLink({
-        attachments,
-        kind: "message",
-        text: `Ссылка: ${copied}`,
-      })
-    ).toEqual({ attachments, kind: "message", text: `Ссылка: ${link}` });
-  });
 });

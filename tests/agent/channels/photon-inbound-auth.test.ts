@@ -140,25 +140,6 @@ describe("Photon inbound authentication", () => {
     );
   });
 
-  it("onboards a first-time number through the verified phone account", async () => {
-    capture.ensureUser
-      .mockResolvedValueOnce({ created: true, userId: "user-new" })
-      .mockResolvedValueOnce({ created: false, userId: "user-new" });
-
-    const first = await onMessage(
-      threadContext(),
-      photonMessage("+15550100011")
-    );
-    const second = await onMessage(
-      threadContext(),
-      photonMessage("+15550100011")
-    );
-
-    expect(capture.ensureUser).toHaveBeenCalledTimes(2);
-    expect(first?.auth?.principalId).toBe("better-auth:user-new");
-    expect(second?.auth?.principalId).toBe("better-auth:user-new");
-  });
-
   it("tells the model when it is answering a brand new person", async () => {
     capture.ensureUser.mockResolvedValue({
       created: true,

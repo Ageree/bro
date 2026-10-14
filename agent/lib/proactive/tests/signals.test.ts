@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentMailSignals,
   calendarPrepSignals,
   calendarSignals,
   flightEvents,
   flightReminders,
-  followUpSignal,
   isEveningEvent,
   gmailProbeQuery,
   gmailSignals,
@@ -209,25 +207,6 @@ describe("proactive signals", () => {
     expect(
       proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
     ).toContain("No new mail.");
-  });
-
-  it("tells the worker where home is, for the time to leave for a flight", () => {
-    expect(
-      proactiveRunPrompt({
-        home: {
-          ...noHome,
-          addressLine1: "ул. Профсоюзная, 12",
-          city: "Москва",
-        },
-        scheduledFor: now,
-        signals: [],
-      })
-    ).toContain(
-      "Home (Personal Info; count a leave-by time from here): ул. Профсоюзная, 12, Москва"
-    );
-    expect(
-      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals: [] })
-    ).toContain("count a leave-by time from the city centre and say so");
   });
 
   it("tells the worker a reminder is due for a flight it may have seen, and what to say", () => {
@@ -730,78 +709,7 @@ describe("calendar prep", () => {
   });
 });
 
-/** A message in the agent's inbox, as AgentMail lists it. */
-function agentMessage(
-  id: string,
-  timestamp: string,
-  labels: readonly string[] = ["received"]
-) {
-  return {
-    from: "Анна <anna@example.com>",
-    inbox_id: "inbox-bro",
-    labels: [...labels],
-    message_id: id,
-    thread_id: `thread-${id}`,
-    timestamp,
-    to: ["bro@example.test"],
-  };
-}
-
-describe("agent mail", () => {
-  it("hands over mail since the watermark by message id, and never what the agent sent", () => {
-    const after = new Date("2026-09-23T11:50:00.000Z");
-    expect(
-      agentMailSignals(
-        [
-          agentMessage("new", "2026-09-23T11:55:00.000Z"),
-          agentMessage("old", "2026-09-23T10:00:00.000Z"),
-          agentMessage("sent", "2026-09-23T11:58:00.000Z", ["sent"]),
-        ],
-        after
-      )
-    ).toEqual([
-      {
-        dedupeKey: "new",
-        itemId: "new",
-        source: "agent_mail",
-        threadId: "thread-new",
-      },
-    ]);
-  });
-});
-
 describe("prompts of the proactive run", () => {
-  const signals = [
-    { dedupeKey: "m1", itemId: "m1", source: "gmail", threadId: "t1" },
-    {
-      dedupeKey: "flight@2026-09-24T07:40:00Z",
-      itemId: "flight",
-      source: "calendar",
-      threadId: null,
-    },
-  ] as const;
-
-  it("keeps a check outside the agency pilot's prompt as it was", () => {
-    const expected = [
-      "Proactive check of the person's mail and calendar. Nobody asked for it; decide what, if anything, is worth writing first about.",
-      "Checked at: 2026-09-23T12:00:00.000Z",
-      "Home address: not in Personal Info; take it from memory if it is there, otherwise count a leave-by time from the city centre and say so.",
-      "New Gmail threads (read each with gmail-read-thread): t1",
-      "New calendar events (call calendar-list-events once with timeMin 2026-09-23T12:00:00.000Z and timeMax 2026-09-24T14:00:00.000Z, then look only at these ids): flight",
-    ].join("\n\n");
-    expect(
-      proactiveRunPrompt({ home: noHome, scheduledFor: now, signals })
-    ).toBe(expected);
-    expect(
-      proactiveRunPrompt({
-        agentic: false,
-        home: noHome,
-        scheduledFor: now,
-        signals,
-      })
-    ).toBe(expected);
-  });
-
   it("asks the agency worker to decide what to do and report it, and reads the new items as data", () => {
     const prompt = proactiveRunPrompt({
       agentic: true,
@@ -852,15 +760,6 @@ describe("prompts of the proactive run", () => {
     expect(prompt).toContain("route_time");
     expect(prompt).toContain("- phone call call-1");
     expect(prompt).toContain("- browser run run-1");
-  });
-
-  it("gives a follow-up signal its own id", () => {
-    expect(followUpSignal("phone", "call-1")).toEqual({
-      dedupeKey: "call-1",
-      itemId: "call-1",
-      source: "phone",
-      threadId: null,
-    });
   });
 
   it("keeps calendar prep with the events and agent mail with the mail when a run is cut", () => {

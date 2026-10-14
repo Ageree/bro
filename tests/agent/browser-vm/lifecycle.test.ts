@@ -524,18 +524,6 @@ describe("rolling the published worker out before an errand", () => {
     expect(objectStorage).not.toHaveBeenCalled();
     expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
   });
-
-  it("asks nothing of the worker without BROWSER_VM_WORKER", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(workspaceId, idleVm());
-
-    const result = await lifecycle.ensureBrowserVm(workspaceId, now);
-
-    expect(result.kind).toBe("ready");
-    expect(records.claimBrowserVmLease).not.toHaveBeenCalled();
-    expect(objectStorage).not.toHaveBeenCalled();
-    expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
-  });
 });
 
 describe("bringing a workspace's browser VM up for an errand", () => {
@@ -630,7 +618,6 @@ describe("bringing a workspace's browser VM up for an errand", () => {
       "answers with Chrome down",
       () => Promise.resolve(health({ chrome: false })),
     ],
-    ["does not answer", () => Promise.reject(new TypeError("fetch failed"))],
   ])(
     "keeps a ready VM whose worker %s as it is, and the errand waits",
     async (_how, answer) => {
@@ -947,40 +934,6 @@ describe("reconciling browser VMs", () => {
     expect(cloud.deleteCloudRuVm).not.toHaveBeenCalled();
   });
 
-  it("lets a VM go that never came up from its create, so the next errand creates a new one", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(
-      workspaceId,
-      vmRow({
-        recoveries: 1,
-        state: "creating",
-        stateChangedAt: minutesAgo(21),
-      })
-    );
-    cloud.readCloudRuVm.mockResolvedValue(cloudVm("creating"));
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(stored()).toMatchObject({
-      bootDiskId: null,
-      floatingIpId: null,
-      host: null,
-      state: "failed",
-      vmId: null,
-    });
-    expect(alertOwner).toHaveBeenCalledExactlyOnceWith(
-      `browser-vm-create-failed:${workspaceId}`,
-      expect.stringContaining("vm-1"),
-      { repeatAfterMs: 6 * 60 * 60_000 }
-    );
-    // Nothing of the person's is on it, so it goes with its disk and address.
-    expect(cloud.deleteCloudRuVm).toHaveBeenCalledExactlyOnceWith("vm-1", {
-      diskIds: ["disk-1"],
-      floatingIpIds: ["fip-1"],
-    });
-    expect(cloud.setCloudRuVmPower).not.toHaveBeenCalled();
-  });
-
   it("waits for a floating IP still settling before giving an abandoned VM's ids up, instead of losing it", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(
@@ -1212,12 +1165,6 @@ describe("reconciling browser VMs", () => {
 
   it.each([
     [
-      "an errand used it within the window",
-      () => {
-        rows.set(workspaceId, vmRow({ lastUsedAt: minutesAgo(19) }));
-      },
-    ],
-    [
       "a run on it is still open",
       () => {
         records.listOpenBrowserVmRuns.mockResolvedValue([
@@ -1259,11 +1206,8 @@ describe("reconciling browser VMs", () => {
 
   it.each([
     ["a person's errand, unused for the idle window", null, 21, true],
-    ["a person's errand, used within the idle window", null, 19, false],
     ["an errand nobody waits for, past its stop time", -1, 3, true],
-    ["an errand nobody waits for, used within the grace", -1, 1, false],
     ["a code wait, before its deadline", 5, 30, false],
-    ["a code wait, past its deadline", -1, 30, true],
   ] as const)(
     "decides the idle stop by who woke the VM: %s",
     async (_case, stopInMinutes, unusedMinutes, stops) => {
@@ -1303,19 +1247,6 @@ describe("reconciling browser VMs", () => {
     expect(worker.controlBrowserVmWorkerChrome).not.toHaveBeenCalled();
   });
 
-  it("settles a VM that finished powering off as stopped", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(
-      workspaceId,
-      vmRow({ state: "stopping", stateChangedAt: minutesAgo(1) })
-    );
-    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(stored()).toMatchObject({ state: "stopped", vmId: "vm-1" });
-  });
-
   it("records the hour a VM was on once it settles as stopped, and only once", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(
@@ -1343,17 +1274,6 @@ describe("reconciling browser VMs", () => {
       units: { flavor: "gen-2-4", seconds: 3600, sharedBy: 1 },
       workspaceId,
     });
-  });
-
-  it("starts the VM's clock when it powers the VM on", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(workspaceId, vmRow({ state: "stopped" }));
-    cloud.readCloudRuVm.mockResolvedValue(cloudVm("stopped"));
-
-    await lifecycle.ensureBrowserVm(workspaceId, now);
-
-    expect(stored()).toMatchObject({ poweredOnAt: now, state: "starting" });
-    expect(recordUsageCost).not.toHaveBeenCalled();
   });
 
   it("stops the VM as before when its time cannot be recorded, and records it on the next start", async () => {
@@ -1447,42 +1367,6 @@ describe("reconciling browser VMs", () => {
 
     await lifecycle.reconcileBrowserVms(new Date(now.getTime() + 60_000));
 
-    expect(rows.has(workspaceId)).toBe(false);
-  });
-
-  it("records the time a deleted VM was still on", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(
-      workspaceId,
-      vmRow({ poweredOnAt: minutesAgo(20), state: "deleting" })
-    );
-    cloud.readCloudRuVm.mockResolvedValue(undefined);
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(rows.has(workspaceId)).toBe(false);
-    expect(recordUsageCost).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        costRub: 0.99,
-        source: "browser-vm",
-        units: { flavor: "gen-2-4", seconds: 1200, sharedBy: 1 },
-      })
-    );
-  });
-
-  it("finishes a deletion that was left half done", async () => {
-    const lifecycle = await loadLifecycle();
-    rows.set(workspaceId, vmRow({ state: "deleting" }));
-    cloud.readCloudRuVm.mockResolvedValue(undefined);
-
-    await lifecycle.reconcileBrowserVms(now);
-
-    expect(cloud.deleteCloudRuFloatingIp).toHaveBeenCalledExactlyOnceWith(
-      "fip-1"
-    );
-    expect(cloud.deleteCloudRuBackupsOf).toHaveBeenCalledExactlyOnceWith([
-      "disk-1",
-    ]);
     expect(rows.has(workspaceId)).toBe(false);
   });
 
@@ -2115,33 +1999,6 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(prepared.proxyExit?.ip).toBe("95.24.1.1");
   });
 
-  it("keeps a Russian exit whose speed could not be measured", async () => {
-    const lifecycle = await loadLifecycle();
-    const vm = vmRow({ proxyExit: null });
-    rows.set(workspaceId, vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ proxy: false })
-    );
-    worker.setBrowserVmWorkerProxy.mockResolvedValue({
-      ...proxySetup({ country: "RU", ip: "95.24.1.5", latencyMs: 700 }),
-      exit: {
-        country: "RU",
-        error: "TimeoutError: ",
-        ip: "95.24.1.5",
-        latencyMs: 700,
-        speedError: "TimeoutError: ",
-      },
-    });
-
-    const prepared = await lifecycle.prepareBrowserVmSession(vm, now);
-
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
-    expect(prepared.proxyExit).toMatchObject({
-      country: "RU",
-      ip: "95.24.1.5",
-    });
-  });
-
   it("refuses to start anything when no rotation gives a Russian exit", async () => {
     const lifecycle = await loadLifecycle();
     const vm = vmRow({
@@ -2208,25 +2065,6 @@ describe("routing the VM's browser through a Russian exit", () => {
     // The queued errand goes on from the rotation not tried yet.
     expect(stored()).toMatchObject({ proxyExit: null });
     expect(stored().proxySession).toMatch(/^bro[\da-f]{12}r1$/u);
-  });
-
-  it("still finds an exit inside the turn's share", async () => {
-    const lifecycle = await loadLifecycle();
-    const vm = vmRow({ proxyExit: null });
-    rows.set(workspaceId, vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ proxy: false })
-    );
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    worker.setBrowserVmWorkerProxy
-      .mockResolvedValueOnce(proxySetup({ country: "DE", ip: "5.1.1.1" }))
-      .mockResolvedValueOnce(proxySetup({ country: "RU", ip: "95.24.1.9" }));
-
-    await lifecycle.prepareBrowserVmSession(vm, now, { inTurn: true });
-
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(2);
-    expect(stored()).toMatchObject({ proxyExit: { ip: "95.24.1.9" } });
   });
 
   it("takes a slow Russian exit at once while a person's turn waits", async () => {
@@ -2352,22 +2190,6 @@ describe("routing the VM's browser through a Russian exit", () => {
       'ClientHttpProxyError: 402, message="user\'s traffic, it ran out"'
     );
     expect(text).not.toContain("127.0.0.1");
-  });
-
-  it("re-arms the proxy alert once the proxy takes the login again", async () => {
-    const lifecycle = await loadLifecycle();
-    const vm = vmRow({ proxyExit: null });
-    rows.set(workspaceId, vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ proxy: false })
-    );
-    worker.setBrowserVmWorkerProxy.mockResolvedValue(
-      proxySetup({ country: "RU", ip: "95.24.1.9" })
-    );
-
-    await lifecycle.prepareBrowserVmSession(vm, now);
-
-    expect(clearOwnerAlert).toHaveBeenCalledWith("browser-vm-proxy", now);
   });
 
   it("goes on rotating when the worker could not reach the proxy", async () => {

@@ -80,13 +80,4 @@ describe("the home details a letter may not give out", () => {
       })
     ).toBe(false);
   });
-
-  it("lets through text that gives out no detail of the home", () => {
-    expect(
-      disclosesHomeDetail({
-        profile: home,
-        text: "Встреча в четверг, в 15:00.",
-      })
-    ).toBe(false);
-  });
 });

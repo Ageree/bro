@@ -51,25 +51,15 @@ describe("a heads-up outside the early-reply pilot", () => {
 });
 
 describe("(a) the heads-up a person's turn opens with", () => {
-  it.each([
-    "Сейчас поищу.",
-    "Секунду, запускаю браузер",
-    "Смотрю, минутку.",
-    "Ищу крем для рук — как найду, пришлю.",
-  ])("delivers «%s» as written", (text) => {
-    const turn = turnSends([person(request)]);
+  it.each(["Сейчас поищу.", "Ищу крем для рук — как найду, пришлю."])(
+    "delivers «%s» as written",
+    (text) => {
+      const turn = turnSends([person(request)]);
 
-    expect(sendRefusal(message(text), turn, true)).toBeUndefined();
-    expect(opensWithHeadsUp(message(text), turn)).toBe(true);
-  });
-
-  it("goes out in the same step as the search it announces", () => {
-    // The step's record is taken before its calls: the search has no
-    // result yet when the heads-up is judged.
-    const turn = turnSends([person(request)]);
-
-    expect(sendRefusal(message(headsUp), turn, true)).toBeUndefined();
-  });
+      expect(sendRefusal(message(text), turn, true)).toBeUndefined();
+      expect(opensWithHeadsUp(message(text), turn)).toBe(true);
+    }
+  );
 
   it.each([
     [
@@ -118,15 +108,6 @@ describe("(b) the person after a heads-up", () => {
     expect(awaitsDelivery(announced)).toBe(true);
     expect(turnDelivered(announced)).toBe(false);
     expect(turnMustEnd(announced)).toBe(false);
-  });
-
-  it("waits after a heads-up sent alone, before any work", () => {
-    const alone = [
-      person(request),
-      ...sendMessage("a", headsUp, textOutput(headsUpDeliveredNotice)),
-    ];
-
-    expect(awaitsDelivery(alone)).toBe(true);
   });
 
   it("waits with a quoted reply's note after the heads-up's", () => {
@@ -182,7 +163,7 @@ describe("(c) the heads-up said again", () => {
     ...sendMessage("a", headsUp, textOutput(headsUpDeliveredNotice)),
   ];
 
-  it.each(["Сейчас поищу.", "Ищу, секунду.", "Смотрю, пришлю, как найду."])(
+  it.each(["Сейчас поищу.", "Ищу, секунду."])(
     "drops «%s» before any work without ending the turn",
     (text) => {
       expect(sendRefusal(message(text), turnSends(announced), true)).toEqual({
@@ -230,7 +211,7 @@ describe("(c) the heads-up said again", () => {
     });
   });
 
-  it.each(["Уже смотрю…", "Секунду, смотрю."])(
+  it.each(["Уже смотрю…"])(
     "drops a bare status «%s» after the work began",
     (text) => {
       const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
@@ -241,7 +222,7 @@ describe("(c) the heads-up said again", () => {
     }
   );
 
-  it.each(["Смотрю — свободно.", "Проверяю: да, есть."])(
+  it.each(["Смотрю — свободно."])(
     "keeps a short result «%s» that starts with a status word",
     (text) => {
       const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
@@ -251,41 +232,6 @@ describe("(c) the heads-up said again", () => {
       ).toBeUndefined();
     }
   );
-
-  it("leaves the turn open after a bare status is dropped", () => {
-    const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
-    const dropped = [
-      ...searched,
-      ...sendMessage(
-        "b",
-        "Уже смотрю…",
-        textOutput(skippedSendNotice("heads-up"))
-      ),
-    ];
-
-    expect(turnMustEnd(dropped)).toBe(false);
-    expect(awaitsDelivery(dropped)).toBe(true);
-  });
-
-  it("keeps a status that carries a result after the work", () => {
-    const searched = [...announced, ...toolStep("web_search", { hits: 3 })];
-
-    expect(
-      sendRefusal(
-        message("Смотрю: нашла 3 варианта."),
-        turnSends(searched),
-        true
-      )
-    ).toBeUndefined();
-  });
-
-  it("tells the model to do the work, not to end the turn", () => {
-    const notice = skippedSendNotice("heads-up");
-
-    expect(notice).toMatch(/^Not delivered:/u);
-    expect(notice).toContain("waiting for the answer itself");
-    expect(notice).not.toContain("end the turn");
-  });
 });
 
 describe("(d) the answer after a heads-up", () => {

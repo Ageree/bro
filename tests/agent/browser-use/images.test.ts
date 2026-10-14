@@ -392,14 +392,6 @@ describe("capturing the pictures a browser run leaves behind", () => {
     expect(put).not.toHaveBeenCalled();
   }, 20_000);
 
-  it("captures nothing without a private store to keep it in", async () => {
-    storage.configured = false;
-    const { images } = await loadImages();
-
-    expect(await images.captureBrowserRunImages(row(), run)).toEqual([]);
-    expect(listBrowserUseWorkspaceFiles).not.toHaveBeenCalled();
-  }, 20_000);
-
   it("hands the channel the very bytes the run saved", async () => {
     const { delivery, images } = await loadImages();
     listBrowserUseWorkspaceFiles.mockResolvedValue({

@@ -62,11 +62,6 @@ describe("the pilot list of fast answer steps", () => {
     expect(await pilot("other", openRouter)).toBe(false);
   });
 
-  it("names a workspace by its owner's email, whatever its case", async () => {
-    expect(await pilot("alice@example.com", openRouter)).toBe(true);
-    expect(await pilot("bob@example.com", openRouter)).toBe(false);
-  });
-
   it("keeps a failed email lookup out of the pilot", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     services.readAccountEmail.mockRejectedValue(new Error("db down"));

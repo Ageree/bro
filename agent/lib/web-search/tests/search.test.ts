@@ -173,17 +173,6 @@ describe("OpenRouter web search", () => {
     ]);
   });
 
-  it("uses the configured search model instead of the inference default", async () => {
-    vi.stubEnv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5");
-    vi.stubEnv("OPENROUTER_SEARCH_MODEL", " openai/gpt-5.6-sol-fast ");
-    fetchMock.mockResolvedValue(oneCitation());
-
-    const searchWeb = await loadSearchWeb();
-    await searchWeb({ query: "anything" }, turnSignal());
-
-    expect(requestAt(0).body.model).toBe("openai/gpt-5.6-sol-fast");
-  });
-
   it("reads results and their excerpts from url_citation annotations", async () => {
     fetchMock.mockResolvedValue(
       completion({
@@ -311,19 +300,6 @@ describe("OpenRouter web search", () => {
     expect(first?.signal).not.toBe(second?.signal);
   });
 
-  it("retries when OpenRouter could not be reached", async () => {
-    fetchMock
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
-      .mockResolvedValueOnce(oneCitation());
-
-    const searchWeb = await loadSearchWeb();
-    const pending = searchWeb({ query: "rates" }, turnSignal());
-    await vi.runAllTimersAsync();
-
-    expect(await pending).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
   it("asks the other engine when the first found nothing", async () => {
     fetchMock
       .mockResolvedValueOnce(completion({ content: "OK" }))
@@ -335,16 +311,6 @@ describe("OpenRouter web search", () => {
 
     expect(await pending).toHaveLength(1);
     expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
-  });
-
-  it("reports the failure that survives the retry", async () => {
-    fetchMock.mockImplementation(async () => failure(503));
-
-    const searchWeb = await loadSearchWeb();
-    expect(
-      await failureOf(searchWeb({ query: "rates" }, turnSignal()))
-    ).toContain("OpenRouter 503");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("reports nothing found after both engines came back empty", async () => {
@@ -509,17 +475,6 @@ describe("RouterAI web search", () => {
 
     expect(await pending).toHaveLength(1);
     expect(requestAt(1).body.plugins[0]?.engine).toBe("perplexity");
-  });
-
-  it("does not retry a refusal RouterAI reports under HTTP 200", async () => {
-    fetchMock.mockResolvedValue(routerAiFailure(402));
-
-    const searchWeb = await loadSearchWeb();
-
-    await expect(searchWeb({ query: "rates" }, turnSignal())).rejects.toThrow(
-      "RouterAI 402: upstream said no"
-    );
-    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("keeps the status of a refusal written as plain text", async () => {

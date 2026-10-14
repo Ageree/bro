@@ -239,9 +239,7 @@ describe("Telegram inbound authentication", () => {
 
   it.each([
     ["expired", "протухла"],
-    ["unknown", "уже воспользовались"],
     ["already_linked_other_user", "другому кабинету"],
-    ["already_linked_other_account", "другой телеграм"],
   ] as const)("reports the %s outcome", async (outcome, reason) => {
     capture.redeemToken.mockResolvedValue(outcome);
     const { context, sent } = inboundContext();

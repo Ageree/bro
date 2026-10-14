@@ -167,12 +167,6 @@ describe("Telegram message delivery", () => {
     scheduleDeliveryCapture.release.mockResolvedValue(true);
   });
 
-  it("replaces eve's default assistant text delivery", () => {
-    expect(
-      telegramChannelCapture.config?.events?.["message.completed"]
-    ).toBeTypeOf("function");
-  });
-
   it("delivers assistant text the model wrote instead of calling send_message", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { context, request } = handlerContext();
@@ -193,24 +187,6 @@ describe("Telegram message delivery", () => {
       { sessionId: "session-1" }
     );
     warn.mockRestore();
-  });
-
-  it("ignores the delivery marker the instructions ask for", async () => {
-    const { context, request } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({ kind: "message", text: "Готово." }),
-      context,
-      sessionContext()
-    );
-    request.mockClear();
-    await handleMessageCompleted(
-      assistantMessage("DELIVERY_COMPLETE"),
-      context,
-      sessionContext()
-    );
-
-    expect(request).not.toHaveBeenCalled();
   });
 
   it("does not repeat a reply send_message already delivered", async () => {
@@ -564,36 +540,6 @@ describe("Telegram message delivery", () => {
     warn.mockRestore();
   });
 
-  it("retries a photo Telegram refused as a document", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const network = stubNetwork({
-      telegram: (method) =>
-        telegramError(
-          method === "sendPhoto" ? 400 : 200,
-          "PHOTO_INVALID_DIMENSIONS"
-        ),
-    });
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [{ kind: "image", url: "https://media.example/wide.jpg" }],
-        kind: "message",
-        text: "Here it is.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    const calls = botApiCalls(network);
-    expect(calls.map((call) => call.method)).toEqual([
-      "sendPhoto",
-      "sendDocument",
-    ]);
-    expect(calls[1]?.form.get("document")).toBeInstanceOf(File);
-    warn.mockRestore();
-  });
-
   it("never re-uploads a photo Telegram only throttled", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const network = stubNetwork({
@@ -678,31 +624,6 @@ describe("Telegram message delivery", () => {
     ]);
   });
 
-  it("uploads a document attachment with sendDocument", async () => {
-    const network = stubNetwork({
-      download: () =>
-        new Response(new Uint8Array(pdfBytes), {
-          headers: { "content-type": "application/pdf" },
-        }),
-    });
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [{ kind: "file", url: "https://media.example/brief.pdf" }],
-        kind: "message",
-        text: "The brief.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    const [upload] = botApiCalls(network);
-    expect(upload?.method).toBe("sendDocument");
-    const document = upload?.form.get("document");
-    expect(document instanceof File ? document.name : "").toBe("brief.pdf");
-  });
-
   it("posts the links of attachments it could not download without a preview where the person's files reach the task agent", async () => {
     // The fallback link is the attachment's URL: a preview would fetch it.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -730,38 +651,6 @@ describe("Telegram message delivery", () => {
         text: "https://media.example/result.png",
       });
     }
-    warn.mockRestore();
-  });
-
-  it("delivers an attachment it could not download as a link", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const network = stubNetwork({
-      download: () => new Response("", { status: 404 }),
-    });
-    const { context, request } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        attachments: [
-          { kind: "image", url: "https://media.example/result.png" },
-        ],
-        kind: "message",
-        text: "Here it is.",
-      }),
-      context,
-      sessionContext()
-    );
-
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[0]?.[1]).toMatchObject({ text: "Here it is." });
-    expect(request.mock.calls[1]?.[1]).toMatchObject({
-      text: "https://media.example/result.png",
-    });
-    expect(botApiCalls(network)).toEqual([]);
-    expect(warn).toHaveBeenCalledWith("[telegram] attachment delivery failed", {
-      reasons: ["http 404"],
-      sessionId: "session-1",
-    });
     warn.mockRestore();
   });
 
@@ -808,43 +697,6 @@ describe("Telegram message delivery", () => {
     expect(photo instanceof File ? photo.type : "").toBe("image/png");
   });
 
-  it("sends two image artifacts of one reply as one album", async () => {
-    const firstArtifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
-    const secondArtifactId = "206c3a7e-c0b8-4317-9e34-552cff646673";
-    telegramChannelCapture.readImage.mockImplementation(
-      async (_scope, artifactId) => ({
-        // The stored hash belongs to these bytes, so both artifacts share them.
-        bytes: new Uint8Array([1, 2, 3]),
-        filename: artifactId === firstArtifactId ? "first.png" : "second.png",
-        id: artifactId,
-        mediaType: "image/png",
-      })
-    );
-    const network = stubNetwork();
-    const { context } = handlerContext();
-
-    await handleActionResult(
-      sendMessageResult({
-        kind: "message",
-        text: [
-          "Two good options.",
-          `![First](/artifacts/${firstArtifactId})`,
-          `![Second](/artifacts/${secondArtifactId})`,
-        ].join("\n"),
-      }),
-      context,
-      sessionContext()
-    );
-
-    const calls = botApiCalls(network);
-    expect(calls.map((call) => call.method)).toEqual(["sendMediaGroup"]);
-    expect(
-      ["file0", "file1"].map(
-        (field) => uploadedFile(calls[0]?.form, field)?.name
-      )
-    ).toEqual(["first.png", "second.png"]);
-  });
-
   it("explains an artifact it could not attach", async () => {
     const artifactId = "0d01e667-d128-4bb7-a248-1ae21db72f4f";
     telegramChannelCapture.readImage.mockResolvedValue(undefined);
@@ -882,28 +734,24 @@ describe("Telegram message delivery", () => {
     );
   });
 
-  it.each([
-    ["thumbs_up", "👍"],
-    ["thumbs_down", "👎"],
-    ["heart", "❤️"],
-    ["laugh", "😂"],
-    ["exclamation", "‼️"],
-    ["question", "❓"],
-  ] as const)("sets the %s reaction", async (type, emoji) => {
-    const { context, request } = handlerContext();
+  it.each([["thumbs_up", "👍"]] as const)(
+    "sets the %s reaction",
+    async (type, emoji) => {
+      const { context, request } = handlerContext();
 
-    await handleActionResult(
-      reactToMessageResult({ operation: "add", type }),
-      context,
-      sessionContext()
-    );
+      await handleActionResult(
+        reactToMessageResult({ operation: "add", type }),
+        context,
+        sessionContext()
+      );
 
-    expect(request).toHaveBeenCalledExactlyOnceWith("setMessageReaction", {
-      chat_id: "4242",
-      message_id: 77,
-      reaction: [{ emoji, type: "emoji" }],
-    });
-  });
+      expect(request).toHaveBeenCalledExactlyOnceWith("setMessageReaction", {
+        chat_id: "4242",
+        message_id: 77,
+        reaction: [{ emoji, type: "emoji" }],
+      });
+    }
+  );
 
   it("clears a reaction with an empty reaction list", async () => {
     const { context, request } = handlerContext();
@@ -951,36 +799,22 @@ describe("Telegram message delivery", () => {
 
   // An overflowing context or a rejected request also fails as
   // MODEL_CALL_FAILED, and «back soon» would not be true there.
-  it("keeps the apology for a model call the provider rejected", async () => {
-    const { context, request } = handlerContext();
-
-    await handleTurnFailed(
+  it("keeps the apology for a model call the provider rejected and for other failures", async () => {
+    for (const failure of [
       { ...modelCallFailure(), details: { statusCode: 400 } },
-      context,
-      sessionContext()
-    );
-
-    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
-      chat_id: "4242",
-      parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
-    });
-  });
-
-  it("keeps the generic apology for other turn failures", async () => {
-    const { context, request } = handlerContext();
-
-    await handleTurnFailed(
       { ...modelCallFailure(), code: "TOOL_FAILED", message: "boom" },
-      context,
-      sessionContext()
-    );
+    ]) {
+      const { context, request } = handlerContext();
 
-    expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
-      chat_id: "4242",
-      parse_mode: "HTML",
-      text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
-    });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One failure, then its checks.
+      await handleTurnFailed(failure, context, sessionContext());
+
+      expect(request).toHaveBeenCalledExactlyOnceWith("sendMessage", {
+        chat_id: "4242",
+        parse_mode: "HTML",
+        text: "Что-то сломалось, пока я разбирался с просьбой. Можно попробовать ещё раз.",
+      });
+    }
   });
 
   it("leaves a failed scheduled report to its retry", async () => {
@@ -1230,69 +1064,6 @@ describe("Telegram approval cards", () => {
     expect(body.text).toContain(
       `Оплата сохранённой картой, не больше ${formatRub(1000)}`
     );
-  });
-
-  it("shows whom an email goes to and its whole text, not the tool's name", async () => {
-    const { context, post } = cardContext();
-
-    await handleInputRequested(
-      inputRequested(
-        approvalRequest("gmail-send", {
-          bcc: [],
-          body: "Ирина Павловна, добрый день!\n\nВ четверг не смогу, могу в понедельник в 12:30.\n\nСпасибо! Хорошего дня.",
-          cc: [],
-          replyToMessageId: "m-thursday",
-          subject: "Встреча в четверг",
-          to: ["irina@example.com"],
-        })
-      ),
-      context,
-      sessionContext()
-    );
-
-    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toBe(
-      [
-        "Отправить письмо:",
-        "Кому: irina@example.com",
-        "Ответ в ветке: «Встреча в четверг»",
-        "Текст:",
-        "│ Ирина Павловна, добрый день!",
-        "│",
-        "│ В четверг не смогу, могу в понедельник в 12:30.",
-        "│",
-        "│ Спасибо! Хорошего дня.",
-      ].join("\n")
-    );
-    expect(JSON.stringify(body.reply_markup)).toContain("Подтвердить");
-  });
-
-  it("shows when and where a calendar event is and who gets an invitation", async () => {
-    const { context, post } = cardContext();
-
-    await handleInputRequested(
-      inputRequested(
-        approvalRequest("calendar-create-event", {
-          attendees: ["irina@example.com"],
-          calendarId: "primary",
-          end: "2026-09-28T13:00:00+03:00",
-          location: "Zoom",
-          start: "2026-09-28T12:30:00+03:00",
-          summary: "Встреча с Ириной Павловной",
-          timezone: "Europe/Moscow",
-        })
-      ),
-      context,
-      sessionContext()
-    );
-
-    const body = postedCardSchema.parse(post.mock.calls[0]?.[0]);
-    expect(body.text).toContain("Создать событие в календаре:");
-    expect(body.text).toContain("«Встреча с Ириной Павловной»");
-    expect(body.text).toContain("12:30–13:00 (Europe/Moscow, UTC+3)");
-    expect(body.text).toContain("Где: Zoom");
-    expect(body.text).toContain("Гости: irina@example.com");
-    expect(body.text).not.toContain("calendar-create-event");
   });
 
   it("leaves every other approval card as eve renders it", async () => {

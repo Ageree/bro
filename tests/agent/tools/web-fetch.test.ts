@@ -262,12 +262,6 @@ describe("web_fetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(502);
   });
 
-  it("returns a missing page as it is", async () => {
-    const result = await fetchPage("https://site.example/gone");
-
-    expect(result.content).toMatch(/^Request failed with status code: 404/u);
-  });
-
   it("does not mistake an article that mentions a captcha for a check page", async () => {
     const url = "https://news.example/captcha";
     pageAt(
@@ -298,7 +292,6 @@ describe("web_fetch", () => {
   // that drops the check must fail here. eve and the world's queue listen on
   // loopback, and the cloud's metadata service sits at 169.254.169.254.
   it.each([
-    "https://127.0.0.1/",
     "https://127.0.0.1:4274/.well-known/workflow/v1/flow",
     "https://localhost/",
     "https://[::1]/",

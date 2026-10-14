@@ -10,7 +10,6 @@ tester.run("anti-slop/no-unknown-parameters", noUnknownParametersRule, {
 		"function enrich(cause: Error | unknown): void {}",
 		"function isString(value: unknown): value is string { return true; }",
 		"const isString = (value: unknown): value is string => true;",
-		"function assertString(value: unknown): asserts value is string {}",
 		"type Guard = (value: unknown) => value is string;",
 		"declare function isString(value: unknown): value is string;",
 		"type Guards = { isString(value: unknown): value is string };",

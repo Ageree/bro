@@ -43,33 +43,22 @@ afterEach(() => {
 });
 
 describe("quota gates with USAGE_LIMITS off", () => {
-  it("allows every message without touching usage counters", async () => {
-    const { messageQuotaGate } = await import("@agent/lib/billing/quota");
-
-    const gate = await messageQuotaGate(scope);
-
-    expect(gate).toEqual({ allowed: true, paywallText: undefined });
-    expect(mocks.countUsage).not.toHaveBeenCalled();
-    expect(mocks.readBillingState).not.toHaveBeenCalled();
-  });
-
-  it("allows every browser errand without touching usage counters", async () => {
-    const { browserRunQuotaGate } = await import("@agent/lib/billing/quota");
-
-    const gate = await browserRunQuotaGate(scope);
-
-    expect(gate).toEqual({ allowed: true, note: undefined });
-    expect(mocks.countUsage).not.toHaveBeenCalled();
-    expect(mocks.readBillingState).not.toHaveBeenCalled();
-  });
-
-  it("allows every picture without touching usage counters", async () => {
-    const { imageGenerationQuotaGate } =
+  it("allows every message, errand and picture without touching usage counters", async () => {
+    const { browserRunQuotaGate, imageGenerationQuotaGate, messageQuotaGate } =
       await import("@agent/lib/billing/quota");
 
-    const gate = await imageGenerationQuotaGate(scope);
-
-    expect(gate).toEqual({ allowed: true, note: undefined });
+    expect(await messageQuotaGate(scope)).toEqual({
+      allowed: true,
+      paywallText: undefined,
+    });
+    expect(await browserRunQuotaGate(scope)).toEqual({
+      allowed: true,
+      note: undefined,
+    });
+    expect(await imageGenerationQuotaGate(scope)).toEqual({
+      allowed: true,
+      note: undefined,
+    });
     expect(mocks.countUsage).not.toHaveBeenCalled();
     expect(mocks.readBillingState).not.toHaveBeenCalled();
   });

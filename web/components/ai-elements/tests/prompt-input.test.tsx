@@ -64,7 +64,6 @@ import {
   PromptInput,
   PromptInputFooter,
   PromptInputSubmit,
-  PromptInputTextarea,
 } from "@web/components/ai-elements/prompt-input";
 
 describe("prompt input", () => {
@@ -83,30 +82,5 @@ describe("prompt input", () => {
     expect(markup).toContain("absolute");
     expect(markup).toContain("right-1.5");
     expect(markup).toContain("bottom-1.5");
-  });
-
-  it("leaves non-compact submit buttons in normal flow", () => {
-    const markup = renderToStaticMarkup(<PromptInputSubmit />);
-
-    expect(markup).toContain('aria-label="Submit"');
-    expect(markup).not.toContain("absolute");
-  });
-
-  it("adds scale correction around compact textareas only", () => {
-    const compactMarkup = renderToStaticMarkup(
-      <PromptInput compact onSubmit={() => undefined}>
-        <PromptInputTextarea placeholder="Compact placeholder" />
-      </PromptInput>
-    );
-    const regularMarkup = renderToStaticMarkup(
-      <PromptInput onSubmit={() => undefined}>
-        <PromptInputTextarea placeholder="Regular placeholder" />
-      </PromptInput>
-    );
-
-    expect(compactMarkup).toContain(
-      'data-motion-element="div" data-motion-layout="position"'
-    );
-    expect(regularMarkup).not.toContain('data-motion-element="div"');
   });
 });

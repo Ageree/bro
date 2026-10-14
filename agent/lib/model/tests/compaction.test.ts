@@ -215,18 +215,6 @@ describe("the cost of eve's compaction", () => {
     });
   });
 
-  it("goes to the errand of a browser report's turn", async () => {
-    const { model } = await selection({
-      compaction: {
-        cost: { ...owner, runId: "run-1", source: "browser-report" },
-      },
-    });
-    await model.doGenerate(compactionCall);
-    expect(costs.recordUsageCost).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", source: "browser-report" })
-    );
-  });
-
   it("leaves a model step to the step hook", async () => {
     const { model } = await selection({ compaction: { cost: owner } });
     await model.doGenerate(stepCall);

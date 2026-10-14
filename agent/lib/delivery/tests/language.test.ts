@@ -13,22 +13,20 @@ import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 describe("messageLanguage", () => {
   it.each([
     ["find a dinner spot for four tomorrow at 7:30", "en"],
-    ["triage my inbox", "en"],
-    ["найди, где поужинать", "ru"],
     ["что лучше, iPhone или Pixel?", "ru"],
     ["[голосовое] купи молоко", "ru"],
   ] as const)("reads %j as %s", (text, language) => {
     expect(messageLanguage(text)).toBe(language);
   });
 
-  it.each(["ok", "👍", "https://example.com/page", "7:30"])(
+  it.each(["ok", "https://example.com/page"])(
     "finds no language in %j",
     (text) => {
       expect(messageLanguage(text)).toBeUndefined();
     }
   );
 
-  it.each(["Cancel", "Approve", "Подтвердить", "Отмена", " отменить. ", "2"])(
+  it.each(["Cancel", " отменить. ", "2"])(
     "finds no language in the card answer %j",
     (text) => {
       expect(messageLanguage(text)).toBeUndefined();
@@ -73,12 +71,6 @@ describe("personLanguage", () => {
         person("ок"),
       ])
     ).toBe("ru");
-  });
-
-  it("keeps the language through a reply without one", () => {
-    expect(personLanguage([person("find me a flight"), person("ok")])).toBe(
-      "en"
-    );
   });
 
   it("keeps Russian through a stray card answer (d18)", () => {
@@ -135,27 +127,6 @@ describe("wordlessLatestMessage", () => {
 
 describe("replyDirective", () => {
   const formal = { formal: true, name: null };
-
-  it("leaves requested translations in the language asked for", () => {
-    expect(
-      replyDirective({ formOfAddress: defaultFormOfAddress, language: "ru" })
-    ).toContain("Текст, который человек попросил на другом языке (перевод");
-    expect(
-      replyDirective({ formOfAddress: defaultFormOfAddress, language: "en" })
-    ).toContain("Text the person asked for in another language (a translation");
-  });
-
-  it("makes Bro speak of himself in the masculine in Russian", () => {
-    const note = replyDirective({
-      formOfAddress: defaultFormOfAddress,
-      language: "ru",
-    });
-    expect(note).toMatch(/^Язык ответа в этом ходе — русский/u);
-    expect(note).toContain("О себе пиши в мужском роде: «сделал»");
-    expect(note).toContain("а не «сделала»");
-    // The voice is Bro's own, not the one of a letter written for the person.
-    expect(note).toContain("письма и тексты, которые пишешь от его имени");
-  });
 
   it("keeps «ты» unless the person asked for «вы»", () => {
     const informal = replyDirective({

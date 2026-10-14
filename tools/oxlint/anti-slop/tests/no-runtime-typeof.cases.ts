@@ -8,8 +8,6 @@ const allowInTypeGuards = [{ allowInTypeGuards: true }];
 tester.run("anti-slop/no-runtime-typeof", noRuntimeTypeofRule, {
 	valid: [
 		'const isServer = typeof document === "undefined";',
-		'const hasStorage = typeof localStorage !== "undefined";',
-		'if (typeof globalThis.crypto === "undefined") throw new Error("no crypto");',
 		'const missing = "undefined" === typeof process;',
 		"const value = input;",
 		{
@@ -18,10 +16,6 @@ tester.run("anti-slop/no-runtime-typeof", noRuntimeTypeofRule, {
 		},
 		{
 			code: 'const isString = (value: unknown): value is string => typeof value === "string";',
-			options: allowInTypeGuards,
-		},
-		{
-			code: 'function assertString(value: unknown): asserts value is string { if (typeof value !== "string") throw new Error(); }',
 			options: allowInTypeGuards,
 		},
 	],

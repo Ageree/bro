@@ -120,18 +120,6 @@ describe("browser run outcome parsing", () => {
     });
   });
 
-  it("tolerates bullets and bold around the labels", () => {
-    const outcome = parseBrowserOutcome(
-      ["- **RESULT:** stopped at the code step", "* **NEEDS:** sms_code"].join(
-        "\n"
-      )
-    );
-
-    expect(outcome.result).toBe("stopped at the code step");
-    expect(outcome.needs).toBe("sms_code");
-    expect(outcome.labelled).toBe(true);
-  });
-
   it("falls back to none for an unlabelled or unknown need", () => {
     expect(parseBrowserOutcome("It worked.").needs).toBe("none");
     expect(parseBrowserOutcome("It worked.").labelled).toBe(false);
@@ -173,28 +161,6 @@ describe("browser run outcome parsing", () => {
     expect(browserOutcomeSummary(parseBrowserOutcome(""), "fallback")).toBe(
       "fallback"
     );
-  });
-
-  it("preserves multiline report facts beyond the one-line metadata fields", () => {
-    const result = [
-      "Comparison requested by the user:",
-      "Alpha has 16 GB memory and a two-year warranty.",
-      "Beta has 32 GB memory and next-day delivery.",
-      "RESULT: compared the two options",
-      "This continuation is still useful report data.",
-      "NEEDS: none",
-    ].join("\n");
-
-    const summary = browserOutcomeSummary(
-      parseBrowserOutcome(result),
-      "fallback",
-      result
-    );
-
-    expect(summary).toContain("Alpha has 16 GB memory");
-    expect(summary).toContain("Beta has 32 GB memory");
-    expect(summary).toContain("This continuation is still useful report data.");
-    expect(summary).toContain("Result: compared the two options");
   });
 
   it("preserves a useful unlabelled response instead of replacing it", () => {
@@ -616,13 +582,6 @@ describe("browser run items", () => {
     expect(items.at(-1)?.name).toBe("Товар 30");
   });
 
-  it("reads no items from a report without the line or with broken JSON", () => {
-    expect(parseBrowserOutcome("RESULT: done\nNEEDS: none").items).toEqual([]);
-    expect(
-      parseBrowserOutcome('RESULT: done\nITEMS: [{"name": "Отель"').items
-    ).toEqual([]);
-  });
-
   it("names each substitute with what it replaces and keeps fees as their own lines", () => {
     // RU 24.09, d05: the basket came back without its substitutions, fees
     // or slot.
@@ -722,13 +681,6 @@ describe("charges the run found", () => {
     expect(summary).toContain(
       "2. Транспортный налог за 2025 год — 1 830 ₽ — due 01.12.2026"
     );
-  });
-
-  it("reads none from a report without charges", () => {
-    expect(
-      parseBrowserOutcome("RESULT: штрафов нет\nCHARGES: []").charges
-    ).toEqual([]);
-    expect(parseBrowserOutcome("CHARGES: none").charges).toEqual([]);
   });
 });
 

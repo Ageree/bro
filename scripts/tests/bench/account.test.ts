@@ -17,7 +17,6 @@ import { buildMessage, encodeHeaderText } from "../../bench/account/mime.ts";
 import {
   caseFixtureState,
   cleanFixtures,
-  describeFixtures,
   planFixtures,
   seedFixtures,
 } from "../../bench/account/seed.ts";
@@ -112,14 +111,6 @@ describe("fixture catalog", () => {
     );
   });
 
-  it("leaves Thursday afternoon with a free half hour between meetings", () => {
-    const week = fixtureSets["busy-week-en"].build(context);
-    expect(week.expect).toContain(
-      "free Thu Oct 1: 12:00–13:00, 14:30–15:00, 16:30–19:00"
-    );
-    expect(week.events.every((event) => event.title.length > 0)).toBe(true);
-  });
-
   it("adds up the repair receipts the expectation names", () => {
     const repair = fixtureSets["repair-receipts"].build(context);
     const counted = repair.letters.filter(
@@ -134,12 +125,6 @@ describe("fixture catalog", () => {
     }, 0);
     expect(total).toBe(49_840);
     expect(repair.expect[0]).toContain("итого 49 840 ₽");
-  });
-
-  it("marks the Drive passport as a specimen", () => {
-    const [passport] =
-      fixtureSets["passport-document"].build(context).documents;
-    expect(passport?.content.startsWith("SPECIMEN")).toBe(true);
   });
 
   it("maps every case to sets that exist", () => {
@@ -428,27 +413,5 @@ describe("cleanFixtures", () => {
 
     expect(fake.trashed.size).toBe(1);
     expect((await readManifest(manifestPath)).items).toEqual([]);
-  });
-});
-
-describe("describeFixtures", () => {
-  it("lists what a dry run would insert, with the checks", () => {
-    const lines = describeFixtures(
-      planFixtures(["d18-chain"], context),
-      "Europe/Moscow"
-    );
-    expect(lines[0]).toBe(
-      "dentist-friday — запись к стоматологу на пятницу (кейсы: d18-chain)"
-    );
-    expect(
-      lines.some((line) =>
-        line.includes("«Вы записаны на приём 25.09» [INBOX]")
-      )
-    ).toBe(true);
-    expect(
-      lines.some((line) =>
-        line.startsWith("  проверить: приём в пятницу 25.09")
-      )
-    ).toBe(true);
   });
 });

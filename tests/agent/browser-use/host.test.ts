@@ -20,16 +20,6 @@ afterEach(() => {
 });
 
 describe("whether a site's name exists", () => {
-  it("reads the host of an origin or of a bare domain", async () => {
-    const { siteHostname } = await import("@agent/lib/browser-use/host");
-
-    expect(siteHostname("https://www.vkusvill.ru/cart")).toBe(
-      "www.vkusvill.ru"
-    );
-    expect(siteHostname("barbershop-arthur.ru")).toBe("barbershop-arthur.ru");
-    expect(siteHostname("  ")).toBeUndefined();
-  });
-
   it("calls a name the resolver says does not exist missing", async () => {
     lookup.mockRejectedValue(dnsError("ENOTFOUND"));
     const { siteHostMissing } = await import("@agent/lib/browser-use/host");

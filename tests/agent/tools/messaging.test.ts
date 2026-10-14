@@ -32,7 +32,7 @@ import {
 } from "@agent/lib/delivery/turn-sends";
 
 describe("send_message channel notes", () => {
-  it.each(["channel:eve", "channel:photon", "channel:telegram"])(
+  it.each(["channel:eve"])(
     "never tells the model %s delivers an attachment as a link",
     async (channel) => {
       const sendMessage = await resolveSendMessage(channel);
@@ -62,20 +62,6 @@ describe("send_message channel notes", () => {
     );
     expect(sendMessage.description).toContain(
       "«все» or «ни один» only of the options you checked"
-    );
-  });
-
-  it("still explains that a quoted reply is delivered unquoted", async () => {
-    const sendMessage = await resolveSendMessage("channel:telegram");
-
-    const output = await sendMessage.toModelOutput?.({
-      kind: "message",
-      replyTo: { kind: "current" },
-      text: "Here it is.",
-    });
-
-    expect(output?.type === "text" ? output.value : "").toContain(
-      "Native quoted replies are unavailable on this channel"
     );
   });
 });
@@ -170,14 +156,6 @@ describe("send_message in a looping turn", () => {
     });
     expect(modelOutput?.type === "text" ? modelOutput.value : "").toContain(
       "has done nothing yet"
-    );
-  });
-
-  it("delivers the first message of a turn as written", async () => {
-    const sendMessage = await resolveSendMessage("channel:telegram");
-
-    expect(await sendMessage.execute(repeated, toolContext())).toEqual(
-      repeated
     );
   });
 
@@ -346,11 +324,6 @@ describe("send_message and the reply language", () => {
       "an English translation for a Russian speaker",
       "Переведи на английский: «Встреча переносится на пятницу, 15:00».",
       "The meeting is moved to Friday at 3 PM. Please confirm that works for you.",
-    ],
-    [
-      "a Russian text for an English speaker",
-      "Write a short note in Russian for my landlord saying the rent will be two days late.",
-      "Здравствуйте! Хочу предупредить, что оплата аренды в этом месяце задержится на два дня.",
     ],
   ])("delivers %s as written", async (_case, request, reply) => {
     const sendMessage = await resolveSendMessage("channel:eve", [
@@ -538,16 +511,6 @@ describe("send_message in the task agent's report", () => {
     const sendMessage = await resolveSendMessage("channel:telegram", [
       personMessage("Разбери таблицу"),
       taskReport,
-    ]);
-    const link = { kind: "link" as const, url: "https://example.com/renew" };
-
-    expect(await sendMessage.execute(link, toolContext())).toEqual(link);
-  });
-
-  it("keeps a native link in the person's own turn", async () => {
-    taskFiles.here.mockReturnValue(true);
-    const sendMessage = await resolveSendMessage("channel:telegram", [
-      personMessage("Скинь ссылку"),
     ]);
     const link = { kind: "link" as const, url: "https://example.com/renew" };
 

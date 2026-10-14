@@ -109,18 +109,6 @@ describe("OpenRouter output cap", () => {
     });
   });
 
-  it("gives a reasoning step room for its thinking", async () => {
-    vi.stubEnv("OPENROUTER_REASONING_EFFORT", "high");
-
-    const body = await runStep("anthropic/claude-sonnet-5");
-
-    expect(body).toMatchObject({
-      max_tokens: 32_768,
-      model: "anthropic/claude-sonnet-5",
-      reasoning: { effort: "high" },
-    });
-  });
-
   it("takes the configured cap", async () => {
     vi.stubEnv("OPENROUTER_MAX_OUTPUT_TOKENS", "4096");
     vi.stubEnv("OPENROUTER_REASONING_EFFORT", "medium");

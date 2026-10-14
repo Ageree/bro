@@ -141,18 +141,12 @@ describe("the subscription checks", () => {
       watch("w2", "https://b.example/p/2"),
     ]);
     services.page
-      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockRejectedValueOnce(new TypeError("decode failed"))
       .mockResolvedValueOnce({ kind: "no-price" });
     services.settle.mockResolvedValue("failed");
     await runSchedule();
     expect(services.settle).toHaveBeenCalledTimes(2);
-  });
-
-  it("counts a read that threw as a failed check", async () => {
-    services.claim.mockResolvedValue([watch("w1", "https://a.example/p/1")]);
-    services.page.mockRejectedValueOnce(new TypeError("decode failed"));
-    services.settle.mockResolvedValue("failed");
-    await runSchedule();
+    // A read that threw counts as a failed check.
     expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
       error: "unreachable: TypeError",
       kind: "failed",

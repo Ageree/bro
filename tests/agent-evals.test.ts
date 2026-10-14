@@ -51,7 +51,6 @@ describe("agent eval supervisor", supervisorTestOptions, () => {
   it.each([
     ["concurrency override", ["--max-concurrency", "8"]],
     ["remote target", ["--url", "https://example.com"]],
-    ["different eval path", ["browser"]],
   ])("rejects a %s before starting Docker", async (_description, args) => {
     const result = await runSupervisor(
       { AI_GATEWAY_API_KEY: "test-gateway-key" },

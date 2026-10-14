@@ -77,7 +77,7 @@ class DisplayLockTest(unittest.TestCase):
         self.assertIn("clear_display_locks()\n    init = Init()", INIT.read_text())
 
 
-class InitTest(unittest.TestCase):
+class InitCase(unittest.TestCase):
     """The init with fake units (sleep loops writing their start count) in a temp directory."""
 
     CHROME_IGNORES_TERM = False
@@ -120,6 +120,8 @@ class InitTest(unittest.TestCase):
         return subprocess.run([sys.executable, str(SHIM), *args], env=self.env, capture_output=True, text=True,
                               timeout=30)
 
+
+class InitTest(InitCase):
     def test_units_start_in_order_with_bro_environment(self):
         self.assertEqual(self.starts(), ["bro-xvfb 0.0.0.0 bro-xvfb", "bro-chrome 0.0.0.0 bro-chrome",
                                          "bro-worker 0.0.0.0 bro-worker"])
@@ -152,14 +154,11 @@ class InitTest(unittest.TestCase):
         self.assertIn("error", refused.stderr)
 
 
-class HungChromeInitTest(InitTest):
+class HungChromeInitTest(InitCase):
     """A Chrome that ignores SIGTERM past TimeoutStopSec: the init kills it and says so in its log, which a
     pool host's park reads (browser-vm/host/hostd.py `init_killed_chrome`)."""
 
     CHROME_IGNORES_TERM = True
-
-    def test_a_chrome_that_exits_on_sigterm_is_logged_stopped(self):
-        pass  # this Chrome does not
 
     def test_a_killed_chrome_is_logged_killed(self):
         self.assertEqual(self.systemctl("stop", "bro-chrome").returncode, 0)

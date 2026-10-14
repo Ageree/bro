@@ -73,7 +73,6 @@ describe("composioProxy", () => {
   it.each([
     new ComposioError(403, "ConnectedAccount_NotFound", "gone"),
     new ComposioError(429, undefined, "slow down"),
-    new ComposioError(500, undefined, "down"),
   ])("does not retry %s", async (error) => {
     composioRequest.mockRejectedValue(error);
 

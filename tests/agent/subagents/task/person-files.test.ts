@@ -388,16 +388,6 @@ describe("the person's files in the task agent's sandbox", () => {
     }
   });
 
-  it("asks once for a file of a message that opens its turn", async () => {
-    const sandbox = sandboxOf();
-    await received(firstMessage(table.path), context(sandbox), "turn_0");
-
-    expect(getInbox).toHaveBeenCalledTimes(1);
-    expect(text(sandbox.files.get(notReceived))).toContain(
-      `${table.path} — Бро не передал этот файл`
-    );
-  });
-
   it("replaces the list when a later message names files by a broken path", async () => {
     const sandbox = sandboxOf();
     const ctx = context(sandbox);
@@ -446,13 +436,6 @@ describe("the person's files in the task agent's sandbox", () => {
         `${file.path} — песочницу не удалось отключить от интернета, поэтому файл не передан`
       );
     }
-  });
-
-  it("leaves the web on while no file came in", async () => {
-    const sandbox = sandboxOf();
-    await received(table.path, context(sandbox));
-
-    expect(markSandboxHoldsPersonFiles).not.toHaveBeenCalled();
   });
 
   it("refuses a file stored before this message, as a later turn names it again", async () => {

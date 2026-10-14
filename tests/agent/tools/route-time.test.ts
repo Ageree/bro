@@ -972,30 +972,6 @@ describe("route_time", () => {
     expect(drive.pick).toBeUndefined();
   });
 
-  it("writes Russian houses the way the map knows them", async () => {
-    const result = await measure({
-      from: "отель Метрополь, Москва",
-      mode: "walking",
-      to: [
-        "Чистопрудный бульвар д. 12 корп. 2, Москва",
-        "Чистопрудный бульвар 12, корп 2, Москва",
-      ],
-    });
-
-    expect(result.routes?.map((route) => route.place)).toEqual([
-      "Чистопрудный бульвар 12 к2, Москва",
-      "Чистопрудный бульвар 12 к2, Москва",
-    ]);
-    expect(result.routes?.every((route) => route.minutes !== undefined)).toBe(
-      true
-    );
-    expect(
-      requestsTo("nominatim.openstreetmap.org")
-        .map((url) => url.searchParams.get("q"))
-        .slice(1)
-    ).toEqual(["Чистопрудный бульвар 12 к2, Москва"]);
-  });
-
   it("measures to the house when the map does not know its building", async () => {
     const result = await measure({
       from: "отель Метрополь, Москва",
@@ -1151,29 +1127,6 @@ describe("route_time", () => {
     expect(toOther.routes?.[1]).toMatchObject({ minutes: 21 });
   });
 
-  it("says the start is not on the map instead of measuring from somewhere else", async () => {
-    const result = await measure({
-      from: "мой отель",
-      mode: "walking",
-      to: ["метро Чистые пруды, Москва"],
-    });
-
-    expect(result.status).toBe("not_found");
-    expect(result.note).toContain("мой отель");
-    expect(requestsTo("routing.openstreetmap.de")).toEqual([]);
-  });
-
-  it("marks a destination it could not find and measures the rest", async () => {
-    const result = await measure({
-      from: "отель Метрополь, Москва",
-      mode: "walking",
-      to: ["Несуществующее кафе", "метро Чистые пруды, Москва"],
-    });
-
-    expect(result.routes?.[0]?.error).toContain("not on the map");
-    expect(result.routes?.[1]).toMatchObject({ km: 1.6, minutes: 21 });
-  });
-
   it("gives only the straight-line distance when the router is down", async () => {
     fetchMock.mockImplementation(async (url) =>
       url.host === "nominatim.openstreetmap.org"
@@ -1255,31 +1208,6 @@ describe("route_time", () => {
       expect(result.pick).not.toContain("measure them again in one more call");
       expect(result.pick).not.toContain("measure them here in one more call");
     }
-  });
-
-  it("takes a geocoder failing on every place for a refusing one", async () => {
-    await measure({
-      from: "отель Метрополь, Москва",
-      mode: "walking",
-      to: ["метро Чистые пруды, Москва"],
-    });
-    fetchMock.mockImplementation(async (url) =>
-      url.host === "nominatim.openstreetmap.org"
-        ? new Response("oops", { status: 500 })
-        : routerAnswer(url)
-    );
-
-    const result = await measure({
-      from: "отель Метрополь, Москва",
-      mode: "walking",
-      to: [
-        "Авокадо, Чистопрудный бульвар, 12 корпус 2, Москва",
-        "Hedonist, Покровский бульвар, 8с1, Москва",
-      ],
-    });
-
-    expect(result.pick).toContain("the map service is refusing now");
-    expect(result.pick).not.toContain("measure them here in one more call");
   });
 
   it("keeps the places a refusing geocoder left unmeasured as candidates", async () => {

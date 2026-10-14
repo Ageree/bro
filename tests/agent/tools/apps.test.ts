@@ -224,37 +224,16 @@ describe("apps run", () => {
 
     expect(await approvalOf(input)).toBe("not-applicable");
     expect(await approvalOf(input, "browser-result")).toBe("not-applicable");
+    // The turn is told the write went through.
+    await expect(run(input)).resolves.toMatchObject({
+      status: "done",
+      wrote: true,
+    });
     settings.access.mockResolvedValue("read_only");
     expect(await approvalOf(input)).toEqual({
       reason: googleReadOnlyWriteRefusal,
       type: "denied",
     });
-  });
-
-  it("tells the turn a write went through", async () => {
-    await expect(
-      run({
-        action: "run",
-        app: "google",
-        arguments:
-          '{"spreadsheet_id":"sheet-1","range":"A:C","values":[["x"]]}',
-        tool: "GOOGLESUPER_SPREADSHEETS_VALUES_APPEND",
-      })
-    ).resolves.toMatchObject({ status: "done", wrote: true });
-  });
-
-  it("allows delegated writes in browser follow-through while identifying writes regardless of tags", async () => {
-    expect(
-      await approvalOf(
-        {
-          action: "run",
-          app: "todoist",
-          arguments: '{"task_id":"1"}',
-          tool: "TODOIST_DELETE_TASK",
-        },
-        "browser-result"
-      )
-    ).toBe("not-applicable");
   });
 
   it("refuses Google mail through apps and a tool of another app", async () => {

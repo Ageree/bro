@@ -28,18 +28,14 @@ function render(state: "connected" | "disconnected" | "error" | "unavailable") {
 }
 
 describe("connected app action", () => {
-  it("offers connecting a person without an account", () => {
-    const html = render("disconnected");
+  it("offers connecting without an account and disconnecting with one", () => {
+    const disconnected = render("disconnected");
+    expect(disconnected.match(/<button/gu)).toHaveLength(1);
+    expect(disconnected).toContain("Подключить");
 
-    expect(html.match(/<button/gu)).toHaveLength(1);
-    expect(html).toContain("Подключить");
-  });
-
-  it("offers disconnecting a connected person", () => {
-    const html = render("connected");
-
-    expect(html.match(/<button/gu)).toHaveLength(1);
-    expect(html).toContain("Отключить");
+    const connected = render("connected");
+    expect(connected.match(/<button/gu)).toHaveLength(1);
+    expect(connected).toContain("Отключить");
   });
 
   it("starts nothing while the connection read is failing or unset", () => {

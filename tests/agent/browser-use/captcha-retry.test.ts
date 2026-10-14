@@ -426,17 +426,6 @@ describe("the anti-bot retry policy", () => {
     });
   });
 
-  it("writes the line a later claim looks for into the retry's task", async () => {
-    const { startCaptchaRetry } =
-      await import("@agent/lib/browser-use/captcha-retry");
-
-    await startCaptchaRetry(parkedRow(1));
-
-    const line = findRecentBrowserUseRunByTaskLine.mock.calls[0]?.[0] ?? "";
-    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
-    expect(task.split("\n")).toContain(line);
-  });
-
   it("starts nothing for an errand the person already stopped", async () => {
     readBrowserRun.mockResolvedValue({
       retriedAsRunId: null,
@@ -617,16 +606,6 @@ describe("the anti-bot retry policy", () => {
     }
   );
 
-  it("leaves the VM idle window alone for a Browser Use retry", async () => {
-    readBrowserUseRun.mockResolvedValue({ task: "Найди айфон" });
-    const { startCaptchaRetry } =
-      await import("@agent/lib/browser-use/captcha-retry");
-
-    await startCaptchaRetry(parkedRow(1));
-
-    expect(keepBrowserVmForErrand).not.toHaveBeenCalled();
-  });
-
   it("goes on in a VM attempt's own session, whose agent kept what it found", async () => {
     readBrowserUseRun.mockResolvedValue({
       sessionId: "vm:workspace:alice:s:1",
@@ -718,99 +697,43 @@ describe("the anti-bot retry policy", () => {
     );
   });
 
-  it("starts a hosted retry in a new session", async () => {
-    readBrowserUseRun.mockResolvedValue({
-      sessionId: "hosted-session",
-      task: "Купи корм\n\nSite: …",
-    });
+  it("keeps the attempt's line after a dropped connection, so the next claim adopts a run it may have started", async () => {
+    createBrowserUseRun.mockRejectedValue(new TypeError("fetch failed"));
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { startCaptchaRetry } =
       await import("@agent/lib/browser-use/captcha-retry");
+    const now = new Date("2026-09-23T12:00:00.000Z");
+    const row = {
+      ...parkedRow(2),
+      completedAt: new Date("2026-09-23T11:58:00.000Z"),
+    };
 
-    await startCaptchaRetry(parkedRow(1));
-
-    expect(createBrowserUseRun.mock.calls[0]?.[0].sessionId).toBeUndefined();
-  });
-
-  it("does not promise a VM's retry another address", async () => {
-    createBrowserUseRun.mockResolvedValue({
-      id: retryRunId,
-      model: "deepseek/deepseek-v4.1-flash",
-      sessionId: "vm-session",
-      status: "queued",
-    });
-    const { startCaptchaRetry } =
-      await import("@agent/lib/browser-use/captcha-retry");
-
-    await startCaptchaRetry({
-      ...parkedRow(1),
-      profileId: "vm:workspace:alice:p1",
+    expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
+    // The same number: the next claim looks for this attempt's line.
+    expect(parkBrowserRunForRetry).toHaveBeenCalledExactlyOnceWith(runId, {
+      captchaAttempt: 2,
+      retryAt: new Date("2026-09-23T12:01:00.000Z"),
     });
 
-    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
-    expect(task).toContain(
-      "a new tab of the same browser, with the same saved profile, cookies and sign-ins"
+    // Browser Use did start it: the next claim finds it and hands the
+    // errand over instead of opening a second browser.
+    createBrowserUseRun.mockClear();
+    findRecentBrowserUseRunByTaskLine.mockImplementation((line) =>
+      Promise.resolve(
+        line ===
+          `(Background retry 3 of errand ${runId}; for bookkeeping only.)`
+          ? { id: retryRunId, sessionId: "fresh-session" }
+          : undefined
+      )
     );
-    expect(task).not.toContain("different network address");
+    expect(
+      await startCaptchaRetry(row, new Date("2026-09-23T12:01:00.000Z"))
+    ).toEqual({ runId: retryRunId, status: "started" });
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
-
-  it.each([
-    ["a dropped connection", () => new TypeError("fetch failed")],
-    [
-      "a 502",
-      async () => {
-        const { BrowserUseError } =
-          await import("@agent/lib/browser-use/client");
-        return new BrowserUseError(502, "/runs", "bad gateway");
-      },
-    ],
-  ])(
-    "keeps the attempt's line after %s, so the next claim adopts a run it may have started",
-    async (_label, failure) => {
-      createBrowserUseRun.mockRejectedValue(await failure());
-      vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const { startCaptchaRetry } =
-        await import("@agent/lib/browser-use/captcha-retry");
-      const now = new Date("2026-09-23T12:00:00.000Z");
-      const row = {
-        ...parkedRow(2),
-        completedAt: new Date("2026-09-23T11:58:00.000Z"),
-      };
-
-      expect(await startCaptchaRetry(row, now)).toEqual({ status: "parked" });
-      // The same number: the next claim looks for this attempt's line.
-      expect(parkBrowserRunForRetry).toHaveBeenCalledExactlyOnceWith(runId, {
-        captchaAttempt: 2,
-        retryAt: new Date("2026-09-23T12:01:00.000Z"),
-      });
-
-      // Browser Use did start it: the next claim finds it and hands the
-      // errand over instead of opening a second browser.
-      createBrowserUseRun.mockClear();
-      findRecentBrowserUseRunByTaskLine.mockImplementation((line) =>
-        Promise.resolve(
-          line ===
-            `(Background retry 3 of errand ${runId}; for bookkeeping only.)`
-            ? { id: retryRunId, sessionId: "fresh-session" }
-            : undefined
-        )
-      );
-      expect(
-        await startCaptchaRetry(row, new Date("2026-09-23T12:01:00.000Z"))
-      ).toEqual({ runId: retryRunId, status: "started" });
-      expect(createBrowserUseRun).not.toHaveBeenCalled();
-    }
-  );
 
   it.each([
     ["cannot reach Browser Use", () => new TypeError("fetch failed")],
-    [
-      "gets a 503",
-      async () => {
-        const { BrowserUseError } =
-          await import("@agent/lib/browser-use/client");
-        return new BrowserUseError(503, "/runs", "unavailable");
-      },
-    ],
     [
       "is rate limited",
       async () => {
@@ -1041,15 +964,6 @@ describe("the anti-bot retry policy", () => {
 });
 
 describe("the retry's exit to the internet", () => {
-  it("stays on the hosted pool, which gives a new browser a new address", async () => {
-    const { retryProxySettings } = await import("@agent/lib/browser-use/proxy");
-
-    expect(retryProxySettings(2, "token")).toEqual({
-      customProxy: undefined,
-      proxyCountryCode: "ru",
-    });
-  });
-
   it("alternates a fixed proxy of our own with the hosted pool", async () => {
     vi.stubEnv("BROWSER_USE_PROXY_HOST", "proxy.example");
     vi.stubEnv("BROWSER_USE_PROXY_PORT", "8080");

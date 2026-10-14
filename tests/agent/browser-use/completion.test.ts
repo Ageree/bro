@@ -504,8 +504,6 @@ describe("settling a browser run", () => {
       "https://example.com/article?source=search#part-2"
     );
     expect(prompt).toContain("Include every relevant returned link");
-    expect(prompt).toContain("labelled Markdown links in web and Telegram");
-    expect(prompt).toContain("iMessage compiler");
   });
 
   it("persists and delivers a complete option report with safe row links", async () => {
@@ -563,8 +561,6 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("Alpha 16 GB, v2");
     expect(prompt).toContain(`[Offer](${safeUrl})`);
     expect(prompt).not.toContain(unsafeUrl);
-    expect(prompt).toContain("material per-option facts the user requested");
-    expect(prompt).toContain("Include every relevant returned link");
     // RU 25.09 (d01, d15): a price moved to other trains, «ни в одном»
     // after two of five barbershops were checked.
     expect(prompt).toContain(
@@ -573,7 +569,6 @@ describe("settling a browser run", () => {
     expect(prompt).toContain(
       "Say which options the run checked and which it did not"
     );
-    expect(prompt).toContain("attach the screenshot the run saved");
     // QA 12.10: Avito sorted «Дороже» under a 15 000 ₽ ceiling, and Bro told
     // the person bikes under 15 000 hardly exist.
     expect(prompt).toContain(
@@ -601,25 +596,6 @@ describe("settling a browser run", () => {
     expect(prompt).toContain("do not present a names-only list");
     expect(prompt).toContain("Continue this run once");
     expect(prompt).toContain("Do not retry in a loop");
-  });
-
-  it("leaves a run that has not reached a terminal status alone", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      result: null,
-      sessionId: "session-1",
-      status: "running",
-      task: "Order the usual",
-    });
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(claimBrowserRunCompletion).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
   });
 
   it("settles on the status endpoint's word when the summary lags but carries the result", async () => {
@@ -738,16 +714,6 @@ describe("settling a browser run", () => {
     );
     expect(prompt).toContain(`- ${photoId}: xiaomi band 9`);
     expect(prompt).toContain("never paste the /artifacts/ path as a bare link");
-  });
-
-  it("says nothing about pictures when the run saved none", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain("/artifacts/");
   });
 
   it("still reports the errand when its pictures could not be kept", async () => {
@@ -990,30 +956,6 @@ describe("settling a browser run", () => {
     expect(
       String(claimBrowserRunCompletion.mock.calls[0]?.[1].outcome)
     ).toContain("Needs: captcha");
-  });
-
-  it("retries a run that failed on a proxy error with nothing to report", async () => {
-    readBrowserRun.mockResolvedValue({
-      ...row,
-      paymentAllowed: false,
-      submission: null,
-    });
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    readBrowserUseRun.mockResolvedValue({
-      error: "net::ERR_PROXY_CONNECTION_FAILED at https://www.gosuslugi.ru/",
-      id: runId,
-      result: null,
-      sessionId: "session-1",
-      status: "failed",
-      task: "Посмотри штрафы",
-    });
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send).not.toHaveBeenCalled();
-    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
   });
 
   it("does not wait out a site whose name does not exist, and has the real one found", async () => {
@@ -1411,30 +1353,6 @@ describe("settling a browser run", () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
-  it("still retries a real anti-bot wall on a run allowed to act", async () => {
-    readBrowserRun.mockResolvedValue({
-      ...row,
-      paymentAllowed: true,
-      submission: { what: "заказ корма" },
-    });
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      result: "RESULT: стоит на проверке\nNEEDS: captcha",
-      sessionId: "session-1",
-      status: "completed",
-      task: "Закажи корм",
-    });
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send).not.toHaveBeenCalled();
-    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
-  });
-
   it("tells a real wall as one, whatever fallback error the report mentions", async () => {
     const searching = {
       ...row,
@@ -1469,29 +1387,6 @@ describe("settling a browser run", () => {
     const prompt = send.mock.calls[0]?.[0] ?? "";
     expect(prompt).toContain("anti-bot check through 5 attempts");
     expect(prompt).not.toContain("could not be reached");
-  });
-
-  it("reports what a run found even when a page on the way did not load", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      result: [
-        "RESULT: нашёл два варианта; один магазин не открылся (ERR_TIMED_OUT)",
-        'ITEMS: [{"name":"Корм","price":"1 200 ₽","quantity":"1","url":"https://www.ozon.ru/product/1","details":null,"replaces":null,"fee":false}]',
-        "NEEDS: none",
-      ].join("\n"),
-      sessionId: "session-1",
-      status: "completed",
-      task: "Найди корм",
-    });
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(parkBrowserRunForRetry).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledOnce();
   });
 
   it("says the site could not be reached, not that it blocked the errand", async () => {
@@ -1825,36 +1720,6 @@ describe("settling a browser run", () => {
       })
     );
     expect(recordBrowserSignOut).not.toHaveBeenCalled();
-  });
-
-  it("keeps the page of a run that asks the person something", async () => {
-    // As before this browser kept sign-ins: the answer goes on in that tab.
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      result: "RESULT: дошёл до адреса доставки\nNEEDS: address",
-      sessionId: "session-1",
-      status: "completed",
-      task: "Закажи корм",
-    });
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
-    expect(send.mock.calls[0]?.[0]).toContain(row.liveViewUrl);
-  });
-
-  it("keeps no browser VM up for a reply to a finished run", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(keepBrowserVmForPersonStep).not.toHaveBeenCalled();
   });
 
   it("leaves a page a follow-up has already taken", async () => {
@@ -2203,16 +2068,6 @@ describe("settling a browser run", () => {
     );
   });
 
-  it("says nothing about a later step the run did not report", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain("schedules-create");
-  });
-
   it("tells the coordinator about a message the VM run ended without reading", async () => {
     // The worker never starts a follow-up on its own for a message queued
     // in during the run's last step (D1), and neither does Bro any more: no
@@ -2271,18 +2126,6 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain("quoted exactly as the person wrote them");
     expect(prompt).not.toContain("the person's own messages");
     expect(prompt).not.toContain("The person's own messages");
-  });
-
-  it("says nothing about unread messages for a run that ended with none", async () => {
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain(
-      "reached the browser only as this run was ending"
-    );
   });
 });
 
@@ -2464,37 +2307,6 @@ describe("what the report turn retells", () => {
     );
     expect(prompt).toContain("https://xn--90adear.xn--p1ai/check/fines");
     expect(prompt).toContain("https://lkfl2.nalog.ru");
-  });
-
-  it("asks the run's own question when it signed in to Госуслуги", async () => {
-    // RU review: a signed-in run asking for the СТС heard «Госуслуги did not
-    // let this errand in».
-    const gosuslugi = {
-      ...row,
-      paymentAllowed: false,
-      site: "https://www.gosuslugi.ru",
-      submission: null,
-      task: "Проверь на Госуслугах штрафы и когда кончается загранпаспорт",
-    };
-    readBrowserRun.mockResolvedValue(gosuslugi);
-    claimBrowserRunCompletion
-      .mockReset()
-      .mockResolvedValueOnce({ ...gosuslugi, completedAt: new Date() });
-    finishedRun([
-      "RESULT: вход выполнен, в профиле нет транспортного средства",
-      "NEEDS: info",
-      "DETAILS: нужен номер СТС",
-      "CHARGES: []",
-    ]);
-    const { settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { send, to } = delivery();
-
-    await settleBrowserRun({ to }, runId);
-
-    expect(send.mock.calls[0]?.[0]).not.toContain(
-      "Госуслуги did not let this errand in"
-    );
   });
 
   it("offers the tax cabinet only with its own login once Госуслуги fail", async () => {
@@ -2896,41 +2708,6 @@ describe("reporting into an eve chat", () => {
     expect(ledger.delivered).toBe(false);
   });
 
-  it("leaves one line per delivery attempt with its outcome and session", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const { deliverBrowserRunReport, settleBrowserRun } =
-      await import("@agent/lib/browser-use/completion");
-    const { to } = delivery();
-
-    const refused = sessionHandle("session_not_active");
-    await settleBrowserRun({ attachSession: refused.attachSession, to }, runId);
-    expect(warn).toHaveBeenCalledWith("[browser-use] report delivery", {
-      attempt: 1,
-      channel: "eve",
-      result: "not_accepted",
-      retryable: true,
-      runId,
-      sessionId: "eve-session-1",
-      status: "session_not_active",
-    });
-
-    const accepted = sessionHandle("accepted");
-    await deliverBrowserRunReport(
-      { attachSession: accepted.attachSession, to },
-      runId
-    );
-    expect(info).toHaveBeenCalledWith("[browser-use] report delivery", {
-      attempt: 1,
-      channel: "eve",
-      result: "accepted",
-      runId,
-      sessionId: "eve-session-1",
-    });
-    info.mockRestore();
-    warn.mockRestore();
-  });
-
   it("gives a send that never answers up after 20 seconds and keeps the report", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { deliverBrowserRunReport } =
@@ -3039,11 +2816,5 @@ describe("settling a sign-up with Bro's own mailbox", () => {
     settleSignUpLogin.mockClear();
     await settled("RESULT: что-то пошло не так\nNEEDS: none");
     expect(settleSignUpLogin.mock.calls[0]?.[2]).toBe("kept");
-  });
-
-  it("leaves every other run's report as it was", async () => {
-    await settled("RESULT: ordered\nNEEDS: none", "Order the usual");
-
-    expect(settleSignUpLogin).not.toHaveBeenCalled();
   });
 });

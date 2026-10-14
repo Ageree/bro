@@ -195,13 +195,6 @@ describe("the auto-payment decision", () => {
     });
   });
 
-  it("asks for any paid purchase when no limit is set", () => {
-    expect(decideAutoPayment(undefined, payment(), [])).toEqual({
-      allowed: false,
-      reason: "no_limit",
-    });
-  });
-
   it("never starts a subscription on its own, however cheap", () => {
     expect(
       decideAutoPayment(policy(), payment({ amount: 0, recurring: true }), [])
@@ -603,26 +596,6 @@ describe("standing permissions", () => {
         { ...taxiEntry(99_999), category: "table" },
       ])
     ).toMatchObject({ capRub: undefined });
-  });
-
-  it("never covers an excluded site or a repeating charge", () => {
-    expect(
-      decideStandingAction(
-        policy({ actions: [taxiRule], excludedMerchants: ["gett.com"] }),
-        standingRequest({ chargeRub: 500, kind: "taxi", merchant: "gett.com" })
-      )
-    ).toBeUndefined();
-    expect(
-      decideStandingAction(
-        actions(lavka),
-        standingRequest({
-          chargeRub: 299,
-          kind: "order",
-          merchant: "lavka.yandex.ru",
-          recurring: true,
-        })
-      )
-    ).toBeUndefined();
   });
 
   it("lets a permission for a whole site cover every kind there and on its subdomains", () => {

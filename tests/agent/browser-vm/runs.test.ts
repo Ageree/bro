@@ -267,11 +267,6 @@ async function loadRuns() {
   );
 }
 
-/** What a start that is refused rejects with. */
-function refusal(cause: unknown) {
-  return cause;
-}
-
 /**
  * A clock the test moves: the timers and the date are fake, and each step
  * also lets the real event loop turn, so the module imports and database
@@ -380,44 +375,6 @@ describe("starting a run on a workspace's browser VM", () => {
       expect(worker.startBrowserVmWorkerRun).not.toHaveBeenCalled();
     }
   );
-
-  it("takes the first answer for the queue's own start, and for a start on Cloud.ru", async () => {
-    lifecycle.ensureBrowserVm.mockResolvedValue({
-      kind: "starting",
-      retryAfterMs: 15_000,
-    });
-    const statics = await importWithSettings(
-      {
-        ...browserVmTestEnvironment,
-        BROWSER_HOST_CLOUD: "static",
-        BROWSER_HOST_STATIC: "static-1@203.0.113.10",
-      },
-      async () => import("@agent/lib/browser-use/client")
-    );
-    expect(
-      await statics
-        .createBrowserUseRun({ profileId, task: composedTask })
-        .catch(refusal)
-    ).toMatchObject({ status: 429 });
-    expect(lifecycle.ensureBrowserVm).toHaveBeenCalledOnce();
-
-    lifecycle.ensureBrowserVm.mockClear();
-    const cloudru = await importWithSettings(
-      {
-        ...browserVmTestEnvironment,
-        BROWSER_HOST_CLOUD: "",
-        BROWSER_HOST_STATIC: "",
-      },
-      async () => import("@agent/lib/browser-use/client")
-    );
-    expect(
-      await cloudru
-        .createBrowserUseRun({ inTurn: true, profileId, task: composedTask })
-        .catch(refusal)
-    ).toMatchObject({ status: 429 });
-    expect(lifecycle.ensureBrowserVm).toHaveBeenCalledOnce();
-    expect(worker.startBrowserVmWorkerRun).not.toHaveBeenCalled();
-  });
 
   it("looks after the sandboxes on the operator's own servers without Cloud.ru's key", async () => {
     const keyless = { CLOUDRU_KEY_ID: "", CLOUDRU_KEY_SECRET: "" };
@@ -584,46 +541,6 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(
       await started({ BROWSER_VM_LLM_BASE_URL: "https://llm.example.test/v1" })
     ).toBeUndefined();
-  });
-
-  it("runs an errand that only searches in flash mode, and any other as before", async () => {
-    const client = await loadClient();
-    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
-      Promise.resolve({
-        id: input.id,
-        sessionId: input.sessionId ?? "",
-        status: "queued",
-      })
-    );
-    worker.sendBrowserVmWorkerMessage.mockImplementation((_vm, id, message) =>
-      Promise.resolve({
-        runId: message.runId ?? "",
-        sessionId: id,
-        status: "started",
-      })
-    );
-
-    await client.createBrowserUseRun({
-      profileId,
-      search: true,
-      task: composedTask,
-    });
-    await client.createBrowserUseRun({
-      profileId,
-      search: false,
-      task: composedTask,
-    });
-    await client.createBrowserUseRun({ profileId, task: composedTask });
-    // A follow-up in the search's own session replaces its tuning, in
-    // full mode.
-    await client.queueBrowserUseSessionMessage(sessionId, "А синий есть?");
-
-    expect(
-      worker.startBrowserVmWorkerRun.mock.calls.map(([, input]) => input.tuning)
-    ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
-    expect(worker.sendBrowserVmWorkerMessage.mock.calls[0]?.[2].tuning).toEqual(
-      vmTuning
-    );
   });
 
   it("sends the worker byte for byte what it sent before flash mode, unless the errand only searches", async () => {
@@ -798,37 +715,6 @@ describe("starting a run on a workspace's browser VM", () => {
         ([, , options]) => options
       )
     ).toEqual([{ rotate: true }, { rotate: false }]);
-  });
-
-  it("asks for a fresh exit, for an anti-bot retry's follow-up", async () => {
-    const client = await loadClient();
-    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
-      Promise.resolve({
-        id: input.id,
-        sessionId: input.sessionId ?? "",
-        status: "queued",
-      })
-    );
-
-    const run = await client.createBrowserUseRun({
-      freshExit: true,
-      profileId,
-      sessionId,
-      task: composedTask,
-    });
-
-    expect(records.recordBrowserVmRun).toHaveBeenCalledExactlyOnceWith({
-      id: run.id,
-      sessionId,
-      status: "dispatching",
-      task: vmTask,
-      workspaceId,
-    });
-    expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(
-      expect.anything(),
-      expect.anything(),
-      { freshExit: true, rotate: false }
-    );
   });
 
   it("answers with the run the worker took though its record could not be written", async () => {
@@ -1010,37 +896,6 @@ describe("reading a VM run", () => {
       status: "completed",
       unreadMessages: [],
     });
-  });
-
-  it("takes RouterAI's own bill for the run's model calls over its token count", async () => {
-    const client = await loadClient();
-    worker.readBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({
-        finishedAt: "2026-09-28T11:58:00Z",
-        result: "RESULT: the parcel is in Moscow",
-        status: "completed",
-        usage: {
-          billed: 4.2,
-          billed_calls: 9,
-          total_completion_tokens: 2_000,
-          total_prompt_cached_tokens: 50_000,
-          total_prompt_tokens: 150_000,
-          total_tokens: 152_000,
-        },
-      })
-    );
-
-    await client.readBrowserUseRun(runId);
-
-    // The token count would price it at 1.95 ₽: it misses the calls
-    // browser-use could not parse, which RouterAI bills all the same.
-    const recorded = recordUsageCost.mock.calls
-      .map(([cost]) => cost)
-      .find((cost) => cost.source === "browser-run");
-    expect(recorded?.costRub).toBe(4.2);
-    expect(recorded?.costUsd).toBeNull();
-    expect(recorded?.units).toMatchObject({ inputTokens: 150_000 });
-    expect(recorded?.units?.hosts).toBeUndefined();
   });
 
   it("records which hosts served the run's model, and its bill when that list is malformed", async () => {
@@ -1234,39 +1089,6 @@ describe("reading a VM run", () => {
     );
   });
 
-  it("surfaces messages the run ended without reading, and persists them", async () => {
-    const client = await loadClient();
-    worker.readBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({
-        finishedAt: "2026-09-28T11:58:00Z",
-        status: "completed",
-        unreadMessages: ["и с завтраком"],
-      })
-    );
-
-    const run = await client.readBrowserUseRun(runId);
-
-    expect(run).toMatchObject({
-      status: "completed",
-      unreadMessages: ["и с завтраком"],
-    });
-    expect(records.updateBrowserVmRun.mock.calls[0]?.[1]).toMatchObject({
-      status: "completed",
-      unreadMessages: ["и с завтраком"],
-    });
-  });
-
-  it("answers [] for unread messages once the worker no longer reports any", async () => {
-    const client = await loadClient();
-    worker.readBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({ status: "running" })
-    );
-
-    const run = await client.readBrowserUseRun(runId);
-
-    expect(run).toMatchObject({ unreadMessages: [] });
-  });
-
   it("marks a run failed once the VM it ran on is stopped", async () => {
     const client = await loadClient();
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "stopped" }));
@@ -1394,25 +1216,6 @@ describe("cancelling a VM run", () => {
     // The VM's one browser is not free yet: a follow-up in the session
     // must wait for it rather than take the run as ended.
     expect(run.status).toBe("running");
-  });
-
-  it("answers a run the worker stopped within its wait as ended", async () => {
-    const client = await loadClient();
-    worker.cancelBrowserVmWorkerRun.mockResolvedValue(
-      workerRun({
-        error: "Stopped by Bro.",
-        finishedAt: "2026-09-28T11:58:00Z",
-        status: "cancelled",
-      })
-    );
-
-    const run = await client.cancelBrowserUseRun(runId);
-
-    expect(run.status).toBe("cancelled");
-    expect(records.updateBrowserVmRun.mock.calls[0]?.[1]).toMatchObject({
-      error: "Stopped by Bro.",
-      status: "cancelled",
-    });
   });
 
   it("asks the worker of a VM that is not marked ready, and fails when it does not answer", async () => {

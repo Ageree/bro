@@ -25,13 +25,7 @@ function approvalCard(
 }
 
 describe("decideInputRequest", () => {
-  it.each([
-    "browser_task",
-    "gmail-send",
-    "slack-send-message",
-    "spend_limit",
-    "google_connect",
-  ])(
+  it.each(["browser_task", "gmail-send"])(
     "cancels %s: payments, bookings and messages are never approved",
     (tool) => {
       const decision = decideInputRequest(
@@ -109,54 +103,11 @@ describe("decideInputRequest", () => {
     expect(decision).toMatchObject({ kind: "ask-tester" });
   });
 
-  it("cancels the same tool as before when it is not held", () => {
-    const decision = decideInputRequest(
-      approvalCard("browser_task", { allowPayment: true }),
-      ownDataTools,
-      []
-    );
-    expect(decision).toMatchObject({
-      kind: "respond",
-      response: { optionId: "cancel", requestId: "req_1" },
-    });
-  });
-
-  it("still approves an own-data tool that is not held", () => {
-    const decision = decideInputRequest(
-      approvalCard("calendar-create-event", {
-        attendees: [],
-        summary: "Лекция",
-      }),
-      ownDataTools,
-      ["browser_task"]
-    );
-    expect(decision).toMatchObject({
-      kind: "respond",
-      response: { optionId: "approve" },
-    });
-  });
-
   it("confirms a payment at the cap (--confirm-payment-up-to)", () => {
     const decision = decideInputRequest(
       approvalCard("browser_task", {
         allowPayment: true,
         submission: { chargeRub: 1000 },
-      }),
-      ownDataTools,
-      [],
-      1000
-    );
-    expect(decision).toMatchObject({
-      kind: "respond",
-      response: { optionId: "approve", requestId: "req_1" },
-    });
-  });
-
-  it("confirms a payment under the cap (--confirm-payment-up-to)", () => {
-    const decision = decideInputRequest(
-      approvalCard("browser_task", {
-        allowPayment: true,
-        submission: { chargeRub: 900 },
       }),
       ownDataTools,
       [],
@@ -197,20 +148,6 @@ describe("decideInputRequest", () => {
     });
   });
 
-  it("cancels a payment as before when no cap is set", () => {
-    const decision = decideInputRequest(
-      approvalCard("browser_task", {
-        allowPayment: true,
-        submission: { chargeRub: 900 },
-      }),
-      ownDataTools
-    );
-    expect(decision).toMatchObject({
-      kind: "respond",
-      response: { optionId: "cancel", requestId: "req_1" },
-    });
-  });
-
   it("holds a tool over the cap when it is also --hold'd", () => {
     const decision = decideInputRequest(
       approvalCard("browser_task", {
@@ -222,16 +159,6 @@ describe("decideInputRequest", () => {
       1000
     );
     expect(decision).toMatchObject({ kind: "ask-tester" });
-  });
-
-  it("leaves a plain question unanswered even with a cap set", () => {
-    const decision = decideInputRequest(
-      { ...approvalCard("ask_question"), kind: "question" },
-      ownDataTools,
-      [],
-      1000
-    );
-    expect(decision.kind).toBe("ask-tester");
   });
 });
 

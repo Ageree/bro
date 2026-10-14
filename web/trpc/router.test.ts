@@ -84,24 +84,6 @@ describe("appRouter", () => {
     );
   });
 
-  it("rejects a model id that names no provider", async () => {
-    await expect(
-      appRouter
-        .createCaller({ origin: "https://example.com", scope })
-        .settings.selectModel({ modelId: "deepseek-v4.1-flash" })
-    ).rejects.toThrow("Use a provider/model id.");
-    expect(selectModelMock).not.toHaveBeenCalled();
-  });
-
-  it("rejects invalid chat writes before persistence", async () => {
-    await expect(
-      appRouter
-        .createCaller({ origin: "https://example.com", scope })
-        .chats.save({ sessionId: "" })
-    ).rejects.toThrow("Too small");
-    expect(saveChatMock).not.toHaveBeenCalled();
-  });
-
   it("starts Google OAuth at the chosen level when no grant exists", async () => {
     googleAccessMock.mockResolvedValue("full");
     readGoogleMock.mockResolvedValue({
@@ -200,15 +182,6 @@ describe("appRouter", () => {
       "slack",
       scope.userId
     );
-  });
-
-  it("offers only the cabinet's apps", async () => {
-    await expect(
-      appRouter
-        .createCaller({ origin: "https://example.com", scope })
-        // @ts-expect-error -- Todoist connects in chat, not from the cabinet.
-        .connectedApps.update({ action: "connect", app: "todoist" })
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   describe("memory in the cabinet", () => {

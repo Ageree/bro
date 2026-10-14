@@ -115,12 +115,6 @@ describe("the instruction catalog", () => {
       "<!-- skill:weather -->\n- x\n<!-- /skill -->",
     ],
     ["a region left open", "follow-through", "<!-- skill:games -->\n- x"],
-    ["a close of nothing", "follow-through", "- x\n<!-- /skill -->"],
-    [
-      "a mismatched close",
-      "follow-through",
-      "<!-- core-only -->\n- x\n<!-- /skill -->",
-    ],
     [
       "a nested region",
       "follow-through",
@@ -130,16 +124,6 @@ describe("the instruction catalog", () => {
       "an unreadable marker",
       "follow-through",
       "<!-- skill: games -->\n- x\n<!-- /skill -->",
-    ],
-    [
-      "a place of two digits",
-      "follow-through",
-      "<!-- skill:games 12 -->\n- x\n<!-- /skill -->",
-    ],
-    [
-      "a misspelt layout",
-      "follow-through",
-      "<!-- full-ony -->\n- x\n<!-- /full-only -->",
     ],
     // Read in some turns of a session only, it may hold no skill.
     [

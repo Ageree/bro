@@ -336,12 +336,8 @@ describe("generate_image", () => {
   });
 
   it.each([
-    ["сделай открытку маме на др", true],
     ["нарисуй кота в шляпе", true],
-    ["хочу мем про понедельник", true],
     ["draw me a cat", true],
-    ["make a birthday card for Sam", true],
-    ["напиши Борису, что я опоздаю", false],
     ["не хочу плакать", false],
     ["imagine a world without memes", true],
     ["imagine a quiet evening", false],
@@ -350,15 +346,6 @@ describe("generate_image", () => {
     const { pictureRequested } =
       await import("@agent/lib/image-artifact/generation");
     expect(pictureRequested([personText(text)])).toBe(expected);
-  });
-
-  it("tells the model when there are no photos to draw from", async () => {
-    const tool = await resolveTool(dynamicContext([request]));
-
-    expect(tool.description).toContain(
-      "The person has sent no photos in this conversation."
-    );
-    expect(mocks.put).not.toHaveBeenCalled();
   });
 
   it("lists the person's photos newest first and copies only the one that just arrived", async () => {

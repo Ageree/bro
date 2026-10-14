@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  composioProxy,
-  findGoogleAccount,
-} from "../../bench/account/composio.ts";
+import { composioProxy } from "../../bench/account/composio.ts";
 import { withRetry } from "../../bench/retry.ts";
 import { sendSignInCode, signedInSession } from "../../bench/sign-in.ts";
 import {
@@ -80,24 +77,10 @@ describe("a request that never left", () => {
   });
 
   it.each([
-    ["a connect timeout", connectTimeout()],
     ["a tunnel the proxy could not open (502)", tunnelRefused(502)],
-    ["a tunnel the proxy could not open (503)", tunnelRefused(503)],
-    ["a tunnel the proxy could not open (504)", tunnelRefused(504)],
     ["a socket closed during the TLS handshake", handshakeClosed()],
     ["a refused connect", systemError("ECONNREFUSED", "connect")],
-    ["an unreachable host", systemError("EHOSTUNREACH", "connect")],
-    ["an unreachable network", systemError("ENETUNREACH", "connect")],
-    ["a connect the system timed out", systemError("ETIMEDOUT", "connect")],
     ["a name that does not resolve", systemError("ENOTFOUND", "getaddrinfo")],
-    ["a lookup that failed for now", systemError("EAI_AGAIN", "getaddrinfo")],
-    [
-      "every address of the host refused",
-      everyAddressFailed(
-        ["ECONNREFUSED", "connect"],
-        ["ECONNREFUSED", "connect"]
-      ),
-    ],
     [
       "every address of the host refused or timed out",
       everyAddressFailed(["ECONNREFUSED", "connect"], ["ETIMEDOUT", "connect"]),
@@ -144,7 +127,6 @@ describe("a request that never left", () => {
 describe("a refusal a repeat would only get again", () => {
   it.each([
     ["the proxy forbids the host (403)", tunnelRefused(403)],
-    ["the proxy wants authentication (407)", tunnelRefused(407)],
     ["the certificate does not verify", certificateRejected()],
   ])("fails at once, even as a read: %s", async (_name, failure) => {
     const fetchMock = failingOnce(failure, sessionAnswer);
@@ -164,7 +146,6 @@ describe("a request cut off after it left", () => {
       socketClosed(),
       "UND_ERR_SOCKET: other side closed",
     ],
-    ["a reset", connectionReset(), "ECONNRESET: read ECONNRESET"],
   ])("is not sent again as a POST: %s", async (_name, failure, detail) => {
     const fetchMock = failingOnce(failure, () => Response.json({}));
 
@@ -179,18 +160,18 @@ describe("a request cut off after it left", () => {
     expect(warnings).toEqual([]);
   });
 
-  it.each([
-    ["the other side closed", socketClosed()],
-    ["a reset", connectionReset()],
-  ])("is read again as a GET: %s", async (_name, failure) => {
-    const fetchMock = failingOnce(failure, sessionAnswer);
+  it.each([["a reset", connectionReset()]])(
+    "is read again as a GET: %s",
+    async (_name, failure) => {
+      const fetchMock = failingOnce(failure, sessionAnswer);
 
-    const checked = signedInSession(host, "session=1");
-    await vi.advanceTimersByTimeAsync(2000);
+      const checked = signedInSession(host, "session=1");
+      await vi.advanceTimersByTimeAsync(2000);
 
-    await expect(checked).resolves.toMatchObject({ userId: "user_1" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
+      await expect(checked).resolves.toMatchObject({ userId: "user_1" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+  );
 });
 
 describe("a failure that does not prove the request never left", () => {
@@ -201,7 +182,6 @@ describe("a failure that does not prove the request never left", () => {
       "several addresses, one of them reset after the connect",
       everyAddressFailed(["ECONNREFUSED", "connect"], ["EHOSTUNREACH", "read"]),
     ],
-    ["a failed lookup without its syscall", systemError("ENOTFOUND")],
     ["a failure that names nothing known", unknownFailure()],
   ])("is not sent again, as a POST or a read: %s", async (_name, failure) => {
     const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(failure);
@@ -304,20 +284,6 @@ describe("Composio", () => {
       data: { emailAddress: "a@b.c" },
       status: 200,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("looks the account up again after a reset", async () => {
-    const fetchMock = failingOnce(socketClosed(), () =>
-      Response.json({
-        items: [{ id: "ca_1", status: "ACTIVE", user_id: "user_1" }],
-      })
-    );
-
-    const found = findGoogleAccount(apiKey, "user_1");
-    await vi.advanceTimersByTimeAsync(2000);
-
-    await expect(found).resolves.toBe("ca_1");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

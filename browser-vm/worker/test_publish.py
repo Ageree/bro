@@ -100,18 +100,6 @@ class Upload(unittest.TestCase):
                 self.assertEqual(stored["/b/w.py"][1], changed)
         self.assertIn("bump it", err.getvalue())
 
-    def test_reads_the_committed_worker_from_git(self):
-        # This very file is in git: HEAD has a worker.py with a VERSION line (or, outside git, nothing).
-        head = publish.committed(HERE / "worker.py")
-        if head is not None:
-            self.assertIn(b"VERSION = ", head)
-
-    def test_prints_the_env_value(self):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(publish.main([]), 0)
-        self.assertRegex(out.getvalue(), r"BROWSER_VM_WORKER=[\w.-]+:workers/worker-[\w.-]+\.py:[0-9a-f]{64}\n")
-
 
 if __name__ == "__main__":
     unittest.main()

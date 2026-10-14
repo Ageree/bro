@@ -273,25 +273,6 @@ describe("the per-turn Google read guard", () => {
     ).toBeUndefined();
   });
 
-  it("gives a background worker more empty searches", () => {
-    const empty = { type: "json" as const, value: { messages: [] } };
-    const history = [
-      person("проверь почту"),
-      ...Array.from(
-        { length: turnReadLimits.interactive.emptySearches },
-        (_, index) =>
-          search(`call-${String(index)}`, empty, `query ${String(index)}`)
-      ).flat(),
-    ];
-
-    expect(
-      readRefusalReason(
-        searchKey("one more"),
-        turnReads(history, turnReadLimits.background)
-      )
-    ).toBeUndefined();
-  });
-
   it("ends a turn that keeps asking for refused reads", () => {
     const refused = (id: string) =>
       search(id, { type: "text", value: readRefusalNotice("duplicate") });

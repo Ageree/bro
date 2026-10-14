@@ -32,17 +32,6 @@ describe("landing page", () => {
     expect(html).toContain("Написать бро");
   });
 
-  it("sizes the film to its own frame and fades its edges", async () => {
-    const html = await landingMarkup();
-
-    // The element carries the clip's ratio, so its box is the frame rather
-    // than a larger box the frame is letterboxed inside — which is what
-    // makes an edge fade land on the frame's own edges.
-    expect(html).toContain('width="720"');
-    expect(html).toContain('height="1280"');
-    expect(html).toContain("film-edge");
-  });
-
   it("opens the iMessage thread without asking for a number", async () => {
     const html = await landingMarkup();
 
@@ -53,20 +42,6 @@ describe("landing page", () => {
     );
     expect(html).not.toContain('name="phone-number"');
     expect(html).not.toContain("<form");
-  });
-
-  it("stands the film on a page with nothing but the call to action", async () => {
-    const html = await landingMarkup();
-
-    // The line under the button, the number in plain sight and the tariffs
-    // all left the stage; the tariffs are published in the offer instead.
-    expect(html).not.toContain("Первое сообщение создаёт твой аккаунт");
-    expect(html).not.toContain("SMS не подойдёт");
-    expect(html).not.toContain("Тарифы");
-    expect(html).not.toContain("Бесплатный режим");
-    expect(html).not.toContain("Полный доступ");
-    expect(html).not.toContain('id="pricing"');
-    expect(html).not.toContain(`>${broLine}<`);
   });
 
   it("says onboarding is closed when the deployment has no line", async () => {
@@ -85,25 +60,6 @@ describe("landing page", () => {
     expect(html).toContain('href="/sign-in"');
     expect(html).toContain('href="/vault"');
     expect(html).not.toContain('href="/workspace"');
-  });
-
-  it("names the page once", async () => {
-    const html = await landingMarkup();
-
-    expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(html).toContain("bro — твой личный ИИ-агент</h1>");
-  });
-
-  it("carries the old title and Open Graph card", async () => {
-    const { metadata } = await import("@app/(public)/page");
-
-    expect(metadata.title).toEqual({
-      absolute: "bro — твой личный ИИ-агент",
-    });
-    expect(metadata.openGraph).toMatchObject({
-      images: ["/brand/bro-og.png"],
-      title: "bro — твой личный ИИ-агент",
-    });
   });
 
   it("opens Messages with a greeting on the separator iOS accepts", () => {

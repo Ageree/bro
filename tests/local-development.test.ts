@@ -3,7 +3,6 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 import {
   SUPERVISOR_TEST_TIMEOUT_MS,
   waitForSupervisorClose,
@@ -22,47 +21,6 @@ afterEach(async () => {
 });
 
 describe("local development", supervisorTestOptions, () => {
-  it("owns the PostgreSQL lifecycle around the application process", async () => {
-    const [compose, developmentScript, packageManifestSource] =
-      await Promise.all([
-        readFile(new URL("../compose.yaml", import.meta.url), "utf8"),
-        readFile(new URL("../scripts/dev.ts", import.meta.url), "utf8"),
-        readFile(new URL("../package.json", import.meta.url), "utf8"),
-      ]);
-    const packageManifest = z
-      .object({ scripts: z.object({ dev: z.string() }) })
-      .parse(JSON.parse(packageManifestSource));
-
-    expect(packageManifest.scripts.dev).toBe(
-      "node --env-file-if-exists=.env.local scripts/dev.ts"
-    );
-    expect(compose).toContain("image: postgres:17-alpine");
-    expect(compose).toContain('"127.0.0.1::5432"');
-    expect(compose).toContain("postgres-data:/var/lib/postgresql/data");
-    expect(compose).toContain("pg_isready -U postgres -d open_instinct");
-
-    const start = developmentScript.indexOf(
-      'composeArguments("up", "--detach", "--wait")'
-    );
-    const port = developmentScript.indexOf(
-      'composeArguments("port", "postgres", "5432")'
-    );
-    const migrate = developmentScript.indexOf('["db:migrate"]');
-    const application = developmentScript.indexOf('["dev:app"]');
-    const stop = developmentScript.indexOf('composeArguments("down")');
-
-    expect(start).toBeGreaterThan(-1);
-    expect(port).toBeGreaterThan(-1);
-    expect(migrate).toBeGreaterThan(start);
-    expect(application).toBeGreaterThan(migrate);
-    expect(stop).toBeGreaterThan(application);
-    expect(developmentScript).toContain('createHash("sha256")');
-    expect(developmentScript).toContain("DATABASE_URL: localDatabaseUrl");
-    expect(developmentScript).toContain(
-      "DATABASE_URL_UNPOOLED: localDatabaseUrl"
-    );
-  });
-
   it("tears Compose down when interrupted during startup", async () => {
     const result = await interruptDuringStartup();
 

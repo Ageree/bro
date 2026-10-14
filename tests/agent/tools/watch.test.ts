@@ -254,18 +254,21 @@ describe("watch-create", () => {
     expect(services.create).not.toHaveBeenCalled();
   });
 
-  it("says the price is already below instead of watching", async () => {
-    services.page.mockResolvedValue({
-      amount: 7_490,
-      currency: "RUB",
-      extractor: "jsonld",
-      kind: "price",
-      landedOn: "shop.example/p/kettle?color=black",
-      name: "Чайник",
-      sku: "K780",
-    });
-    const result = await create({ below: 8_000, url: link }, asked);
-    expect(result).toMatchObject({ watching: false });
+  it("says the price is already at or below the threshold instead of watching", async () => {
+    for (const amount of [7_490, 8_000]) {
+      services.page.mockResolvedValue({
+        amount,
+        currency: "RUB",
+        extractor: "jsonld",
+        kind: "price",
+        landedOn: "shop.example/p/kettle?color=black",
+        name: "Чайник",
+        sku: "K780",
+      });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One price at a time.
+      const result = await create({ below: 8_000, url: link }, asked);
+      expect(result).toMatchObject({ watching: false });
+    }
     expect(services.create).not.toHaveBeenCalled();
   });
 
@@ -372,20 +375,5 @@ describe("watch-create", () => {
       Math.round((watch.expiresAt.getTime() - Date.now()) / (24 * 60 * 60_000))
     );
     expect(terms).toEqual([14, 30]);
-  });
-
-  it("says a price exactly at the threshold has already come", async () => {
-    services.page.mockResolvedValue({
-      amount: 8_000,
-      currency: "RUB",
-      extractor: "jsonld",
-      kind: "price",
-      landedOn: "shop.example/p/kettle?color=black",
-      name: "Чайник",
-      sku: "K780",
-    });
-    const result = await create({ below: 8_000, url: link }, asked);
-    expect(result).toMatchObject({ watching: false });
-    expect(services.create).not.toHaveBeenCalled();
   });
 });

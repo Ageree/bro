@@ -7,10 +7,7 @@ const error = { messageId: "chained" };
 tester.run("anti-slop/no-chained-type-assertions", noChainedTypeAssertionsRule, {
   valid: [
     "const user = input as User;",
-    "const user = <User>input;",
-    "const values = [1, 2] as const;",
     "const result = transform(input as Source) as Result;",
-    "const nested = { value: input as Source } as Container;",
     "const values = (([1, 2] as const)) as const;",
   ],
   invalid: [

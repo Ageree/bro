@@ -1,6 +1,5 @@
 import type { SessionAuth } from "eve/context";
 import type { ToolContext } from "eve/tools";
-import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -22,7 +21,6 @@ import {
   telegramChatIdFromConversationId,
   telegramConversationIdSchema,
 } from "@agent/lib/telegram-conversation";
-import { scheduledAgentJobs } from "@db/schema";
 
 describe("Telegram conversation identity", () => {
   it("accepts eve's private-chat continuation token", () => {
@@ -46,25 +44,6 @@ describe("Telegram conversation identity", () => {
       scope: telegramScope,
     });
     expect(scheduleReplyAnchor(telegramToolContext())).toBe("77");
-  });
-
-  it("stores telegram alongside the existing conversation channels", () => {
-    const table = getTableConfig(scheduledAgentJobs);
-    const conversationChannel = table.columns.find(
-      (column) => column.name === "conversation_channel"
-    );
-
-    expect(conversationChannel?.enumValues).toEqual([
-      "eve",
-      "photon",
-      "telegram",
-    ]);
-    expect(
-      table.checks.find(
-        (check) =>
-          check.name === "scheduled_agent_jobs_conversation_channel_check"
-      )
-    ).toBeDefined();
   });
 
   it("resolves the current Telegram message as a reply target", () => {

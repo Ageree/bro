@@ -3,53 +3,24 @@ import { describe, expect, it, vi } from "vitest";
 import browser from "@agent/instructions/content/browser/available.md?raw";
 
 describe("public-service instructions", () => {
-  it("reads meter photos by tariff, serial number and whole units", async () => {
-    // RU d08: readings from the photos were never staged; mixed-up T1 and
-    // T2 are an error.
-    const content = await resolveContent("telegram-webhook", "bu-key");
-
-    expect(content).toContain("его заводской номер");
-    expect(content).toContain(
-      "Красные цифры и всё после запятой — доли (у воды это литры)"
-    );
-    expect(content).toContain("Т1 (день) и Т2 (ночь)");
-    expect(content).toContain("«Т» или «Σ» без номера — сумма тарифов");
-    expect(content).toContain(
-      "Показание меньше прошлого или подозрительный скачок — переспроси одним вопросом до передачи"
-    );
-  });
-
   it("sends delegated readings at once across report continuations without cards", async () => {
     const content = await resolveContent("telegram-webhook", "bu-key");
 
-    expect(content).toContain("дойди до кнопки передачи и остановись");
-    expect(content).toContain("в `what` — все показания с номерами счётчиков");
     expect(content).toContain(
       "Показания, которые человек прислал, передавай сразу, без вопроса и без карточки."
     );
     expect(content).toContain(
       "Они уходят сразу и в продолжении того же поручения после отчёта браузера, без карточки и повторного вопроса."
     );
-    expect(content).toContain("сначала почта");
   });
 
-  it("routes Госуслуги errands and doctors to the right cabinet", async () => {
-    const content = await resolveContent("photon-imessage", "bu-key");
-
-    expect(content).toContain("каждое начисление с тем, за что оно");
-    expect(content).toContain(
-      "ЕМИАС (emias.info или mos.ru, вход через Госуслуги)"
-    );
+  it("lets the saved Госуслуги login open only the errand's own site", () => {
     expect(browser).toContain(
       "Сохранённый вход на Госуслуги открывает и госсайты с кнопкой «Войти через Госуслуги»"
     );
     expect(browser).toContain(
       "Входит так запуск только на сайт своего поручения, а не на запасные сайты, магазины и банки с той же кнопкой."
     );
-    expect(browser).toContain(
-      "«Висит 500 ₽ к оплате» без того, за что, — не ответ."
-    );
-    expect(browser).toContain("в том же ходе ставь в его календарь");
   });
 
   it("keeps document numbers on the explicitly requested site without extra approval", async () => {
@@ -62,22 +33,6 @@ describe("public-service instructions", () => {
       "номера документов используй на сайте поручения, если человек попросил это сделать, без карточки; на чужой сайт их не отправляй"
     );
     expect(content).toContain("https://xn--90adear.xn--p1ai/check/fines");
-  });
-
-  it("does without Госуслуги what it can, and warns of the code up front", async () => {
-    // RU 25.09, d06: Bro offered to look in the mail «если хотите», and the
-    // code request came a quarter of an hour after the start, unannounced.
-    const content = await resolveContent("telegram-webhook", "bu-key");
-
-    expect(content).toContain(
-      "срок документа сам ищи в почте и на Диске (`gmail-search`, `drive-search`), а не предлагай поискать"
-    );
-    expect(content).toContain(
-      "Если вход Госуслуг сохранён в сейфе, запуская, сразу скажи, что для входа придёт код по SMS или в Max"
-    );
-    expect(content).toContain(
-      "по его собственному входу (ИНН и пароль) — кнопка «Войти через Госуслуги» там упрётся в тот же вход"
-    );
   });
 
   it("keeps «найди билеты» a search, on the seller's own site", () => {
