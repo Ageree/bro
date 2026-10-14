@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import type * as ai from "ai";
 import type * as settingsService from "@db/services/settings";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
+import type { browserTaskApproval as browserTaskApprovalOf } from "@agent/tools/browser_task";
 import {
   afterEach,
   beforeAll,
@@ -3156,6 +3157,305 @@ describe("browser_task autonomous delegated continuation", () => {
       paymentAllowed: true,
       submission: approved,
     });
+  });
+});
+
+/** Puts the workspaces of `list` in the autonomy pilot, modules afresh. */
+function autonomyPilot(list = "*") {
+  vi.stubEnv("ERRAND_AUTONOMY_WORKSPACES", list);
+  vi.resetModules();
+}
+
+describe("browser_task in the autonomy pilot", () => {
+  const walledSite = "https://barber-one.ru";
+  const fallbackSite = "https://barber-two.ru";
+  const haircut: BrowserSubmission = {
+    amount: "бесплатно",
+    chargeRub: 0,
+    forWhom: "Алиса",
+    kind: "appointment",
+    personalData: ["имя", "телефон"],
+    what: "стрижка",
+    when: "завтра, 15:00",
+    where: "Barber One, Тверская ул., 12 (barber-one.ru)",
+  };
+  const onFallback = {
+    ...haircut,
+    where: "Barber Two, ул. Арбат, 10 (barber-two.ru)",
+  };
+  const asked = "Запиши меня на стрижку завтра в 15:00, любой барбер рядом";
+
+  afterEach(() => {
+    vi.stubEnv("ERRAND_AUTONOMY_WORKSPACES", "");
+    vi.resetModules();
+  });
+
+  function reportContext() {
+    const context = toolContext("better-auth:alice", "browser-result");
+    return {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            ...context.session.auth.current,
+            attributes: {
+              ...context.session.auth.current.attributes,
+              browserRunId: runId,
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function walledRow(submission: ConfirmedSubmission | null = haircut) {
+    return {
+      ...browserRunRow(new Date(), "Needs: captcha", submission),
+      delegatedByPerson: true,
+      site: walledSite,
+      task: asked,
+    };
+  }
+
+  /** The tool as a browser report's step resolves it, after `said`. */
+  async function reportTool(said = asked) {
+    const { default: dynamic } = await import("@agent/tools/browser_task");
+    const resolve = dynamic.events["step.started"];
+    if (!resolve) throw new Error("browser_task resolves per step.");
+    const context = reportContext();
+    const tools = await resolve({}, {
+      channel: { kind: "channel:photon", metadata: {} },
+      messages: [
+        { content: said, role: "user" },
+        { content: "Сейчас запишу.", role: "assistant" },
+        {
+          content: `${backgroundTurnMarker}\nBrowser run ${runId} finished.\nNeeds: captcha`,
+          role: "user",
+        },
+      ],
+      model: null,
+      session: { auth: context.session.auth, id: context.session.id },
+    } satisfies DynamicResolveContext);
+    const tool =
+      tools && !("execute" in tools) ? tools.browser_task : undefined;
+    if (!tool || !("execute" in tool)) {
+      throw new Error("browser_task must resolve for a conversation.");
+    }
+    return { context, tool };
+  }
+
+  async function approval(
+    input: NonNullable<Parameters<typeof browserTaskApprovalOf>[0]>,
+    said = asked
+  ) {
+    const { browserTaskApproval } = await import("@agent/tools/browser_task");
+    const { personSiteWords } = await import("@agent/lib/browser-use/autonomy");
+    return browserTaskApproval(input, reportContext(), {
+      answers: [],
+      paymentAsked: null,
+      said: null,
+      siteWords: personSiteWords([said]),
+    });
+  }
+
+  const freeStart = {
+    action: "start",
+    allowSubmit: true,
+    personWants: "done",
+    site: fallbackSite,
+    submission: onFallback,
+    task: "Запиши на стрижку завтра в 15:00",
+  } as const;
+
+  it("takes the free errand to a fallback site after an anti-bot wall, held to that site", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue(walledRow());
+
+    expect(await approval(freeStart)).toBe("not-applicable");
+    const { context, tool } = await reportTool();
+    const result = await tool.execute(freeStart, context);
+
+    expect(result).toMatchObject({ status: "running" });
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain(
+      "The person already asked for this errand to be completed"
+    );
+    expect(task).toContain("Submit only on barber-two.ru");
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      delegatedByPerson: true,
+      site: fallbackSite,
+      startedByPerson: true,
+      submission: { ...onFallback, boundHost: "barber-two.ru" },
+    });
+  });
+
+  it("stages a search for the person on the fallback site, so its free follow-up needs no word", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue(walledRow(null));
+    const { context, tool } = await reportTool();
+
+    const result = await tool.execute(
+      {
+        action: "start",
+        personWants: "done",
+        site: fallbackSite,
+        task: "Найди слот на стрижку завтра около 15:00",
+      },
+      context
+    );
+
+    expect(result).toMatchObject({ status: "running" });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "The person asked in their own message for this to be done in their name"
+    );
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      delegatedByPerson: true,
+      startedByPerson: true,
+      submission: null,
+    });
+  });
+
+  it("asks for the person's word when they named the site that walled it", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue(walledRow());
+
+    expect(
+      await approval(
+        freeStart,
+        "Запиши меня в Barber One на завтра в 15:00, только туда"
+      )
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("never carries a payment: it waits for the person's yes to «Оплачиваю?»", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue(walledRow());
+
+    const decision = await approval({
+      ...freeStart,
+      allowPayment: true,
+      submission: { ...onFallback, amount: "1 500 ₽", chargeRub: 1500 },
+    });
+
+    expect(decision).toMatchObject({ type: "denied" });
+    expect(JSON.stringify(decision)).toContain("Оплачиваю?");
+    // A walled paid errand gives the fallback no consent either.
+    readBrowserRunForScope.mockResolvedValue(
+      walledRow({ ...haircut, chargeRub: 1500, paymentCapRub: 1500 })
+    );
+    expect(
+      await approval({
+        ...freeStart,
+        submission: { ...onFallback, chargeRub: 0 },
+      })
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("keeps the old rule outside the pilot, on the same site and for another submission", async () => {
+    readBrowserRunForScope.mockResolvedValue(walledRow());
+    autonomyPilot("another-workspace");
+    expect(await approval(freeStart)).toMatchObject({ type: "denied" });
+
+    autonomyPilot();
+    expect(
+      await approval({ ...freeStart, site: "https://www.barber-one.ru" })
+    ).toMatchObject({ type: "denied" });
+    expect(
+      await approval({
+        ...freeStart,
+        submission: { ...onFallback, when: "завтра, 18:00" },
+      })
+    ).toMatchObject({ type: "denied" });
+  });
+
+  it("takes nothing on from an errand whose site let it in", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue({
+      ...walledRow(),
+      outcome: "Needs: decision",
+    });
+
+    expect(await approval(freeStart)).toMatchObject({ type: "denied" });
+  });
+
+  const fines = "Проверь штрафы ГИБДД: СТС 77 УО 123456, ВУ 9912 345678";
+
+  it("sends the СТС and licence numbers only to the official fines check", async () => {
+    autonomyPilot();
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await expect(
+      browserTask.execute(
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://shtrafy-online.ru",
+          task: fines,
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("go only to the official fines check");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+
+    const result = await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://xn--90adear.xn--p1ai",
+        task: fines,
+      },
+      toolContext("better-auth:alice")
+    );
+    expect(result).toMatchObject({ status: "running" });
+    const task = createBrowserUseRun.mock.calls[0]?.[0].task ?? "";
+    expect(task).toContain(
+      "This is a check of traffic fines on an official site"
+    );
+    expect(task).not.toContain(
+      "Never type the number of any of their documents either"
+    );
+  });
+
+  it("refuses a follow-up that would take the numbers to another site", async () => {
+    autonomyPilot();
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Needs: decision")
+    );
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    await expect(
+      browserTask.execute(
+        {
+          action: "continue",
+          personSaid: fines,
+          personWants: "look",
+          runId,
+          task: fines,
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("go only to the official fines check");
+  });
+
+  it("refuses no site the numbers outside the pilot", async () => {
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://shtrafy-online.ru",
+        task: fines,
+      },
+      toolContext("better-auth:alice")
+    );
+
+    expect(result).toMatchObject({ status: "running" });
+    expect(createBrowserUseRun.mock.calls[0]?.[0].task).toContain(
+      "Never type the number of any of their documents either"
+    );
   });
 });
 

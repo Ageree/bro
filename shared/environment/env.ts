@@ -304,6 +304,18 @@ export const env = createEnv({
         "YANDEX_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Bro carries an errand on by itself (`agent/lib/browser-use/autonomy.ts`):
+    // after a site never lets the run past its anti-bot check, the free part
+    // of the errand goes on at a fallback site with no new word from the
+    // person, and fines are checked by an errand on the official ГИБДД site,
+    // the only one the СТС and licence numbers go to. Workspace ids or `*`;
+    // unset, nobody, and the instructions read as before.
+    ERRAND_AUTONOMY_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "ERRAND_AUTONOMY_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     BROWSER_VM_FILES_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),

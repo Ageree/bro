@@ -1263,6 +1263,16 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `[message]` (`role`: person/input/bro, `logMessage` в `agent/hooks/turn-log.ts`),
   с фильтром секретов, всегда, без флага; ход ищите и по `[tools]` и
   `durationMs` инструментов в строке `"method":"EVE"`.
+- Пилот `ERRAND_AUTONOMY_WORKSPACES` (id или `*`, владелец 14.10): после `NEEDS: captcha`
+  ход-отчёт заводит поручение на запасном сайте как поручение человека (`walledErrandFor`
+  в `agent/tools/browser_task.ts`: делегирование, данные, бесплатный `submission` того же
+  варианта с `boundHost` нового сайта); платное — по-прежнему «Оплачиваю?». Сайт, который
+  человек назвал, ловит лишь `namesSite` по латинице и транслиту (`agent/lib/browser-use/autonomy.ts`):
+  «Вайлдберриз» он не узнает, держит промпт; госсайты и запуск по разрешению не переносятся.
+  Номера СТС и ВУ уходят только на гибдд.рф, gibdd.ru и Госуслуги (`checksFinesOfficially`
+  в `public-services.ts`): код отказывает в старте и продолжении на другой сайт, но сам
+  запуск на сайте ГИБДД держит лишь строка задачи. Тексты пилота — `autonomyEdits`
+  (`agent/lib/skills/autonomy.ts`), без флага промпт прежний байт в байт.
 - `ERR_TUNNEL_CONNECTION_FAILED` в отчёте запуска — сбой нашего резидентного прокси
   на CONNECT, а не сайта: 14.10 он отвечал 500/568 на каждый второй запрос, и форма
   productradar.ru дважды сбросилась. Пересыльщик worker (`Forwarder`, ≥ 2026-10-14.1)
