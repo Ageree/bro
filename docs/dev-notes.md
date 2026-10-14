@@ -1722,7 +1722,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   читает его из строки расписания на каждом вызове (`agent/lib/schedules/delegation/run.ts`),
   `browser_task` стартует только этот `submission` на этом сайте, `gmail-send`/`mail-send` — только
   этим адресам; оплата, `withinSpendLimit`, другой сайт и `continue` — отказ. Строки промпта меняет
-  `delegation/text.ts` только в пилоте: без флага промпт байт в байт прежний.
+  `delegation/text.ts` только в пилоте: без флага промпт байт в байт прежний. С 14.10 в
+  проде `*` (владелец, сразу всем); откат — снять флаг в `prod.json` и `host.py env`.
 - Агентный работник (`AGENCY_WORKSPACES`): вид запуска решает `proactiveRunKind`
   (`agent/lib/schedules/identity.ts`), режим читает пилот на каждом шаге.
   Гварды, журнал `agency_actions` и бюджет — `agent/lib/agency/`; повтор того же
