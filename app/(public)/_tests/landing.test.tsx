@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { parseHTML } from "linkedom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { imessageLink } from "@app/(public)/_components/write-bro";
 
@@ -42,12 +43,25 @@ describe("landing page", () => {
     expect(html.match(/<h1/g)).toHaveLength(1);
     expect(html).toContain("bro — твой личный ИИ-агент</h1>");
   });
+  it("keeps only the hero without lower sections, a footer or scroll cues", async () => {
+    const html = await landingMarkup();
+    const { document } = parseHTML(html);
+
+    expect(html.match(/<main/g)).toHaveLength(1);
+    expect(html.match(/<section/g)).toHaveLength(1);
+    expect(html).not.toContain("<h2");
+    expect(html).not.toContain("<footer");
+    expect(document.querySelectorAll('a[href^="#"]')).toHaveLength(0);
+    expect(html).not.toContain('data-slot="dialog-trigger"');
+    expect(html).not.toContain('data-slot="collapsible-trigger"');
+  });
   it("opens the iMessage thread without asking for a number", async () => {
     const html = await landingMarkup();
     expect(html).toContain(
       `href="${imessageLink(broLine).replace("&", "&amp;")}"`
     );
     expect(html).toContain('aria-label="Написать бро в iMessage"');
+    expect(html.match(/aria-label="Написать бро в iMessage"/g)).toHaveLength(1);
     expect(html).not.toContain('name="phone-number"');
     expect(html).not.toContain("<form");
   });
@@ -56,6 +70,9 @@ describe("landing page", () => {
     const html = await landingMarkup();
     expect(html).toContain("Пока закрыто");
     expect(html).toContain('disabled=""');
+    expect(
+      parseHTML(html).document.querySelectorAll("button[disabled]")
+    ).toHaveLength(1);
     expect(html).not.toContain("sms:");
   });
   it("links this app's routes", async () => {
