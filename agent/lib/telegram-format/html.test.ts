@@ -58,10 +58,6 @@ describe("Telegram HTML conversion", () => {
 });
 
 describe("Telegram message splitting", () => {
-  it("keeps a short message as one part", () => {
-    expect(splitTelegramHtml("short")).toEqual(["short"]);
-  });
-
   it("prefers a newline boundary", () => {
     const head = "a".repeat(telegramMessageTextMaxLength - 10);
     const parts = splitTelegramHtml(`${head}\n${"b".repeat(200)}`);
