@@ -25,8 +25,17 @@ async function sharedFiles() {
     ).url;
   const report = await share("Отчёт за сентябрь.pdf");
   const chart = await share("chart.png");
+  const table = await share("table.csv");
   const messages: ModelMessage[] = [
-    { content: "сделай отчёт и график", role: "user" },
+    { content: "сделай отчёт, график и таблицу", role: "user" },
+    // A background task's report, its link ending a sentence.
+    Object.assign(
+      {
+        content: `Background task task_1 (task) is completed.\n\nResult:\nТаблица: ${table}.`,
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    ),
     {
       content: [
         {
@@ -36,7 +45,7 @@ async function sharedFiles() {
           type: "tool-result",
         },
         {
-          output: { type: "text", value: chart },
+          output: { type: "text", value: `График: ${chart}.` },
           toolCallId: "call-2",
           toolName: "task",
           type: "tool-result",
@@ -50,6 +59,7 @@ async function sharedFiles() {
     chart,
     known: modules.knownSharedLinks(messages),
     report,
+    table,
   };
 }
 
@@ -70,9 +80,9 @@ afterEach(() => {
 });
 
 describe("the task agent's file links as the model copies them", () => {
-  it("knows the links a task call answered with", async () => {
-    const { chart, known, report } = await sharedFiles();
-    expect(known).toEqual([report, chart]);
+  it("knows the links a task call or its report answered with, a period after one or not", async () => {
+    const { chart, known, report, table } = await sharedFiles();
+    expect(known).toEqual([table, report, chart]);
   });
 
   it("mends a wrong signature character, a cut tail or a bare id", async () => {
@@ -96,6 +106,36 @@ describe("the task agent's file links as the model copies them", () => {
         known
       )
     ).toEqual({ kind: "message", text: `Готово: ${report}\nСмотри.` });
+  });
+
+  it("finds a cut link glued to a word or written without its scheme", async () => {
+    const { chart, known, withExactSharedLinks } = await sharedFiles();
+    const cut = chart.slice(0, -5);
+    const bare = cut.replace(/^https:\/\//u, "");
+
+    expect(
+      withExactSharedLinks({ kind: "message", text: `График:${cut}` }, known)
+    ).toEqual({ kind: "message", text: `График:${chart}` });
+    expect(
+      withExactSharedLinks(
+        { kind: "message", text: `График ${bare} готов` },
+        known
+      )
+    ).toEqual({ kind: "message", text: `График ${chart} готов` });
+  });
+
+  it("keeps a link that opens as its own file, though a known one has its name", async () => {
+    const { exactSharedLink, known, report, shareSandboxFile } =
+      await sharedFiles();
+    // An earlier version of the report, whose link fell out of the known ones.
+    const { url: earlier } = await shareSandboxFile({
+      bytes: new TextEncoder().encode("первая версия"),
+      mediaType: "application/pdf",
+      name: "Отчёт за сентябрь.pdf",
+    });
+
+    expect(earlier).not.toBe(report);
+    expect(exactSharedLink(earlier, known)).toBe(earlier);
   });
 
   it("leaves a link of no file of this conversation as written", async () => {

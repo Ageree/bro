@@ -34,7 +34,7 @@ const standardAttachmentLimits: AttachmentLimits = {
 
 /**
  * The files pilot's limits (`taskFilesOfCaller`): a file the task agent made
- * or a person sent goes back as a real file up to 20 MiB, three of them per
+ * or a person sent goes back as a real file up to 20 MiB, 50 MiB in all per
  * message. Telegram takes a document up to 50 MB, and a photo past 10 MB goes
  * as one (`agent/channels/telegram.ts`).
  */

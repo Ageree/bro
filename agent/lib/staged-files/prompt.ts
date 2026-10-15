@@ -30,6 +30,12 @@ const encryptedNote = " — PDF зашифрован: ты его не види�
 /** The PDFs' facts by path: the hash in the path names the bytes. */
 const factsByPath = new Map<string, ReturnType<typeof pdfFacts>>();
 const maximumFacts = 500;
+/**
+ * The PDFs a model call failed on, by path (`markUnreadablePdfs`): they go
+ * as their lines from then on, as an earlier turn's do.
+ */
+const unreadable = new Set<string>();
+const maximumUnreadable = 500;
 
 const ownAnnotationsSchema = z.object({
   openrouter: z.object({ annotations: z.array(annotationSchema) }),
@@ -53,6 +59,43 @@ export function currentTurnStart(prompt: Prompt) {
     if (role === "assistant" && userAfter) return index;
   }
   return -1;
+}
+
+/**
+ * The staged PDFs a prompt carries as parts, which the provider parses: on
+ * a prompt `withStagedFiles` made, this turn's.
+ */
+export function inlinePdfPaths(prompt: Prompt) {
+  return prompt.flatMap((message) =>
+    message.role === "user"
+      ? message.content.flatMap((part) =>
+          part.type === "file" &&
+          part.mediaType === "application/pdf" &&
+          isStagedPath(part.filename)
+            ? [part.filename]
+            : []
+        )
+      : []
+  );
+}
+
+/**
+ * Remembers PDFs the provider could not parse. Such a call fails its turn
+ * without an answer, so the next turn's prompt has no assistant message
+ * after the PDF and would count it as its own, inline, failing again: a
+ * corrupt PDF would fail every turn after it. Remembered, it goes as its
+ * line, which Bro hands to the task agent. Process memory only: a restart
+ * costs one more failure.
+ */
+export function markUnreadablePdfs(paths: readonly string[]) {
+  for (const path of paths) {
+    unreadable.delete(path);
+    unreadable.add(path);
+  }
+  for (const oldest of unreadable) {
+    if (unreadable.size <= maximumUnreadable) break;
+    unreadable.delete(oldest);
+  }
 }
 
 function attachedLine(path: string, label: string) {
@@ -95,7 +138,7 @@ function pdfParts(
       ],
     } as const;
   }
-  if (earlier) {
+  if (earlier || unreadable.has(path)) {
     return { kind: "earlier", parts: [attachedLine(path, label)] } as const;
   }
   return {
@@ -105,8 +148,9 @@ function pdfParts(
 }
 
 /**
- * The prompt with each staged file's path line, the PDFs of earlier turns
- * and the encrypted ones as lines alone, eve's line of a photo too large to
+ * The prompt with each staged file's path line, the PDFs of earlier turns,
+ * the encrypted ones and those a call failed on (`markUnreadablePdfs`) as
+ * lines alone, eve's line of a photo too large to
  * inline saying the model does not see it, and the parse of this turn's
  * PDFs on the assistant message after them; the same prompt when nothing
  * changes. Within a turn every step gets the same transform; the next turn

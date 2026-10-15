@@ -21,14 +21,18 @@ type SandboxSession = Awaited<ReturnType<ToolContext["getSandbox"]>>;
 beforeEach(() => {
   vi.clearAllMocks();
   pilot.taskFilesOfCaller.mockReturnValue(false);
-  storage.shareSandboxFile.mockImplementation(async (input) =>
-    Promise.resolve({
+  storage.shareSandboxFile.mockImplementation(async (input) => {
+    // The store keeps its own cap, 10 MB unless the caller raises it.
+    if (input.bytes.byteLength > (input.maximumBytes ?? 10 * 1024 * 1024)) {
+      throw new Error("A shared file is over the store's cap.");
+    }
+    return await Promise.resolve({
       bytes: input.bytes.byteLength,
       mediaType: input.mediaType,
       name: input.name,
       url: "https://bro.example.test/eve/v1/sandbox-files/x/y?sig=z",
-    })
-  );
+    });
+  });
 });
 
 /** A file the sandbox serves in chunks of a megabyte, `chunks` of them. */

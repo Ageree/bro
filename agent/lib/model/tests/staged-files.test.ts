@@ -169,6 +169,38 @@ describe("the files pilot's model calls", () => {
     expect(outside).not.toContain("Attached file");
   });
 
+  it("sends a PDF the provider could not parse as its line from then on", async () => {
+    network.fetch
+      .mockImplementationOnce(async () =>
+        Response.json(
+          {
+            error: {
+              code: 400,
+              message: "Failed to parse the file. It may be corrupt.",
+            },
+          },
+          { status: 400 }
+        )
+      )
+      .mockImplementation(async () => completion({ content: "Готово." }));
+    const { model } = await selection(true);
+
+    await expect(
+      generateText({ maxRetries: 0, messages, model })
+    ).rejects.toThrow("Failed to parse the file");
+    // The failed turn left no answer: the next one follows it directly.
+    await generateText({
+      messages: [...messages, { content: "ну что там?", role: "user" }],
+      model,
+    });
+
+    const failed = JSON.stringify(sentBody(0).messages[0]?.content);
+    const next = JSON.stringify(sentBody(1).messages[0]?.content);
+    expect(failed).toContain("file_data");
+    expect(next).not.toContain("file_data");
+    expect(next).toContain(`Attached file ${form} (application/pdf, 3`);
+  });
+
   it("runs a task call with the staged path its input miswrote", async () => {
     network.fetch.mockImplementation(async () =>
       completion({ content: null, tool_calls: [taskCall(miswritten)] })

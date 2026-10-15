@@ -23,14 +23,13 @@ const looseParts = new RegExp(
   `${sandboxFilesPath}/([\\da-f]{8,24})(?:/([^?#]*))?`,
   "u"
 );
-/**
- * A link in text as a model writes it, with or without its scheme: a host,
- * the path, and its tail up to a space, a quote or a bracket.
- */
-const looseLink = new RegExp(
-  `(?:https?://)?[\\w.-]*(?::\\d+)?${sandboxFilesPath}/[^\\s"'<>()[\\]]+`,
-  "gu"
-);
+/** The path every task file link carries, which a link in text is found by. */
+const linkPath = `${sandboxFilesPath}/`;
+/** What ends a link's tail in text: a space, a quote or a bracket. */
+const tailEnd = /[\s"'<>()[\]]/u;
+const hostChar = /[\w.-]/u;
+const digit = /\d/u;
+const schemes = ["https://", "http://"] as const;
 const signature = /sig=[\w-]+/u;
 /** How far a link cut at a space in its name is looked after for its `sig`. */
 const signatureReach = 300;
@@ -66,7 +65,9 @@ export function knownSharedLinks(
 ): readonly string[] {
   const links = new Set(reportedSharedFileLinks(messages));
   for (const text of taskResultTexts(messages)) {
-    for (const [link] of text.matchAll(linkPattern)) {
+    for (const [written] of text.matchAll(linkPattern)) {
+      // A link that ends a sentence keeps its period out.
+      const link = written.replace(/[.,;:!?…]+$/u, "");
       if (isSharedFileLink(link)) links.add(link);
     }
   }
@@ -107,18 +108,21 @@ function only(links: readonly string[]) {
 }
 
 /**
- * The known link `value` stands for: itself when it is one, else the known
+ * The known link `value` stands for: itself when it is one; a link that
+ * opens all the same stays the file it names (the known spelling of its id
+ * when there is one: a name the model decoded, which a URL parser accepts,
+ * comes back encoded), never another file of the same name; else the known
  * link with its id, the only one with its name, or the only one whose id
  * starts with its 12 or more hex or is within two characters of its 24;
- * failing those, itself when it is a valid link all the same (its name
- * decoded, which a URL parser accepts, comes back as the known link);
  * undefined when none or several fit.
  */
 export function exactSharedLink(value: string, known: readonly string[]) {
   if (known.includes(value)) return value;
-  return (
-    knownLinkFor(value, known) ?? (isSharedFileLink(value) ? value : undefined)
-  );
+  if (isSharedFileLink(value)) {
+    const { id } = partsOf(value);
+    return known.find((link) => partsOf(link).id === id) ?? value;
+  }
+  return knownLinkFor(value, known);
 }
 
 function knownLinkFor(value: string, known: readonly string[]) {
@@ -166,16 +170,54 @@ function linkExtent(text: string, start: number, written: string) {
   return `${written}${between}`;
 }
 
+/**
+ * Where the link whose path is at `at` begins, as a model writes it: the
+ * host and its port, with the scheme or without. Read back from the path,
+ * so a long word in the text costs its length once rather than its square,
+ * as a pattern tried from each of its letters would (a send's text is up to
+ * 20 000 characters).
+ */
+function linkStart(text: string, at: number) {
+  let start = at;
+  while (start > 0 && digit.test(text.charAt(start - 1))) start -= 1;
+  start = start < at && text.charAt(start - 1) === ":" ? start - 1 : at;
+  while (start > 0 && hostChar.test(text.charAt(start - 1))) start -= 1;
+  const scheme = schemes.find(
+    (prefix) =>
+      start >= prefix.length && text.startsWith(prefix, start - prefix.length)
+  );
+  return start - (scheme?.length ?? 0);
+}
+
+/**
+ * Each task file link in `text` as a model writes it, with or without its
+ * scheme: where it begins, and its host, path and tail up to a space, a
+ * quote or a bracket.
+ */
+function* looseLinks(text: string) {
+  let at = text.indexOf(linkPath);
+  while (at !== -1) {
+    let end = at + linkPath.length;
+    while (end < text.length && !tailEnd.test(text.charAt(end))) end += 1;
+    if (end > at + linkPath.length) {
+      const index = linkStart(text, at);
+      yield { index, written: text.slice(index, end) };
+    }
+    // A second path inside the same tail belongs to this link.
+    at = text.indexOf(linkPath, Math.max(end, at + 1));
+  }
+}
+
 function withExactLinksInText(text: string, known: readonly string[]) {
   let mended = "";
   let from = 0;
-  for (const match of text.matchAll(looseLink)) {
-    if (match.index < from) continue;
-    const written = linkExtent(text, match.index, match[0]);
+  for (const loose of looseLinks(text)) {
+    if (loose.index < from) continue;
+    const written = linkExtent(text, loose.index, loose.written);
     const link = exactSharedLink(written, known);
     if (link === undefined) continue;
-    mended += `${text.slice(from, match.index)}${link}`;
-    from = match.index + written.length;
+    mended += `${text.slice(from, loose.index)}${link}`;
+    from = loose.index + written.length;
   }
   return from === 0 ? text : `${mended}${text.slice(from)}`;
 }
