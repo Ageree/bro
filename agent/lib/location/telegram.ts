@@ -37,9 +37,68 @@ const shareSchema = z.object({
     .optional(),
 });
 
-/** The location a Telegram message shares, or undefined when it shares none. */
+/** The keyboard button that sends the person's location (`location_now` with `ask`). */
+const locationButtonText = "📍 Отправить геопозицию";
+/** The line the button comes with: Telegram posts no keyboard without text. */
+export const locationButtonPrompt =
+  "Кнопка «📍 Отправить геопозицию» внизу пришлёт Бро, где ты сейчас.";
+
+/** The reply keyboard with the button: shown once, hidden after a tap. */
+export const locationButtonMarkup = {
+  keyboard: [[{ request_location: true, text: locationButtonText }]],
+  one_time_keyboard: true,
+  resize_keyboard: true,
+};
+
+/**
+ * A `location_now` result that asks the channel for the button: the tool
+ * says `locationButton: true` only in a Telegram conversation.
+ */
+export const locationButtonResultSchema = z.object({
+  kind: z.literal("tool-result"),
+  output: z.object({ locationButton: z.literal(true) }),
+  toolName: z.literal("location_now"),
+});
+
+/** A point this soon after the button was shown is the button's answer. */
+const askedForMs = 10 * 60_000;
+/** Chats this instance remembers asking; the oldest go first. */
+const rememberedAsks = 500;
+
+/**
+ * Chats shown the button, by chat id: when. A location the button sends
+ * may carry no accuracy, the same shape as a pin dropped on the map, so the
+ * chat's next plain location is read as the person's own. In this
+ * instance's memory, like the bridge throttle: one eve serves the database.
+ */
+const askedChats = new Map<string, number>();
+
+/** Remembers that the chat was just shown the location button. */
+export function rememberLocationAsked(chatId: string, now = Date.now()) {
+  askedChats.delete(chatId);
+  askedChats.set(chatId, now);
+  for (const oldest of askedChats.keys()) {
+    if (askedChats.size <= rememberedAsks) break;
+    askedChats.delete(oldest);
+  }
+}
+
+/** Whether the chat was shown the button in the last 10 minutes; forgets it. */
+export function takeLocationAsked(chatId: string, now = Date.now()) {
+  const at = askedChats.get(chatId);
+  askedChats.delete(chatId);
+  return at !== undefined && now - at <= askedForMs;
+}
+
+/**
+ * The location a Telegram message shares, or undefined when it shares none.
+ * `asked`, called only for a plain location not forwarded and without its
+ * accuracy: whether the chat was just shown the location button, which
+ * makes it the person's own (it then says only that they arrived).
+ */
 export function telegramLocation(
-  message: TelegramMessage
+  message: TelegramMessage,
+  { asked }: { readonly asked?: () => boolean } = {}
 ): SharedPoint | undefined {
   const parsed = shareSchema.safeParse(message.raw);
   if (!parsed.success) return undefined;
@@ -72,10 +131,10 @@ export function telegramLocation(
       source: "telegram_venue",
     };
   }
-  const own =
-    !forwarded &&
-    (location.horizontal_accuracy !== undefined ||
-      location.live_period !== undefined);
+  const measured =
+    location.horizontal_accuracy !== undefined ||
+    location.live_period !== undefined;
+  const own = !forwarded && (measured || (asked?.() ?? false));
   return {
     ...base,
     accuracyM:
@@ -86,7 +145,7 @@ export function telegramLocation(
     arriveAllowed: own,
     kind: own ? "position" : "place",
     label: null,
-    leaveAllowed: own,
+    leaveAllowed: own && measured,
     liveKey:
       own && location.live_period !== undefined
         ? liveKeyOf(message.chat.id, message.messageId)

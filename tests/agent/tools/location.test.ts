@@ -81,7 +81,10 @@ function resolveContext(
   };
 }
 
-function callContext(authenticator = "authjs"): ToolContext {
+function callContext(
+  authenticator = "authjs",
+  conversationChannel = "eve"
+): ToolContext {
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",
@@ -98,7 +101,13 @@ function callContext(authenticator = "authjs"): ToolContext {
       throw new Error("No token.");
     },
     session: {
-      auth: { current: caller(authenticator), initiator: null },
+      auth: {
+        current: {
+          ...caller(authenticator),
+          attributes: { conversationChannel, workspaceId },
+        },
+        initiator: null,
+      },
       id: "session-1",
       turn: { id: "turn-1", sequence: 1 },
     },
@@ -196,6 +205,22 @@ describe("the geolocation tools", () => {
       "reply",
       expect.stringContaining("Ask the person to send their location")
     );
+  });
+
+  it("ask for a location with Telegram's button, and in words elsewhere", async () => {
+    const set = await tools(said("что рядом?"));
+    if (!set || !("location_now" in set))
+      throw new Error("Expected the tools.");
+    expect(
+      await set.location_now.execute(
+        { ask: true },
+        callContext("authjs", "telegram")
+      )
+    ).toMatchObject({ asked: true, locationButton: true });
+    expect(services.latest).not.toHaveBeenCalled();
+    const web = await set.location_now.execute({ ask: true }, callContext());
+    expect(web).toMatchObject({ asked: false });
+    expect(web).not.toHaveProperty("locationButton");
   });
 
   it("name a fresh point only in the person's words, in their turn", async () => {

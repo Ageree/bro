@@ -84,6 +84,10 @@
   после последней поездки на машине (`agent/lib/location/stays.ts`); до трёх запросов
   `nearbyPlace` (слой POI Nominatim) за вызов — имя ближайшего заведения только
   полем результата, не в контексте.
+- Кнопка Telegram: `location_now` с `ask: true` в Telegram отвечает `locationButton`, и
+  канал (`action.result`) шлёт клавиатуру с `request_location`. Такая точка может прийти
+  без точности (как булавка), поэтому простая точка чата в 10 минут после кнопки —
+  `position`, только «пришёл» (`takeLocationAsked`, память процесса).
 - Веб-кнопка (`location.share` в `web/trpc/router.ts`) пишет точку `web` (не чаще
   раза в 10 с), чат шлёт `webShareText`, канал веба читает его как присланную точку
   (`webLocationContext`).

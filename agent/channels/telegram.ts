@@ -31,7 +31,14 @@ import { inboundTurn } from "@agent/lib/inbound-media/turn-content";
 import { locationContext } from "@agent/lib/location/context";
 import { ingestShared } from "@agent/lib/location/ingest";
 import { placeMarker, positionMarker } from "@agent/lib/location/markers";
-import { telegramLocation } from "@agent/lib/location/telegram";
+import {
+  locationButtonMarkup,
+  locationButtonPrompt,
+  locationButtonResultSchema,
+  rememberLocationAsked,
+  takeLocationAsked,
+  telegramLocation,
+} from "@agent/lib/location/telegram";
 import { locationPilot } from "@db/services/location";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
@@ -193,6 +200,21 @@ export default telegramChannel({
         });
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
+        return;
+      }
+
+      // `location_now` with `ask` (geolocation pilot): the keyboard button
+      // that sends the person's location, with its one line. The model's own
+      // message follows as usual.
+      if (
+        event.status === "completed" &&
+        locationButtonResultSchema.safeParse(event.result).success
+      ) {
+        await context.telegram.post({
+          reply_markup: locationButtonMarkup,
+          text: locationButtonPrompt,
+        });
+        rememberLocationAsked(context.telegram.chatId);
         return;
       }
 
@@ -386,7 +408,11 @@ export default telegramChannel({
     // bare marker, and the point, its address and any reminder it fired go
     // as context lines (`agent/lib/location/`).
     const located = locationPilot(scope);
-    const shared = located ? telegramLocation(message) : undefined;
+    const shared = located
+      ? telegramLocation(message, {
+          asked: () => takeLocationAsked(message.chat.id),
+        })
+      : undefined;
     if (shared) {
       const marker = shared.kind === "position" ? positionMarker : placeMarker;
       const turnContext = [

@@ -73,6 +73,12 @@ const askForPoint =
 
 const nowInputSchema = z
   .object({
+    ask: z
+      .boolean()
+      .optional()
+      .describe(
+        "true: Bro needs the person's location now and has none fresh — in Telegram this shows them a button that sends it; nothing is read."
+      ),
     label: z
       .string()
       .trim()
@@ -84,10 +90,38 @@ const nowInputSchema = z
   })
   .strict();
 
+/**
+ * Asks the person for their location: in Telegram the channel shows the
+ * keyboard button (`locationButton`, `agent/channels/telegram.ts`), with
+ * its own line; elsewhere the model says how to send one.
+ */
+function askForLocation(context: ToolContext) {
+  const caller = context.session.auth.current ?? context.session.auth.initiator;
+  const channel = z
+    .string()
+    .safeParse(caller?.attributes.conversationChannel).data;
+  if (channel !== "telegram") {
+    return {
+      asked: false,
+      reply:
+        channel === "eve"
+          ? "Ask the person to press the pin button by the message field in this chat: it sends their location."
+          : askForPoint,
+    };
+  }
+  return {
+    asked: true,
+    locationButton: true,
+    reply:
+      "The person now sees a button «📍 Отправить геопозицию» under the chat, with a line saying it sends where they are: do not explain how to send a location; say in a few words what you will do once it comes, or nothing more if that is clear.",
+  };
+}
+
 async function locationNow(
   input: z.output<typeof nowInputSchema>,
   context: ToolContext
 ) {
+  if (input.ask === true) return askForLocation(context);
   const scope = locationScope(context);
   const label = given(input.label);
   const now = new Date();
@@ -500,7 +534,7 @@ export default defineDynamic({
         location_now: defineTool({
           availableInSubagents: false,
           description:
-            "Where the person is, by the location they shared themselves (a point or a place in Telegram, a location card in iMessage): address, accuracy, when; with `label`, the latest point they named so («парковка»). For «где я», «где я припарковался», «что рядом», «сколько идти отсюда», food or a taxi «сюда». A point older than an hour is where they were, not where they are; with none, ask them to send their location.",
+            "Where the person is, by the location they shared themselves (a point or a place in Telegram, a location card in iMessage): address, accuracy, when; with `label`, the latest point they named so («парковка»). For «где я», «где я припарковался», «что рядом», «сколько идти отсюда», food or a taxi «сюда». A point older than an hour is where they were, not where they are; with none, ask them to send their location — `ask: true` shows them a button for it in Telegram.",
           inputSchema: nowInputSchema,
           async execute(input, toolContext) {
             return locationNow(input, toolContext);

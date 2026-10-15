@@ -1,5 +1,5 @@
 import type { TelegramMessage } from "eve/channels/telegram";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { telegramLocation } from "@agent/lib/location/telegram";
 
 function message(raw: TelegramMessage["raw"]): TelegramMessage {
@@ -79,5 +79,26 @@ describe("a location shared in Telegram", () => {
       kind: "place",
     });
     expect(telegramLocation(message({ text: "привет" }))).toBeUndefined();
+  });
+
+  it("takes a plain location right after the button as the person's own, for an arrival only", () => {
+    const asked = vi.fn<() => boolean>(() => true);
+    expect(telegramLocation(message({ location }), { asked })).toMatchObject({
+      accuracyM: null,
+      arriveAllowed: true,
+      kind: "position",
+      leaveAllowed: false,
+    });
+    asked.mockReturnValue(false);
+    expect(telegramLocation(message({ location }), { asked })).toMatchObject({
+      kind: "place",
+    });
+    // A measured point does not need the button, and does not use it up.
+    asked.mockClear();
+    telegramLocation(
+      message({ location: { ...location, horizontal_accuracy: 5 } }),
+      { asked }
+    );
+    expect(asked).not.toHaveBeenCalled();
   });
 });
