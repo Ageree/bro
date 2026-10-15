@@ -447,6 +447,14 @@ describe("the note of a group without its rules", () => {
     ).toBe(
       "Инструменты групп calendar, mail открыты без своих правил: перед первым вызовом — load_skill google."
     );
+    // The tools of places are core: a reminder at a place needs no skill.
+    expect(
+      routerSkillNote(
+        ["places"],
+        [person("напомни купить хлеб, когда приду на Тверскую 7")],
+        setup
+      )
+    ).toBeUndefined();
   });
 
   it("says nothing once the block is in the conversation", () => {
