@@ -1,0 +1,6 @@
+# Local-only extras of the f-* suite on top of the sandbox pins (sandbox/image/requirements.txt); never shipped.
+# cryptography: f_pdf_password_extract encrypts the booklet with AES-256 (pypdf). zxing-cpp: the checker's qr_decode.
+cffi==2.1.1
+cryptography==50.0.2
+pycparser==3.11
+zxing-cpp==3.1.1

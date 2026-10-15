@@ -143,3 +143,13 @@ jobs:
           python -m venv /tmp/kit &&
           /tmp/kit/bin/pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r ../image/requirements.txt &&
           /tmp/kit/bin/python -m unittest discover -s tests -t .
+
+      # The checker of the bench's file suite (docs/benchmarks/files): the kit venv /tmp/kit with the sandbox pins (the
+      # kit step makes it; made here when it is missing) plus zxing-cpp and cryptography.
+      - name: Files suite checker (bench)
+        working-directory: scripts/bench/files
+        run: |
+          test -x /tmp/kit/bin/python || (python -m venv /tmp/kit && /tmp/kit/bin/pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r ../../../sandbox/image/requirements.txt)
+          command -v pdftotext || (sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils fonts-dejavu-core)
+          /tmp/kit/bin/pip install --disable-pip-version-check --only-binary=:all: -r requirements.txt
+          /tmp/kit/bin/python -m unittest discover -s tests -t .
