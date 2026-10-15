@@ -122,6 +122,35 @@ class Look(unittest.TestCase):
         code, result = brokit("look", self.pdf, self.photo, "--region", "0,0,10,10", "--out", self.out(), cache=self.cache)
         self.assertEqual((code, result["code"]), (2, "bad_args"))
 
+    def test_a_small_picture_is_shown_as_it_is(self):
+        from PIL import Image
+
+        icon = os.path.join(self.root, "stamp.png")
+        Image.new("RGB", (200, 150), "red").save(icon)
+        for path, region in ((icon, None), (self.photo, "100,100,140,130")):
+            args = ["look", path, "--out", self.out()] + (["--region", region] if region else [])
+            code, result = brokit(*args, cache=self.cache)
+            self.assertEqual(code, 0, result)
+            self.assertFalse(result["truncated"], result)
+            (image,) = result["items"][0]["images"]
+            self.assertTrue(os.path.isfile(image["file"]))
+
+    def test_only_plain_image_formats_are_opened(self):
+        # Pillow opens EPS too, and draws it through Ghostscript: a person's file is no program to run.
+        eps = os.path.join(self.root, "drawing.eps")
+        with open(eps, "w", encoding="ascii") as handle:
+            handle.write("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n")
+        code, result = brokit("look", eps, "--out", self.out(), cache=self.cache)
+        self.assertEqual((code, result["code"]), (2, "unsupported"))
+        # A phone's MPO is a JPEG whose second frame is a depth map: one picture, not two pages.
+        from PIL import Image
+
+        mpo = os.path.join(self.root, "phone.jpg")
+        Image.new("RGB", (640, 480), "green").save(mpo, format="MPO", save_all=True, append_images=[Image.new("RGB", (320, 240))])
+        code, result = brokit("look", mpo, "--out", self.out(), cache=self.cache)
+        self.assertEqual(code, 0, result)
+        self.assertEqual((result["items"][0]["pages_total"], len(result["items"][0]["images"])), (1, 1))
+
     @unittest.skipUnless(shutil.which("soffice"), "LibreOffice is not installed")
     def test_an_office_file_is_seen_as_its_pages(self):
         import docx

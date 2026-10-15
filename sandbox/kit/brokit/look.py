@@ -36,10 +36,16 @@ PICTURE_BYTES = 400_000
 CALL_BYTES = 1_200_000
 # Less than this left of the call's budget is not worth another picture.
 MIN_PICTURE_BYTES = 40_000
+# A picture is not made smaller than this to fit its budget.
+MIN_SIDE = 320
 GRID_STEPS = (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000)
 REGION_DPI = 600
 REGION_ZOOM = 4
 HEIC_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1")
+# The formats `look` opens. Pillow knows many more, some through outside
+# programs (EPS runs Ghostscript): a hostile file is opened as one of these
+# or refused. JPEG includes MPO, the JPEG of many phone cameras.
+IMAGE_FORMATS = ("AVIF", "BMP", "GIF", "JPEG", "PNG", "TIFF", "WEBP")
 FONT_PATHS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf")
 
 
@@ -89,6 +95,12 @@ def compact(pages):
     return ",".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in runs)
 
 
+def open_image(path):
+    from PIL import Image
+
+    return Image.open(path, formats=IMAGE_FORMATS)
+
+
 def classify(path):
     """pdf, office or image, from the bytes first; refuses anything else."""
     need_file(path)
@@ -98,10 +110,8 @@ def classify(path):
         return "office"
     with open(path, "rb") as handle:
         head = handle.read(32)
-    from PIL import Image
-
     try:
-        with Image.open(path):
+        with open_image(path):
             return "image"
     except Exception:  # noqa: BLE001 — Pillow raises many kinds for a file it cannot read
         if head[4:8] == b"ftyp" and head[8:12] in HEIC_BRANDS:
@@ -177,12 +187,11 @@ class ImageFrames:
     kind = "image"
 
     def __init__(self, path):
-        from PIL import Image
-
         self.path = path
         try:
-            with Image.open(path) as image:
-                self.total = getattr(image, "n_frames", 1)
+            with open_image(path) as image:
+                # An MPO's later frames are the camera's depth map or preview, not pages.
+                self.total = 1 if image.format == "MPO" else getattr(image, "n_frames", 1)
         except Exception:  # noqa: BLE001
             raise KitError("unreadable", path + " is not a readable image")
 
@@ -190,7 +199,7 @@ class ImageFrames:
         from PIL import Image, ImageOps
 
         try:
-            image = Image.open(self.path)
+            image = open_image(self.path)
             image.seek(page - 1)
             if draft and image.format == "JPEG":
                 image.draft("RGB", (LONG_SIDE, LONG_SIDE))
@@ -201,12 +210,13 @@ class ImageFrames:
             raise KitError("unreadable", "%s: frame %d cannot be read" % (self.path, page))
 
     def view(self, page):
-        from PIL import Image
-
-        with Image.open(self.path) as image:
-            image.seek(page - 1)
-            orientation = image.getexif().get(0x0112, 1)
-            width, height = image.size
+        try:
+            with open_image(self.path) as image:
+                image.seek(page - 1)
+                orientation = image.getexif().get(0x0112, 1)
+                width, height = image.size
+        except (OSError, ValueError, EOFError):
+            raise KitError("unreadable", "%s: frame %d cannot be read" % (self.path, page))
         return (height, width) if orientation in (5, 6, 7, 8) else (width, height)
 
     def picture(self, page, view, region):
@@ -315,11 +325,15 @@ def draw_grid(picture, box, step):
 
 
 def encoded(base, box, step, cap):
-    """The JPEG of `base` (with its grid) within `cap` bytes, or None: quality first, then size."""
+    """The JPEG of `base` (with its grid) within `cap` bytes, or None: quality first, then size.
+
+    The picture as it is always gets a try, however small (an icon, a small
+    region); it is made smaller only while it stays MIN_SIDE px long.
+    """
     from PIL import Image
 
     factor = 1.0
-    while max(base.size) * factor >= 320:
+    while True:
         if factor == 1.0:
             picture = base
         else:
@@ -337,7 +351,8 @@ def encoded(base, box, step, cap):
                 break
             quality = max(35, int(quality * 0.85))
         factor *= 0.85
-    return None
+        if max(base.size) * factor < MIN_SIDE:
+            return None
 
 
 def clamp_region(region, view, warnings):

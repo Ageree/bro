@@ -59,6 +59,9 @@ const markerPattern = /^\[bro-look-image:([0-9a-f-]{36})\|(\d+)\|([^\]]*)\]$/u;
 /** How many of the latest `look` calls keep their pictures in the prompt. */
 const liveLooks = 2;
 
+/** `image/png` and the like, or the bare top-level `image` the SDK allows. */
+const imageType = /^image(?:\/|$)/u;
+
 function decodedPath(encoded: string) {
   try {
     return decodeURIComponent(encoded);
@@ -117,7 +120,7 @@ function withoutPictures(
           )
         );
       }
-    } else if (item.type === "file" && item.mediaType.startsWith("image/")) {
+    } else if (item.type === "file" && imageType.test(item.mediaType)) {
       touched = true;
       const file: UserFilePart = {
         data: item.data,

@@ -140,6 +140,12 @@ export default defineDynamic({
                   [];
                 for (const item of result.items) {
                   for (const image of item.images) {
+                    // The kit lives where the model writes too: only its own pictures are read.
+                    if (posix.dirname(posix.normalize(image.file)) !== out) {
+                      throw new Error(
+                        `look wrote a picture outside its directory: ${image.file}`
+                      );
+                    }
                     // oxlint-disable-next-line eslint/no-await-in-loop -- One picture at a time keeps the step's memory flat.
                     const bytes = await readSandboxFileWithin(
                       sandbox,

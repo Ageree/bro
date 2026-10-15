@@ -29,8 +29,7 @@ import brokitUtil from "../../../sandbox/kit/brokit/util.py?raw";
  *   agent's hook calls `ensureKit` on every message; it hashes the files on
  *   disk again, since the model can write anything under /workspace.
  * - Bro's own sandbox never runs a copy left on disk: `runFreshKit` writes
- *   the whole kit into a directory made for that one call (signing,
- *   docs: W2 spec §3).
+ *   the whole kit into a directory made for that one call (signing).
  *
  * Every exec is one constant command: the boot script, the arguments and
  * the paths travel in the environment, so nothing a model wrote reaches the
@@ -209,7 +208,7 @@ export async function runKit(
 }
 
 /**
- * `brokit <args>` in Bro's own sandbox, from a fresh copy (W2 spec §3.2):
+ * `brokit <args>` in Bro's own sandbox, from a fresh copy:
  * `dir` is a directory the caller made for this one call and deletes after
  * it (`/tmp/bro-sign-<uuid>`); the kit is written there and checked against
  * its hash before it runs, with the hostile-input limits on. A copy left in

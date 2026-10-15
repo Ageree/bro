@@ -133,7 +133,7 @@ jobs:
         working-directory: scripts/selectel
         run: python -m unittest
 
-      # The task agent's kit (sandbox/kit) on the sandbox's own wheels; W5's suite step reuses /tmp/kit.
+      # The task agent's kit (sandbox/kit) on the sandbox's own wheels; later steps reuse the venv /tmp/kit.
       - name: Poppler and fonts for the kit
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils fonts-dejavu-core
 

@@ -264,6 +264,19 @@ describe("the task agent's look", () => {
     ).rejects.toThrow("too large");
   });
 
+  it("reads only the pictures of its own directory", async () => {
+    const tool = await lookTool();
+    const token = "/workspace/.bro/mark-token";
+    const sandbox = sandboxWith(
+      lookOutput(token),
+      new Map([[token, new Uint8Array([1, 2, 3])]])
+    );
+
+    await expect(
+      tool.execute({ paths: ["/workspace/act.pdf"] }, toolContext(sandbox))
+    ).rejects.toThrow("outside its directory");
+  });
+
   it("reads under /workspace and /tmp only", async () => {
     const tool = await lookTool();
     const sandbox = sandboxWith("", new Map());

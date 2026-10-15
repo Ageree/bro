@@ -13,9 +13,10 @@ import { watchedModelFetch } from "../stream-watchdog";
  * (`carriesMedia`) and every raw call stays on RouterAI. Any failure of
  * RunInfra — a thrown fetch, a status other than 2xx, an error inside the
  * answer — sends the same call to RouterAI at once, and the calls of the
- * next five minutes skip RunInfra, then one tries it again. The answer is read whole before it is passed on, as RouterAI's is
- * (`fetch.ts`): a failure can come at its end, and nothing of a failed
- * answer may reach eve.
+ * next five minutes skip RunInfra, then one tries it again. The answer is
+ * read whole before it is passed on, as RouterAI's is (`fetch.ts`): a
+ * failure can come at its end, and nothing of a failed answer may reach
+ * eve.
  */
 const backend = "RunInfra";
 

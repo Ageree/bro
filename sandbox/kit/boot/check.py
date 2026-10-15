@@ -22,7 +22,12 @@ TOKEN = re.compile(r"^[0-9a-f]{32}$")
 
 
 def kit_hash(kit):
-    """16 hex of sha256 over `relpath \\0 content \\0` of kit/brokit/**.py, sorted; None if unreadable."""
+    """16 hex of sha256 over `relpath \\0 content \\0` of kit/brokit/**.py, sorted.
+
+    None when the kit cannot be what Bro wrote: missing, a symlink in it, or a
+    file other than a .py source outside __pycache__ (a compiled module such
+    as util.cpython-310-x86_64-linux-gnu.so is imported before util.py).
+    """
     root = os.path.join(kit, "brokit")
     if not os.path.isdir(root) or os.path.islink(root):
         return None
@@ -33,9 +38,10 @@ def kit_hash(kit):
             if os.path.islink(os.path.join(directory, name)):
                 return None
         for name in names:
-            if name.endswith(".py"):
-                path = os.path.join(directory, name)
-                files.append(("brokit/" + os.path.relpath(path, root).replace(os.sep, "/"), path))
+            if not name.endswith(".py"):
+                return None
+            path = os.path.join(directory, name)
+            files.append(("brokit/" + os.path.relpath(path, root).replace(os.sep, "/"), path))
     digest = hashlib.sha256()
     for relative, path in sorted(files):
         with open(path, "rb") as handle:

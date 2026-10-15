@@ -95,6 +95,15 @@ class Boot(unittest.TestCase):
             handle.write("import os\n")
         self.assertEqual(self.check(VECTOR_VERSION), "stale")
 
+    def test_check_sees_a_compiled_module_put_beside_the_sources(self):
+        # Python imports a.cpython-….so before a.py: the sources hashing right is not enough.
+        self.lay_out(VECTOR, VECTOR_VERSION)
+        os.makedirs(os.path.join(self.home, "kit", "brokit", "__pycache__"))
+        self.assertEqual(self.check(VECTOR_VERSION), "current")
+        with open(os.path.join(self.home, "kit", "brokit", "a.cpython-310-x86_64-linux-gnu.so"), "wb") as handle:
+            handle.write(b"\x7fELF")
+        self.assertEqual(self.check(VECTOR_VERSION), "stale")
+
     def test_check_keeps_the_token_and_the_path_line_once(self):
         token = "0123456789abcdef0123456789abcdef"
         self.check(VECTOR_VERSION, token)

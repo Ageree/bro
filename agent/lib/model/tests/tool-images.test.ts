@@ -178,6 +178,42 @@ describe("pictures of the task agent's tools", () => {
     );
   });
 
+  it("move a picture any other tool returned, its type named by the top level alone too", async () => {
+    const prompt: Prompt = [
+      {
+        content: [
+          {
+            output: {
+              type: "content",
+              value: [
+                { text: "Скриншот страницы", type: "text" },
+                {
+                  data: { data: "DDDD", type: "data" },
+                  mediaType: "image",
+                  type: "file",
+                },
+              ],
+            },
+            toolCallId: "call-1",
+            toolName: "web_screenshot",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ];
+
+    const sent = (await transformed(prompt)).result?.prompt;
+
+    expect(toolText(sent, 0)).toBe(
+      "Скриншот страницы\n[изображение 1 — в следующем сообщении]"
+    );
+    expect(sent?.[1]).toMatchObject({
+      content: [{ type: "text" }, { data: { data: "DDDD", type: "data" } }],
+      role: "user",
+    });
+  });
+
   it("reach the provider as a text tool message and an image in the next user message", async () => {
     const { directModelSelection } = await import("@agent/lib/model/direct");
     const prompt = await looked("call-1", 1, "/9j/4AAQ");
