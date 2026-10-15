@@ -45,8 +45,10 @@
         "PRICE_RUB",
         "ROUTERAI_*",
         "S3_*",
+        "SANDBOX_*",
         "SECRET_ENCRYPTION_KEY",
         "SUPERMEMORY_*",
+        "TASK_FILES_WORKSPACES",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"
@@ -95,8 +97,10 @@
         "PRICE_RUB",
         "ROUTERAI_*",
         "S3_*",
+        "SANDBOX_*",
         "SECRET_ENCRYPTION_KEY",
         "SUPERMEMORY_*",
+        "TASK_FILES_WORKSPACES",
         "TELEGRAM_*",
         "VERCEL_*",
         "YOOKASSA_*"
