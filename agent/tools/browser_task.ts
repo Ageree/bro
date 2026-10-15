@@ -11,9 +11,12 @@ import { delegatingRun } from "@agent/lib/schedules/delegation/pilot";
 import { runDelegation } from "@agent/lib/schedules/delegation/run";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 import {
+  type DirectPurchase,
   type DirectTurn,
-  directPurchase,
   directPurchasePilot,
+  forwardedMessage,
+  purchaseRequestOf,
+  requestCovers,
 } from "@agent/lib/payments/direct";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -764,6 +767,15 @@ function commitmentLine(
 ) {
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
+    const asked = consent.submission.directRequest?.request;
+    // The person's request to buy (DIRECT_PURCHASE_WORKSPACES): staged
+    // first, paid once its total was checked against it.
+    const direct =
+      asked === undefined
+        ? undefined
+        : cap === undefined
+          ? `The person asked for this purchase in their own words — «${asked}». Find what they asked for and take it up to the payment step, then stop there before paying, with NEEDS: payment, the ITEMS and the TOTAL with every fee: the order and its total are checked against their request before anything is paid. You may fill in everything up to that step, with the known details below:`
+          : `The person asked for this purchase in their own words — «${asked}» — and the order staged with this total was checked against that request, so they are not asked again. You may fill it in, pay and press its final button, with the known details below:`;
     const header = {
       agency:
         "Bro's own agency rule started this one submission in the person's name: it is free, and it was not put to the person on a card. You may fill it in and press its final button, with the known details below:",
@@ -773,9 +785,7 @@ function commitmentLine(
       person:
         cap === undefined
           ? "The person asked in their own message for this one submission in their name. You may fill it in and press its final button, with the known details below:"
-          : consent.submission.directRequest === undefined
-            ? "The person asked for this one submission in their name and answered yes when asked to pay its total. You may fill it in, pay and press its final button, with the known details below:"
-            : `The person asked for this purchase in their own words — «${consent.submission.directRequest}» — and that request is their consent to pay for exactly it, within the payment ceiling below, with no further question. You may fill it in, pay and press its final button, with the known details below:`,
+          : "The person asked for this one submission in their name and answered yes when asked to pay its total. You may fill it in, pay and press its final button, with the known details below:",
       errand:
         "The person already allowed this one submission in their name on this errand, so they are not asked again. You may fill it in and press its final button, with the known details below:",
       delegated:
@@ -783,7 +793,7 @@ function commitmentLine(
       standing: `The person gave a standing permission that covers this one submission in their name (${consent.by === "standing" ? describeStandingAction(consent.rule) : ""}), so they are not asked again. You may fill it in and press its final button, with the known details below:`,
     }[consent.by];
     return [
-      header,
+      direct ?? header,
       submissionTerms(consent.submission),
       ...boundSubmissionLines(consent.submission),
       `Submit nothing beyond it: no other slot, organisation, item or amount, no second booking, order or application, no extra sign-ups, newsletters or messages, and none of the person's details beyond those listed. When the page would submit something that differs — a slot outside that time, ${cap === undefined ? "a higher cost" : "a total above the payment ceiling below"}, another organisation, more of their details than listed — stop before the final button with NEEDS: decision and say in DETAILS what differs.`,
@@ -1336,15 +1346,11 @@ function goAheadLine(
   const cap = submission.paymentCapRub;
   if (cap === undefined) return undefined;
   const total = formatRub(submission.chargeRub ?? cap);
-  if (submission.directRequest !== undefined) {
-    const pays = aliases.includes(browserSecretAliases.cardNumber)
-      ? "fill the card form with the saved card and press its pay button, until the site shows that the payment went through"
-      : "take it up to the card form: the saved card comes with the follow-up";
-    return `The person asked for this themselves — «${submission.directRequest}» — and that is their consent to pay: when the page has exactly what they asked for (the same thing, quantity, place, date and recipient they named) at a total of no more than ${formatRub(cap)} with every fee, place the order and ${pays}. When anything differs from their words or the total is higher, do not pay: stop before the final button with NEEDS: payment, the TOTAL, and in DETAILS what differs.`;
-  }
   const pay = aliases.includes(browserSecretAliases.cardNumber)
     ? "Place it, fill the card form with the saved card and press its pay button, until the site shows that the payment went through («Оплата прошла», the order confirmed): that is this errand, not a step to stop short of."
     : "Place it and take it up to the card form: the saved card comes with the follow-up.";
+  if (submission.directRequest !== undefined)
+    return `The person asked for this order themselves — «${submission.directRequest.request}» — and its total of ${total} was checked against that request: ${submission.what}, for ${submission.forWhom}, at ${submission.where}. ${pay}`;
   return `The person asked for this order themselves and said yes to paying ${total} for it: ${submission.what}, for ${submission.forWhom}, at ${submission.where}. ${pay}`;
 }
 
@@ -2903,7 +2909,12 @@ function turnWords(context: ModeContext, turn: PersonTurn) {
   const picked = new Set(turn.picked);
   const direct: DirectTurn | undefined =
     personTurn && turn.step !== undefined
-      ? { personTurn, said: turn.said, step: turn.step }
+      ? {
+          forwarded: forwardedMessage(context.session.auth.current),
+          personTurn,
+          said: turn.said,
+          step: turn.step,
+        }
       : undefined;
   return {
     direct,
@@ -3447,7 +3458,11 @@ async function paymentUnanswered(
   const answer =
     consent.by === "person" ? paymentAnswer(said.words) : undefined;
   if (answer === "no") return paymentDeclinedRefusal;
-  if (consent.submission.directRequest !== undefined) return undefined;
+  if (
+    consent.submission.directRequest !== undefined &&
+    consent.submission.paymentCapRub !== undefined
+  )
+    return undefined;
   if (
     answer !== "yes" ||
     said.paymentAsked === null ||
@@ -3499,48 +3514,89 @@ async function paymentUnanswered(
 }
 
 /**
- * Whether the person's own request this turn pays this call with no
- * question (DIRECT_PURCHASE_WORKSPACES, `agent/lib/payments/direct.ts`): a
- * payment, in a turn their message opened, that is no answer to a question
- * of Bro's. The judge reads the submission beside their words, and a total
- * the call names is held to their budget or the ceiling. Undefined outside
- * the pilot and for any other call.
+ * The person's request to buy that this call carries
+ * (DIRECT_PURCHASE_WORKSPACES, `agent/lib/payments/direct.ts`): read from
+ * their own words in a turn they opened — never one that answers Bro's
+ * question — or, on the turn of this errand's own report, the request its
+ * row recorded on theirs. The report itself adds nothing to it.
  */
-function directBrowserPayment(
-  input: BrowserTaskInput,
+function errandRequest(
   scope: AccessScope,
-  said: ReturnType<typeof turnWords>
+  said: ReturnType<typeof turnWords>,
+  errand: ErrandRow | undefined,
+  delegated: boolean
 ) {
-  const { submission } = input;
-  const chargeRub = submission?.chargeRub;
-  if (
-    said.direct === undefined ||
-    submission === undefined ||
-    (input.allowPayment !== true && (chargeRub ?? 0) === 0) ||
-    paymentAnswer(said.words) !== undefined
-  )
-    return Promise.resolve(undefined);
-  return directPurchase(scope, said.direct, {
-    terms: { purchase: submission, site: input.site ?? null },
-    totalMinor:
-      chargeRub === undefined ? undefined : Math.round(chargeRub * 100),
-  });
+  if (said.personTurn) {
+    return said.direct === undefined || paymentAnswer(said.words) !== undefined
+      ? undefined
+      : purchaseRequestOf(scope, said.direct);
+  }
+  return delegated ? errand?.submission?.directRequest : undefined;
+}
+
+/** Whether the call pays: binds the card or names a total. */
+function payingCall(input: BrowserTaskInput) {
+  return input.allowPayment === true || (input.submission?.chargeRub ?? 0) > 0;
 }
 
 /**
+ * Whether a request covers paying this call: only an order the errand's
+ * finished run staged and has not placed, at the exact total the call
+ * names, no subscription or repeating charge, and what a judge finds is the
+ * request's own (`requestCovers`). Undefined for a call that pays nothing,
+ * or with no request; `stage` when nothing is staged to pay yet.
+ */
+async function directPaymentFor(
+  input: BrowserTaskInput,
+  scope: AccessScope,
+  errand: ErrandRow | undefined,
+  request: ReturnType<typeof errandRequest>
+): Promise<DirectPurchase | { readonly kind: "stage" } | undefined> {
+  const { submission } = input;
+  if (request === undefined || submission === undefined || !payingCall(input))
+    return undefined;
+  const chargeRub = submission.chargeRub ?? 0;
+  if (
+    !errand?.completedAt ||
+    reportsPlacedOrder(errand.outcome) ||
+    chargeRub <= 0 ||
+    mentionsRecurringCharge(input.task, submission.what, submission.amount)
+  )
+    return { kind: "stage" };
+  return requestCovers(scope, request, {
+    terms: { staged: errand.outcome, submission },
+    totalMinor: wholeRubles(chargeRub) * 100,
+  });
+}
+
+const directStageRefusal =
+  "Nothing was paid: the person's request is their consent to pay, but only for the order a run has staged with its real total. Start or continue the errand with allowSubmit and a submission naming what they asked for, without allowPayment and chargeRub: the run takes it up to the payment step and stops there. On its report, continue it with allowSubmit, allowPayment and chargeRub of its Total, with no question: the tool checks the order and the total against their request.";
+
+/**
  * The one question the person's request leaves, ahead of every other
- * refusal: what was found differs from it, the total is above their budget
- * or the ceiling, or a saved rule wants them asked.
+ * refusal: what was staged differs from it, the total is above their budget
+ * or the ceiling, a saved rule wants them asked — or nothing is staged yet
+ * to pay.
  */
 async function directQuestion(
   input: BrowserTaskInput,
   consent: ConfirmedConsent,
   said: ReturnType<typeof turnWords>,
-  scope: AccessScope
+  scope: AccessScope,
+  errand: ErrandRow | undefined
 ) {
-  if (consent.by !== "person" || consent.submission.directRequest !== undefined)
+  if (
+    (consent.by !== "person" && consent.by !== "delegated") ||
+    consent.submission.directRequest !== undefined
+  )
     return undefined;
-  const direct = await directBrowserPayment(input, scope, said);
+  const direct = await directPaymentFor(
+    input,
+    scope,
+    errand,
+    errandRequest(scope, said, errand, consent.by === "delegated")
+  );
+  if (direct?.kind === "stage") return directStageRefusal;
   return direct?.kind === "ask"
     ? `Nothing was paid. ${direct.reply}`
     : undefined;
@@ -3604,21 +3660,25 @@ async function consentFor(
       ? await standingConsent(input, submission, scope, errand)
       : undefined;
   if (standing) return standing;
-  const direct = byPerson
-    ? await directBrowserPayment(input, scope, said)
-    : undefined;
-  if (direct?.kind === "granted") {
-    // The run is held to the request and pays at most what it allows.
+  const request = errandRequest(scope, said, errand, delegated);
+  if (request !== undefined && !payingCall(input) && byPerson) {
+    // Recorded on the person's own turn: the run stages, its report pays.
     return {
       by: "person",
       kind: "confirmed",
+      submission: { ...submission, directRequest: request },
+    };
+  }
+  const direct = await directPaymentFor(input, scope, errand, request);
+  if (request !== undefined && direct?.kind === "granted") {
+    // Exactly the staged total, not the card margin.
+    return {
+      by: byPerson ? "person" : "delegated",
+      kind: "confirmed",
       submission: {
         ...submission,
-        directRequest: direct.request,
-        paymentCapRub:
-          submission.chargeRub === undefined
-            ? direct.capRub
-            : Math.min(direct.capRub, paymentCeilingRub(submission.chargeRub)),
+        directRequest: request,
+        paymentCapRub: wholeRubles(submission.chargeRub ?? 0),
       },
     };
   }
@@ -3806,7 +3866,7 @@ export async function browserTaskApproval(
   const consent = await consentFor(input, scope, errand, said, context, walled);
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
   const unchosen =
-    (await directQuestion(input, consent, said, scope)) ??
+    (await directQuestion(input, consent, said, scope, errand)) ??
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
   if (unchosen) return { reason: unchosen, type: "denied" };
@@ -3854,15 +3914,19 @@ async function consentFromInput(
   );
   if (!consent) throw new Error(missingSubmissionRefusal);
   const unchosen =
-    (await directQuestion(input, consent, said, scope)) ??
+    (await directQuestion(input, consent, said, scope, errand)) ??
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
   if (unchosen) throw new Error(unchosen);
   if (consent.by === "card")
     throw new Error(unrequestedSubmissionRefusal.reason);
-  // A new consent of the person's request, not the errand's own carried on.
-  if (consent.by === "person" && consent.submission.directRequest !== undefined)
-    await spendDirectRequest(input, scope, said, context.callId);
+  // A payment on the person's request, not the errand's own carried on.
+  const paidRequest =
+    consent.by === "errand" || consent.submission.paymentCapRub === undefined
+      ? undefined
+      : consent.submission.directRequest;
+  if (paidRequest !== undefined)
+    await spendDirectRequest(scope, paidRequest.key, context.callId);
   return consent.by === "errand" ? undefined : consent;
 }
 
@@ -3870,22 +3934,17 @@ const directRequestSpentRefusal =
   "Nothing was started: the person's request in this turn is already being paid by another purchase, and one request pays one. Check that purchase with status first; do not start another for the same request. Only if they want something more, ask them one short question with what it is and its total.";
 
 /**
- * One request pays one purchase: the call that starts or continues the
- * errand takes it — the same call replayed keeps it — and another call on
- * the same request is refused.
+ * One request pays one purchase: the call that pays takes it — the same
+ * call replayed keeps it — and another call on the same request is refused.
  */
 async function spendDirectRequest(
-  input: BrowserTaskInput,
   scope: AccessScope,
-  said: ReturnType<typeof turnWords>,
+  consentKey: string,
   callId: string
 ) {
-  const direct = await directBrowserPayment(input, scope, said);
-  if (direct?.kind !== "granted")
-    throw new Error(paymentQuestionRefusal(input.submission?.chargeRub));
   if (
     !(await claimDirectPurchase(scope, {
-      consentKey: direct.key,
+      consentKey,
       ref: `browser:${callId}`,
     }))
   )
@@ -5711,7 +5770,7 @@ export const browserTask = defineTool({
  * request is their consent, so a paid errand starts paying at once.
  */
 const directPurchaseNote =
-  " Direct purchase: when the person's own message in this turn plainly asks you to buy, order or pay for something («купи корм», «закажи пиццу из Додо», «оплати интернет»), that request is their consent to pay — do not ask «Оплачиваю?». Start the errand at once with allowSubmit, allowPayment and a submission naming what they asked for in their own words (the thing, the quantity, the place, the date; chargeRub only when the price is known): the tool checks their words, and the run is held to them and to their budget or the ceiling and pays by itself. Ask one question about the substance only when the tool or the run says that what was found differs from their request or the total is above their budget or the ceiling.";
+  " Direct purchase: when the person's own message in this turn plainly asks you to buy, order or pay for something («купи корм», «закажи пиццу из Додо», «оплати интернет»), that request is their consent to pay — do not ask «Оплачиваю?». Start the errand at once with allowSubmit and a submission naming what they asked for in their own words (the thing, the quantity, the place, the date), without allowPayment and chargeRub: the run stages it up to the payment step. On its report, continue it with allowSubmit, allowPayment and a submission naming the staged order with chargeRub of its Total, and say in one line that you are paying it: the tool checks the order and the total against their request and their budget or the ceiling. Ask one question about the substance only when the tool says what was staged differs from their request or the total is above their budget or the ceiling.";
 
 export default defineDynamic({
   events: {

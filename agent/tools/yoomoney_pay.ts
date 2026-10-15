@@ -12,7 +12,11 @@ import {
   namesTotal,
   plainQuestion,
 } from "@agent/lib/payments/consent";
-import { type DirectTurn, directPurchase } from "@agent/lib/payments/direct";
+import {
+  type DirectTurn,
+  directPurchase,
+  forwardedMessage,
+} from "@agent/lib/payments/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   type StepIdentity,
@@ -161,25 +165,17 @@ const paymentTerms = (
  * question (DIRECT_PURCHASE_WORKSPACES): never one paid on its page.
  */
 /**
- * Whether the person's own words name the transfer's recipient: a transfer
- * cannot be taken back, so «переведи Маше 2000» names nobody the wallet can
- * check, and is asked about.
+ * Whether the person's own request this turn pays this payment without a
+ * question (DIRECT_PURCHASE_WORKSPACES): in its first version only a service
+ * paid from the balance — a transfer cannot be taken back, and a card is
+ * not the wallet the person thinks of.
  */
-function namesRecipient(turn: DirectTurn, payment: Payment) {
-  if (payment.kind !== "transfer") return true;
-  const to = payment.requestParams.to ?? "";
-  const words = (turn.said ?? []).join("\n");
-  if (to.includes("@")) return words.toLowerCase().includes(to.toLowerCase());
-  const digits = words.replaceAll(/\D/gu, "");
-  return to.length >= 10 && digits.includes(to.slice(-10));
-}
-
 const directFor = async (
   scope: AccessScope,
   payment: Payment,
   turn: DirectTurn
 ) =>
-  namesRecipient(turn, payment)
+  payment.kind === "service" && payment.cardId === null
     ? directPurchase(scope, turn, {
         terms: paymentTerms(payment),
         totalMinor: payment.amountMinor,
@@ -785,6 +781,7 @@ async function callYoomoneyPay(
     said: words.said,
     step,
     compacted: words.compacted === true,
+    forwarded: forwardedMessage(context.session.auth.current),
   };
   if (!yoomoneyEnabled(scope)) {
     return {

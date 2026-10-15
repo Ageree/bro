@@ -138,11 +138,16 @@ export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
      */
     readonly boundHost?: string;
     /**
-     * The person's own words that asked for this purchase and paid it with
-     * no question (DIRECT_PURCHASE_WORKSPACES): the run pays only for what
-     * they name, within `paymentCapRub`.
+     * The person's own request to buy (DIRECT_PURCHASE_WORKSPACES,
+     * `agent/lib/payments/direct.ts`), recorded on their own turn: the run
+     * stages the order, and the report's turn pays it with no question once
+     * code checked the staged order and its total against it.
      */
-    readonly directRequest?: string;
+    readonly directRequest?: {
+      readonly budgetRub?: number | undefined;
+      readonly key: string;
+      readonly request: string;
+    };
     readonly paymentCapRub?: number;
   };
 

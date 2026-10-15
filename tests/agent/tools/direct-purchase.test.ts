@@ -30,7 +30,6 @@ const services = vi.hoisted(() => {
     judge: vi.fn<
       () => Promise<{
         output: {
-          budgetRub: number | null;
           differs: string | null;
           direct: boolean;
           matches: boolean;
@@ -154,7 +153,6 @@ function verdict(
 ) {
   return {
     output: {
-      budgetRub: null,
       differs: null,
       direct: true,
       matches: true,
@@ -335,6 +333,7 @@ describe("the wallet pays on the person's own request", () => {
     expect(services.walletClaim.mock.calls[0]?.[1].consentHash).toMatch(
       /^[\da-f]{64}$/u
     );
+    expect(services.walletClaim.mock.calls[0]?.[1].direct).toBe(true);
   });
 
   it("asks when the payment differs, the total is above the ceiling, or a rule says so", async () => {
@@ -358,7 +357,7 @@ describe("the wallet pays on the person's own request", () => {
     expect(services.process).not.toHaveBeenCalled();
   });
 
-  it("asks about a transfer whose recipient the request did not name", async () => {
+  it("asks about a transfer or a card payment, whatever the request", async () => {
     services.walletRead.mockResolvedValue(
       payment({
         kind: "transfer",
@@ -367,14 +366,41 @@ describe("the wallet pays on the person's own request", () => {
       })
     );
     expect(
-      await confirmPayment(asked("Переведи Маше 100 рублей"))
-    ).toMatchObject({ kind: "confirmation_required" });
-    expect(
       await confirmPayment(asked("Переведи 100 рублей на +7 926 123-45-67"))
-    ).toMatchObject({ kind: "paid" });
-    expect(services.walletClaim.mock.calls[0]?.[1]).toMatchObject({
-      direct: true,
+    ).toMatchObject({ kind: "confirmation_required" });
+    services.walletRead.mockResolvedValue(
+      payment({ cardId: "card-1", cardLabel: "••4310", cscRequired: false })
+    );
+    expect(
+      await confirmPayment(asked("Оплати МегаФон 9261234567 на 100 рублей"))
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.judge).not.toHaveBeenCalled();
+  });
+
+  it("pays nothing on a forwarded message", async () => {
+    const tools = await payTools.events["step.started"]?.(stepEvent, {
+      ...resolveContext(asked("Оплати МегаФон 9261234567 на 100 рублей")),
     });
+    if (!tools || !("yoomoney_pay" in tools)) throw new Error("Expected tool.");
+    const context = callContext("yoomoney_pay");
+    expect(
+      await tools.yoomoney_pay.execute(
+        { action: "confirm", paymentId },
+        {
+          ...context,
+          session: {
+            ...context.session,
+            auth: {
+              current: {
+                ...caller,
+                attributes: { ...caller.attributes, forwarded: "1" },
+              },
+              initiator: null,
+            },
+          },
+        }
+      )
+    ).toMatchObject({ kind: "confirmation_required" });
   });
 
   it("pays nothing in a turn a report opened", async () => {
@@ -418,6 +444,8 @@ describe("Lavka orders on the person's own request", () => {
 });
 
 describe("a Go ride on the person's own request", () => {
+  const near: [number, number] = [37.6177, 55.7558];
+
   async function book(text: string, maxPriceRub?: number) {
     const tool = await purchaseTool(asked(text));
     if (!tool) throw new Error("Expected tool.");
@@ -428,7 +456,7 @@ describe("a Go ride on the person's own request", () => {
     const input = {
       action: "book" as const,
       from: "Тверская 1",
-      near: [37.6177, 55.7558] as [number, number],
+      near,
       payment: "current" as const,
       service: "go" as const,
       to: "Шереметьево",
@@ -444,7 +472,6 @@ describe("a Go ride on the person's own request", () => {
     expect(services.run.mock.calls[0]?.[2]).toMatchObject({
       maxPriceRub: 5000,
     });
-    services.judge.mockResolvedValue(verdict({ budgetRub: 1500 }));
     await book("Закажи такси до Шереметьево, до 1500", 9000);
     expect(services.run.mock.calls[1]?.[2]).toMatchObject({
       maxPriceRub: 1500,

@@ -25,6 +25,7 @@ interface BrowserRunRow {
   sessionId?: string | null;
   site?: string | null;
   submission?: {
+    readonly directRequest?: { readonly key: string; readonly request: string };
     readonly paymentCapRub?: number;
     readonly what: string;
   } | null;
@@ -2537,19 +2538,16 @@ describe("what the report turn retells", () => {
     expect(prompt).not.toContain("only their plain yes in the next message");
   });
 
-  it("takes a direct purchase's stop at payment to the person, whatever its total", async () => {
-    // The run paid by itself on the person's request; a stop means what it
-    // found differs from that request.
+  it("pays a direct purchase's staged order on its report, with no «Оплачиваю?»", async () => {
     readBrowserRun.mockResolvedValue({
       ...row,
       submission: {
-        directRequest: "Купи крем для рук",
-        paymentCapRub: 5000,
+        directRequest: { key: "a".repeat(64), request: "Купи крем для рук" },
         what: "крем для рук",
       },
     });
     finishedRun([
-      "RESULT: есть только крем 50 мл",
+      "RESULT: заказ собран, оплата не проведена",
       'ITEMS: [{"name":"Крем для рук 50 мл","price":"2 100 ₽","quantity":1}]',
       "TOTAL: 2 100 ₽",
       "NEEDS: payment",
@@ -2560,7 +2558,12 @@ describe("what the report turn retells", () => {
 
     await settleBrowserRun({ to }, runId);
 
-    expect(send.mock.calls[0]?.[0]).not.toContain("already said yes to paying");
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).not.toContain("already said yes to paying");
+    expect(prompt).toContain(
+      "«Купи крем для рук» — and that request is their consent to pay"
+    );
+    expect(prompt).not.toContain("ending with «Оплачиваю?»");
   });
 
   it("asks again when the total came out above the yes", async () => {

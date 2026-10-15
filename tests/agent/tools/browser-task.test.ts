@@ -74,15 +74,22 @@ import type * as browserUseHost from "@agent/lib/browser-use/host";
  * What the direct-purchase judge (`agent/lib/payments/direct.ts`) answers,
  * for a prompt that carries the person's request.
  */
-const directVerdict = vi.hoisted(() => ({
-  current: {
-    budgetRub: null as number | null,
-    differs: null as string | null,
+interface DirectVerdict {
+  differs: string | null;
+  direct: boolean;
+  matches: boolean;
+  ruleIndex: number | null;
+}
+
+const directVerdict = vi.hoisted(() => {
+  const current: DirectVerdict = {
+    differs: null,
     direct: true,
     matches: true,
-    ruleIndex: null as number | null,
-  },
-}));
+    ruleIndex: null,
+  };
+  return { current };
+});
 
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
@@ -10491,7 +10498,6 @@ async function directPilot(
   vi.stubEnv("DIRECT_PURCHASE_WORKSPACES", pilot);
   vi.stubEnv("DIRECT_PURCHASE_MAX_RUB", "5000");
   directVerdict.current = {
-    budgetRub: null,
     differs: null,
     direct: true,
     matches: true,
@@ -10530,125 +10536,204 @@ function directTurn(words: string) {
   };
 }
 
-const denied = (reason: string): unknown =>
-  expect.objectContaining({
-    reason: expect.stringContaining(reason),
-    type: "denied",
-  });
+/** A refusal whose reason says `text`. */
+function denied(text: string) {
+  const reason: unknown = expect.stringContaining(text);
+  return { reason, type: "denied" as const };
+}
+
+/** A browser report's turn for this errand: the page wrote its words. */
+function directReportContext() {
+  const context = toolContext("better-auth:alice", "browser-result");
+  return {
+    ...context,
+    session: {
+      ...context.session,
+      auth: {
+        ...context.session.auth,
+        current: {
+          ...context.session.auth.current,
+          attributes: {
+            ...context.session.auth.current.attributes,
+            browserRunId: runId,
+          },
+        },
+      },
+    },
+  };
+}
+
+const reportTurn = {
+  answers: [],
+  paymentAsked: null,
+  said: null,
+  step: { sessionId, stepIndex: 0, turnId: "turn_3" },
+};
 
 describe("browser_task pays on the person's own request in the direct-purchase pilot", () => {
   const food: BrowserSubmission = {
-    amount: "до 5 000 ₽",
     forWhom: "Алиса",
     kind: "order",
     personalData: ["имя", "телефон", "адрес доставки"],
     what: "корм Royal Canin для кошек, 2 кг",
     where: "Ozon (ozon.ru)",
   };
-  const buy = {
+  const said = "Купи корм Royal Canin для кошек 2 кг на озоне";
+  const recorded: NonNullable<ConfirmedSubmission["directRequest"]> = {
+    key: "a".repeat(64),
+    request: said,
+  };
+  const stage = {
     action: "start",
-    allowPayment: true,
     allowSubmit: true,
     personWants: "done",
     site: "https://www.ozon.ru",
     submission: food,
     task: "Купи корм Royal Canin для кошек, 2 кг",
   } as const;
-  const said = "Купи корм Royal Canin для кошек 2 кг на озоне";
+  const staged = { ...food, chargeRub: 2490 };
+  const pay = {
+    action: "continue",
+    allowPayment: true,
+    allowSubmit: true,
+    personWants: "done",
+    runId,
+    submission: staged,
+    task: "Оплати собранный заказ",
+  } as const;
   const person = () => approvalSession("photon-imessage");
 
-  it("starts a paid errand with no question, held to the request and the ceiling", async () => {
-    const { browserTaskApproval } = await directPilot();
-    expect(await browserTaskApproval(buy, person(), directTurn(said))).toBe(
-      "not-applicable"
-    );
-
-    const tool = await directPersonTool(said);
-    await tool.execute(buy, toolContext("better-auth:alice"));
-    expect(claimDirectPurchase).toHaveBeenCalledTimes(1);
-    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
-      paymentAllowed: true,
-      submission: { ...food, directRequest: said, paymentCapRub: 5000 },
-    });
-    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain(`«${said}» — and that is their consent to pay`);
-    expect(task).toContain(`Payment is pre-approved up to ${formatRub(5000)}`);
-  });
-
-  it("carries the errand's own consent on without spending the request again", async () => {
-    await directPilot();
+  /** The errand's run stopped at the payment step with this total. */
+  function stagedErrand(chargeRub = 2490, request = recorded) {
     readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), "Result: в корзине\nNeeds: payment", {
+      browserRunRow(new Date(), stagedPayment({ ...food, chargeRub }), {
         ...food,
-        directRequest: said,
-        paymentCapRub: 5000,
+        directRequest: request,
       })
     );
-    const tool = await directPersonTool("оплачивай");
-    await tool.execute(
-      {
-        action: "continue",
-        allowPayment: true,
-        personSaid: "оплачивай",
-        personWants: "done",
-        runId,
-        submission: { ...food, chargeRub: 2490 },
-        task: "оплачивай",
-      },
-      toolContext("better-auth:alice")
+  }
+
+  it("records the request on the person's turn and stages, paying nothing", async () => {
+    const { browserTaskApproval } = await directPilot();
+    expect(await browserTaskApproval(stage, person(), directTurn(said))).toBe(
+      "not-applicable"
     );
+    const tool = await directPersonTool(said);
+    await tool.execute(stage, toolContext("better-auth:alice"));
     expect(claimDirectPurchase).not.toHaveBeenCalled();
-    expect(createBrowserUseRun).toHaveBeenCalledTimes(1);
+    const row = createBrowserRun.mock.calls[0]?.[1];
+    expect(row).toMatchObject({
+      paymentAllowed: false,
+      submission: { ...food, directRequest: { request: said } },
+    });
+    expect(row?.submission?.paymentCapRub).toBeUndefined();
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain(`«${said}». Find what they asked for`);
   });
 
-  it("starts no second purchase on the same request", async () => {
+  it("pays nothing on the person's turn before an order is staged", async () => {
+    const { browserTaskApproval } = await directPilot();
+    expect(
+      await browserTaskApproval(
+        { ...stage, allowPayment: true },
+        person(),
+        directTurn(said)
+      )
+    ).toMatchObject(denied("only for the order a run has staged"));
+  });
+
+  it("pays the staged order on its report's turn, at its exact total, spending the request once", async () => {
+    const { browserTaskApproval } = await directPilot();
+    stagedErrand();
+    expect(
+      await browserTaskApproval(pay, directReportContext(), reportTurn)
+    ).toBe("not-applicable");
+
+    const { browserTask } = await import("@agent/tools/browser_task");
+    await browserTask.execute(pay, directReportContext());
+    expect(claimDirectPurchase).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ consentKey: recorded.key })
+    );
+    expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+      paymentAllowed: true,
+      submission: { directRequest: recorded, paymentCapRub: 2490 },
+    });
+    const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+    expect(task).toContain("was checked against that request");
+    expect(task).toContain(`Payment is pre-approved up to ${formatRub(2490)}`);
+  });
+
+  it("pays no second purchase on the same request", async () => {
     await directPilot();
+    stagedErrand();
     claimDirectPurchase.mockResolvedValue(false);
-    const tool = await directPersonTool(said);
+    const { browserTask } = await import("@agent/tools/browser_task");
     await expect(
-      tool.execute(buy, toolContext("better-auth:alice"))
+      browserTask.execute(pay, directReportContext())
     ).rejects.toThrow("one request pays one");
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
-  it("asks one question when the submission differs or costs more than the ceiling", async () => {
+  it("asks one question when the staged order differs or costs more than the ceiling", async () => {
     const mismatch = await directPilot({
       differs: "4 кг вместо 2 кг",
       matches: false,
     });
+    stagedErrand();
     expect(
-      await mismatch.browserTaskApproval(buy, person(), directTurn(said))
-    ).toEqual(denied("(4 кг вместо 2 кг)"));
+      await mismatch.browserTaskApproval(pay, directReportContext(), reportTurn)
+    ).toMatchObject(denied("(4 кг вместо 2 кг)"));
     const priced = await directPilot();
+    stagedErrand(6200);
     expect(
       await priced.browserTaskApproval(
-        { ...buy, submission: { ...food, chargeRub: 6200 } },
-        person(),
-        directTurn(said)
+        { ...pay, submission: { ...food, chargeRub: 6200 } },
+        directReportContext(),
+        reportTurn
       )
-    ).toEqual(denied("above 5"));
+    ).toMatchObject(denied("above 5"));
+  });
+
+  it("holds the total to the budget the person wrote", async () => {
+    const { browserTaskApproval } = await directPilot();
+    stagedErrand(2490, { ...recorded, budgetRub: 2000 });
+    expect(
+      await browserTaskApproval(pay, directReportContext(), reportTurn)
+    ).toMatchObject(denied("budget of 2"));
   });
 
   it("asks when a saved rule wants the person asked", async () => {
     const { browserTaskApproval } = await directPilot({ ruleIndex: 0 });
-    expect(await browserTaskApproval(buy, person(), directTurn(said))).toEqual(
-      denied("saved rule")
-    );
+    stagedErrand();
+    expect(
+      await browserTaskApproval(pay, directReportContext(), reportTurn)
+    ).toMatchObject(denied("saved rule"));
   });
 
-  it("pays nothing on a report's turn or outside the pilot", async () => {
+  it("pays nothing on a report's turn of an errand the person did not ask to buy", async () => {
+    const { browserTaskApproval } = await directPilot();
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), stagedPayment(staged), food)
+    );
+    expect(
+      await browserTaskApproval(pay, directReportContext(), reportTurn)
+    ).toEqual(paymentQuestion);
+  });
+
+  it("reads no request from a forwarded message or outside the pilot", async () => {
     const { browserTaskApproval } = await directPilot();
     expect(
       await browserTaskApproval(
-        buy,
-        toolContext("better-auth:alice", "browser-result"),
-        { ...directTurn(said), said: null }
+        stage,
+        person(),
+        directTurn(`[переслано] ${said}`)
       )
-    ).toEqual(denied(""));
+    ).toMatchObject(denied("instead of the one option"));
     const off = await directPilot({}, "");
     // As before the pilot: a purchase still to be found searches first.
     expect(
-      await off.browserTaskApproval(buy, person(), directTurn(said))
-    ).toEqual(denied("instead of the one option"));
+      await off.browserTaskApproval(stage, person(), directTurn(said))
+    ).toMatchObject(denied("instead of the one option"));
   });
 });

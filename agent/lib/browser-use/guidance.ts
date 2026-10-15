@@ -81,6 +81,16 @@ export function approvedPaymentInstruction(approvedRub: number) {
 }
 
 /**
+ * A run staged an order the person asked for themselves
+ * (DIRECT_PURCHASE_WORKSPACES, `agent/lib/payments/direct.ts`): their
+ * request is their consent, and `browser_task` checks the staged order and
+ * its total against it before anything is paid.
+ */
+export function directPaymentInstruction(request: string) {
+  return `The person asked for this purchase themselves — «${request}» — and that request is their consent to pay: do not ask them «Оплачиваю?». When the staged order is what they asked for, continue this run now with browser_task continue on this run id, allowSubmit, allowPayment and a submission naming exactly the staged option with chargeRub of its Total, and in your one message say in one short line what you are paying for and the total. The tool checks the order and the total against their request, their budget or the ceiling and their saved rules: when it refuses, ask the one question it names about the substance — what differs or the total — and nothing else. When the staged order plainly is not what they asked for, ask that one question yourself instead.`;
+}
+
+/**
  * What the coordinator does about what a settled run stopped on, whenever
  * its outcome reaches the conversation: in the run's own report turn, or
  * handed over by `browser_task` when the person asks «ну что там?» first.

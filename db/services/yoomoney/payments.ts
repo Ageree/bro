@@ -1,7 +1,10 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { db, yoomoneyPayments } from "@db";
 import { claimDirectPurchase } from "@db/services/direct-purchases";
-import { lockWorkspaceSpending } from "@db/services/spending";
+import {
+  lockWorkspaceSpending,
+  refuseUnresolvedPurchase,
+} from "@db/services/spending";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 /**
@@ -161,6 +164,18 @@ export async function claimYoomoneyPayment(
       )
       .limit(1);
     if (spent) return { kind: "consent_spent" as const, payment };
+    // Paid with no question, it waits for a purchase elsewhere whose
+    // outcome is unknown, as the browser and Lavka do.
+    if (input.direct === true) {
+      const unresolved = await refuseUnresolvedPurchase(
+        transaction,
+        scope
+      ).then(
+        () => false,
+        () => true
+      );
+      if (unresolved) return { kind: "busy" as const, payment };
+    }
     if (
       input.direct === true &&
       !(await claimDirectPurchase(

@@ -22,6 +22,7 @@ import {
   directPurchase,
   directPurchaseCeilingRub,
   directPurchasePilot,
+  forwardedMessage,
 } from "@agent/lib/payments/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -386,7 +387,12 @@ export default defineDynamic({
       const words = personWordsThisTurn(context.messages, step);
       // Only in a turn the person's own message opened, as phone-call.
       if (words.said === null) return null;
-      const turn: DirectTurn = { personTurn: true, said: words.said, step };
+      const turn: DirectTurn = {
+        forwarded: forwardedMessage(caller),
+        personTurn: true,
+        said: words.said,
+        step,
+      };
       return {
         yandex_purchase: defineTool({
           availableInSubagents: false,
