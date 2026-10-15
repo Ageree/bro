@@ -83,6 +83,13 @@ function idOf(link: string) {
   return new URL(link).pathname.split("/")[4] ?? "";
 }
 
+/** The link with the first character of its signature changed. */
+function wrongSignature(link: string) {
+  return link.replace(/sig=(.)/u, (_, first: string) =>
+    first === "A" ? "sig=B" : "sig=A"
+  );
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", async () =>
     Promise.resolve(new Response(null, { status: 200 }))
@@ -104,11 +111,6 @@ describe("the task agent's file links as the model copies them", () => {
   it("mends a wrong signature character, a cut tail or a bare id", async () => {
     const { chart, exactSharedLink, form, known, report, signed } =
       await sharedFiles();
-    const wrongSignature = (link: string) =>
-      link.replace(/sig=(.)/u, (_, first: string) =>
-        first === "A" ? "sig=B" : "sig=A"
-      );
-
     expect(exactSharedLink(wrongSignature(chart), known)).toBe(chart);
     expect(exactSharedLink(wrongSignature(signed), known)).toBe(signed);
     expect(exactSharedLink(report.slice(0, -10), known)).toBe(report);
