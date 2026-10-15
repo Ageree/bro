@@ -8,6 +8,7 @@ import { YoomoneyError } from "@shared/yoomoney/api";
 import {
   processYoomoneyPayment,
   requestYoomoneyPayment,
+  yoomoneyReadBackSilent,
 } from "@shared/yoomoney/payments";
 import { readYoomoneyConnection, withYoomoneyToken } from "./connection";
 import { settlementFromHistory } from "./history";
@@ -57,13 +58,18 @@ export async function yoomoneyPayLink(id: string) {
 }
 
 /**
- * Where the person's bank sends them back after 3-D Secure: made before a
- * payment is claimed, so a failure here leaves nothing claimed.
+ * Where the person's bank sends them back after 3-D Secure, passed or not:
+ * made before a payment is claimed, so a failure here leaves nothing
+ * claimed.
  */
 export async function yoomoneyCardReturn(id: string) {
-  const url = new URL(`/api/yoomoney/pay/${id}/return`, applicationOrigin());
-  url.searchParams.set("t", await linkToken(id));
-  return url.toString();
+  const back = async (verdict: "ok" | "fail") => {
+    const url = new URL(`/api/yoomoney/pay/${id}/return`, applicationOrigin());
+    url.searchParams.set("t", await linkToken(id));
+    url.searchParams.set("r", verdict);
+    return url.toString();
+  };
+  return { passed: await back("ok"), failed: await back("fail") };
 }
 
 /** The card payment this link names, when the link is its own. */
@@ -122,7 +128,7 @@ export async function sendYoomoneyCardPayment(
   }: {
     readonly cardId: string;
     readonly csc: string | undefined;
-    readonly returnTo: string;
+    readonly returnTo: Awaited<ReturnType<typeof yoomoneyCardReturn>>;
   }
 ) {
   const scope = scopeOf(payment);
@@ -236,11 +242,18 @@ export async function payYoomoneyByCard(
 /**
  * A card payment YooMoney answered (`pending`: with the bank or still in
  * progress) read back by its `request_id` alone — after the person's bank
- * sent them back, or when they ask its page again. A request YooMoney no
- * longer knows is looked up in the wallet's history; a lost read changes
- * nothing.
+ * sent them back (`back`: whether it says they passed), or when its page
+ * checks it again. A read back YooMoney answers without an outcome — the
+ * person still at their bank, or a request it no longer knows — is looked
+ * up in the wallet's history and otherwise leaves the payment pending: a
+ * refusal then would drop the payment the person is confirming. A lost
+ * read changes nothing.
  */
-export async function readBackYoomoneyCardPayment(id: string, token: string) {
+export async function readBackYoomoneyCardPayment(
+  id: string,
+  token: string,
+  back: "passed" | "failed" | undefined
+) {
   const payment = await readYoomoneyPaymentByLink(id, token);
   if (payment?.state !== "pending") return;
   const scope = scopeOf(payment);
@@ -250,27 +263,37 @@ export async function readBackYoomoneyCardPayment(id: string, token: string) {
     );
     if (!read.connected) return;
     const outcome = read.result;
-    // The bank asks again: its fresh form replaces the stale one.
+    console.info("[yoomoney] card payment read back", {
+      back,
+      outcome: outcome.kind,
+      error: outcome.kind === "refused" ? outcome.error : undefined,
+    });
     const settlement =
       outcome.kind === "paid"
         ? { state: "paid" as const, paymentId: outcome.paymentId }
-        : outcome.kind === "bank"
-          ? {
-              state: "pending" as const,
-              bankUri: outcome.acsUri,
-              bankParams: outcome.acsParams,
-            }
-          : outcome.kind !== "refused"
-            ? undefined
-            : outcome.error === "contract_not_found"
-              ? await settlementFromHistory(scope, payment)
-              : { state: "refused" as const, error: outcome.error };
-    if (settlement !== undefined)
-      await settleYoomoneyPayment(scope, {
-        id: payment.id,
-        from: ["pending"],
-        ...settlement,
-      });
+        : outcome.kind !== "refused"
+          ? { state: "pending" as const }
+          : !yoomoneyReadBackSilent(outcome.error)
+            ? { state: "refused" as const, error: outcome.error }
+            : ((await settlementFromHistory(scope, payment)) ??
+              // A bank that did not pass the person: nothing was charged.
+              (back === "failed"
+                ? { state: "refused" as const, error: "ext_auth_failed" }
+                : { state: "pending" as const }));
+    // The bank asks again: its fresh form replaces the stale one. Back from
+    // the bank, the form is spent: the page no longer offers it.
+    const form =
+      outcome.kind === "bank"
+        ? { bankUri: outcome.acsUri, bankParams: outcome.acsParams }
+        : back === undefined
+          ? { bankUri: undefined, bankParams: undefined }
+          : { bankUri: null, bankParams: null };
+    await settleYoomoneyPayment(scope, {
+      id: payment.id,
+      from: ["pending"],
+      ...settlement,
+      ...form,
+    });
   } catch {
     // Read again later: the page and Bro's status both can.
   }

@@ -134,8 +134,9 @@ const processSchema = z.object({
 /**
  * How `process-payment` is asked: from the balance; from a linked card
  * (with its CVV when YooMoney wants one, and where the bank sends the
- * person back after 3-D Secure); or `again` — the `request_id` alone,
- * which reads a card payment back and never picks a source for it.
+ * person back after 3-D Secure, passed or not); or `again` — the
+ * `request_id` alone, which reads a card payment back and never picks a
+ * source for it.
  */
 type PaymentSource =
   | { readonly kind: "wallet" }
@@ -144,7 +145,7 @@ type PaymentSource =
       readonly kind: "card";
       readonly cardId: string;
       readonly csc: string | undefined;
-      readonly returnTo: string;
+      readonly returnTo: { readonly passed: string; readonly failed: string };
     };
 
 function processBody(requestId: string, source: PaymentSource) {
@@ -153,11 +154,21 @@ function processBody(requestId: string, source: PaymentSource) {
   if (source.kind === "card") {
     body.set("money_source", source.cardId);
     if (source.csc !== undefined) body.set("csc", source.csc);
-    body.set("ext_auth_success_uri", source.returnTo);
-    body.set("ext_auth_fail_uri", source.returnTo);
+    body.set("ext_auth_success_uri", source.returnTo.passed);
+    body.set("ext_auth_fail_uri", source.returnTo.failed);
   }
   return body;
 }
+
+/**
+ * A read back that YooMoney answers without an outcome: `contract_not_found`
+ * (the request is gone) or `illegal_params` — what the `request_id` alone
+ * gets while the person's bank has not sent them back yet (15.10, a card
+ * read back mid-3-D Secure). Neither says the payment was refused: the
+ * wallet's history does.
+ */
+export const yoomoneyReadBackSilent = (error: string) =>
+  error === "contract_not_found" || error === "illegal_params";
 
 /**
  * Pays a checked payment: `paid`, `refused`, `pending` while YooMoney
@@ -176,8 +187,23 @@ export async function processYoomoneyPayment(
       token,
     })
   );
-  if (!parsed.success) return { kind: "pending" as const, nextRetryMs: 5_000 };
+  if (!parsed.success) {
+    console.warn("[yoomoney] process-payment unreadable", {
+      source: source.kind,
+      issues: parsed.error.issues.map((issue) => issue.path.join(".")),
+    });
+    return { kind: "pending" as const, nextRetryMs: 5_000 };
+  }
   const answer = parsed.data;
+  // How each call went, without the token, the CVV or the bank's form:
+  // what a card payment that never reached the person's bank did.
+  console.info("[yoomoney] process-payment", {
+    source: source.kind,
+    status: answer.status,
+    error: answer.error,
+    bank:
+      answer.acs_uri === undefined ? undefined : new URL(answer.acs_uri).host,
+  });
   if (answer.status === "ext_auth_required") {
     return answer.acs_uri === undefined
       ? { kind: "pending" as const, nextRetryMs: 5_000 }
@@ -198,10 +224,6 @@ export async function processYoomoneyPayment(
       kind: "pending" as const,
       nextRetryMs: answer.next_retry ?? 5_000,
     };
-  console.warn("[yoomoney] process-payment refused", {
-    status: answer.status,
-    error: answer.error,
-  });
   return { kind: "refused" as const, error: answer.error ?? answer.status };
 }
 
@@ -269,6 +291,7 @@ const refusals = new Map(
       "Подготовленный платёж устарел: его нужно подготовить заново.",
     ext_action_required:
       "ЮMoney просит сначала сделать что-то в самом кошельке, например пройти идентификацию.",
+    ext_auth_failed: "Банк не подтвердил платёж картой.",
     illegal_param_amount: "ЮMoney не принял сумму.",
     illegal_param_amount_due: "ЮMoney не принял сумму.",
     illegal_param_to:

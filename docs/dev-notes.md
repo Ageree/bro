@@ -419,6 +419,14 @@
   карту): у неотвеченного это первый вызов, и ЮMoney по умолчанию платит кошельком —
   `unknown` карты сверяется только по истории. У `/pay/*` `Referrer-Policy: same-origin`:
   при `no-referrer` браузер шлёт форму с `Origin: null`, и проверка Origin её отвергает.
+  Пока человек у банка, `request_id` один ЮMoney отвечает `illegal_params` (15.10): это не
+  отказ — сверка с историей, платёж ждёт (`yoomoneyReadBackSilent`). Ручная проверка статуса
+  посреди 3-D Secure так закрыла первый живой платёж картой «Мир» (ЮMoney шлёт её в 3-D Secure
+  1.0.2 через `mirconnect.ru`). Банк возвращает на `…/return?r=ok|fail`; ход платежа — строки
+  `[yoomoney] process-payment` и `card payment …` в журнале `bro-web`.
+- Ops-адрес `host.py` — IP из кэша `<VM>.json` в `BRO_APP_HOST_DIR`, а не из DNS: 15.10 IP VM
+  сменился, кэш из `state restore` остался старым, и `logs`/`deploy` рвались «Connection reset
+  by peer». Сверьте IP кэша с A-записью `brobro.tech`.
 - OAuth почты требует настройки самого ящика, не только scopes приложения:
   Яндекс — «Почтовые программы» → IMAP; Mail.ru — «Внешние сервисы» →
   «Доступ к Почте по IMAP, POP и SMTP». Выключенная настройка блокирует вход

@@ -307,25 +307,92 @@ describe("a payment from the wallet's linked card", () => {
     expect(sent.get("money_source")).toBe("card-1");
     expect(sent.get("csc")).toBe("123");
     const { applicationOrigin } = await import("@shared/environment/origin");
-    expect(sent.get("ext_auth_success_uri")).toBe(
-      `${applicationOrigin()}/api/yoomoney/pay/${id}/return?t=${token}`
-    );
+    const back = `${applicationOrigin()}/api/yoomoney/pay/${id}/return?t=${token}`;
+    expect(sent.get("ext_auth_success_uri")).toBe(`${back}&r=ok`);
+    expect(sent.get("ext_auth_fail_uri")).toBe(`${back}&r=fail`);
     // A second press pays nothing more.
     expect(await card.payYoomoneyByCard(id, token, "123")).toEqual({
       kind: "settled",
+    });
+
+    // Read back while the person is still at their bank (15.10): YooMoney
+    // has no outcome yet, and the payment waits for them.
+    wallet({
+      "/api/process-payment": () =>
+        Response.json({ status: "refused", error: "illegal_params" }),
+      "/api/operation-history": () => Response.json({ operations: [] }),
+    });
+    await card.readBackYoomoneyCardPayment(id, token, undefined);
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "pending",
+      bankUri: "https://bank.example/3ds",
     });
 
     const readBack = wallet({
       "/api/process-payment": () =>
         Response.json({ status: "success", payment_id: "payment-1" }),
     });
-    await card.readBackYoomoneyCardPayment(id, token);
+    await card.readBackYoomoneyCardPayment(id, token, "passed");
     expect(new URLSearchParams(readBack[0]?.body).toString()).toBe(
       "request_id=request-1"
     );
     expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
       state: "paid",
       paymentId: "payment-1",
+      bankUri: null,
+    });
+  });
+
+  it("is refused when the bank did not pass the person and YooMoney has no outcome", async () => {
+    const yoomoney = await service();
+    const state = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    wallet(consenting);
+    await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state);
+    const payments = await import("@db/services/yoomoney/payments");
+    const card = await import("@db/services/yoomoney/card");
+    const id = "6f0e3c1a-1111-4a8b-9c0d-000000000004";
+    await payments.createYoomoneyPayment(alice, {
+      id,
+      rootSessionId: "session-1",
+      kind: "service",
+      account: "4100111222333",
+      title: "МегаФон (Россия)",
+      requestParams: { pattern_id: "337" },
+      shown: [],
+      requestId: "request-2",
+      amountMinor: 1000,
+      test: false,
+      cardId: "card-1",
+      cardLabel: "••4310",
+      cscRequired: true,
+      confirmationQuestion: `Платёж ${id}.`,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const token = new URL(await card.yoomoneyPayLink(id)).searchParams.get("t");
+    if (token === null) throw new Error("Expected the link's secret.");
+    wallet({
+      ...consenting,
+      "/api/process-payment": () =>
+        Response.json({
+          status: "ext_auth_required",
+          acs_uri: "https://bank.example/3ds",
+          acs_params: { MD: "md-2", PaReq: "pareq-2" },
+        }),
+    });
+    await card.payYoomoneyByCard(id, token, "123");
+
+    wallet({
+      "/api/process-payment": () =>
+        Response.json({ status: "refused", error: "illegal_params" }),
+      "/api/operation-history": () => Response.json({ operations: [] }),
+    });
+    await card.readBackYoomoneyCardPayment(id, token, "failed");
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "refused",
+      error: "ext_auth_failed",
+      bankUri: null,
     });
   });
 });
