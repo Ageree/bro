@@ -31,14 +31,31 @@ const comingAndGoing = [
 ];
 
 /**
- * The person's words of where they are or will be, or of a reminder bound
- * to a place: the decision model gave no group to «напомни купить хлеб,
+ * The person's reminders at places themselves: «покажи мои напоминания у
+ * мест», «отмени напоминание у Тверской», «location reminders». The
+ * decision model gave no group to «покажи все мои напоминания у мест» (15.10).
+ * After «у» a place only: «напоминания у меня на завтра» and «напоминание у
+ * задачи» are none, and neither is «напоминание о месте встречи», nor «place
+ * reminders» (a verb as often as not).
+ */
+const placeReminders = [
+  String.raw`напомина(ни|лк)\p{L}*\s+((у|возле|около|по|для)\s+мест(у|а|ам|ах)?|о\s+местах)(?!\p{L})`,
+  String.raw`напомина(ни|лк)\p{L}*\s+(по|с|на|через)\s+(геолокаци|геопозици|локаци|местоположени|геозон)`,
+  String.raw`напомина(ни|лк)\p{L}*\s+(у|возле|около)(?!\p{L})${notAPlace}(?!\s+((меня|тебя|нас|вас|него|нее|неё|них|кого|всех|бро)(?!\p{L})|задач|событи|дел[ауо]?(?!\p{L})|календар|телефон|приложени|будильник|звонк|запис))\s+\p{L}`,
+  String.raw`гео[-\s]?напомина(ни|лк)`,
+  String.raw`(location|geo)([-\s]?based)?[-\s]?reminders?(?!\p{L})|reminders?\s+(at|for|by|tied\s+to)\s+(places?|locations?)(?!\p{L})`,
+];
+
+/**
+ * The person's words of where they are or will be, of a reminder bound to
+ * a place, or of their reminders at places (`placeReminders`): the decision model gave no group to «напомни купить хлеб,
  * когда приду на Тверскую 7» (15.10). Only words that clearly mean the
  * person's own place: «рядом с текстом», «ближайший понедельник» and «когда
  * буду свободен» are none of it.
  */
 const ownPlace = stems(
   ...comingAndGoing,
+  ...placeReminders,
   String.raw`где\s+я\s+(сейчас|нахожусь|находил\p{L}*|припарковал\p{L}*|парковал\p{L}*|поставил\p{L}*\s+машин|оставил\p{L}*\s+машин)(?!\p{L})`,
   String.raw`где\s+я\s+был[аи]?(\s*\?|\s+(вчера|сегодня|утром|дн[её]м|вечером|ночью|в\s+\d|час\p{L}*\s+назад)(?!\p{L}))`,
   String.raw`где\s+я\s*\?|где\s+(сейчас\s+)?нахожусь|где\s+моя\s+машин`,

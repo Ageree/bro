@@ -123,6 +123,12 @@ describe("the router's state string", () => {
     "где я был?",
     "когда приеду на вечеринку, напомни про подарок",
     "is there a pharmacy nearby?",
+    "Покажи все мои напоминания у мест, с id",
+    "отмени напоминание у Тверской",
+    "какие у меня напоминания по геолокации",
+    "удали все геонапоминания",
+    "show my location reminders",
+    "list my reminders at places",
   ])("hears the person's own place in «%s»", (words) => {
     expect(routerTurnText([person(words)]).located).toBe(true);
   });
@@ -159,6 +165,12 @@ describe("the router's state string", () => {
     "when I get to the meeting",
     "see the nearby paragraph",
     "где я был неправ?",
+    "покажи мои напоминания",
+    "напомни в пятницу",
+    "какие напоминания у меня на завтра?",
+    "убери напоминание у задачи про отчёт",
+    "пришли напоминание о месте встречи",
+    "place reminders on all my meetings",
   ])("hears no place in «%s»", (words) => {
     expect(routerTurnText([person(words)]).located).toBe(false);
   });
