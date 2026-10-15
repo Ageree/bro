@@ -3,10 +3,23 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { yandexPilot } from "@agent/lib/yandex/pilot";
 import type { runYandexOperation } from "@agent/lib/yandex/transport";
+import type { latestPosition } from "@db/services/location";
 
 const services = vi.hoisted(() => ({
+  latest: vi.fn<typeof latestPosition>(),
+  locationPilot: vi.fn<() => boolean>(() => false),
   pilot: vi.fn<typeof yandexPilot>(),
   run: vi.fn<typeof runYandexOperation>(),
+}));
+
+vi.mock("@db/services/location", () => ({
+  latestPosition: services.latest,
+  locationPilot: services.locationPilot,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: vi.fn<() => Promise<string>>(
+    async () => "Europe/Moscow"
+  ),
 }));
 
 vi.mock("@agent/lib/yandex/pilot", () => ({
@@ -95,6 +108,60 @@ beforeEach(() => {
   services.run.mockResolvedValue({
     data: { requestWorks: true, signedIn: true },
     kind: "ok",
+  });
+});
+
+describe("Yandex Maps around the person's shared point", () => {
+  const point = {
+    live: false,
+    point: {
+      accuracyM: 20,
+      address: null,
+      createdAt: new Date(),
+      externalId: "telegram:1:2:3",
+      id: "point-1",
+      kind: "position" as const,
+      label: null,
+      lat: 55.7612,
+      liveKey: null,
+      lon: 37.6099,
+      recordedAt: new Date(Date.now() - 10 * 60_000),
+      source: "telegram" as const,
+      workspaceId,
+    },
+  };
+
+  async function search(input: { readonly near?: [number, number] }) {
+    const found = await tool([{ content: "что поесть рядом?", role: "user" }]);
+    if (!found) throw new Error("Expected yandex.");
+    return found.execute(
+      { operation: "maps.search", query: "кафе", ...input },
+      callContext()
+    );
+  }
+
+  it("looks around the point when the model gave none, in the pilot only", async () => {
+    services.run.mockResolvedValue({
+      data: { places: [], total: 0 },
+      kind: "ok",
+    });
+    services.latest.mockResolvedValue(point);
+    await search({});
+    expect(services.run.mock.calls[0]?.[2]).toMatchObject({
+      near: [37.6177, 55.755863],
+    });
+    services.locationPilot.mockReturnValue(true);
+    const result = await search({});
+    expect(services.run.mock.calls[1]?.[2]).toMatchObject({
+      near: [37.6099, 55.7612],
+    });
+    expect(result).toHaveProperty("positionNear");
+    // Latitude first, next to the point: turned round.
+    await search({ near: [55.7612, 37.6099] });
+    expect(services.run.mock.calls[2]?.[2]).toMatchObject({
+      near: [37.6099, 55.7612],
+    });
+    services.locationPilot.mockReturnValue(false);
   });
 });
 

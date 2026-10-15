@@ -25,6 +25,7 @@ import type { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 
 const watches = vi.hoisted(() => ({
   list: vi.fn<typeof listLiveSubscriptions>(() => Promise.resolve([])),
+  locationPilot: vi.fn<() => boolean>(() => true),
   pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
   setStatus: vi.fn<typeof setSubscriptionStatus>(),
 }));
@@ -53,6 +54,9 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
 }));
 vi.mock("@agent/lib/subscriptions/pilot", () => ({
   subscriptionsPilot: watches.pilot,
+}));
+vi.mock("@db/services/location", () => ({
+  locationPilot: watches.locationPilot,
 }));
 vi.mock("@db/services/subscriptions", () => ({
   listLiveSubscriptions: watches.list,
@@ -834,6 +838,83 @@ describe("schedule tools", () => {
       )
     ).resolves.toMatchObject({ status: "paused" });
     watches.pilot.mockResolvedValue(true);
+  });
+
+  it("lists a reminder at a place without its point, and changes only its status", async () => {
+    const created = new Date("2026-10-15T10:00:00.000Z");
+    const reminder = {
+      action: "notify" as const,
+      checkEverySeconds: 86_400,
+      checks: 0,
+      condition: {
+        on: "arrive" as const,
+        repeat: false,
+        text: "забрать посылку",
+      },
+      createdAt: created,
+      createdByUserId: "user-1",
+      dedupeKey: "arrive:55.751,37.618",
+      expiresAt: new Date("2026-10-29T10:00:00.000Z"),
+      failures: 0,
+      hits: 0,
+      id: "00000000-0000-4000-8000-0000000000ba",
+      jobId: "00000000-0000-4000-8000-0000000000bb",
+      lastCheckedAt: null,
+      lastError: null,
+      lastHitAt: null,
+      nextCheckAt: new Date("2026-10-29T10:00:00.000Z"),
+      source: {
+        address: "Тверская улица 7, Москва",
+        label: "дом",
+        lat: 55.7512,
+        lon: 37.6184,
+        origin: "home" as const,
+        radiusM: 150,
+      },
+      state: {
+        changedAt: null,
+        farAt: null,
+        inside: null,
+        last: null,
+        pending: null,
+        recentOut: null,
+        sawPosition: false,
+      },
+      status: "active" as const,
+      template: "place" as const,
+      updatedAt: created,
+      wake: "urgent_at_night" as const,
+      workspaceId: "workspace-1",
+    };
+    services.list.mockResolvedValue([]);
+    watches.list.mockResolvedValue([reminder]);
+    const listed = await listSchedules.execute(
+      {},
+      toolContext("schedules-list")
+    );
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: reminder.id,
+        nextCheckLocal: null,
+        place: { label: "дом", radiusM: 150 },
+        when: { on: "arrive", text: "забрать посылку" },
+      }),
+    ]);
+    expect(JSON.stringify(listed)).not.toMatch(/55\.75|Тверская/u);
+    services.getJob.mockResolvedValue(undefined);
+    await expect(
+      updateSchedule.execute(
+        { id: reminder.id, runNow: true },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/place reminder/u);
+    watches.locationPilot.mockReturnValueOnce(false);
+    await expect(
+      updateSchedule.execute(
+        { id: reminder.id, status: "active" },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow(/geolocation is switched off/u);
   });
 
   it("omits messaging capabilities outside their valid turns", async () => {

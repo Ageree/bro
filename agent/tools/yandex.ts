@@ -7,6 +7,7 @@ import {
   stepIdentity,
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
+import { nearFromPosition } from "@agent/lib/location/near";
 import { operationArguments } from "@agent/lib/yandex/operations";
 import { yandexPilot, yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 import {
@@ -20,6 +21,7 @@ import {
   yandexOperations,
 } from "@agent/lib/yandex/registry";
 import { runYandexOperation } from "@agent/lib/yandex/transport";
+import { locationPilot } from "@db/services/location";
 
 const [firstOperation, ...otherOperations] = yandexOperations;
 
@@ -40,6 +42,11 @@ const description = `Ask a Yandex service (Yandex Market, Food and the others be
 
 Operations:
 ${operationList}`;
+
+/** A `maps.search` call's `near`, when the model gave one. */
+const nearSchema = z.object({
+  near: z.tuple([z.number(), z.number()]).optional(),
+});
 
 const notThePerson =
   "Nothing was asked: the Yandex tool works only in a turn the person's own message opened.";
@@ -101,10 +108,22 @@ async function callYandex(
       return { ok: false as const, reply: refusals[signedIn.kind] };
     }
   }
+  // Geolocation pilot: «рядом» on Yandex Maps looks around the person's
+  // own shared point, not central Moscow.
+  const located =
+    operation.id === "maps.search" && locationPilot({ workspaceId })
+      ? await nearFromPosition(
+          scopeFromPrincipal(caller),
+          nearSchema.safeParse(input).data?.near
+        )
+      : undefined;
   const outcome = await runYandexOperation(
     workspaceId,
     operation,
-    operationArguments(operation, input)
+    operationArguments(
+      operation,
+      located ? { ...input, near: located.near } : input
+    )
   );
   if (operation.id === accountReadyOperation.id) {
     // The onboarding's next step rides in the result, not the prompt.
@@ -124,7 +143,11 @@ async function callYandex(
       };
     }
   }
-  if (outcome.kind === "ok") return { data: outcome.data, ok: true as const };
+  if (outcome.kind === "ok") {
+    return located
+      ? { data: outcome.data, ok: true as const, positionNear: located.said }
+      : { data: outcome.data, ok: true as const };
+  }
   return { ok: false as const, reply: refusals[outcome.kind] };
 }
 

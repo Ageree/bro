@@ -1,6 +1,7 @@
 import type { ScheduleHandlerArgs } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { expireConversationLines } from "@db/services/conversation-log";
+import type { expireLocationPoints } from "@db/services/location";
 import type {
   recordUntrackedMemories,
   trimForgottenMemoryHistory,
@@ -9,6 +10,7 @@ import type {
 const passes = vi.hoisted(() => ({
   schedulesEnabled: vi.fn<() => boolean>(),
   expireConversationLines: vi.fn<typeof expireConversationLines>(),
+  expireLocationPoints: vi.fn<typeof expireLocationPoints>(),
   recordUntrackedMemories: vi.fn<typeof recordUntrackedMemories>(),
   trimForgottenMemoryHistory: vi.fn<typeof trimForgottenMemoryHistory>(),
 }));
@@ -18,6 +20,9 @@ vi.mock("@agent/lib/schedules/enabled", () => ({
 }));
 vi.mock("@db/services/conversation-log", () => ({
   expireConversationLines: passes.expireConversationLines,
+}));
+vi.mock("@db/services/location", () => ({
+  expireLocationPoints: passes.expireLocationPoints,
 }));
 vi.mock("@db/services/memory/records", () => ({
   recordUntrackedMemories: passes.recordUntrackedMemories,
@@ -50,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   passes.schedulesEnabled.mockReturnValue(true);
   passes.expireConversationLines.mockResolvedValue();
+  passes.expireLocationPoints.mockResolvedValue();
   passes.recordUntrackedMemories.mockResolvedValue();
   passes.trimForgottenMemoryHistory.mockResolvedValue();
 });
@@ -66,6 +72,7 @@ describe("the hourly memory-history tick", () => {
     await tick();
 
     expect(passes.expireConversationLines).toHaveBeenCalledOnce();
+    expect(passes.expireLocationPoints).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledOnce();
   });
 });

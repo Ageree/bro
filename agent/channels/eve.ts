@@ -5,11 +5,14 @@ import {
   routeAuth,
   UnauthenticatedError,
 } from "eve/channels/auth";
+import type { UserContent } from "ai";
 import { z } from "zod";
 import { claimSession, isSessionOwned } from "@db/services/sessions";
 import { ensureScope } from "@db/services/scope";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
+import { webLocationContext } from "@agent/lib/location/context";
+import { locationPilot } from "@db/services/location";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   accessScopeForUser,
@@ -71,12 +74,20 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
   },
 ];
 
+/** The text of a web chat message, its parts joined. */
+function messageWords(message: string | UserContent) {
+  if (!Array.isArray(message)) return message;
+  return message
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
 const channel = eveChannel({
   auth: authenticate,
   // Someone who signs up on the web and writes there first meets Bro here, so
   // this channel opens a workspace's first conversation the same way the
   // messaging channels do.
-  async onMessage(context) {
+  async onMessage(context, message) {
     const auth = defaultEveAuth(context);
     // Route auth above resolves a workspace user or has already refused the
     // request, so a missing caller is a broken invariant, not a guest.
@@ -90,6 +101,12 @@ const channel = eveChannel({
           channel: "channel:eve",
           sessionId: context.eve.sessionId,
         })),
+        // The point the chat's button just shared, or where the person last
+        // shared they were, for a message about places near them
+        // (geolocation pilot).
+        ...(locationPilot(scope)
+          ? await webLocationContext(scope, messageWords(message))
+          : []),
       ],
     };
   },

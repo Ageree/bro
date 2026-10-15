@@ -109,6 +109,8 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
 | `TG_BRIDGE_PROXY`               | не задан (`http://<login>:<password>@<host>:<port>` или `h:port:u:p`) |
 | `TG_BRIDGE_HEALTH`              | `127.0.0.1:7445`                                                      |
 | `TG_BRIDGE_POLL_TIMEOUT`        | `50` с                                                                |
+| `TG_BRIDGE_LIVE_LOCATION`       | `off` (`on` — живая геопозиция, ниже)                                 |
+| `TG_BRIDGE_LIVE_URL`            | origin `TG_BRIDGE_EVE_URL` + `/eve/v1/telegram-location`              |
 
 Мост бьёт прямо в eve, не в Next: `proxy.ts` отправляет `/eve/v1/telegram`
 без cookie на `/sign-in`. Без токена, с секретом, который Telegram не
@@ -128,7 +130,9 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
 `GET http://127.0.0.1:7445/health` — JSON (`status`, `healthy`, `lastPollAgoS`,
 `pending`, `oldestPendingAgeS`, `eveRefused`, `stateWriteFailing`, `offset`,
 счётчики `delivered`, `dropped`, `duplicates`, `deliveryRetries`,
-`pollErrors`, `stateWriteErrors`); `200`, когда мост опрашивает Telegram, eve
+`pollErrors`, `stateWriteErrors`, а с живой геопозицией — `liveDelivered`,
+`liveDropped`, `coalesced`, `skipped`; правки трансляции в
+`oldestPendingAgeS` не входят); `200`, когда мост опрашивает Telegram, eve
 не отвечал отказом по секрету, запись файла состояния не падает и ни одно
 обновление не ждёт доставки дольше `TG_BRIDGE_STUCK_S` (120 с: лежащий eve,
 сломанный релиз), иначе `503`. Секрет `/health` не проверяет: `eveRefused`
@@ -137,6 +141,37 @@ api.telegram.org ◀─ getUpdates (HTTPS; /etc/hosts → tg-egress, или TG_B
 `conflict`, `telegram-unreachable`, `telegram-error`.
 `python3 /opt/bro/tg-bridge/tg_bridge.py check` — то же для человека и
 watchdog (код 0 или 1).
+
+## Живая геопозиция
+
+Человек в Telegram жмёт «Транслировать геопозицию»: первая точка приходит
+обычным `message`, а каждое движение — `edited_message` того же сообщения.
+Канал Telegram в eve правки выбрасывает, поэтому при
+`TG_BRIDGE_LIVE_LOCATION=on` мост просит у `getUpdates` ещё и
+`edited_message`, а правки с `location` отдаёт на `TG_BRIDGE_LIVE_URL`
+(маршрут `/eve/v1/telegram-location`, `agent/lib/location/live.ts`) с тем же
+заголовком секрета. Там нет хода модели: правка двигает напоминания у мест
+(пилот `LOCATION_WORKSPACES`) и изредка пишется в трек; всё, что не личный чат
+человека из пилота, eve принимает `200` и выбрасывает.
+
+- Правки идут своей очередью `live:<chat>`: не ждут за сообщениями чата и не
+  держат их.
+- Правка скоропортящаяся. Стоящая в очереди правка того же сообщения
+  выбрасывается (`coalesced`), если следующая в очереди лежит ближе 100 м;
+  дальняя остаётся, поэтому «снаружи → внутри → снаружи» не схлопнется.
+  Ответ живого eve не `2xx` (релиз без маршрута — `404`) — выброс сразу, без
+  повторов, строка в журнале на каждую сотую (`liveDropped`). Лежащий eve —
+  повтор, как у сообщений; `401`/`403` — ожидание, как у сообщений.
+- Правка текста (`edited_message` без `location`) подтверждается Telegram и
+  никуда не идёт (`skipped`) — и при выключенном флаге: Telegram может
+  прислать правки, сделанные до смены `allowed_updates`.
+- `switch-to-webhook` ставит прежний список обновлений: в режиме вебхука
+  трансляции нет.
+
+Включение — после релиза eve с маршрутом: `TG_BRIDGE_LIVE_LOCATION=on` в
+`prod.json` и `host.py env …` (deployd перезапишет `/etc/bro/env` и
+перезапустит мост через `bridge_paused`). Сам код моста едет на VM только
+`host.py update-host` (раздел ниже), не релизом. Откат — `off` тем же путём.
 
 ## Что делает сервер
 

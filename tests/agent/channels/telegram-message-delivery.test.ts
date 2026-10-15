@@ -991,6 +991,42 @@ const postedCardSchema = z.object({
   text: z.string(),
 });
 
+describe("Telegram location button", () => {
+  it("shows the keyboard button for a location_now that asks, and nothing for send_message", async () => {
+    const { context, post } = cardContext();
+    const { takeLocationAsked } = await import("@agent/lib/location/telegram");
+
+    await handleActionResult(
+      {
+        result: {
+          callId: "call-location",
+          kind: "tool-result",
+          output: { asked: true, locationButton: true, reply: "…" },
+          toolName: "location_now",
+        },
+        sequence: 0,
+        status: "completed",
+        stepIndex: 0,
+        turnId: "turn-1",
+      },
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledOnce();
+    const posted = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(posted.reply_markup).toEqual({
+      keyboard: [[{ request_location: true, text: "📍 Отправить геопозицию" }]],
+      one_time_keyboard: true,
+      resize_keyboard: true,
+    });
+    expect(posted.text).toContain("Отправить геопозицию");
+    // The chat's next plain location is read as the person's own, once.
+    expect(takeLocationAsked("4242")).toBe(true);
+    expect(takeLocationAsked("4242")).toBe(false);
+  });
+});
+
 describe("Telegram approval cards", () => {
   it("shows what a browser errand will submit in the person's name", async () => {
     const { context, post, state } = cardContext();

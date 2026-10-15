@@ -3,6 +3,11 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import type { ScheduledRunOutcome } from "@shared/schedules/outcome";
 import type { FlightSource, FlightState } from "@shared/subscriptions/flight";
 import type {
+  PlaceCondition,
+  PlaceSource,
+  PlaceState,
+} from "@shared/subscriptions/place";
+import type {
   PriceCondition,
   PriceSource,
   PriceState,
@@ -13,18 +18,34 @@ import { db, scheduledAgentJobs, scheduledAgentRuns, subscriptions } from "@db";
 const liveStatuses = ["active", "paused"] as const;
 
 /**
- * The watches the person set up and manages (`watch-create`): their own
- * hidden job carries the reports. A flight's watch is Bro's own, on the
- * proactive job, and is neither listed nor changed by the person's tools.
+ * The watches the person set up and manages (`watch-create`,
+ * `place_reminder`): their own hidden job carries the reports. A flight's
+ * watch is Bro's own, on the proactive job, and is neither listed nor
+ * changed by the person's tools.
  */
-const personTemplate = "price";
+const personTemplates = ["price", "place"] as const;
+
+/**
+ * When a watch is next due for the subscriptions tick. A place reminder is
+ * never read by it: shared points decide it (`evaluatePlaceReminders`), and
+ * the tick takes it only when its term ends. A price, a period away.
+ */
+function nextCheckOf(
+  template: (typeof personTemplates)[number],
+  now: Date,
+  checkEverySeconds: number,
+  expiresAt: Date
+) {
+  return template === "place"
+    ? expiresAt
+    : new Date(now.getTime() + checkEverySeconds * 1_000);
+}
 
 /** Failed checks in a row after which a watch stops and the person hears. */
 export const maximumSubscriptionFailures = 3;
 
-export interface NewSubscription {
+interface NewSubscriptionBase {
   readonly checkEverySeconds: number;
-  readonly condition: PriceCondition;
   readonly conversation: {
     readonly conversationChannel: "eve" | "photon" | "telegram";
     readonly conversationId: string;
@@ -34,10 +55,25 @@ export interface NewSubscription {
   readonly dedupeKey: string;
   readonly expiresAt: Date;
   readonly replyAnchorMessageId?: string;
-  readonly source: PriceSource;
-  readonly state: PriceState;
-  readonly template: typeof personTemplate;
+  /** Whether a hit may wake the person at night (`subscriptions.wake`). */
+  readonly wake?: "day_only" | "urgent_at_night";
 }
+
+export type NewSubscription = NewSubscriptionBase &
+  (
+    | {
+        readonly condition: PriceCondition;
+        readonly source: PriceSource;
+        readonly state: PriceState;
+        readonly template: "price";
+      }
+    | {
+        readonly condition: PlaceCondition;
+        readonly source: PlaceSource;
+        readonly state: PlaceState;
+        readonly template: "place";
+      }
+  );
 
 /**
  * Sets up a watch with the hidden job its hits are reported through. A live
@@ -70,9 +106,13 @@ export async function createSubscription(
         )
       )
       .for("update");
-    const nextCheckAt = new Date(
-      now.getTime() + input.checkEverySeconds * 1_000
+    const nextCheckAt = nextCheckOf(
+      input.template,
+      now,
+      input.checkEverySeconds,
+      input.expiresAt
     );
+    const wake = input.wake ?? "day_only";
     if (existing) {
       const [updated] = await transaction
         .update(subscriptions)
@@ -88,6 +128,7 @@ export async function createSubscription(
           state: input.state,
           status: "active",
           updatedAt: now,
+          wake,
         })
         .where(eq(subscriptions.id, existing.id))
         .returning();
@@ -140,6 +181,7 @@ export async function createSubscription(
         state: input.state,
         template: input.template,
         updatedAt: now,
+        wake,
         workspaceId: scope.workspaceId,
       })
       .returning();
@@ -166,7 +208,7 @@ export async function claimDueSubscriptions(options: {
       .set({ status: "expired", updatedAt: options.now })
       .where(
         and(
-          eq(subscriptions.template, personTemplate),
+          inArray(subscriptions.template, [...personTemplates]),
           eq(subscriptions.status, "paused"),
           lte(subscriptions.expiresAt, options.now)
         )
@@ -190,7 +232,7 @@ export async function claimDueSubscriptions(options: {
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.template, personTemplate),
+          inArray(subscriptions.template, [...personTemplates]),
           eq(subscriptions.status, "active"),
           lte(subscriptions.nextCheckAt, options.now)
         )
@@ -292,7 +334,7 @@ export async function settleSubscriptionCheck(
         .set({ status: "expired", updatedAt: now })
         .where(eq(subscriptions.id, claim.id));
       // A flight's job is the proactive one, which goes on.
-      if (current.template === personTemplate) {
+      if (isPersonTemplate(current.template)) {
         await transaction
           .update(scheduledAgentJobs)
           .set({ status: "completed", updatedAt: now })
@@ -301,7 +343,7 @@ export async function settleSubscriptionCheck(
       return "lapsed" as const;
     }
     // Only a person's watch reports through its own job.
-    if (current.template !== personTemplate) return undefined;
+    if (!isPersonTemplate(current.template)) return undefined;
     const counted = {
       checks: sql`${subscriptions.checks} + 1`,
       lastCheckedAt: now,
@@ -378,6 +420,57 @@ export async function settleSubscriptionCheck(
   });
 }
 
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Ends a place reminder that fired on a shared point
+ * (`evaluatePlaceReminders` in `db/services/location.ts`), inside that
+ * transaction: the reminder is `fired` with its last state, its job is done,
+ * and the report is a finished run, as `settleSubscriptionCheck` writes one.
+ * `suppressed`: the person's own turn already says it.
+ */
+export async function recordPlaceHit(
+  transaction: Transaction,
+  hit: {
+    readonly id: string;
+    readonly jobId: string;
+    readonly now: Date;
+    readonly outcome: ScheduledRunOutcome;
+    readonly reportStatus: "pending" | "suppressed";
+    readonly state: PlaceState;
+  }
+) {
+  await transaction
+    .update(subscriptions)
+    .set({
+      checks: sql`${subscriptions.checks} + 1`,
+      hits: sql`${subscriptions.hits} + 1`,
+      lastCheckedAt: hit.now,
+      lastHitAt: hit.now,
+      state: hit.state,
+      status: "fired",
+      updatedAt: hit.now,
+    })
+    .where(eq(subscriptions.id, hit.id));
+  await transaction
+    .update(scheduledAgentJobs)
+    .set({ lastRunAt: hit.now, status: "completed", updatedAt: hit.now })
+    .where(eq(scheduledAgentJobs.id, hit.jobId));
+  await transaction.insert(scheduledAgentRuns).values({
+    attempts: 1,
+    completedAt: hit.now,
+    createdAt: hit.now,
+    jobId: hit.jobId,
+    outcome: hit.outcome,
+    reportSequence: 1,
+    reportStatus: hit.reportStatus,
+    scheduledFor: hit.now,
+    startedAt: hit.now,
+    status: "completed",
+    updatedAt: hit.now,
+  });
+}
+
 /** The person's watches still checked or paused, newest first. */
 export async function listLiveSubscriptions(scope: AccessScope) {
   return db
@@ -387,7 +480,7 @@ export async function listLiveSubscriptions(scope: AccessScope) {
       and(
         eq(subscriptions.workspaceId, scope.workspaceId),
         eq(subscriptions.createdByUserId, scope.userId),
-        eq(subscriptions.template, personTemplate),
+        inArray(subscriptions.template, [...personTemplates]),
         inArray(subscriptions.status, [...liveStatuses])
       )
     )
@@ -414,7 +507,7 @@ export async function setSubscriptionStatus(
           eq(subscriptions.id, id),
           eq(subscriptions.workspaceId, scope.workspaceId),
           eq(subscriptions.createdByUserId, scope.userId),
-          eq(subscriptions.template, personTemplate),
+          inArray(subscriptions.template, [...personTemplates]),
           inArray(subscriptions.status, [...liveStatuses])
         )
       )
@@ -423,8 +516,18 @@ export async function setSubscriptionStatus(
     const [updated] = await transaction
       .update(subscriptions)
       .set({
+        // A resumed place reminder still waits for its term, not the tick.
         ...(status === "active" &&
-          current.status === "paused" && { nextCheckAt: now }),
+          current.status === "paused" && {
+            nextCheckAt: current.template === "place" ? current.expiresAt : now,
+          }),
+        // Points were not run while it was paused: its side is unknown, so
+        // the first arrival after resuming is not taken for staying.
+        ...(status === "active" &&
+          current.status === "paused" &&
+          current.template === "place" && {
+            state: sql`${subscriptions.state} || '{"inside":null,"changedAt":null,"pending":null}'::jsonb`,
+          }),
         status: status === "deleted" ? "cancelled" : status,
         updatedAt: now,
       })
@@ -436,6 +539,10 @@ export async function setSubscriptionStatus(
       .where(eq(scheduledAgentJobs.id, current.jobId));
     return updated;
   });
+}
+
+function isPersonTemplate(template: string) {
+  return personTemplates.some((person) => person === template);
 }
 
 /** The wake rule of the watch a job reports for (`subscriptions.wake`). */

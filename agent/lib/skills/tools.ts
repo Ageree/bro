@@ -99,10 +99,15 @@ const toolGroupEntries = {
   link_telegram: "core",
   list_orders: "core",
   load_skill: "core",
+  location_edit: "core",
+  location_history: "core",
+  location_now: "core",
   "notion-add-task": "apps",
   "notion-read": "apps",
   "notion-search": "apps",
+  open_tools: "core",
   personal_info__update: "core",
+  place_reminder: "core",
   privacy: "core",
   proactive_messages: "core",
   profile__find: "core",
@@ -193,7 +198,7 @@ function turnContext(message: ModelMessage | undefined) {
  * turn's context, then the message that opened it — and the conversation
  * before it.
  */
-function splitTurn(messages: readonly ModelMessage[]) {
+export function splitTurn(messages: readonly ModelMessage[]) {
   const opening = messages.findLastIndex(startsTurn);
   if (opening === -1) return { history: [], input: messages };
   let start = opening;

@@ -23,6 +23,8 @@ export function keptData(
   options: {
     /** The workspace is in the cross-channel pilot (`conversation_log`). */
     readonly conversationLog?: boolean;
+    /** The workspace is in the geolocation pilot (`location_points`). */
+    readonly location?: boolean;
     readonly phone?: boolean;
   } = {}
 ) {
@@ -51,6 +53,11 @@ export function keptData(
           `Владелец сервиса может читать тексты переписки с Бро, чтобы находить и чинить ошибки: они хранятся ${String(env.OWNER_TRANSCRIPTS_RETENTION_DAYS)} дн. и затем удаляются, коды и пароли из них вырезаются. Метаданные ходов (время, длительность, ошибки) хранятся и без текстов.`,
         ]
       : []),
+    ...(options.location === true
+      ? [
+          "Геопозицию, которой вы сами поделились (точка, место или трансляция в Telegram, карточка геопозиции в iMessage, кнопка в веб-чате), Бро хранит до 90 дней в базе Postgres Selectel (Россия), чтобы отвечать «где я припарковался» и напоминать у мест. «Забудь, где я был» удаляет эти точки сразу; то, что уже было в переписке (адрес в ответах Бро, сама присланная точка), остаётся в истории чатов, пока живёт сессия, и до 14 дней — в ночных зашифрованных резервных копиях.",
+        ]
+      : []),
     ...(options.conversationLog === true
       ? [
           "Сообщения человека в веб-чате, Telegram и iMessage (каждое до 500 знаков) 14 дней хранятся и в той же базе Postgres, чтобы в одном чате Бро знал, о чём человек писал в другом; «удали всё, что ты про меня помнишь» стирает их сразу; что уже попало в сводку другого чата, остаётся в истории того чата, как вся переписка. Стёртые и истёкшие строки ещё до 14 дней остаются в ночных зашифрованных резервных копиях базы.",
@@ -72,10 +79,18 @@ export function dataProcessors(
   {
     memoryDigest = false,
     agentMail = false,
+    decisionModel = false,
+    location = false,
     phone = false,
   }: {
     readonly memoryDigest?: boolean;
     readonly agentMail?: boolean;
+    /**
+     * The workspace's messages reach a decision model: the tool router's
+     * pilot, or the model router's with routes (`agent/tools/privacy.ts`).
+     */
+    readonly decisionModel?: boolean;
+    readonly location?: boolean;
     readonly phone?: boolean;
   } = {}
 ) {
@@ -92,6 +107,11 @@ export function dataProcessors(
     ...(direct === "RouterAI" && env.RUNINFRA_API_KEY !== undefined
       ? [
           "Модель DeepSeek V4.1 Flash для ответов Бро запускает RunInfra: такие запросы идут туда напрямую, а через RouterAI — только если RunInfra не ответил.",
+        ]
+      : []),
+    ...(decisionModel
+      ? [
+          "Чтобы выбрать нужные инструменты или модель для задания, короткий текст сообщения (без кодов, номеров документов и длинных чисел) и прошлого ответа Бро получает модель Jev компании TypeSafe — напрямую или через RouterAI; она возвращает только вероятности и ничего не делает.",
         ]
       : []),
     ...(env.BROWSER_USE_API_KEY === undefined
@@ -140,13 +160,20 @@ export function dataProcessors(
       ? []
       : [
           "С сервисами Яндекса (Еда, Лавка, Go, Маркет) Бро работает через свой браузер от вашего аккаунта: Яндекс видит заказы и поездки, которые вы поручили.",
+          ...(location
+            ? [
+                "При геолокации поиск мест на Яндекс Картах (через ваш аккаунт Яндекса) получает координаты вашей последней присланной точки за 2 часа, если вы не назвали другое место.",
+              ]
+            : []),
         ]),
     ...(env.SANDBOX_WORKSPACES === undefined
       ? []
       : [
           "Код и работу с файлами Бро выполняет в изолированной песочнице на сервере Selectel (Россия).",
         ]),
-    "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",
+    location
+      ? "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap, а при геолокации — и координаты присланных точек, чтобы узнать адрес; без имени и контактов."
+      : "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap.",
     ...(env.TIMEPAD_API_KEY === undefined
       ? []
       : [
