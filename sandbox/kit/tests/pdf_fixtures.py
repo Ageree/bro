@@ -223,7 +223,7 @@ def signature_png(path, width=600, height=160):
 
 
 def lines_pdf(path):
-    """Two pages of Cyrillic lines (centred title, body, a right-aligned date) and one picture."""
+    """Two pages of Cyrillic lines (centred title, body, a right-aligned blue date) and one picture."""
     from PIL import Image
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
@@ -235,7 +235,9 @@ def lines_pdf(path):
     c.setFont("TestSans", 11)
     c.drawString(60, 720, "Дана Соколовой Марии Игоревне в том, что она работает")
     c.drawString(60, 704, "в ООО «Образец» с 01.03.2019 по настоящее время.")
+    c.setFillColorRGB(0.1, 0.3, 0.6)
     c.drawRightString(535, 680, "15.10.2026")
+    c.setFillColorRGB(0, 0, 0)
     picture = Image.new("RGB", (120, 60), (200, 30, 30))
     c.drawImage(ImageReader(picture), 60, 560, 120, 60)
     c.showPage()

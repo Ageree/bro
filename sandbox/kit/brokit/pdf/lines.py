@@ -1,13 +1,15 @@
 """`pdf lines` and `pdf retext`: translate a PDF in place, keeping its look (W2 spec §6.6).
 
 `lines` lists every printed line (pdftotext -bbox-layout) with an id "p<N>l<k>", its box in
-view pt, an approximate size, bold/serif (from the fonts pypdf sees on that baseline, best
-effort) and its alignment in the page's text column. `retext` removes all text from the PDF
-(images, rules, stamps and signatures stay), then draws every line again — the mapped ones
-with their translation, the rest with their own text — in DejaVu Sans/Serif, fitted to the
-old box with the old alignment, and reports ids that still hold Cyrillic.
+view pt, its size, bold/serif (from the text pypdf sees on that baseline, best effort) and its
+alignment in the page's text column. `retext` removes all text from the PDF (images, rules,
+stamps and signatures stay), then draws every line again — the mapped ones with their
+translation, the rest with their own text — in DejaVu Sans/Serif at the old size and colour,
+fitted to the old box with the old alignment, and reports ids that still hold Cyrillic.
 """
 
+import collections
+import math
 import re
 
 from brokit import labels
@@ -17,33 +19,68 @@ from brokit.util import KitError, out_path, parse_pages, parser, read_json
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 
 
-def _font_runs(page):
-    """[(view y of the baseline, view x, font name)] of text pieces pypdf sees on the page."""
-    runs = []
+BLACK = (0.0, 0.0, 0.0)
+SQUEEZE = 0.8
 
-    def visitor(text, cm, tm, font, _size):
+
+def _fill_colour(operator, args):
+    """RGB of a non-stroking colour operator (g, rg, k; sc/scn by their count of numbers), else None."""
+    values = [min(1.0, max(0.0, float(a))) for a in args if isinstance(a, (int, float))]
+    if operator == b"g" or (operator in (b"sc", b"scn") and len(values) == 1):
+        return (values[0],) * 3 if values else None
+    if operator == b"rg" or (operator in (b"sc", b"scn") and len(values) == 3):
+        return tuple(values) if len(values) == 3 else None
+    if operator == b"k" or (operator in (b"sc", b"scn") and len(values) == 4):
+        if len(values) != 4:
+            return None
+        c, m, y, k = values
+        return ((1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k))
+    return None
+
+
+def _font_runs(page):
+    """[(view y of the baseline, view x, font name, size in pt, fill RGB)] of text pieces pypdf sees on the page."""
+    runs = []
+    colour, saved = [BLACK], []
+
+    def before(operator, args, _cm, _tm):
+        if operator == b"q":
+            saved.append(colour[0])
+        elif operator == b"Q" and saved:
+            colour[0] = saved.pop()
+        elif operator in (b"g", b"rg", b"k", b"sc", b"scn"):
+            colour[0] = _fill_colour(operator, args) or colour[0]
+
+    def visitor(text, cm, tm, font, size):
         if not text.strip() or font is None:
             return
         x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
         y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
         view = geom.user_to_view(page, [x, y, x, y])
-        runs.append((view[1], view[0], str(font.get("/BaseFont", ""))))
+        # The size as printed: Tf scaled by the text and the graphics matrices (a «1 Tf» run of Word).
+        printed = float(size or 0) * math.hypot(tm[0], tm[1]) * math.hypot(cm[0], cm[1])
+        runs.append((view[1], view[0], str(font.get("/BaseFont", "")), printed, colour[0]))
 
     try:
-        page.extract_text(visitor_text=visitor)
+        page.extract_text(visitor_text=visitor, visitor_operand_before=before)
     except crypt.pdf_errors():
         return []
     return runs
 
 
 def _style(line, runs):
+    """(bold, serif, size, colour) of a line from the runs on its baseline; size ≈ the box's height without them."""
     x0, y0, x1, y1 = line["box"]
     baseline = y1 - 0.21 * (y1 - y0)
-    names = [name for y, x, name in runs if abs(y - baseline) <= 2.5 and x0 - 2 <= x <= x1 + 2]
+    found = [run for run in runs if abs(run[0] - baseline) <= 2.5 and x0 - 2 <= run[1] <= x1 + 2]
+    names = [run[2] for run in found]
     bold = sum(1 for n in names if re.search(r"Bold|Black|Heavy|Semibold|Demi", n)) > len(names) / 2 if names else False
     serifs = sum(1 for n in names if re.search(r"Times|Serif|Georgia|Cambria|Garamond|Roman", n) and "Sans" not in n)
     serif = serifs > len(names) / 2 if names else False
-    return bold, serif
+    sizes = sorted(run[3] for run in found if run[3] > 0)
+    size = sizes[len(sizes) // 2] if sizes else y1 - y0
+    colour = collections.Counter(run[4] for run in found).most_common(1)[0][0] if found else BLACK
+    return bold, serif, size, colour
 
 
 def page_lines(path, reader, numbers):
@@ -69,16 +106,17 @@ def page_lines(path, reader, numbers):
                 align = "right"
             else:
                 align = "left"
-            bold, serif = _style(line, runs)
+            bold, serif, size, colour = _style(line, runs)
             result.append(
                 {
                     "id": "p%dl%d" % (number, index),
                     "text": text,
                     "box": geom.rounded(line["box"]),
-                    "size": round(0.78 * (y1 - y0), 1),
+                    "size": round(size, 1),
                     "bold": bold,
                     "serif": serif,
                     "align": align,
+                    "colour": colour,
                 }
             )
         out[number] = result
@@ -94,7 +132,8 @@ def lines(argv):
     reader = crypt.open_pdf(options.file, warnings=warnings)
     numbers = parse_pages(options.pages, len(reader.pages))
     found = page_lines(options.file, reader, numbers)
-    pages = [{"page": n, "lines": found[n]} for n in numbers]
+    # The colour is retext's to keep, not the translator's to read.
+    pages = [{"page": n, "lines": [{k: v for k, v in line.items() if k != "colour"} for line in found[n]]} for n in numbers]
     empty = [n for n in numbers if not found[n]]
     if empty:
         warnings.append("no_text_layer: pages %s are scans — read them with look" % ",".join(str(n) for n in empty))
@@ -191,19 +230,21 @@ def _redraw(writer, found, mapping):
             x0, y0, x1, y1 = line["box"]
             size = max(line["size"], 4.0)
             room = x1 - x0 if line["align"] != "left" or text == line["text"] else max(x1 - x0, width - x0 - 36)
-            while size > 4 and pdfmetrics.stringWidth(text, font_name, size) > room:
+            # DejaVu runs wider than most document fonts: first narrower letters (down to 80 %), then smaller ones.
+            squeeze = max(SQUEEZE, min(1.0, room / max(pdfmetrics.stringWidth(text, font_name, size), 0.01)))
+            while size > 4 and pdfmetrics.stringWidth(text, font_name, size) * squeeze > room:
                 size -= 0.25
-            if pdfmetrics.stringWidth(text, font_name, size) > room + 0.5:
+            wide = pdfmetrics.stringWidth(text, font_name, size) * squeeze
+            if wide > room + 0.5:
                 overflow.append(line["id"])
-            canvas.setFont(font_name, size)
-            canvas.setFillColorRGB(0, 0, 0)
+            canvas.setFillColorRGB(*line["colour"])
             baseline = height - (y1 - 0.21 * (y1 - y0))
-            if line["align"] == "center":
-                canvas.drawCentredString((x0 + x1) / 2, baseline, text)
-            elif line["align"] == "right":
-                canvas.drawRightString(x1, baseline, text)
-            else:
-                canvas.drawString(x0, baseline, text)
+            start = {"center": (x0 + x1 - wide) / 2, "right": x1 - wide}.get(line["align"], x0)
+            writing = canvas.beginText(start, baseline)
+            writing.setFont(font_name, size)
+            writing.setHorizScale(squeeze * 100)
+            writing.textOut(text)
+            canvas.drawText(writing)
             drawn += 1
         canvas.showPage()
     canvas.save()
