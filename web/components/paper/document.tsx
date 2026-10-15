@@ -18,10 +18,7 @@ export function Document({
 }) {
   return (
     <div
-      className={cn(
-        "mx-auto w-full max-w-[46rem] px-bro-pad pt-4 pb-4",
-        className
-      )}
+      className={cn("mx-auto w-full max-w-[46rem] px-bro-pad py-4", className)}
     >
       {children}
     </div>

@@ -48,7 +48,7 @@ export function TurnRow({
             {turn.tools.length > 0 ? ` · ${turn.tools.join(", ")}` : ""}
           </span>
         </CollapsibleTrigger>
-        <CollapsibleContent className="type-fine mt-1 mb-1 min-w-0 rounded-2xl bg-muted px-4 py-3 wrap-break-word">
+        <CollapsibleContent className="type-fine my-1 min-w-0 rounded-2xl bg-muted px-4 py-3 wrap-break-word">
           {!textsOn ? (
             <p className="text-muted-foreground">Тексты выключены.</p>
           ) : transcript.isPending ? (
