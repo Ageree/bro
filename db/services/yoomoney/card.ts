@@ -56,6 +56,16 @@ export async function yoomoneyPayLink(id: string) {
   return url.toString();
 }
 
+/**
+ * Where the person's bank sends them back after 3-D Secure: made before a
+ * payment is claimed, so a failure here leaves nothing claimed.
+ */
+export async function yoomoneyCardReturn(id: string) {
+  const url = new URL(`/api/yoomoney/pay/${id}/return`, applicationOrigin());
+  url.searchParams.set("t", await linkToken(id));
+  return url.toString();
+}
+
 /** The card payment this link names, when the link is its own. */
 export async function readYoomoneyPaymentByLink(id: string, token: string) {
   if (!z.uuid().safeParse(id).success) return undefined;
@@ -105,16 +115,17 @@ async function renewed(payment: CardPayment) {
  */
 export async function sendYoomoneyCardPayment(
   payment: CardPayment,
-  csc: string | undefined
+  {
+    cardId,
+    csc,
+    returnTo,
+  }: {
+    readonly cardId: string;
+    readonly csc: string | undefined;
+    readonly returnTo: string;
+  }
 ) {
-  const { cardId } = payment;
-  if (cardId === null) throw new Error("Not a card payment.");
   const scope = scopeOf(payment);
-  const returnTo = new URL(
-    `/api/yoomoney/pay/${payment.id}/return`,
-    applicationOrigin()
-  );
-  returnTo.searchParams.set("t", await linkToken(payment.id));
   const settle = (
     settlement: Omit<Parameters<typeof settleYoomoneyPayment>[1], "id" | "from">
   ) =>
@@ -129,7 +140,7 @@ export async function sendYoomoneyCardPayment(
         kind: "card",
         cardId,
         csc,
-        returnTo: returnTo.toString(),
+        returnTo,
       })
     );
     if (!paid.connected) {
@@ -200,6 +211,8 @@ export async function payYoomoneyByCard(
     payment = await renewed(payment);
     if (payment?.cardId == null) return { kind: "changed" as const };
   }
+  const { cardId } = payment;
+  const returnTo = await yoomoneyCardReturn(payment.id);
   const claimed = await claimYoomoneyPayment(scope, {
     id: payment.id,
     rootSessionId: payment.rootSessionId,
@@ -213,7 +226,11 @@ export async function payYoomoneyByCard(
   if (claimed.kind === "busy") return { kind: "busy" as const };
   if (claimed.kind === "expired") return { kind: "changed" as const };
   if (claimed.kind !== "claimed") return { kind: "unavailable" as const };
-  return sendYoomoneyCardPayment(claimed.payment, askCsc ? csc : undefined);
+  return sendYoomoneyCardPayment(claimed.payment, {
+    cardId,
+    csc: askCsc ? csc : undefined,
+    returnTo,
+  });
 }
 
 /**
@@ -233,14 +250,21 @@ export async function readBackYoomoneyCardPayment(id: string, token: string) {
     );
     if (!read.connected) return;
     const outcome = read.result;
+    // The bank asks again: its fresh form replaces the stale one.
     const settlement =
       outcome.kind === "paid"
         ? { state: "paid" as const, paymentId: outcome.paymentId }
-        : outcome.kind !== "refused"
-          ? undefined
-          : outcome.error === "contract_not_found"
-            ? await settlementFromHistory(scope, payment)
-            : { state: "refused" as const, error: outcome.error };
+        : outcome.kind === "bank"
+          ? {
+              state: "pending" as const,
+              bankUri: outcome.acsUri,
+              bankParams: outcome.acsParams,
+            }
+          : outcome.kind !== "refused"
+            ? undefined
+            : outcome.error === "contract_not_found"
+              ? await settlementFromHistory(scope, payment)
+              : { state: "refused" as const, error: outcome.error };
     if (settlement !== undefined)
       await settleYoomoneyPayment(scope, {
         id: payment.id,

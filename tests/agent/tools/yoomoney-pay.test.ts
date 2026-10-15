@@ -40,6 +40,7 @@ vi.mock("@db/services/yoomoney/payments", () => ({
 }));
 vi.mock("@db/services/yoomoney/card", () => ({
   sendYoomoneyCardPayment: services.sendCard,
+  yoomoneyCardReturn: async () => "https://bro.example/return",
   yoomoneyPayLink: services.link,
 }));
 vi.mock("@shared/yoomoney/showcase", async (original) => ({
@@ -299,12 +300,24 @@ describe("wallet payments", () => {
       payment: { ...quoted, state: "submitting" },
     });
     services.sendCard.mockResolvedValue({ kind: "settled" });
+    // A yes to a question that never named the card does not pay from it.
+    services.judge.mockResolvedValue({ output: { matches: true } });
+    expect(
+      await call(
+        answered("да", "Пополнить МегаФон 9261234567 на 100 ₽? Оплачиваю?"),
+        { action: "confirm", paymentId: prepared }
+      )
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.claim).not.toHaveBeenCalled();
     await call(answered("да", asked), {
       action: "confirm",
       paymentId: prepared,
     });
     expect(services.sendCard).toHaveBeenCalledTimes(1);
-    expect(services.sendCard.mock.calls[0]?.[1]).toBeUndefined();
+    expect(services.sendCard.mock.calls[0]?.[1]).toMatchObject({
+      cardId: "card-1",
+      csc: undefined,
+    });
     expect(services.process).not.toHaveBeenCalled();
   });
 
