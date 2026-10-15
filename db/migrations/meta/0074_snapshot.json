@@ -1,5 +1,5 @@
 {
-  "id": "be2e2124-1f55-4c22-909a-28d97783b071",
+  "id": "6b4dd615-8881-4104-b9c0-2b8b86ae7d96",
   "prevId": "9e7f6ef7-73e2-4fa0-8a3d-54c0b8384992",
   "version": "7",
   "dialect": "postgresql",
@@ -8893,6 +8893,18 @@
         "csc_required": {
           "name": "csc_required",
           "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bank_uri": {
+          "name": "bank_uri",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bank_params": {
+          "name": "bank_params",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

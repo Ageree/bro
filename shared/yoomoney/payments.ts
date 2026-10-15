@@ -126,7 +126,8 @@ const processSchema = z.object({
   payment_id: z.string().optional(),
   balance: z.coerce.number().optional(),
   next_retry: z.coerce.number().optional(),
-  acs_uri: z.url().optional(),
+  // The person's browser is sent there: a bank's https page, nothing else.
+  acs_uri: z.url({ protocol: /^https$/u }).optional(),
   acs_params: z.record(z.string(), z.string()).optional(),
 });
 

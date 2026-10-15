@@ -178,6 +178,9 @@ export async function settleYoomoneyPayment(
     readonly state: "pending" | "unknown" | "paid" | "refused";
     readonly paymentId?: string | null;
     readonly error?: string;
+    // A card payment waiting on the person's bank: the form for its page.
+    readonly bankUri?: string;
+    readonly bankParams?: Record<string, string>;
   }
 ) {
   const settled = input.state === "paid" || input.state === "refused";
@@ -187,6 +190,8 @@ export async function settleYoomoneyPayment(
       state: input.state,
       paymentId: input.paymentId ?? undefined,
       error: input.error,
+      bankUri: input.bankUri,
+      bankParams: input.bankParams,
       settledAt: settled ? new Date() : undefined,
     })
     .where(

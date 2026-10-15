@@ -296,6 +296,11 @@ describe("a payment from the wallet's linked card", () => {
       acsUri: "https://bank.example/3ds",
       acsParams: { MD: "md-1", PaReq: "pareq-1" },
     });
+    // Its page can send the person to the bank again.
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "pending",
+      bankUri: "https://bank.example/3ds",
+    });
     const sent = new URLSearchParams(
       requests.find(({ path }) => path === "/api/process-payment")?.body
     );

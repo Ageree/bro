@@ -122,9 +122,34 @@ export default async function Page(props: PageProps<"/pay/[id]">) {
           )}
           {(payment.state === "pending" || payment.state === "submitting") && (
             <div className="flex flex-col gap-3">
-              <p className="type-body">
-                Платёж ждёт ответа банка или ЮMoney. Не оплачивайте его ещё раз.
-              </p>
+              {payment.state === "pending" && payment.bankUri !== null ? (
+                <form
+                  action={payment.bankUri}
+                  className="flex flex-col gap-3"
+                  method="post"
+                >
+                  {Object.entries(payment.bankParams ?? {}).map(
+                    ([name, value]) => (
+                      <input
+                        key={name}
+                        name={name}
+                        type="hidden"
+                        value={value}
+                      />
+                    )
+                  )}
+                  <p className="type-body">
+                    Банк просит подтвердить платёж на своей странице.
+                  </p>
+                  <Button className="w-full" type="submit" variant="paper">
+                    Подтвердить в банке
+                  </Button>
+                </form>
+              ) : (
+                <p className="type-body">
+                  Платёж ждёт ответа ЮMoney. Не оплачивайте его ещё раз.
+                </p>
+              )}
               <a
                 className="type-body underline"
                 href={`/api/yoomoney/pay/${payment.id}/return?t=${encodeURIComponent(query.t)}`}
