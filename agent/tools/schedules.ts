@@ -25,6 +25,8 @@ import {
 import { siteHostname } from "@agent/lib/browser-use/host";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
+import { placeWatchOf } from "@agent/lib/subscriptions/watches";
+import { locationPilot } from "@db/services/location";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import {
   localRunLabel,
@@ -261,6 +263,7 @@ function watchSummary(
   watch: Awaited<ReturnType<typeof listLiveSubscriptions>>[number],
   timeZone: string
 ) {
+  if (watch.template === "place") return placeSummary(watch, timeZone);
   return {
     id: watch.id,
     kind: "price watch, checked by code every few hours",
@@ -275,6 +278,37 @@ function watchSummary(
     when: watch.condition,
   };
 }
+
+/**
+ * A reminder at a place as the schedule tools show it: its name and
+ * crossing, never its point or address (`place_reminder list` says those).
+ * Shared locations decide it, so it has no next check.
+ */
+function placeSummary(
+  watch: Awaited<ReturnType<typeof listLiveSubscriptions>>[number],
+  timeZone: string
+) {
+  const reminder = placeWatchOf(watch);
+  return {
+    id: watch.id,
+    kind: "place reminder: fires when a location the person shares shows them arriving or leaving",
+    nextCheckLocal: null,
+    place: reminder
+      ? { label: reminder.source.label, radiusM: reminder.source.radiusM }
+      : null,
+    status: watch.status === "cancelled" ? "deleted" : watch.status,
+    untilLocal: localRunLabel(watch.expiresAt, timeZone),
+    when: reminder
+      ? { on: reminder.condition.on, text: reminder.condition.text }
+      : null,
+  };
+}
+
+const placeChangeRefusal =
+  "That is a place reminder: it can only be paused, resumed or deleted (status). For other words, place or term, call place_reminder again.";
+/** For a workspace whose geolocation is switched off. */
+const heldPlaceRefusal =
+  "That is a place reminder, and geolocation is switched off here now: it waits unused, and can only be paused or deleted (status). Say so plainly.";
 
 const watchChangeRefusal =
   "That is a price watch: it can only be paused, resumed or deleted (status). For a new threshold or term, call watch-create again with the same link.";
@@ -292,11 +326,23 @@ async function updateWatch(
   status: "active" | "deleted" | "paused" | undefined
 ) {
   const watches = await listLiveSubscriptions(scope);
-  if (!watches.some((watch) => watch.id === id)) return undefined;
+  const found = watches.find((watch) => watch.id === id);
+  if (!found) return undefined;
   // Outside the pilot a watch is held by the tick, and stays so.
-  const inPilot = await subscriptionsPilot(scope);
+  const place = found.template === "place";
+  const inPilot = place
+    ? locationPilot(scope)
+    : await subscriptionsPilot(scope);
   if (status === undefined || (status === "active" && !inPilot)) {
-    throw new Error(inPilot ? watchChangeRefusal : heldWatchRefusal);
+    throw new Error(
+      place
+        ? inPilot
+          ? placeChangeRefusal
+          : heldPlaceRefusal
+        : inPilot
+          ? watchChangeRefusal
+          : heldWatchRefusal
+    );
   }
   const [watch, timeZone] = await Promise.all([
     setSubscriptionStatus(scope, id, status),

@@ -53,7 +53,7 @@ describe("request_vault_setup", () => {
 
     const text = JSON.stringify(result);
     expect(text).toContain("Секрет в чат не присылай");
-    expect(text).toContain("/vault?setup=vault&kind=payment");
+    expect(text).toContain("/workspace?setup=vault&kind=payment");
   });
 
   it("makes no link for a login: logins have no page", () => {

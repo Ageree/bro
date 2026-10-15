@@ -90,9 +90,9 @@ export function ChatConversation({
             className="self-center"
             disabled={history.isLoadingOlder}
             onClick={() => void history.loadOlder()}
-            size="sm"
+            size="lg"
             type="button"
-            variant="ghost"
+            variant="outline"
           >
             {history.isLoadingOlder ? (
               <LoaderCircleIcon className="animate-spin" />
@@ -183,7 +183,7 @@ function ErrorMessage({ message }: { readonly message: string }) {
   return (
     <Message className="max-w-full" from="assistant">
       <MessageContent>
-        <Alert variant="destructive">
+        <Alert className="rounded-2xl px-4 py-3" variant="destructive">
           <AlertCircleIcon />
           <AlertTitle>Запрос не прошёл</AlertTitle>
           <AlertDescription>{message}</AlertDescription>

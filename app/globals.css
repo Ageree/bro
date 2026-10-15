@@ -7,15 +7,3 @@
 @import "./styles/brand/bro.css";
 @source "../web/components/**/*.{ts,tsx}";
 @source "../node_modules/streamdown/dist/*.js";
-
-:root {
-  --primary: #007aff;
-  --primary-foreground: #fff;
-  --ring: #007aff;
-}
-
-.dark {
-  --primary: #0a84ff;
-  --primary-foreground: #fff;
-  --ring: #0a84ff;
-}

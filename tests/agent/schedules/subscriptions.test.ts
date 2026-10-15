@@ -12,6 +12,7 @@ import type {
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof claimDueSubscriptions>(),
   enabled: vi.fn<typeof schedulesEnabled>(() => true),
+  locationPilot: vi.fn<() => boolean>(() => true),
   page: vi.fn<typeof readPricePage>(),
   pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
   settle: vi.fn<typeof settleSubscriptionCheck>(),
@@ -24,6 +25,9 @@ vi.mock("@agent/lib/subscriptions/page", () => ({
 }));
 vi.mock("@agent/lib/subscriptions/pilot", () => ({
   subscriptionsPilot: services.pilot,
+}));
+vi.mock("@db/services/location", () => ({
+  locationPilot: services.locationPilot,
 }));
 vi.mock("@db/services/subscriptions", () => ({
   claimDueSubscriptions: services.claim,
@@ -95,6 +99,72 @@ async function runSchedule() {
   });
   await task;
 }
+
+/** A reminder at a place, as the tick claims it only at its term's end. */
+function placeReminder(
+  expiresAt: Date,
+  sawPosition: boolean
+): ClaimedSubscription {
+  return watch("p1", "https://unused.example", {
+    checkEverySeconds: 86_400,
+    condition: { on: "arrive", repeat: false, text: "забрать посылку" },
+    dedupeKey: "arrive:55.751,37.618",
+    expiresAt,
+    source: {
+      address: null,
+      label: "дом",
+      lat: 55.7512,
+      lon: 37.6184,
+      origin: "home",
+      radiusM: 150,
+    },
+    state: {
+      changedAt: null,
+      farAt: null,
+      inside: false,
+      last: null,
+      pending: null,
+      recentOut: null,
+      sawPosition,
+    },
+    template: "place",
+    wake: "urgent_at_night",
+  });
+}
+
+describe("reminders at places", () => {
+  it("wait for their term again when it is still ahead", async () => {
+    const expiresAt = new Date("2099-01-01T00:00:00.000Z");
+    services.claim.mockResolvedValue([placeReminder(expiresAt, true)]);
+    services.settle.mockResolvedValue("held");
+    await runSchedule();
+    expect(services.settle.mock.calls[0]?.[1]).toEqual({
+      kind: "held",
+      nextCheckAt: expiresAt,
+    });
+    expect(services.page).not.toHaveBeenCalled();
+  });
+
+  it("tell an unused end only after Bro saw where the person was", async () => {
+    const ended = new Date("2026-10-01T00:00:00.000Z");
+    services.claim.mockResolvedValue([placeReminder(ended, true)]);
+    services.settle.mockResolvedValue("expired");
+    await runSchedule();
+    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
+      kind: "expired",
+      outcome: { kind: "result", urgency: "normal" },
+    });
+    services.settle.mockClear();
+    services.claim.mockResolvedValue([placeReminder(ended, false)]);
+    await runSchedule();
+    expect(services.settle.mock.calls[0]?.[1]).toEqual({ kind: "lapsed" });
+    services.settle.mockClear();
+    services.locationPilot.mockReturnValueOnce(false);
+    services.claim.mockResolvedValue([placeReminder(ended, true)]);
+    await runSchedule();
+    expect(services.settle.mock.calls[0]?.[1]).toEqual({ kind: "lapsed" });
+  });
+});
 
 describe("the subscription checks", () => {
   it("reads each due page by code and writes what it found", async () => {

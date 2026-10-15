@@ -12,8 +12,10 @@ import {
   paperComposerSubmitClassName,
 } from "../../../_lib/composer";
 import { messageContent } from "../../../_lib/message-input";
+import { cn } from "@web/components/class-names";
 import { api } from "@web/trpc/client";
 import type { ChatAgent } from "../chat-agent";
+import { ShareLocationButton } from "./location";
 
 export function ChatInput({
   agent,
@@ -45,9 +47,14 @@ export function ChatInput({
   };
 
   return (
-    <div className="absolute bottom-0 left-1/2 z-20 mx-auto w-full max-w-3xl -translate-x-1/2 bg-linear-to-t from-background via-background to-transparent px-4 pt-4 pb-6 sm:px-6">
+    // The paper fades in under the composer across the whole width, so
+    // scrolling text never shows through beside it.
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-linear-to-t from-background via-background to-transparent px-4 pt-8 pb-6 sm:px-6">
       <PromptInput
-        className={paperComposerClassName}
+        className={cn(
+          paperComposerClassName,
+          "pointer-events-auto mx-auto max-w-3xl"
+        )}
         compact
         onSubmit={handleSubmit}
       >
@@ -59,7 +66,18 @@ export function ChatInput({
           />
         </PromptInputBody>
         <PromptInputFooter>
-          <PromptInputTools />
+          <PromptInputTools>
+            <ShareLocationButton
+              disabled={isRestoring || agent.status === "submitted"}
+              onShared={async (text) => {
+                if (sessionId !== undefined) saveChat({ sessionId });
+                await agent.send(
+                  text,
+                  isBusy ? { turnPolicy: "steer" } : undefined
+                );
+              }}
+            />
+          </PromptInputTools>
           <PromptInputSubmit
             className={paperComposerSubmitClassName}
             disabled={isRestoring}

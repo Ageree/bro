@@ -1,5 +1,5 @@
 {
-  "id": "f0b3a894-e57f-4188-8038-727089b76fa5",
+  "id": "65f8131f-718a-40c2-bbd3-e18b61f1ffd0",
   "prevId": "5b8f25fb-ed8f-4b17-a817-08848274fe51",
   "version": "7",
   "dialect": "postgresql",
@@ -3773,6 +3773,210 @@
       },
       "isRLSEnabled": false
     },
+    "public.location_points": {
+      "name": "location_points",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lat": {
+          "name": "lat",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lon": {
+          "name": "lon",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accuracy_m": {
+          "name": "accuracy_m",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "address": {
+          "name": "address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "live_key": {
+          "name": "live_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "location_points_workspace_time_idx": {
+          "name": "location_points_workspace_time_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "location_points_live_idx": {
+          "name": "location_points_live_idx",
+          "columns": [
+            {
+              "expression": "live_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"location_points\".\"live_key\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "location_points_expiry_idx": {
+          "name": "location_points_expiry_idx",
+          "columns": [
+            {
+              "expression": "recorded_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "location_points_external_uidx": {
+          "name": "location_points_external_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "location_points_workspace_id_workspaces_id_fk": {
+          "name": "location_points_workspace_id_workspaces_id_fk",
+          "tableFrom": "location_points",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "location_points_kind_check": {
+          "name": "location_points_kind_check",
+          "value": "\"location_points\".\"kind\" IN ('position', 'place')"
+        },
+        "location_points_source_check": {
+          "name": "location_points_source_check",
+          "value": "\"location_points\".\"source\" IN ('telegram', 'telegram_venue', 'telegram_live', 'imessage', 'web')"
+        },
+        "location_points_coordinates_check": {
+          "name": "location_points_coordinates_check",
+          "value": "\"location_points\".\"lat\" BETWEEN -90 AND 90 AND \"location_points\".\"lon\" BETWEEN -180 AND 180"
+        },
+        "location_points_accuracy_check": {
+          "name": "location_points_accuracy_check",
+          "value": "\"location_points\".\"accuracy_m\" IS NULL OR \"location_points\".\"accuracy_m\" >= 0"
+        },
+        "location_points_label_check": {
+          "name": "location_points_label_check",
+          "value": "\"location_points\".\"label\" IS NULL OR length(\"location_points\".\"label\") BETWEEN 1 AND 80"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.login_handoffs": {
       "name": "login_handoffs",
       "schema": "",
@@ -7132,7 +7336,7 @@
       "checkConstraints": {
         "subscriptions_template_check": {
           "name": "subscriptions_template_check",
-          "value": "\"subscriptions\".\"template\" IN ('price', 'flight')"
+          "value": "\"subscriptions\".\"template\" IN ('price', 'flight', 'place')"
         },
         "subscriptions_action_check": {
           "name": "subscriptions_action_check",
@@ -8481,294 +8685,6 @@
         "yandex_purchases_attempt_check": {
           "name": "yandex_purchases_attempt_check",
           "value": "(\"yandex_purchases\".\"state\" = 'quoted' AND \"yandex_purchases\".\"call_id\" IS NULL AND \"yandex_purchases\".\"submitted_at\" IS NULL) OR (\"yandex_purchases\".\"state\" <> 'quoted' AND \"yandex_purchases\".\"call_id\" IS NOT NULL AND \"yandex_purchases\".\"submitted_at\" IS NOT NULL)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.yoomoney_authorizations": {
-      "name": "yoomoney_authorizations",
-      "schema": "",
-      "columns": {
-        "state_hash": {
-          "name": "state_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "redirect_uri": {
-          "name": "redirect_uri",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "yoomoney_authorizations_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk": {
-          "name": "yoomoney_authorizations_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk",
-          "tableFrom": "yoomoney_authorizations",
-          "tableTo": "workspace_memberships",
-          "columnsFrom": ["workspace_id", "user_id"],
-          "columnsTo": ["workspace_id", "user_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.yoomoney_connections": {
-      "name": "yoomoney_connections",
-      "schema": "",
-      "columns": {
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "account": {
-          "name": "account",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "encrypted_token": {
-          "name": "encrypted_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "yoomoney_connections_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk": {
-          "name": "yoomoney_connections_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk",
-          "tableFrom": "yoomoney_connections",
-          "tableTo": "workspace_memberships",
-          "columnsFrom": ["workspace_id", "user_id"],
-          "columnsTo": ["workspace_id", "user_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.yoomoney_payments": {
-      "name": "yoomoney_payments",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "root_session_id": {
-          "name": "root_session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_params": {
-          "name": "request_params",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "shown": {
-          "name": "shown",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "amount_minor": {
-          "name": "amount_minor",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "test": {
-          "name": "test",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'quoted'"
-        },
-        "confirmation_question": {
-          "name": "confirmation_question",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payment_id": {
-          "name": "payment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "call_id": {
-          "name": "call_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "submitted_at": {
-          "name": "submitted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "settled_at": {
-          "name": "settled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "yoomoney_payments_in_flight_uidx": {
-          "name": "yoomoney_payments_in_flight_uidx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"yoomoney_payments\".\"state\" IN ('submitting', 'pending', 'unknown')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "yoomoney_payments_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk": {
-          "name": "yoomoney_payments_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk",
-          "tableFrom": "yoomoney_payments",
-          "tableTo": "workspace_memberships",
-          "columnsFrom": ["workspace_id", "user_id"],
-          "columnsTo": ["workspace_id", "user_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "yoomoney_payments_kind_check": {
-          "name": "yoomoney_payments_kind_check",
-          "value": "\"yoomoney_payments\".\"kind\" IN ('transfer', 'service')"
-        },
-        "yoomoney_payments_state_check": {
-          "name": "yoomoney_payments_state_check",
-          "value": "\"yoomoney_payments\".\"state\" IN ('quoted', 'submitting', 'pending', 'unknown', 'paid', 'refused')"
-        },
-        "yoomoney_payments_amount_check": {
-          "name": "yoomoney_payments_amount_check",
-          "value": "\"yoomoney_payments\".\"amount_minor\" BETWEEN 0 AND 9007199254740991"
         }
       },
       "isRLSEnabled": false

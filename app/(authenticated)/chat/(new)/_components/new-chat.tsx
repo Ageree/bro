@@ -17,6 +17,7 @@ import {
   paperComposerSubmitClassName,
 } from "../../_lib/composer";
 import { chatTitle, messageContent } from "../../_lib/message-input";
+import { cn } from "@web/components/class-names";
 import { api } from "@web/trpc/client";
 
 export function NewChat() {
@@ -62,7 +63,10 @@ export function NewChat() {
 
   return (
     <PromptInput
-      className={paperComposerClassName}
+      className={cn(
+        paperComposerClassName,
+        "[&_[data-slot=input-group]]:shadow-none"
+      )}
       compact
       onSubmit={handleSubmit}
     >

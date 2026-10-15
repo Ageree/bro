@@ -1,73 +1,15 @@
-import type { Metadata } from "next";
-import Link from "next/link";
-import {
-  Actions,
-  Document,
-  DocumentTitle,
-  Rows,
-  Section,
-} from "@web/components/paper/document";
-import { VaultAddresses } from "./_components/addresses";
-import { VaultCards } from "./_components/cards";
-import { VaultContacts } from "./_components/contacts";
-import { VaultOtherItems } from "./_components/other";
-import { readVaultItems } from "@db/services/vault";
-import { requireRequestScope } from "@web/auth/request-scope";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Сейф" };
-
-export default async function Page() {
-  const scope = await requireRequestScope();
-  const items = await readVaultItems(scope);
-  const itemsByKind = Object.groupBy(items, (item) => item.kind);
-  const otherItems = items.filter(
-    (item) =>
-      item.kind === "identity" || item.kind === "phone" || item.kind === "token"
-  );
-  return (
-    <Document>
-      <DocumentTitle>Сейф</DocumentTitle>
-      <p className="type-fine text-muted-foreground">
-        Здесь карты, адреса и контакты, которые Bro использует в поручениях.
-        Входы на сайты сюда не добавляются: войди на сайте сам по ссылке от Bro
-        или скажи ему логин в чате.
-      </p>
-
-      <Section headingId="saved-heading" title="Сохранённые">
-        <Rows>
-          <VaultCards items={itemsByKind.payment ?? []} />
-          <VaultAddresses items={itemsByKind.address ?? []} />
-          <VaultContacts items={itemsByKind.contact ?? []} />
-        </Rows>
-        <VaultOtherItems items={otherItems} />
-      </Section>
-
-      <Section headingId="add-heading" title="Добавить или изменить">
-        <p className="type-fine text-muted-foreground">
-          Открой нужный список выше, чтобы найти или удалить запись. Новую —
-          добавь здесь.
-        </p>
-        <Actions>
-          <Link
-            className="type-act bro-link"
-            href="/vault?setup=vault&kind=payment"
-          >
-            Добавить карту
-          </Link>
-          <Link
-            className="type-act bro-link"
-            href="/vault?setup=vault&kind=address"
-          >
-            Добавить адрес
-          </Link>
-          <Link
-            className="type-act bro-link"
-            href="/vault?setup=vault&kind=contact"
-          >
-            Добавить контакт
-          </Link>
-        </Actions>
-      </Section>
-    </Document>
-  );
+/**
+ * The vault lives in the cabinet now. Links the agent and the chat history
+ * already hold keep working, with their query: `?setup=vault&kind=payment`
+ * still opens the right sheet.
+ */
+export default async function Page({ searchParams }: PageProps<"/vault">) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(await searchParams)) {
+    for (const item of [value ?? []].flat()) query.append(key, item);
+  }
+  const search = query.toString();
+  redirect(search ? `/workspace?${search}` : "/workspace");
 }

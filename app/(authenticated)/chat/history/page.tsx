@@ -8,10 +8,8 @@ import {
   Actions,
   Document,
   DocumentTitle,
-  Row,
-  Rows,
-  Section,
 } from "@web/components/paper/document";
+import { Button } from "@web/components/ui/button";
 import { listChats } from "@db/services/chats";
 import { requireRequestScope } from "@web/auth/request-scope";
 
@@ -20,9 +18,9 @@ export const metadata: Metadata = { title: "Все чаты" };
 export const dynamic = "force-dynamic";
 
 /**
- * Paper: the chats are a list of rows under a hairline, each one a line of
- * text with its date set small and grey on the side. No cards, no badges —
- * the thread Bro is actually talking in says so in words.
+ * Paper: each chat is a plate row — its title on the left, the date on the
+ * right, the thread Bro is actually talking in named in words. The empty
+ * state is one plate that points at the new chat.
  */
 export default async function AllChatsPage() {
   const scope = await requireRequestScope();
@@ -38,55 +36,60 @@ export default async function AllChatsPage() {
       </p>
       {chats.length > 0 ? (
         <p className="type-fine text-muted-foreground">
-          Расход — {formatChatUsage(totalUsage)}
+          {chatCount(chats.length)} · Расход — {formatChatUsage(totalUsage)}
         </p>
       ) : null}
       <Actions>
-        <Link className="type-act-lead bro-link" href="/chat">
+        <Button
+          nativeButton={false}
+          render={<Link href="/chat" />}
+          variant="paper"
+        >
           Новый чат
-        </Link>
+        </Button>
       </Actions>
 
-      <Section
-        headingId="chats-heading"
-        state={chats.length > 0 ? chatCount(chats.length) : undefined}
-        title="История"
-      >
-        {chats.length > 0 ? (
-          <Rows>
-            {chats.map((chat) => {
-              const channel = mainThreads.get(chat.sessionId);
-              return (
-                <Row
-                  key={chat.sessionId}
-                  side={
-                    <time dateTime={chat.updatedAt}>
-                      {formatChatDate(chat.updatedAt)}
-                    </time>
-                  }
+      {chats.length > 0 ? (
+        <ul className="mt-6 flex list-none flex-col gap-3">
+          {chats.map((chat) => {
+            const channel = mainThreads.get(chat.sessionId);
+            return (
+              <li key={chat.sessionId}>
+                <Link
+                  className="flex min-h-11 items-baseline justify-between gap-4 rounded-3xl border-2 border-foreground bg-card px-5 py-3.5 transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+                  href={`/chat/${encodeURIComponent(chat.sessionId)}`}
                 >
-                  <p className="truncate">
-                    <Link
-                      className="bro-link"
-                      href={`/chat/${encodeURIComponent(chat.sessionId)}`}
-                    >
+                  <span className="min-w-0 flex-1">
+                    <span className="type-row block truncate">
                       {channel ?? chat.title}
-                    </Link>
-                  </p>
-                  <p className="type-status text-muted-foreground">
-                    {channel ? "Главная ветка · " : ""}
-                    {formatChatUsage(chat.usage)}
-                  </p>
-                </Row>
-              );
-            })}
-          </Rows>
-        ) : (
-          <p className="type-fine mt-[0.6rem] text-muted-foreground">
-            Пока ни одного чата — начни новый.
+                    </span>
+                    <span className="type-status block text-muted-foreground">
+                      {channel ? "Главная ветка · " : ""}
+                      {formatChatUsage(chat.usage)}
+                    </span>
+                  </span>
+                  <time
+                    className="type-status shrink-0 text-muted-foreground"
+                    dateTime={chat.updatedAt}
+                  >
+                    {formatChatDate(chat.updatedAt)}
+                  </time>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <section
+          aria-label="Пока пусто"
+          className="mt-6 bro-plate p-6 text-center sm:p-8"
+        >
+          <p className="type-sec-title">Пока ни одного чата</p>
+          <p className="type-fine mt-[0.55rem] text-muted-foreground">
+            Начни новый — он появится здесь.
           </p>
-        )}
-      </Section>
+        </section>
+      )}
     </Document>
   );
 }

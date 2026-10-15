@@ -37,7 +37,7 @@ export function ActivityCard({
 }) {
   return (
     <Card
-      className="max-h-full w-full gap-0 overflow-hidden rounded-none ring-border"
+      className="max-h-full w-full gap-0 overflow-hidden shadow-[0_8px_30px_rgb(20_21_16/8%)]"
       size="sm"
     >
       <CardContent className="min-h-0 overflow-y-auto">
@@ -48,7 +48,7 @@ export function ActivityCard({
               className="type-supporting-body flex-1"
               htmlFor="show-full-trace"
             >
-              <span className="font-[300]">Полная трассировка</span>
+              Полная трассировка
             </label>
             <Switch
               checked={traceView === "trace"}
@@ -59,9 +59,7 @@ export function ActivityCard({
             />
           </Field>
           <div className="flex items-center gap-4">
-            <span className="type-supporting-body">
-              <span className="font-[300]">Расход</span>
-            </span>
+            <span className="type-supporting-body">Расход</span>
             <span className="ml-auto type-caption text-muted-foreground tabular-nums">
               {formatChatUsage(usage)}
             </span>
@@ -82,7 +80,7 @@ export function ActivityCard({
                   {doneCount} готово
                 </span>
               </div>
-              <div>
+              <div className="space-y-2">
                 {sessions.map((session) => {
                   const status =
                     statuses.get(session.childSessionId) ?? "starting";
@@ -93,7 +91,7 @@ export function ActivityCard({
                   return (
                     <Button
                       aria-label={`Задача ${agentLabel(session.name)}, ${statusLabel(status)}`}
-                      className="rounded-none p-3"
+                      className="min-h-11 rounded-2xl p-3"
                       data-task-session={session.childSessionId}
                       key={session.childSessionId}
                       onClick={() => {

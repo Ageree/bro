@@ -55,8 +55,10 @@ export const MessageContent = ({
   <div
     className={cn(
       "flex w-fit min-w-0 max-w-full flex-col gap-3 overflow-hidden type-supporting-body",
-      "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
-      "group-[.is-assistant]:text-foreground",
+      // The person's message is an ink pill; Bro's is a white plate.
+      "group-[.is-user]:ml-auto group-[.is-user]:rounded-3xl group-[.is-user]:bg-foreground group-[.is-user]:px-5 group-[.is-user]:py-3 group-[.is-user]:text-background",
+      "group-[.is-user]:[&_a]:text-inherit group-[.is-user]:[&_code]:text-foreground",
+      "group-[.is-assistant]:rounded-3xl group-[.is-assistant]:border-2 group-[.is-assistant]:border-foreground group-[.is-assistant]:bg-card group-[.is-assistant]:px-5 group-[.is-assistant]:py-3 group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}
@@ -243,7 +245,7 @@ export const MessageBranchSelector = ({
   return (
     <ButtonGroup
       className={cn(
-        "[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md",
+        "[&>*:not(:first-child)]:rounded-l-full [&>*:not(:last-child)]:rounded-r-full",
         className
       )}
       orientation="horizontal"
@@ -349,7 +351,7 @@ export function ArtifactMessageImage({
   if (failedSource === source) {
     return (
       <a
-        className="my-3 inline-flex max-w-full items-center gap-2 rounded-lg border bg-muted px-3 py-2 type-label"
+        className="my-3 inline-flex max-w-full items-center gap-2 rounded-2xl border border-border bg-card px-3 py-2 type-label"
         href={parsedSource.data}
         rel="noreferrer"
         target="_blank"
@@ -367,7 +369,7 @@ export function ArtifactMessageImage({
         {...props}
         alt={alt ?? "Browser image"}
         className={cn(
-          "my-3 max-h-[32rem] w-auto max-w-full rounded-lg border bg-muted object-contain",
+          "my-3 max-h-[32rem] w-auto max-w-full rounded-2xl border border-border bg-card object-contain",
           className
         )}
         decoding="async"

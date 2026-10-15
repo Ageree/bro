@@ -214,12 +214,12 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
 
 /**
  * The markers a channel puts for what is not text
- * (`agent/lib/inbound-media/turn-content.ts`): a file's label or the word
- * «фото» is not the person's. A voice message's transcript after
- * `[голосовое]` is.
+ * (`agent/lib/inbound-media/turn-content.ts`): a file's label, the word
+ * «фото» or a shared location's marker (`agent/lib/location/markers.ts`) is
+ * not the person's. A voice message's transcript after `[голосовое]` is.
  */
-const mediaMarkers =
-  /\[(?:фото|документ|голосовое не распозналось|файл:[^\]]*)\]|\[голосовое\]/giu;
+export const mediaMarkers =
+  /\[(?:фото|документ|голосовое не распозналось|геопозиция|место|файл:[^\]]*)\]|\[голосовое\]/giu;
 
 /**
  * A file's marker of any type but a picture or a PDF, which the model reads
@@ -298,7 +298,7 @@ function turnMessages(input: readonly ModelMessage[]) {
  * the report a browser run brought. eve's context and the memory slots'
  * records are not the turn's words.
  */
-function turnWords(input: readonly ModelMessage[]) {
+export function turnWords(input: readonly ModelMessage[]) {
   return turnMessages(input).map(messageText).join("\n");
 }
 
@@ -331,9 +331,10 @@ function sentDocument(input: readonly ModelMessage[]) {
 /**
  * The marker a channel adds to a workspace's first message ever
  * (`agent/lib/first-contact.ts`). It comes as eve's turn context, which no
- * person or page writes.
+ * person or page writes. In a whole conversation: whether its first contact
+ * is in it.
  */
-function firstContact(input: readonly ModelMessage[]) {
+export function firstContactMarked(input: readonly ModelMessage[]) {
   return input.some(
     (message) =>
       message.role === "user" &&
@@ -528,7 +529,7 @@ export function skillsForTurn(turn: {
   if (hosts.some(publicServiceHost)) wanted.add("gov-services");
   if (hosts.some(meterReadingsHost)) wanted.add("meter-readings");
   if (appsNamedByPerson(turn.input).length > 0) wanted.add("apps");
-  if (firstContact(turn.input)) wanted.add("first-contact");
+  if (firstContactMarked(turn.input)) wanted.add("first-contact");
   if (turn.browserReport) wanted.add("browser");
   for (const name of ["meter-readings", "gov-services"] as const) {
     if (wanted.has(name)) {

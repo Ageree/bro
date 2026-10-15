@@ -32,7 +32,7 @@ describe("offer page", () => {
     expect(html).toContain('href="mailto:solsav1703@gmail.com"');
   });
 
-  it("wears the masthead and stays out of search indexes", () => {
+  it("wears the capsule and footer and stays out of search indexes", () => {
     expect(html).toContain('href="/"');
     expect(html).toContain(">bro.<");
     expect(metadata.title).toEqual({ absolute: "Публичная оферта — bro" });

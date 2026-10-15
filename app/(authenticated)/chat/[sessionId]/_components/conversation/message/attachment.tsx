@@ -19,11 +19,11 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
         // oxlint-disable-next-line nextjs/no-img-element -- runtime browser artifact URL
         <img
           alt={label}
-          className="size-12 shrink-0 rounded-sm object-cover"
+          className="size-12 shrink-0 rounded-xl object-cover"
           src={part.url}
         />
       ) : (
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
           <Icon className="size-4" />
         </span>
       )}
@@ -41,7 +41,7 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
 
   return part.url ? (
     <Button
-      className="max-w-sm"
+      className="max-w-sm rounded-2xl"
       nativeButton={false}
       render={
         <a
@@ -56,7 +56,7 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
       {content}
     </Button>
   ) : (
-    <Card className="max-w-sm" size="sm">
+    <Card className="max-w-sm rounded-2xl border border-border" size="sm">
       <CardContent className="flex items-center gap-3">{content}</CardContent>
     </Card>
   );

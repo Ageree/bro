@@ -17,6 +17,16 @@ const services = vi.hoisted(() => ({
   modelSelection: vi.fn<typeof ModelSelection.modelSelection>(),
 }));
 
+// The tool router's decision model, which only its pilot asks: mail.
+vi.mock("@agent/lib/tool-router/system-one", () => ({
+  askRouterQuestions: async () => ({
+    answers: new Map([["mail", 0.93]]),
+    model: "jev-1.14.0",
+    ms: 90,
+    provider: "typesafe",
+  }),
+}));
+
 vi.mock("@db/services/browser-runs", () => ({
   browserRunReportDelivered: async () => false,
 }));
@@ -50,21 +60,31 @@ type Kind = keyof typeof catalogKinds;
  * every resolver gives for the step's messages, through the model
  * selection `agent/agent.ts` makes of the same messages.
  */
-async function toolBlocks(
+async function stepTools(
   kind: Kind,
   steps: readonly (readonly ModelMessage[])[],
   pilot: boolean,
-  skills = false
+  skills = false,
+  router = false
 ) {
   stubDeployment(
-    skills ? { ...fullDeployment, SKILLS_WORKSPACES: "*" } : fullDeployment
+    router
+      ? {
+          ...fullDeployment,
+          SKILLS_WORKSPACES: "*",
+          TOOL_ROUTER_MODE: "on",
+          TOOL_ROUTER_WORKSPACES: "*",
+        }
+      : skills
+        ? { ...fullDeployment, SKILLS_WORKSPACES: "*" }
+        : fullDeployment
   );
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", pilot ? "*" : "");
   const [agent, { stepToolsTransform }] = await Promise.all([
     import("@agent/agent").then((module) => module.default),
     import("@agent/lib/model/direct"),
   ]);
-  const blocks: string[] = [];
+  const blocks: ReturnType<typeof stepToolsTransform>[] = [];
   for (const [stepIndex, messages] of steps.entries()) {
     const event = {
       data: { sequence: 1, stepIndex, turnId: "turn-1" },
@@ -80,20 +100,30 @@ async function toolBlocks(
     const options = services.modelSelection.mock.lastCall?.[1];
     if (!options) throw new Error("No model selection was made.");
     blocks.push(
-      toolsDigest(
-        stepToolsTransform(catalog, {
-          forcedReply: options.toolChoice === "required",
-          groups: options.toolGroups,
-          offered: options.offeredTools,
-          stableContext: options.stableContext,
-          withheld: options.withheldTools ?? [],
-        })
-      )
+      stepToolsTransform(catalog, {
+        forcedReply: options.toolChoice === "required",
+        groups: options.toolGroups,
+        offered: options.offeredTools,
+        routerGroups: options.routerGroups,
+        stableContext: options.stableContext,
+        withheld: options.withheldTools ?? [],
+      })
     );
   }
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
   vi.stubEnv("SKILLS_WORKSPACES", "");
+  vi.stubEnv("TOOL_ROUTER_MODE", "");
+  vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
   return blocks;
+}
+
+async function toolBlocks(
+  kind: Kind,
+  steps: readonly (readonly ModelMessage[])[],
+  pilot: boolean,
+  skills = false
+) {
+  return (await stepTools(kind, steps, pilot, skills)).map(toolsDigest);
 }
 
 function person(text: string) {
@@ -325,6 +355,75 @@ describe("the tool block of a turn in the pilot of the cache-friendly step", () 
         true
       );
       expect(new Set(blocks).size).toBe(1);
+    }
+  );
+
+  it(
+    "keeps the router's core and groups through a person's turn, and grows only after open_tools",
+    { timeout: 60_000 },
+    async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const mail = [person("Ответь Лене на письмо про отпуск")];
+      const read = [
+        ...mail,
+        call("gmail-search", "call-1", { query: "отпуск" }),
+        result("gmail-search", "call-1", "[]"),
+      ];
+      const replied = [
+        ...read,
+        call("send_message", "call-2", { kind: "message", text: "Нашёл." }),
+        result("send_message", "call-2", "submitted"),
+      ];
+      const opened = [
+        ...replied,
+        call("open_tools", "call-3", { groups: "media" }),
+        {
+          content: [
+            {
+              output: { type: "json" as const, value: { opened: ["media"] } },
+              toolCallId: "call-3",
+              toolName: "open_tools",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ];
+      const later = [
+        ...opened,
+        call("web_search", "call-4", { query: "кот" }),
+        result("web_search", "call-4", "кот"),
+      ];
+      const blocks = await stepTools(
+        "web",
+        [mail, read, replied, opened, later],
+        true,
+        true,
+        true
+      );
+      const [first, afterRead, afterReply, afterOpen, afterMore] =
+        blocks.map(toolsDigest);
+      expect([afterRead, afterReply]).toEqual([first, first]);
+      expect(afterOpen).not.toBe(first);
+      expect(afterMore).toBe(afterOpen);
+
+      const names = (blocks[0] ?? []).map((tool) => tool.name);
+      // The core stays whatever the router chose; the groups it did not
+      // choose are left out.
+      for (const name of ["privacy", "browser_task", "open_tools"]) {
+        expect([name, names.includes(name)]).toEqual([name, true]);
+      }
+      expect(names).toContain("gmail-send");
+      expect(names).not.toContain("slack-search");
+      expect(names).not.toContain("generate_image");
+      // The core first, then the groups, then the volatile tools.
+      expect(names.indexOf("gmail-send")).toBeGreaterThan(
+        names.indexOf("privacy")
+      );
+      expect(names.at(-1)).toBe("ask_question");
+      expect((blocks[3] ?? []).map((tool) => tool.name)).toContain(
+        "generate_image"
+      );
     }
   );
 });

@@ -123,7 +123,7 @@ export function InputRequestActions({
     <div className="space-y-2">
       <p className="type-body whitespace-pre-line">{inputRequest.prompt}</p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {inputRequest.options?.map((option) => (
+        {inputRequest.options?.map((option, index) => (
           <Button
             disabled={!canRespond}
             key={option.id}
@@ -135,9 +135,11 @@ export function InputRequestActions({
                 },
               ]);
             }}
-            size="act-sm"
+            size="lg"
             type="button"
-            variant={option.style === "danger" ? "quiet" : "act"}
+            variant={
+              index === 0 && option.style !== "danger" ? "paper" : "outline"
+            }
           >
             {option.label}
           </Button>

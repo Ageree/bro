@@ -143,13 +143,13 @@ export function SubagentPanel({
 
       <Button
         aria-label="Open activity panel"
-        className="absolute top-2 right-3 z-30 md:hidden"
+        className="absolute top-3 right-3 z-30 md:hidden"
         onClick={() => {
           setMobileOpen(true);
         }}
-        size="icon-sm"
+        size="icon-lg"
         type="button"
-        variant="ghost"
+        variant="outline"
       >
         <ListTreeIcon />
       </Button>
@@ -157,25 +157,27 @@ export function SubagentPanel({
       <aside
         aria-hidden={!selected}
         className={cn(
-          "relative hidden h-full shrink-0 overflow-hidden border-l bg-background transition-[width] duration-200 ease-linear md:block",
-          selected ? "w-1/2 min-w-80" : "w-0 border-l-0"
+          "relative hidden h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-linear md:block",
+          selected ? "w-1/2 min-w-80" : "w-0"
         )}
       >
         <div
           className={cn(
-            "absolute inset-y-0 right-0 flex w-full min-w-80 flex-col transition-[opacity,transform] duration-200",
+            "absolute inset-y-0 right-0 flex w-full min-w-80 flex-col p-3 pl-0 transition-[opacity,transform] duration-200",
             selected
               ? "translate-x-0 opacity-100"
               : "pointer-events-none translate-x-6 opacity-0"
           )}
         >
           {selected ? (
-            <TracePreview
-              closeButtonRef={traceCloseButton}
-              key={selected.childSessionId}
-              onClose={closeTask}
-              session={selected}
-            />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bro-plate">
+              <TracePreview
+                closeButtonRef={traceCloseButton}
+                key={selected.childSessionId}
+                onClose={closeTask}
+                session={selected}
+              />
+            </div>
           ) : null}
         </div>
       </aside>

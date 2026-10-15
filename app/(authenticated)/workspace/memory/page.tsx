@@ -94,7 +94,7 @@ export default async function Page() {
                 <p className="type-fine text-muted-foreground">{group.note}</p>
               ) : null}
               {group.records.length > 0 ? (
-                <ul className="mt-[0.6rem] list-none">
+                <Rows>
                   {group.records.map((record) => (
                     <MemoryRecordRow
                       key={record.index}
@@ -103,7 +103,7 @@ export default async function Page() {
                       timeZone={timeZone}
                     />
                   ))}
-                </ul>
+                </Rows>
               ) : (
                 <p className="type-fine text-muted-foreground">{group.empty}</p>
               )}
