@@ -12,6 +12,7 @@ import meterReadings from "@agent/instructions/content/meter-readings.md?raw";
 import publicServices from "@agent/instructions/content/public-services.md?raw";
 import recommendations from "@agent/instructions/content/recommendations.md?raw";
 import roleInteractive from "@agent/instructions/content/role/interactive.md?raw";
+import signText from "@agent/instructions/content/sign.md?raw";
 import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
 import taskFilesText from "@agent/instructions/content/task-files.md?raw";
 import { withBackgroundActions } from "@agent/lib/schedules/delegation/text";
@@ -60,7 +61,10 @@ import { autonomyEdits } from "./autonomy";
  * the core: its pilot reads it in the person's turns but not in a browser
  * report's, and a block must read the same in every turn of a session.
  * The rules for the person's files (`task-files.md`) are one skill instead:
- * the setup has them in every turn of a session or in none.
+ * the setup has them in every turn of a session or in none. So are the rules
+ * for signing documents (`sign.md`), read only with the files' and with no
+ * line in the core's index: the core has no room, and the consent rule
+ * itself stands in the core (`signing.ts`).
  *
  * Only the files below take markers: they are the interactive turn's.
  * The workers' roles (`role/scheduled-worker.md` and the rest) and
@@ -79,6 +83,7 @@ export const skillNames = [
   "money",
   "schedules",
   "files",
+  "sign",
   "images",
   "games",
   "about-bro",
@@ -98,7 +103,7 @@ export const skillUses: Partial<Record<SkillName, string>> = {
   apps: "Notion, Slack, Google Таблицы и другие приложения",
   browser:
     "купить, заказать, забронировать, записать на сайте; билеты, отели, такси, доставка; отчёт запуска",
-  files: "присланные таблицы и документы, презентации, расчёты, графики",
+  files: "присланные файлы, сканы, бланки, таблицы, презентации, графики",
   games: "викторины, квизы, игры",
   "gov-services": "Госуслуги, штрафы, налоги, документы, врачи",
   google: "почта, календарь, Диск, контакты, доступ Google",
@@ -141,6 +146,7 @@ const sourceTexts = [
   ["hard-constraints", hardConstraints],
   ["task-agent", taskAgentText],
   ["task-files", taskFilesText],
+  ["sign", signText],
 ] as const;
 
 export type InstructionSource = (typeof sourceTexts)[number][0];
@@ -173,6 +179,11 @@ export interface SkillSetup {
    * (`withBackgroundActions`); absent is no, as before the pilot.
    */
   readonly backgroundActions?: boolean;
+  /**
+   * The person's signature may go on documents (`signOfCaller`); only with
+   * `taskFiles`, and absent is no, as for `taskFiles`.
+   */
+  readonly sign?: boolean;
 }
 
 /** Who reads a run of lines: every layout, one layout, or one skill. */
@@ -359,6 +370,9 @@ export function interactiveSources(
     "creative/games",
     "hard-constraints",
     ...(setup.taskFiles === true ? (["task-files"] as const) : []),
+    ...(setup.taskFiles === true && setup.sign === true
+      ? (["sign"] as const)
+      : []),
   ];
 }
 
@@ -400,17 +414,33 @@ export function availableSkills(setup: SkillSetup) {
   return skillNames.filter((name) => skillBody(name, setup) !== undefined);
 }
 
-/** Every setup a deployment can have, for what must hold in each. */
-export const skillSetups: readonly SkillSetup[] = [false, true].flatMap(
-  (browser) =>
-    [false, true].flatMap((drawing) =>
-      [false, true].flatMap((taskFiles) =>
-        [false, true].map((backgroundActions) => ({
-          backgroundActions,
-          browser,
-          images: drawing,
-          taskFiles,
-        }))
-      )
+/** The setups before signing: every browser, drawing, files and pilot. */
+const unsignedSetups: readonly SkillSetup[] = [false, true].flatMap((browser) =>
+  [false, true].flatMap((drawing) =>
+    [false, true].flatMap((taskFiles) =>
+      [false, true].map((backgroundActions) => ({
+        backgroundActions,
+        browser,
+        images: drawing,
+        taskFiles,
+      }))
     )
+  )
 );
+
+/**
+ * Every setup a deployment can have, for what must hold in each: signing
+ * comes only with the files.
+ */
+export const skillSetups: readonly SkillSetup[] = [
+  ...unsignedSetups,
+  ...unsignedSetups
+    .filter(({ taskFiles }) => taskFiles === true)
+    .map((unsigned) => ({
+      backgroundActions: unsigned.backgroundActions,
+      browser: unsigned.browser,
+      images: unsigned.images,
+      sign: true,
+      taskFiles: unsigned.taskFiles,
+    })),
+];

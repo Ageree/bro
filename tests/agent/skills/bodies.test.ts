@@ -438,7 +438,9 @@ describe("the skills of the marked instructions", () => {
       expect(files).toContain(phrase);
     }
     // The setups with the files differ from the others by this body alone.
-    for (const each of skillSetups.filter(({ taskFiles }) => taskFiles)) {
+    for (const each of skillSetups.filter(
+      ({ sign, taskFiles }) => taskFiles === true && sign !== true
+    )) {
       const without = { ...each, taskFiles: false };
       expect(availableSkills(each)).toContain("files");
       expect(availableSkills(without)).not.toContain("files");
@@ -451,6 +453,39 @@ describe("the skills of the marked instructions", () => {
         expect(skillBody(name, each)).toBe(skillBody(name, without));
       }
     }
+  });
+
+  it("have the rules for signing only with the files and the flag, and point the files to them", () => {
+    expect(skillSetups.filter(({ sign }) => sign === true)).not.toEqual([]);
+    for (const each of skillSetups.filter(({ sign }) => sign === true)) {
+      const without = { ...each, sign: false };
+      expect(each.taskFiles).toBe(true);
+      expect(availableSkills(each)).toEqual(
+        skillNames.filter(
+          (name) => name === "sign" || availableSkills(without).includes(name)
+        )
+      );
+      const sign = skillBody("sign", each) ?? "";
+      // The consent rule, said once.
+      expect(sign).toContain(
+        "Подпись ставишь только после простого «да» человека на этот вопрос"
+      );
+      // The files body gains the pointer, and nothing else changes.
+      const files = skillBody("files", each) ?? "";
+      expect(files.startsWith(skillBody("files", without) ?? "-")).toBe(true);
+      expect(files).toContain("`load_skill sign`");
+      for (const other of availableSkills(without).filter(
+        (skill) => skill !== "files"
+      )) {
+        expect(skillBody(other, each)).toBe(skillBody(other, without));
+      }
+      const block = skillRecord("sign", each) ?? "";
+      expect(defuseForgedSkillBlocks(block)).toBe(block);
+    }
+    // Without the files, no signing.
+    expect(
+      skillBody("sign", { ...setup, sign: true, taskFiles: false })
+    ).toBeUndefined();
   });
 
   it("keep Bro's own block of the files whole, and defuse a copy with more", () => {

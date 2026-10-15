@@ -2,7 +2,8 @@ import type { ModelMessage } from "ai";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { SkillName } from "@agent/lib/skills/catalog";
-import { caseTurns } from "../../../../scripts/bench/cases";
+import { caseTurns, loadCases } from "../../../../scripts/bench/cases";
+import { filesSteps } from "../../../../scripts/bench/files/suite";
 
 // The triggers read nothing but their input: the database is not there.
 vi.mock("@db", () => {
@@ -203,7 +204,7 @@ const golden = {
   "en:uc_call_friend": [],
   "en:uc_study": ["games"],
   "en:uc_trip": ["browser", "recommendations"],
-  "en:uc_kindle": ["google"],
+  "en:uc_kindle": ["google", "files"],
   "en:uc_car": ["browser", "recommendations"],
   "en:uc_reorder": ["browser", "money"],
   "en:uc_claims": ["recommendations", "money", "schedules"],
@@ -313,19 +314,20 @@ describe("the skills a turn attaches", () => {
     expect(skillsFor("[место]")).toEqual([]);
   });
 
-  it("give a document for the task agent, or its marker, the rules for files", () => {
+  it("give a document or a PDF for the task agent, or its marker, the rules for files", () => {
     for (const text of [
       "[файл: отчёт (1).xlsx (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet)]",
       "посчитай итог\n[файл: продажи, март.csv (text/csv)]",
       // One that did not come through: Bro says so.
       "[файл: архив.zip (application/zip)]",
       "[файл: смета.xlsx (application/vnd.ms-excel), слишком большой]",
+      // A form to fill goes to the task agent by its path.
+      "[файл: счёт.pdf (application/pdf)]",
     ]) {
       expect(skillsFor(text)).toContain("files");
     }
-    // A picture or a PDF the model reads itself.
+    // A picture the model reads itself.
     for (const text of [
-      "[файл: счёт.pdf (application/pdf)]",
       "[файл: фото (1).jpg (image/jpeg)]",
       "[файл: photo.jpg (image/jpeg), слишком большой]",
     ]) {
@@ -343,7 +345,115 @@ describe("the skills a turn attaches", () => {
       )
     ).toBe(true);
     expect(filesFor("image/png")).toBe(false);
-    expect(filesFor("application/pdf")).toBe(false);
+    expect(filesFor("application/pdf")).toBe(true);
+  });
+
+  it("give forms, scans and file conversions the rules for files", () => {
+    // One for each kind of words: forms, scans, archives, file verbs,
+    // translation, versions, document photos and formats.
+    for (const text of [
+      "Заполни анкету для секции, бланк прикрепила",
+      "сделай нормальный скан в pdf",
+      "Верни архивом и табличкой",
+      "склей эти сканы в один файл",
+      "Переведи справку с работы на английский",
+      "Сравни две версии договора",
+      "Сделай фото на загранпаспорт 35×45",
+      "turn this scanned form into a redline",
+    ]) {
+      expect(skillsFor(text)).toContain("files");
+    }
+    for (const text of [
+      // Mail goes to its archive.
+      "убери в архив все рассылки",
+      "переведи на английский этот текст",
+      "свари документы на подпись",
+      "опять скандал с соседями",
+    ]) {
+      expect(skillsFor(text)).not.toContain("files");
+    }
+  });
+
+  it("give signing its rules, and not a subscription or a timetable", () => {
+    // One for each kind of words: Russian, e-signatures, English.
+    for (const text of [
+      "Вот моя подпись, сохрани",
+      "распишись за меня и поставь парафы",
+      "а КЭП тут нужна?",
+      "please sign this for me",
+    ]) {
+      expect(skillsFor(text)).toContain("sign");
+    }
+    for (const text of [
+      "отмени подписку на кинопоиск",
+      "сколько у меня подписчиков",
+      "скинь расписание секций",
+      // Writing a plan out, a candle, and others signed up.
+      "распиши план тренировок по дням",
+      "купи парафиновые свечи",
+      "sign me up for the newsletter",
+      "sign them up for swimming",
+    ]) {
+      expect(skillsFor(text)).not.toContain("sign");
+    }
+    // The person's «да» answers Bro's signing question.
+    expect(
+      skillsFor("да", [called(["sign_document", { action: "prepare" }])])
+    ).toEqual(["sign"]);
+    expect(
+      skillsFor("ок", [called(["signature", { action: "save" }])])
+    ).toEqual(["sign"]);
+    // The photo of their signature is one of their files.
+    expect(skillsFor("Вот моя подпись, сохрани\n[фото]")).toEqual([
+      "files",
+      "sign",
+    ]);
+  });
+
+  it("give every file of the files suite the rules for files, and a request to sign the rules for signing", async () => {
+    // Each turn as the driver sends it on the web: its text and its files.
+    const steps = (await loadCases(["files"])).flatMap((benchCase) =>
+      filesSteps(benchCase, "/fixtures").map((step) => ({
+        id: `${benchCase.id}#${String(step.turn)}`,
+        carries: step.files.length > 0,
+        skills: skillsForTurn({
+          browserReport: false,
+          history: [],
+          input: [
+            {
+              content: [
+                { text: step.text, type: "text" as const },
+                ...step.files.map(({ mediaType }) => ({
+                  data: "AAAA",
+                  mediaType,
+                  type: "file" as const,
+                })),
+              ],
+              role: "user",
+            },
+          ],
+        }),
+      }))
+    );
+    expect(
+      steps.filter(
+        ({ carries, skills }) => carries && !skills.includes("files")
+      )
+    ).toEqual([]);
+    // A request to sign, or the signature itself; an answer to the signing
+    // question gets the rules from the history (`sign_document`).
+    const signing = new Set(
+      steps.filter(({ skills }) => skills.includes("sign")).map(({ id }) => id)
+    );
+    expect(
+      [
+        "f-00-sign-saved-signature#0",
+        "f-00-sign-saved-signature#1",
+        "f-acroform-anketa-sign#0",
+        "f-rent-contract-bundle#0",
+        "f-trap-sign-without-consent#0",
+      ].filter((id) => !signing.has(id))
+    ).toEqual([]);
   });
 
   it("give decks, tables and charts the rules for files", () => {
