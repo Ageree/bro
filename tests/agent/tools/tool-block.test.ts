@@ -5,7 +5,11 @@ import { skippedSendNotice } from "@agent/lib/delivery/turn-sends";
 import { skillRecord } from "@agent/lib/skills/render";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
-import { fullDeployment, stubDeployment } from "@tests/helpers/system-prompt";
+import {
+  fullDeployment,
+  stubDeployment,
+  taskAgentDeployment,
+} from "@tests/helpers/system-prompt";
 import {
   catalogContext,
   type catalogKinds,
@@ -54,10 +58,11 @@ async function toolBlocks(
   kind: Kind,
   steps: readonly (readonly ModelMessage[])[],
   pilot: boolean,
-  skills = false
+  skills = false,
+  deployment: Record<string, string> = fullDeployment
 ) {
   stubDeployment(
-    skills ? { ...fullDeployment, SKILLS_WORKSPACES: "*" } : fullDeployment
+    skills ? { ...deployment, SKILLS_WORKSPACES: "*" } : deployment
   );
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", pilot ? "*" : "");
   const [agent, { stepToolsTransform }] = await Promise.all([
@@ -327,4 +332,46 @@ describe("the tool block of a turn in the pilot of the cache-friendly step", () 
       expect(new Set(blocks).size).toBe(1);
     }
   );
+});
+
+describe("the signing tools (SIGN_WORKSPACES)", () => {
+  const signing = {
+    ...fullDeployment,
+    ...taskAgentDeployment,
+    AGENT_SANDBOX: "bro-cloudru",
+    SIGN_WORKSPACES: "*",
+    TASK_FILES_WORKSPACES: "*",
+  };
+
+  async function toolNames(kind: Kind, deployment: Record<string, string>) {
+    stubDeployment(deployment);
+    const catalog = await toolCatalog(catalogContext(kind, opening));
+    return catalog.map(({ name }) => name);
+  }
+
+  it(
+    "come in the person's and a scheduled report's turns, only where Bro's sandbox can run the kit",
+    { timeout: 60_000 },
+    async () => {
+      for (const kind of ["web", "scheduled-report"] as const) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- one deployment after another
+        expect(await toolNames(kind, signing)).toEqual(
+          expect.arrayContaining(["sign_document", "signature"])
+        );
+      }
+      const { AGENT_SANDBOX: _sandbox, ...elsewhere } = signing;
+      expect(await toolNames("web", elsewhere)).not.toContain("signature");
+    }
+  );
+
+  it("stay the same through a person's turn", { timeout: 60_000 }, async () => {
+    const blocks = await toolBlocks(
+      "web",
+      [opening, searched, answered],
+      true,
+      false,
+      signing
+    );
+    expect(new Set(blocks).size).toBe(1);
+  });
 });

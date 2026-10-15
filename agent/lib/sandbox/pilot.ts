@@ -78,7 +78,7 @@ const userCallerSchema = z.object({
 });
 
 /** The workspace of the caller that holds the turn, if it has one. */
-function callerWorkspaceId(context: {
+export function callerWorkspaceId(context: {
   readonly session: Pick<SessionContext["session"], "auth">;
 }) {
   const caller = context.session.auth.current ?? context.session.auth.initiator;

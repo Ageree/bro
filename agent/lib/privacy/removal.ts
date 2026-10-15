@@ -30,7 +30,12 @@ export function memoryRemoval() {
  * данные». On 25.09 (RU d14) Bro answered both without naming the Google
  * switch, the cabinet, or what forgetting leaves behind.
  */
-export function removalOutsideMemory() {
+export function removalOutsideMemory(
+  options: {
+    /** Signing with the person's signature is on (`signEnabled`). */
+    readonly signature?: boolean;
+  } = {}
+) {
   return [
     `Личные данные (имя, телефон, почта, адрес, дата рождения) — это не память: они убираются в кабинете, ${cabinetPage("/personal-info", "раздел «Личные данные»")}, или просьбой («удали мой адрес»).`,
     ...(googleWorkspaceConfigured()
@@ -45,6 +50,11 @@ export function removalOutsideMemory() {
       : []),
     "Расписания и напоминания — «покажи мои расписания», затем «удали …» или «останови все расписания».",
     `Сейф — карты, адреса и контакты — в кабинете, ${cabinetPage("/vault", "раздел «Сейф»")}. Сохранённый вход сайта (логин и пароль) — просьбой «забудь мой вход на …».`,
+    ...(options.signature === true
+      ? [
+          "Образец подписи — «удали мою подпись»; записи о подписаниях и уже подписанные файлы остаются.",
+        ]
+      : []),
     ...(browserUseConfigured()
       ? [
           "Входы на сайты в облачном браузере — «забудь мои входы на сайты»: профиль браузера удаляется со всеми куки, и следующее поручение входит заново; «не заходи больше в <сайт>» — Бро больше никогда не открывает этот сайт сам, даже после новых поручений там.",

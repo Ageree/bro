@@ -5,6 +5,7 @@ import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { signEnabled } from "@agent/lib/signatures/pilot";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
 import { env } from "@shared/environment";
@@ -70,6 +71,7 @@ export const privacy = defineTool({
       phonePilot(scope) ||
       (env.PHONE_AGENT_ID !== undefined &&
         (await readPhoneNumber(scope)) !== null);
+    const signature = signEnabled(scope.workspaceId);
     const [modelId, google, memoryDigest, conversationLog] = await Promise.all([
       getWorkspaceModelId(scope),
       googleNow(scope),
@@ -80,7 +82,7 @@ export const privacy = defineTool({
       crossChannelPilot(scope),
     ]);
     return {
-      kept: keptData({ conversationLog, phone }),
+      kept: keptData({ conversationLog, phone, signature }),
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
@@ -90,7 +92,7 @@ export const privacy = defineTool({
       ...(google !== undefined && { google }),
       remove: [
         memoryRemoval(),
-        ...removalOutsideMemory(),
+        ...removalOutsideMemory({ signature }),
         ...(phone
           ? [
               "phone-disable выключает звонки, но сохраняет номер и ежемесячную плату. Постоянное освобождение требует отдельного подтверждения phone-release; operator-required означает, что оператор должен проверить отключение и плата может продолжаться. Удаление памяти не освобождает платный номер.",

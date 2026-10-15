@@ -106,6 +106,19 @@ describe("the tools of a step", () => {
     });
   });
 
+  it("lets the task agent's report offer to sign its file in the signing pilot", () => {
+    const report = {
+      ...quiet,
+      kind: "background-task",
+      taskAgent: true,
+    } as const;
+    expect(turnTools({ ...report, signing: true }).offeredTools).toEqual([
+      "sign_document",
+      ...backgroundTaskTurnTools,
+    ]);
+    expect(turnTools(report).offeredTools).toEqual(backgroundTaskTurnTools);
+  });
+
   it("gives a browser report one set in the pilot, whatever its step", () => {
     const pilot = {
       ...quiet,

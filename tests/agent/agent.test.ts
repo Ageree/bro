@@ -27,6 +27,7 @@ const services = vi.hoisted(() => ({
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
   taskFilesEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
+  signEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-run-leases", () => ({
@@ -51,6 +52,10 @@ vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
   taskFilesEnabled: services.taskFilesEnabled,
   taskFilesOfCaller: () => false,
+}));
+vi.mock("@agent/lib/signatures/pilot", () => ({
+  signEnabled: services.signEnabled,
+  signOfCaller: () => false,
 }));
 vi.mock("@agent/lib/history/pilot", () => ({
   historyTrimPilot: services.historyTrimPilot,
@@ -115,6 +120,7 @@ beforeEach(() => {
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
   services.taskFilesEnabled.mockReturnValue(false);
+  services.signEnabled.mockReturnValue(false);
   services.historyTrimPilot.mockResolvedValue(false);
   services.compactionPilot.mockResolvedValue(false);
   services.compactionHeld.mockReturnValue(false);
@@ -866,6 +872,21 @@ describe("interactive delivery enforcement", () => {
       "This browser report already reached the person"
     );
     expect(options?.offeredTools).toEqual([
+      "react_to_message",
+      "send_message",
+      "task",
+      "task_cancel",
+    ]);
+
+    // In the signing pilot the report may offer to sign the file it brings.
+    services.signEnabled.mockReturnValue(true);
+    services.modelSelection.mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([taskReport], "browser-result", reportAttributes)
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.offeredTools).toEqual([
+      "sign_document",
       "react_to_message",
       "send_message",
       "task",

@@ -70,6 +70,7 @@ import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
 import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot, taskFilesEnabled } from "@agent/lib/sandbox/pilot";
+import { signEnabled } from "@agent/lib/signatures/pilot";
 import { turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
@@ -419,6 +420,7 @@ export default defineAgent({
           // its last (`turnTools`).
           ...turnTools({
             browserFiles: browserFilesEnabled(scope.workspaceId),
+            signing: signEnabled(scope.workspaceId),
             askedQuestion: turnAskedQuestion(ctx.messages),
             cardsHeld,
             heldForAnswer,
