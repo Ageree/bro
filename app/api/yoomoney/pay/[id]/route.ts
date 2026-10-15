@@ -26,7 +26,7 @@ function bankForm(acsUri: string, acsParams: Readonly<Record<string, string>>) {
         `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`
     )
     .join("");
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Подтверждение в банке</title></head><body onload="document.forms[0].submit()"><form method="post" action="${escapeHtml(acsUri)}">${fields}<noscript><p>Банк просит подтвердить платёж.</p></noscript><button type="submit">Перейти в банк</button></form></body></html>`;
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Подтверждение в банке</title></head><body onload="document.forms[0].submit()"><form method="post" action="${escapeHtml(acsUri)}">${fields}<p>Открываем страницу банка, чтобы подтвердить платёж…</p><button type="submit">Перейти в банк</button></form></body></html>`;
 }
 
 /**
@@ -64,8 +64,14 @@ export async function POST(
     "Referrer-Policy": "no-referrer",
   };
   if (result.kind === "bank") {
+    // `no-referrer` would send the bank `Origin: null`; this page's address
+    // carries no token, and the bank sees only this site's origin.
     return new NextResponse(bankForm(result.acsUri, result.acsParams), {
-      headers: { ...headers, "Content-Type": "text/html; charset=utf-8" },
+      headers: {
+        ...headers,
+        "Content-Type": "text/html; charset=utf-8",
+        "Referrer-Policy": "strict-origin",
+      },
     });
   }
   if (result.kind !== "settled") page.searchParams.set("e", result.kind);
