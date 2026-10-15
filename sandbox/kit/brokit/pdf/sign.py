@@ -815,7 +815,7 @@ def _blank_for(box, blanks, caption):
     best, best_distance = None, None
     for blank in blanks:
         bx0, by0, bx1, by1 = blank["box"]
-        if blank["kind"] == "checkbox":
+        if blank["kind"] == "checkbox" or blank.get("filled"):
             continue
         if caption:
             # «(подпись)» sits under its line: the blank right above it, across its centre.

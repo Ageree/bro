@@ -1,7 +1,8 @@
 """`pdf write`: text, check marks and pictures onto a flat form, all pages of one file in one call (W2 spec §6.5).
 
 SPEC.json is a list of items, each with "page" and "box" (view pt) or "at" (a blank id of
-`pdf layout` of the same file — box, angle and rule come from its cache):
+`pdf layout` of the same file — box, angle and rule come from its cache; the output keeps those
+ids, its written blanks marked "filled"):
   {"at": "p1b3", "text": "…", "size": "auto" | 11, "align": "left|center|right", "comb": 12,
    "font": "sans|serif|mono", "color": "#000", "angle": deg}
   {"page": 1, "box": [...], "check": true}
@@ -144,6 +145,9 @@ def main(argv):
     with crypt.parsing():
         _draw(writer, placed)
     crypt.write_pdf(writer, output)
+    from brokit.pdf import layout
+
+    layout.carry(options.file, output, [(p["page"], p["box"]) for p in placed])
     items = [
         {
             "n": p["n"],
