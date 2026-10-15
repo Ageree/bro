@@ -3,26 +3,29 @@
 #
 #   host.py ops NAME site-errands.sh HOSTS [SINCE [UNTIL]]
 #
-# HOSTS is a comma-separated list of domains (tutu.ru,ostrovok.ru); a run counts when its site or the page its
-# browser ended on is one of them or under one, or its task or outcome names one. SINCE and UNTIL are dates or
-# times PostgreSQL reads, on Moscow time unless they carry an offset; SINCE defaults to seven days ago, UNTIL to
-# now. Written for a benchmark case that staged a flight and a hotel on the owner's account and that nobody
-# checked afterwards (uc_visa, 04.10): did a run of it get past the last button.
+# HOSTS is a list of domains joined by + (tutu.ru+ostrovok.ru: deployd takes no comma in an argument); a run
+# counts when its site or the page its browser ended on is one of them or under one, or its task or outcome
+# names one. SINCE and UNTIL are dates or times PostgreSQL reads, on Moscow time unless they carry an offset;
+# SINCE defaults to seven days ago, UNTIL to now. Written for a benchmark case that staged a flight and a hotel on
+# the owner's account and that nobody checked afterwards (uc_visa): did a run of it get past the last button.
 #
 # Prints for each such run of browser_runs only what Bro itself recorded about it: the workspace (12 characters),
 # the run (shortened), the sites' host names, times, status, the attempt, whether the card was bound and what
 # the person approved (its kind and roubles), and from the run's outcome its labels as Bro reads them — NEEDS
 # (one of Bro's words, `other` for anything else, which Bro reads as none), ORDER, TOTAL in roubles, ACTION,
-# the booking's reference and whether the site confirmed it — plus fixed words its Result line used (booked,
-# paid, not paid, before payment, cancelled). Then the orders and the spend recorded for those runs, the
-# sign-ins on those domains, and the hosts the same workspaces' runs went to in the window. Never a task, a
+# the booking's reference and whether the site confirmed it — plus which footer labels the run wrote at all,
+# what kind of page its browser ended on (confirmation, payment, booking form, other: from the URL's path,
+# never the path itself), and fixed words (booked, not booked, paid, not paid, before payment, cancelled) in
+# its Result line and in the report Bro sent the person. Then the orders and the spend recorded for those runs,
+# the sign-ins on those domains, and the hosts the same workspaces' runs went to in the window. Never a task, a
 # report, a page's text, a name, a phone or an address: an ORDER or a booking reference is shown only when it
 # fits in 64 characters whole (Bro records no longer order), the total only as its number.
 source "$(dirname "$0")/db-lib.sh"
 { [ "$#" -ge 1 ] && [ "$#" -le 3 ]; } || die "usage: site-errands.sh HOSTS [SINCE [UNTIL]]"
 HOSTS=${1,,}
-[[ "$HOSTS" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+(,[a-z0-9-]+(\.[a-z0-9-]+)+)*$ ]] \
-  || die "HOSTS is domains separated by commas: tutu.ru,ostrovok.ru"
+[[ "$HOSTS" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+([+,][a-z0-9-]+(\.[a-z0-9-]+)+)*$ ]] \
+  || die "HOSTS is domains joined by +: tutu.ru+ostrovok.ru"
+HOSTS=${HOSTS//+/,}
 SINCE=${2:-$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)}
 UNTIL=${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 # The shape only keeps psql's quoting simple; PostgreSQL itself says whether the date exists.
@@ -140,20 +143,46 @@ WITH window_runs AS (
               WHEN l.booking_line LIKE '%— not confirmed yet' THEN false
               WHEN l.booking_line IS NULL AND NOT l.summarized AND l.raw_booking THEN l.raw_booking_confirmed
               END AS booking_confirmed,
-         concat_ws(',',
-           CASE WHEN l.result_line ~* 'забронир|бронь (оформлен|создан|подтвержд)|\mbooked\M|\mreserved\M'
-                THEN 'booked' END,
-           CASE WHEN l.result_line
-                     ~* '(?<!не)(?<!не )(?<!не был )(?<!не была )(?<!не было )(оплачен|оплатил|списан)|(?<!not )(?<!un)\m(paid|charged)\M'
-                THEN 'paid' END,
-           CASE WHEN l.result_line
-                     ~* 'не *(оплач|оплат|списан)|не (был|была|было) (оплач|списан)|not (yet )?(paid|charged)|без оплат|\munpaid\M'
-                THEN 'not paid' END,
-           CASE WHEN l.result_line ~* '(до|перед) оплат|(шаг|страниц|этап)\S* оплат|before pay|payment (page|step)'
-                THEN 'before payment' END,
-           CASE WHEN l.result_line ~* 'отмен[её]н|отменил|аннулир|\mcancell?ed\M'
-                THEN 'cancelled' END) AS result_says
+         said.result_says,
+         said.told_person,
+         CASE WHEN l.outcome IS NULL AND l.vm_result IS NULL THEN '(no outcome)'
+              ELSE coalesce((SELECT string_agg(DISTINCT upper(x[1]), ',' ORDER BY upper(x[1]))
+                             FROM regexp_matches(l.raw, '^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}(RESULT|NEEDS|ORDER|TOTAL|ACTION|BOOKING|ITEMS|CHARGES|DETAILS|NEXT|SIGNED_IN|BLOCKED|ACCOUNT)\*{0,2}[ \t]*:', 'gin') AS x),
+                            '(none)') END AS labels,
+         CASE WHEN l.final_url IS NULL THEN NULL
+              WHEN page.path ~ 'success|confirm|thank|complete|finish|spasibo|uspe' THEN 'confirmation'
+              WHEN page.path ~ 'pay|oplat|checkout|card|3ds|acs|billing' THEN 'payment'
+              WHEN page.path ~ 'book|order|reserv|passeng|guest|travell?er|bron|zakaz|form' THEN 'booking form'
+              ELSE 'other' END AS final_page
   FROM labelled l
+  -- Only the URL's path is looked at, and only these words of it leave the query.
+  CROSS JOIN LATERAL (
+    SELECT lower(coalesce(substring(l.final_url FROM '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*(/[^?#]*)'), '/')) AS path
+  ) page
+  -- The same fixed words over the run's Result line and over the report Bro sent the person.
+  CROSS JOIN LATERAL (
+    SELECT max(tags) FILTER (WHERE which = 1) AS result_says,
+           max(tags) FILTER (WHERE which = 2) AS told_person
+    FROM (
+      SELECT t.which,
+             concat_ws(',',
+               CASE WHEN t.body ~* '(?<!не )забронир|бронь (оформлен|создан|подтвержд)|(?<!not )\mbooked\M|(?<!not )\mreserved\M'
+                    THEN 'booked' END,
+               CASE WHEN t.body ~* 'не (за)?брониров|не забронир|брон\S* не (оформ|созда|сдела)|not (yet )?(booked|reserved)'
+                    THEN 'not booked' END,
+               CASE WHEN t.body
+                         ~* '(?<!не)(?<!не )(?<!не был )(?<!не была )(?<!не было )(оплачен|оплатил|списан)|(?<!not )(?<!un)\m(paid|charged)\M'
+                    THEN 'paid' END,
+               CASE WHEN t.body
+                         ~* 'не *(оплач|оплат|списан)|не (был|была|было) (оплач|списан)|not (yet )?(paid|charged)|без оплат|\munpaid\M'
+                    THEN 'not paid' END,
+               CASE WHEN t.body ~* '(до|перед) оплат|(шаг|страниц|этап)\S* оплат|before pay|payment (page|step)'
+                    THEN 'before payment' END,
+               CASE WHEN t.body ~* 'отмен[её]н|отменил|аннулир|\mcancell?ed\M'
+                    THEN 'cancelled' END) AS tags
+      FROM unnest(ARRAY[l.result_line, coalesce(l.report, '')]) WITH ORDINALITY AS t(body, which)
+    ) s
+  ) said
 )
 SQL
 )
@@ -192,7 +221,10 @@ SELECT left(workspace_id, 12) AS workspace,
        action,
        booking_ref,
        booking_confirmed,
+       labels,
+       final_page,
        result_says,
+       told_person,
        report_delivered_at IS NOT NULL AS reported,
        retried_as
 FROM facts
