@@ -73,7 +73,7 @@ export function SubagentTrace({
 
   return (
     <section className="py-4">
-      <Alert variant={alertVariant}>
+      <Alert className="rounded-2xl px-4 py-3" variant={alertVariant}>
         <BotIcon />
         <AlertTitle>Трассировка: {target.name}</AlertTitle>
         <AlertAction>
@@ -86,9 +86,9 @@ export function SubagentTrace({
             className="mx-auto flex"
             disabled={isLoadingOlder}
             onClick={() => void loadOlder()}
-            size="sm"
+            size="lg"
             type="button"
-            variant="ghost"
+            variant="outline"
           >
             {isLoadingOlder ? (
               <LoaderCircleIcon className="animate-spin" />
@@ -112,7 +112,7 @@ export function SubagentTrace({
           </Shimmer>
         ) : null}
         {error ? (
-          <Alert variant="destructive">
+          <Alert className="rounded-2xl px-4 py-3" variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
