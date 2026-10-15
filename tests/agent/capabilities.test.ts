@@ -95,6 +95,7 @@ describe("authored mode capability matrix", () => {
       "contacts-search",
       "form_of_address",
       "gmail-attachment",
+      "gmail-delete-draft",
       "gmail-draft",
       "gmail-read-thread",
       "gmail-search",

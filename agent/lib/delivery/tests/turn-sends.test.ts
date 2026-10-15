@@ -1594,6 +1594,42 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
     ).toEqual({ rewrite: "declined" });
   });
 
+  it("returns «убрал оба черновика» after archiving, which deletes no draft", () => {
+    const archived = [
+      userMessage("удали оба черновика Ивану"),
+      ...toolStep("gmail-update", { update: "archive", updatedCount: 2 }),
+    ];
+    const claim = "Убрал оба черновика Ивану.";
+
+    expect(refusal(archived, claim)).toEqual({ rewrite: "undone" });
+    expect(
+      refusal(
+        [
+          ...archived,
+          ...toolStep("gmail-delete-draft", {
+            changed: false,
+            deleted: [],
+            notFound: ["m-1", "m-2"],
+          }),
+        ],
+        claim
+      )
+    ).toEqual({ rewrite: "declined" });
+    expect(
+      refusal(
+        [
+          ...archived,
+          ...toolStep("gmail-delete-draft", {
+            changed: true,
+            deleted: ["m-1", "m-2"],
+            notFound: [],
+          }),
+        ],
+        claim
+      )
+    ).toBeUndefined();
+  });
+
   it.each([
     [
       "an email",

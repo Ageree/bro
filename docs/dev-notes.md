@@ -1823,6 +1823,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `requireAuth`; квота — 429 и 403 `rateLimitExceeded` (`client.ts`).
 - Чтения Gmail и Диска считаются за ход (`turn-reads.ts`); параллельные вызовы
   одного шага счёт не видит. Оба файла — в `agent/lib/google-workspace/`.
+- Черновик удаляет только `gmail-delete-draft` (`drafts.delete`, мимо Корзины) и
+  только в ходе, открытом сообщением человека: архивация `gmail-update` оставляет
+  его в Черновиках. Поиск отдаёт id сообщения, а `drafts.delete` берёт id
+  черновика — инструмент сопоставляет их по `drafts.list` (`deleteGmailDrafts`).
 - Ответ на письмо — по Gmail `id` (`replyToMessageId`), не `rfcMessageId`. Голос
   человека — письма с SENT и From из `sendAs`: плюс-адрес ящика тоже SENT.
 - Отказ самой политики ai@7 пишет как одобрение с `isAutomatic: true`: это не

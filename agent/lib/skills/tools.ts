@@ -91,6 +91,7 @@ const toolGroupEntries = {
   generate_image: "core",
   generate_video: "core",
   "gmail-attachment": "google",
+  "gmail-delete-draft": "google",
   "gmail-draft": "google",
   "gmail-read-thread": "google",
   "gmail-search": "google",

@@ -44,10 +44,14 @@ function succeeded(output: ToolResultPart["output"]) {
 
 /**
  * Tools that answer every call and say in their result whether they changed
- * anything: a point named or forgotten (`changed`), a place reminder set or
- * cancelled (`created`, `cancelled`).
+ * anything: a point named or forgotten, a draft deleted (`changed`), a place
+ * reminder set or cancelled (`created`, `cancelled`).
  */
-const flaggedWriteTools = new Set(["location_edit", "place_reminder"]);
+const flaggedWriteTools = new Set([
+  "gmail-delete-draft",
+  "location_edit",
+  "place_reminder",
+]);
 
 const changeFlagsSchema = z.object({
   cancelled: z.boolean().optional(),
@@ -133,13 +137,23 @@ function wroteCalendar(part: ToolResultPart, appsCalls: Set<string>) {
  * resumed wrote «Я перенастроил вашу задачу на 8 октября, 09:20». A setting
  * Bro keeps outside memory — the form of address, the spend limit, Personal
  * Info — is remembered too («Запомнил: на «вы»»), and a reminder of an event
- * is set with the event.
+ * is set with the event. A draft is deleted by its own tool alone: Bro once
+ * archived two drafts with `gmail-update` and wrote «убрал оба черновика»,
+ * while both stayed in Drafts.
  */
-const acts = ["email", "memory", "message", "order", "schedule"] as const;
+const acts = [
+  "draft",
+  "email",
+  "memory",
+  "message",
+  "order",
+  "schedule",
+] as const;
 
 type Act = (typeof acts)[number];
 
 const actTools: Record<Act, readonly string[]> = {
+  draft: ["gmail-delete-draft"],
   email: ["gmail-draft", "gmail-send"],
   // A point the person named is remembered too: «Запомнил точку как
   // «парковка»» after `location_edit` went back as undone (prod, 15.10).
@@ -254,6 +268,7 @@ function actOutcomes(
   previousTurn: readonly ModelMessage[]
 ) {
   const outcomes: Record<Act, ReturnType<typeof noCalls>> = {
+    draft: noCalls(),
     email: noCalls(),
     memory: noCalls(),
     message: noCalls(),
@@ -772,6 +787,21 @@ const actClaims: readonly {
     asked: /отправь|напиши|ответь|перешли|send|reply|forward|write/u,
     noun: /письм|email|e-mail/u,
     verbs: ["отправил", "ответил", "переслал", "sent", "replied", "forwarded"],
+  },
+  {
+    act: "draft",
+    asked: /удали|убери|убрать|сотри|стереть|выкин|почисти|delete|remove/u,
+    noun: /черновик|draft/u,
+    verbs: [
+      "удалил",
+      "убрал",
+      "стер",
+      "выкинул",
+      "почистил",
+      "deleted",
+      "removed",
+      "erased",
+    ],
   },
   {
     act: "message",
