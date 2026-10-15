@@ -24,6 +24,10 @@ import {
 } from "@agent/lib/schedules/tools";
 import { siteHostname } from "@agent/lib/browser-use/host";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
+import {
+  routineSetupOfCaller,
+  similarSchedules,
+} from "@agent/lib/schedules/routine";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import { placeWatchOf } from "@agent/lib/subscriptions/watches";
 import { locationPilot } from "@db/services/location";
@@ -138,7 +142,11 @@ async function createScheduleApproval({
     : { reason: held, type: "denied" as const };
 }
 
-async function runCreateSchedule(
+/**
+ * The checks before a schedule is made, and whose it is, where it reports
+ * and when it runs on the person's clock.
+ */
+async function scheduleToCreate(
   input: z.infer<typeof delegatingCreateScheduleInputSchema>,
   context: ToolContext
 ) {
@@ -159,23 +167,166 @@ async function runCreateSchedule(
     );
   const owner = scheduleOwner(context);
   const timeZone = await readWorkspaceTimeZone(owner.scope);
+  return {
+    delegation,
+    owner,
+    timeZone,
+    timing: resolveScheduleTiming(input.timing, timeZone),
+  };
+}
+
+type ScheduleToCreate = Awaited<ReturnType<typeof scheduleToCreate>>;
+
+/** A first run sooner than this is the trial itself: two would come at once. */
+const trialLeadMs = 60 * 60_000;
+
+/**
+ * A trial run of a new routine that gathers something, before its first
+ * regular run: never of a one-off, which is its own run, nor of one that
+ * acts in the person's name. A trial that did not start is offered instead,
+ * as outside the pilot: the schedule itself is made.
+ */
+async function startTrial(
+  scope: ScheduleToCreate["owner"]["scope"],
+  job: Awaited<ReturnType<typeof createScheduledAgentJob>>,
+  gathers: boolean
+) {
+  if (!gathers || job.timing.kind === "once" || job.delegation !== null)
+    return "none";
+  if (job.nextRunAt && job.nextRunAt.getTime() - Date.now() < trialLeadMs)
+    return "none";
+  try {
+    const trial = await queueScheduledAgentRunNow(scope, job.id);
+    return trial ? "started" : "offered";
+  } catch (error) {
+    console.warn("[schedules] the trial run did not start", {
+      id: job.id,
+      name: error instanceof Error ? error.name : "unknown",
+    });
+    return "offered";
+  }
+}
+
+/**
+ * Makes the schedule and words its confirmation. `gathers` comes only from
+ * the pilot of routines set up whole, which starts a trial run at once.
+ */
+async function createAndConfirm(
+  input: z.infer<typeof delegatingCreateScheduleInputSchema>,
+  context: ToolContext,
+  { delegation, owner, timeZone, timing }: ScheduleToCreate,
+  gathers?: boolean
+) {
   const job = await createScheduledAgentJob(owner.scope, {
     ...owner.conversation,
     delegation,
     missedRunPolicy: input.missedRunPolicy,
     prompt: input.prompt,
     replyAnchorMessageId: scheduleReplyAnchor(context),
-    timing: resolveScheduleTiming(input.timing, timeZone),
+    timing,
   });
+  const trial =
+    gathers === undefined
+      ? undefined
+      : await startTrial(owner.scope, job, gathers);
   const delivery = await scheduleDelivery(job);
+  const confirmation = scheduleConfirmation(
+    job,
+    delivery,
+    input.missingInputs ?? [],
+    trial
+  );
   return {
     ...scheduleSummary(job, timeZone),
     deliversTo: delivery.deliversTo,
     reply:
       job.delegation === null
-        ? scheduleConfirmation(job, delivery, input.missingInputs ?? [])
-        : `${scheduleConfirmation(job, delivery, input.missingInputs ?? [])} ${delegationReply(job.delegation)}`,
+        ? confirmation
+        : `${confirmation} ${delegationReply(job.delegation)}`,
   };
+}
+
+async function runCreateSchedule(
+  input: z.infer<typeof delegatingCreateScheduleInputSchema>,
+  context: ToolContext
+) {
+  return createAndConfirm(
+    input,
+    context,
+    await scheduleToCreate(input, context)
+  );
+}
+
+/**
+ * What the pilot of routines set up whole adds to `schedules-create`
+ * (ROUTINE_SETUP_WORKSPACES, docs/roadmap.md item 13). EN D7: the trial
+ * summary was only offered, and a second summary was made over the first.
+ */
+const routineFields = {
+  gathers: z
+    .boolean()
+    .describe(
+      "true when each run gathers something for the person — a summary, a digest, a check of mail, the calendar, prices, the weather or the way somewhere: a recurring one then runs once right away as a trial. false when each run only reminds of something («напоминай пить воду»)."
+    ),
+  // Weak models fill every optional field: an entry that is no id of a
+  // similar schedule keeps nothing, and must never fail the schedule.
+  keepAlongside: z
+    .array(z.string().max(100))
+    .max(10)
+    .optional()
+    .describe(
+      "Only after the person said to keep both: the ids of the similar schedules a refused call named, which stay beside the new one. Leave it out otherwise."
+    ),
+};
+
+const routineCreateScheduleInputSchema =
+  createScheduleInputSchema.extend(routineFields);
+const shortRoutineCreateScheduleInputSchema = createScheduleInput(
+  shortScheduleTimingInputSchema
+).extend(routineFields);
+const delegatingRoutineCreateScheduleInputSchema =
+  delegatingCreateScheduleInputSchema.extend(routineFields);
+const shortDelegatingRoutineCreateScheduleInputSchema =
+  shortDelegatingCreateScheduleInputSchema.extend(routineFields);
+
+/**
+ * Why nothing was made: the person has an active schedule like this one,
+ * and only they say whether the new one replaces it or comes beside it.
+ */
+function similarScheduleRefusal(
+  similar: readonly ReturnType<typeof scheduleSummary>[]
+) {
+  const named = similar.map(({ id, nextRunLocal, prompt, timing }) => ({
+    id,
+    nextRunLocal,
+    prompt,
+    timing,
+  }));
+  return `Nothing was created: the person already has an active schedule like this one: ${JSON.stringify(named)}. Ask them in one short message whether to replace it or to keep both, naming its time (nextRunLocal) and what it does, and wait for their answer. To replace it, change that schedule with schedules-update (prompt, timing) rather than making a second one. To keep both, call schedules-create again with keepAlongside ${JSON.stringify(named.map(({ id }) => id))}.`;
+}
+
+async function runRoutineCreateSchedule(
+  input: z.infer<typeof delegatingRoutineCreateScheduleInputSchema>,
+  context: ToolContext
+) {
+  const made = await scheduleToCreate(input, context);
+  const kept = new Set(input.keepAlongside ?? []);
+  // A one-off reminder is never held up by a routine.
+  const similar =
+    made.timing.kind === "once"
+      ? []
+      : similarSchedules(
+          { prompt: input.prompt, timing: made.timing },
+          await listScheduledAgentJobs(made.owner.scope)
+        ).filter((job) => !kept.has(job.id));
+  if (similar.length > 0) {
+    throw new Error(
+      similarScheduleRefusal(
+        similar.map((job) => scheduleSummary(job, made.timeZone))
+      )
+    );
+  }
+  return createAndConfirm(input, context, made, input.gathers);
 }
 
 const createScheduleDescription =
@@ -509,13 +660,35 @@ export default defineDynamic({
       // The skills pilot's turns read the short descriptions.
       const short = skillsLayout(context) === "core";
       const delegating = backgroundActionsOfCaller(context);
-      const create = delegating
-        ? short
-          ? shortDelegatingCreateSchedule
-          : delegatingCreateSchedule
-        : short
-          ? shortCreateSchedule
-          : createSchedule;
+      // The pilot of routines set up whole takes what each run does, and
+      // which similar schedules the person said to keep; outside it the
+      // tool is the same, byte for byte.
+      const create = routineSetupOfCaller(context)
+        ? defineTool({
+            approval: createScheduleApproval,
+            description: delegating
+              ? short
+                ? shortDelegatingCreateScheduleDescription
+                : delegatingCreateScheduleDescription
+              : short
+                ? shortCreateScheduleDescription
+                : createScheduleDescription,
+            inputSchema: delegating
+              ? short
+                ? shortDelegatingRoutineCreateScheduleInputSchema
+                : delegatingRoutineCreateScheduleInputSchema
+              : short
+                ? shortRoutineCreateScheduleInputSchema
+                : routineCreateScheduleInputSchema,
+            execute: runRoutineCreateSchedule,
+          })
+        : delegating
+          ? short
+            ? shortDelegatingCreateSchedule
+            : delegatingCreateSchedule
+          : short
+            ? shortCreateSchedule
+            : createSchedule;
       const managing = {
         "schedules-create": create,
         "schedules-list": listSchedules,

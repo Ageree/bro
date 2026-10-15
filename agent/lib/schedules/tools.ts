@@ -157,6 +157,21 @@ const travelTask =
   /(?:ехать|езды|в пути|пробк|маршрут|до работы|на работу|до офиса|commute|(?<!(?:google|my)\s)\bdriv(?:e|es|ing)\b|traffic)/iu;
 
 /**
+ * What the reply says of a trial run: one `schedules-create` already started
+ * (the pilot of routines set up whole, `agent/lib/schedules/routine.ts`), one
+ * to offer, or none for a schedule that only reminds or acts.
+ */
+const trialLines = {
+  none: [],
+  offered: [
+    "If each run gathers something (a summary, a check) rather than only reminding, offer to send one right now as a trial; on the person's yes, call schedules-update with runNow true.",
+  ],
+  started: [
+    "A trial run starts within a minute, beside the regular ones; its report arrives in a few minutes in the same place. Say so in this reply without asking, and nothing more about it until it comes.",
+  ],
+} as const;
+
+/**
  * What the confirmation of a new schedule tells the person besides its first
  * run. RU d12 (25.09): «сводка будет приходить каждый будний день в 8:00»
  * said neither where it arrives, nor how to move or pause it, nor that the
@@ -166,7 +181,8 @@ const travelTask =
 export function scheduleConfirmation(
   job: ScheduledJob,
   delivery: Awaited<ReturnType<typeof scheduleDelivery>>,
-  missingInputs: readonly string[]
+  missingInputs: readonly string[],
+  trial: keyof typeof trialLines = "offered"
 ) {
   const missing = missingInputs
     .map((input) => input.trim())
@@ -182,7 +198,7 @@ export function scheduleConfirmation(
       ? []
       : [
           "Say it changes in plain words: «сдвинь на 7:30», «на праздники не присылай», «поставь на паузу», «удали».",
-          "If each run gathers something (a summary, a check) rather than only reminding, offer to send one right now as a trial; on the person's yes, call schedules-update with runNow true.",
+          ...trialLines[trial],
         ]),
     ...(travelTask.test(job.prompt)
       ? [

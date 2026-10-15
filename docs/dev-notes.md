@@ -1844,6 +1844,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   2026 год: следующее допишите (`shared/schedules/holidays.ts`).
 - `schedules-answer` принимает лишь run id, чей вопрос доставлен в этот чат
   после прошлого сообщения человека (`answerableScheduledQuestions`).
+- Пилот `ROUTINE_SETUP_WORKSPACES` (id или `*`, 15.10, п. 13): `schedules-create`
+  берёт `gathers` и `keepAlongside`. Повторяющееся, которое собирает, сразу ставит
+  пробный прогон, кроме расписания с `delegate` (проба сделала бы действие сейчас)
+  и первого запуска ближе часа (пришли бы два подряд).
+  Похожее активное повторяющееся (в те же дни ±1 ч или половина основ слов общая,
+  `agent/lib/schedules/routine.ts`) — отказ «Nothing was created», пока его id нет
+  в `keepAlongside`; что человек ответил, код не сверяет. Пилотный вариант — инлайн
+  `defineTool` в резолвере: вне пилота инструмент прежний статический.
 - `eve dev` не запускает расписания по cron: `POST /eve/v1/dev/schedules/<имя>`.
   Через `next dev` этому POST нужна локальная сессионная cookie: без неё
   middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200
