@@ -59,6 +59,7 @@ def main(argv):
         pages.append(info)
         warnings.extend("%s: %s" % (photo, w) for w in info.pop("warnings"))
     if pdf:
+        images = same_a4_size(images, pages)
         first, rest = images[0], images[1:]
         first.save(
             args.output, "PDF", save_all=True, append_images=rest, resolution=pages[0]["dpi"], quality=80
@@ -66,6 +67,26 @@ def main(argv):
     else:
         images[0].save(args.output, dpi=(pages[0]["dpi"], pages[0]["dpi"]), quality=88)
     return {"output": args.output, "pages": pages, "warnings": warnings}
+
+
+def same_a4_size(images, pages):
+    """A4 pages of one PDF share the first A4 page's pixel size, so they print alike."""
+    from PIL import Image
+
+    a4 = [image for image, page in zip(images, pages) if page["paper"] == "a4"]
+    if not a4:
+        return images
+    short = min(a4[0].size)
+    out = []
+    for image, page in zip(images, pages):
+        if page["paper"] == "a4":
+            size = (short, round(short * A4)) if image.height >= image.width else (round(short * A4), short)
+            if image.size != size:
+                image = image.resize(size, Image.LANCZOS)
+            page["size_px"] = list(size)
+            page["dpi"] = round(short / (210 / 25.4))
+        out.append(image)
+    return out
 
 
 def parse_corners(text):
@@ -279,7 +300,7 @@ def scan_page(path, corners, mode, paper, turn):
         warnings.append(
             "page edges not found: only straightened by %.1f°; pass --corners read with look --grid" % angle
         )
-        width, height, name = flat.width, flat.height, "photo"
+        name = "photo"
         used = None
     else:
         if not convex(corners):
