@@ -172,6 +172,26 @@ describe("privacy", () => {
     );
   });
 
+  it("names the decision model only for the tool router's pilot", async () => {
+    const outside = await withServices({
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    expect((await overview(outside.tool)).processors.join("\n")).not.toContain(
+      "Jev"
+    );
+
+    vi.stubEnv("TOOL_ROUTER_WORKSPACES", scope.workspaceId);
+    const pilot = await withServices({
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    const processors = (await overview(pilot.tool)).processors.join("\n");
+    vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
+    expect(processors).toContain("модель Jev компании TypeSafe");
+    expect(processors).toContain("без кодов, номеров документов");
+  });
+
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {
     const { facts } = await withServices({
       MODEL_PROVIDER: "routerai",

@@ -76,6 +76,16 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import { turnTools } from "@agent/lib/turn-kind/tools";
+import {
+  toolRouterEligible,
+  toolRouterListed,
+  toolRouterMode,
+} from "@agent/lib/tool-router/pilot";
+import {
+  routerGroupsOfStep,
+  routerSkillNote,
+  stampRouterUse,
+} from "@agent/lib/tool-router/turn";
 import { directModelActive } from "@shared/model/provider";
 import { env } from "@shared/environment";
 
@@ -145,6 +155,11 @@ export default defineAgent({
         // the steps before wrote a new summary, and at the first step
         // whether a message of the turn reached its history at all.
         recordStepHistory(step, ctx.messages);
+        // In the pilot of the tool router every step tells it which groups
+        // the step before used (`stampRouterUse`), whatever the turn.
+        if (toolRouterListed(ctx)) {
+          stampRouterUse(ctx.messages, step, toolRouterMode());
+        }
         // A turn eve compacted inside takes its kind from its record.
         const kind = turnKind(ctx, step);
         const backgroundTaskTurn = kind === "background-task";
@@ -251,6 +266,8 @@ export default defineAgent({
           resolveModeValue(ctx, clockModes) !== null;
         // The pilots' verdicts hold for the whole turn: one that flipped
         // between steps changed the step's notes and tools.
+        const stepPilot = stepContextPilot(scope, step);
+        const routerMode = toolRouterMode();
         const [
           modelId,
           formOfAddress,
@@ -261,10 +278,11 @@ export default defineAgent({
           earlyReply,
           fastReply,
           earlyReplySplit,
+          routerGroups,
         ] = await Promise.all([
           getWorkspaceModelId(scope),
           writesToPerson ? getFormOfAddress(scope) : undefined,
-          stepContextPilot(scope, step).then(
+          stepPilot.then(
             async (pilot) =>
               [
                 pilot,
@@ -293,7 +311,30 @@ export default defineAgent({
           kind === "person" ? fastReplyPilot(scope, step) : false,
           // The heads-up of the early-reply pilot in a step of its own.
           kind === "person" ? earlyReplySplitPilot(scope, step) : false,
+          // The pilot of the tool router chooses a person's groups, only
+          // with the cache-friendly step: without it the block changes
+          // between steps anyway. A failure leaves the step as before.
+          toolRouterEligible(ctx, kind)
+            ? stepPilot
+                .then((stable) =>
+                  stable
+                    ? routerGroupsOfStep(
+                        ctx.messages,
+                        step,
+                        skillSetup(ctx),
+                        routerMode
+                      )
+                    : undefined
+                )
+                .catch(() => {
+                  console.warn("[tool-router] step not routed");
+                  return undefined;
+                })
+            : undefined,
         ]);
+        // In `on` the router's groups take the skills' place; in `shadow`
+        // they are only logged.
+        const routed = routerMode === "on" ? routerGroups : undefined;
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
         const notes = [
           timeZone === undefined ? undefined : localClock(new Date(), timeZone),
@@ -339,6 +380,10 @@ export default defineAgent({
             ? owedStepsNote(owedSteps, stableContext)
             : undefined,
           writesToPerson && sendFailed ? failedSendNote : undefined,
+          // A group open without its skill's block: load it first.
+          routed === undefined
+            ? undefined
+            : routerSkillNote(routed, ctx.messages, skillSetup(ctx)),
         ].filter((note) => note !== undefined);
         const costOwner = turnCostSource(ctx.session);
         const selection: Parameters<typeof modelSelection>[1] = {
@@ -429,6 +474,15 @@ export default defineAgent({
         // tools in every layout (`backgroundTaskTurnTools`).
         if (!stableContext && !backgroundTaskTurn) {
           return modelSelection(modelId, selection);
+        }
+        if (routed !== undefined) {
+          return modelSelection(modelId, {
+            ...selection,
+            routerGroups: routed,
+            stableContext,
+            step,
+            toolGroups: undefined,
+          });
         }
         return modelSelection(modelId, { ...selection, stableContext, step });
       },

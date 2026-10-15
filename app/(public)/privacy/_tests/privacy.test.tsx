@@ -28,6 +28,7 @@ describe("privacy page", () => {
       "AgentMail",
       "Mail.ru и Яндекс",
       "Песочница для кода",
+      "TypeSafe",
     ]) {
       expect(html).toContain(service);
     }

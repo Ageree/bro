@@ -2,6 +2,8 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
+import { taskJobsDecided } from "@agent/lib/model/router/task";
+import { toolRouterListedWorkspace } from "@agent/lib/tool-router/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -70,20 +72,26 @@ export const privacy = defineTool({
       phonePilot(scope) ||
       (env.PHONE_AGENT_ID !== undefined &&
         (await readPhoneNumber(scope)) !== null);
-    const [modelId, google, memoryDigest, conversationLog] = await Promise.all([
-      getWorkspaceModelId(scope),
-      googleNow(scope),
-      // The digest's model reads memory only where the digest runs and asks.
-      schedulesEnabled() && directModelActive()
-        ? memoryDigestPilot(scope, { whenUnknown: true })
-        : false,
-      crossChannelPilot(scope),
-    ]);
+    const [modelId, google, memoryDigest, conversationLog, taskJobs] =
+      await Promise.all([
+        getWorkspaceModelId(scope),
+        googleNow(scope),
+        // The digest's model reads memory only where the digest runs and asks.
+        schedulesEnabled() && directModelActive()
+          ? memoryDigestPilot(scope, { whenUnknown: true })
+          : false,
+        crossChannelPilot(scope),
+        taskJobsDecided(scope),
+      ]);
     return {
       kept: keptData({ conversationLog, phone }),
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
+        decisionModel:
+          (directModelActive() &&
+            toolRouterListedWorkspace(scope.workspaceId)) ||
+          taskJobs,
         phone,
       }),
       serverLocation: serverLocation(),
