@@ -170,6 +170,48 @@ function onePlace(
   };
 }
 
+/**
+ * The keyword a place stands for. The model writes them in the person's
+ * language as often as not («сюда», «домой»: live check 15.10), or the
+ * address `location_now` gave for the person's own point — that is «here»
+ * too, not an address the person wrote.
+ */
+const placeKeywords: ReadonlyMap<string, "here" | "home" | "shared"> = new Map([
+  ["here", "here"],
+  ["сюда", "here"],
+  ["здесь", "here"],
+  ["тут", "here"],
+  ["где я", "here"],
+  ["где я сейчас", "here"],
+  ["текущее место", "here"],
+  ["мое место", "here"],
+  ["current location", "here"],
+  ["home", "home"],
+  ["дом", "home"],
+  ["домой", "home"],
+  ["дома", "home"],
+  ["мой дом", "home"],
+  ["shared", "shared"],
+  ["это место", "shared"],
+  ["присланное место", "shared"],
+  ["эта точка", "shared"],
+]);
+
+function folded(text: string) {
+  return text
+    .toLowerCase()
+    .replaceAll("ё", "е")
+    .replaceAll(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function placeKeyword(wanted: string, ownAddress: string | null) {
+  const key = folded(wanted);
+  const keyword = placeKeywords.get(key);
+  if (keyword !== undefined) return keyword;
+  return ownAddress !== null && folded(ownAddress) === key ? "here" : key;
+}
+
 async function resolvePlace(
   wanted: string,
   context: ToolContext,
@@ -177,9 +219,9 @@ async function resolvePlace(
 ): Promise<Resolved> {
   const scope = scheduleScope(context);
   const now = Date.now();
-  const lowered = wanted.toLowerCase();
+  const latest = await latestPosition(scope);
+  const lowered = placeKeyword(wanted, latest?.point.address ?? null);
   if (lowered === "here") {
-    const latest = await latestPosition(scope);
     if (!latest || now - latest.point.recordedAt.getTime() > hereFreshMs) {
       return reply(
         `Bro has no location of the person's from the last 30 minutes. Ask them to send it (${askForPoint}), then set the reminder. Nothing was set up.`
