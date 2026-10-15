@@ -226,7 +226,9 @@ function latestQuestion(text: string) {
  * fine); a question in Bro's own words that asks to sign counts for the
  * judge, unless the message asked another open signing's stored question;
  * any other question clears what was asked; a send without one changes
- * nothing.
+ * nothing. A message that carries the file of some open signing asks about
+ * that signing only, and a question two signings share asks neither unless
+ * the message carries one of their files: one «да» answers one offer.
  */
 export function deliveryVerdicts(
   rows: readonly Pick<DocumentSigning, "id" | "question" | "sourceShareId">[],
@@ -236,22 +238,30 @@ export function deliveryVerdicts(
   const links = sentLinks(sent);
   const text = sent.text ?? "";
   const latest = latestQuestion(text);
-  const asks = (row: Pick<DocumentSigning, "question">) =>
-    latest !== undefined && endsWithQuote(row.question, latest);
-  const askedAnother = rows.some(asks);
+  const carries = (row: Pick<DocumentSigning, "sourceShareId">) =>
+    row.sourceShareId !== null &&
+    links.some((link) => sharedFileId(link) === row.sourceShareId);
+  const stored = rows.filter(
+    (row) => latest !== undefined && endsWithQuote(row.question, latest)
+  );
+  const carried = rows.filter(carries);
+  const owners = carried.length > 0 ? carried : rows;
+  // The one offer whose stored question this is, told apart by its file.
+  const owner = [stored, stored.filter(carries)].find(
+    (asking) => asking.length === 1
+  )?.[0];
   return rows.map((row) => {
     const asked: { text: string; verbatim: boolean } | "clear" | undefined =
       latest === undefined
         ? undefined
-        : asks(row)
+        : owner === row
           ? { text, verbatim: true }
-          : !askedAnother && signQuestionPattern.test(latest.trim())
+          : stored.length === 0 &&
+              owners.includes(row) &&
+              signQuestionPattern.test(latest.trim())
             ? { text, verbatim: false }
             : "clear";
-    const shown =
-      row.sourceShareId !== null &&
-      links.some((link) => sharedFileId(link) === row.sourceShareId);
-    return { asked, id: row.id, shown };
+    return { asked, id: row.id, shown: carries(row) };
   });
 }
 

@@ -146,6 +146,27 @@ describe("what a delivered send did to an open signing", () => {
     ).toEqual([{ text: question, verbatim: true }, "clear"]);
   });
 
+  it("asks one of two offers sharing a question only by the file the message carries", () => {
+    const corrected = {
+      id: "3f6f5d78-641b-4c80-aacf-eec05af14e53",
+      question,
+      sourceShareId: "b2".repeat(12),
+    };
+    const askedOf = (message: Parameters<typeof deliveryVerdicts>[1]) =>
+      verdicts(message, [row, corrected]).map((verdict) => verdict.asked);
+    expect(askedOf({ kind: "message", text: question })).toEqual([
+      "clear",
+      "clear",
+    ]);
+    expect(
+      askedOf({
+        attachments: [{ kind: "file", url: shareLink("b2".repeat(12)) }],
+        kind: "message",
+        text: question,
+      })
+    ).toEqual(["clear", { text: question, verbatim: true }]);
+  });
+
   it("showed the unsigned file when it carried its link", () => {
     expect(
       verdicts({
