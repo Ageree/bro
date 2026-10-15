@@ -14,7 +14,11 @@ import {
   memoryNamespace,
 } from "@agent/lib/memory/namespace";
 import { afterForgetting } from "@agent/lib/privacy/removal";
-import { eraseConversationLines } from "@agent/lib/conversation/erase";
+import {
+  eraseConversationLines,
+  eraseLocationHistory,
+} from "@agent/lib/conversation/erase";
+import { locationPilot } from "@db/services/location";
 import {
   adoptWorkstreams,
   findWorkstreams,
@@ -211,6 +215,7 @@ export default defineMemory({
             // started — a turn Bro opened forgets only what it names.
             if (startedByPerson(ctx)) {
               await eraseConversationLines(scope.workspaceId);
+              await eraseLocationHistory(scope.workspaceId);
             }
             // Only a call that left no saved work behind answers «удали
             // всё»: it carries the guide to what stays outside memory.
@@ -224,7 +229,8 @@ export default defineMemory({
                 note: "The workstreams in changed were renamed after the card and were not forgotten.",
               }),
               ...(missing.length > 0 && { missing }),
-              ...(nothingLeft && afterForgetting()),
+              ...(nothingLeft &&
+                afterForgetting({ location: locationPilot(scope) })),
             };
           },
         }),

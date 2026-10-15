@@ -126,6 +126,8 @@ class FakeEve:
     def __init__(self):
         self.taken = []
         self.seen = []
+        # (path, update id) of everything posted, in order: the live location's edits go to their own route.
+        self.posted = []
         self.script = {}
         self.secrets = []
         self.healthy = True
@@ -142,7 +144,7 @@ class FakeEve:
 
             def do_POST(self):
                 data = self.rfile.read(int(self.headers["Content-Length"]))
-                status = eve.handle(data, self.headers)
+                status = eve.handle(data, self.headers, self.path)
                 self.send_response(status)
                 self.send_header("Content-Length", "2")
                 self.end_headers()
@@ -155,11 +157,12 @@ class FakeEve:
         threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/eve/v1/telegram"
 
-    def handle(self, data, headers):
+    def handle(self, data, headers, path="/eve/v1/telegram"):
         update = json.loads(data)
         with self.lock:
             self.secrets.append((headers.get("X-Telegram-Bot-Api-Secret-Token"), headers.get("Content-Type")))
             self.seen.append(update["update_id"])
+            self.posted.append((path, update["update_id"]))
             answers = self.script.get(update["update_id"])
             status = answers.pop(0) if answers else 200
             if status == 200:
@@ -178,6 +181,14 @@ class FakeEve:
 def message(update_id, chat, text="x"):
     return {"update_id": update_id, "message": {"message_id": update_id, "chat": {"id": chat, "type": "private"},
                                                  "from": {"id": chat}, "text": text}}
+
+
+def live_edit(update_id, chat, lat, message_id=50, lon=37.6):
+    """An edit of the live location `message_id` in `chat`, moved to (lat, lon)."""
+    return {"update_id": update_id, "edited_message": {
+        "message_id": message_id, "chat": {"id": chat, "type": "private"}, "from": {"id": chat},
+        "date": 1_760_000_000, "edit_date": 1_760_000_000 + update_id,
+        "location": {"latitude": lat, "longitude": lon, "live_period": 3600, "horizontal_accuracy": 10}}}
 
 
 def wait_for(predicate, timeout=10):
@@ -440,6 +451,75 @@ class Delivery(BridgeCase):
         self.assertNotIn(SECRET, self.logged())
 
 
+class LiveLocation(BridgeCase):
+    """TG_BRIDGE_LIVE_LOCATION: a live location's edits go to their own eve route and never hold messages."""
+
+    def live(self):
+        with self.eve.lock:
+            return [i for path, i in self.eve.posted if path == "/eve/v1/telegram-location"]
+
+    def test_off_asks_for_no_edits_and_confirms_a_stray_one_unsent(self):
+        # An edit Telegram made before the flag went off may still come: confirmed, sent nowhere.
+        self.telegram.add(live_edit(1, 5, 55.75), message(2, 5))
+        bridge = self.start()
+        self.assertTrue(wait_for(lambda: self.eve.taken_ids() == [2]))
+        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 3, "done": []}))
+        self.assertEqual(self.telegram.allowed, ["message", "callback_query"])
+        self.assertEqual(bridge.counters["skipped"], 1)
+        self.assertEqual(self.live(), [])
+
+    def test_on_sends_edits_to_the_live_route_with_the_secret(self):
+        self.telegram.add(message(1, 5), live_edit(2, 5, 55.75), message(3, 5))
+        bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on"))
+        self.assertTrue(wait_for(lambda: self.live() == [2] and self.eve.taken_ids()[-1] == 3))
+        self.assertEqual(self.telegram.allowed, ["message", "callback_query", "edited_message"])
+        with self.eve.lock:
+            self.assertEqual([i for path, i in self.eve.posted if path == "/eve/v1/telegram"], [1, 3])
+        self.assertTrue(all(secret == (SECRET, "application/json") for secret in self.eve.secrets))
+        self.assertTrue(wait_for(lambda: bridge.counters["liveDelivered"] == 1))
+        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 4, "done": []}))
+
+    def test_an_edited_text_is_skipped_before_the_queue(self):
+        edited = {"update_id": 1, "edited_message": {"message_id": 9, "chat": {"id": 5, "type": "private"},
+                                                     "from": {"id": 5}, "text": "поправил"}}
+        self.telegram.add(edited, message(2, 5))
+        bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on"))
+        self.assertTrue(wait_for(lambda: self.eve.taken_ids() == [2]))
+        self.assertEqual(bridge.counters["skipped"], 1)
+        self.assertNotIn(1, self.eve.seen)
+        self.assertNotIn("поправил", self.logged())
+
+    def test_close_queued_edits_coalesce_but_a_far_one_between_stays(self):
+        # One batch: 2 and 3 are within 100 m of 4 and go; 5 is far, so 4 before it stays, and so does 6.
+        north = 55.75 + 0.009  # about a kilometre from the first edit
+        self.telegram.add(live_edit(1, 5, 55.75), live_edit(2, 5, north), live_edit(3, 5, north + 0.0003),
+                          live_edit(4, 5, north + 0.0005), live_edit(5, 5, 55.75), live_edit(6, 5, north))
+        bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on"))
+        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 7, "done": []}))
+        self.assertEqual(self.live(), [1, 4, 5, 6])
+        self.assertEqual(bridge.counters["coalesced"], 2)
+
+    def test_eve_without_the_route_drops_an_edit_at_once(self):
+        self.eve.script[1] = [404]
+        self.telegram.add(live_edit(1, 5, 55.75), message(2, 5))
+        bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on"))
+        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 3, "done": []}))
+        self.assertEqual(self.eve.seen.count(1), 1)
+        self.assertEqual(bridge.counters["liveDropped"], 1)
+        self.assertEqual(bridge.counters["deliveryRetries"], 0)
+        self.assertEqual(self.eve.taken_ids(), [2])
+
+    def test_edits_wait_while_eve_is_down_and_do_not_make_health_stuck(self):
+        bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on", TG_BRIDGE_STUCK_S="0.3",
+                                          TG_BRIDGE_LIVE_URL="http://127.0.0.1:9/eve/v1/telegram-location"))
+        self.telegram.add(live_edit(1, 5, 55.75))
+        self.assertTrue(wait_for(lambda: bridge.counters["deliveryRetries"] >= 3))
+        time.sleep(0.4)
+        self.assertEqual(bridge.counters["liveDropped"], 0)
+        self.assertIsNone(bridge.health()[1]["oldestPendingAgeS"])
+        self.assertTrue(bridge.health()[0])
+
+
 class Restart(BridgeCase):
     def test_restart_neither_repeats_nor_loses(self):
         self.eve.script[1] = [500] * 1000
@@ -690,6 +770,8 @@ class Pieces(unittest.TestCase):
             "TG_BRIDGE_RETRY_MAX_S": ["nan", "inf", "1e999", "-1", "soon"],
             "TG_BRIDGE_HEALTH": ["127.0.0.1:abc", "127.0.0.1:99999"],
             "TG_BRIDGE_EVE_URL": ["http://127.0.0.1:abc/eve/v1/telegram", "https://127.0.0.1/x", "eve"],
+            "TG_BRIDGE_LIVE_LOCATION": ["yes", "1"],
+            "TG_BRIDGE_LIVE_URL": ["https://127.0.0.1/eve/v1/telegram-location"],
         }
         for name, values in broken.items():
             for value in values:

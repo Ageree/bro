@@ -20,6 +20,7 @@ export const travelModes = ["walking", "cycling", "driving"] as const;
 type TravelMode = (typeof travelModes)[number];
 
 const geocoderUrl = "https://nominatim.openstreetmap.org/search";
+const reverseUrl = "https://nominatim.openstreetmap.org/reverse";
 const routerOrigin = "https://routing.openstreetmap.de";
 /** The FOSSGIS router keeps one OSRM instance per profile. */
 const routerProfiles: Readonly<Record<TravelMode, string>> = {
@@ -50,6 +51,9 @@ const requestTimeoutMs = 8000;
 const placeMemoryMs = 24 * 60 * 60_000;
 const missingPlaceMemoryMs = 60 * 60_000;
 const routeMemoryMs = 6 * 60 * 60_000;
+/** An address stays where it is for a week; the sea, an hour. */
+const addressMemoryMs = 7 * 24 * 60 * 60_000;
+const missingAddressMemoryMs = 60 * 60_000;
 /** Plenty for the conversations one instance serves; the oldest go first. */
 const maximumRemembered = 500;
 /** How far around the start a destination is looked for first, in degrees. */
@@ -210,6 +214,10 @@ const rememberedPlaces = new Map<
   string,
   { readonly places: readonly MapPlace[]; readonly until: number }
 >();
+const rememberedAddresses = new Map<
+  string,
+  { readonly address: string | undefined; readonly until: number }
+>();
 const rememberedRoutes = new Map<
   string,
   { readonly route: MeasuredRoute | undefined; readonly until: number }
@@ -369,6 +377,164 @@ async function request<Schema extends z.ZodType>(
     throw new MapServiceError(`${service} sent an unexpected answer`, "failed");
   }
   return parsed.data;
+}
+
+/**
+ * Whether this host could be asked right now without waiting: no request
+ * slot ahead and no cool-down. A call that must not wait (a channel's
+ * `onMessage`, a background fill) gives up when it could not.
+ */
+function freeNow(host: string) {
+  const now = Date.now();
+  return (
+    now >= (coolingUntil.get(host) ?? 0) &&
+    now >= (nextRequestAt.get(host) ?? 0)
+  );
+}
+
+const reverseAddressSchema = z.object({
+  city: z.string().optional(),
+  hamlet: z.string().optional(),
+  house_number: z.string().optional(),
+  road: z.string().optional(),
+  state: z.string().optional(),
+  town: z.string().optional(),
+  village: z.string().optional(),
+});
+
+const reverseSchema = z.union([
+  z.object({ error: z.string() }),
+  z.object({
+    address: reverseAddressSchema.optional(),
+    display_name: z.string().optional(),
+  }),
+]);
+
+/**
+ * The short address of a point: «Тверская улица 7, Москва» from the
+ * address parts, never a shop's or a café's own name (anyone may edit it on
+ * the map, and it is not where the person said they are). Asked in Russian,
+ * of the address layer only, remembered for a week by the point rounded to
+ * about 11 m. `wait: false` asks only when this instance may ask at once,
+ * and otherwise returns nothing without waiting. Undefined when the map has
+ * no address there.
+ */
+export async function reverseGeocode(
+  lat: number,
+  lon: number,
+  signal: AbortSignal,
+  {
+    wait = true,
+    zoom = 18,
+  }: { readonly wait?: boolean; readonly zoom?: number } = {}
+): Promise<string | undefined> {
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${String(zoom)}`;
+  const known = recall(rememberedAddresses, key);
+  if (known) return known.address;
+  const url = new URL(reverseUrl);
+  url.searchParams.set("lat", lat.toFixed(6));
+  url.searchParams.set("lon", lon.toFixed(6));
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("accept-language", "ru");
+  url.searchParams.set("layer", "address");
+  url.searchParams.set("zoom", String(zoom));
+  if (!wait && !freeNow(url.host)) return undefined;
+  const result = await request(
+    url,
+    "The OpenStreetMap geocoder",
+    reverseSchema,
+    signal
+  );
+  const address = "error" in result ? undefined : shortAddress(result.address);
+  remember(rememberedAddresses, key, {
+    address,
+    until:
+      Date.now() +
+      (address === undefined ? missingAddressMemoryMs : addressMemoryMs),
+  });
+  return address;
+}
+
+const nearbySchema = z.union([
+  z.object({ error: z.string() }),
+  z.object({
+    address: reverseAddressSchema.optional(),
+    name: z.string().nullish(),
+  }),
+]);
+
+const rememberedNearby = new Map<
+  string,
+  {
+    readonly place: { readonly address?: string; readonly name?: string };
+    readonly until: number;
+  }
+>();
+
+/**
+ * The named place on the map nearest a point (a café, a shop, a station)
+ * and its address, for the history of where the person stayed
+ * (`location_history`): «что за кофейня это была». The name is whatever the
+ * map says, which anyone may edit: a tool hands it on as the nearest place,
+ * never as where the person said they were, and never into a turn's context.
+ * Waits for its request slot like any lookup; remembered for a week.
+ */
+export async function nearbyPlace(
+  lat: number,
+  lon: number,
+  signal: AbortSignal
+): Promise<{ readonly address?: string; readonly name?: string }> {
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const known = recall(rememberedNearby, key);
+  if (known) return known.place;
+  const url = new URL(reverseUrl);
+  url.searchParams.set("lat", lat.toFixed(6));
+  url.searchParams.set("lon", lon.toFixed(6));
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("accept-language", "ru");
+  url.searchParams.set("layer", "poi");
+  url.searchParams.set("zoom", "18");
+  const result = await request(
+    url,
+    "The OpenStreetMap geocoder",
+    nearbySchema,
+    signal
+  );
+  const address = "error" in result ? undefined : shortAddress(result.address);
+  const cleaned =
+    "error" in result
+      ? ""
+      : (result.name ?? "")
+          .replaceAll(/[\p{Cc}\p{Cf}\s]+/gu, " ")
+          .trim()
+          .slice(0, 80);
+  const name = cleaned.length > 0 ? cleaned : undefined;
+  const place = {
+    ...(address !== undefined && { address }),
+    ...(name !== undefined && { name }),
+  };
+  remember(rememberedNearby, key, {
+    place,
+    until:
+      Date.now() +
+      (name === undefined ? missingAddressMemoryMs : addressMemoryMs),
+  });
+  return place;
+}
+
+function shortAddress(parts: z.infer<typeof reverseAddressSchema> | undefined) {
+  if (!parts) return undefined;
+  const street = [parts.road, parts.house_number]
+    .filter((part) => part !== undefined && part.length > 0)
+    .join(" ");
+  const settlement =
+    parts.city ?? parts.town ?? parts.village ?? parts.hamlet ?? parts.state;
+  const label = [street, settlement]
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .join(", ");
+  return label.length > 0 ? label.slice(0, 200) : undefined;
 }
 
 /** «55.7648, 37.6380» as a place, without asking anyone. */

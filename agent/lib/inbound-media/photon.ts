@@ -16,6 +16,11 @@ import {
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
+  isLocationCard,
+  locationCardByteCap,
+  readLocationCard,
+} from "@agent/lib/location/vcf";
+import {
   fileNote,
   inboundTurn,
   type InboundMediaItem,
@@ -184,12 +189,37 @@ function taskDocumentItem(
   };
 }
 
+/**
+ * A location card («Отправить мою геопозицию», a pin) read as a point, before
+ * any other handling: a card is a small text file the task agent's documents
+ * would otherwise take. One that does not read stays the note it was.
+ */
+async function locationItem(
+  attachment: Attachment,
+  reader: Reader,
+  declared: string | undefined
+): Promise<InboundMediaItem> {
+  const resolved = await attachmentBytes(
+    attachment,
+    reader,
+    locationCardByteCap
+  );
+  const point =
+    resolved.kind === "bytes" ? readLocationCard(resolved.bytes) : undefined;
+  if (point) return { kind: "location", point };
+  return { kind: "note", text: fileNote(attachment.name, declared) };
+}
+
 async function attachmentItem(
   attachment: Attachment,
   reader: Reader,
-  documents: boolean
+  documents: boolean,
+  location: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(attachment.mimeType);
+  if (location && isLocationCard(attachment.name, declared)) {
+    return locationItem(attachment, reader, declared);
+  }
   const voiceLike =
     attachment.type === "audio" ||
     isAudioMediaType(declared) ||
@@ -296,18 +326,22 @@ async function attachmentItem(
  * The turn for an iMessage that carries attachments, or `undefined` when it is
  * text only and eve's default turn applies. `documents` (`taskFilesEnabled`)
  * also hands the model the spreadsheets and documents the task agent can
- * open; without it they stay a note.
+ * open; without it they stay a note. `location` (the geolocation pilot)
+ * reads a location card as a point (`InboundTurn.locations`).
  */
 export async function photonMediaTurn(
   message: Message,
-  { documents = false }: { readonly documents?: boolean } = {}
+  {
+    documents = false,
+    location = false,
+  }: { readonly documents?: boolean; readonly location?: boolean } = {}
 ): Promise<InboundTurn | undefined> {
   const attachments = message.attachments;
   if (attachments.length === 0) return undefined;
   const readers = rawReaders(message);
   const items = await Promise.all(
     attachments.map((attachment, index) =>
-      attachmentItem(attachment, readers[index], documents)
+      attachmentItem(attachment, readers[index], documents, location)
     )
   );
   return inboundTurn(message.text, items);

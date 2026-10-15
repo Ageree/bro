@@ -2,6 +2,7 @@ import { defineSchedule } from "eve/schedules";
 import { z } from "zod";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { expireConversationLines } from "@db/services/conversation-log";
+import { expireLocationPoints } from "@db/services/location";
 import {
   recordUntrackedMemories,
   trimForgottenMemoryHistory,
@@ -16,11 +17,14 @@ import {
 // workspace's, in the pilot or not. That pass runs under EVE_SCHEDULES=off
 // too: the 14 days are a promise to the person, not an action of Bro's, a
 // delete of what expired is harmless wherever it runs, and the log has no
-// other sweep (a delete on every logged line cost every turn).
+// other sweep (a delete on every logged line cost every turn). Shared
+// locations older than 90 days go the same way, and the reminders at places
+// that ended a month ago (`docs/location.md`).
 export default defineSchedule({
   cron: "17 * * * *",
   run({ waitUntil }) {
     waitUntil(runPass("conversation-log", expireConversationLines));
+    waitUntil(runPass("location", () => expireLocationPoints(new Date())));
     if (!schedulesEnabled()) return;
     waitUntil(maintainMemoryHistory());
   },

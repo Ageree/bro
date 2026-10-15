@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 const switchState = vi.hoisted(() => ({
   enabled: false,
   expireConversationLines: vi.fn<() => Promise<void>>(),
+  expireLocationPoints: vi.fn<() => Promise<void>>(),
   recordUntrackedMemories: vi.fn<() => Promise<void>>(),
   trimForgottenMemoryHistory: vi.fn<() => Promise<void>>(),
 }));
@@ -14,6 +15,9 @@ vi.mock("@agent/lib/schedules/enabled", () => ({
 }));
 vi.mock("@db/services/conversation-log", () => ({
   expireConversationLines: switchState.expireConversationLines,
+}));
+vi.mock("@db/services/location", () => ({
+  expireLocationPoints: switchState.expireLocationPoints,
 }));
 vi.mock("@db/services/memory/records", () => ({
   recordUntrackedMemories: switchState.recordUntrackedMemories,
@@ -69,16 +73,19 @@ describe("EVE_SCHEDULES=off", () => {
     }
   );
 
-  // The 14 days of the cross-channel log are a promise to the person, and
-  // its only sweep is this tick (`agent/schedules/memory-history.ts`).
-  it("memoryHistory only expires the cross-channel log", async () => {
+  // The 14 days of the cross-channel log and the 90 of shared locations
+  // are promises to the person, and their only sweep is this tick
+  // (`agent/schedules/memory-history.ts`).
+  it("memoryHistory only expires the cross-channel log and locations", async () => {
     switchState.expireConversationLines.mockResolvedValue();
+    switchState.expireLocationPoints.mockResolvedValue();
     const { args, waitUntil } = tickArguments();
     memoryHistory.run(args);
     await Promise.all(waitUntil.mock.calls.map(([work]) => work));
 
-    expect(waitUntil).toHaveBeenCalledOnce();
+    expect(waitUntil).toHaveBeenCalledTimes(2);
     expect(switchState.expireConversationLines).toHaveBeenCalledOnce();
+    expect(switchState.expireLocationPoints).toHaveBeenCalledOnce();
     expect(switchState.trimForgottenMemoryHistory).not.toHaveBeenCalled();
     expect(switchState.recordUntrackedMemories).not.toHaveBeenCalled();
   });

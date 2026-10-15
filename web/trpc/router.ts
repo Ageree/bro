@@ -11,6 +11,7 @@ import {
 } from "@db/services/settings";
 import { deleteVaultItem, saveVaultItem } from "@db/services/vault";
 import { disconnectMail } from "@db/services/mail";
+import { locationPilot, recordWebShare } from "@db/services/location";
 import { mailAccessSchema, mailProviderSchema } from "@shared/mail/schema";
 import { mailEnabled, mailProviderConfigured } from "@shared/mail/providers";
 import {
@@ -144,6 +145,43 @@ export const appRouter = createTRPCRouter({
             callbackUrl.toString()
           ),
         };
+      }),
+  },
+  /**
+   * The web chat's «поделиться геопозицией» button (geolocation pilot,
+   * LOCATION_WORKSPACES): whether to show it, and the point the browser
+   * gave, stored as the person's own shared position.
+   */
+  location: {
+    enabled: protectedProcedure.query(({ ctx }) => locationPilot(ctx.scope)),
+    share: protectedProcedure
+      .input(
+        z.object({
+          accuracyM: z.number().min(0).max(100_000).optional(),
+          lat: z.number().min(-90).max(90),
+          lon: z.number().min(-180).max(180),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!locationPilot(ctx.scope)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Геопозиция в веб-чате пока недоступна.",
+          });
+        }
+        const { shared } = await recordWebShare(ctx.scope, {
+          accuracyM:
+            input.accuracyM === undefined ? null : Math.round(input.accuracyM),
+          lat: input.lat,
+          lon: input.lon,
+        });
+        if (!shared) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Геопозиция только что отправлена.",
+          });
+        }
+        return { shared };
       }),
   },
   personalMail: {
