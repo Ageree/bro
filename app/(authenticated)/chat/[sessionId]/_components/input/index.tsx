@@ -12,6 +12,7 @@ import {
   paperComposerSubmitClassName,
 } from "../../../_lib/composer";
 import { messageContent } from "../../../_lib/message-input";
+import { cn } from "@web/components/class-names";
 import { api } from "@web/trpc/client";
 import type { ChatAgent } from "../chat-agent";
 
@@ -49,7 +50,10 @@ export function ChatInput({
     // scrolling text never shows through beside it.
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-linear-to-t from-background via-background to-transparent px-4 pt-8 pb-6 sm:px-6">
       <PromptInput
-        className={`${paperComposerClassName} pointer-events-auto mx-auto max-w-3xl`}
+        className={cn(
+          paperComposerClassName,
+          "pointer-events-auto mx-auto max-w-3xl"
+        )}
         compact
         onSubmit={handleSubmit}
       >
