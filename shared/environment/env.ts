@@ -1038,6 +1038,17 @@ export const env = createEnv({
         "BACKGROUND_ACTIONS_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of one-off schedules on the clock of an event elsewhere
+    // (docs/roadmap.md, item 18): workspace ids, or `*` for every workspace,
+    // whose `schedules-create` takes a flight's departure on its airport's
+    // clock and how long before it to run (`minutesBefore`), and code counts
+    // the moment. Unset, nobody: the tools read as before.
+    SCHEDULE_EVENT_ZONE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SCHEDULE_EVENT_ZONE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,

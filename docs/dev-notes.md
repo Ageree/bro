@@ -1842,6 +1842,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Правка расписания берёт недостающее из расписания, не из профиля
   (`shared/schedules/timing.ts`). Праздники — только постановление № 1466 на
   2026 год: следующее допишите (`shared/schedules/holidays.ts`).
+- Шаг перед событием в другом городе (пилот `SCHEDULE_EVENT_ZONE_WORKSPACES`,
+  id или `*`; п. 18 роадмапа): у `once` есть `minutesBefore`, модель шлёт вылет
+  по часам аэропорта и его пояс, а момент (целые часы, как `flightFacts`)
+  считает `resolveScheduleTiming`. Без флага инструменты прежние байт в байт.
+  Варианты `schedules-*` — один `defineTool` в резолвере: тернарник схем в
+  `inputSchema` TypeScript сужает до самой узкой схемы (без `delegate`), поэтому
+  схему выбирает функция с широким типом результата (`createInputSchemaOf`).
 - `schedules-answer` принимает лишь run id, чей вопрос доставлен в этот чат
   после прошлого сообщения человека (`answerableScheduledQuestions`).
 - `eve dev` не запускает расписания по cron: `POST /eve/v1/dev/schedules/<имя>`.

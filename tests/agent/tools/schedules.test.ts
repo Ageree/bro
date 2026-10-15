@@ -5,7 +5,7 @@ import type {
 } from "eve/tools";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   createScheduledAgentJob,
   getScheduledAgentJob,
@@ -1361,5 +1361,113 @@ describe("schedules that act (BACKGROUND_ACTIONS_WORKSPACES)", () => {
 
     expect(inputProperties(create.inputSchema)).not.toContain("delegate");
     expect(create.description).toBe(createSchedule.description);
+  });
+});
+
+// EN D2 (roadmap, item 18): check-in for a flight out of another city came
+// as «2026-10-01T09:17» with no zone, and opened on the person's clock.
+describe("a one-off on the clock of an event elsewhere (SCHEDULE_EVENT_ZONE_WORKSPACES)", () => {
+  async function createTool(pilot: string) {
+    vi.resetModules();
+    vi.stubEnv("SCHEDULE_EVENT_ZONE_WORKSPACES", pilot);
+    const { default: tools } = await import("@agent/tools/schedules");
+    const resolve = tools.events["turn.started"];
+    const context = dynamicContext("photon-imessage", "channel:photon");
+    const resolved = resolve
+      ? await resolve(
+          {},
+          {
+            ...context,
+            session: {
+              ...context.session,
+              auth: {
+                current: {
+                  ...context.session.auth.current,
+                  attributes: { workspaceId: "workspace-1" },
+                },
+                initiator: null,
+              },
+            },
+          }
+        )
+      : null;
+    const create =
+      resolved && "schedules-create" in resolved
+        ? resolved["schedules-create"]
+        : undefined;
+    if (!create) throw new Error("Expected the schedules-create tool.");
+    return create;
+  }
+
+  // The departure as the booking shows it, on the clock of JFK.
+  const input = {
+    missedRunPolicy: "run_latest" as const,
+    prompt: "Открой онлайн-регистрацию на рейс DL 2101 Нью-Йорк — Чикаго.",
+    timing: {
+      at: "2026-10-02T09:17",
+      kind: "once" as const,
+      minutesBefore: 1440,
+      timezone: "America/New_York",
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ now: new Date("2026-09-25T12:00:00.000Z") });
+    services.timeZone.mockResolvedValue("Europe/Moscow");
+    services.report.mockImplementation((job) =>
+      Promise.resolve({
+        delivery: {
+          conversationChannel: job.conversationChannel,
+          conversationId: job.conversationId,
+          replyAnchorMessageId: null,
+        },
+        fallbacks: [],
+      })
+    );
+    services.create.mockImplementation((_scope, created) =>
+      Promise.resolve({
+        ...scheduledJob(),
+        nextRunAt:
+          created.timing.kind === "once" ? new Date(created.timing.at) : null,
+        timing: created.timing,
+      })
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens check-in 24 h before a New York departure on the airport's clock, for a person in Moscow", async () => {
+    const create = await createTool("workspace-1");
+    if (!(create.inputSchema instanceof z.ZodType)) {
+      throw new TypeError("Expected an authored Zod input schema.");
+    }
+    expect(create.inputSchema.safeParse(input).success).toBe(true);
+
+    const result = await create.execute(
+      input,
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    // 09:17 in New York (UTC−4) on 1 October is 13:17 UTC, 16:17 in Moscow.
+    expect(services.create.mock.calls[0]?.[1]).toMatchObject({
+      timing: { at: "2026-10-01T13:17:00.000Z", kind: "once" },
+    });
+    expect(result).toMatchObject({
+      nextRunEventLocal: "2026-10-01 09:17, Thursday (America/New_York)",
+      nextRunLocal: "2026-10-01 16:17, Thursday (Europe/Moscow)",
+    });
+  });
+
+  it("says check-in is open now rather than set a moment already past", async () => {
+    const create = await createTool("workspace-1");
+    vi.setSystemTime(new Date("2026-10-01T20:00:00.000Z"));
+
+    await expect(
+      create.execute(input, toolContext("schedules-create", "photon-imessage"))
+    ).rejects.toThrow("check-in is already open");
+    expect(services.create).not.toHaveBeenCalled();
   });
 });
