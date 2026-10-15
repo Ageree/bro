@@ -342,6 +342,15 @@
   адрес с `host.py status` (ему нужен `SELECTEL_PROJECT` из
   `GET https://api.selectel.ru/vpc/resell/v2/projects`; файл `project` состояния —
   не он). Собранный релиз выкатывается без пересборки: `deploy --version`.
+- `host.py state save` грузит в `operator/state.bin` весь локальный каталог и
+  затирает более новые файлы другой сессии, а `state restore` без `--force`
+  оставляет уже лежащие локальные (`cmd_state` в `host.py`). 15.10 так затёрся
+  `bro-app-sel-2.json` с новым адресом VM: следующий выкат шёл бы на мёртвый
+  адрес, `PUT env` падал на «Connection reset». Перед правкой env или выкатом —
+  `state restore --force`; перед `state save` — убедиться, что чужое новое не
+  затрётся. Версии `operator/state.bin` в бакете включены: прежняя — `GET ?versions`
+  и `versionId` (`s3.signed` в `scripts/cloudru-sandbox-probe/s3.py`). Живой env
+  сверяйте по sha256 текста из `GET /ops/v1/env` deployd с составленным `compose_env`.
 - deployd пропускает в аргументах `host.py ops` только `[A-Za-z0-9._:/=@%?&+-]`
   (`ARGUMENT` в `host/deployd.py`): список через запятую он отвергает («at most 16
   plain arguments»), ops-скрипты соединяют значения через `+`.
@@ -789,7 +798,7 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
 
 ## Геолокация
 
-- Пилот `LOCATION_WORKSPACES` (id или `*`), обзор — `docs/location.md`. `position`
+- `LOCATION_WORKSPACES` (id или `*`; с 15.10 в проде `*`, владелец), обзор — `docs/location.md`. `position`
   (где человек) ≠ `place` (место, о котором говорит): пересланное и булавки — `place`,
   venue — «вероятно там», только приход; `.loc.vcf` — `position` лишь по подписи
   текущего места (`agent/lib/location/vcf.ts`, список подписей не сверен с живой
@@ -1106,8 +1115,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   модели на ~50k истории. Anthropic кэширует, только если просить:
   `cache_control` верхнего уровня (`extraBody` в `direct.ts`), иначе каждый шаг
   Haiku — полная цена входа.
-- Роутер инструментов (15.10, `TOOL_ROUTER_WORKSPACES` — id или `*`; `TOOL_ROUTER_MODE`
-  `shadow` по умолчанию | `on`; нужны пилоты навыков и шага): ход человека видит ядро
+- Роутер инструментов (`TOOL_ROUTER_WORKSPACES` — id или `*`; `TOOL_ROUTER_MODE`
+  `shadow` по умолчанию | `on`; нужны пилоты навыков и шага, `toolRouterEligible` в
+  `agent/lib/tool-router/pilot.ts`). С 15.10 в проде всем: `*` у
+  `TOOL_ROUTER_WORKSPACES`, `SKILLS_WORKSPACES`, `STEP_CONTEXT_WORKSPACES` (и
+  `LOCATION_WORKSPACES`), `TOOL_ROUTER_MODE=on`; откат — id владельца в `prod.json`
+  и `host.py env`. ход человека видит ядро
   (`agent/lib/tool-router/groups.ts`) и группы, которые Jev выбрал одним запросом System One
   (14 вопросов `noul`, `questions.ts` — дословно из оценки, правка слова — новый прогон и
   пороги). Набор хода только растёт; в окне 60 мин от последнего шага с блоком роутера —
@@ -1158,7 +1171,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Шаблон чата DeepSeek склеивает все системные сообщения в начало промпта:
   «последнее» системное (пометка шага) стоит перед историей и рвёт кэш.
   Состав шага меряет `scripts/costs/step-context.ts` (`docs/agent-costs.md`, 3.2).
-  За флагом `STEP_CONTEXT_WORKSPACES` (с 01.10 — пилот) время и записки идут после истории
+  За флагом `STEP_CONTEXT_WORKSPACES` (с 15.10 в проде `*`) время и записки идут после истории
   тегом `<bro-step-note>` (`agent/lib/step-context/`), а его подобия в
   остальном промпте обезвреживаются (`defuseStepNoteTag`); новые опции
   `modelSelection` добавляйте только под флагом — тесты `agent.test.ts`
@@ -1484,10 +1497,15 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   и поручение шло на старом worker. `rollOutBrowserVmWorker` теперь повторяет запрос через
   4 с до 3 раз; другой причины 401 (ключ, окружение) повторы не лечат. Запуск без `done` и без
   ошибки worker с `.3` описывает цифрами (`unfinished_reason`: шаги, `stopped`, последние действия).
-- Пул браузеров включён только пилоту владельца (`BROWSER_POOL_WORKSPACES`,
-  прод, с 01.10), остальные поручения идут прежним путём (Browser Use). С
-  10.10 хост пула — постоянный сервер Selectel (`BROWSER_HOST_CLOUD=static`,
-  `firecracker`, `CLOUDRU_PRIVATE_ROUTING=off`); зоны Cloud.ru — история.
+- Браузер у каждого человека свой — песочница пула: в проде `BROWSER_BACKEND=pool`,
+  и `usesBrowserPool` (`agent/lib/browser-vm/backend.ts`) отдаёт пул всем, список
+  `BROWSER_POOL_WORKSPACES` тогда не читается. Хост пула с 10.10 — постоянный
+  сервер Selectel (`BROWSER_HOST_CLOUD=static`, `firecracker`,
+  `CLOUDRU_PRIVATE_ROUTING=off`); зоны Cloud.ru — история. От Browser Use Cloud
+  отказались; 15.10 `BROWSER_USE_API_KEY` убран из env прода: с ним
+  `agent/lib/privacy/facts.ts` рассказывал людям про облачный браузер Browser Use.
+  Ключ не возвращайте: код Browser Use жив, но в проде не работает (без ключа
+  молчит и расписание `browser-sign-ins`).
 - В browser-use 0.13.10 обычный file input не имеет `frame_id`: CDP ставит
   его на владеющий HTML-узел. Для проверки origin поля worker ищет ближайшего
   владельца в том же `target_id` и сверяет `Page.getFrameTree.securityOrigin`;
@@ -1665,7 +1683,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   пароль ищется по хэшам слов его 10 последних сообщений, а с фото в трёх
   последних — без сверки (код фото не читает). Госсайтам со входом через
   Госуслуги — отказ: их логин работает лишь на gosuslugi.ru.
-- Телефон для входа — секрет Browser Use на домене `site`, не текст: текст видят
+- Телефон для входа — секрет запуска на домене `site`, не текст: текст видят
   все страницы. Российский номер привязан и 10 цифрами (поля с маской «+7»),
   кроме Госуслуг: там одно поле на телефон, почту и СНИЛС.
 - Не пишите запуску, что он «уже вошёл»: 04.10 с такой фразой продолжения
@@ -1728,7 +1746,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   закрытия: 14.10 ссылку «задать пароль» отвергли как старый код.
 - Логин Госуслуг вводится только на gosuslugi.ru и дан лишь госсайтам из
   закрытого списка (`public-services.ts`): вход отдаёт сайту профиль человека.
-- Статуса «ждёт ввода» у Browser Use нет: правило «сразу кончай с
+- Статуса «ждёт ввода» у запуска нет: правило «сразу кончай с
   `NEEDS: sms_code`» стоит сразу после текста поручения и главнее бюджета
   (`personStepLine`), иначе запуск ждал код весь бюджет.
 - Метки итога (`ITEMS:`, `BOOKING:`, `NEXT:`…) — `outcome.ts`; промпт расписания
@@ -1758,21 +1776,17 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   карту из `verify` и не доверяйте `not_done` без прохода `continue`, который
   ещё раз смотрит список перед последним нажатием. Таймаут «run ran out of time»
   (`expireBrowserRun`) пока не восстанавливается.
-- У Browser Use нет идемпотентности, POST не повторяется: повтор несёт id
-  поручения и номер попытки, захват находит начатый запуск в `GET /runs`.
-- Куки ложатся в профиль только при чистой остановке (`PATCH /browsers/{id}`
-  `stop`): погашенный облаком браузер теряет вход, поэтому ждущие страницы гасит
-  поллер через 15 минут простоя (`release.ts`). Браузеры сессии — только
-  `GET /browsers?agentSessionId=…&filterBy=active`.
+- История (Browser Use Cloud, в проде не работает с 15.10): POST запуска там не
+  повторялся (нет идемпотентности, захват искал начатый запуск в `GET /runs`),
+  куки ложились в профиль лишь при чистой остановке браузера (`release.ts`).
 - Профиль один на воркспейс, а два поручения на один аккаунт не идут разом
   (`sign-ins.ts`): коды параллельных входов гасили друг друга.
-- Входы (`SIGNED_IN:`) продлевает расписание `browser-sign-ins`, кроме Госуслуг:
-  ЕСИА на новом адресе спрашивает код всегда.
-- На 429 (мало сессий) поручение встаёт в очередь (`queue.ts`), на 402 — алерт
-  владельцу (`agent/lib/owner-alert.ts`).
+- Входы (`SIGNED_IN:`) продлевало расписание `browser-sign-ins` (только Browser
+  Use, без его ключа не идёт). Очередь `queue.ts` на пуле — занятый аккаунт и
+  полный сервер; 429/402 Browser Use — история.
 - Очередь и антибот-повторы своего браузера (`vm:`) разбирает и live watch
   тика `browser-runs` (`nextOwnBrowserStarts`), с общим на тик лимитом
-  стартов; Browser Use — только тики. В тестах поллера watch держат
+  стартов; Browser Use (история) — только тики. В тестах поллера watch держат
   выключенным моки `hasLiveBrowserRuns` и `nextOwnBrowserStarts` (`liveWatch`):
   без них тест спит настоящие секунды.
 - eve подписывает карточку лишь «Approve tool call: …»: текст собирает
@@ -2009,7 +2023,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   записанное релизами VM до этого переносит recall из ключей списка
   `cutoverAppRoots` (`agent/lib/memory/namespace.ts`). На умолчание eve не
   полагайтесь.
-- Навыки (`SKILLS_WORKSPACES`) — записи слота `agent/memory/bro_skills.ts`, а
+- Навыки (`SKILLS_WORKSPACES`, с 15.10 в проде `*`) — записи слота `agent/memory/bro_skills.ts`, а
   не `agent/skills/` eve: статичные навыки входят в ключ песочницы, и каждая
   правка дала бы всем сессиям новую песочницу без вложений. Записи хода eve
   вставляет по имени файла слота: навыки — раньше профиля, чья записка
