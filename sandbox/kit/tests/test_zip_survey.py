@@ -94,6 +94,8 @@ class ZipTest(unittest.TestCase):
         inner = io.BytesIO()
         with zipfile.ZipFile(inner, "w") as archive:
             archive.writestr("x.txt", b"x")
+        # Its end record is intact, its central directory is not.
+        damaged = inner.getvalue().replace(b"PK\x01\x02", b"XX\x01\x02")
         # Windows counts 255 characters, Linux 255 bytes: Cyrillic is two each.
         long_name = "Акт сверки взаиморасчётов " * 8 + ".pdf"
         odd = self.path("odd.zip")
@@ -103,6 +105,7 @@ class ZipTest(unittest.TestCase):
             archive.writestr("note", b"a file")
             archive.writestr("note/inside.txt", b"a folder where the file is")
             archive.writestr(long_name, pdf_bytes("x"))
+            archive.writestr("damaged.zip", damaged)
         code, result = kit("zip", "unpack", odd, "-o", self.path("odd"))
         self.assertEqual(code, 0, result)
         targets = sorted(f["to"] for f in result["files"])
@@ -111,7 +114,9 @@ class ZipTest(unittest.TestCase):
         with open(self.path("odd/a.zip.packed"), "rb") as handle:
             self.assertEqual(handle.read(), b"kept")
         self.assertIn("a.zip/x.txt", targets)
-        self.assertEqual([item["name"] for item in result["skipped"]], ["note/inside.txt"])
+        # The inner archive that does not open stays a file beside the rest.
+        self.assertIn("damaged.zip", targets)
+        self.assertEqual([item["name"] for item in result["skipped"]], ["note/inside.txt", "damaged.zip"])
         pdf = [target for target in targets if target.endswith(".pdf")]
         self.assertEqual(len(pdf), 1)
         self.assertLessEqual(len(pdf[0].encode("utf-8")), 255)
