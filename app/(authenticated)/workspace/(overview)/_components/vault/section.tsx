@@ -181,7 +181,13 @@ export function VaultSectionBackButton({
   readonly title: string;
 }) {
   return (
-    <Button onClick={onClick} size="act-sm" type="button" variant="act">
+    <Button
+      className="justify-self-start rounded-full px-3 py-1.5"
+      onClick={onClick}
+      size="act-sm"
+      type="button"
+      variant="act"
+    >
       <ArrowLeftIcon />
       {title}
     </Button>
