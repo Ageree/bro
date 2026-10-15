@@ -94,6 +94,7 @@ export const yoomoneyPayments = pgTable(
     shown: jsonb("shown").$type<{ label: string; value: string }[]>().notNull(),
     requestId: text("request_id").notNull(),
     amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    // Always false: YooMoney's wallet API dropped its test payments.
     test: boolean("test").notNull(),
     state: text("state", {
       enum: ["quoted", "submitting", "pending", "unknown", "paid", "refused"],

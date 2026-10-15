@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { env } from "@shared/environment";
 import { yoomoneyHistoryPage, yoomoneyRequest } from "./api";
 
 /**
@@ -8,25 +7,10 @@ import { yoomoneyHistoryPage, yoomoneyRequest } from "./api";
  * (`contract_amount`, with the fee), `process-payment` pays it. A
  * `request_id` is paid at most once: `process-payment` with the same one
  * again returns its outcome, which is how an `in_progress` payment or a
- * lost answer is read back. `YOOMONEY_TEST_PAYMENTS=on` makes a payment
- * prepared then YooMoney's test one, from its check to its last read:
- * everything is checked, nothing is charged.
+ * lost answer is read back. There is no test mode: YooMoney refuses the
+ * `test_payment` of its old docs, and `request-payment` alone charges
+ * nothing.
  */
-
-export const yoomoneyTestPayments = () => env.YOOMONEY_TEST_PAYMENTS === "on";
-
-/** Whether the payment is a test one: the payment's own, never the flag's now. */
-interface PaymentMode {
-  readonly test: boolean;
-}
-
-function withTestMode(body: URLSearchParams, { test }: PaymentMode) {
-  if (test) {
-    body.set("test_payment", "true");
-    body.set("test_result", "success");
-  }
-  return body;
-}
 
 const requestSchema = z.object({
   status: z.string(),
@@ -47,19 +31,17 @@ const requestSchema = z.object({
  */
 export async function requestYoomoneyPayment(
   token: string,
-  params: Readonly<Record<string, string>>,
-  mode: PaymentMode
+  params: Readonly<Record<string, string>>
 ) {
   const parsed = requestSchema.safeParse(
     await yoomoneyRequest("/api/request-payment", {
-      body: withTestMode(new URLSearchParams(params), mode),
+      body: new URLSearchParams(params),
       token,
     })
   );
   if (!parsed.success) {
     console.warn("[yoomoney] request-payment unreadable", {
       issues: parsed.error.issues.map((issue) => issue.path.join(".")),
-      test: mode.test,
     });
     return { kind: "refused" as const, error: "unknown" };
   }
@@ -73,7 +55,6 @@ export async function requestYoomoneyPayment(
       requestId: answer.request_id !== undefined,
       contractAmount: answer.contract_amount !== undefined,
       walletAllowed: answer.money_source?.wallet?.allowed,
-      test: mode.test,
     });
     return { kind: "refused" as const, error };
   };
@@ -86,8 +67,7 @@ export async function requestYoomoneyPayment(
     answer.contract_amount === undefined
   )
     return refused(answer.error ?? "unknown");
-  // The test mode's answer may say nothing of the wallet.
-  if (answer.money_source?.wallet?.allowed === false && !mode.test)
+  if (answer.money_source?.wallet?.allowed === false)
     return refused("wallet_not_allowed");
   return {
     kind: "ready" as const,
@@ -110,17 +90,13 @@ const processSchema = z.object({
  * `pending` while YooMoney still processes it (ask again after
  * `nextRetryMs` with the same `request_id`).
  */
-export async function processYoomoneyPayment(
-  token: string,
-  requestId: string,
-  mode: PaymentMode
-) {
+export async function processYoomoneyPayment(token: string, requestId: string) {
   const parsed = processSchema.safeParse(
     await yoomoneyRequest("/api/process-payment", {
-      body: withTestMode(
-        new URLSearchParams({ request_id: requestId, money_source: "wallet" }),
-        mode
-      ),
+      body: new URLSearchParams({
+        request_id: requestId,
+        money_source: "wallet",
+      }),
       token,
     })
   );
@@ -140,7 +116,6 @@ export async function processYoomoneyPayment(
   console.warn("[yoomoney] process-payment refused", {
     status: answer.status,
     error: answer.error,
-    test: mode.test,
   });
   return { kind: "refused" as const, error: answer.error ?? answer.status };
 }
@@ -221,8 +196,6 @@ const refusals = new Map(
     not_enough_funds: "На кошельке не хватает денег.",
     not_in_history: "ЮMoney не провёл платёж: в истории кошелька его нет.",
     payment_refused: "ЮMoney отказал в платеже.",
-    test_unknown:
-      "Тестовый платёж не подтвердился. В тестовом режиме деньги не списываются.",
     payee_not_found:
       "Получатель не найден: у этого номера, телефона или почты нет кошелька ЮMoney.",
     wallet_not_allowed:

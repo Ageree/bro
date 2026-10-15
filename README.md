@@ -451,8 +451,8 @@ yes to a question with its exact total. Register an app at
 `https://yoomoney.ru/myservices/new` with the Redirect URI
 `<origin>/api/yoomoney/callback` and "verify authenticity" (`client_secret`)
 on, then set `YOOMONEY_CLIENT_ID`, `YOOMONEY_CLIENT_SECRET` and the pilot
-`YOOMONEY_WORKSPACES` (workspace ids or `*`). `YOOMONEY_TEST_PAYMENTS=on`
-makes every payment YooMoney's test one, which charges nothing. The person
+`YOOMONEY_WORKSPACES` (workspace ids or `*`). The wallet API has no test
+mode: `request-payment` checks a payment without charging it. The person
 opens the link Bro sends in a browser signed in to the cabinet; Bro asks for
 `account-info operation-history payment-p2p payment-shop`.
 

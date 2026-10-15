@@ -36,7 +36,6 @@ import {
   processYoomoneyPayment,
   requestYoomoneyPayment,
   yoomoneyRefusal,
-  yoomoneyTestPayments,
 } from "@shared/yoomoney/payments";
 import {
   fillYoomoneyService,
@@ -128,12 +127,12 @@ const paymentCode = (id: string) =>
   createHash("sha256").update(id).digest("hex").slice(0, 6);
 
 function confirmationQuestion(
-  payment: Pick<Payment, "id" | "title" | "shown" | "amountMinor" | "test">
+  payment: Pick<Payment, "id" | "title" | "shown" | "amountMinor">
 ) {
   const details = payment.shown
     .map(({ label, value }) => `${label}: ${value}`)
     .join("; ");
-  return `${payment.test ? "ТЕСТОВЫЙ платёж, деньги не спишутся. " : ""}ЮMoney: ${payment.title}${details ? ` (${details})` : ""}. С кошелька спишется ${rub(payment.amountMinor)} с учётом комиссии. Платёж ${paymentCode(payment.id)}. Оплачиваю?`;
+  return `ЮMoney: ${payment.title}${details ? ` (${details})` : ""}. С кошелька спишется ${rub(payment.amountMinor)} с учётом комиссии. Платёж ${paymentCode(payment.id)}. Оплачиваю?`;
 }
 
 function paymentResult(payment: Payment) {
@@ -141,7 +140,6 @@ function paymentResult(payment: Payment) {
     paymentId: payment.id,
     title: payment.title,
     totalRub: payment.amountMinor / 100,
-    test: payment.test,
   };
   switch (payment.state) {
     case "quoted":
@@ -156,9 +154,8 @@ function paymentResult(payment: Payment) {
       return {
         ...base,
         kind: "paid" as const,
-        reply: payment.test
-          ? "This was YooMoney's test payment: everything was checked and nothing was charged. Tell the person the test payment went through."
-          : "Paid. Tell the person in one short message what was paid and the sum. Never pay it again.",
+        reply:
+          "Paid. Tell the person in one short message what was paid and the sum. Never pay it again.",
       };
     case "refused":
       return {
@@ -186,7 +183,7 @@ function paymentResult(payment: Payment) {
  * `request_id`, which never pays twice.
  */
 async function pay(token: string, payment: Payment) {
-  let outcome = await processYoomoneyPayment(token, payment.requestId, payment);
+  let outcome = await processYoomoneyPayment(token, payment.requestId);
   for (
     let attempt = 0;
     attempt < 3 && outcome.kind === "pending";
@@ -197,7 +194,7 @@ async function pay(token: string, payment: Payment) {
     await new Promise((resolve) => setTimeout(resolve, wait));
     try {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the same request, read back.
-      outcome = await processYoomoneyPayment(token, payment.requestId, payment);
+      outcome = await processYoomoneyPayment(token, payment.requestId);
     } catch (error) {
       // YooMoney took the payment already: a lost or refused read of it
       // says nothing of how it went.
@@ -226,14 +223,13 @@ async function sameWallet(scope: AccessScope, payment: Payment) {
 /**
  * What became of a payment whose outcome was lost, by its wallet's history
  * (`findYoomoneyPayment`): absent from the whole history half an hour after
- * it was sent is a payment YooMoney never made. A test payment is never in
- * the history and never charged. Undefined while it cannot be told.
+ * it was sent is a payment YooMoney never made. Undefined while it cannot
+ * be told.
  */
 async function fromHistory(
   scope: AccessScope,
   payment: Payment
 ): Promise<Settlement | undefined> {
-  if (payment.test) return { state: "refused", error: "test_unknown" };
   const sent = payment.submittedAt ?? payment.createdAt;
   try {
     const found = await withYoomoneyToken(scope, (token) =>
@@ -404,11 +400,10 @@ async function prepare(
     params = filled.params;
     shown = filled.shown;
   }
-  const test = yoomoneyTestPayments();
   const connection = await readYoomoneyConnection(scope);
   if (connection.state !== "connected") return notConnected;
   const checked = await withYoomoneyToken(scope, (token) =>
-    requestYoomoneyPayment(token, params, { test })
+    requestYoomoneyPayment(token, params)
   );
   if (!checked.connected) return notConnected;
   if (checked.result.kind === "refused") {
@@ -423,13 +418,13 @@ async function prepare(
     title,
     shown,
     amountMinor: checked.result.amountMinor,
-    test,
   };
   const payment = await createYoomoneyPayment(scope, {
     ...draft,
     rootSessionId,
     kind: input.kind,
     account: connection.account,
+    test: false,
     requestParams: params,
     requestId: checked.result.requestId,
     confirmationQuestion: confirmationQuestion(draft),
@@ -504,13 +499,6 @@ async function confirm(
   });
   if (payment === undefined) return { kind: "unavailable" as const };
   if (payment.state !== "quoted") return paymentResult(payment);
-  if (payment.test !== yoomoneyTestPayments()) {
-    return {
-      kind: "mode_changed" as const,
-      reply:
-        "Nothing was paid: test payments were switched on or off after this payment was prepared. Prepare it again and ask the person again.",
-    };
-  }
   if (!(await sameWallet(scope, payment))) {
     return {
       kind: "wallet_changed" as const,
@@ -531,7 +519,7 @@ async function confirm(
   if (payment.expiresAt.getTime() <= Date.now()) {
     // The yes holds for the same payment: checked anew, for the same sum.
     const checked = await withYoomoneyToken(scope, (token) =>
-      requestYoomoneyPayment(token, payment.requestParams, payment)
+      requestYoomoneyPayment(token, payment.requestParams)
     );
     if (!checked.connected) return notConnected;
     if (checked.result.kind === "refused") {

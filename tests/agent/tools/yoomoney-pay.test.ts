@@ -230,14 +230,6 @@ describe("wallet payments", () => {
     });
   });
 
-  it("pays a test payment only as a test, and a real one only for real", async () => {
-    services.read.mockResolvedValue(row({ test: true }));
-    expect(
-      await call(answered("да"), { action: "confirm", paymentId })
-    ).toMatchObject({ kind: "mode_changed" });
-    expect(services.claim).not.toHaveBeenCalled();
-  });
-
   it("leaves a payment whose answer was lost unknown, not refused", async () => {
     services.process.mockRejectedValue(new YoomoneyError("unavailable"));
     expect(
@@ -269,20 +261,6 @@ describe("wallet payments", () => {
     ).toMatchObject({ kind: "unknown" });
     expect(services.process).not.toHaveBeenCalled();
     expect(services.settle).not.toHaveBeenCalled();
-  });
-
-  it("settles a lost test payment unpaid without the history: tests are never there", async () => {
-    services.read.mockResolvedValue(row({ state: "unknown", test: true }));
-    services.process.mockResolvedValue({
-      kind: "refused",
-      error: "contract_not_found",
-    });
-    await call(answered("ну что там?"), { action: "status", paymentId });
-    expect(services.history).not.toHaveBeenCalled();
-    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
-      state: "refused",
-      error: "test_unknown",
-    });
   });
 
   it("reads a payment in flight back with its own request, never a new one", async () => {
